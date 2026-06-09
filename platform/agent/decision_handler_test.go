@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,9 +55,19 @@ func installSharedEngineWithMockDB(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { _ = mockDB.Close() })
-	mockSQL.ExpectQuery("SELECT").WillReturnRows(
-		sqlmock.NewRows([]string{"id", "name", "pattern", "category", "severity", "action", "enabled", "tier", "tenant_id", "description", "metadata"}),
-	)
+	// handleDecide now makes a policy-derived category lookup
+	// (EnabledPIICategories, #2565) in addition to EvaluateRequest. Those two
+	// GetPolicies calls share a cache key for a real (non-empty) tenant, but a
+	// blank-tenant test path can produce two distinct keys (EvaluateRequest
+	// substitutes DefaultTenant; EnabledPIICategories doesn't), so allow several
+	// empty-result SELECTs. Extra unmet expectations are harmless (the tests
+	// don't assert ExpectationsWereMet).
+	mockSQL.MatchExpectationsInOrder(false)
+	for i := 0; i < 4; i++ {
+		mockSQL.ExpectQuery("SELECT").WillReturnRows(
+			sqlmock.NewRows([]string{"id", "name", "pattern", "category", "severity", "action", "enabled", "tier", "tenant_id", "description", "metadata"}),
+		)
+	}
 	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.EngineConfig{}, nil)
 	old := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(engine)
@@ -115,6 +126,54 @@ func TestHandleDecide_VerdictAllow(t *testing.T) {
 	}
 	if resp.ExpiresAt.IsZero() {
 		t.Error("expires_at must be populated")
+	}
+}
+
+// TestHandleDecide_IndonesiaNIKRedactObligation pins the /decide half of the
+// #2571 fix: under PII_ACTION=redact, a checksum-valid NIK must emit EXACTLY ONE
+// redact_pii obligation that names check-input as its fulfillment endpoint.
+// Before the fix /decide flagged Indonesia PII for block only, so under redact
+// it returned allow with NO obligation and the NIK slipped through. Mirrors the
+// pre-check integration test on the /decide plane (deterministic, no license).
+func TestHandleDecide_IndonesiaNIKRedactObligation(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	t.Setenv("ENVIRONMENT", "development")
+	t.Setenv("PII_ACTION", "redact")
+	ResetDetectionConfigCache()
+	installSharedEngineWithMockDB(t)
+	installCircuitBreaker(t)
+
+	body, _ := json.Marshal(DecideRequest{
+		Stage:          DecisionStageLLM,
+		CallerIdentity: DecisionCallerIdentity{GatewayID: "test-llm-gateway", TenantID: "test-tenant"},
+		Target:         DecisionTarget{Type: "llm", Model: "gpt-4o", Provider: "openai"},
+		Query:          "Customer NIK is 3174042506780001",
+	})
+	rr := decideForTest(t, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp DecideResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v -- body=%s", err, rr.Body.String())
+	}
+	if resp.Verdict != VerdictAllow {
+		t.Fatalf("verdict: got %q want %q (redact, not block); reasons=%v", resp.Verdict, VerdictAllow, resp.Reasons)
+	}
+
+	redactCount := 0
+	var ob DecisionObligation
+	for _, o := range resp.Obligations {
+		if o.Type == ObligationRedactPII {
+			redactCount++
+			ob = o
+		}
+	}
+	if redactCount != 1 {
+		t.Fatalf("expected exactly one redact_pii obligation for a NIK under PII_ACTION=redact, got %d (obligations=%+v)", redactCount, resp.Obligations)
+	}
+	if ob.Fulfillment == nil || !strings.Contains(ob.Fulfillment.Endpoint, "check-input") {
+		t.Errorf("redact_pii obligation must name check-input as its fulfillment endpoint, got %+v", ob.Fulfillment)
 	}
 }
 
@@ -213,6 +272,51 @@ func TestMapPolicyResultToVerdict_AllPaths(t *testing.T) {
 				t.Error("obligations must always be non-nil for stable JSON output")
 			}
 		})
+	}
+}
+
+// TestNewRedactPIIObligation_SelfDescribing pins the #2563 contract: every
+// redact_pii obligation the PDP emits carries a complete Fulfillment block
+// naming the engine endpoint, so a PEP never has to infer how to discharge it
+// (and can never be tempted to hand-roll redaction).
+func TestNewRedactPIIObligation_SelfDescribing(t *testing.T) {
+	ob := newRedactPIIObligation("RBI India PII detected: Aadhaar")
+	if ob.Type != ObligationRedactPII {
+		t.Fatalf("type=%q want %q", ob.Type, ObligationRedactPII)
+	}
+	if ob.Detail == "" {
+		t.Error("detail should carry the human-readable reason")
+	}
+	if ob.Fulfillment == nil {
+		t.Fatal("obligation is not self-describing: Fulfillment is nil")
+	}
+	if ob.Fulfillment.Endpoint != requestRedactionEndpoint {
+		t.Errorf("endpoint=%q want %q", ob.Fulfillment.Endpoint, requestRedactionEndpoint)
+	}
+	if ob.Fulfillment.Method != http.MethodPost {
+		t.Errorf("method=%q want POST", ob.Fulfillment.Method)
+	}
+	if ob.Fulfillment.Phase != ObligationPhaseRequest {
+		t.Errorf("phase=%q want %q", ob.Fulfillment.Phase, ObligationPhaseRequest)
+	}
+}
+
+// TestMapPolicyResultToVerdict_ObligationIsFulfillable asserts that the redact
+// obligation produced by the verdict mapping is engine-fulfillable (not a bare
+// {type,detail}). This is the structural guard against regressing to the
+// pre-#2563 obligation shape.
+func TestMapPolicyResultToVerdict_ObligationIsFulfillable(t *testing.T) {
+	_, _, obligations := mapPolicyResultToVerdict(
+		&StaticPolicyResult{RequiresRedaction: true, Reason: "NIK detected"}, false)
+	if len(obligations) != 1 {
+		t.Fatalf("obligations=%d want 1", len(obligations))
+	}
+	ob := obligations[0]
+	if ob.Type != ObligationRedactPII || ob.Fulfillment == nil {
+		t.Fatalf("obligation not self-describing: %+v", ob)
+	}
+	if ob.Fulfillment.Endpoint != requestRedactionEndpoint || ob.Fulfillment.Phase != ObligationPhaseRequest {
+		t.Fatalf("fulfillment wrong: %+v", ob.Fulfillment)
 	}
 }
 

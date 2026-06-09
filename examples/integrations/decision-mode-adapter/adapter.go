@@ -127,8 +127,56 @@ type DecideResponse struct {
 }
 
 type Obligation struct {
-	Type   string `json:"type"`
-	Detail string `json:"detail,omitempty"`
+	Type        string                 `json:"type"`
+	Detail      string                 `json:"detail,omitempty"`
+	Fulfillment *ObligationFulfillment `json:"fulfillment,omitempty"`
+}
+
+// ObligationFulfillment names the AxonFlow engine call that discharges an
+// obligation (ADR-056 / #2563). A conforming PEP POSTs the source content to
+// Endpoint and forwards the engine-redacted content the endpoint returns — it
+// NEVER redacts with its own patterns. This adapter honours that: the only way
+// it produces redacted content is by calling the named endpoint.
+//
+// ContentTypes advertises the mime-types the endpoint's detectors can redact
+// today (e.g. "text/plain"). The contract is content-type-agnostic: a PEP
+// holding content of an unadvertised type (e.g. an image awaiting OCR-PII
+// redaction) must fail closed rather than forward it unredacted. Media support
+// arrives by registering a detector server-side, not by redesigning this shape.
+type ObligationFulfillment struct {
+	Endpoint     string   `json:"endpoint"`
+	Method       string   `json:"method"`
+	Phase        string   `json:"phase"`
+	ContentTypes []string `json:"content_types,omitempty"`
+}
+
+const (
+	obligationRedactPII    = "redact_pii"
+	obligationPhaseRequest = "request"
+	contentTypeText        = "text/plain"
+	// requestRedactionPath is the only engine endpoint this adapter will POST
+	// content to for fulfillment. Refusing any other endpoint stops a malformed
+	// verdict from steering the PEP into calling an arbitrary URL.
+	requestRedactionPath = "/api/v1/mcp/check-input"
+)
+
+// checkInputRequest / checkInputResponse mirror the platform's
+// MCPCheckInputRequest / MCPCheckInputResponse (the request-redaction endpoint).
+// ContentType selects the server-side redaction detector; this adapter handles
+// text only and submits "text/plain".
+type checkInputRequest struct {
+	ConnectorType string `json:"connector_type"`
+	Statement     string `json:"statement"`
+	ContentType   string `json:"content_type,omitempty"`
+	TenantID      string `json:"tenant_id,omitempty"`
+	Operation     string `json:"operation,omitempty"`
+}
+
+type checkInputResponse struct {
+	Allowed            bool   `json:"allowed"`
+	Redacted           bool   `json:"redacted,omitempty"`
+	RedactedStatement  string `json:"redacted_statement,omitempty"`
+	RedactionEvaluated bool   `json:"redaction_evaluated,omitempty"`
 }
 
 // openAIChatRequest is the subset of the OpenAI chat-completion body the
@@ -215,12 +263,38 @@ func Middleware(cfg Config, downstream http.Handler) http.Handler {
 
 		switch resp.Verdict {
 		case "allow":
+			// Discharge any request-phase redact_pii obligation THROUGH THE
+			// ENGINE before forwarding (ADR-056 / #2563). We never redact
+			// locally: the obligation names an engine endpoint, we POST the
+			// query there, and we forward exactly what it returns. On any
+			// fulfillment failure we fail closed (block) rather than forward
+			// unredacted content.
+			outBody := body
+			if hasRequestRedaction(resp.Obligations) {
+				redactedQuery, ferr := fulfillRequestRedaction(r.Context(), cfg, resp.Obligations, query, r.Header.Get("traceparent"))
+				if ferr != nil {
+					writeErrorJSON(w, http.StatusBadGateway,
+						fmt.Sprintf("AxonFlow obligation could not be fulfilled via the engine: %v", ferr),
+						resp.DecisionID, resp.TraceID)
+					return
+				}
+				if redactedQuery != query {
+					rewritten, rerr := rewriteUserQuery(body, redactedQuery)
+					if rerr != nil {
+						writeErrorJSON(w, http.StatusBadGateway,
+							"failed to apply engine redaction to request body", resp.DecisionID, resp.TraceID)
+						return
+					}
+					outBody = rewritten
+				}
+			}
 			if resp.TraceID != "" {
 				r.Header.Set("traceparent", formatTraceparent(resp.TraceID))
 				w.Header().Set("X-Axonflow-Trace-Id", resp.TraceID)
 				w.Header().Set("X-Axonflow-Decision-Id", resp.DecisionID)
 			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(outBody))
+			r.Body = io.NopCloser(bytes.NewReader(outBody))
 			downstream.ServeHTTP(w, r)
 
 		case "deny":
@@ -291,6 +365,152 @@ func callDecisionAPI(ctx context.Context, cfg Config, req DecideRequest, incomin
 	}
 
 	return &resp, nil
+}
+
+// hasRequestRedaction reports whether any obligation requires request-phase
+// PII redaction.
+func hasRequestRedaction(obs []Obligation) bool {
+	for _, o := range obs {
+		if o.Type == obligationRedactPII && o.Fulfillment != nil && o.Fulfillment.Phase == obligationPhaseRequest {
+			return true
+		}
+	}
+	return false
+}
+
+// fulfillRequestRedaction discharges every request-phase redact_pii obligation
+// by calling the engine endpoint the obligation names. It performs NO local
+// redaction; the returned string is exactly what the engine produced. Any
+// obligation that names no request-phase endpoint, an endpoint this adapter
+// refuses to call, or a content-type the endpoint cannot redact, is a hard
+// error so the caller fails closed.
+func fulfillRequestRedaction(ctx context.Context, cfg Config, obs []Obligation, query, traceparent string) (string, error) {
+	redacted := query
+	for _, o := range obs {
+		if o.Type != obligationRedactPII {
+			continue
+		}
+		f := o.Fulfillment
+		if f == nil || f.Phase != obligationPhaseRequest {
+			return query, fmt.Errorf("redact_pii obligation has no request-phase fulfillment endpoint")
+		}
+		if !endpointMatches(f.Endpoint, requestRedactionPath) {
+			return query, fmt.Errorf("refusing to call non-redaction endpoint %q", f.Endpoint)
+		}
+		// Content-type-agnostic check: this adapter only holds text. If the
+		// endpoint cannot redact text, fail closed rather than forward.
+		if len(f.ContentTypes) > 0 && !contains(f.ContentTypes, contentTypeText) {
+			return query, fmt.Errorf("endpoint does not advertise a %s detector", contentTypeText)
+		}
+		out, err := callRedactionEndpoint(ctx, cfg, redacted, traceparent)
+		if err != nil {
+			return query, err
+		}
+		redacted = out
+	}
+	return redacted, nil
+}
+
+// callRedactionEndpoint POSTs the statement to the request-redaction engine
+// endpoint and returns the engine-masked statement.
+func callRedactionEndpoint(ctx context.Context, cfg Config, statement, traceparent string) (string, error) {
+	reqBody, err := json.Marshal(checkInputRequest{
+		ConnectorType: "gateway",
+		Statement:     statement,
+		ContentType:   contentTypeText,
+		TenantID:      cfg.TenantID,
+		Operation:     "execute",
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal redaction request: %w", err)
+	}
+	url := strings.TrimRight(cfg.AxonFlowEndpoint, "/") + requestRedactionPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("create redaction request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if traceparent != "" {
+		httpReq.Header.Set("traceparent", traceparent)
+	}
+	if cfg.ClientID != "" {
+		httpReq.SetBasicAuth(cfg.ClientID, cfg.ClientSecret)
+	}
+	httpResp, err := cfg.httpClient().Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("redaction endpoint call failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, maxDecisionResponseSize))
+	if httpResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("redaction endpoint returned %d: %s", httpResp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var cir checkInputResponse
+	if err := json.Unmarshal(respBody, &cir); err != nil {
+		return "", fmt.Errorf("decode redaction response: %w", err)
+	}
+	// Fail closed if the redactor did not actually run (#2563 B1): "redacted:false"
+	// with the redactor disabled is indistinguishable from "looked, found nothing".
+	if !cir.RedactionEvaluated {
+		return "", fmt.Errorf("engine redactor did not run (redaction disabled) — failing closed")
+	}
+	if cir.Redacted && cir.RedactedStatement != "" {
+		return cir.RedactedStatement, nil
+	}
+	return statement, nil
+}
+
+// rewriteUserQuery replaces the last user message's content in the original
+// request body with the redacted query, preserving every other field.
+func rewriteUserQuery(body []byte, redacted string) ([]byte, error) {
+	var generic map[string]interface{}
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return nil, err
+	}
+	msgs, ok := generic["messages"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("request has no messages array to rewrite")
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m, ok := msgs[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role == "user" {
+			m["content"] = redacted
+			return json.Marshal(generic)
+		}
+	}
+	return nil, fmt.Errorf("request has no user message to rewrite")
+}
+
+// endpointMatches reports whether endpoint resolves to the expected engine path
+// (accepting an absolute URL whose path matches).
+func endpointMatches(endpoint, expected string) bool {
+	e := strings.TrimSpace(endpoint)
+	if e == expected {
+		return true
+	}
+	if i := strings.Index(e, "://"); i >= 0 {
+		rest := e[i+3:]
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			path := rest[slash:]
+			if q := strings.IndexByte(path, '?'); q >= 0 {
+				path = path[:q]
+			}
+			return path == expected
+		}
+	}
+	return false
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // extractQuery pulls the last user message from the OpenAI chat request.

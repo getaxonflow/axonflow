@@ -349,6 +349,36 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	return result
 }
 
+// EnabledPIICategories returns the distinct PII categories (by the pii-*/media-pii
+// convention, see isPIIPolicyCategory) that have at least one ENABLED policy for
+// the tenant in the given phase. It is the source for policy-derived PII scoping:
+// coverage = (enabled policies ∩ the PII convention), so a newly-seeded pii-*
+// category is auto-included with no hardcoded category list to maintain.
+//
+// IMPORTANT: returns nil (not an empty non-nil slice) when no PII policies are
+// enabled. Callers MUST treat nil as "no PII to evaluate" and skip the response
+// pass — passing an empty Categories to EvaluateResponse evaluates ALL policies
+// (the whitelist short-circuits when both include and exclude are empty).
+func (e *UnifiedPolicyEngine) EnabledPIICategories(ctx context.Context, tenantID string, orgID *string, phase Phase) []PolicyCategory {
+	policies, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[PolicyCategory]bool)
+	var cats []PolicyCategory
+	for i := range policies {
+		if !policies[i].Enabled {
+			continue
+		}
+		c := policies[i].Category
+		if isPIIPolicyCategory(c) && !seen[c] {
+			seen[c] = true
+			cats = append(cats, c)
+		}
+	}
+	return cats
+}
+
 // InvalidateCache forces a cache refresh for a tenant.
 func (e *UnifiedPolicyEngine) InvalidateCache(tenantID string, orgID *string) {
 	e.cache.Invalidate(tenantID, orgID)

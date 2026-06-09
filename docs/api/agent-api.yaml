@@ -4241,6 +4241,14 @@ components:
       type: object
       required:
         - type
+      description: |
+        A PEP-side requirement attached to an `allow` verdict. Obligations are
+        SELF-DESCRIBING and ENGINE-FULFILLABLE (ADR-056 / ADR-057, #2563):
+        `/decide` is a pure PDP and never mutates content, so a `redact_pii`
+        obligation is not "redact this yourself with your own patterns" — it is
+        "call the AxonFlow engine endpoint named in `fulfillment` to obtain
+        engine-redacted content." Client-side redaction is forbidden; the
+        blessed client path is `platform/shared/pep`.
       properties:
         type:
           type: string
@@ -4251,6 +4259,58 @@ components:
         detail:
           type: string
           description: Human-readable detail for audit logs.
+        fulfillment:
+          $ref: '#/components/schemas/ObligationFulfillment'
+
+    ObligationFulfillment:
+      type: object
+      description: |
+        Names the engine call a PEP makes to discharge an obligation (since
+        8.6.0). Fulfillment is a property of the contract, not of PEP-author
+        discipline: a conforming PEP POSTs the obligation's source content to
+        `endpoint` and forwards the engine-redacted content the endpoint
+        returns. There is no other blessed way to satisfy a `redact_pii`
+        obligation. A PEP holding content of a type NOT in `content_types`
+        (e.g. an image awaiting OCR-PII redaction) MUST fail closed rather than
+        forward it unredacted.
+      required:
+        - endpoint
+        - method
+        - phase
+      properties:
+        endpoint:
+          type: string
+          description: |
+            Engine path the PEP POSTs to in order to discharge the obligation.
+            For a request-phase `redact_pii` obligation this is
+            `/api/v1/mcp/check-input`; the response-phase counterpart is
+            `/api/v1/mcp/check-output`. `/decide` runs pre-call, so it only
+            ever emits request-phase obligations.
+          example: "/api/v1/mcp/check-input"
+        method:
+          type: string
+          description: HTTP method to use against `endpoint`.
+          example: "POST"
+        phase:
+          type: string
+          enum: [request, response]
+          description: |
+            Which content the PEP submits. `request` = the PEP redacts the
+            request it is about to forward (the `query` it asked `/decide`
+            about); `response` = the PEP redacts a backend response before
+            returning it. `/decide` emits only `request` obligations; the
+            `response` value is part of the contract for PEP helpers that fan
+            out to both phases.
+        content_types:
+          type: array
+          items:
+            type: string
+          description: |
+            The mime-types `endpoint`'s redaction detectors can handle today
+            (e.g. `text/plain`). Deliberately content-type-agnostic: adding a
+            modality is a server-side detector registration plus a new entry
+            here, not a redesign of this shape.
+          example: ["text/plain"]
 
     DecideErrorResponse:
       type: object
@@ -4952,6 +5012,33 @@ components:
             ID of an active override consumed by this decision (if any).
             Distinguishes "you already have an override" from "you can
             request one".
+        # Request-phase redaction (ADR-056 / #2563, since 8.6.0). When an
+        # allowed statement carries PII under a redact (not block) policy, the
+        # engine returns the masked statement here so a PEP can forward
+        # redacted content without hand-rolling its own patterns — symmetric
+        # with how check-output exposes redacted_data. Additive + omitempty,
+        # so the response is byte-for-byte identical for existing callers and
+        # for any allowed statement with no PII.
+        redacted:
+          type: boolean
+          description: |
+            Whether the engine masked any PII in the request statement.
+            Omitted (false) when nothing was redacted.
+        redacted_statement:
+          type: string
+          description: |
+            The request statement with PII fields masked. A PEP fulfilling a
+            Decision Mode redact_pii obligation forwards THIS value instead of
+            the original. Omitted when nothing was redacted. Source of truth:
+            `platform/agent/mcp_handler.go` (MCPCheckInputResponse).
+        redaction_evaluated:
+          type: boolean
+          description: |
+            Whether the redaction detector actually ran (regardless of whether
+            it masked anything). A PEP fulfilling a redact_pii obligation MUST
+            fail closed when this is false — it means no detection config was
+            enabled, so `redacted: false` is indistinguishable from "looked,
+            found nothing" and the request must not be forwarded as clean.
 
     MCPCheckOutputRequest:
       type: object

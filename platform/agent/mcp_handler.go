@@ -30,7 +30,6 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
-	"axonflow/platform/shared/idempotency"
 	"axonflow/platform/connectors/amadeus"
 	"axonflow/platform/connectors/azureblob"
 	"axonflow/platform/connectors/base"
@@ -50,6 +49,7 @@ import (
 	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
+	"axonflow/platform/shared/idempotency"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/secretenv"
@@ -711,25 +711,27 @@ func evaluateInputPolicies(
 	policyEngine := sharedpolicy.GetGlobalEngine()
 	mcpDetectionCfg := GetMCPDetectionConfig()
 	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
+		// Security + compliance categories stay explicit; the PII categories are
+		// policy-derived (every enabled PII-category system policy) so a new
+		// pii-* category (e.g. pii-indonesia) is auto-covered — no hardcoded PII
+		// list to forget. The non-PII categories keep the slice non-empty, so
+		// the empty-Categories-means-all whitelist footgun can't apply here.
+		inputCats := []sharedpolicy.PolicyCategory{
+			sharedpolicy.CategorySecuritySQLi,
+			sharedpolicy.CategorySecurityDangerous,
+			sharedpolicy.CategoryComplianceRBI,
+			sharedpolicy.CategoryComplianceSEBI,
+			sharedpolicy.CategoryComplianceEUAIAct,
+			sharedpolicy.CategoryComplianceMASFEAT,
+		}
+		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
-			TenantID:      tenantID,
-			OrgID:         orgID,
-			ConnectorName: connectorName,
-			UserID:        userID,
-			Parameters:    parameters,
-			Categories: []sharedpolicy.PolicyCategory{
-				sharedpolicy.CategorySecuritySQLi,
-				sharedpolicy.CategorySecurityDangerous,
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-				sharedpolicy.CategoryComplianceRBI,
-				sharedpolicy.CategoryComplianceSEBI,
-				sharedpolicy.CategoryComplianceEUAIAct,
-				sharedpolicy.CategoryComplianceMASFEAT,
-			},
+			TenantID:        tenantID,
+			OrgID:           orgID,
+			ConnectorName:   connectorName,
+			UserID:          userID,
+			Parameters:      parameters,
+			Categories:      inputCats,
 			SkipCategories:  mcpDetectionCfg.SkipCategories,
 			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 		})
@@ -740,6 +742,118 @@ func evaluateInputPolicies(
 	}
 
 	return out
+}
+
+// redactInputStatement runs the engine's redactor over a request statement so
+// an allowed-but-PII-bearing statement can be forwarded in masked form. This is
+// the request-phase half of the redaction contract (ADR-056 / #2563): /decide
+// emits a self-describing redact_pii obligation naming check-input, and
+// check-input returns the engine-masked statement so the PEP never hand-rolls
+// its own patterns. The same engine primitive (EvaluateResponse) that masks
+// connector responses masks the request — masking is direction-agnostic.
+//
+// Categories are policy-derived via the engine's canonical
+// EnabledPIICategories (Session A's helper, #2565) — every enabled PII-category
+// policy by the pii-* convention, so a new jurisdiction (e.g. pii-indonesia) is
+// auto-covered with no hardcoded list. Returns the masked statement and whether
+// any masking occurred; on no-PII / engine-disabled it returns ("", false, …)
+// and the caller forwards the original statement verbatim.
+//
+// CONNECTOR-AGNOSTIC (ADR-056 Decision 3): unlike the managed-connector
+// block/deny evaluators (evaluateInputPolicies / evaluateOutputPolicies), this
+// path deliberately does NOT gate on mcpDetectionCfg.IsConnectorEnabled. A PEP
+// in gateway/PDP mode has no managed connector — it passes a synthetic origin
+// tag — so honouring the connector allowlist here would let an operator's
+// allowlist (which excludes that synthetic tag) silently disable redaction
+// while /decide still emits the obligation: the PEP would forward unredacted
+// PII believing it had discharged the obligation. That fail-open is exactly
+// what the ADR forbids. Redaction is content governance; the connector axis is
+// meaningless for it. (The block/deny gate is unchanged; only this additive
+// masking step is connector-agnostic.)
+//
+// CROSS-CONFIG fail-OPEN fix (#2563 B1): `/decide` emits the redact_pii
+// obligation under the GATEWAY detection config, but check-input historically
+// gated this fulfillment on the MCP config. With MCP redaction OFF + Gateway ON
+// the PEP got the obligation, called check-input, and the redactor silently did
+// not run — returning "nothing redacted", which the PEP could not distinguish
+// from "engine looked, found nothing" → unredacted PII forwarded. Two fixes:
+//  1. UNIFY the enable decision — redaction runs when EITHER the MCP or the
+//     Gateway static-policy detection is enabled, so whenever /decide (gateway)
+//     could emit the obligation, the fulfillment endpoint will actually redact.
+//  2. Report `evaluated` — whether the detector ran at all — so check-input can
+//     tell the PEP "redactor did not run" and the PEP fails CLOSED rather than
+//     forwarding (covers a stale/cached obligation reaching a now-disabled
+//     redactor). evaluated=false only when no detection config is enabled (a
+//     state in which /decide also emits no obligation).
+//
+// Returns (masked, redacted, evaluated). redacted implies evaluated.
+func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, statement string) (masked string, redacted, evaluated bool) {
+	policyEngine := sharedpolicy.GetGlobalEngine()
+	mcpCfg := GetMCPDetectionConfig()
+	gwCfg := GetGatewayDetectionConfig()
+	// Effective config = whichever surface is enabled (prefer MCP for managed
+	// connectors). The two derive their PII action from the same PII_ACTION env.
+	effective := mcpCfg
+	if !mcpCfg.Enabled && gwCfg.Enabled {
+		effective = gwCfg
+	}
+	if policyEngine == nil || (!mcpCfg.Enabled && !gwCfg.Enabled) {
+		return "", false, false
+	}
+	if statement == "" {
+		return "", false, true // detector available; nothing to scan
+	}
+	// working accumulates redactions across the static engine and the
+	// enterprise Indonesia checksum detector (the two diverged request-phase
+	// detectors). evaluated stays true throughout — detection IS configured.
+	working := statement
+	anyRedacted := false
+
+	// Static-engine redaction (regex categories: e.g. US SSN, Singapore NRIC).
+	// Policy-derived category scoping (Session A's canonical helper, #2565):
+	// the PII categories with an ENABLED request-phase policy for this tenant.
+	// PhaseRequest keeps the redaction coverage phase-consistent with /decide's
+	// obligation emission (also request-phase). EnabledPIICategories returns nil
+	// when no PII policy is enabled — we MUST skip the EvaluateResponse call in
+	// that case, because passing an empty Categories evaluates ALL policies (the
+	// whitelist short-circuits).
+	piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)
+	if len(piiCats) > 0 {
+		result := policyEngine.EvaluateResponse(ctx, []map[string]interface{}{{"statement": working}}, sharedpolicy.EvalOptions{
+			TenantID:        tenantID,
+			ConnectorName:   connectorName,
+			UserID:          userID,
+			Categories:      piiCats,
+			SkipCategories:  effective.SkipCategories,
+			ActionOverrides: effective.BuildActionOverrides(),
+			MaxRedactions:   100,
+		})
+		if result != nil && result.Redacted {
+			if rows, ok := result.Content.([]map[string]interface{}); ok && len(rows) > 0 {
+				if out, ok := rows[0]["statement"].(string); ok && out != working {
+					working = out
+					anyRedacted = true
+				}
+			}
+		}
+	}
+
+	// Enterprise Indonesia checksum redaction (NIK / NPWP). The static engine
+	// above carries regex categories but NOT the checksum-validated NIK
+	// detector, so without this step check-input masks Singapore NRIC yet
+	// leaves NIK intact. /decide emits a redact_pii obligation naming
+	// check-input for critical Indonesia PII (gateway_handlers / decision_handler),
+	// so check-input MUST actually mask it here — otherwise the obligation is
+	// unfulfillable and the PEP forwards NIK unredacted (#2571).
+	if idMasked, changed := redactIndonesiaPIIInString(working); changed {
+		working = idMasked
+		anyRedacted = true
+	}
+
+	if !anyRedacted {
+		return "", false, true // redactor ran; nothing in scope to mask
+	}
+	return working, true, true
 }
 
 // OutputPolicyOutcome carries the results of SQLi scanning, response-phase static
@@ -761,6 +875,15 @@ type OutputPolicyOutcome struct {
 
 	// RedactedMessage is non-empty when PII redaction was applied to a command response message.
 	RedactedMessage string
+
+	// IndonesiaRedactedTypes lists the Indonesia (OJK/UU PDP) PII types masked on
+	// the response in redact mode (e.g. nik, npwp_legacy, phone_indonesia). These
+	// redactions come from the Enterprise Indonesia detector, NOT the shared static
+	// engine, so they are tracked here separately and OR'd into the audit
+	// redaction signal — otherwise a response whose ONLY redaction is Indonesian
+	// PII would be masked for the caller but recorded as un-redacted in the audit
+	// trail (the whole point of response-side governance is audit visibility).
+	IndonesiaRedactedTypes []string
 
 	// ExfilResult is the raw exfiltration check result. Nil when checkExfiltration is false
 	// or when the exfiltration checker is disabled.
@@ -787,6 +910,7 @@ func evaluateOutputPolicies(
 	messageMetadata map[string]interface{},
 	rowCount int,
 	checkExfiltration bool,
+	isGateway bool, // true for PEP/gateway callers (check-output) → bypass the connector allowlist for PII detection
 ) OutputPolicyOutcome {
 	var out OutputPolicyOutcome
 
@@ -817,28 +941,103 @@ func evaluateOutputPolicies(
 		}
 	}
 
-	// 2. Response-phase static policy evaluation (PII redaction)
-	policyEngine := sharedpolicy.GetGlobalEngine()
 	mcpDetectionCfg := GetMCPDetectionConfig()
-	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
+	// Connector-agnostic gateway path: a PEP/gateway caller (isGateway, e.g.
+	// check-output submitting pre-executed output) has no managed connector, so
+	// the MCP connector allowlist (IsConnectorEnabled, permissive-when-empty)
+	// must NOT gate it — otherwise a configured allowlist silently disables
+	// response PII redaction for the gateway. Managed-connector responses
+	// (query/execute) keep the allowlist.
+	detectionGate := mcpDetectionCfg.Enabled && (isGateway || mcpDetectionCfg.IsConnectorEnabled(connectorName))
+
+	// 2. Indonesia (OJK/UU PDP) checksum-validated PII governance on the response.
+	// The static policy engine CANNOT cover NIK on responses: sys_pii_indonesia_ktp
+	// is a request-phase "menu/spec parity" row, and the real checksum-validated
+	// NIK/NPWP detector is the Enterprise Indonesia detector — which, like the
+	// orchestrator's response-side detector, must run on the response too. Without
+	// this, NIK is governed on input (decision_handler/gateway_handlers) but leaks
+	// on output. Runs before the static pass so a critical-PII hard-deny wins.
+	if detectionGate {
+		var idText string
+		if rows != nil {
+			for _, row := range rows {
+				for _, v := range row {
+					if s, ok := v.(string); ok {
+						idText += s + " "
+					}
+				}
+			}
+		} else {
+			idText = message
+		}
+		blockOnCritical := mcpDetectionCfg.PIIAction == DetectionActionBlock
+		if idResult := checkIndonesiaResponsePII(idText, blockOnCritical); idResult != nil {
+			if idResult.BlockRecommended {
+				out.StaticResult = &sharedpolicy.ResponseResult{
+					Blocked:     true,
+					BlockReason: idResult.Reason,
+					BlockedBy: &sharedpolicy.CompiledPolicy{
+						PolicyID: "sys_pii_indonesia_ktp",
+						Name:     "Indonesian KTP/NIK Detection",
+						Category: sharedpolicy.CategoryPIIIndonesia,
+					},
+				}
+				log.Printf("[MCP] Response blocked by Indonesia PII detection: %s", logutil.Sanitize(idResult.Reason))
+				return out
+			}
+			if idResult.HasPII && mcpDetectionCfg.PIIAction == DetectionActionRedact {
+				// Mask NIK/NPWP/etc ONLY under PII_ACTION=redact, then feed the masked
+				// content forward into the static pass below. Under warn/log the action
+				// is detect-don't-modify (parity with the static engine + orchestrator,
+				// which never mutate content for warn/log); block is handled above.
+				if rows != nil {
+					anyRedacted := false
+					for _, row := range rows {
+						for k, v := range row {
+							if s, ok := v.(string); ok {
+								if masked, changed := redactIndonesiaPIIInString(s); changed {
+									row[k] = masked
+									anyRedacted = true
+								}
+							}
+						}
+					}
+					if anyRedacted {
+						out.RedactedRows = rows
+						out.IndonesiaRedactedTypes = indonesiaDetectedTypeNames(idResult)
+					}
+				} else if message != "" {
+					if masked, changed := redactIndonesiaPIIInString(message); changed {
+						message = masked
+						out.RedactedMessage = masked
+						out.IndonesiaRedactedTypes = indonesiaDetectedTypeNames(idResult)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Response-phase static policy evaluation (PII redaction)
+	policyEngine := sharedpolicy.GetGlobalEngine()
+	if policyEngine != nil && detectionGate {
 		var responseContent []map[string]interface{}
 		if rows != nil {
 			responseContent = rows
 		} else if message != "" {
 			responseContent = []map[string]interface{}{{"message": message}}
 		}
-		if responseContent != nil {
+		// Policy-derived PII categories: evaluate every enabled PII-category
+		// system policy for the tenant rather than a hardcoded literal (which
+		// had silently omitted pii-indonesia). nil => no enabled PII policies =>
+		// skip the static PII pass; must NOT pass empty Categories, which would
+		// evaluate ALL policies (the whitelist short-circuits on empty).
+		piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		if responseContent != nil && len(piiCats) > 0 {
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
-				TenantID:      tenantID,
-				ConnectorName: connectorName,
-				UserID:        userID,
-				Categories: []sharedpolicy.PolicyCategory{
-					sharedpolicy.CategoryPIIGlobal,
-					sharedpolicy.CategoryPIIUS,
-					sharedpolicy.CategoryPIIIndia,
-					sharedpolicy.CategoryPIIEU,
-					sharedpolicy.CategoryPIISingapore,
-				},
+				TenantID:        tenantID,
+				ConnectorName:   connectorName,
+				UserID:          userID,
+				Categories:      piiCats,
 				SkipCategories:  mcpDetectionCfg.SkipCategories,
 				ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 				MaxRedactions:   100,
@@ -864,7 +1063,7 @@ func evaluateOutputPolicies(
 		}
 	}
 
-	// 3. Exfiltration detection (enabled for query responses, disabled for execute)
+	// 4. Exfiltration detection (enabled for query responses, disabled for execute)
 	if checkExfiltration {
 		exfiltrationChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 		if exfiltrationChecker != nil && exfiltrationChecker.IsEnabled() {
@@ -888,6 +1087,43 @@ func evaluateOutputPolicies(
 	}
 
 	return out
+}
+
+// WasRedacted reports whether ANY response redaction occurred — from the shared
+// static engine OR the Enterprise Indonesia detector. Every redaction surface
+// (client response body, MCP-tool response, audit trail) MUST gate on this, not
+// on StaticResult alone: an Indonesia-ONLY redaction leaves StaticResult nil, so
+// gating on StaticResult would forward the (already-masked) content with NO
+// redaction signal — and on paths that gate the masked DATA on StaticResult,
+// would forward the UNMASKED original (#2563 round-2 leak).
+func (o OutputPolicyOutcome) WasRedacted() bool {
+	return o.RedactedRows != nil || o.RedactedMessage != "" ||
+		(o.StaticResult != nil && o.StaticResult.Redacted)
+}
+
+// RedactedFieldNames returns the union of static-engine redacted field paths and
+// Indonesia-detector redacted type names, for client + audit redaction metadata.
+func (o OutputPolicyOutcome) RedactedFieldNames() []string {
+	var fields []string
+	if o.StaticResult != nil && o.StaticResult.Redacted {
+		fields = sharedpolicy.GetRedactedFieldPaths(o.StaticResult)
+	}
+	return append(fields, o.IndonesiaRedactedTypes...)
+}
+
+// applyResponseRedactionAudit records response-side redactions into the audit
+// entry from BOTH sources (static engine + Indonesia detector). Either source
+// alone counts — without the Indonesia arm, a response whose only masking is
+// Indonesian PII would be returned redacted but logged un-redacted, defeating
+// the OJK/UU-PDP response-audit purpose. Shared by all three output handlers.
+func applyResponseRedactionAudit(auditEntry *MCPQueryAuditEntry, outcome OutputPolicyOutcome) {
+	if !outcome.WasRedacted() {
+		return
+	}
+	fields := outcome.RedactedFieldNames()
+	auditEntry.ResponseRedacted = true
+	auditEntry.ResponseRedactionsCount = len(fields)
+	auditEntry.ResponseRedactedFields = fields
 }
 
 // mcpQueryHandler executes a query via a connector (MCP Resource pattern)
@@ -1094,7 +1330,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// Response-phase policy evaluation: SQLi scan, PII redaction, exfiltration (Issue #1258)
 	outputOutcome := evaluateOutputPolicies(ctx,
 		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
-		result.Rows, "", nil, result.RowCount, true)
+		result.Rows, "", nil, result.RowCount, true, false /* isGateway: managed connector */)
 
 	// Use redacted row data if PII was redacted
 	responseData := result.Rows
@@ -1104,11 +1340,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Update audit entry with output policy results
 	auditEntry.ExfilRowsReturned = result.RowCount
-	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
-		auditEntry.ResponseRedacted = true
-		auditEntry.ResponseRedactionsCount = len(outputOutcome.StaticResult.RedactedFields)
-		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
-	}
+	applyResponseRedactionAudit(&auditEntry, outputOutcome)
 
 	if outputOutcome.SQLiBlocked {
 		auditEntry.RequestBlocked = true
@@ -1167,7 +1399,6 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			DynamicPolicyInfo: inputOutcome.DynamicInfo,
 		}
 	}
-	redactedFields := sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
 
 	// 8. Return results
 	// SDK expects "data" field (ConnectorResponse.Data), not "rows"
@@ -1180,10 +1411,11 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		"duration_ms": result.Duration.Milliseconds(),
 	}
 
-	// Add policy info fields (additive, backward compatible)
-	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
+	// Add policy info fields (additive, backward compatible). Gate on WasRedacted
+	// (static OR Indonesia) so an Indonesia-only redaction still surfaces the flag.
+	if outputOutcome.WasRedacted() {
 		response["redacted"] = true
-		response["redacted_fields"] = redactedFields
+		response["redacted_fields"] = outputOutcome.RedactedFieldNames()
 	}
 	if policyInfo != nil {
 		response["policy_info"] = policyInfo
@@ -1418,7 +1650,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// Exfiltration checking is not applied to execute results (execute returns rows_affected, not data rows).
 	outputOutcome := evaluateOutputPolicies(ctx,
 		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
-		nil, result.Message, result.Metadata, int(result.RowsAffected), false)
+		nil, result.Message, result.Metadata, int(result.RowsAffected), false, false /* isGateway: managed connector */)
 
 	// Use redacted message if PII was redacted
 	responseMessage := result.Message
@@ -1427,11 +1659,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update audit entry with output policy results
-	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
-		auditEntry.ResponseRedacted = true
-		auditEntry.ResponseRedactionsCount = len(outputOutcome.StaticResult.RedactedFields)
-		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
-	}
+	applyResponseRedactionAudit(&auditEntry, outputOutcome)
 
 	if outputOutcome.SQLiBlocked {
 		auditEntry.RequestBlocked = true
@@ -1475,9 +1703,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		"duration_ms":   result.Duration.Milliseconds(),
 		"message":       responseMessage,
 	}
-	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
+	if outputOutcome.WasRedacted() {
 		response["redacted"] = true
-		response["redacted_fields"] = sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
+		response["redacted_fields"] = outputOutcome.RedactedFieldNames()
 	}
 	if policyInfo != nil {
 		response["policy_info"] = policyInfo
@@ -1510,6 +1738,12 @@ type MCPCheckInputRequest struct {
 	Statement     string                 `json:"statement"`
 	Parameters    map[string]interface{} `json:"parameters,omitempty"`
 	Operation     string                 `json:"operation,omitempty"` // "query" or "execute"; defaults to "execute"
+	// ContentType selects the request-redaction detector (ADR-056 / #2563
+	// addendum). Empty defaults to "text/plain". A content_type with no
+	// registered detector is rejected (415) so the caller fails closed rather
+	// than forward content the engine cannot govern. Media (image/*) becomes a
+	// registered detector, not a contract change.
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // MCPCheckInputResponse is the response body for POST /api/v1/mcp/check-input.
@@ -1529,6 +1763,25 @@ type MCPCheckInputResponse struct {
 	PolicyMatches      []RicherPolicyMatch      `json:"policy_matches,omitempty"`
 	OverrideAvailable  *bool                    `json:"override_available,omitempty"`
 	OverrideExistingID string                   `json:"override_existing_id,omitempty"`
+
+	// Request-phase redaction (ADR-056 / #2563). When an allowed statement
+	// carries PII under a redact (not block) policy, the engine returns the
+	// masked statement here so a PEP can forward redacted content WITHOUT
+	// hand-rolling its own patterns. This is what makes a /decide redact_pii
+	// obligation engine-fulfillable: the obligation names this endpoint, the
+	// PEP POSTs the statement, and forwards RedactedStatement. omitempty keeps
+	// the response byte-for-byte identical for existing callers (and for any
+	// allowed statement with no PII), so the field is purely additive.
+	Redacted          bool   `json:"redacted,omitempty"`
+	RedactedStatement string `json:"redacted_statement,omitempty"`
+	// RedactionEvaluated reports whether the redaction detector actually RAN
+	// (regardless of whether it masked anything). A PEP fulfilling a redact_pii
+	// obligation MUST fail closed when this is false — it means the redactor did
+	// not run (no detection config enabled), so "redacted:false" would otherwise
+	// be indistinguishable from "looked, found nothing" (#2563 B1). omitempty:
+	// true is sent on every evaluated allow path; absent ⇒ not evaluated ⇒ the
+	// PEP fails closed.
+	RedactionEvaluated bool `json:"redaction_evaluated,omitempty"`
 }
 
 // RicherPolicyMatch is the plugin-facing shape of a matched policy. Kept
@@ -1610,6 +1863,17 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
+
+	// Content-type-agnostic redaction (ADR-056 / #2563 addendum): reject a
+	// content_type with no registered detector. Runs AFTER auth so the detector
+	// registry isn't probeable by unauthenticated callers (#2563 L1). Empty/text
+	// defaults to the built-in text detector, so existing callers are
+	// unaffected; a caller asking us to govern (e.g.) an image with no media
+	// detector registered fails closed here rather than forwarding ungoverned.
+	if _, ok := requestRedactionDetectorFor(req.ContentType); !ok {
+		sendErrorResponse(w, "no redaction detector registered for content_type: "+req.ContentType, http.StatusUnsupportedMediaType, nil)
 		return
 	}
 
@@ -1697,176 +1961,207 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		idempOrgID = tenantID
 	}
 	idempotency.Wrap(w, r, mcpIdempStore, idempOrgID, tenantID, "mcp.check-input", func(w http.ResponseWriter, r *http.Request) {
-	// Generate a stable decision_id up front so it can be attached to both
-	// the audit entry and the response body. The explain endpoint
-	// (GET /api/v1/decisions/:id/explain) resolves by this id.
-	decisionID := uuid.New().String()
+		// Generate a stable decision_id up front so it can be attached to both
+		// the audit entry and the response body. The explain endpoint
+		// (GET /api/v1/decisions/:id/explain) resolves by this id.
+		decisionID := uuid.New().String()
 
-	auditEntry := MCPQueryAuditEntry{
-		AuditID:        uuid.New().String(),
-		ConnectorName:  req.ConnectorType,
-		Operation:      "check-input",
-		TenantID:       tenantID,
-		OrgID:          orgID,
-		UserID:         userID,
-		StatementHash:  computeStatementHash(req.Statement),
-		ParametersHash: computeParametersHash(req.Parameters),
-		ParameterCount: len(req.Parameters),
-		DecisionID:     decisionID,
-	}
+		auditEntry := MCPQueryAuditEntry{
+			AuditID:        uuid.New().String(),
+			ConnectorName:  req.ConnectorType,
+			Operation:      "check-input",
+			TenantID:       tenantID,
+			OrgID:          orgID,
+			UserID:         userID,
+			StatementHash:  computeStatementHash(req.Statement),
+			ParametersHash: computeParametersHash(req.Parameters),
+			ParameterCount: len(req.Parameters),
+			DecisionID:     decisionID,
+		}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
 
-	operation := req.Operation
-	if operation == "" {
-		operation = "execute"
-	}
+		operation := req.Operation
+		if operation == "" {
+			operation = "execute"
+		}
 
-	// v9 Phase 8 #2384 PR-C1: orgID plumbed through.
-	outcome := evaluateInputPolicies(ctx,
-		tenantID, orgID, userID, userRole,
-		req.ConnectorType, operation, req.Statement, req.Parameters)
+		// v9 Phase 8 #2384 PR-C1: orgID plumbed through.
+		outcome := evaluateInputPolicies(ctx,
+			tenantID, orgID, userID, userRole,
+			req.ConnectorType, operation, req.Statement, req.Parameters)
 
-	if outcome.EvalUnavailable {
-		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-		logMCPQueryAudit(auditEntry)
-		sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
-		return
-	}
-
-	if outcome.DynamicBlocked {
-		auditEntry.RequestBlocked = true
-		auditEntry.RequestBlockReason = outcome.DynamicBlockReason
-		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-		logMCPQueryAudit(auditEntry)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
-			Allowed:     false,
-			BlockReason: outcome.DynamicBlockReason,
-			DecisionID:  decisionID,
-		})
-		return
-	}
-
-	policiesEvaluated := 0
-	if outcome.StaticResult != nil {
-		auditEntry.RequestPoliciesEvaluated = outcome.StaticResult.PoliciesEvaluated
-		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
-		policiesEvaluated = outcome.StaticResult.PoliciesEvaluated
-		if outcome.StaticResult.Blocked {
-			auditEntry.RequestBlocked = true
-			auditEntry.RequestBlockReason = outcome.StaticResult.BlockReason
+		if outcome.EvalUnavailable {
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-
-			// Plugin Batch 1: enrich the block response with decision_id,
-			// risk_level, policy_matches, override_available.
-			matches, topRisk, overrideAvail, overrideExistingID :=
-				buildRicherCheckInputBlock(ctx, usageDB, tenantID, userEmail,
-					outcome.StaticResult.MatchedPolicies)
-
-			// #1983 / α1: stamp { policy_id -> version } on the audit entry
-			// before logMCPQueryAudit so the version surfaces in the
-			// MCPQueryAuditEntry → audit_queue Details map. Built from the
-			// richer matches (one DB lookup per policy already happened in
-			// buildRicherCheckInputBlock). Empty when all matches are
-			// dynamic-only / unknown.
-			auditEntry.PolicyVersions = collectPolicyVersions(matches)
 			logMCPQueryAudit(auditEntry)
+			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
+			return
+		}
 
-			// ADR-044: if the caller has an active session override on any
-			// of the matched policies, flip deny -> allow and emit an
-			// override_used audit event. Must run before the block audit
-			// write so we don't record a denied decision that didn't
-			// actually fire.
-			if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
-				ctx, usageDB, tenantID, userEmail, matches,
-			); applied {
-				// #1983 / α1: stamp policy_id + policy_version of the
-				// match the override unblocked into policy_details so
-				// explain can answer "which version of which policy was
-				// overridden."
-				var overriddenPolicyID string
-				var overriddenPolicyVersion int
-				if overriddenMatch != nil {
-					overriddenPolicyID = overriddenMatch.PolicyID
-					overriddenPolicyVersion = overriddenMatch.Version
-				}
-				writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-					decisionID, tenantID, orgID, auth.Client.ID, userEmail,
-					overriddenPolicyID, overriddenPolicyVersion)
-				log.Printf("[MCP] Override %s applied — flipping deny to allow for decision %s",
-					usedOverrideID, decisionID)
-				// Fall through to the non-block success path below by
-				// clearing the StaticResult.Blocked condition. We can't
-				// mutate outcome in place cleanly; instead encode the
-				// allowed response directly here and return.
-				auditEntry.RequestBlocked = false
-				auditEntry.RequestBlockReason = ""
-				auditEntry.PolicyVersions = collectPolicyVersions(matches)
-				auditEntry.Success = true
-				auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-				logMCPQueryAudit(auditEntry)
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
-					Allowed:            true,
-					PoliciesEvaluated:  policiesEvaluated,
-					DecisionID:         decisionID,
-					OverrideExistingID: usedOverrideID,
-				})
-				return
-			}
-
-			// Dual-write to audit_logs so explainDecision(id) can resolve
-			// this decision. mcp_query_audits is the legacy per-connector
-			// audit table; audit_logs is what the explain/override/audit-
-			// search endpoints read.
-			writeExplainableAuditLog(ctx, usageDB,
-				decisionID, auditEntry.AuditID,
-				tenantID, orgID, auth.Client.ID, userEmail,
-				userID, userRole,
-				"mcp_check_input", req.Statement, auditEntry.StatementHash,
-				outcome.StaticResult.BlockReason, topRisk, matches)
-
+		if outcome.DynamicBlocked {
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = outcome.DynamicBlockReason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
-				Allowed:            false,
-				BlockReason:        outcome.StaticResult.BlockReason,
-				PoliciesEvaluated:  policiesEvaluated,
-				DecisionID:         decisionID,
-				RiskLevel:          topRisk,
-				PolicyMatches:      matches,
-				OverrideAvailable:  overrideAvail,
-				OverrideExistingID: overrideExistingID,
+				Allowed:     false,
+				BlockReason: outcome.DynamicBlockReason,
+				DecisionID:  decisionID,
 			})
 			return
 		}
-	}
 
-	policyInfo := sharedpolicy.BuildPolicyInfo(outcome.StaticResult, nil)
-	if policyInfo != nil && outcome.DynamicInfo != nil {
-		policyInfo.DynamicPolicyInfo = outcome.DynamicInfo
-	} else if policyInfo == nil && outcome.DynamicInfo != nil {
-		policyInfo = &sharedpolicy.PolicyInfo{DynamicPolicyInfo: outcome.DynamicInfo}
-	}
+		policiesEvaluated := 0
+		if outcome.StaticResult != nil {
+			auditEntry.RequestPoliciesEvaluated = outcome.StaticResult.PoliciesEvaluated
+			auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
+			policiesEvaluated = outcome.StaticResult.PoliciesEvaluated
+			if outcome.StaticResult.Blocked {
+				auditEntry.RequestBlocked = true
+				auditEntry.RequestBlockReason = outcome.StaticResult.BlockReason
+				auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 
-	auditEntry.Success = true
-	auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-	logMCPQueryAudit(auditEntry)
+				// Plugin Batch 1: enrich the block response with decision_id,
+				// risk_level, policy_matches, override_available.
+				matches, topRisk, overrideAvail, overrideExistingID :=
+					buildRicherCheckInputBlock(ctx, usageDB, tenantID, userEmail,
+						outcome.StaticResult.MatchedPolicies)
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
-		Allowed:           true,
-		PoliciesEvaluated: policiesEvaluated,
-		PolicyInfo:        policyInfo,
-		// Plugin Batch 1: every governance decision surfaces decision_id —
-		// allow paths included, so callers can fetch the audit record via
-		// /explain/{id} or compare requests across allow/deny without an
-		// extra round-trip. The deny paths above already emit it.
-		DecisionID: decisionID,
-	})
+				// #1983 / α1: stamp { policy_id -> version } on the audit entry
+				// before logMCPQueryAudit so the version surfaces in the
+				// MCPQueryAuditEntry → audit_queue Details map. Built from the
+				// richer matches (one DB lookup per policy already happened in
+				// buildRicherCheckInputBlock). Empty when all matches are
+				// dynamic-only / unknown.
+				auditEntry.PolicyVersions = collectPolicyVersions(matches)
+				logMCPQueryAudit(auditEntry)
+
+				// ADR-044: if the caller has an active session override on any
+				// of the matched policies, flip deny -> allow and emit an
+				// override_used audit event. Must run before the block audit
+				// write so we don't record a denied decision that didn't
+				// actually fire.
+				if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
+					ctx, usageDB, tenantID, userEmail, matches,
+				); applied {
+					// #1983 / α1: stamp policy_id + policy_version of the
+					// match the override unblocked into policy_details so
+					// explain can answer "which version of which policy was
+					// overridden."
+					var overriddenPolicyID string
+					var overriddenPolicyVersion int
+					if overriddenMatch != nil {
+						overriddenPolicyID = overriddenMatch.PolicyID
+						overriddenPolicyVersion = overriddenMatch.Version
+					}
+					writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
+						decisionID, tenantID, orgID, auth.Client.ID, userEmail,
+						overriddenPolicyID, overriddenPolicyVersion)
+					log.Printf("[MCP] Override %s applied — flipping deny to allow for decision %s",
+						usedOverrideID, decisionID)
+					// Fall through to the non-block success path below by
+					// clearing the StaticResult.Blocked condition. We can't
+					// mutate outcome in place cleanly; instead encode the
+					// allowed response directly here and return.
+					auditEntry.RequestBlocked = false
+					auditEntry.RequestBlockReason = ""
+					auditEntry.PolicyVersions = collectPolicyVersions(matches)
+					auditEntry.Success = true
+					auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+					logMCPQueryAudit(auditEntry)
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+						Allowed:            true,
+						PoliciesEvaluated:  policiesEvaluated,
+						DecisionID:         decisionID,
+						OverrideExistingID: usedOverrideID,
+					})
+					return
+				}
+
+				// Dual-write to audit_logs so explainDecision(id) can resolve
+				// this decision. mcp_query_audits is the legacy per-connector
+				// audit table; audit_logs is what the explain/override/audit-
+				// search endpoints read.
+				writeExplainableAuditLog(ctx, usageDB,
+					decisionID, auditEntry.AuditID,
+					tenantID, orgID, auth.Client.ID, userEmail,
+					userID, userRole,
+					"mcp_check_input", req.Statement, auditEntry.StatementHash,
+					outcome.StaticResult.BlockReason, topRisk, matches)
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+					Allowed:            false,
+					BlockReason:        outcome.StaticResult.BlockReason,
+					PoliciesEvaluated:  policiesEvaluated,
+					DecisionID:         decisionID,
+					RiskLevel:          topRisk,
+					PolicyMatches:      matches,
+					OverrideAvailable:  overrideAvail,
+					OverrideExistingID: overrideExistingID,
+				})
+				return
+			}
+		}
+
+		policyInfo := sharedpolicy.BuildPolicyInfo(outcome.StaticResult, nil)
+		if policyInfo != nil && outcome.DynamicInfo != nil {
+			policyInfo.DynamicPolicyInfo = outcome.DynamicInfo
+		} else if policyInfo == nil && outcome.DynamicInfo != nil {
+			policyInfo = &sharedpolicy.PolicyInfo{DynamicPolicyInfo: outcome.DynamicInfo}
+		}
+
+		// Request-phase redaction (ADR-056 / #2563): when the allowed statement
+		// carries PII under a redact (not block) policy, hand the PEP the
+		// engine-masked statement so it can forward redacted content. This is the
+		// engine-backed fulfillment of a /decide redact_pii obligation — the PEP
+		// never runs its own patterns. Dispatched through the content-type detector
+		// seam (text/plain today; media routes to the orchestrator media subsystem).
+		// No-PII / engine-disabled returns the statement unchanged (didRedact=false),
+		// so the omitempty fields stay absent and existing callers see the old shape.
+		detector, _ := requestRedactionDetectorFor(req.ContentType) // presence verified at handler entry
+		redaction := detector.Redact(ctx, RedactionInput{
+			TenantID:      tenantID,
+			UserID:        userID,
+			ConnectorName: req.ConnectorType,
+			ContentType:   req.ContentType,
+			Text:          req.Statement,
+		})
+		redactedStmt, didRedact := redaction.Text, redaction.Redacted
+		if didRedact {
+			auditEntry.ResponseRedacted = true
+		}
+
+		auditEntry.Success = true
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+
+		resp := MCPCheckInputResponse{
+			Allowed:           true,
+			PoliciesEvaluated: policiesEvaluated,
+			PolicyInfo:        policyInfo,
+			// Plugin Batch 1: every governance decision surfaces decision_id —
+			// allow paths included, so callers can fetch the audit record via
+			// /explain/{id} or compare requests across allow/deny without an
+			// extra round-trip. The deny paths above already emit it.
+			DecisionID: decisionID,
+			// RedactionEvaluated lets a PEP fulfilling a redact_pii obligation fail
+			// closed when the redactor did not run (#2563 B1) — true on every
+			// evaluated allow path, absent only when no detection config is enabled.
+			RedactionEvaluated: redaction.Evaluated,
+		}
+		if didRedact {
+			resp.Redacted = true
+			resp.RedactedStatement = redactedStmt
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	}) // end idempotency.Wrap closure
 }
 
@@ -1982,14 +2277,10 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 
 	outcome := evaluateOutputPolicies(ctx,
 		tenantID, userID, req.ConnectorType,
-		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration)
+		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration, true /* isGateway: check-output is a PEP/gateway caller */)
 
 	auditEntry.ExfilRowsReturned = req.RowCount
-	if outcome.StaticResult != nil && outcome.StaticResult.Redacted {
-		auditEntry.ResponseRedacted = true
-		auditEntry.ResponseRedactionsCount = len(outcome.StaticResult.RedactedFields)
-		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outcome.StaticResult)
-	}
+	applyResponseRedactionAudit(&auditEntry, outcome)
 
 	// #1983 / α1: stamp policy_version for any matched static policies
 	// (block + redact branches). Single batch lookup per request — output

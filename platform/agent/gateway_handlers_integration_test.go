@@ -318,6 +318,57 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		t.Logf("NIK warn mode: approved=%v", resp.Approved)
 	})
 
+	t.Run("Pre-check flags Indonesia NIK for redaction when PII_ACTION=redact", func(t *testing.T) {
+		// Regression for the NIK-slips-through-unredacted bug: under
+		// PII_ACTION=redact, critical Indonesia PII (NIK/NPWP) must signal
+		// redaction (approved=true + requires_redaction=true + the
+		// indonesia_pii_protection policy) exactly like India/RBI PII does.
+		// Before the fix this flag was never set, so NIK was forwarded
+		// unredacted while SSN/Aadhaar were redacted.
+		t.Setenv("PII_ACTION", "redact")
+		ResetDetectionConfigCache()
+
+		reqBody := PreCheckRequest{
+			ClientID: "test-client-nik-redact",
+			Query:    "Customer NIK is 3174042506780001",
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-License-Key", "test-key")
+
+		rr := httptest.NewRecorder()
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp PreCheckResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if !resp.Approved {
+			t.Errorf("Expected approved=true under PII_ACTION=redact (redact, not block); got block_reason=%s", resp.BlockReason)
+		}
+		if !resp.RequiresRedaction {
+			t.Error("BUG: expected requires_redaction=true for NIK under PII_ACTION=redact — NIK is slipping through unredacted")
+		}
+		foundPolicy := false
+		for _, p := range resp.Policies {
+			if p == "indonesia_pii_protection" {
+				foundPolicy = true
+				break
+			}
+		}
+		if !foundPolicy {
+			t.Errorf("Expected 'indonesia_pii_protection' in policies, got %v", resp.Policies)
+		}
+		t.Logf("NIK redact mode: approved=%v requires_redaction=%v policies=%v", resp.Approved, resp.RequiresRedaction, resp.Policies)
+	})
+
 	t.Run("Pre-check allows clean Indonesian query", func(t *testing.T) {
 		reqBody := PreCheckRequest{
 			ClientID: "test-client-clean-id",

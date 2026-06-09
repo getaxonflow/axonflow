@@ -4,7 +4,9 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,6 +207,104 @@ func TestMiddleware_Allow_PropagtesTraceID(t *testing.T) {
 	}
 	if rr.Header().Get("X-Axonflow-Decision-Id") != "dec-123" {
 		t.Errorf("X-Axonflow-Decision-Id header missing")
+	}
+}
+
+// reqRedactObligation builds the self-describing request-phase redact_pii
+// obligation the platform now emits.
+func reqRedactObligation() Obligation {
+	return Obligation{
+		Type:        obligationRedactPII,
+		Detail:      "NIK detected",
+		Fulfillment: &ObligationFulfillment{Endpoint: requestRedactionPath, Method: "POST", Phase: obligationPhaseRequest, ContentTypes: []string{contentTypeText}},
+	}
+}
+
+// TestMiddleware_Allow_FulfillsObligationViaEngine asserts the adapter calls the
+// engine to redact and forwards the engine-redacted body — never the original.
+func TestMiddleware_Allow_FulfillsObligationViaEngine(t *testing.T) {
+	var redactHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/decide":
+			_ = json.NewEncoder(w).Encode(DecideResponse{Verdict: "allow", DecisionID: "d", TraceID: "t", Obligations: []Obligation{reqRedactObligation()}})
+		case requestRedactionPath:
+			redactHits++
+			var in checkInputRequest
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			if in.ContentType != contentTypeText {
+				t.Errorf("content_type=%q want %q", in.ContentType, contentTypeText)
+			}
+			_ = json.NewEncoder(w).Encode(checkInputResponse{Allowed: true, RedactionEvaluated: true, Redacted: true, RedactedStatement: "my id is [REDACTED]"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	var forwardedBody string
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		forwardedBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := Middleware(Config{AxonFlowEndpoint: srv.URL}, downstream)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"my id is 3174012509900001"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if redactHits != 1 {
+		t.Fatalf("expected exactly 1 engine redaction call, got %d", redactHits)
+	}
+	if !strings.Contains(forwardedBody, "[REDACTED]") {
+		t.Fatalf("forwarded body not engine-redacted: %s", forwardedBody)
+	}
+	if strings.Contains(forwardedBody, "3174012509900001") {
+		t.Fatalf("forwarded body still contains raw PII: %s", forwardedBody)
+	}
+}
+
+// TestMiddleware_Allow_FailsClosed_WhenEngineRedactionFails proves the adapter
+// never forwards unredacted content when fulfillment fails.
+func TestMiddleware_Allow_FailsClosed_WhenEngineRedactionFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/decide" {
+			_ = json.NewEncoder(w).Encode(DecideResponse{Verdict: "allow", Obligations: []Obligation{reqRedactObligation()}})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError) // redaction endpoint down
+	}))
+	defer srv.Close()
+
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("downstream must NOT be called when engine redaction fails")
+	})
+	handler := Middleware(Config{AxonFlowEndpoint: srv.URL}, downstream)
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"id 3174012509900001"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 fail-closed, got %d", rr.Code)
+	}
+}
+
+func TestFulfillRequestRedaction_RefusesUnknownEndpoint(t *testing.T) {
+	obs := []Obligation{{Type: obligationRedactPII, Fulfillment: &ObligationFulfillment{Endpoint: "/evil", Phase: obligationPhaseRequest}}}
+	_, err := fulfillRequestRedaction(context.Background(), Config{AxonFlowEndpoint: "http://x"}, obs, "q", "")
+	if err == nil || !strings.Contains(err.Error(), "non-redaction endpoint") {
+		t.Fatalf("err=%v want refusal", err)
+	}
+}
+
+func TestFulfillRequestRedaction_FailsClosedOnUnsupportedContentType(t *testing.T) {
+	obs := []Obligation{{Type: obligationRedactPII, Fulfillment: &ObligationFulfillment{
+		Endpoint: requestRedactionPath, Phase: obligationPhaseRequest, ContentTypes: []string{"image/png"}}}}
+	_, err := fulfillRequestRedaction(context.Background(), Config{AxonFlowEndpoint: "http://x"}, obs, "q", "")
+	if err == nil || !strings.Contains(err.Error(), "detector") {
+		t.Fatalf("err=%v want content-type fail-closed", err)
 	}
 }
 

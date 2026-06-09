@@ -77,19 +77,19 @@ type PIIDetectionResult struct {
 
 // PIIPattern represents a compiled pattern for PII detection
 type PIIPattern struct {
-	Type       PIIType
-	Pattern    *regexp.Regexp
-	Severity   PIISeverity
-	Validator  func(match string, context string) (bool, float64) // Returns (isValid, confidence)
-	MinLength  int
-	MaxLength  int
+	Type      PIIType
+	Pattern   *regexp.Regexp
+	Severity  PIISeverity
+	Validator func(match string, context string) (bool, float64) // Returns (isValid, confidence)
+	MinLength int
+	MaxLength int
 }
 
 // EnhancedPIIDetector provides comprehensive PII detection with validation
 type EnhancedPIIDetector struct {
-	patterns        []*PIIPattern
-	contextWindow   int // Characters around match to include for context
-	minConfidence   float64
+	patterns         []*PIIPattern
+	contextWindow    int // Characters around match to include for context
+	minConfidence    float64
 	enableValidation bool
 }
 
@@ -383,12 +383,12 @@ func (d *EnhancedPIIDetector) GetPatternStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_patterns":   len(d.patterns),
-		"types":            typeCount,
-		"severities":       severityCount,
-		"validation":       d.enableValidation,
-		"min_confidence":   d.minConfidence,
-		"context_window":   d.contextWindow,
+		"total_patterns": len(d.patterns),
+		"types":          typeCount,
+		"severities":     severityCount,
+		"validation":     d.enableValidation,
+		"min_confidence": d.minConfidence,
+		"context_window": d.contextWindow,
 	}
 }
 
@@ -983,16 +983,20 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 		return nil, false
 	}
 
+	// Policy-derived PII categories (not a hardcoded literal, which had silently
+	// omitted pii-indonesia). nil => no enabled PII policies => nothing to scan.
+	// Derivation org scope MUST match what EvaluateResponse loads with (it loads
+	// via OrganizationID, left nil here) so categories and evaluation use the same
+	// policy set.
+	piiCats := engine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+	if len(piiCats) == 0 {
+		return &sharedpolicy.ResponseResult{Content: content}, true
+	}
+
 	result := engine.EvaluateResponse(ctx, content, sharedpolicy.EvalOptions{
-		TenantID: tenantID,
-		OrgID:    orgID,
-		Categories: []sharedpolicy.PolicyCategory{
-			sharedpolicy.CategoryPIIGlobal,
-			sharedpolicy.CategoryPIIUS,
-			sharedpolicy.CategoryPIIIndia,
-			sharedpolicy.CategoryPIIEU,
-			sharedpolicy.CategoryPIISingapore,
-		},
+		TenantID:        tenantID,
+		OrgID:           orgID,
+		Categories:      piiCats,
 		SkipCategories:  gwCfg.SkipCategories,
 		ActionOverrides: gwCfg.BuildActionOverrides(),
 	})

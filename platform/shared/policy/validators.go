@@ -559,6 +559,145 @@ func GetValidatorForCategory(category PolicyCategory) ValidatorFunc {
 	}
 }
 
+// passportLabelRe / dobLabelRe match an indicator that IMMEDIATELY PRECEDES the
+// value — they are anchored at end-of-(left-context) (`$`), allowing only
+// whitespace, a short connector word, and a separator between the label and the
+// value. This gates on the label that actually MODIFIES this match, not on any
+// occurrence of the word anywhere in the ±50-char window: e.g.
+// "the company was born in 2018, invoice 03/04/2025" must NOT govern the invoice
+// date, because the date's left context ends with "invoice ", not a birth label.
+// Word boundaries (\b) also keep "born" out of "airborne"/"reborn"/"newborn" and
+// "passport" out of "passporting".
+// The trailing separator class includes '.' so a full abbreviation that ends in a
+// period ("d.o.b. 01/01/1990") still validates.
+var passportLabelRe = regexp.MustCompile(`(?i)\b(passport|travel document|travel doc)\b\s*(?:number|no\.?|num)?\s*[:#=.\-]?\s*$`)
+var dobLabelRe = regexp.MustCompile(`(?i)\b(d\.?o\.?b\.?|date of birth|birth ?date|birthday|born)\b\s*(?:of|on|is|was)?\s*[:#=.\-]?\s*$`)
+
+// leftContextOf returns the portion of context immediately preceding match (the
+// text to the value's left). Used so the *Label regexes can require the label to
+// abut the value rather than merely co-occur in the window. Uses the FIRST
+// occurrence of match in context; when the value appears multiple times this
+// biases toward under-detection (evaluates the first instance's left), never an
+// over-block — the safe direction.
+func leftContextOf(match, context string) string {
+	if idx := strings.Index(context, match); idx >= 0 {
+		return context[:idx]
+	}
+	return context // fallback: match not located in window → treat whole window as "left"
+}
+
+// ValidatePassport validates passport-number-shaped strings: 1-2 leading letters
+// followed by 6-9 digits (matching the sys_pii_passport pattern). That pattern is
+// broad — it also matches generic uppercase-alphanumeric IDs (SKUs, order/case
+// numbers) — and the shared engine's EvaluateAll has no confidence threshold (a
+// valid match always fires). The policy's effective action is the deployment's
+// PII_ACTION (blocked under PII_ACTION=block, redacted/warned otherwise — the
+// pii-global category override replaces the seed action), so a false positive
+// CAN block legitimate traffic. Validity therefore requires a passport/travel-
+// document label IMMEDIATELY PRECEDING the number; without it the match is
+// rejected, so "order X1234567" is not governed as a passport.
+//
+// Coverage limits (documented, not a regression): only letter-prefixed passport
+// formats are covered — all-numeric passports (some jurisdictions) never match
+// the sys_pii_passport pattern itself, so they are out of scope here.
+func ValidatePassport(match string, context string) (bool, float64) {
+	clean := strings.TrimSpace(match)
+	letters, digits := 0, 0
+	digitsSeen := false
+	for _, c := range clean {
+		switch {
+		case unicode.IsLetter(c):
+			if digitsSeen { // letters must all precede the digits (no "1A234567")
+				return false, 0
+			}
+			letters++
+		case unicode.IsDigit(c):
+			digits++
+			digitsSeen = true
+		default:
+			return false, 0
+		}
+	}
+	if letters < 1 || letters > 2 || digits < 6 || digits > 9 {
+		return false, 0
+	}
+	if passportLabelRe.MatchString(leftContextOf(match, context)) {
+		return true, 0.95
+	}
+	return false, 0
+}
+
+// ValidateDOB validates date-of-birth-shaped strings. The sys_pii_dob pattern
+// matches ANY date, and EvaluateAll has no confidence threshold, so validity
+// REQUIRES a birth-date label IMMEDIATELY PRECEDING the date (dobLabelRe, anchored
+// at the value's left edge). A bare birth word elsewhere in the window does NOT
+// qualify: "the company was born in 2018, invoice 03/04/2025" leaves the date's
+// left context ending in "invoice " → not governed. The policy's effective action
+// is the deployment's PII_ACTION (block under PII_ACTION=block, redact/warn
+// otherwise), so this proximity gate is what prevents false blocks of ordinary
+// dates.
+//
+// Coverage limits (documented, not a regression): the sys_pii_dob pattern is
+// US/ISO only (MM/DD/YYYY, YYYY/MM/DD). Other locale formats (DD/MM/YYYY,
+// DD.MM.YYYY, ISO with '-') are not matched by the pattern itself, so a labelled
+// DOB in those formats is out of scope here.
+func ValidateDOB(match string, context string) (bool, float64) {
+	if dobLabelRe.MatchString(leftContextOf(match, context)) {
+		return true, 0.95
+	}
+	return false, 0
+}
+
+// sgPostalLabelRe / sgUENLabelRe gate the two broad Singapore numeric detectors
+// the same way passportLabelRe/dobLabelRe gate passport/DOB: the label must
+// IMMEDIATELY PRECEDE the value (anchored at the end of the left context), not
+// merely co-occur in the window. Both detectors are CategoryPIISingapore, whose
+// category default validator is nil (accept-all), so before this gate every
+// regex match fired unconditionally — and under PII_ACTION=redact the engine
+// masked the value, which for a bare JSON number breaks the document and makes
+// a downstream PEP (e.g. the Claude Desktop proxy, which re-validates the
+// redacted result as JSON) fail-closed on an otherwise-benign response.
+var sgPostalLabelRe = regexp.MustCompile(`(?i)\b(singapore|s'?pore|postal\s*code|post\s*code|postcode|zip\s*code)\b\s*(?:is|:|=|#|\-)?\s*$`)
+var sgUENLabelRe = regexp.MustCompile(`(?i)\b(uen|unique\s*entity\s*(?:number|no\.?|num)?|entity\s*(?:number|no\.?)|business\s*reg(?:istration)?\s*(?:number|no\.?)?|acra)\b\s*(?:is|:|=|#|\-)?\s*$`)
+
+// ValidateSingaporePostal gates sys_pii_singapore_postal. Its pattern matches ANY
+// 6-digit number in 010000–829999 (\b(?:0[1-9]|[1-7]\d|8[0-2])\d{4}\b), so an
+// order amount, transaction count, or numeric ID trivially false-matches and is
+// masked. EvaluateAll has no confidence threshold (a valid match always fires),
+// so validity REQUIRES a Singapore/postal label immediately preceding the value;
+// a bare 6-digit number is not governed as a postal code.
+//
+// Coverage limit (documented, not a regression): a real SG postal code that
+// appears with no preceding postal/Singapore label (e.g. a bare "408600" with no
+// context) is not governed — the safe direction for a low-severity, warn-default
+// locality signal, versus masking arbitrary financial figures.
+func ValidateSingaporePostal(match string, context string) (bool, float64) {
+	if sgPostalLabelRe.MatchString(leftContextOf(match, context)) {
+		return true, 0.95
+	}
+	return false, 0
+}
+
+// ValidateSingaporeUEN gates sys_pii_singapore_uen. The pattern has two alts:
+//   - \d{8,9}[A-Z]      — broad: any 8-9 digit run followed by a letter (an
+//     invoice/order/SKU id like "12345678X" false-matches). Requires a UEN label.
+//   - [TS]\d{2}[A-Z]{2}\d{4}[A-Z] — the structured T/S-prefixed UEN, specific
+//     enough to be self-anchoring; accepted without a label.
+func ValidateSingaporeUEN(match string, context string) (bool, float64) {
+	clean := strings.ToUpper(strings.TrimSpace(match))
+	// Structured T/S-prefixed UEN: TyyXXnnnnK — specific, self-anchoring.
+	if structuredUENRe.MatchString(clean) {
+		return true, 0.95
+	}
+	// Broad numeric+letter form: only governed with a UEN/entity label adjacent.
+	if sgUENLabelRe.MatchString(leftContextOf(match, context)) {
+		return true, 0.9
+	}
+	return false, 0
+}
+
+var structuredUENRe = regexp.MustCompile(`^[TS]\d{2}[A-Z]{2}\d{4}[A-Z]$`)
+
 // ValidatorRegistry maps PII types to their validators.
 var ValidatorRegistry = map[string]ValidatorFunc{
 	"credit_card":  ValidateCreditCard,
@@ -570,9 +709,80 @@ var ValidatorRegistry = map[string]ValidatorFunc{
 	"phone":        ValidatePhone,
 	"ip_address":   ValidateIPAddress,
 	"bank_account": ValidateBankAccount,
+	"passport":     ValidatePassport,
+	"dob":          ValidateDOB,
+	"sg_postal":    ValidateSingaporePostal,
+	"sg_uen":       ValidateSingaporeUEN,
 }
 
 // GetValidatorByType returns a validator by PII type name.
 func GetValidatorByType(piiType string) ValidatorFunc {
 	return ValidatorRegistry[strings.ToLower(piiType)]
+}
+
+// validatorTokenMappings maps PII-type tokens to ValidatorRegistry keys, in
+// DETERMINISTIC, most-specific-first order. Used to select a validator from a
+// policy ID by underscore-delimited segment match (so "sys_pii_email" → email).
+//
+// A slice (not a map) on purpose: map iteration order is random in Go, so the
+// previous map-based segment matcher could non-deterministically pick the wrong
+// validator when two tokens both matched. Specific multi-word tokens
+// (credit_card, ip_address, bank_account) MUST precede their shorter aliases
+// (ip, bank) so the alias never shadows the precise match.
+var validatorTokenMappings = []struct{ token, regKey string }{
+	{"credit_card", "credit_card"},
+	{"bank_account", "bank_account"},
+	{"ip_address", "ip_address"},
+	{"ssn", "ssn"},
+	{"iban", "iban"},
+	{"aadhaar", "aadhaar"},
+	{"pan", "pan"},
+	{"email", "email"},
+	{"phone", "phone"},
+	{"passport", "passport"},
+	{"dob", "dob"},
+	{"postal", "sg_postal"},
+	{"uen", "sg_uen"},
+	{"ip", "ip_address"},
+	{"bank", "bank_account"},
+}
+
+// ValidatorForPolicyID selects a validator by matching a known PII-type token as
+// an underscore-delimited segment of the policy ID (e.g. "sys_pii_email" → the
+// email validator). Returns nil when no token matches, so callers fall back to
+// the category default.
+//
+// This realizes the "can be overridden per pattern" behavior that the seed
+// comments describe but the exact-match ValidatorRegistry[policyID] lookup never
+// delivered: a system policy ID like "sys_pii_email" never equals a bare type
+// key ("email"), so every loaded policy silently fell through to its category
+// default validator — which for pii-global is the credit-card validator, and that
+// validator rejects every non-card string. Concretely this fix changes resolution
+// for these DB-loaded policies:
+//   - sys_pii_email, sys_pii_phone, sys_pii_ip_address: credit-card → the correct
+//     validator (these were inert before — never matched anything).
+//   - sys_pii_pan: ValidateAadhaar (pii-india default) → ValidatePAN (correct).
+//   - sys_pii_indonesia_phone, sys_pii_singapore_phone: nil/accept-all (their
+//     category default) → ValidatePhone (a slight narrowing; still governs real
+//     numbers — see TestValidatorForPolicyID_LocalePhones).
+//
+// SSN/IBAN/Aadhaar were already correct only because their pii-us/eu/india
+// category defaults happen to be the right validator. sys_pii_passport and
+// sys_pii_dob now resolve to ValidatePassport/ValidateDOB (#2567) — both
+// context-gated to avoid false-positive blocks/redactions on the broad
+// passport/date patterns. sys_pii_booking_ref still has no token and no shared
+// validator, so it keeps the pii-global credit-card default and remains
+// validator-inert (intentional — a booking ref is not PII to redact).
+//
+// Single source of truth shared by the loader (PolicyLoader.getValidatorForPolicy,
+// which pre-sets CompiledPolicy.Validator) and the evaluator (PatternEvaluator
+// .getValidator, the in-memory fallback) so the two never diverge.
+func ValidatorForPolicyID(policyID string) ValidatorFunc {
+	segments := "_" + strings.ToLower(policyID) + "_"
+	for _, m := range validatorTokenMappings {
+		if strings.Contains(segments, "_"+m.token+"_") {
+			return ValidatorRegistry[m.regKey]
+		}
+	}
+	return nil
 }

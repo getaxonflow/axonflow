@@ -199,6 +199,18 @@ sequenceDiagram
 
 **Endpoint:** `POST /api/v1/decide` (`stage` = llm / tool / agent). Reference PEP adapters ship for **LLM**, **MCP** (`tools/call`), and **agent** gateways. **Code:** `platform/agent/decision_handler.go`. **See:** [ADR-056 — Decision Mode](../technical-docs/architecture-decisions/ADR-056-decision-mode.md).
 
+**Obligations are fulfilled by AxonFlow's engine, never by the client.** `/api/v1/decide` is a pure decision: it returns a verdict plus **obligations** and **never mutates content** — it does not return a redacted request or the response. An obligation is **self-describing**: a `redact_pii` obligation carries a `fulfillment` block naming the *engine endpoint* the PEP must call to discharge it, the phase, and the content types the engine can handle:
+
+```json
+{ "type": "redact_pii", "detail": "...",
+  "fulfillment": { "endpoint": "/api/v1/mcp/check-input", "method": "POST",
+                   "phase": "request", "content_types": ["text/plain"] } }
+```
+
+The blessed PEP path is **decide → fulfill via the named endpoint → forward**. Request-phase and response-phase redaction are a symmetric pair: **`POST /api/v1/mcp/check-input`** returns an engine-redacted request (`redacted_statement`), **`POST /api/v1/mcp/check-output`** returns an engine-redacted response (`redacted_data`). Reference PEPs use the thin `platform/shared/pep` client, whose **only** redaction path is that engine round-trip — it carries no PII patterns and **fails closed** if an obligation cannot be discharged through the engine. Client-side redaction is forbidden structurally, not by convention.
+
+What the docs deliberately do **not** claim is "one engine does all PII." PII detection is split across several detectors (a static text-category engine, an enterprise Indonesia checksum detector, an orchestrator response detector, and a media subsystem); the redaction contract is **content-type-agnostic** and dispatches each obligation to whichever detector is authoritative for that content type and phase. A content type with no registered detector is rejected (`415`) and a PEP holding it **fails closed** rather than forwarding ungoverned (today only `text/plain` is wired; media content routes to the orchestrator's existing media-governance subsystem, not a re-implementation). Coverage is **policy-derived** — the PII categories your active policies enable (by the `pii-*` convention), not a hardcoded list — so a new jurisdiction is covered without code changes. Gateway/PDP detection is **connector-agnostic**: AxonFlow governs whatever content the PEP submits, regardless of backend, so there is no "enabled connector" prerequisite for gateway redaction.
+
 ### MAP — Multi-Agent Planning
 
 AxonFlow decomposes a natural-language request into a multi-step plan, then executes the steps with a policy decision **at each step**, with replay/resume and optional approval gates.

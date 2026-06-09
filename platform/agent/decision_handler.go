@@ -110,6 +110,57 @@ const (
 	DecisionStageAgent = "agent"
 )
 
+// Obligation contract constants (ADR-056, #2563).
+const (
+	// ObligationRedactPII is the obligation a PEP discharges by replacing the
+	// request content with engine-redacted content before forwarding.
+	ObligationRedactPII = "redact_pii"
+
+	// ObligationPhaseRequest / ObligationPhaseResponse are the two fulfillment
+	// phases. /decide runs pre-call, so it only ever emits request-phase
+	// obligations; the response-phase value is named in the contract for PEP
+	// helpers that fan out to the response-redaction endpoint after the call.
+	ObligationPhaseRequest  = "request"
+	ObligationPhaseResponse = "response"
+
+	// requestRedactionEndpoint is the engine endpoint a PEP POSTs to in order
+	// to discharge a request-phase redact_pii obligation. ADR-056 settles the
+	// "request-phase redaction has no home" question in favour of extending
+	// check-input (the request gate) to return engine-redacted content, keeping
+	// it symmetric with check-output (the response gate) and keeping /decide a
+	// pure PDP. The "/mcp/" path segment is historical; in gateway/PDP mode the
+	// endpoint is connector-agnostic (the PEP passes a synthetic connector tag).
+	requestRedactionEndpoint = "/api/v1/mcp/check-input"
+
+	// (The response-phase fulfillment endpoint — /api/v1/mcp/check-output — is
+	// not referenced here: /decide runs pre-call and only emits request-phase
+	// obligations. Response-phase fulfillment lives in the PEP client, which
+	// fans out to check-output after the backend call. See platform/shared/pep.)
+
+	// contentTypeText is the only redaction content-type wired today. Media
+	// (image/*, application/pdf) routes to the existing orchestrator media-
+	// governance subsystem via the detector seam — see RequestRedactionDetector
+	// in request_redaction_detector.go.
+	contentTypeText = "text/plain"
+)
+
+// newRedactPIIObligation builds a self-describing request-phase redact_pii
+// obligation. Centralized so every emission site carries identical, complete
+// Fulfillment metadata — a PEP must never have to infer the endpoint OR which
+// content modalities the endpoint can redact.
+func newRedactPIIObligation(detail string) DecisionObligation {
+	return DecisionObligation{
+		Type:   ObligationRedactPII,
+		Detail: detail,
+		Fulfillment: &ObligationFulfillment{
+			Endpoint:     requestRedactionEndpoint,
+			Method:       http.MethodPost,
+			Phase:        ObligationPhaseRequest,
+			ContentTypes: requestRedactionContentTypes(),
+		},
+	}
+}
+
 // DecideRequest is the inbound contract for POST /api/v1/decide.
 // Required: stage, query. caller_identity.gateway_id is recommended so the
 // audit trail records which gateway layer issued the decision. user_token
@@ -160,9 +211,48 @@ type DecideResponse struct {
 
 // DecisionObligation is a PEP-side requirement attached to an allow verdict
 // (e.g. redact PII before forwarding the call).
+//
+// Obligations are SELF-DESCRIBING and ENGINE-FULFILLABLE (ADR-056, #2563):
+// `/decide` is a pure PDP and never mutates content, so a redact_pii obligation
+// is not "go redact this yourself with your own patterns" — it is "call the
+// AxonFlow engine endpoint named in Fulfillment to obtain engine-redacted
+// content." The Fulfillment block tells the PEP exactly which endpoint, method,
+// and phase discharges the obligation, so no PEP ever hand-rolls a regex
+// (which is how the desktop proxy's redact.go ended up punting US SSN). The
+// blessed client path is platform/shared/pep.
 type DecisionObligation struct {
-	Type   string `json:"type"`             // e.g. "redact_pii"
-	Detail string `json:"detail,omitempty"` // human-readable detail for audit logs
+	Type        string                 `json:"type"`                  // e.g. "redact_pii"
+	Detail      string                 `json:"detail,omitempty"`      // human-readable detail for audit logs
+	Fulfillment *ObligationFulfillment `json:"fulfillment,omitempty"` // how the PEP discharges this via the engine
+}
+
+// ObligationFulfillment names the engine call a PEP makes to discharge an
+// obligation. It exists so fulfillment is a property of the contract, not of
+// PEP-author discipline: a conforming PEP POSTs the obligation's source content
+// to Endpoint and forwards the engine-redacted content the endpoint returns.
+// There is no other blessed way to satisfy a redact_pii obligation — client-
+// side redaction is forbidden by ADR-056.
+//
+// Phase distinguishes which content the PEP submits:
+//   - "request"  -> the PEP redacts the request it is about to forward
+//     (the `query` it asked /decide about), via the request-redaction endpoint.
+//   - "response" -> the PEP redacts a backend response before returning it,
+//     via the response-redaction endpoint (check-output). /decide itself runs
+//     pre-call so it only emits request-phase obligations; the response-phase
+//     value is part of the contract for PEP helpers that fan out to both.
+//
+// ContentTypes advertises the mime-types the endpoint's redaction detectors can
+// handle today (e.g. "text/plain"). The contract is deliberately content-type-
+// agnostic: a PEP holding content of a type NOT in this list (an image awaiting
+// OCR-PII redaction, say) must fail closed rather than forward it unredacted.
+// Adding media is a server-side detector registration plus a new entry here —
+// NOT a redesign of this shape. This is the same lesson as the connector trap
+// (#2563): don't bake a single content modality into the contract.
+type ObligationFulfillment struct {
+	Endpoint     string   `json:"endpoint"`                // engine path, e.g. "/api/v1/mcp/check-input"
+	Method       string   `json:"method"`                  // HTTP method, e.g. "POST"
+	Phase        string   `json:"phase"`                   // "request" | "response"
+	ContentTypes []string `json:"content_types,omitempty"` // mime-types the endpoint can redact today
 }
 
 // Decision Mode Prometheus metrics. Mirrors gateway pre-check shape so
@@ -404,6 +494,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// patterns (BCA/Mandiri/BRI/BNI) are attributed to indonesia_pii_protection
 	// instead of being shadowed by the generic RBI bank-account detector.
 	rbiPIIRequiresRedaction := false
+	indonesiaPIIRequiresRedaction := false
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock
 
 	// OJK/UU PDP Indonesia PII pre-check (NIK / NPWP / +62 / bank accounts).
@@ -423,6 +514,13 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		})
 		recordDecideMetrics(VerdictDeny, stage, startTime)
 		return
+	}
+	// Under PII_ACTION=redact, critical Indonesia PII (NIK / NPWP) is detected
+	// but not blocked. Flag it for redaction the same way RBI India PII is
+	// flagged below — previously it was detected but never flagged, so NIK
+	// slipped through unredacted on the allow path while SSN/Aadhaar redacted.
+	if indonesiaPIIResult.HasPII && gwDetectionCfg.Enabled && indonesiaPIIResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
+		indonesiaPIIRequiresRedaction = true
 	}
 
 	// RBI India PII pre-check (Aadhaar / PAN / UPI / bank-account validators).
@@ -459,26 +557,29 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			ChecksPerformed:   []string{"gateway_static_policies_disabled"},
 		}
 	} else if sharedEngine != nil {
+		// Security + compliance categories stay explicit; the PII subset is
+		// policy-derived via Session A's canonical EnabledPIICategories (#2565)
+		// — the same source of truth the W2 response engines use — so a new
+		// pii-* jurisdiction is auto-covered with no hardcoded list to forget.
+		// PhaseRequest because /decide is a pre-call (request-phase) decision.
+		// The non-PII categories keep the slice non-empty, so the
+		// empty-Categories-means-all whitelist footgun can't apply here.
+		decideCats := []sharedpolicy.PolicyCategory{
+			sharedpolicy.CategorySecuritySQLi,
+			sharedpolicy.CategorySecurityDangerous,
+			sharedpolicy.CategorySensitiveData,
+			sharedpolicy.CategoryComplianceRBI,
+			sharedpolicy.CategoryComplianceSEBI,
+			sharedpolicy.CategoryComplianceEUAIAct,
+			sharedpolicy.CategoryComplianceMASFEAT,
+		}
+		decideCats = append(decideCats, sharedEngine.EnabledPIICategories(ctx, user.TenantID, nil, sharedpolicy.PhaseRequest)...)
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			OrgID:         user.OrgID,
-			ConnectorName: "decision",
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				sharedpolicy.CategorySecuritySQLi,
-				sharedpolicy.CategorySecurityDangerous,
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-				sharedpolicy.CategoryPIIIndonesia,
-				sharedpolicy.CategorySensitiveData,
-				sharedpolicy.CategoryComplianceRBI,
-				sharedpolicy.CategoryComplianceSEBI,
-				sharedpolicy.CategoryComplianceEUAIAct,
-				sharedpolicy.CategoryComplianceMASFEAT,
-			},
+			TenantID:        user.TenantID,
+			OrgID:           user.OrgID,
+			ConnectorName:   "decision",
+			UserID:          fmt.Sprintf("%d", user.ID),
+			Categories:      decideCats,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
 		})
@@ -505,25 +606,28 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// the full shared engine + DB-seeded patterns.
 	verdict, reasons, obligations := mapPolicyResultToVerdict(policyResult, isCommunityMode())
 
-	// Merge RBI-PII redaction obligation when the validator-backed detector
-	// flagged critical India PII and PII_ACTION=redact. Suppressed on deny
-	// (the request won't be forwarded anyway) and on needs_approval (the
+	// Merge a redaction obligation when a validator-backed detector flagged
+	// critical India *or* Indonesia PII and PII_ACTION=redact. Suppressed on
+	// deny (the request won't be forwarded anyway) and on needs_approval (the
 	// approver makes the redact call at queue exit). The shared engine's
-	// regex-based India category may or may not have set the same
-	// obligation; we dedup to avoid two redact_pii entries.
-	if rbiPIIRequiresRedaction && verdict == VerdictAllow {
+	// regex-based category may or may not have set the same obligation; we
+	// dedup to avoid two redact_pii entries. Indonesia (NIK / NPWP) is included
+	// here for the same reason RBI India PII is — previously it was detected but
+	// never produced a redact obligation, so NIK slipped through unredacted.
+	if (rbiPIIRequiresRedaction || indonesiaPIIRequiresRedaction) && verdict == VerdictAllow {
 		alreadyHasRedact := false
 		for _, o := range obligations {
-			if o.Type == "redact_pii" {
+			if o.Type == ObligationRedactPII {
 				alreadyHasRedact = true
 				break
 			}
 		}
 		if !alreadyHasRedact {
-			obligations = append(obligations, DecisionObligation{
-				Type:   "redact_pii",
-				Detail: piiResult.Reason,
-			})
+			redactReason := piiResult.Reason
+			if redactReason == "" && indonesiaPIIRequiresRedaction {
+				redactReason = fmt.Sprintf("Indonesia PII detected: %v", indonesiaPIIResult.DetectedTypes)
+			}
+			obligations = append(obligations, newRedactPIIObligation(redactReason))
 		}
 	}
 
@@ -603,10 +707,7 @@ func mapPolicyResultToVerdict(result *StaticPolicyResult, communityMode bool) (s
 		return VerdictNeedsApproval, reasons, obligations
 	}
 	if result.RequiresRedaction {
-		obligations = append(obligations, DecisionObligation{
-			Type:   "redact_pii",
-			Detail: result.Reason,
-		})
+		obligations = append(obligations, newRedactPIIObligation(result.Reason))
 	}
 	return VerdictAllow, reasons, obligations
 }

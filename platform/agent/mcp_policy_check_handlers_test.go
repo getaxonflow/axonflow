@@ -901,7 +901,7 @@ func TestEvaluateInputPolicies_ConnectorNotEnabled(t *testing.T) {
 	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
 
 	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed: false,
+		Allowed:     false,
 		BlockReason: "Should not reach",
 	})
 	defer server.Close()
@@ -962,7 +962,7 @@ func TestEvaluateOutputPolicies_NilEngine_NilChecker(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 1, true)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 1, true, false /* isGateway */)
 
 	if out.SQLiBlocked {
 		t.Error("expected SQLiBlocked=false")
@@ -981,7 +981,7 @@ func TestEvaluateOutputPolicies_MessageOnly(t *testing.T) {
 	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	ctx := context.Background()
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", nil, "3 rows affected", nil, 3, false)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", nil, "3 rows affected", nil, 3, false, false /* isGateway */)
 
 	if out.SQLiBlocked {
 		t.Error("expected SQLiBlocked=false")
@@ -1004,7 +1004,7 @@ func TestEvaluateOutputPolicies_ExfiltrationExceeded(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 3, true)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 3, true, false /* isGateway */)
 
 	if out.ExfilResult == nil {
 		t.Fatal("expected ExfilResult to be non-nil")
@@ -1034,7 +1034,7 @@ func TestEvaluateOutputPolicies_ExfiltrationNotChecked(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 3, false)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 3, false, false /* isGateway */)
 
 	if out.ExfilResult != nil {
 		t.Error("expected ExfilResult=nil when checkExfiltration=false")
@@ -1057,13 +1057,20 @@ func TestEvaluateOutputPolicies_WithStaticEngine(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"name": "Alice"}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 1, false)
+	// isGateway=true forces the detection gate open, so the empty-set guard is the
+	// ONLY thing that can keep the static pass from running. With no enabled
+	// PII-category policies (empty cache), EnabledPIICategories returns nil and the
+	// guard MUST skip EvaluateResponse → StaticResult stays nil. If the guard were
+	// removed, empty Categories would evaluate ALL policies (the whitelist
+	// "empty == all" footgun) and StaticResult would be non-nil — so this is a
+	// non-vacuous regression lock on the guard, not just a "not blocked" check.
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 1, false, true /* isGateway */)
 
-	if out.StaticResult == nil {
-		t.Fatal("expected StaticResult to be non-nil when engine is active")
+	if out.StaticResult != nil {
+		t.Errorf("empty-set guard must skip the static pass when no PII policies are enabled; got StaticResult=%+v (the empty-Categories-evaluates-all footgun)", out.StaticResult)
 	}
-	if out.StaticResult.Blocked {
-		t.Error("expected not blocked with empty policy cache")
+	if out.SQLiBlocked {
+		t.Error("clean rows must not be SQLi-blocked")
 	}
 }
 

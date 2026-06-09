@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,10 +42,10 @@ import (
 
 // Outreach log rate limiting - logs once per hour max per category
 var (
-	outreachLogMu               sync.Mutex
-	lastEnforcementLogTime      time.Time
-	lastBypassLogTime           time.Time
-	outreachLogInterval         = time.Hour
+	outreachLogMu          sync.Mutex
+	lastEnforcementLogTime time.Time
+	lastBypassLogTime      time.Time
+	outreachLogInterval    = time.Hour
 )
 
 // shouldLogEnforcementOutreach returns true if enough time has passed since last enforcement log
@@ -246,18 +247,18 @@ var llmPricing = map[string]map[string]float64{
 		"gpt-4o":        0.005,
 		"gpt-4o-mini":   0.00015,
 		"gpt-4":         0.03,
-		"gpt-4-turbo":   0.01,    // legacy, kept for backward compat
-		"gpt-3.5-turbo": 0.0005,  // legacy, kept for backward compat
+		"gpt-4-turbo":   0.01,   // legacy, kept for backward compat
+		"gpt-3.5-turbo": 0.0005, // legacy, kept for backward compat
 	},
 	"anthropic": {
-		"claude-opus-4":      0.015,
-		"claude-sonnet-4":    0.003,
-		"claude-haiku-4.5":   0.0008,
-		"claude-3-opus":      0.015,  // legacy, kept for backward compat
-		"claude-3-sonnet":    0.003,  // legacy, kept for backward compat
-		"claude-3-haiku":     0.001,  // legacy, kept for backward compat
-		"claude-3-5-sonnet":  0.003,  // legacy, kept for backward compat
-		"claude-3-5-haiku":   0.001,  // legacy, kept for backward compat
+		"claude-opus-4":     0.015,
+		"claude-sonnet-4":   0.003,
+		"claude-haiku-4.5":  0.0008,
+		"claude-3-opus":     0.015, // legacy, kept for backward compat
+		"claude-3-sonnet":   0.003, // legacy, kept for backward compat
+		"claude-3-haiku":    0.001, // legacy, kept for backward compat
+		"claude-3-5-sonnet": 0.003, // legacy, kept for backward compat
+		"claude-3-5-haiku":  0.001, // legacy, kept for backward compat
 	},
 	"bedrock": {
 		"anthropic.claude-sonnet-4-20250514-v1:0":  0.003,
@@ -351,7 +352,7 @@ func getIndonesiaPIIDetector() *indonesia.IndonesiaPIIDetector {
 			indonesiaPIIDetector = indonesia.NewIndonesiaPIIDetector(config)
 			log.Printf("🇮🇩 [OJK] Indonesia PII detector initialized")
 		} else {
-			log.Printf("🇮🇩 [OJK] Indonesia PII detection disabled (Community mode)")
+			log.Printf("🇮🇩 [OJK] Indonesia PII detection disabled (Community Edition — enterprise detector not built in)")
 		}
 	})
 	return indonesiaPIIDetector
@@ -360,6 +361,49 @@ func getIndonesiaPIIDetector() *indonesia.IndonesiaPIIDetector {
 func checkIndonesiaPII(query string, blockOnCritical bool) *indonesia.IndonesiaPIICheckResult {
 	detector := getIndonesiaPIIDetector()
 	return indonesia.CheckRequestForPII(detector, query, blockOnCritical)
+}
+
+// checkIndonesiaResponsePII runs the SAME checksum-validated Indonesia detector
+// on response text. CheckRequestForPII/DetectAll are text-based (not
+// request-specific), so the response path reuses them rather than introducing a
+// second detector — this is what closes the request/response asymmetry that let
+// NIK be governed on input but leak on output (the static sys_pii_indonesia_ktp
+// policy is request-phase "menu/spec parity" only; the real checksum validator
+// lives here, mirroring the orchestrator's response-side detector).
+func checkIndonesiaResponsePII(responseText string, blockOnCritical bool) *indonesia.IndonesiaPIICheckResult {
+	detector := getIndonesiaPIIDetector()
+	return indonesia.CheckRequestForPII(detector, responseText, blockOnCritical)
+}
+
+// indonesiaDetectedTypeNames returns the distinct detected Indonesia PII type
+// names from a check result, for the audit trail's redacted-fields record.
+func indonesiaDetectedTypeNames(r *indonesia.IndonesiaPIICheckResult) []string {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.DetectedTypes))
+	for _, t := range r.DetectedTypes {
+		names = append(names, string(t))
+	}
+	return names
+}
+
+// redactIndonesiaPIIInString masks every Indonesia PII occurrence in s using the
+// detector's per-detection MaskedValue (NIK/NPWP/+62/bank). Returns the masked
+// string and whether anything changed. Used for the response/check-output redact
+// path (PII_ACTION=redact) alongside the block path.
+func redactIndonesiaPIIInString(s string) (string, bool) {
+	detector := getIndonesiaPIIDetector()
+	if detector == nil || s == "" {
+		return s, false
+	}
+	out := s
+	for _, d := range detector.DetectAll(s) {
+		if d.Value != "" && d.MaskedValue != "" && d.MaskedValue != d.Value {
+			out = strings.ReplaceAll(out, d.Value, d.MaskedValue)
+		}
+	}
+	return out, out != s
 }
 
 // getGatewayAuditQueue returns the audit queue for Gateway Mode handlers.
@@ -487,6 +531,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// Issue #891: Respect PII_ACTION setting - block only if PII_ACTION=block
 	gwDetectionCfg := GetGatewayDetectionConfig()
 	rbiPIIRequiresRedaction := false
+	indonesiaPIIRequiresRedaction := false
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock
 
 	// OJK/UU PDP Compliance: Check Indonesia-specific PII FIRST (NIK, NPWP, +62, bank accounts).
@@ -517,6 +562,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		if gwDetectionCfg.Enabled && indonesiaPIIResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
 			log.Printf("🇮🇩 [Pre-check] Critical Indonesia PII detected - flagged for redaction: %v", indonesiaPIIResult.DetectedTypes)
+			indonesiaPIIRequiresRedaction = true
 		} else {
 			log.Printf("⚠️ [Pre-check] Indonesia PII detected (non-critical): %v", indonesiaPIIResult.DetectedTypes)
 		}
@@ -685,7 +731,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Build response
 	// Issue #891: Combine redaction flags from static policies and RBI PII detection
-	requiresRedaction := policyResult.RequiresRedaction || rbiPIIRequiresRedaction
+	requiresRedaction := policyResult.RequiresRedaction || rbiPIIRequiresRedaction || indonesiaPIIRequiresRedaction
 
 	// Determine if request should be blocked
 	// Block if: policy blocked OR HITL required (Enterprise only - pending human approval)
@@ -703,6 +749,15 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// Add RBI PII policy to triggered policies if redaction required
 	if rbiPIIRequiresRedaction {
 		response.Policies = append(response.Policies, "rbi_pii_protection")
+	}
+
+	// Add Indonesia PII policy to triggered policies if redaction required.
+	// Mirrors the RBI flag above: under PII_ACTION=redact, critical Indonesia
+	// PII (NIK / NPWP) must signal redaction the same way India PII does —
+	// previously it was detected and logged but never flagged, so NIK slipped
+	// through unredacted while SSN/Aadhaar were redacted.
+	if indonesiaPIIRequiresRedaction {
+		response.Policies = append(response.Policies, "indonesia_pii_protection")
 	}
 
 	// Issue #1081: Add HITL policy to triggered policies if HITL required (Enterprise only)
@@ -1120,7 +1175,6 @@ func hashString(s string) string {
 	hash := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(hash[:])
 }
-
 
 // sendGatewayError sends a JSON error response
 func sendGatewayError(w http.ResponseWriter, message string, statusCode int) {

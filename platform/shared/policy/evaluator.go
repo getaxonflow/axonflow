@@ -237,35 +237,14 @@ func (e *PatternEvaluator) getValidator(policy *CompiledPolicy) ValidatorFunc {
 		return policy.Validator
 	}
 
-	// Try to get validator by policy ID pattern.
-	// Use word-boundary matching (underscore-separated segments) to avoid
-	// false matches like "pipe" containing "ip" or "japan" containing "pan".
-	policyID := strings.ToLower(policy.PolicyID)
-	segments := "_" + policyID + "_" // Pad with delimiters for boundary matching
-
-	// Map policy ID segments to validator types.
-	// Keys are checked as "_key_" to ensure word-boundary matching.
-	validatorMappings := map[string]string{
-		"credit_card":  "credit_card",
-		"ssn":          "ssn",
-		"iban":         "iban",
-		"aadhaar":      "aadhaar",
-		"pan":          "pan",
-		"email":        "email",
-		"phone":        "phone",
-		"ip_address":   "ip_address",
-		"ip":           "ip_address",
-		"bank_account": "bank_account",
-		"bank":         "bank_account",
+	// Select by PII-type token within the policy ID (single source of truth
+	// shared with the loader — ValidatorForPolicyID), falling back to the
+	// category default only when no token matches. This is the in-memory
+	// fallback; DB-loaded policies arrive with Validator already set by the
+	// loader (PolicyLoader.getValidatorForPolicy uses the same helper).
+	if v := ValidatorForPolicyID(policy.PolicyID); v != nil {
+		return v
 	}
-
-	for key, validatorType := range validatorMappings {
-		if strings.Contains(segments, "_"+key+"_") {
-			return e.validators[validatorType]
-		}
-	}
-
-	// Fallback: try to get validator by category
 	return GetValidatorForCategory(policy.Category)
 }
 

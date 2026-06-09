@@ -190,8 +190,8 @@ type mcpSession struct {
 	// stampAuthContext(ctx, client, authKind) without re-authenticating.
 	// Closes the latent bug from PR #2342 R3-MEDIUM-1 where the cache-miss
 	// path was identified as not stamping.
-	client    *Client
-	authKind  AuthKind
+	client   *Client
+	authKind AuthKind
 }
 
 var (
@@ -1278,6 +1278,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		nil, // messageMetadata
 		rowCount,
 		checkExfil,
+		true, // isGateway: check_output is a PEP/gateway caller (no managed connector)
 	)
 
 	blocked := outcome.SQLiBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)
@@ -1293,12 +1294,17 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 
 	if outcome.StaticResult != nil {
 		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
-		if outcome.RedactedRows != nil {
-			resp["redacted_data"] = outcome.RedactedRows
-		}
-		if outcome.RedactedMessage != "" {
-			resp["redacted_message"] = outcome.RedactedMessage
-		}
+	}
+	// Redacted content is surfaced independently of StaticResult: an Indonesia-only
+	// redaction (the OJK/UU-PDP NIK path) leaves StaticResult nil, and gating the
+	// masked data on StaticResult would forward the UNMASKED original to the MCP
+	// client (#2563 round-2 leak). RedactedRows/RedactedMessage are set whenever
+	// any source redacted.
+	if outcome.RedactedRows != nil {
+		resp["redacted_data"] = outcome.RedactedRows
+	}
+	if outcome.RedactedMessage != "" {
+		resp["redacted_message"] = outcome.RedactedMessage
 	}
 
 	if outcome.ExfilInfo != nil {
