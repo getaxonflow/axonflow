@@ -18,12 +18,26 @@ import (
 
 // MockExportRepository implements ExportRepository for testing.
 type MockExportRepository struct {
-	exports       map[string]*Export
-	createErr     error
-	getByIDErr    error
-	listErr       error
-	updateErr     error
-	listTotal     int64
+	exports             map[string]*Export
+	createErr           error
+	getByIDErr          error
+	listErr             error
+	updateErr           error
+	listTotal           int64
+	decisionChain       []DecisionChainRecord
+	getDecisionChainErr error
+
+	// #2610 real-data export sources + injectable errors.
+	fullAudit              []AuditLogRecord
+	getFullAuditErr        error
+	policyViolations       []PolicyViolationRecord
+	getPolicyViolationsErr error
+	hitlHistory            []HITLApprovalRecord
+	getHITLErr             error
+	accuracyMetrics        []*AccuracyMetric
+	getAccuracyMetricsErr  error
+	conformityAssessments  []*ConformityAssessment
+	getConformityErr       error
 }
 
 func NewMockExportRepository() *MockExportRepository {
@@ -75,6 +89,48 @@ func (m *MockExportRepository) Update(ctx context.Context, export *Export) error
 func (m *MockExportRepository) Delete(ctx context.Context, id string) error {
 	delete(m.exports, id)
 	return nil
+}
+
+func (m *MockExportRepository) GetDecisionChain(ctx context.Context, orgID string, from, to time.Time) ([]DecisionChainRecord, error) {
+	if m.getDecisionChainErr != nil {
+		return nil, m.getDecisionChainErr
+	}
+	return m.decisionChain, nil
+}
+
+func (m *MockExportRepository) GetFullAudit(ctx context.Context, orgID string, from, to time.Time) ([]AuditLogRecord, error) {
+	if m.getFullAuditErr != nil {
+		return nil, m.getFullAuditErr
+	}
+	return m.fullAudit, nil
+}
+
+func (m *MockExportRepository) GetPolicyViolations(ctx context.Context, orgID string, from, to time.Time) ([]PolicyViolationRecord, error) {
+	if m.getPolicyViolationsErr != nil {
+		return nil, m.getPolicyViolationsErr
+	}
+	return m.policyViolations, nil
+}
+
+func (m *MockExportRepository) GetHITLApprovalHistory(ctx context.Context, orgID string, from, to time.Time) ([]HITLApprovalRecord, error) {
+	if m.getHITLErr != nil {
+		return nil, m.getHITLErr
+	}
+	return m.hitlHistory, nil
+}
+
+func (m *MockExportRepository) GetAccuracyMetrics(ctx context.Context, orgID string, from, to time.Time) ([]*AccuracyMetric, error) {
+	if m.getAccuracyMetricsErr != nil {
+		return nil, m.getAccuracyMetricsErr
+	}
+	return m.accuracyMetrics, nil
+}
+
+func (m *MockExportRepository) GetConformityAssessments(ctx context.Context, orgID string, from, to time.Time) ([]*ConformityAssessment, error) {
+	if m.getConformityErr != nil {
+		return nil, m.getConformityErr
+	}
+	return m.conformityAssessments, nil
 }
 
 func TestNewExportHandler(t *testing.T) {

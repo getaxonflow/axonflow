@@ -1374,3 +1374,71 @@ func TestDetectPII_WithEnhancedEnabled(t *testing.T) {
 		t.Errorf("Expected to find SSN type in detected PII: %v", detected)
 	}
 }
+
+// --- #2626: response-plane verdict on RedactionInfo --------------------------
+
+// TestProcessResponse_Verdict_AllowedWhenClean: a clean response carries the
+// "allowed" verdict so the audit row is labeled truthfully.
+func TestProcessResponse_Verdict_AllowedWhenClean(t *testing.T) {
+	processor := NewResponseProcessor()
+	_, info := processor.ProcessResponse(context.Background(),
+		UserContext{ID: 1, TenantID: "t1"},
+		&LLMResponse{Content: "nothing sensitive here", Model: "m"})
+	if info.Verdict != responseVerdictAllowed {
+		t.Fatalf("clean response verdict = %q, want %q", info.Verdict, responseVerdictAllowed)
+	}
+}
+
+// TestProcessResponse_Verdict_RedactedWhenMasked: when content is actually
+// masked (block/redact path), the verdict is "redacted" — NOT "allowed".
+// Red-on-revert: deleting the `redactionInfo.Verdict = responseVerdictRedacted`
+// assignment drops this to "allowed" and fails.
+func TestProcessResponse_Verdict_RedactedWhenMasked(t *testing.T) {
+	t.Setenv("PII_ACTION", "redact")
+	processor := NewResponseProcessor()
+	_, info := processor.ProcessResponse(context.Background(),
+		UserContext{ID: 1, TenantID: "t1"}, // no PII-view permission
+		&LLMResponse{Content: "User SSN is 123-45-6789 and should be redacted.", Model: "m"})
+	if !info.HasRedactions {
+		t.Fatal("expected SSN to be redacted")
+	}
+	if info.Verdict != responseVerdictRedacted {
+		t.Fatalf("redacted response verdict = %q, want %q", info.Verdict, responseVerdictRedacted)
+	}
+}
+
+// TestProcessResponse_Verdict_AllowedUnderWarnLog: warn/log "detect-don't-modify"
+// — detection fires but the response is returned unmodified, so the verdict is
+// "allowed", never "redacted". This is the truthful-labeling guard.
+func TestProcessResponse_Verdict_AllowedUnderWarnLog(t *testing.T) {
+	t.Setenv("PII_ACTION", "warn")
+	processor := NewResponseProcessor()
+	out, info := processor.ProcessResponse(context.Background(),
+		UserContext{ID: 1, TenantID: "t1"},
+		&LLMResponse{Content: "User SSN is 123-45-6789.", Model: "m"})
+	if info.Verdict != responseVerdictAllowed {
+		t.Fatalf("warn/log verdict = %q, want %q (detect-don't-modify)", info.Verdict, responseVerdictAllowed)
+	}
+	// Response is returned unmodified under warn/log.
+	if !strings.Contains(getString(out), "123-45-6789") {
+		t.Error("warn/log must return the response unmodified (SSN preserved)")
+	}
+}
+
+// TestProcessResponse_Verdict_BlockedOnValidationDenial: a withheld response
+// (validation failure) carries the "blocked" verdict so the handler records it
+// as blocked rather than the success it used to masquerade as
+// (#2626 ORCH-RESP-VALIDATE-DENY-AS-ALLOWED).
+func TestProcessResponse_Verdict_BlockedOnValidationDenial(t *testing.T) {
+	processor := NewResponseProcessor()
+	// Empty content trips the no_empty_response validation rule.
+	_, info := processor.ProcessResponse(context.Background(),
+		UserContext{ID: 1, TenantID: "t1"},
+		&LLMResponse{Content: "", Model: "m"})
+	if info.Verdict != responseVerdictBlocked {
+		t.Fatalf("validation-denied response verdict = %q, want %q", info.Verdict, responseVerdictBlocked)
+	}
+	if info.ValidationError == "" {
+		t.Error("expected ValidationError to be populated on a blocked response")
+	}
+}

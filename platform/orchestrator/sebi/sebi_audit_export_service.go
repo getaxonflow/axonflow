@@ -133,6 +133,10 @@ func (s *SEBIAuditExportServiceImpl) ExportAuditData(ctx context.Context, tenant
 				continue
 			}
 			exportData.DecisionChain = chains
+			// #2598: reconstruct the logical chains (rows sharing a correlation_id)
+			// alongside the flat chronological list. RecordsByType stays the
+			// decision-record (step) count for retention/volume reporting.
+			exportData.DecisionChains = groupSEBIDecisionChain(chains)
 			summary.RecordsByType[SEBIDataTypeDecisionChain] = count
 			summary.TotalRecords += count
 
@@ -548,14 +552,48 @@ func (s *SEBIAuditExportServiceImpl) exportLLMCalls(ctx context.Context, tenantI
 	return calls, len(calls), nil
 }
 
+// exportDecisionChain returns the per-decision audit rows for SEBI's audit
+// trail, in chronological order — one row per governance decision (a
+// /api/v1/decide call or an MCP check). The caller groups them into logical
+// chains via groupSEBIDecisionChain (#2598).
+//
+// Rows are derived from the canonical audit_logs decision rows — the rows the
+// Decision Mode PEP and the MCP check planes persist via writeDecisionAuditLog,
+// identified by policy_details->>'decision_id'. The legacy decision_chain table
+// has no production writer (#2588: its only writer, DecisionChainTracker, is
+// instantiated solely in tests), so the previous FROM decision_chain query
+// returned zero rows in every deployment and this section was silently empty in
+// regulator exports. This converges the read onto audit_logs per the #2585
+// audit-log northstar rather than reviving a parallel table.
+//
+// correlation_id (#2598) is the shared key the writers stamp on every decision
+// row of one logical request (the W3C trace_id a PEP propagates across its
+// llm/tool/agent hops). It is read here — COALESCEd with the dual-written JSONB
+// copy — so groupSEBIDecisionChain can reconstruct a real chain. Rows without
+// one (legacy + single-shot callers) carry "" and become singleton chains.
+// Ordering stays chronological (timestamp, id) so the flat list AND each chain's
+// steps read in step order.
+//
+// audit_logs is NOT FORCE ROW LEVEL SECURITY (migration 101 deliberately left
+// it unprotected for the cross-org cleanup worker), so this read needs no
+// withOrgScope wrap — unlike the FORCE-RLS reads elsewhere in this file. The
+// SEBI tenantID argument is used loosely as either the org_id or tenant_id
+// label across callers, so both columns are matched.
 func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, tenantID string, req *SEBIAuditExportRequest) ([]SEBIDecisionChainRecord, int, error) {
 	query := `
-		SELECT id, request_id, created_at, decision_type, decision_outcome,
-		       risk_level, model_id, requires_human_review,
-		       policies_evaluated::text, policy_triggered, processing_time_ms
-		FROM decision_chain
-		WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
-		ORDER BY created_at DESC
+		SELECT id, request_id, timestamp,
+		       COALESCE(NULLIF(policy_details->>'stage', ''), request_type) AS decision_type,
+		       policy_decision,
+		       COALESCE(model, '')                                          AS model_id,
+		       COALESCE((policy_details->'policy_ids')::text, '')           AS policies_evaluated,
+		       COALESCE(policy_details->'policy_ids'->>0, '')               AS policy_triggered,
+		       response_time_ms,
+		       COALESCE(correlation_id, policy_details->>'correlation_id', '') AS correlation_id
+		FROM audit_logs
+		WHERE (tenant_id = $1 OR org_id = $1)
+		  AND timestamp >= $2 AND timestamp <= $3
+		  AND policy_details->>'decision_id' IS NOT NULL
+		ORDER BY timestamp ASC, id ASC
 		LIMIT 100000
 	`
 
@@ -571,40 +609,97 @@ func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, te
 	var chains []SEBIDecisionChainRecord
 	for rows.Next() {
 		var c SEBIDecisionChainRecord
-		var modelID, riskLevel, policiesEvaluated, policyTriggered sql.NullString
+		var decisionType, policyDecision, modelID, policiesEvaluated, policyTriggered, correlationID string
 		var processingTimeMs sql.NullInt64
 
 		err := rows.Scan(
-			&c.ID, &c.RequestID, &c.Timestamp, &c.DecisionType, &c.DecisionOutcome,
-			&riskLevel, &modelID, &c.RequiresReview,
-			&policiesEvaluated, &policyTriggered, &processingTimeMs,
+			&c.ID, &c.RequestID, &c.Timestamp, &decisionType, &policyDecision,
+			&modelID, &policiesEvaluated, &policyTriggered, &processingTimeMs, &correlationID,
 		)
 		if err != nil {
 			log.Printf("[SEBIAudit] Error scanning decision chain: %v", err)
 			continue
 		}
 
-		if modelID.Valid {
-			c.ModelID = modelID.String
+		c.DecisionType = decisionType
+		c.DecisionOutcome = mapDecisionOutcome(policyDecision)
+		c.RequiresReview = policyDecision == "needs_approval" || policyDecision == "require_approval"
+		c.ModelID = modelID
+		if policiesEvaluated != "" && policiesEvaluated != "null" {
+			c.PoliciesEvaluated = policiesEvaluated
 		}
-		if riskLevel.Valid {
-			c.RiskLevel = riskLevel.String
-		}
-		if policiesEvaluated.Valid {
-			c.PoliciesEvaluated = policiesEvaluated.String
-		}
-		if policyTriggered.Valid {
-			c.PolicyTriggered = policyTriggered.String
-		}
+		c.PolicyTriggered = policyTriggered
 		if processingTimeMs.Valid {
 			v := int(processingTimeMs.Int64)
 			c.ProcessingTimeMs = &v
 		}
+		c.CorrelationID = correlationID
+		// RiskLevel is not captured on canonical decision rows; left empty
+		// (omitempty) rather than fabricated.
 
 		chains = append(chains, c)
 	}
 
-	return chains, len(chains), nil
+	return chains, len(chains), rows.Err()
+}
+
+// groupSEBIDecisionChain reconstructs logical decision chains from the flat,
+// chronologically-ordered decision rows (#2598). Rows sharing a non-empty
+// correlation_id collapse into one chain in step order; rows without one (legacy
+// + single-shot callers) each become a singleton chain. Group order is
+// first-appearance, which — because the input is ordered by (timestamp, id) — is
+// chronological by each chain's earliest step, preserving the chronological
+// behavior for ungrouped rows. Pure function (no I/O) so the grouping is
+// unit-testable on its own.
+func groupSEBIDecisionChain(records []SEBIDecisionChainRecord) []SEBIDecisionChain {
+	if len(records) == 0 {
+		return nil
+	}
+	groups := make([]SEBIDecisionChain, 0, len(records))
+	indexByCorrelation := make(map[string]int, len(records))
+	for _, r := range records {
+		key := r.CorrelationID
+		if key != "" {
+			if i, ok := indexByCorrelation[key]; ok {
+				g := &groups[i]
+				g.Steps = append(g.Steps, r)
+				g.StepCount = len(g.Steps)
+				if r.Timestamp.After(g.EndedAt) {
+					g.EndedAt = r.Timestamp
+				}
+				if r.Timestamp.Before(g.StartedAt) {
+					g.StartedAt = r.Timestamp
+				}
+				continue
+			}
+			indexByCorrelation[key] = len(groups)
+		}
+		groups = append(groups, SEBIDecisionChain{
+			CorrelationID: r.CorrelationID,
+			StepCount:     1,
+			StartedAt:     r.Timestamp,
+			EndedAt:       r.Timestamp,
+			Steps:         []SEBIDecisionChainRecord{r},
+		})
+	}
+	return groups
+}
+
+// mapDecisionOutcome translates a canonical audit_logs policy_decision verdict
+// (allow|deny|needs_approval|require_approval|error) into the SEBI decision
+// outcome vocabulary used by regulator-facing exports. Unknown verdicts pass
+// through unchanged so a new verdict is never silently dropped.
+func mapDecisionOutcome(verdict string) string {
+	switch verdict {
+	case "allow":
+		return "approved"
+	case "deny":
+		return "blocked"
+	case "needs_approval", "require_approval":
+		return "pending_review"
+	default:
+		return verdict
+	}
 }
 
 func (s *SEBIAuditExportServiceImpl) exportHITLOversight(ctx context.Context, tenantID string, req *SEBIAuditExportRequest) ([]SEBIHITLRecord, int, error) {
@@ -821,10 +916,15 @@ func (s *SEBIAuditExportServiceImpl) checkAuditLogging(ctx context.Context, tena
 }
 
 func (s *SEBIAuditExportServiceImpl) checkDecisionChainTracing(ctx context.Context, tenantID string) (bool, string) {
+	// Decision records now live in audit_logs (#2588); the decision_chain table
+	// has no live writer. Count canonical decision rows in the last 24h to
+	// verify decision recording is actually producing records.
 	query := `
 		SELECT COUNT(*)
-		FROM decision_chain
-		WHERE tenant_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'
+		FROM audit_logs
+		WHERE (tenant_id = $1 OR org_id = $1)
+		  AND policy_details->>'decision_id' IS NOT NULL
+		  AND timestamp >= NOW() - INTERVAL '24 hours'
 	`
 
 	var count int
@@ -907,6 +1007,31 @@ type dataTypeStats struct {
 func (s *SEBIAuditExportServiceImpl) getDataTypeStats(ctx context.Context, tenantID string, dataType SEBIAuditDataType) (*dataTypeStats, error) {
 	stats := &dataTypeStats{}
 
+	// Decision-record stats come from audit_logs decision rows (#2588), not the
+	// dead decision_chain table. It needs a bespoke query (decision_id predicate
+	// + `timestamp` column, both tenant/org columns matched) so it can't use the
+	// generic table/tenantCol builder below.
+	if dataType == SEBIDataTypeDecisionChain {
+		query := `
+			SELECT MIN(timestamp), MAX(timestamp), COUNT(*)
+			FROM audit_logs
+			WHERE (tenant_id = $1 OR org_id = $1)
+			  AND policy_details->>'decision_id' IS NOT NULL
+		`
+		var oldest, newest sql.NullTime
+		err := s.db.QueryRowContext(ctx, query, tenantID).Scan(&oldest, &newest, &stats.TotalRecords)
+		if err != nil {
+			return stats, err
+		}
+		if oldest.Valid {
+			stats.OldestRecord = oldest.Time
+		}
+		if newest.Valid {
+			stats.NewestRecord = newest.Time
+		}
+		return stats, nil
+	}
+
 	// Map data type to table name and tenant column
 	// policy_violations uses org_id; all others use tenant_id
 	tableName := ""
@@ -917,8 +1042,6 @@ func (s *SEBIAuditExportServiceImpl) getDataTypeStats(ctx context.Context, tenan
 		tenantCol = "org_id"
 	case SEBIDataTypeLLMCalls:
 		tableName = "llm_call_audits"
-	case SEBIDataTypeDecisionChain:
-		tableName = "decision_chain"
 	case SEBIDataTypeHITLOversight:
 		tableName = "hitl_queue"
 	case SEBIDataTypePIIRedactions:

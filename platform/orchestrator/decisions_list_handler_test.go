@@ -104,6 +104,55 @@ func TestListDecisions_TenantFilterIsInWhereClause(t *testing.T) {
 }
 
 // =============================================================================
+// #2592 / ADR-058 Phase 1: decision_id is read from the first-class column via
+// COALESCE(decision_id, policy_details->>'decision_id'), and the WHERE predicate
+// admits a row whose decision_id is in the COLUMN even when the JSONB copy is
+// absent. Red-on-revert: if the reader reverts to the JSONB-only projection +
+// predicate, the regex (which requires the column arm) no longer matches and
+// this test fails — guarding the no-flag-day contract from a silent regression.
+// =============================================================================
+
+func TestListDecisions_ReadsDecisionIdColumnWithJSONBFallback(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	origDB := usageDB
+	usageDB = mockDB
+	defer func() { usageDB = origDB }()
+
+	// The projection MUST COALESCE the column first, and the predicate MUST
+	// admit the column arm (decision_id IS NOT NULL) — both required so a
+	// column-only row (no JSONB decision_id) still surfaces post-backfill.
+	mock.ExpectQuery(`COALESCE\(decision_id, policy_details->>'decision_id'\)[\s\S]*?FROM audit_logs[\s\S]*?WHERE tenant_id = \$1[\s\S]*?\(decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL\)`).
+		WithArgs("tenant-a", sqlmock.AnyArg(), "", "", "", 5).
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+		).AddRow("dec-from-column", time.Now().UTC(), "deny", "pol-mcp", "", nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	listDecisionsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body DecisionListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Decisions) != 1 || body.Decisions[0].DecisionID != "dec-from-column" {
+		t.Fatalf("expected the column-sourced decision_id to surface, got %+v", body.Decisions)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// =============================================================================
 // Per-tier window+pagesize enforcement (5 cases)
 // =============================================================================
 

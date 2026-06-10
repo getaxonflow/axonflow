@@ -290,6 +290,7 @@ func writeOverrideUsedEvent(
 	db *sql.DB,
 	overrideID, decisionID, tenantID, orgID, clientID, userEmail string,
 	policyID string, policyVersion int,
+	correlationID string,
 ) {
 	if db == nil || overrideID == "" {
 		return
@@ -305,6 +306,12 @@ func writeOverrideUsedEvent(
 	if policyVersion > 0 {
 		details["policy_version"] = policyVersion
 	}
+	// #2598: mirror the correlation key into JSONB (read-path resilience) and the
+	// first-class column below, so an override applied mid-chain groups with the
+	// other stages of the same logical request.
+	if correlationID != "" {
+		details["correlation_id"] = correlationID
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		return
@@ -318,12 +325,20 @@ func writeOverrideUsedEvent(
 	if tenantID == "" {
 		tenantID = "unknown"
 	}
+	// #2592 / ADR-058 Phase 1: dual-write decision_id into the first-class
+	// column + stamp plane=mcp (this is the MCP check-input override surface),
+	// alongside the JSONB copy. No obligations on an override-used event.
+	// #2598: correlation_id (first-class column or NULL → singleton).
+	var correlationIDArg interface{}
+	if correlationID != "" {
+		correlationIDArg = correlationID
+	}
 	_, _ = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
-			policy_decision, policy_details
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			policy_decision, policy_details, decision_id, plane, correlation_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`,
 		"audit_used_"+decisionID,
 		decisionID,
@@ -339,6 +354,9 @@ func writeOverrideUsedEvent(
 		"none",
 		"allow",
 		detailsJSON,
+		decisionID,       // decision_id (first-class column)
+		PlaneMCP,         // plane
+		correlationIDArg, // correlation_id (#2598)
 	)
 }
 
@@ -364,6 +382,7 @@ func writeExplainableAuditLog(
 	userIDStr, userRole string,
 	requestType, statement, statementHash, blockReason, topRisk string,
 	matches []RicherPolicyMatch,
+	correlationID string,
 ) {
 	if db == nil || decisionID == "" {
 		return
@@ -401,6 +420,12 @@ func writeExplainableAuditLog(
 	if len(policyVersions) > 0 {
 		details["policy_versions"] = policyVersions
 	}
+	// #2598: mirror the correlation key into JSONB (read-path resilience) so a
+	// check-input block groups with the other stages of the same logical request
+	// when the gateway propagates a W3C traceparent.
+	if correlationID != "" {
+		details["correlation_id"] = correlationID
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		log.Printf("explainable audit log: marshal failed: %v", err)
@@ -429,12 +454,21 @@ func writeExplainableAuditLog(
 		statementHash = "none"
 	}
 
+	// #2592 / ADR-058 Phase 1: dual-write decision_id into the first-class
+	// column + stamp plane=mcp (the MCP check-input request plane), alongside
+	// the JSONB copy. obligations stays NULL — a check-input block records
+	// policy_matches, not an engine-fulfillable obligation.
+	// #2598: correlation_id (first-class column or NULL → singleton).
+	var correlationIDArg interface{}
+	if correlationID != "" {
+		correlationIDArg = correlationID
+	}
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
-			policy_decision, policy_details
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			policy_decision, policy_details, decision_id, plane, correlation_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`,
 		"audit_"+decisionID, // id
 		requestID,           // request_id
@@ -449,7 +483,10 @@ func writeExplainableAuditLog(
 		statement,           // query
 		statementHash,       // query_hash
 		"deny",              // policy_decision
-		detailsJSON,         // policy_details (JSONB)
+		detailsJSON,         // policy_details (JSONB) — decision_id still mirrored here
+		decisionID,          // decision_id (first-class column; #2592)
+		PlaneMCP,            // plane
+		correlationIDArg,    // correlation_id (#2598)
 	)
 	if err != nil {
 		log.Printf("explainable audit log: insert failed: %v", err)

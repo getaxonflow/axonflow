@@ -12,6 +12,57 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.7.0] - 2026-06-11 — Governance integrity: audit-trail consolidation, per-org detection posture on every plane, and compliance-export fixes
+
+**Community.** Every change in this release lives in the `platform/` binaries — the agent, the orchestrator, and the shared policy engine — so this release ships to the community mirror; Enterprise-only surfaces (the customer-portal write paths, the SEBI / EU AI Act compliance exports, SCIM) are tagged inline. v8.7.0 consolidates policy decisions onto a single canonical audit record, lets each organization set its own detection enforcement posture independently on every plane, closes a class of compliance-export defects that let regulator-facing exports report success with no data, and corrects audit-feed pagination and PII detection false positives. **No breaking changes.** The new `audit_logs` columns are additive and nullable (migrations 119–121) and require no backfill; every API addition is additive and backward-compatible.
+
+### Audit-trail consolidation
+
+- **`decision_id` and `plane` are now first-class `audit_logs` columns.** Every governed decision writes a canonical row carrying a stable `decision_id` and a `plane` discriminator (`llm`·`mcp`·`agent`·`gateway`·`decision`·`openai_compat`) so a single query returns every block across every enforcement surface. Migration `core/119`. On its own, this makes a cross-plane block queryable in one place.
+- **MCP `check-output` blocks emit the canonical `audit_logs` decision row.** A PII block on the MCP response path previously did not produce a decision row in the consolidated shape, so it did not appear in the portal decisions feed. It now writes the same canonical record as every other plane.
+- **`correlation_id` groups decisions into chains.** A new nullable `audit_logs.correlation_id` column (migration `core/121`, partial index `WHERE correlation_id IS NOT NULL`) carries the W3C `trace_id` a Policy Enforcement Point propagates across the hops (LLM → tool → agent) of one logical request. Rows sharing a `correlation_id` are the ordered steps of one decision chain; the SEBI and EU AI Act exporters group by it. Legacy rows (no trace) are single-step chains, so grouping never drops a decision.
+
+### Audit-coverage hardening
+
+A pre-release coverage review mapped every enforcement decision to its audit write and closed the highest-impact gaps below.
+
+- **Orchestrator LLM-response decisions now write canonical `audit_logs` rows — and redactions are no longer mislabeled `allowed`.** The response-redaction plane previously recorded a redacted response (including Indonesian NIK/NPWP masking) as `policy_decision="allowed"` with empty `redacted_fields`, and a validation-withheld response wrote no row at all. It now writes a canonical row carrying the true verdict (`redacted` with the masked fields, `blocked` for a withheld response, `allowed` for a clean one), `plane=llm`, `decision_id`, and `correlation_id`.
+- **MCP `check-input` emits the canonical `audit_logs` row for every terminal verdict.** Mirroring the `check-output` fix above, a dynamic-policy block and a terminal allow (including allow-with-redaction) on the request plane previously did not appear in the portal decisions feed or `/explain`. They now write the canonical decision row (`plane=mcp`), with no double-write on the static-block or override paths that already record their own row.
+- **Self-service password changes are audited.** *(Enterprise)* Forgot-, reset-, and change-password now record audit events (`PASSWORD_RESET_REQUESTED` / `PASSWORD_RESET_COMPLETED` / `PASSWORD_CHANGED`) on success **and** on the security-relevant failure (e.g. a wrong-current-password attempt), closing the asymmetry with the already-audited admin reset path. Rows carry only the event, actor, org, and request metadata — never the password, reset token, or hash.
+
+### Per-org detection posture
+
+- **Agent enforces per-`(org, category)` detection-action overrides.** New `detection_action_overrides` table (migration `core/120`, ENABLE+FORCE RLS by `org_id`) lets each org override the deployment-global action (`PII_ACTION` and the SQLi / dangerous-query / dangerous-command levers) per category, resolved as `effective = per-org override ELSE deployment-global default`. A short-TTL per-org cache keeps the hot path DB-free (`AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS`, default 60s) and **fails safe to the deployment-global action** on any lookup error. Wired across `check-input`/`check-output`, the gateway pre-check, `/decide`, the proxy, the policy-test surface, and the OpenAI-compatible endpoint.
+- **Orchestrator honors per-org posture on the LLM-response redaction plane.** The orchestrator is a separate binary whose response redaction (proxy / gateway / MAP) previously always used the deployment-global action — so a per-org redact under a global warn was reverted and leaked. It now resolves the same per-org override, fail-safe to global.
+- **Customer-portal authenticated write path to set posture.** *(Enterprise)* A new `/api/v1/detection-posture[/{category}]` surface (List/Set/Delete) on the session-auth router, gated by `sso:configure`, plus a **Settings → Governance → Detection Posture** UI (`/settings/detection-posture`). The org is taken from the session, never a header/body.
+
+### Compliance-export integrity
+
+- **EU AI Act exports no longer fake success.** *(Enterprise)* Every EU AI Act export processor except decision-chain was a stub returning no rows while the job was marked `Completed` at 100%. Unimplemented export types now **fail honestly** (job → `Failed`) instead of reporting a zero-record success.
+- **EU AI Act exports query real, org-scoped data.** *(Enterprise)* The `full_audit`, `conformity_evidence`, `hitl_summary`, `policy_violations`, and `accuracy_metrics` processors now read real data from `audit_logs`, `policy_violations`, the HITL records, and the `euaiact_*` tables.
+- **SEBI and EU AI Act exports reconstruct decision chains from `audit_logs`.** *(Enterprise)* Both exports derive their lineage from the canonical decision rows and group by `correlation_id` — SEBI returns `data.decision_chains`; the EU AI Act export returns `decision_chains` + `chain_count`.
+- **Audit retention is actually executed.** A retention executor prunes the six config-governed audit tables on schedule — **dry-run by default**, deleting only when retention enforcement is explicitly enabled, with an admin-portal surface to inspect a run.
+- **`admin_audit_log` + `scim_audit_log` writers are wired.** *(Enterprise)* Administrative and SCIM operations are now recorded to their dedicated tables (the SCIM writer RLS-scoped to the acting org via `withOrgScope`).
+
+### Decisions / audit feed
+
+- **`total` is the true count of matching rows**, not the size of the returned page, so a UI can render an accurate "1–N of M".
+- **`offset` is applied** to the search query — pagination no longer repeats the first page.
+- **`tenant_id` and `user_email` filters do case-insensitive partial (ILIKE) matching**, so an operator can search by a fragment.
+- **`action` filter on `policy_decision`** (`allowed`/`blocked`/`redacted`/`error`) added to audit search.
+- **The portal audit view no longer steals input focus** on each filter fetch — typing in a filter while results refresh no longer drops keystrokes. *(Enterprise)*
+- **SCIM group-to-role mapping endpoints are mounted.** *(Enterprise)* The previously-unreachable group→role mapping routes are mounted on the session-auth router behind `sso:configure` (a privilege grant, so deliberately not the bearer `/scim/v2` provisioning router); org resolved from the session; every change written to the SCIM audit log.
+
+### PII detection false positives
+
+- **Context-gated broad detectors.** Bare-12-digit Aadhaar and Singapore NRIC/FIN now require an adjacent label/indicator before they fire, so a benign order ID or barcode is not masked.
+- **JSON-structure-aware masking.** A redacted response always stays valid JSON: a numeric-position value (e.g. a NIK stored as an integer) is masked **and** coerced to a string; escaped PII (`\uXXXX`) is decoded and matched; an unsafe result **fails closed** rather than emitting broken JSON.
+- **Closed IP-on-version-string and phone-on-tracking-ID false positives.**
+
+### Capabilities
+
+- **`/health` recommends claude-code plugin v1.6.0** (the version carrying the Enterprise self-hosted MCP login fix). The recommended claude-code plugin version is bumped 1.5.3 → 1.6.0; SDK and other plugin recommendations unchanged.
+
 ## [8.6.0] - 2026-06-09 — Decision Mode PII governance: validator-assignment fixes, request + response NIK/NPWP redaction on every plane, and engine-fulfillable obligations
 
 **Community.** Every change in this release lives in the `platform/` and `platform/shared/` binaries — the agent, the orchestrator, and the shared policy engine — so this release ships to the community mirror. The fixes and additions are reachable in both editions; where behavior differs by edition it is called out inline. In particular, the **Enterprise** build supplies checksum/province-validated Indonesian NIK/NPWP detection (the precision behind the redaction below), while **Community** uses pattern-based Indonesian PII detection — and as of this release both editions govern that PII on the **request and the response** path. No breaking changes; every API and policy-engine change is additive and backward-compatible.

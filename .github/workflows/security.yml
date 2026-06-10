@@ -176,6 +176,11 @@ jobs:
 
       - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@v4
+        # Best-effort dashboard upload. Code scanning (GitHub Advanced Security)
+        # is not enabled on every repo this workflow is synced to (e.g. the public
+        # community mirror), so upload-sarif 403s there. The Trivy scan still runs;
+        # this upload is observability only and must never fail CI.
+        continue-on-error: true
         if: always()
         with:
           sarif_file: 'trivy-fs-results.sarif'
@@ -219,6 +224,9 @@ jobs:
 
       - name: Upload Trivy config results
         uses: github/codeql-action/upload-sarif@v4
+        # Best-effort dashboard upload (see trivy-filesystem note above): must not
+        # fail CI where code scanning is unavailable (e.g. the public mirror).
+        continue-on-error: true
         if: always()
         with:
           sarif_file: 'trivy-config-results.sarif'

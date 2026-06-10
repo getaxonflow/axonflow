@@ -43,7 +43,9 @@ type auditSearchCriteria struct {
 	DecisionID  string
 	PolicyName  string
 	OverrideID  string
+	Action      string
 	Limit       int
+	Offset      int
 }
 
 // asAuditSearchCriteria is a best-effort adapter from the various anonymous
@@ -102,9 +104,17 @@ func asAuditSearchCriteria(criteria interface{}) (auditSearchCriteria, bool) {
 			if fv.Kind() == reflect.String {
 				out.OverrideID = fv.String()
 			}
+		case "Action":
+			if fv.Kind() == reflect.String {
+				out.Action = fv.String()
+			}
 		case "Limit":
 			if fv.Kind() == reflect.Int || fv.Kind() == reflect.Int64 {
 				out.Limit = int(fv.Int())
+			}
+		case "Offset":
+			if fv.Kind() == reflect.Int || fv.Kind() == reflect.Int64 {
+				out.Offset = int(fv.Int())
 			}
 		}
 	}
@@ -148,6 +158,14 @@ type AuditEntry struct {
 	ResponseSample   string                 `json:"response_sample"`
 	ComplianceFlags  []string               `json:"compliance_flags"`
 	SecurityMetrics  map[string]interface{} `json:"security_metrics"`
+	// Canonical decision-row columns (#2597 / #2611 / ADR-058). Populated on the
+	// orchestrator response plane (#2626) so a redacted/blocked LLM response
+	// lands in audit_logs with a first-class plane + decision_id + correlation_id
+	// like every other plane, and the lineage exporters can stitch it to the
+	// request-plane decision. Empty on legacy/other writers → NULL columns.
+	DecisionID    string `json:"decision_id,omitempty"`
+	Plane         string `json:"plane,omitempty"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // BatchWriter handles batch writing of audit entries
@@ -200,10 +218,29 @@ func NewAuditLogger(databaseURL string) *AuditLogger {
 	return logger
 }
 
-// LogSuccessfulRequest logs a successful request
-func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req OrchestratorRequest, 
+// LogSuccessfulRequest writes the canonical audit_logs row for an orchestrator
+// LLM response that was delivered to the caller (verdict "allowed" or
+// "redacted"). It is the authoritative response-plane writer (#2626): the
+// shared policy engine's RecordViolation/RecordEvaluation are intentionally
+// no-ops here (it is built with a nil AuditQueue), so this is the single source
+// of truth — avoiding double-writes.
+//
+// The row is canonical: plane=llm + a fresh decision_id + the request's
+// correlation_id (#2597 / #2611), so the portal decisions/audit feed and the
+// lineage exporters treat it like every other plane and can stitch it back to
+// the request-plane decision.
+//
+// The verdict is taken from the response-plane RedactionInfo carried in ctx
+// (set by the handler). Crucially it is driven by RedactionInfo.Verdict, not by
+// HasRedactions — so warn/log "detect-don't-modify" is recorded truthfully as
+// "allowed" (with the detected fields still surfaced for audit), never
+// mislabeled "redacted".
+func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req OrchestratorRequest,
 	response interface{}, policyResult *PolicyEvaluationResult, providerInfo *ProviderInfo) *AuditEntry {
-	
+
+	decisionID := generateDecisionID()
+	correlationID := correlationIDFromContext(ctx, req.RequestID)
+
 	entry := &AuditEntry{
 		ID:            generateAuditID(),
 		RequestID:     req.RequestID,
@@ -217,11 +254,17 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 		RequestType:   req.RequestType,
 		Query:         req.Query,
 		QueryHash:     hashQuery(req.Query),
-		PolicyDecision: "allowed",
+		PolicyDecision: responseVerdictAllowed,
 		PolicyDetails: map[string]interface{}{
 			"applied_policies": policyResult.AppliedPolicies,
 			"risk_score":       policyResult.RiskScore,
 			"processing_time":  policyResult.ProcessingTimeMs,
+			// Dual-write the canonical keys into policy_details so the existing
+			// SearchAuditLogs JSONB filters (policy_details->>'decision_id') keep
+			// matching, alongside the first-class columns below.
+			"decision_id":    decisionID,
+			"correlation_id": correlationID,
+			"plane":          agent.PlaneLLM,
 		},
 		Provider:        providerInfo.Provider,
 		Model:           providerInfo.Model,
@@ -231,14 +274,83 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 		ResponseSample:  truncateResponse(response),
 		ComplianceFlags: l.detectComplianceFlags(req, response),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
+		DecisionID:      decisionID,
+		Plane:           agent.PlaneLLM,
+		CorrelationID:   correlationID,
 	}
 
-	// Check for redactions
-	if redactionInfo, ok := ctx.Value("redaction_info").(*RedactionInfo); ok && redactionInfo != nil {
+	// Verdict from the response-plane RedactionInfo carried in ctx.
+	if redactionInfo, ok := ctx.Value(ctxKeyRedactionInfo).(*RedactionInfo); ok && redactionInfo != nil {
 		entry.RedactedFields = redactionInfo.RedactedFields
-		if redactionInfo.HasRedactions {
-			entry.PolicyDecision = "redacted"
+		switch {
+		case redactionInfo.Verdict != "":
+			// Truthful verdict (warn/log → "allowed", block/redact → "redacted").
+			entry.PolicyDecision = redactionInfo.Verdict
+		case redactionInfo.HasRedactions:
+			// Legacy callers that don't set Verdict still get the redacted label.
+			entry.PolicyDecision = responseVerdictRedacted
 		}
+	}
+
+	l.enqueueEntry(entry)
+	return entry
+}
+
+// LogBlockedResponse writes the canonical audit_logs row when the orchestrator
+// RESPONSE plane WITHHOLDS the LLM response (validation/governance denial). The
+// row records verdict "blocked" with plane=llm + decision_id + correlation_id
+// (#2626 ORCH-RESP-VALIDATE-DENY-AS-ALLOWED) — never the "allowed" success the
+// old path silently persisted. The validation reason is preserved in
+// policy_details for the auditor.
+func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRequest,
+	policyResult *PolicyEvaluationResult, info *RedactionInfo) *AuditEntry {
+	if l == nil {
+		return nil
+	}
+
+	decisionID := generateDecisionID()
+	correlationID := correlationIDFromContext(ctx, req.RequestID)
+
+	policyDetails := map[string]interface{}{
+		"processing_time": policyResult.ProcessingTimeMs,
+		"risk_score":      policyResult.RiskScore,
+		"decision_id":     decisionID,
+		"correlation_id":  correlationID,
+		"plane":           agent.PlaneLLM,
+		"block_phase":     "response",
+	}
+	if policyResult.AppliedPolicies != nil {
+		policyDetails["applied_policies"] = policyResult.AppliedPolicies
+	}
+	var redactedFields []string
+	if info != nil {
+		if info.ValidationError != "" {
+			policyDetails["validation_error"] = info.ValidationError
+		}
+		redactedFields = info.RedactedFields
+	}
+
+	entry := &AuditEntry{
+		ID:             generateAuditID(),
+		RequestID:      req.RequestID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         req.User.ID,
+		UserEmail:      req.User.Email,
+		UserRole:       req.User.Role,
+		ClientID:       req.Client.ID,
+		TenantID:       req.User.TenantID,
+		OrgID:          req.Client.OrgID,
+		RequestType:    req.RequestType,
+		Query:          req.Query,
+		QueryHash:      hashQuery(req.Query),
+		PolicyDecision: responseVerdictBlocked,
+		PolicyDetails:  policyDetails,
+		RedactedFields: redactedFields,
+		ComplianceFlags: l.detectComplianceFlags(req, nil),
+		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
+		DecisionID:      decisionID,
+		Plane:           agent.PlaneLLM,
+		CorrelationID:   correlationID,
 	}
 
 	l.enqueueEntry(entry)
@@ -524,9 +636,9 @@ func (l *AuditLogger) LogToolCallAudit(ctx context.Context, entry *ToolCallAudit
 }
 
 // SearchAuditLogs searches audit logs based on criteria
-func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, error) {
+func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int, error) {
 	if l.db == nil {
-		return []*AuditEntry{}, nil
+		return []*AuditEntry{}, 0, nil
 	}
 
 	// Build query based on criteria
@@ -534,7 +646,8 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		SELECT id, request_id, timestamp, user_id, user_email, user_role,
 			   client_id, tenant_id, request_type, query, policy_decision,
 			   policy_details, provider, model, response_time_ms, tokens_used,
-			   cost, redacted_fields, error_message, compliance_flags
+			   cost, redacted_fields, error_message, compliance_flags,
+			   COUNT(*) OVER() AS total_count
 		FROM audit_logs
 		WHERE 1=1
 	`
@@ -562,12 +675,12 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 	} else if searchReq, ok := asAuditSearchCriteria(criteria); ok {
 		// Handle general search (from auditSearchHandler or via named-type callers).
 		if searchReq.UserEmail != "" {
-			query += fmt.Sprintf(" AND user_email = $%d", argIndex)
+			query += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", argIndex)
 			args = append(args, searchReq.UserEmail)
 			argIndex++
 		}
 		if searchReq.ClientID != "" {
-			query += fmt.Sprintf(" AND client_id = $%d", argIndex)
+			query += fmt.Sprintf(" AND client_id ILIKE '%%' || $%d || '%%'", argIndex)
 			args = append(args, searchReq.ClientID)
 			argIndex++
 		}
@@ -623,7 +736,11 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		if searchReq.OverrideID != "" {
 			query += fmt.Sprintf(" AND policy_details->>'override_id' = $%d", argIndex)
 			args = append(args, searchReq.OverrideID)
-			// argIndex not incremented — this is the last filter.
+			argIndex++
+		}
+		if searchReq.Action != "" {
+			query += fmt.Sprintf(" AND policy_decision = $%d", argIndex)
+			args = append(args, searchReq.Action)
 		}
 
 		query += " ORDER BY timestamp DESC"
@@ -631,11 +748,14 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		if searchReq.Limit > 0 {
 			query += fmt.Sprintf(" LIMIT %d", searchReq.Limit)
 		}
+		if searchReq.Offset > 0 {
+			query += fmt.Sprintf(" OFFSET %d", searchReq.Offset)
+		}
 	}
 
 	rows, err := l.db.Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -643,6 +763,7 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 	// callers downstream serialize nil as `null`, which breaks any
 	// consumer that does `for entry of entries` or `entries.length`.
 	entries := make([]*AuditEntry, 0)
+	totalCount := 0
 	for rows.Next() {
 		entry := &AuditEntry{}
 		var policyDetailsJSON, redactedFieldsJSON, complianceFlagsJSON []byte
@@ -655,6 +776,7 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		var provider, model, errorMessage sql.NullString
 		var responseTime, tokensUsed sql.NullInt64
 		var cost sql.NullFloat64
+		var rowTotal int
 
 		err := rows.Scan(
 			&entry.ID,
@@ -677,6 +799,7 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 			&redactedFieldsJSON,
 			&errorMessage,
 			&complianceFlagsJSON,
+			&rowTotal,
 		)
 		if err != nil {
 			log.Printf("Error scanning audit log: %v", err)
@@ -692,6 +815,11 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		entry.TokensUsed = int(tokensUsed.Int64)
 		entry.Cost = cost.Float64
 
+		// All rows carry the same window-function value; capture it once per
+		// iteration so that after the loop totalCount reflects the true number
+		// of matching rows before the LIMIT was applied.
+		totalCount = rowTotal
+
 		// Unmarshal JSON fields
 		_ = json.Unmarshal(policyDetailsJSON, &entry.PolicyDetails)
 		_ = json.Unmarshal(redactedFieldsJSON, &entry.RedactedFields)
@@ -700,7 +828,7 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		entries = append(entries, entry)
 	}
 
-	return entries, nil
+	return entries, totalCount, nil
 }
 
 // IsHealthy checks if the audit logger is healthy
@@ -808,6 +936,36 @@ func generateAuditID() string {
 	return fmt.Sprintf("audit_%d_%s", time.Now().Unix(), generateRandomString(8))
 }
 
+// generateDecisionID mints the canonical decision_id for an orchestrator
+// response-plane audit row (#2626). Distinct from the row's primary-key id; it
+// is the per-decision correlation handle the lineage exporters key on.
+func generateDecisionID() string {
+	return fmt.Sprintf("orchresp_%d_%s", time.Now().UnixNano(), generateRandomString(12))
+}
+
+// correlationIDFromContext returns the request's W3C correlation_id (#2611) when
+// the handler propagated one (traceparent → trace_id), else the supplied
+// fallback (the request id). Never returns empty so a response-plane row always
+// carries a correlation key the exporters can GROUP BY.
+func correlationIDFromContext(ctx context.Context, fallback string) string {
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxKeyCorrelationID).(string); ok && v != "" {
+			return v
+		}
+	}
+	return fallback
+}
+
+// nullIfEmpty maps "" → SQL NULL so nullable VARCHAR columns stay NULL for
+// writers that don't populate them (keeping partial indexes + lineage scoped to
+// rows that genuinely carry the value).
+func nullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func hashQuery(query string) string {
 	// Simple hash for query deduplication
 	// In production, use a proper hash function
@@ -909,8 +1067,9 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, provider, model,
 			response_time_ms, tokens_used, cost, redacted_fields,
-			error_message, response_sample, compliance_flags, security_metrics
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+			error_message, response_sample, compliance_flags, security_metrics,
+			decision_id, plane, correlation_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
 	`)
 	if err != nil {
 		return err
@@ -948,6 +1107,13 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			entry.ResponseSample,
 			complianceFlagsJSON,
 			securityMetricsJSON,
+			// Canonical decision-row columns (#2626). Nullable: legacy/other-plane
+			// writers leave these empty → NULL, so the partial indexes
+			// (decision_id/correlation_id) and the lineage exporters only pick up
+			// rows that genuinely carry a canonical decision.
+			nullIfEmpty(entry.DecisionID),
+			nullIfEmpty(entry.Plane),
+			nullIfEmpty(entry.CorrelationID),
 		)
 		if err != nil {
 			log.Printf("Failed to insert audit entry: %v", err)

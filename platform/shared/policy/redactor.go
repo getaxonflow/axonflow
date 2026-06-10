@@ -3,6 +3,7 @@ package policy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -174,6 +175,10 @@ func (r *FieldRedactor) applyToRows(content interface{}, plans []RedactionPlan) 
 				}
 			}
 
+			// If flat masking broke embedded JSON (a match hit a bare number/literal),
+			// re-redact JSON-aware so we never emit invalid JSON.
+			newValue = r.jsonSafeRemask(strValue, newValue, patternMap)
+
 			// Update row if modified
 			if newValue != strValue {
 				resultRows[rowIdx][fieldName] = newValue
@@ -232,6 +237,7 @@ func (r *FieldRedactor) applyToMap(m map[string]interface{}, plans []RedactionPl
 					}
 				}
 			}
+			newValue = r.jsonSafeRemask(v, newValue, patternMap)
 			if newValue != v {
 				result[key] = newValue
 			}
@@ -320,6 +326,7 @@ func (r *FieldRedactor) applyToString(content interface{}, plans []RedactionPlan
 		}
 	}
 
+	newStr = r.jsonSafeRemask(str, newStr, patternMap)
 	return newStr, redacted
 }
 
@@ -331,6 +338,164 @@ func (r *FieldRedactor) buildPatternMap(plans []RedactionPlan) map[string][]Reda
 		patternMap[patternStr] = append(patternMap[patternStr], plan)
 	}
 	return patternMap
+}
+
+// --- JSON-structure-aware redaction ----------------------------------------
+//
+// The per-string masking above replaces a matched span in place. When a string
+// VALUE is itself serialized JSON (e.g. the Claude Desktop proxy submits a whole
+// tool result as one "statement" string), masking a value that sits in a NON-string
+// position — a bare JSON number/bool — yields invalid JSON
+// (`{"n":369318}` → `{"n":3****8}`). A downstream JSON consumer then rejects it and
+// the Desktop proxy fail-closes the whole (benign) response. jsonSafeRemask keeps
+// the common path byte-identical and ONLY re-redacts JSON-aware in that exact
+// corruption case, so it never emits invalid JSON.
+
+type compiledRedactPattern struct {
+	re       *regexp.Regexp
+	strategy RedactorFunc
+	piiType  string
+}
+
+func (r *FieldRedactor) compilePatterns(patternMap map[string][]RedactionPlan) []compiledRedactPattern {
+	out := make([]compiledRedactPattern, 0, len(patternMap))
+	for patternStr, plans := range patternMap {
+		re, err := regexp.Compile(patternStr)
+		if err != nil || len(plans) == 0 {
+			continue
+		}
+		out = append(out, compiledRedactPattern{
+			re:       re,
+			strategy: r.getStrategy(plans[0].Strategy),
+			piiType:  r.getPIIType(plans[0].Policy),
+		})
+	}
+	return out
+}
+
+// maskFlat applies every compiled pattern to s end-to-start (identical span logic
+// to the inline applyTo* loops) and reports how many spans were masked. Masking
+// inside a JSON string value is itself JSON-safe (the asterisks stay in the quotes).
+func maskFlat(s string, pats []compiledRedactPattern) (string, int) {
+	out := s
+	count := 0
+	for _, p := range pats {
+		locs := p.re.FindAllStringIndex(out, -1)
+		for i := len(locs) - 1; i >= 0; i-- {
+			loc := locs[i]
+			out = out[:loc[0]] + p.strategy(out[loc[0]:loc[1]], p.piiType) + out[loc[1]:]
+			count++
+		}
+	}
+	return out, count
+}
+
+// maskJSONNode walks a decoded JSON value, masking string leaves in place (JSON-safe)
+// and coercing a matched NUMBER leaf to its masked STRING form — a masked number
+// cannot remain a valid JSON number, so it becomes a quoted string. Matching uses
+// the SAME patternMap the flat path uses (validator gating already happened when the
+// plans were built), so the redaction set is consistent; values that live in a single
+// JSON leaf are matched identically. *count accumulates how many leaves were masked.
+func maskJSONNode(node interface{}, pats []compiledRedactPattern, count *int) interface{} {
+	switch v := node.(type) {
+	case map[string]interface{}:
+		for k, val := range v {
+			v[k] = maskJSONNode(val, pats, count)
+		}
+		return v
+	case []interface{}:
+		for i, val := range v {
+			v[i] = maskJSONNode(val, pats, count)
+		}
+		return v
+	case string:
+		if m, n := maskFlat(v, pats); n > 0 {
+			*count += n
+			return m
+		}
+		return v
+	case json.Number:
+		if m, n := maskFlat(v.String(), pats); n > 0 {
+			*count += n
+			return m
+		}
+		return v
+	default:
+		return node // bool, nil — PII patterns do not meaningfully match these
+	}
+}
+
+// redactJSONAware re-redacts jsonStr by walking its structure (UseNumber preserves
+// untouched number formatting) so the output is always valid JSON. ok=false when
+// jsonStr is not a single clean JSON document; masked reports whether any leaf was
+// actually redacted (so the caller can keep the fail-closed flat result when a
+// match existed only across leaf boundaries and the per-leaf walk found nothing).
+func (r *FieldRedactor) redactJSONAware(jsonStr string, patternMap map[string][]RedactionPlan) (out string, masked, ok bool) {
+	dec := json.NewDecoder(strings.NewReader(jsonStr))
+	dec.UseNumber()
+	var root interface{}
+	if err := dec.Decode(&root); err != nil || dec.More() {
+		return "", false, false // not a single clean JSON document
+	}
+	count := 0
+	root = maskJSONNode(root, r.compilePatterns(patternMap), &count)
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // don't gratuitously escape <>& on the repair path
+	if err := enc.Encode(root); err != nil {
+		return "", false, false
+	}
+	return strings.TrimRight(buf.String(), "\n"), count > 0, true
+}
+
+// jsonSafeRemask returns flatMasked unchanged unless flat masking turned a
+// previously-valid JSON value invalid (a match landed on a bare number/literal),
+// in which case it returns a JSON-aware re-redaction of the original. Non-JSON and
+// structure-preserving cases stay byte-identical — no gratuitous reformatting.
+//
+// Fail-closed invariant: when flat masking DID redact (it broke the JSON, so it
+// removed something) but the per-leaf JSON-aware walk redacts NOTHING — only possible
+// for a pattern that matches across a JSON leaf boundary — we keep the redacted-but-
+// invalid flatMasked rather than returning the clean original. Never trade a
+// fail-closed (invalid-but-redacted) result for a fail-open (valid-but-leaked) one.
+func (r *FieldRedactor) jsonSafeRemask(original, flatMasked string, patternMap map[string][]RedactionPlan) string {
+	if !json.Valid([]byte(original)) {
+		return flatMasked // non-JSON value: raw-string flat masking is authoritative
+	}
+	// For VALID JSON always run the structure-aware walk, even when flat masking
+	// changed nothing: the flat pass scans the RAW serialized bytes, so PII hidden
+	// behind \uXXXX escapes in a string leaf ("123456" decodes to "123456")
+	// evades it, and a bare-number match breaks the JSON. The walk decodes each leaf
+	// before matching and re-serializes valid JSON. (Cost: a redacted JSON value is
+	// normalized/re-serialized; a value with no PII is returned untouched.)
+	safe, masked, ok := r.redactJSONAware(original, patternMap)
+	if !ok {
+		return flatMasked
+	}
+	if !masked {
+		if flatMasked == original {
+			return original // no PII in any decoded leaf and flat changed nothing
+		}
+		return flatMasked // flat matched something the per-leaf walk could not (cross-leaf) → fail-closed
+	}
+	// Accept the walk's output ONLY if no pattern still matches it; a span matching
+	// across a JSON leaf boundary survives in `safe`, so keep the redacted-but-invalid
+	// flatMasked (fail-closed) rather than a valid-but-leaked result.
+	if !anyPatternMatches(safe, r.compilePatterns(patternMap)) {
+		return safe
+	}
+	return flatMasked
+}
+
+// anyPatternMatches reports whether any compiled pattern still matches s — used to
+// detect a cross-leaf span the per-leaf JSON-aware walk could not see.
+func anyPatternMatches(s string, pats []compiledRedactPattern) bool {
+	for _, p := range pats {
+		if p.re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // getStrategy returns the strategy function for a strategy type.

@@ -88,7 +88,7 @@ func communityPatterns() []*indonesiaPIIPattern {
 		},
 		{
 			Type:        IndonesiaPIITypePhone,
-			Pattern:     regexp.MustCompile(`\b(?:\+?62|0)8[1-9]\d{6,10}\b`),
+			Pattern:     regexp.MustCompile(`\b(?:\+?62|0)8[1-9]\d{7,11}\b`),
 			Severity:    IndonesiaPIISeverityMedium,
 			MinLength:   10,
 			MaxLength:   15,

@@ -863,7 +863,7 @@ func getIndonesiaPIIPatterns() []SystemPolicySeed {
 			// Carriers: Telkomsel (0811-0813,0821-0823,0852-0853,0851),
 			//   Indosat (0814-0816,0855-0858), XL (0817-0819,0859,0877-0878),
 			//   Tri (0895-0899,0896-0897), Smartfren (0881-0889)
-			Pattern:  `\b(?:\+?62|0)8[1-9]\d{6,10}\b`,
+			Pattern:  `\b(?:\+?62|0)8[1-9]\d{7,11}\b`,
 			Severity: SeverityMedium,
 			Action:   "redact",
 			Priority: 70,
