@@ -102,7 +102,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
 # - OSS repo: Only has migrations/core/
 # - Enterprise repo: Has migrations/core/, migrations/enterprise/, migrations/industry/
 # Just copy what exists - no conditional logic needed
-FROM alpine:3.23 AS migrations-prep
+FROM alpine:3.24 AS migrations-prep
 
 # Copy migrations directory as-is from the repo
 COPY migrations/ /migrations/
@@ -128,7 +128,7 @@ RUN set -e && \
     echo "Total: $total migration files"
 
 # Final stage - minimal runtime image
-FROM alpine:3.23
+FROM alpine:3.24
 
 ARG AXONFLOW_VERSION=8.6.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
