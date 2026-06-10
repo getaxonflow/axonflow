@@ -126,15 +126,19 @@ func getPluginCompatibility() PluginCompatInfo {
 		// affordance lands natively in each host. The v8.0.0 platform bump
 		// (#2308) did NOT change the plugin recommended-version. Bumped
 		// claude-code + cursor to 1.5.3 during the v8.5.2 release-train
-		// (headersHelper ${CLAUDE_PLUGIN_ROOT} Basic-auth fix); codex stays
-		// 1.5.2 (v8.5.2 fix was docs-only, no codex 1.5.3); openclaw bumped
-		// 2.6.1 -> 2.6.5 to track its latest published release (prior value
-		// lagged the registry; openclaw 2.6.5 is live on npm).
+		// (headersHelper ${CLAUDE_PLUGIN_ROOT} Basic-auth fix). claude-code
+		// bumped 1.5.3 -> 1.6.0 (2026-06-10) — 1.6.0 adds the endpoint-gated
+		// Community-SaaS credential + self-hosted-auth.json Enterprise
+		// credential fallback (no more Enterprise MCP 401;
+		// axonflow-claude-plugin#94/#95); cursor stays 1.5.3 (no 1.6.0 cut).
+		// codex stays 1.5.2 (v8.5.2 fix was docs-only, no codex 1.5.3);
+		// openclaw bumped 2.6.1 -> 2.6.5 to track its latest published release
+		// (prior value lagged the registry; openclaw 2.6.5 is live on npm).
 		// MinPluginVersion floor stays 1.4.0 / 2.4.0. Mirrors
 		// platform/agent/capabilities.go.
 		RecommendedPluginVersion: map[string]string{
 			"openclaw":    "2.6.5",
-			"claude-code": "1.5.3",
+			"claude-code": "1.6.0",
 			"cursor":      "1.5.3",
 			"codex":       "1.5.2",
 		},

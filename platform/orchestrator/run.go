@@ -72,6 +72,14 @@ const (
 	ctxKeyRequestID contextKey = "request_id"
 	ctxKeyUser      contextKey = "user"
 	ctxKeyClient    contextKey = "client"
+	// ctxKeyRedactionInfo carries the response-plane *RedactionInfo (verdict +
+	// redacted fields) from the handler to LogSuccessfulRequest (#2626). A typed
+	// key avoids the string-key collision/lint smell the old "redaction_info"
+	// literal carried.
+	ctxKeyRedactionInfo contextKey = "redaction_info"
+	// ctxKeyCorrelationID carries the request's W3C correlation_id (#2611) so the
+	// response-plane audit row can be stitched to the request-plane decision.
+	ctxKeyCorrelationID contextKey = "correlation_id"
 )
 
 // Configuration
@@ -1199,6 +1207,12 @@ func initializeComponents() {
 		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(
 			usageDB, sharedpolicy.DefaultEngineConfig(), nil))
 		log.Println("Shared policy engine initialized for orchestrator response processing")
+
+		// Wire the orchestrator's OWN per-org detection-action override cache
+		// (#2612). Separate binary → separate cache instance + DB handle from the
+		// agent's. Makes the response plane honor a per-org redact/block/warn/log
+		// posture instead of only the deployment-global config. Fail-safe to global.
+		InitDetectionOverrides(usageDB)
 	}
 
 	// Initialize Response Processor (uses shared engine if available, else legacy regexes)
@@ -1256,8 +1270,28 @@ func initializeComponents() {
 	// tierChecker already initialized above (before LLM registry creation)
 	if usageDB != nil {
 		auditCleanupService = NewAuditCleanupService(usageDB, tierChecker)
+
+		// #2590: config-governed retention executor for the six audit tables
+		// that had a retention config row but no executing prune branch
+		// (UU PDP / DPA deletion obligations). Dry-run unless the operator
+		// opts in via AXONFLOW_AUDIT_RETENTION_ENFORCE=true. Cross-org deletes
+		// and the FORCE-RLS reads (audit_retention_config, decision_chain)
+		// route through the axonflow_platform_admin (BYPASSRLS) pool when
+		// configured; mirror the NodeMonitor fallback + warning otherwise.
+		retentionEnforce := auditRetentionEnforceEnabled()
+		auditCleanupService.SetRetentionEnforce(retentionEnforce)
+		if adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil {
+			log.Printf("[AuditRetention] failed to open admin connection (%v); falling back to usageDB", adminErr)
+		} else if adminDB != nil {
+			auditCleanupService.SetRetentionAdminDB(adminDB)
+			log.Println("[AuditRetention] using axonflow_platform_admin (BYPASSRLS) connection for cross-org retention")
+		} else if agent.UseAppRoleEnabled() {
+			log.Println("[AuditRetention] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; under FORCE RLS as app_role, per-org overrides + decision_chain retention will not see cross-org rows")
+		}
+
 		auditCleanupService.StartCleanupWorker(context.Background(), 1*time.Hour)
-		log.Printf("Audit Cleanup Service initialized (retention: %d days)", tierChecker.AuditRetentionDays())
+		log.Printf("Audit Cleanup Service initialized (tier retention: %d days; config-governed retention executor enforce=%v)",
+			tierChecker.AuditRetentionDays(), retentionEnforce)
 	}
 
 	// Initialize Metrics Collector
@@ -2041,7 +2075,49 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// 3. Process response (PII detection, redaction, etc.)
 	processedResponse, redactionInfo := responseProcessor.ProcessResponse(ctx, req.User, llmResponse)
 
-	// 4. Log successful request
+	// Canonical response-plane audit (#2626). The verdict carried by
+	// redactionInfo drives BOTH the audit row and the HTTP outcome. correlation_id
+	// ties this response row to the request-plane decision (W3C trace_id when the
+	// caller propagates traceparent; else the request id); plane=llm + decision_id
+	// make the row canonical (#2597/#2611) so the portal feed + lineage exporters
+	// pick it up like every other plane.
+	correlationID := correlationIDFromRequest(r, req.RequestID)
+	ctx = context.WithValue(ctx, ctxKeyCorrelationID, correlationID)
+	ctx = context.WithValue(ctx, ctxKeyRedactionInfo, redactionInfo)
+
+	if redactionInfo != nil && redactionInfo.Verdict == responseVerdictBlocked {
+		// The response plane WITHHELD the LLM response (validation/governance
+		// deny). It is NEVER recorded as "allowed": write the canonical blocked
+		// row and return a forbidden response instead of the mislabeled success
+		// the old path sent. Audit-write failure cannot fail-open governance here
+		// (the response was already withheld) — the row is enqueued fail-safe.
+		_ = auditLogger.LogBlockedResponse(ctx, req, policyResult, redactionInfo)
+
+		latencyMs := time.Since(startTime).Milliseconds()
+		promRequestsTotal.WithLabelValues("blocked").Inc()
+		promBlockedRequests.Inc()
+		promRequestDuration.WithLabelValues("blocked").Observe(float64(latencyMs))
+		if orchestratorMetrics != nil {
+			orchestratorMetrics.recordRequest(req.RequestType, providerInfo.Provider, latencyMs, false, true, 0, 0)
+		}
+
+		response := OrchestratorResponse{
+			RequestID:      req.RequestID,
+			Success:        false,
+			Error:          "Response blocked by response-plane governance",
+			Data:           processedResponse,
+			PolicyInfo:     policyResult,
+			ProcessingTime: time.Since(startTime).String(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Error encoding response: %v", err)
+		}
+		return
+	}
+
+	// 4. Log successful request (verdict "allowed"/"redacted" carried in ctx)
 	_ = auditLogger.LogSuccessfulRequest(ctx, req, processedResponse, policyResult, providerInfo)
 
 	// 5. Collect metrics
@@ -2478,7 +2554,9 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		DecisionID  string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
 		PolicyName  string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
 		OverrideID  string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
+		Action      string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")
 		Limit       int       `json:"limit,omitempty"`
+		Offset      int       `json:"offset,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&searchReq); err != nil {
@@ -2510,7 +2588,7 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results, err := auditLogger.SearchAuditLogs(searchReq)
+	results, totalCount, err := auditLogger.SearchAuditLogs(searchReq)
 	if err != nil {
 		sendErrorResponse(w, "Audit search failed", http.StatusInternalServerError)
 		return
@@ -2532,9 +2610,9 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		Offset  int           `json:"offset"`
 	}{
 		Entries: results,
-		Total:   len(results),
+		Total:   totalCount,
 		Limit:   searchReq.Limit,
-		Offset:  0,
+		Offset:  searchReq.Offset,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2619,7 +2697,7 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 		StartTime: startTime,
 	}
 
-	results, err := auditLogger.SearchAuditLogs(searchReq)
+	results, _, err := auditLogger.SearchAuditLogs(searchReq)
 	if err != nil {
 		sendErrorResponse(w, "Failed to fetch tenant audit logs", http.StatusInternalServerError)
 		return
@@ -3035,6 +3113,44 @@ func getEnv(key, defaultValue string) string {
 
 func generateRequestID() string {
 	return fmt.Sprintf("req_%d_%s", time.Now().Unix(), generateRandomString(8))
+}
+
+// correlationIDFromRequest derives the W3C correlation_id (#2611) for a response
+// row. It prefers the trace_id from an inbound `traceparent` header (so the
+// response-plane row shares a correlation key with the request-plane decision
+// when the caller propagates W3C trace context), falling back to the request id
+// so the value is never empty.
+func correlationIDFromRequest(r *http.Request, fallback string) string {
+	if r != nil {
+		if tid := traceIDFromTraceparent(r.Header.Get("traceparent")); tid != "" {
+			return tid
+		}
+	}
+	return fallback
+}
+
+// traceIDFromTraceparent extracts the 32-hex trace_id field from a W3C
+// `traceparent` header (version-format `00-<trace_id>-<span_id>-<flags>`).
+// Returns "" when the header is absent or malformed.
+func traceIDFromTraceparent(h string) string {
+	if h == "" {
+		return ""
+	}
+	parts := strings.Split(h, "-")
+	if len(parts) < 4 {
+		return ""
+	}
+	traceID := parts[1]
+	if len(traceID) != 32 {
+		return ""
+	}
+	for _, c := range traceID {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return ""
+		}
+	}
+	return traceID
 }
 
 func generateRandomString(length int) string {

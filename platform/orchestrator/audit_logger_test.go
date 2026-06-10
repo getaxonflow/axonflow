@@ -465,6 +465,8 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+						// #2626: decision_id, plane, correlation_id
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 					).
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectCommit()
@@ -528,9 +530,10 @@ func TestBatchWriter_Write(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
 				mock.ExpectPrepare("INSERT INTO audit_logs")
-				// First entry (24 args including org_id)
+				// First entry (27 args: +decision_id, plane, correlation_id per #2626)
 				mock.ExpectExec("INSERT INTO audit_logs").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -539,9 +542,10 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				// Second entry (24 args including org_id)
+				// Second entry (27 args: +decision_id, plane, correlation_id per #2626)
 				mock.ExpectExec("INSERT INTO audit_logs").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -676,14 +680,16 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"total_count",
 				}).
 					AddRow(
 						"audit_001", "req_001", time.Now(), 1, "test@example.com", "user",
 						"client_001", "tenant_001", "query", "test query", "allowed",
 						[]byte(`{"risk_score": 0.1}`), "openai", "gpt-4", 150, 100,
 						0.005, []byte(`[]`), "", []byte(`["gdpr_applicable"]`),
+						1,
 					)
-				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email = (.+) ORDER BY timestamp DESC LIMIT").
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) ORDER BY timestamp DESC LIMIT").
 					WithArgs("test@example.com").
 					WillReturnRows(rows)
 			},
@@ -711,20 +717,23 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"total_count",
 				}).
 					AddRow(
 						"audit_002", "req_002", time.Now(), 2, "admin@example.com", "admin",
 						"client_002", "tenant_002", "mutation", "update query", "allowed",
 						[]byte(`{"risk_score": 0.3}`), "anthropic", "claude-sonnet-4", 200, 150,
 						0.008, []byte(`["email"]`), "", []byte(`[]`),
+						2,
 					).
 					AddRow(
 						"audit_003", "req_003", time.Now(), 2, "admin@example.com", "admin",
 						"client_002", "tenant_002", "mutation", "delete query", "blocked",
 						[]byte(`{"risk_score": 0.8}`), "anthropic", "claude-sonnet-4", 180, 120,
 						0.006, []byte(`[]`), "", []byte(`["sox_relevant"]`),
+						2,
 					)
-				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email = (.+) client_id = (.+) request_type = (.+) ORDER BY timestamp DESC LIMIT").
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) client_id ILIKE (.+) request_type = (.+) ORDER BY timestamp DESC LIMIT").
 					WithArgs("admin@example.com", "client_002", "mutation").
 					WillReturnRows(rows)
 			},
@@ -751,6 +760,7 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"total_count",
 				})
 				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) timestamp >= (.+) timestamp <= (.+) ORDER BY timestamp DESC LIMIT").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
@@ -779,6 +789,75 @@ func TestSearchAuditLogs(t *testing.T) {
 			expectCount: 0,
 			expectError: true,
 		},
+		{
+			name: "Search by action (policy_decision)",
+			criteria: struct {
+				TenantID string
+				Action   string
+				Limit    int
+			}{
+				TenantID: "tenant_001",
+				Action:   "blocked",
+				Limit:    50,
+			},
+			setupMock: func(mock sqlmock.Sqlmock) {
+				rows := sqlmock.NewRows([]string{
+					"id", "request_id", "timestamp", "user_id", "user_email", "user_role",
+					"client_id", "tenant_id", "request_type", "query", "policy_decision",
+					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
+					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"total_count",
+				}).
+					AddRow(
+						"audit_act_001", "req_act_001", time.Now(), 5, "user@example.com", "user",
+						"client_001", "tenant_001", "query", "blocked query", "blocked",
+						[]byte(`{"risk_score": 0.9}`), "openai", "gpt-4", 100, 80,
+						0.004, []byte(`[]`), "", []byte(`[]`),
+						1,
+					)
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) tenant_id = (.+) policy_decision = (.+) ORDER BY timestamp DESC LIMIT").
+					WithArgs("tenant_001", "blocked").
+					WillReturnRows(rows)
+			},
+			expectCount: 1,
+			expectError: false,
+		},
+		{
+			name: "Search with offset",
+			criteria: struct {
+				UserEmail   string
+				ClientID    string
+				StartTime   time.Time
+				EndTime     time.Time
+				RequestType string
+				Limit       int
+				Offset      int
+			}{
+				Limit:  10,
+				Offset: 1,
+			},
+			setupMock: func(mock sqlmock.Sqlmock) {
+				rows := sqlmock.NewRows([]string{
+					"id", "request_id", "timestamp", "user_id", "user_email", "user_role",
+					"client_id", "tenant_id", "request_type", "query", "policy_decision",
+					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
+					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"total_count",
+				}).
+					AddRow(
+						"audit_010", "req_010", time.Now(), 5, "page@example.com", "user",
+						"client_010", "tenant_010", "query", "second page query", "allowed",
+						[]byte(`{"risk_score": 0.1}`), "openai", "gpt-4o", 110, 80,
+						0.003, []byte(`[]`), "", []byte(`[]`),
+						1,
+					)
+				// Expect the SQL to contain OFFSET so we can assert the clause is present.
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs(.+)OFFSET").
+					WillReturnRows(rows)
+			},
+			expectCount: 1,
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -798,7 +877,7 @@ func TestSearchAuditLogs(t *testing.T) {
 			tt.setupMock(mock)
 
 			// Execute search
-			results, err := logger.SearchAuditLogs(tt.criteria)
+			results, _, err := logger.SearchAuditLogs(tt.criteria)
 
 			// Verify error expectation
 			if tt.expectError && err == nil {
@@ -839,7 +918,7 @@ func TestSearchAuditLogs_NilDatabase(t *testing.T) {
 	}
 
 	// Should return empty results without error
-	results, err := logger.SearchAuditLogs(criteria)
+	results, _, err := logger.SearchAuditLogs(criteria)
 	if err != nil {
 		t.Errorf("Expected nil database to be handled gracefully, got error: %v", err)
 	}
@@ -871,6 +950,7 @@ func TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice(t *testing.T) {
 			"client_id", "tenant_id", "request_type", "query", "policy_decision",
 			"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 			"cost", "redacted_fields", "error_message", "compliance_flags",
+			"total_count",
 		}))
 
 	criteria := struct {
@@ -889,7 +969,7 @@ func TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice(t *testing.T) {
 		Limit:    10,
 	}
 
-	results, err := logger.SearchAuditLogs(criteria)
+	results, _, err := logger.SearchAuditLogs(criteria)
 	if err != nil {
 		t.Fatalf("expected no error on empty results, got %v", err)
 	}
@@ -910,6 +990,77 @@ func TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice(t *testing.T) {
 		t.Errorf("expected JSON `[]`, got %q", string(encoded))
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// TestSearchAuditLogs_TotalCountExceedsPageSize is the regression guard for the
+// pagination bug (#2602): the handler must report the TRUE number of matching
+// rows (from COUNT(*) OVER()), not the size of the returned page. Here a single
+// page of 10 rows is returned (LIMIT 10) while 25 rows match the filter — every
+// row carries total_count=25 from the window function. The returned total must
+// be 25, not 10. Reverting the implementation to `return entries, len(results)`
+// makes this fail (total would be the page size, 10).
+func TestSearchAuditLogs_TotalCountExceedsPageSize(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	logger := &AuditLogger{db: db}
+
+	const pageSize = 10
+	const trueTotal = 25
+
+	rows := sqlmock.NewRows([]string{
+		"id", "request_id", "timestamp", "user_id", "user_email", "user_role",
+		"client_id", "tenant_id", "request_type", "query", "policy_decision",
+		"policy_details", "provider", "model", "response_time_ms", "tokens_used",
+		"cost", "redacted_fields", "error_message", "compliance_flags",
+		"total_count",
+	})
+	// One page of rows; each carries the same window-function total (trueTotal),
+	// exactly as Postgres returns COUNT(*) OVER() alongside a LIMITed result set.
+	for i := 0; i < pageSize; i++ {
+		rows.AddRow(
+			fmt.Sprintf("audit_%03d", i), fmt.Sprintf("req_%03d", i), time.Now(), i, "page@example.com", "user",
+			"client_001", "tenant_001", "query", "page query", "allowed",
+			[]byte(`{"risk_score": 0.1}`), "openai", "gpt-4", 100, 80,
+			0.004, []byte(`[]`), "", []byte(`[]`),
+			trueTotal,
+		)
+	}
+	// user_email uses ILIKE partial-match (#2616), matching the sibling
+	// SearchAuditLogs tests above; this regression guard's mock was authored
+	// against the older `=` form (#2606) and never reconciled with #2616.
+	mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) ORDER BY timestamp DESC LIMIT").
+		WithArgs("page@example.com").
+		WillReturnRows(rows)
+
+	criteria := struct {
+		UserEmail string
+		Limit     int
+	}{
+		UserEmail: "page@example.com",
+		Limit:     pageSize,
+	}
+
+	results, total, err := logger.SearchAuditLogs(criteria)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(results) != pageSize {
+		t.Fatalf("expected a single page of %d results, got %d", pageSize, len(results))
+	}
+	// The contract: total is the true match count, NOT the returned page size.
+	if total != trueTotal {
+		t.Errorf("expected total %d (true match count), got %d — pagination would show the wrong page count", trueTotal, total)
+	}
+	if total == len(results) {
+		t.Errorf("total (%d) must not collapse to the page size (%d)", total, len(results))
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
@@ -1140,6 +1291,26 @@ func TestLogSuccessfulRequest(t *testing.T) {
 		t.Errorf("Expected policy decision 'allowed', got %q", entry.PolicyDecision)
 	}
 
+	// #2626: every response-plane row is canonical — plane=llm, a decision_id,
+	// and a correlation_id (here falling back to the request id since no
+	// traceparent was propagated), dual-written into policy_details for the
+	// JSONB filters.
+	if entry.Plane != "llm" {
+		t.Errorf("Expected plane 'llm', got %q", entry.Plane)
+	}
+	if entry.DecisionID == "" {
+		t.Error("Expected a non-empty decision_id on the response-plane row")
+	}
+	if entry.CorrelationID != "test-req-123" {
+		t.Errorf("Expected correlation_id to fall back to request id, got %q", entry.CorrelationID)
+	}
+	if entry.PolicyDetails["decision_id"] != entry.DecisionID {
+		t.Errorf("decision_id not dual-written into policy_details: %v", entry.PolicyDetails["decision_id"])
+	}
+	if entry.PolicyDetails["correlation_id"] != entry.CorrelationID {
+		t.Errorf("correlation_id not dual-written into policy_details: %v", entry.PolicyDetails["correlation_id"])
+	}
+
 	// Verify entry was queued
 	select {
 	case queuedEntry := <-logger.auditQueue:
@@ -1187,22 +1358,30 @@ func TestLogSuccessfulRequestWithRedaction(t *testing.T) {
 		Cost:           0.005,
 	}
 
-	// Create context with redaction info
+	// Create context with redaction info carrying the explicit "redacted"
+	// verdict (block/redact path).
 	redactionInfo := &RedactionInfo{
 		HasRedactions:  true,
 		RedactedFields: []string{"ssn", "email"},
 		RedactionCount: 2,
+		Verdict:        responseVerdictRedacted,
 	}
-	ctx := context.WithValue(context.Background(), "redaction_info", redactionInfo)
+	ctx := context.WithValue(context.Background(), ctxKeyRedactionInfo, redactionInfo)
 	entry := logger.LogSuccessfulRequest(ctx, req, "Test query with [REDACTED] [REDACTED]", policyResult, providerInfo)
 
-	// Verify redaction was applied
+	// Verify redaction was applied — NOT mislabeled "allowed" (#2626).
 	if entry.PolicyDecision != "redacted" {
 		t.Errorf("Expected policy decision 'redacted', got %q", entry.PolicyDecision)
 	}
 
 	if len(entry.RedactedFields) != 2 {
 		t.Errorf("Expected 2 redacted fields, got %d", len(entry.RedactedFields))
+	}
+
+	// Canonical columns present on the redacted row too.
+	if entry.Plane != "llm" || entry.DecisionID == "" || entry.CorrelationID == "" {
+		t.Errorf("redacted row missing canonical columns: plane=%q decision_id=%q correlation_id=%q",
+			entry.Plane, entry.DecisionID, entry.CorrelationID)
 	}
 
 	// Verify entry was queued
@@ -1257,13 +1436,103 @@ func TestLogSuccessfulRequestWithEmptyRedaction(t *testing.T) {
 		HasRedactions:  false,
 		RedactedFields: []string{},
 		RedactionCount: 0,
+		Verdict:        responseVerdictAllowed,
 	}
-	ctx := context.WithValue(context.Background(), "redaction_info", redactionInfo)
+	ctx := context.WithValue(context.Background(), ctxKeyRedactionInfo, redactionInfo)
 	entry := logger.LogSuccessfulRequest(ctx, req, "Clean response", policyResult, providerInfo)
 
 	// With no redactions, policy decision should remain "allowed"
 	if entry.PolicyDecision != "allowed" {
 		t.Errorf("Expected policy decision 'allowed', got %q", entry.PolicyDecision)
+	}
+}
+
+// TestLogSuccessfulRequest_WarnLogNotMislabeledRedacted proves the truthful
+// verdict under warn/log "detect-don't-modify" (#2626): detection found PII
+// (HasRedactions=true, fields recorded for audit) but the response was returned
+// UNMODIFIED, so the row must be "allowed", NOT "redacted". This is the
+// red-on-revert guard for the Verdict-over-HasRedactions precedence.
+func TestLogSuccessfulRequest_WarnLogNotMislabeledRedacted(t *testing.T) {
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+	req := OrchestratorRequest{
+		RequestID:   "test-req-warnlog",
+		Query:       "detect-only query",
+		RequestType: "test",
+		User:        UserContext{ID: 1, Email: "t@example.com", Role: "user", TenantID: "test-tenant"},
+		Client:      ClientContext{ID: "c", OrgID: "org-warn"},
+	}
+	policyResult := &PolicyEvaluationResult{Allowed: true}
+	providerInfo := &ProviderInfo{Provider: "openai", Model: "gpt-4"}
+
+	// warn/log: PII detected for audit, but response NOT modified → Verdict allowed.
+	info := &RedactionInfo{
+		HasRedactions:  true,
+		RedactedFields: []string{"nik"},
+		RedactionCount: 1,
+		Verdict:        responseVerdictAllowed,
+	}
+	ctx := context.WithValue(context.Background(), ctxKeyRedactionInfo, info)
+	entry := logger.LogSuccessfulRequest(ctx, req, "unmodified response", policyResult, providerInfo)
+
+	if entry.PolicyDecision != "allowed" {
+		t.Fatalf("warn/log detect-don't-modify must record 'allowed', got %q", entry.PolicyDecision)
+	}
+	// Detected fields are still surfaced for audit visibility.
+	if len(entry.RedactedFields) != 1 || entry.RedactedFields[0] != "nik" {
+		t.Errorf("expected detected field 'nik' surfaced for audit, got %v", entry.RedactedFields)
+	}
+}
+
+// TestLogBlockedResponse proves a withheld/validation-denied response is
+// recorded as "blocked" on the canonical LLM plane (#2626
+// ORCH-RESP-VALIDATE-DENY-AS-ALLOWED), with the validation reason preserved.
+func TestLogBlockedResponse(t *testing.T) {
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+	req := OrchestratorRequest{
+		RequestID:   "test-req-respblock",
+		Query:       "q",
+		RequestType: "test",
+		User:        UserContext{ID: 3, Email: "b@example.com", Role: "user", TenantID: "test-tenant"},
+		Client:      ClientContext{ID: "c", OrgID: "org-x"},
+	}
+	policyResult := &PolicyEvaluationResult{Allowed: true, AppliedPolicies: []string{"resp_validation"}}
+	info := &RedactionInfo{Verdict: responseVerdictBlocked, ValidationError: "reasonable_size: response too large"}
+
+	ctx := context.WithValue(context.Background(), ctxKeyCorrelationID, "abc123trace")
+	entry := logger.LogBlockedResponse(ctx, req, policyResult, info)
+
+	if entry.PolicyDecision != "blocked" {
+		t.Fatalf("response-plane denial must record 'blocked', got %q", entry.PolicyDecision)
+	}
+	if entry.Plane != "llm" {
+		t.Errorf("expected plane 'llm', got %q", entry.Plane)
+	}
+	if entry.DecisionID == "" {
+		t.Error("expected a non-empty decision_id on the blocked row")
+	}
+	if entry.CorrelationID != "abc123trace" {
+		t.Errorf("expected correlation_id from ctx 'abc123trace', got %q", entry.CorrelationID)
+	}
+	if entry.PolicyDetails["validation_error"] != "reasonable_size: response too large" {
+		t.Errorf("validation_error not preserved: %v", entry.PolicyDetails["validation_error"])
+	}
+	if entry.PolicyDetails["block_phase"] != "response" {
+		t.Errorf("expected block_phase 'response', got %v", entry.PolicyDetails["block_phase"])
+	}
+
+	select {
+	case queued := <-logger.auditQueue:
+		if queued.PolicyDecision != "blocked" {
+			t.Error("queued blocked entry mislabeled")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("blocked entry was not queued")
 	}
 }
 

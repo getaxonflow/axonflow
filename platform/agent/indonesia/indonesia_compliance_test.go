@@ -12,30 +12,30 @@ func TestNIKDetection_ValidProvinces(t *testing.T) {
 	detector := NewIndonesiaPIIDetector(DefaultIndonesiaPIIDetectorConfig())
 
 	tests := []struct {
-		name     string
-		input    string
-		wantHit  bool
+		name    string
+		input   string
+		wantHit bool
 	}{
 		// Valid NIK examples per province
-		{"Aceh male", "3174042506780001", true},           // province 31 (Jakarta), DD=25
-		{"North Sumatra", "1271045612900001", true},        // province 12, DD=56 (female, 56-40=16)
-		{"West Java", "3201011501850001", true},             // province 32, DD=15
-		{"Central Java", "3301012312950001", true},          // province 33, DD=23
-		{"East Java", "3501011201000001", true},              // province 35, DD=12
-		{"Banten", "3601014301950001", true},                 // province 36, DD=43 (female, 43-40=3)
-		{"DKI Jakarta", "3174042506780001", true},            // province 31
-		{"Bali", "5101012506900001", true},                   // province 51
-		{"West Kalimantan", "6101011001850001", true},        // province 61
-		{"North Sulawesi", "7101012506900001", true},         // province 71
-		{"Maluku", "8101012506900001", true},                 // province 81
-		{"Papua", "9101012506900001", true},                  // province 91
-		{"North Kalimantan", "6501012506900001", true},       // province 65
-		{"West Sulawesi", "7601012506900001", true},          // province 76
-		{"North Maluku", "8201012506900001", true},           // province 82
-		{"Central Papua", "9401012506900001", true},          // province 94
-		{"Riau Islands", "2101012506900001", true},           // province 21
-		{"DI Yogyakarta", "3401012506900001", true},          // province 34
-		{"Bangka Belitung", "1901012506900001", true},        // province 19
+		{"Aceh male", "3174042506780001", true},        // province 31 (Jakarta), DD=25
+		{"North Sumatra", "1271045612900001", true},    // province 12, DD=56 (female, 56-40=16)
+		{"West Java", "3201011501850001", true},        // province 32, DD=15
+		{"Central Java", "3301012312950001", true},     // province 33, DD=23
+		{"East Java", "3501011201000001", true},        // province 35, DD=12
+		{"Banten", "3601014301950001", true},           // province 36, DD=43 (female, 43-40=3)
+		{"DKI Jakarta", "3174042506780001", true},      // province 31
+		{"Bali", "5101012506900001", true},             // province 51
+		{"West Kalimantan", "6101011001850001", true},  // province 61
+		{"North Sulawesi", "7101012506900001", true},   // province 71
+		{"Maluku", "8101012506900001", true},           // province 81
+		{"Papua", "9101012506900001", true},            // province 91
+		{"North Kalimantan", "6501012506900001", true}, // province 65
+		{"West Sulawesi", "7601012506900001", true},    // province 76
+		{"North Maluku", "8201012506900001", true},     // province 82
+		{"Central Papua", "9401012506900001", true},    // province 94
+		{"Riau Islands", "2101012506900001", true},     // province 21
+		{"DI Yogyakarta", "3401012506900001", true},    // province 34
+		{"Bangka Belitung", "1901012506900001", true},  // province 19
 
 		// Female DD offset (+40): DD=41-71
 		{"Female DD=41 (day 1)", "3174044106780001", true},
@@ -71,7 +71,7 @@ func TestNIKDetection_InvalidInputs(t *testing.T) {
 		{"Province 00", "0001012506780001", false},
 		{"Province 10", "1001012506780001", false},
 		{"Province 20 (does not exist)", "2001012506780001", false}, // province 20 is not valid
-		{"Province 22", "2201012506780001", false}, // gap between 21 and 31
+		{"Province 22", "2201012506780001", false},                  // gap between 21 and 31
 		{"Province 23-30", "2501012506780001", false},
 		{"Province 37-50", "4001012506780001", false},
 		{"Province 54-60", "5501012506780001", false},
@@ -182,6 +182,9 @@ func TestPhoneDetection(t *testing.T) {
 		{"Minimal length", "+628123456789", true},
 		{"With country code space", "0812345678", true},
 		{"Not starting with 8", "0712345678", false},
+		// A bare 62-prefixed 10-digit number (no +) is one digit short of a real
+		// mobile and collides with order/tracking ids — must NOT match (PR C FP fix).
+		{"Tracking-id (62 + too few digits)", "6281234509", false},
 		{"Too short", "+6281234", false},
 		{"US number", "+12025551234", false},
 		{"India number", "+919876543210", false},
@@ -407,9 +410,9 @@ func TestCreditCardFalsePositive(t *testing.T) {
 
 	// Credit card numbers that could look like NIKs if not properly filtered
 	inputs := []string{
-		"4532015112830366",  // Visa 16-digit
-		"5425233430109903",  // Mastercard
-		"6011111111111117",  // Discover
+		"4532015112830366", // Visa 16-digit
+		"5425233430109903", // Mastercard
+		"6011111111111117", // Discover
 	}
 
 	for _, input := range inputs {

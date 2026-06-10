@@ -213,6 +213,108 @@ type Export struct {
 	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
 }
 
+// DecisionChainRecord is a single governance decision exported for EU AI Act
+// Article 12 record-keeping. It is derived from the canonical audit_logs
+// decision rows (rows carrying policy_details->>'decision_id', written by the
+// Decision Mode PEP and the MCP check planes) rather than the legacy
+// decision_chain table, which has no production writer (#2588). Records are
+// returned in chronological order, one per decision. Rows sharing a
+// correlation_id (the W3C trace_id a PEP propagates across its llm/tool/agent
+// hops, #2598) are reconstructed into a DecisionChainGroup; rows without one are
+// singletons. See ExportRepository.GetDecisionChain and the #2585 audit-log
+// northstar.
+type DecisionChainRecord struct {
+	ID                string    `json:"id"`
+	RequestID         string    `json:"request_id"`
+	Timestamp         time.Time `json:"timestamp"`
+	DecisionType      string    `json:"decision_type"`
+	DecisionOutcome   string    `json:"decision_outcome"`
+	ModelID           string    `json:"model_id,omitempty"`
+	RequiresReview    bool      `json:"requires_human_review"`
+	PoliciesEvaluated string    `json:"policies_evaluated,omitempty"`
+	PolicyTriggered   string    `json:"policy_triggered,omitempty"`
+	ProcessingTimeMs  *int      `json:"processing_time_ms,omitempty"`
+	// CorrelationID is the shared key tying this decision to the other stages of
+	// the SAME logical request; empty for legacy/single-shot rows. The grouping
+	// key for DecisionChainGroup (#2598).
+	CorrelationID string `json:"correlation_id,omitempty"`
+}
+
+// DecisionChainGroup is one logical request's decision chain for EU AI Act
+// Article 12 record-keeping: the decision rows sharing a correlation_id (the
+// W3C trace_id a PEP propagates across its llm/tool/agent hops), in chronological
+// step order. Rows with no correlation_id (legacy + single-shot callers) each
+// form a singleton chain. #2598 / #2585.
+type DecisionChainGroup struct {
+	CorrelationID string                `json:"correlation_id,omitempty"`
+	StepCount     int                   `json:"step_count"`
+	StartedAt     time.Time             `json:"started_at"`
+	EndedAt       time.Time             `json:"ended_at"`
+	Steps         []DecisionChainRecord `json:"steps"`
+}
+
+// AuditLogRecord is one row of the canonical audit_logs decision/request record
+// set, exported for EU AI Act Article 12 record-keeping (the full_audit export).
+// Unlike DecisionChainRecord — which is the decision-only subset (rows carrying
+// a decision_id) — the full audit export covers every governed request/response
+// for the org in the window. The raw prompt text (audit_logs.query) is
+// deliberately NOT exported (it may carry PII); query_hash is the tamper-evident
+// fingerprint instead. #2610.
+type AuditLogRecord struct {
+	ID             string    `json:"id"`
+	RequestID      string    `json:"request_id"`
+	Timestamp      time.Time `json:"timestamp"`
+	UserEmail      string    `json:"user_email,omitempty"`
+	UserRole       string    `json:"user_role,omitempty"`
+	ClientID       string    `json:"client_id,omitempty"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	OrgID          string    `json:"org_id,omitempty"`
+	RequestType    string    `json:"request_type"`
+	QueryHash      string    `json:"query_hash,omitempty"`
+	PolicyDecision string    `json:"policy_decision"`
+	DecisionID     string    `json:"decision_id,omitempty"`
+	Plane          string    `json:"plane,omitempty"`
+	Provider       string    `json:"provider,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	ResponseTimeMs *int64    `json:"response_time_ms,omitempty"`
+	TokensUsed     *int      `json:"tokens_used,omitempty"`
+	ErrorMessage   string    `json:"error_message,omitempty"`
+}
+
+// PolicyViolationRecord is one policy_violations row exported for the EU AI Act
+// policy_violations export (Article 12 record-keeping / Article 9 risk
+// management evidence). #2610.
+type PolicyViolationRecord struct {
+	ID            int64                  `json:"id"`
+	OrgID         string                 `json:"org_id,omitempty"`
+	ViolationType string                 `json:"violation_type,omitempty"`
+	Severity      string                 `json:"severity,omitempty"`
+	ClientID      string                 `json:"client_id,omitempty"`
+	UserID        string                 `json:"user_id,omitempty"`
+	Description   string                 `json:"description,omitempty"`
+	Details       map[string]interface{} `json:"details,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+}
+
+// HITLApprovalRecord is one hitl_approval_history row — the immutable
+// human-oversight audit trail (EU AI Act Article 14 oversight / Article 12
+// record-keeping) exported by the hitl_summary export. #2610.
+type HITLApprovalRecord struct {
+	ID             int64     `json:"id"`
+	RequestID      string    `json:"request_id"`
+	OrgID          string    `json:"org_id,omitempty"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	Action         string    `json:"action"`
+	ActorID        string    `json:"actor_id,omitempty"`
+	ActorEmail     string    `json:"actor_email,omitempty"`
+	ActorRole      string    `json:"actor_role,omitempty"`
+	Comment        string    `json:"comment,omitempty"`
+	Justification  string    `json:"justification,omitempty"`
+	PreviousStatus string    `json:"previous_status,omitempty"`
+	NewStatus      string    `json:"new_status,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // ConformityAssessment represents an EU AI Act conformity assessment.
 type ConformityAssessment struct {
 	ID              string                 `json:"id"`

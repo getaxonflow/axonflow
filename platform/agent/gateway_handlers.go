@@ -529,7 +529,8 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue #891: Respect PII_ACTION setting - block only if PII_ACTION=block
-	gwDetectionCfg := GetGatewayDetectionConfig()
+	// #2581: resolve per-org posture (org with no override → deployment-global).
+	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 	rbiPIIRequiresRedaction := false
 	indonesiaPIIRequiresRedaction := false
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock

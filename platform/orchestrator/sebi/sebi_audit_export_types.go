@@ -261,8 +261,17 @@ type SEBIAuditExportData struct {
 	// LLMCalls contains LLM call audit records
 	LLMCalls []SEBILLMCallRecord `json:"llm_calls,omitempty"`
 
-	// DecisionChain contains decision chain records
+	// DecisionChain contains the flat per-decision audit rows in chronological
+	// order (one row per governance decision). Retained for chronological
+	// consumers; each row now also carries its correlation_id.
 	DecisionChain []SEBIDecisionChainRecord `json:"decision_chain,omitempty"`
+
+	// DecisionChains contains the SAME decision rows reconstructed into logical
+	// chains: every row sharing a correlation_id grouped into one chain in step
+	// order, rows without one as singletons (#2598). This is the regulator-facing
+	// "decision chain" view — the chronological DecisionChain above is the
+	// flattened source.
+	DecisionChains []SEBIDecisionChain `json:"decision_chains,omitempty"`
 
 	// HITLOversight contains human-in-the-loop records
 	HITLOversight []SEBIHITLRecord `json:"hitl_oversight,omitempty"`
@@ -379,6 +388,23 @@ type SEBIDecisionChainRecord struct {
 	PolicyTriggered  string    `json:"policy_triggered,omitempty"`
 	ProcessingTimeMs *int      `json:"processing_time_ms,omitempty"`
 	InputFactors     []DecisionFactor `json:"input_factors,omitempty"`
+	// CorrelationID is the shared key (the W3C trace_id a PEP propagates across
+	// its hops) that ties this decision to the other stages of the SAME logical
+	// request; empty for legacy/single-shot rows. The grouping key for
+	// SEBIDecisionChain (#2598).
+	CorrelationID string `json:"correlation_id,omitempty"`
+}
+
+// SEBIDecisionChain is one logical request's decision chain: the decision rows
+// sharing a correlation_id (the W3C trace_id a PEP propagates across its
+// llm/tool/agent hops), in chronological step order. Rows with no correlation_id
+// (legacy + single-shot callers) each form a singleton chain. #2598 / #2585.
+type SEBIDecisionChain struct {
+	CorrelationID string                    `json:"correlation_id,omitempty"`
+	StepCount     int                       `json:"step_count"`
+	StartedAt     time.Time                 `json:"started_at"`
+	EndedAt       time.Time                 `json:"ended_at"`
+	Steps         []SEBIDecisionChainRecord `json:"steps"`
 }
 
 // DecisionFactor represents a factor in a decision

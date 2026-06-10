@@ -39,11 +39,31 @@ type ResponseProcessor struct {
 	useSharedEngine     bool // Use shared policy engine for PII detection/redaction
 }
 
+// Canonical response-plane verdicts (#2626). These mirror the audit_logs
+// policy_decision vocabulary the orchestrator already writes ("allowed",
+// "redacted", "blocked") so the portal decisions/audit feed and the lineage
+// exporters classify response-plane rows identically to every other row.
+const (
+	responseVerdictAllowed  = "allowed"
+	responseVerdictRedacted = "redacted"
+	responseVerdictBlocked  = "blocked"
+)
+
 // RedactionInfo contains information about redactions made
 type RedactionInfo struct {
 	HasRedactions  bool     `json:"has_redactions"`
 	RedactedFields []string `json:"redacted_fields"`
 	RedactionCount int      `json:"redaction_count"`
+	// Verdict is the canonical response-plane decision (#2626): "allowed",
+	// "redacted", or "blocked". It drives the audit row's policy_decision AND
+	// the HTTP outcome. Kept distinct from HasRedactions so warn/log
+	// (detect-don't-modify) is recorded truthfully as "allowed" — never
+	// mislabeled "redacted" — while a withheld/validation-denied response is
+	// recorded as "blocked" rather than the success it used to masquerade as.
+	Verdict string `json:"verdict,omitempty"`
+	// ValidationError carries the response-plane validation-failure reason when
+	// Verdict == "blocked"; surfaced in the audit row's policy_details.
+	ValidationError string `json:"validation_error,omitempty"`
 }
 
 // PIIDetector detects various types of PII in text
@@ -161,6 +181,17 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 	piiAction := os.Getenv("PII_ACTION")
 	skipRedaction := piiAction == "warn" || piiAction == "log"
 
+	// Per-org posture (#2612): when this org has an EXPLICIT PII override, it
+	// governs the detect-don't-modify (warn/log) vs redact/block revert decision
+	// for THIS org. Without this, a per-org redact/block set on the engine config
+	// at processWithSharedEngine (below) would still be reverted by the
+	// deployment-global warn/log baseline → the org's PII leaks. Layered ON TOP of
+	// the global baseline: no override (empty org / no cache / no row) leaves the
+	// baseline above untouched → byte-identical to the global-only behavior.
+	if orgPIIAction, ok := ResolveGatewayPIIActionOverride(ctx, user.OrgID); ok {
+		skipRedaction = orgPIIAction == agent.DetectionActionWarn || orgPIIAction == agent.DetectionActionLog
+	}
+
 	if p.useSharedEngine && p.sharedPolicyEngine != nil {
 		// Use shared policy engine (database-driven, configurable)
 		processedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
@@ -183,13 +214,33 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 		processedData = responseData
 	}
 
+	// Canonical response-plane verdict (#2626). The audit row must reflect what
+	// ACTUALLY happened to the response, not merely what detection matched:
+	//   - warn/log (skipRedaction): detection may have fired, but the response is
+	//     returned UNMODIFIED → "allowed" (detected fields stay in RedactedFields
+	//     for audit visibility; never mislabeled "redacted").
+	//   - block/redact that actually masked content → "redacted".
+	//   - otherwise → "allowed".
+	if redactionInfo == nil {
+		redactionInfo = &RedactionInfo{}
+	}
+	if !skipRedaction && redactionInfo.HasRedactions {
+		redactionInfo.Verdict = responseVerdictRedacted
+	} else {
+		redactionInfo.Verdict = responseVerdictAllowed
+	}
+
 	// Validate response (always runs regardless of PII_ACTION)
 	if err := p.validateResponse(processedData); err != nil {
 		log.Printf("Response validation failed: %v", err)
+		// The original LLM response is WITHHELD and replaced with an error. This
+		// is a response-plane denial: record it truthfully as "blocked" so it is
+		// never persisted as the success the caller used to receive
+		// (#2626 ORCH-RESP-VALIDATE-DENY-AS-ALLOWED).
 		return map[string]string{
 			"error":   "Response validation failed",
 			"details": err.Error(),
-		}, &RedactionInfo{}
+		}, &RedactionInfo{Verdict: responseVerdictBlocked, ValidationError: err.Error()}
 	}
 
 	// Enrich response with metadata (always runs regardless of PII_ACTION)
@@ -202,7 +253,11 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 // This provides comprehensive validators (Luhn, MOD97, Verhoeff, SSN, Aadhaar, PAN).
 // Uses GATEWAY detection config since orchestrator processes LLM responses for proxy/gateway/MAP modes.
 func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user UserContext, data interface{}) (interface{}, *RedactionInfo) {
-	gwCfg := agent.GetGatewayDetectionConfig()
+	// Per-org posture (#2612): resolve the gateway config with this org's
+	// overrides layered on the deployment-global config (fail-safe to global).
+	// Drives BuildActionOverrides below so the engine redacts/blocks/warns per the
+	// org's posture, not just the deployment-wide one.
+	gwCfg := ResolveGatewayDetectionConfig(ctx, user.OrgID)
 
 	// Skip shared engine processing if gateway static policies are disabled
 	if !gwCfg.Enabled {

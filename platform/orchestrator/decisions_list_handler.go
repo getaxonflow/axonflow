@@ -249,9 +249,17 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 	// `policy_ids` array. policy_details is JSONB so all of these read
 	// without a join. Filter clauses use the `$N::text = ''` short-circuit
 	// pattern so absent filters compile to a constant TRUE.
+	//
+	// #2592 / ADR-058 Phase 1: decision_id is now a first-class indexed column.
+	// Read it via COALESCE(column, policy_details->>'decision_id') so the feed
+	// uses the column when present yet still surfaces JSONB-only rows
+	// (historical rows pre-backfill, plus any writer that hasn't cut over) —
+	// NO flag-day. The WHERE predicate mirrors the same fallback. The partial
+	// index idx_audit_logs_decision_id (WHERE decision_id IS NOT NULL) backs
+	// the column arm of the predicate.
 	const q = `
 		SELECT
-			policy_details->>'decision_id'                         AS decision_id,
+			COALESCE(decision_id, policy_details->>'decision_id')  AS decision_id,
 			timestamp,
 			policy_decision                                        AS decision,
 			COALESCE(
@@ -263,7 +271,7 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
-		  AND policy_details->>'decision_id' IS NOT NULL
+		  AND (decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL)
 		  AND ($3::text = '' OR policy_decision = $3)
 		  AND ($4::text = '' OR (
 		        policy_details->>'policy_id' = $4

@@ -73,17 +73,16 @@ func TestExportAuditData_AllDataTypes_Success(t *testing.T) {
 				100, 200, int64(450), 0.005,
 				"allowed", int64(10), "agent-1", redactedJSON, flagsJSON))
 
-	// Mock exportDecisionChain
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type, decision_outcome, risk_level, model_id, requires_human_review, policies_evaluated::text, policy_triggered, processing_time_ms FROM decision_chain")).
+	// Mock exportDecisionChain (now reads canonical audit_logs decision rows, #2588)
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->'policy_ids'->>0")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision_outcome",
-			"risk_level", "model_id", "requires_human_review",
-			"policies_evaluated", "policy_triggered", "processing_time_ms",
+			"id", "request_id", "timestamp", "decision_type", "policy_decision",
+			"model_id", "policies_evaluated", "policy_triggered", "response_time_ms",
+			"correlation_id",
 		}).
-			AddRow("dc-1", "req-1", now, "policy_eval", "approved",
-				"limited", "model-v2", true,
-				"{policy-1,policy-2}", "policy-1", 150))
+			AddRow("dc-1", "req-1", now, "policy_eval", "needs_approval",
+				"model-v2", "[\"policy-1\",\"policy-2\"]", "policy-1", int64(150), ""))
 
 	// Mock exportHITLOversight
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason, reviewer_id, decision, notes, review_time_ms FROM hitl_queue")).
@@ -151,7 +150,8 @@ func TestExportAuditData_AllDataTypes_Success(t *testing.T) {
 
 	assert.Len(t, resp.Data.DecisionChain, 1)
 	assert.True(t, resp.Data.DecisionChain[0].RequiresReview)
-	assert.Equal(t, "limited", resp.Data.DecisionChain[0].RiskLevel)
+	assert.Equal(t, "pending_review", resp.Data.DecisionChain[0].DecisionOutcome)
+	assert.Empty(t, resp.Data.DecisionChain[0].RiskLevel)
 
 	assert.Len(t, resp.Data.HITLOversight, 1)
 	assert.Equal(t, "Looks good", resp.Data.HITLOversight[0].Notes)
@@ -347,9 +347,9 @@ func TestExportAuditData_TableNotExists_DecisionChain(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
 	mock.ExpectCommit()
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->'policy_ids'->>0")).
 		WithArgs(tenantID, startDate, endDate).
-		WillReturnError(fmt.Errorf("no such table: decision_chain"))
+		WillReturnError(fmt.Errorf("no such table: audit_logs"))
 
 	req := &SEBIAuditExportRequest{
 		StartDate: startDate,
@@ -526,12 +526,12 @@ func TestExportAuditData_EmptyResults(t *testing.T) {
 			"policy_decision", "user_id", "client_id", "redacted_fields", "compliance_flags",
 		}))
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->'policy_ids'->>0")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision_outcome",
-			"risk_level", "model_id", "requires_human_review",
-			"policies_evaluated", "policy_triggered", "processing_time_ms",
+			"id", "request_id", "timestamp", "decision_type", "policy_decision",
+			"model_id", "policies_evaluated", "policy_triggered", "response_time_ms",
+			"correlation_id",
 		}))
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason")).
@@ -585,16 +585,16 @@ func TestExportAuditData_DecisionChain_NullableFields(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
 	mock.ExpectCommit()
 
-	// Decision chain with all nullable fields as nil
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
+	// Decision chain with COALESCE'd empty strings; only response_time_ms is nil.
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->'policy_ids'->>0")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision_outcome",
-			"risk_level", "model_id", "requires_human_review",
-			"policies_evaluated", "policy_triggered", "processing_time_ms",
+			"id", "request_id", "timestamp", "decision_type", "policy_decision",
+			"model_id", "policies_evaluated", "policy_triggered", "response_time_ms",
+			"correlation_id",
 		}).
-			AddRow("dc-1", "req-1", now, "policy_eval", "approved",
-				nil, nil, false, nil, nil, nil))
+			AddRow("dc-1", "req-1", now, "policy_eval", "allow",
+				"", "", "", nil, ""))
 
 	req := &SEBIAuditExportRequest{
 		StartDate: startDate,
@@ -613,6 +613,7 @@ func TestExportAuditData_DecisionChain_NullableFields(t *testing.T) {
 	assert.False(t, dc.RequiresReview)
 	assert.Empty(t, dc.RiskLevel)
 	assert.Empty(t, dc.PolicyTriggered)
+	assert.Nil(t, dc.ProcessingTimeMs)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -755,12 +756,12 @@ func TestExportAuditData_DataTypeAll(t *testing.T) {
 			"policy_decision", "user_id", "client_id", "redacted_fields", "compliance_flags",
 		}))
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->'policy_ids'->>0")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision_outcome",
-			"risk_level", "model_id", "requires_human_review",
-			"policies_evaluated", "policy_triggered", "processing_time_ms",
+			"id", "request_id", "timestamp", "decision_type", "policy_decision",
+			"model_id", "policies_evaluated", "policy_triggered", "response_time_ms",
+			"correlation_id",
 		}))
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason")).
@@ -940,10 +941,18 @@ func TestGetRetentionStatus_AllCompliant(t *testing.T) {
 		// getDataTypeStats
 		now := time.Now().UTC()
 		oldest := now.Add(-365 * 24 * time.Hour)
-		mock.ExpectQuery(regexp.QuoteMeta(fmt.Sprintf("SELECT\n\t\t\tMIN(created_at) as oldest,\n\t\t\tMAX(created_at) as newest,\n\t\t\tCOUNT(*) as total\n\t\tFROM %s", tableNames[i]))).
-			WithArgs(tenantID).
-			WillReturnRows(sqlmock.NewRows([]string{"oldest", "newest", "total"}).
-				AddRow(oldest, now, int64(1000)))
+		if dt == "decision_chain" {
+			// Decision-record stats now derive from audit_logs decision rows (#2588).
+			mock.ExpectQuery(regexp.QuoteMeta("MIN(timestamp), MAX(timestamp), COUNT(*)")).
+				WithArgs(tenantID).
+				WillReturnRows(sqlmock.NewRows([]string{"oldest", "newest", "total"}).
+					AddRow(oldest, now, int64(1000)))
+		} else {
+			mock.ExpectQuery(regexp.QuoteMeta(fmt.Sprintf("SELECT\n\t\t\tMIN(created_at) as oldest,\n\t\t\tMAX(created_at) as newest,\n\t\t\tCOUNT(*) as total\n\t\tFROM %s", tableNames[i]))).
+				WithArgs(tenantID).
+				WillReturnRows(sqlmock.NewRows([]string{"oldest", "newest", "total"}).
+					AddRow(oldest, now, int64(1000)))
+		}
 	}
 
 	req := &SEBIRetentionStatusRequest{}
@@ -1173,7 +1182,7 @@ func TestValidateComplianceReadiness_AllPass(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(150))
 
 	// checkDecisionChainTracing: count > 0
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->>'decision_id' IS NOT NULL")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(50))
 
@@ -1230,7 +1239,7 @@ func TestValidateComplianceReadiness_AllFail(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	// checkDecisionChainTracing: no recent records
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->>'decision_id' IS NOT NULL")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
@@ -1291,7 +1300,7 @@ func TestValidateComplianceReadiness_TableNotExists_Retention(t *testing.T) {
 		WillReturnError(fmt.Errorf("relation \"audit_logs\" does not exist"))
 
 	// checkDecisionChainTracing: table does not exist -> false
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->>'decision_id' IS NOT NULL")).
 		WithArgs(tenantID).
 		WillReturnError(fmt.Errorf("relation \"decision_chain\" does not exist"))
 
@@ -1350,7 +1359,7 @@ func TestValidateComplianceReadiness_DBErrors(t *testing.T) {
 		WillReturnError(fmt.Errorf("disk full"))
 
 	// checkDecisionChainTracing: non-table error -> fail
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->>'decision_id' IS NOT NULL")).
 		WithArgs(tenantID).
 		WillReturnError(fmt.Errorf("server crashed"))
 
@@ -1407,7 +1416,7 @@ func TestValidateComplianceReadiness_MixedResults(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 
 	// checkDecisionChainTracing: pass
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->>'decision_id' IS NOT NULL")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
@@ -1777,13 +1786,94 @@ func TestCheckDecisionChainTracing_NoRecentRecords(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->>'decision_id' IS NOT NULL")).
 		WithArgs("banking-india").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	ok, details := service.checkDecisionChainTracing(ctx, "banking-india")
 	assert.False(t, ok)
 	assert.Contains(t, details, "No decision chain records")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestExportDecisionChain_DecisionRows_FromAuditLogs is a red-on-revert guard
+// for #2588 + #2598: the per-decision audit rows must be read from the canonical
+// audit_logs decision rows, not the dead decision_chain table. It programs ONLY
+// the audit_logs exportDecisionChain query, so if the production code reverts to
+// FROM decision_chain the mock has no matching expectation and the test fails.
+// It asserts the policy_decision → SEBI outcome mapping across three decision
+// rows (allow / needs_approval / deny) AND that the three rows — which share one
+// correlation_id (a 3-stage llm → tool → agent request) — reconstruct into
+// exactly ONE grouped chain with three ordered steps (#2598).
+func TestExportDecisionChain_DecisionRows_FromAuditLogs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	service := NewSEBIAuditExportService(db, nil)
+	ctx := context.Background()
+	tenantID := "banking-india"
+
+	now := time.Now().UTC()
+	startDate := now.Add(-24 * time.Hour)
+	endDate := now
+
+	// getOrgName (FORCE-RLS org scope)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
+		WithArgs(tenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test Org"))
+	mock.ExpectCommit()
+
+	// exportDecisionChain: three audit_logs decision rows that share ONE
+	// correlation_id (a 3-stage llm → tool → agent request), in chronological
+	// order, with allow / needs_approval / deny. correlation_id is the last column.
+	const sharedCorr = "trace-req-3stage"
+	mock.ExpectQuery(regexp.QuoteMeta("policy_details->'policy_ids'->>0")).
+		WithArgs(tenantID, startDate, endDate).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "request_id", "timestamp", "decision_type", "policy_decision",
+			"model_id", "policies_evaluated", "policy_triggered", "response_time_ms",
+			"correlation_id",
+		}).
+			AddRow("dc-1", "req-a", now, "llm", "allow",
+				"gpt-4o", "[\"sys_pii_indonesia_ktp\"]", "sys_pii_indonesia_ktp", int64(12), sharedCorr).
+			AddRow("dc-2", "req-b", now.Add(time.Second), "tool", "needs_approval",
+				"", "[\"sebi_high_risk\"]", "sebi_high_risk", int64(8), sharedCorr).
+			AddRow("dc-3", "req-c", now.Add(2*time.Second), "agent", "deny",
+				"", "[\"sebi_block\"]", "sebi_block", int64(5), sharedCorr))
+
+	req := &SEBIAuditExportRequest{
+		StartDate: startDate,
+		EndDate:   endDate,
+		DataTypes: []SEBIAuditDataType{SEBIDataTypeDecisionChain},
+	}
+
+	resp, err := service.ExportAuditData(ctx, tenantID, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Data)
+
+	// Flat list + record count are unchanged (chronological, one row per decision).
+	assert.Equal(t, 3, resp.Summary.RecordsByType[SEBIDataTypeDecisionChain])
+	require.Len(t, resp.Data.DecisionChain, 3)
+	assert.Equal(t, "approved", resp.Data.DecisionChain[0].DecisionOutcome)
+	assert.Equal(t, "pending_review", resp.Data.DecisionChain[1].DecisionOutcome)
+	assert.Equal(t, "blocked", resp.Data.DecisionChain[2].DecisionOutcome)
+
+	// #2598: the three shared-correlation rows reconstruct into ONE grouped chain
+	// with three steps in step order (llm → tool → agent).
+	require.Len(t, resp.Data.DecisionChains, 1)
+	chain := resp.Data.DecisionChains[0]
+	assert.Equal(t, sharedCorr, chain.CorrelationID)
+	assert.Equal(t, 3, chain.StepCount)
+	require.Len(t, chain.Steps, 3)
+	assert.Equal(t, "dc-1", chain.Steps[0].ID)
+	assert.Equal(t, "dc-2", chain.Steps[1].ID)
+	assert.Equal(t, "dc-3", chain.Steps[2].ID)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }

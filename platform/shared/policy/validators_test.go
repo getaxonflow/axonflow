@@ -6,11 +6,11 @@ import (
 
 func TestValidateCreditCard(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
-		minConf    float64
+		name      string
+		match     string
+		context   string
+		wantValid bool
+		minConf   float64
 	}{
 		// Valid cards with Luhn check
 		{"Valid Visa", "4111111111111111", "card number", true, 0.9},
@@ -47,11 +47,11 @@ func TestValidateCreditCard(t *testing.T) {
 
 func TestValidateSSN(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
-		minConf    float64
+		name      string
+		match     string
+		context   string
+		wantValid bool
+		minConf   float64
 	}{
 		// Valid SSNs
 		{"Valid SSN with dashes", "123-45-6789", "ssn field", true, 0.9},
@@ -88,11 +88,11 @@ func TestValidateSSN(t *testing.T) {
 
 func TestValidateIBAN(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
-		minConf    float64
+		name      string
+		match     string
+		context   string
+		wantValid bool
+		minConf   float64
 	}{
 		// Valid IBANs (MOD 97 verified)
 		{"Valid DE IBAN", "DE89370400440532013000", "bank account", true, 0.9},
@@ -121,11 +121,11 @@ func TestValidateIBAN(t *testing.T) {
 
 func TestValidateAadhaar(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
-		minConf    float64
+		name      string
+		match     string
+		context   string
+		wantValid bool
+		minConf   float64
 	}{
 		// Valid Aadhaar numbers
 		{"Valid Aadhaar", "234567890123", "aadhaar number", true, 0.9},
@@ -139,8 +139,24 @@ func TestValidateAadhaar(t *testing.T) {
 		{"Too short", "23456789012", "", false, 0},
 		{"Too long", "2345678901234", "", false, 0},
 
-		// Context effects
-		{"With credit card context", "234567890123", "credit card number", true, 0.5},
+		// Context gating (the fix): a 12-digit number is governed as Aadhaar ONLY
+		// with an adjacent Aadhaar/UID label. The pattern matches any 12 digits and
+		// EvaluateAll has no confidence threshold, so an unlabelled number must NOT
+		// validate — otherwise benign barcodes/ids are masked.
+		{"No label - benign barcode", "234567890123", "barcode 234567890123 scanned", false, 0},
+		{"Credit-card context (was a false positive)", "234567890123", "credit card number", false, 0},
+		{"Label adjacent in sentence", "234567890123", "customer aadhaar 234567890123 on file", true, 0.9},
+		{"Label not adjacent", "234567890123", "the aadhaar programme; ref 234567890123 here", false, 0},
+		// What the ENGINE actually passes: the pattern's `aadhaar[:\s]+<digits>`
+		// alternative is leftmost, so the match span INCLUDES the label and the left
+		// context excludes it. Must still validate (runtime-verified, not just unit).
+		{"Label embedded in match", "aadhaar 234567890123", "customer aadhaar 234567890123 on file", true, 0.9},
+		{"Label embedded with colon", "Aadhaar: 2345 6789 0123", "id Aadhaar: 2345 6789 0123", true, 0.9},
+		// The seed UID alternative has no \b, so a case-insensitive scrape pulls "uid"
+		// out of "liqUID"/"sqUID" → match span "uid 234...". The left context then ends
+		// MID-WORD ("the liq"), which must reject the in-match label. (R3 blocker.)
+		{"Mid-word uid (liquid)", "uid 234567890123", "the liquid 234567890123 sample", false, 0},
+		{"Mid-word uid (squid)", "uid 234567890123", "squid 234567890123 count", false, 0},
 	}
 
 	for _, tt := range tests {
@@ -158,11 +174,11 @@ func TestValidateAadhaar(t *testing.T) {
 
 func TestValidatePAN(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
-		minConf    float64
+		name      string
+		match     string
+		context   string
+		wantValid bool
+		minConf   float64
 	}{
 		// Valid PAN numbers
 		{"Valid Person PAN", "ABCPD1234E", "PAN card", true, 0.9},
@@ -193,10 +209,10 @@ func TestValidatePAN(t *testing.T) {
 
 func TestValidateEmail(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
+		name      string
+		match     string
+		context   string
+		wantValid bool
 	}{
 		{"Valid email", "user@example.com", "", true},
 		{"Valid with dots", "user.name@example.com", "", true},
@@ -219,10 +235,10 @@ func TestValidateEmail(t *testing.T) {
 
 func TestValidatePhone(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
+		name      string
+		match     string
+		context   string
+		wantValid bool
 	}{
 		{"US format", "555-123-4567", "phone", true},
 		{"US with area", "(555) 123-4567", "call us", true},
@@ -243,10 +259,10 @@ func TestValidatePhone(t *testing.T) {
 
 func TestValidateIPAddress(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
+		name      string
+		match     string
+		context   string
+		wantValid bool
 	}{
 		{"Valid public IP", "8.8.8.8", "ip address", true},
 		{"Valid IP", "192.168.1.1", "server", true},
@@ -254,6 +270,21 @@ func TestValidateIPAddress(t *testing.T) {
 		{"Invalid octet", "256.1.1.1", "", false},
 		{"Invalid format", "1.2.3", "", false},
 		{"Invalid negative", "-1.2.3.4", "", false},
+		// A version LABEL immediately preceding the dotted value → reject (PR C FP fix).
+		{"Version full word", "10.20.30.40", "build version 10.20.30.40 in prod", false},
+		{"Ver json key", "10.20.30.40", `{"ver":"10.20.30.40"}`, false},
+		{"Version json space", "10.20.30.40", `{"version": "10.20.30.40"}`, false},
+		{"Firmware adjacent", "1.2.3.4", "firmware 1.2.3.4 installed", false},
+		{"Semver adjacent", "2.5.10.1", "semver 2.5.10.1 tag", false},
+		// "server" contains "ver" but must NOT match \bver\b (word boundary).
+		{"Server not version", "203.0.113.7", "server 203.0.113.7 responded", true},
+		// Proximity gate (R3 r1): a version word NEAR but not abutting an IP → detect.
+		{"Version not adjacent", "203.0.113.7", "deployed to 203.0.113.7 this version", true},
+		// Excluded common-verb labels (R3 r2): release/build/rev abutting a REAL IP must
+		// STILL be detected — they are too FP-prone to hard-reject.
+		{"Release verb adjacent", "203.0.113.7", "please release 203.0.113.7 to prod", true},
+		{"Build verb adjacent", "10.0.0.5", "kicked off the build 10.0.0.5 host", true},
+		{"Indicator with release", "203.0.113.7", "the ip address to release 203.0.113.7 now", true},
 	}
 
 	for _, tt := range tests {
@@ -268,10 +299,10 @@ func TestValidateIPAddress(t *testing.T) {
 
 func TestValidateBankAccount(t *testing.T) {
 	tests := []struct {
-		name       string
-		match      string
-		context    string
-		wantValid  bool
+		name      string
+		match     string
+		context   string
+		wantValid bool
 	}{
 		// Valid routing + account (ABA checksum)
 		{"Valid routing 322271627", "322271627123456789", "bank account", true},

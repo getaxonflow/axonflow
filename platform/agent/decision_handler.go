@@ -110,6 +110,20 @@ const (
 	DecisionStageAgent = "agent"
 )
 
+// Plane (surface) discriminator values for the audit_logs.plane column
+// (#2592 / ADR-058 Decision-1). Identifies which gateway/surface emitted a
+// decision so a single query over audit_logs can return every block across
+// every plane. Distinct from the per-request `stage` (llm/tool/agent): plane
+// is the SURFACE (which PEP wrote the row), stage is the request shape.
+const (
+	PlaneDecision     = "decision"      // POST /api/v1/decide (the Decision API itself)
+	PlaneMCP          = "mcp"           // MCP check-input / check-output handlers
+	PlaneLLM          = "llm"           // LLM gateway PEP
+	PlaneAgent        = "agent"         // agent gateway PEP
+	PlaneGateway      = "gateway"       // generic reference PEP adapter
+	PlaneOpenAICompat = "openai_compat" // OpenAI-compatible chat-completions surface
+)
+
 // Obligation contract constants (ADR-056, #2563).
 const (
 	// ObligationRedactPII is the obligation a PEP discharges by replacing the
@@ -428,6 +442,15 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		userID:    user.ID,
 		query:     req.Query,
 		gatewayID: sanitizeGatewayID(req.CallerIdentity.GatewayID),
+		plane:     PlaneDecision, // every /api/v1/decide row records plane=decision
+		// correlationID is the SHARED key across the stages of one logical request
+		// (#2598). traceID here is the inbound traceparent's W3C trace-id when the
+		// PEP propagated one — the SAME value across its llm/tool/agent hops — or a
+		// freshly minted id otherwise (a single-shot call → its own singleton).
+		// Captured BEFORE recordDecideDecision, which may swap the RETURNED trace_id
+		// for an OTel-assigned one; the persisted correlation key stays this stable
+		// inbound/minted value so multi-stage grouping survives OTel being on.
+		correlationID: traceID,
 	}
 
 	// Circuit breaker -- transient deny shape. Returns HTTP 503 so the PEP
@@ -479,7 +502,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gwDetectionCfg := GetGatewayDetectionConfig()
+	// #2581: resolve per-org posture (org with no override → deployment-global).
+	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 
 	// blockingPolicyID captures the SINGLE policy that produces a deny
 	// verdict, when one exists. The shared engine appends non-blocking
@@ -661,6 +685,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	if evaluatedPolicies == nil {
 		evaluatedPolicies = []string{}
 	}
+
+	// Persist the structured obligations (e.g. redact_pii) onto the audit row
+	// instead of flattening them into the reason text. Only the terminal
+	// allow/deny path carries obligations; the early-return deny paths above
+	// (circuit-breaker / kill-switch / PII) have none, so they leave this nil.
+	decisionAudit.obligations = obligations
 
 	traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, verdict, evaluatedPolicies, time.Since(startTime).Milliseconds(), reasons, traceID, reqContext, contextTruncated, decisionAudit)
 
@@ -1043,6 +1073,25 @@ type decisionAuditInput struct {
 	// onto the decision span's decision.gateway_id attribute. Empty for callers
 	// that don't assert one.
 	gatewayID string
+	// plane is the surface that emitted the decision (#2592 / ADR-058):
+	// PlaneDecision for /api/v1/decide, PlaneMCP for the MCP handlers, etc.
+	// Persisted to the first-class audit_logs.plane column. Empty defaults to
+	// PlaneDecision in writeDecisionAuditLog (the /decide path is the only
+	// caller that historically left it unset).
+	plane string
+	// correlationID is the shared key across the decision rows of one logical
+	// request (#2598 / ADR-058 Phase 1.5): the W3C trace_id a PEP propagates
+	// across its llm/tool/agent hops, so the SEBI/EU-AI-Act exporters can GROUP
+	// the stages into one ordered chain. Persisted to the first-class
+	// audit_logs.correlation_id column AND mirrored into policy_details JSONB
+	// (dual-write, matching decision_id). Empty/"" → NULL column → the row is a
+	// singleton chain (legacy + single-shot callers).
+	correlationID string
+	// obligations is the structured ADR-056/#2563 obligation contract for this
+	// decision (e.g. a redact_pii obligation). Persisted to audit_logs.obligations
+	// JSONB so obligations are queryable structure, not flattened into the
+	// free-text policy_details->>'reason'. Empty/nil → NULL column.
+	obligations []DecisionObligation
 }
 
 // maxGatewayIDLen bounds a recorded gateway_id. Gateway ids are short origin
@@ -1166,6 +1215,13 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	if contextTruncated {
 		details["context_truncated"] = true
 	}
+	// #2598 / ADR-058 Phase 1.5: mirror the correlation key into the JSONB copy
+	// alongside the first-class column below, so the exporters' COALESCE read path
+	// still resolves it if the column is ever dropped/rolled back (matches the
+	// decision_id dual-write). Omitted when unset → the row stays a singleton.
+	if audit.correlationID != "" {
+		details["correlation_id"] = audit.correlationID
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		log.Printf("⚠️ [Decide] audit log marshal failed (non-fatal): %v", err)
@@ -1200,12 +1256,40 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	sum := sha256.Sum256([]byte(query))
 	queryHash := hex.EncodeToString(sum[:])
 
+	// #2592 / ADR-058 Phase 1: promote decision_id to a first-class column +
+	// add the plane discriminator + structured obligations, ALONGSIDE the JSONB
+	// copy above (dual-write, no flag-day). plane defaults to PlaneDecision
+	// because /api/v1/decide is the only writer that historically left it unset.
+	plane := audit.plane
+	if plane == "" {
+		plane = PlaneDecision
+	}
+	// obligations → JSONB column (NULL when none). Marshal failure is non-fatal:
+	// the row still records the verdict, just without the structured obligations.
+	var obligationsJSON interface{}
+	if len(audit.obligations) > 0 {
+		if b, mErr := json.Marshal(audit.obligations); mErr == nil {
+			obligationsJSON = b
+		} else {
+			log.Printf("⚠️ [Decide] obligations marshal failed (non-fatal): %v", mErr)
+		}
+	}
+
+	// #2598 / ADR-058 Phase 1.5: correlation_id → first-class column (NULL when
+	// unset so the row groups as its own singleton). Dual-written into
+	// policy_details above for read-path resilience.
+	var correlationIDArg interface{}
+	if audit.correlationID != "" {
+		correlationIDArg = audit.correlationID
+	}
+
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
-			policy_decision, policy_details
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			policy_decision, policy_details, decision_id, plane, obligations,
+			correlation_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`,
 		"decide_"+decisionID, // id (PK; one row per decision)
 		requestID,            // request_id
@@ -1220,7 +1304,11 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		query,                // query
 		queryHash,            // query_hash
 		verdict,              // policy_decision — allow|deny|needs_approval
-		detailsJSON,          // policy_details (JSONB)
+		detailsJSON,          // policy_details (JSONB) — decision_id still mirrored here
+		decisionID,           // decision_id (first-class column; #2592)
+		plane,                // plane (surface discriminator; #2592)
+		obligationsJSON,      // obligations (JSONB or NULL; #2592)
+		correlationIDArg,     // correlation_id (first-class column or NULL; #2598)
 	)
 	if err != nil {
 		log.Printf("⚠️ [Decide] audit log insert failed (non-fatal): %v", err)

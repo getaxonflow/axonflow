@@ -241,32 +241,29 @@ func ValidateAadhaar(match string, context string) (bool, float64) {
 		return false, 0
 	}
 
-	// Calculate confidence
-	confidence := 0.7
-
-	lowerContext := strings.ToLower(context)
-	positiveIndicators := []string{"aadhaar", "aadhar", "uid", "uidai", "unique id"}
-	for _, indicator := range positiveIndicators {
-		if strings.Contains(lowerContext, indicator) {
-			confidence = 0.95
-			break
-		}
+	// The pattern's bare-12-digit alternative matches ANY 12-digit number
+	// (barcodes, order ids, ledger refs), and EvaluateAll has no confidence
+	// threshold, so a match always fires → under PII_ACTION=redact benign 12-digit
+	// figures were masked. Validity therefore REQUIRES an Aadhaar/UID label. A
+	// Verhoeff check-digit gate is NOT enough on its own here: ~1 in 10 random
+	// 12-digit numbers pass the check digit, so it would only cut the false
+	// positives 10x, not eliminate them.
+	//
+	// The label can be in EITHER place: (a) immediately preceding the digits (the
+	// pattern's bare-digit alternative, label lives in the left context), or (b)
+	// as the PREFIX of the match itself — the pattern's `aadhaar[:\s]+<digits>` /
+	// `UID[:\s]+<digits>` alternatives are leftmost, so the match is e.g.
+	// "aadhaar 234...". Accept either. For (b) the leading label must be a REAL word
+	// (the seed alts have no \b, so a case-insensitive scrape can pull "uid" out of
+	// "liqUID 234..." → span "uid 234..."); require the char before the match to be
+	// a non-word char, i.e. the left context does not end mid-word.
+	left := leftContextOf(match, context)
+	labelInLeft := aadhaarLabelRe.MatchString(left)
+	labelInMatch := aadhaarLabelInMatchRe.MatchString(match) && !endsWithWordChar(left)
+	if !labelInLeft && !labelInMatch {
+		return false, 0
 	}
-
-	// Negative indicators (might be credit card or other number)
-	negativeIndicators := []string{"card", "credit", "phone", "mobile"}
-	for _, indicator := range negativeIndicators {
-		if strings.Contains(lowerContext, indicator) {
-			confidence -= 0.2
-			break
-		}
-	}
-
-	if confidence < 0.5 {
-		confidence = 0.5
-	}
-
-	return true, confidence
+	return true, 0.95
 }
 
 // ValidatePAN validates Indian Permanent Account Numbers (tax ID).
@@ -409,6 +406,16 @@ func ValidatePhone(match string, context string) (bool, float64) {
 }
 
 // ValidateIPAddress validates IPv4 addresses.
+// ipVersionLabelRe matches a version LABEL that immediately PRECEDES the dotted value
+// (anchored at the end of the left context, allowing JSON/punctuation between the label
+// and the value: {"ver":"10.20.30.40"}, "version: 2.5.0.1", "firmware 1.2.3.4"). It is
+// deliberately restricted to version-SPECIFIC tokens — "release"/"build"/"rev" were
+// excluded because they are common English verbs that frequently abut a real IP in ops
+// prose ("please release 203.0.113.7 to prod"), where rejecting would drop a real IP
+// (a leak — worse than masking a version). Proximity-gated, so a version word merely
+// near (not abutting) an IP never rejects; word boundaries keep "server"/"review" out.
+var ipVersionLabelRe = regexp.MustCompile(`(?i)\b(version|ver|semver|firmware|revision)\b["':#=.\-\s]*$`)
+
 func ValidateIPAddress(match string, context string) (bool, float64) {
 	parts := strings.Split(match, ".")
 	if len(parts) != 4 {
@@ -451,9 +458,14 @@ func ValidateIPAddress(match string, context string) (bool, float64) {
 		}
 	}
 
-	// Version numbers are often misdetected as IPs
-	if strings.Contains(lowerContext, "version") {
-		confidence -= 0.3
+	// Version / build numbers are often misdetected as IPs (a 4-part dotted number
+	// with octets ≤255 is a valid IPv4 shape). When a version/build LABEL immediately
+	// precedes the dotted value it is a version, not an address → reject. Proximity-
+	// gated (leftContextOf + end-anchored ipVersionLabelRe) so a real IP merely near a
+	// version word elsewhere in the window is still detected — and it covers the "ver"
+	// JSON-key form the old full-word "version" substring check missed.
+	if ipVersionLabelRe.MatchString(leftContextOf(match, context)) {
+		return false, 0
 	}
 
 	if confidence < 0.3 {
@@ -698,6 +710,67 @@ func ValidateSingaporeUEN(match string, context string) (bool, float64) {
 
 var structuredUENRe = regexp.MustCompile(`^[TS]\d{2}[A-Z]{2}\d{4}[A-Z]$`)
 
+// aadhaarLabelRe / sgICLabelRe gate three more broad detectors the same way
+// passportLabelRe/dobLabelRe (#2567) and sgPostalLabelRe/sgUENLabelRe (#2575) do:
+// the label must IMMEDIATELY PRECEDE the value (anchored at the end of the left
+// context). These three matched on shape alone with no real gate, and EvaluateAll
+// has no confidence threshold, so under PII_ACTION=redact they masked benign IDs:
+// any 12-digit number fired Aadhaar; any [STFGM]/[FG]+7digit+letter fired NRIC/FIN.
+var aadhaarLabelRe = regexp.MustCompile(`(?i)\b(aadhaar|aadhar|uidai|uid|unique\s*id)\b\s*(?:number|no\.?|num|card|id)?\s*[:#=.\-]?\s*$`)
+
+// aadhaarLabelInMatchRe matches when the Aadhaar label is the PREFIX of the
+// matched span (the seed pattern's leftmost `aadhaar[:\s]+<digits>` /
+// `UID[:\s]+<digits>` alternatives put the label inside the match). Anchored at
+// the span start (^) so it only fires for a leading label — combined with the
+// caller's word-boundary check on the left context, this rejects a label that the
+// case-insensitive seed alt scraped out of the MIDDLE of a word (e.g. "liqUID
+// 234..." → span "uid 234...") while accepting a genuine "aadhaar 234..." match.
+var aadhaarLabelInMatchRe = regexp.MustCompile(`(?i)^\s*(aadhaar|aadhar|uidai|uid|unique\s*id)\b`)
+
+// endsWithWordChar reports whether s ends in a word character ([A-Za-z0-9_]).
+// Used to tell a real word-boundary label ("...customer aadhaar"|"") from one the
+// regex scraped out of the middle of a longer word ("...the liq"+"uid").
+func endsWithWordChar(s string) bool {
+	rs := []rune(s)
+	if len(rs) == 0 {
+		return false
+	}
+	r := rs[len(rs)-1]
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// sgICLabelRe: the unambiguous labels (nric, national registration, identity card,
+// foreign identification) may appear bare; the bare token "fin" is an ordinary
+// English word (fish fin, code fin), so it is accepted ONLY when followed by a
+// qualifier (no/number/card) or a separator (:/#/=/-), i.e. "FIN: F…", "FIN no F…"
+// — never "the fin S…". Bare-space "FIN F…" is out of scope (use a separator).
+var sgICLabelRe = regexp.MustCompile(`(?i)(?:\b(?:nric|national\s*registration(?:\s*identity)?(?:\s*card)?|foreign\s*identification(?:\s*number)?|identity\s*card)\b\s*(?:number|no\.?|num)?\s*[:#=.\-]?|\bfin\b\s*(?:no\.?|number|num|card|[:#=.\-]))\s*$`)
+
+// ValidateSingaporeNRIC gates sys_pii_singapore_nric. Its pattern `[STFGM]\d{7}[A-Z]`
+// matches generic letter+7digit+letter ids (asset tags, SKUs, order refs), and the
+// pii-singapore category default validator is nil (accept-all). Validity therefore
+// REQUIRES an NRIC/identity-card label immediately preceding the value.
+//
+// Coverage limit (documented, not a regression): the NRIC checksum (the trailing
+// check letter) is Enterprise-only (Issue #1076); the OSS path never validated it,
+// so a bare unlabelled NRIC is not governed here — the safe direction versus masking
+// arbitrary alphanumeric ids.
+func ValidateSingaporeNRIC(match string, context string) (bool, float64) {
+	if sgICLabelRe.MatchString(leftContextOf(match, context)) {
+		return true, 0.9
+	}
+	return false, 0
+}
+
+// ValidateSingaporeFIN gates sys_pii_singapore_fin (`[FG]\d{7}[A-Z]`) — same broad
+// shape and same nil-category-default as NRIC. Same adjacent-label gate.
+func ValidateSingaporeFIN(match string, context string) (bool, float64) {
+	if sgICLabelRe.MatchString(leftContextOf(match, context)) {
+		return true, 0.9
+	}
+	return false, 0
+}
+
 // ValidatorRegistry maps PII types to their validators.
 var ValidatorRegistry = map[string]ValidatorFunc{
 	"credit_card":  ValidateCreditCard,
@@ -713,6 +786,8 @@ var ValidatorRegistry = map[string]ValidatorFunc{
 	"dob":          ValidateDOB,
 	"sg_postal":    ValidateSingaporePostal,
 	"sg_uen":       ValidateSingaporeUEN,
+	"sg_nric":      ValidateSingaporeNRIC,
+	"sg_fin":       ValidateSingaporeFIN,
 }
 
 // GetValidatorByType returns a validator by PII type name.
@@ -743,6 +818,8 @@ var validatorTokenMappings = []struct{ token, regKey string }{
 	{"dob", "dob"},
 	{"postal", "sg_postal"},
 	{"uen", "sg_uen"},
+	{"nric", "sg_nric"},
+	{"fin", "sg_fin"},
 	{"ip", "ip_address"},
 	{"bank", "bank_account"},
 }

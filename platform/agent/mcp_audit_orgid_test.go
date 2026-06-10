@@ -39,7 +39,10 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 			"SELECT 1",
 			sqlmock.AnyArg(), // query_hash
 			"deny",
-			sqlmock.AnyArg(), // policy_details JSONB
+			sqlmock.AnyArg(),     // policy_details JSONB
+			"decision-1",         // decision_id (first-class column; #2592)
+			PlaneMCP,             // plane — MCP check-input surface
+			"corr-trace-input-1", // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -49,7 +52,8 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 		"alice@example.com", "admin",
 		"mcp_check_policy", "SELECT 1", "h",
 		"deny", "low",
-		[]RicherPolicyMatch{{PolicyName: "p", PolicyID: "pid", Version: 1}})
+		[]RicherPolicyMatch{{PolicyName: "p", PolicyID: "pid", Version: 1}},
+		"corr-trace-input-1")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
@@ -81,14 +85,18 @@ func TestWriteOverrideUsedEvent_OrgIDPersisted(t *testing.T) {
 			"override applied",
 			"none",
 			"allow",
-			sqlmock.AnyArg(), // policy_details JSONB
+			sqlmock.AnyArg(),   // policy_details JSONB
+			"decision-1",       // decision_id (first-class column; #2592)
+			PlaneMCP,           // plane — MCP check-input override surface
+			"corr-trace-ovr-1", // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"override-1", "decision-1",
 		"travel_tenant", wantOrgID, "client-xyz", "bob@example.com",
-		"policy-1", 7)
+		"policy-1", 7,
+		"corr-trace-ovr-1")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
