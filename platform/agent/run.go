@@ -1057,6 +1057,12 @@ func Run() {
 		tierAwarePolicyEngine = NewTierAwarePolicyEngine(authDB, nil)
 		log.Println("✅ Tier-aware policy engine initialized")
 
+		// Per-org detection-action overrides (#2581). Wires the short-TTL cache
+		// to authDB so the MCP + gateway check paths can resolve a per-org PII /
+		// SQLi / dangerous-* posture on top of the deployment-global env config.
+		// No-op in no-DB mode (cache stays nil → global config used everywhere).
+		InitDetectionOverrides(authDB)
+
 		// Activate integration-specific policies before policy engine init
 		// so the shared engine sees enabled rows on first load.
 		ActivateIntegrationsFromEnv(usageDB)
@@ -1799,7 +1805,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	var policyResult *StaticPolicyResult
 
 	// Check if gateway static policies are enabled (proxy uses gateway config)
-	gatewayDetectionCfg := GetGatewayDetectionConfig()
+	// #2581: resolve per-org posture (org with no override → deployment-global).
+	gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), user.OrgID)
 	sharedEngine := sharedpolicy.GetGlobalEngine()
 	if !gatewayDetectionCfg.Enabled {
 		// Static policies disabled — create empty result
@@ -2638,7 +2645,8 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
 	var result *StaticPolicyResult
-	gatewayDetectionCfg := GetGatewayDetectionConfig()
+	// #2581: resolve per-org posture (org with no override → deployment-global).
+	gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), testUser.OrgID)
 	sharedEngine := sharedpolicy.GetGlobalEngine()
 	if !gatewayDetectionCfg.Enabled {
 		result = &StaticPolicyResult{}

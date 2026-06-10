@@ -32,7 +32,6 @@ import (
 	"strings"
 	"unicode"
 
-	"axonflow/platform/agent"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -975,7 +974,10 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 		return nil, false
 	}
 
-	gwCfg := agent.GetGatewayDetectionConfig()
+	// Per-org posture (#2612): orgID (already a parameter) selects this org's
+	// gateway config — the deployment-global config with its overrides applied,
+	// fail-safe to global. The action then flows into BuildActionOverrides below.
+	gwCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 
 	// Skip detection if gateway static policies are disabled
 	if !gwCfg.Enabled {

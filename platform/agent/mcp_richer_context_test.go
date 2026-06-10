@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
-	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/agent/sqli"
+	sharedpolicy "axonflow/platform/shared/policy"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
@@ -269,9 +269,9 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 	db, mock := newMockDB(t)
 	mock.ExpectExec("INSERT INTO audit_logs").
 		WithArgs(
-			sqlmock.AnyArg(), // id
+			sqlmock.AnyArg(),  // id
 			"req-1",           // request_id
-			sqlmock.AnyArg(), // timestamp
+			sqlmock.AnyArg(),  // timestamp
 			0,                 // user_id (email is not numeric → 0)
 			"u@e.com",         // user_email
 			"user",            // user_role
@@ -282,7 +282,10 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 			"SELECT 1",        // query
 			"h1",              // query_hash
 			"deny",            // policy_decision
-			sqlmock.AnyArg(), // policy_details JSON
+			sqlmock.AnyArg(),  // policy_details JSON
+			"dec-1",           // decision_id (first-class column; #2592)
+			PlaneMCP,          // plane — MCP check-input surface
+			"corr-trace-1",    // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -293,6 +296,7 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 		"mcp_check_input", "SELECT 1", "h1",
 		"blocked", "high",
 		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "Name"}},
+		"corr-trace-1",
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -305,12 +309,12 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 func TestWriteExplainableAuditLog_NilDBOrEmptyDecisionID(t *testing.T) {
 	writeExplainableAuditLog(context.Background(), nil,
 		"dec-1", "req-1", "t1", "o1", "c1", "u", "0", "user",
-		"t", "q", "h", "r", "high", nil)
+		"t", "q", "h", "r", "high", nil, "")
 
 	db, mock := newMockDB(t)
 	writeExplainableAuditLog(context.Background(), db,
 		"", "req-1", "t1", "o1", "c1", "u", "0", "user",
-		"t", "q", "h", "r", "high", nil)
+		"t", "q", "h", "r", "high", nil, "")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("empty decision_id should be a no-op; got: %v", err)
 	}
@@ -325,7 +329,7 @@ func TestWriteOverrideUsedEvent_Inserts(t *testing.T) {
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 5)
+		"pol-1", 5, "")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -337,12 +341,12 @@ func TestWriteOverrideUsedEvent_Inserts(t *testing.T) {
 func TestWriteOverrideUsedEvent_NilDBOrEmptyOverride(t *testing.T) {
 	writeOverrideUsedEvent(context.Background(), nil,
 		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 5)
+		"pol-1", 5, "")
 
 	db, mock := newMockDB(t)
 	writeOverrideUsedEvent(context.Background(), db,
 		"", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 5)
+		"pol-1", 5, "")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("empty override_id should be a no-op; got: %v", err)
 	}
@@ -354,26 +358,29 @@ func TestWriteOverrideUsedEvent_FallbackPlaceholders(t *testing.T) {
 	db, mock := newMockDB(t)
 	mock.ExpectExec("INSERT INTO audit_logs").
 		WithArgs(
-			sqlmock.AnyArg(), // id
-			"dec-1",           // request_id = decisionID
-			sqlmock.AnyArg(), // timestamp
-			0,                 // user_id
+			sqlmock.AnyArg(),         // id
+			"dec-1",                  // request_id = decisionID
+			sqlmock.AnyArg(),         // timestamp
+			0,                        // user_id
 			"unknown@axonflow.local", // user_email fallback
 			"user",                   // user_role
 			"unknown",                // client_id fallback
 			"unknown",                // tenant_id fallback
-			"",                        // org_id (no fallback)
-			"override_used",           // request_type
-			"override applied",        // query
-			"none",                    // query_hash
-			"allow",                   // policy_decision
-			sqlmock.AnyArg(),          // policy_details JSON
+			"",                       // org_id (no fallback)
+			"override_used",          // request_type
+			"override applied",       // query
+			"none",                   // query_hash
+			"allow",                  // policy_decision
+			sqlmock.AnyArg(),         // policy_details JSON
+			"dec-1",                  // decision_id (first-class column; #2592)
+			PlaneMCP,                 // plane — MCP check-input override surface
+			"corr-fb-ovr",            // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"ov-1", "dec-1", "", "", "", "",
-		"", 0)
+		"", 0, "corr-fb-ovr")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -386,20 +393,23 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 	db, mock := newMockDB(t)
 	mock.ExpectExec("INSERT INTO audit_logs").
 		WithArgs(
-			sqlmock.AnyArg(), // id
-			"req-1",           // request_id
-			sqlmock.AnyArg(), // timestamp
-			42,                // user_id parsed from numeric string
+			sqlmock.AnyArg(),         // id
+			"req-1",                  // request_id
+			sqlmock.AnyArg(),         // timestamp
+			42,                       // user_id parsed from numeric string
 			"unknown@axonflow.local", // user_email fallback
 			"user",                   // user_role fallback
 			"unknown",                // client_id fallback
 			"unknown",                // tenant_id fallback
-			"",                        // org_id (no fallback)
+			"",                       // org_id (no fallback)
 			"mcp_check_input",
 			"q",
 			"h",
 			"deny",
 			sqlmock.AnyArg(),
+			"dec-1",       // decision_id (first-class column; #2592)
+			PlaneMCP,      // plane — MCP check-input surface
+			"corr-fb-exp", // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -410,6 +420,7 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 		"mcp_check_input", "q", "h",
 		"blocked", "high",
 		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "n1"}},
+		"corr-fb-exp",
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -850,10 +861,10 @@ func TestCollectPolicyVersions(t *testing.T) {
 // byte-for-byte legacy shape).
 func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 	cases := []struct {
-		name        string
-		matches     []RicherPolicyMatch
-		wantTopMap  map[string]int // expected top-level policy_versions map
-		wantInline  map[string]int // expected inline match[i].policy_version
+		name       string
+		matches    []RicherPolicyMatch
+		wantTopMap map[string]int // expected top-level policy_versions map
+		wantInline map[string]int // expected inline match[i].policy_version
 	}{
 		{
 			name: "with versions",
@@ -894,6 +905,9 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 					"u@e.com", "user", "c1", "t1", "o1",
 					"mcp_check_input", "SELECT 1", "h1", "deny",
 					jsonCaptureArg{dst: &capturedJSON},
+					"dec-1",   // decision_id (first-class column; #2592)
+					PlaneMCP,  // plane — MCP check-input surface
+					"corr-tc", // correlation_id (#2598)
 				).
 				WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -904,6 +918,7 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 				"mcp_check_input", "SELECT 1", "h1",
 				"blocked", "high",
 				tc.matches,
+				"corr-tc",
 			)
 
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -913,9 +928,9 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 				t.Fatal("policy_details JSON was not captured")
 			}
 			var details struct {
-				DecisionID     string              `json:"decision_id"`
-				PolicyVersions map[string]int      `json:"policy_versions,omitempty"`
-				PolicyMatches  []map[string]any    `json:"policy_matches"`
+				DecisionID     string           `json:"decision_id"`
+				PolicyVersions map[string]int   `json:"policy_versions,omitempty"`
+				PolicyMatches  []map[string]any `json:"policy_matches"`
 			}
 			if err := json.Unmarshal(capturedJSON, &details); err != nil {
 				t.Fatalf("unmarshal policy_details JSON: %v", err)
@@ -972,12 +987,16 @@ func TestWriteOverrideUsedEvent_PolicyVersionInJSONB(t *testing.T) {
 			"u@e.com", "user", "c1", "t1", "o1",
 			"override_used", "override applied", "none", "allow",
 			jsonCaptureArg{dst: &capturedJSON},
+			"dec-1",   // decision_id (first-class column; #2592)
+			PlaneMCP,  // plane — MCP check-input override surface
+			"corr-pv", // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
 		"pol-1", 4,
+		"corr-pv",
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1068,6 +1087,9 @@ func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 			"none",              // statementHash fallback
 			"deny",
 			sqlmock.AnyArg(),
+			"dec-1",    // decision_id (first-class column; #2592)
+			PlaneMCP,   // plane — MCP check-input surface
+			"corr-out", // correlation_id (#2598)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1078,6 +1100,7 @@ func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 		"mcp_check_output", "", "", // empty statement + hash
 		"blocked", "high",
 		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "n", Version: 1}},
+		"corr-out",
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1100,4 +1123,3 @@ func TestLookupPolicyVersionsByID_AllRowsHaveNullVersion(t *testing.T) {
 		t.Errorf("all-null versions: want nil, got %v", got)
 	}
 }
-

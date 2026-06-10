@@ -6,7 +6,9 @@
 package euaiact
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -158,63 +160,300 @@ func (s *ExportService) processExport(exportID string) {
 	s.repo.Update(ctx, export)
 }
 
-// processFullAuditExport processes a full audit export.
+// finalizeExportPayload records the true row count + serialized size on the
+// export and — when a cloud storage backend is configured — uploads the JSON
+// payload so the export is downloadable. It mirrors the decision-chain upload
+// path so every EU AI Act export type shares identical storage semantics and
+// the same JSON-only delivery limitation (CSV/XML/PDF rendering is not yet
+// implemented for any export type). When no storage backend is configured the
+// record count + file size still reflect the real rows; the export is produced
+// but not downloadable — the same limitation the decision-chain export carries.
+// slug is the storage-key/file basename for the export type. #2610.
+func (s *ExportService) finalizeExportPayload(ctx context.Context, export *Export, recordCount int, payload []byte, slug string) error {
+	export.RecordCount = recordCount
+	export.FileSize = int64(len(payload))
+
+	if s.storageBackend == nil {
+		return nil
+	}
+	storageKey := fmt.Sprintf("euaiact/%s/%s-%s.json", export.OrgID, slug, export.ID)
+	if _, err := s.storageBackend.Upload(ctx, &cloudstorage.UploadRequest{
+		Key:         storageKey,
+		Body:        bytes.NewReader(payload),
+		ContentType: "application/json",
+		Metadata: map[string]string{
+			"export_id":   export.ID,
+			"org_id":      export.OrgID,
+			"export_type": string(export.ExportType),
+		},
+	}); err != nil {
+		return fmt.Errorf("upload %s export: %w", slug, err)
+	}
+	export.StorageType = "cloud"
+	export.StorageKey = storageKey
+	return nil
+}
+
+// processFullAuditExport processes a full audit export — the canonical
+// audit_logs record set (every governed request/response, not just the
+// decision-only subset) for the org + window, for EU AI Act Article 12
+// record-keeping. It queries the real rows, records the true count, and uploads
+// the serialized payload when a storage backend is configured. An empty window
+// yields a truthful zero-record export (a regulator-valid "no governed activity
+// in range" attestation), never a fabricated success (#2591) — only a genuine
+// query/serialize/upload error fails the job. #2610.
 func (s *ExportService) processFullAuditExport(ctx context.Context, export *Export) error {
-	// Update progress
-	export.Progress = 10
+	export.Progress = 25
 	s.repo.Update(ctx, export)
 
-	// TODO: Query audit data from database
-	// This will be implemented when integrated with the full system
+	records, err := s.repo.GetFullAudit(ctx, export.OrgID, export.DateFrom, export.DateTo)
+	if err != nil {
+		return fmt.Errorf("query full audit: %w", err)
+	}
 
-	export.Progress = 50
+	export.Progress = 60
 	s.repo.Update(ctx, export)
 
-	// TODO: Generate export file in requested format
+	payload, err := json.Marshal(map[string]interface{}{
+		"export_id":    export.ID,
+		"org_id":       export.OrgID,
+		"export_type":  export.ExportType,
+		"date_from":    export.DateFrom,
+		"date_to":      export.DateTo,
+		"record_count": len(records),
+		"audit_logs":   records,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal full audit: %w", err)
+	}
+
+	if err := s.finalizeExportPayload(ctx, export, len(records), payload, "full-audit"); err != nil {
+		return err
+	}
+	export.Progress = 90
+	s.repo.Update(ctx, export)
+	return nil
+}
+
+// processConformityExport processes a conformity evidence export — the
+// euaiact_conformity_assessments (Article 43) for the org whose assessment_date
+// falls in the window, with their full requirements/evidence/findings content.
+// Real data, true count, fail-on-error (#2591). #2610.
+func (s *ExportService) processConformityExport(ctx context.Context, export *Export) error {
+	export.Progress = 25
+	s.repo.Update(ctx, export)
+
+	assessments, err := s.repo.GetConformityAssessments(ctx, export.OrgID, export.DateFrom, export.DateTo)
+	if err != nil {
+		return fmt.Errorf("query conformity assessments: %w", err)
+	}
+
+	export.Progress = 60
+	s.repo.Update(ctx, export)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"export_id":              export.ID,
+		"org_id":                 export.OrgID,
+		"export_type":            export.ExportType,
+		"date_from":              export.DateFrom,
+		"date_to":                export.DateTo,
+		"record_count":           len(assessments),
+		"conformity_assessments": assessments,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal conformity assessments: %w", err)
+	}
+
+	if err := s.finalizeExportPayload(ctx, export, len(assessments), payload, "conformity-evidence"); err != nil {
+		return err
+	}
+	export.Progress = 90
+	s.repo.Update(ctx, export)
+	return nil
+}
+
+// processHITLExport processes a HITL summary export — the hitl_approval_history
+// immutable human-oversight audit trail (Article 14 oversight / Article 12
+// record-keeping) for the org + window. Real data, true count, fail-on-error
+// (#2591). #2610.
+func (s *ExportService) processHITLExport(ctx context.Context, export *Export) error {
+	export.Progress = 25
+	s.repo.Update(ctx, export)
+
+	records, err := s.repo.GetHITLApprovalHistory(ctx, export.OrgID, export.DateFrom, export.DateTo)
+	if err != nil {
+		return fmt.Errorf("query HITL approval history: %w", err)
+	}
+
+	export.Progress = 60
+	s.repo.Update(ctx, export)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"export_id":      export.ID,
+		"org_id":         export.OrgID,
+		"export_type":    export.ExportType,
+		"date_from":      export.DateFrom,
+		"date_to":        export.DateTo,
+		"record_count":   len(records),
+		"hitl_approvals": records,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal HITL approval history: %w", err)
+	}
+
+	if err := s.finalizeExportPayload(ctx, export, len(records), payload, "hitl-summary"); err != nil {
+		return err
+	}
+	export.Progress = 90
+	s.repo.Update(ctx, export)
+	return nil
+}
+
+// processDecisionChainExport processes a decision_chain export — the
+// per-decision audit rows for the requested org + window, reconstructed into
+// logical chains: rows sharing a correlation_id (the W3C trace_id a PEP
+// propagates across its hops) are grouped into one chain in step order, rows
+// without one are singletons (#2598). The payload carries both the flat
+// chronological list (decision_chain) and the grouped view (decision_chains).
+//
+// The rows are derived from the canonical audit_logs decision rows (#2588); the
+// legacy decision_chain table this export was conceptually tied to has no live
+// writer, so this processor previously returned an empty (RecordCount=0) export
+// in every deployment. It now queries the real rows, records the true count
+// (decision records / steps), and — when a cloud storage backend is configured —
+// uploads the serialized payload so it is downloadable. The payload is JSON
+// regardless of the requested format (CSV/XML/PDF rendering is not yet
+// implemented for any EU AI Act export type); the storage key reflects this with
+// a .json suffix.
+func (s *ExportService) processDecisionChainExport(ctx context.Context, export *Export) error {
+	export.Progress = 25
+	s.repo.Update(ctx, export)
+
+	records, err := s.repo.GetDecisionChain(ctx, export.OrgID, export.DateFrom, export.DateTo)
+	if err != nil {
+		return fmt.Errorf("query decision chain: %w", err)
+	}
+
+	chains := groupDecisionChain(records)
+
+	// RecordCount stays the decision-record (step) count for retention/volume
+	// reporting; chain_count reports how many logical chains those steps formed.
+	export.RecordCount = len(records)
+	export.Progress = 60
+	s.repo.Update(ctx, export)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"export_id":       export.ID,
+		"org_id":          export.OrgID,
+		"export_type":     export.ExportType,
+		"date_from":       export.DateFrom,
+		"date_to":         export.DateTo,
+		"record_count":    len(records),
+		"chain_count":     len(chains),
+		"decision_chain":  records,
+		"decision_chains": chains,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal decision chain: %w", err)
+	}
+	export.FileSize = int64(len(payload))
+
+	// Persist the payload so the export is downloadable. Mirrors the SEBI cloud
+	// upload path; when no storage backend is configured the record count + file
+	// size still reflect the real decision rows (same delivery limitation the
+	// other EU AI Act export types carry).
+	if s.storageBackend != nil {
+		storageKey := fmt.Sprintf("euaiact/%s/decision-chain-%s.json", export.OrgID, export.ID)
+		if _, upErr := s.storageBackend.Upload(ctx, &cloudstorage.UploadRequest{
+			Key:         storageKey,
+			Body:        bytes.NewReader(payload),
+			ContentType: "application/json",
+			Metadata: map[string]string{
+				"export_id":   export.ID,
+				"org_id":      export.OrgID,
+				"export_type": string(export.ExportType),
+			},
+		}); upErr != nil {
+			return fmt.Errorf("upload decision chain export: %w", upErr)
+		}
+		export.StorageType = "cloud"
+		export.StorageKey = storageKey
+	}
 
 	export.Progress = 90
-	export.RecordCount = 0 // Will be set from actual data
 	s.repo.Update(ctx, export)
-
 	return nil
 }
 
-// processConformityExport processes a conformity evidence export.
-func (s *ExportService) processConformityExport(ctx context.Context, export *Export) error {
-	export.Progress = 50
-	s.repo.Update(ctx, export)
-	// TODO: Implement conformity export
-	return nil
-}
-
-// processHITLExport processes a HITL summary export.
-func (s *ExportService) processHITLExport(ctx context.Context, export *Export) error {
-	export.Progress = 50
-	s.repo.Update(ctx, export)
-	// TODO: Implement HITL export
-	return nil
-}
-
-// processDecisionChainExport processes a decision chain export.
-func (s *ExportService) processDecisionChainExport(ctx context.Context, export *Export) error {
-	export.Progress = 50
-	s.repo.Update(ctx, export)
-	// TODO: Implement decision chain export
-	return nil
-}
-
-// processPolicyViolationsExport processes a policy violations export.
+// processPolicyViolationsExport processes a policy violations export — the
+// policy_violations rows for the org + window (Article 12 record-keeping /
+// Article 9 risk-management evidence). Real data, true count, fail-on-error
+// (#2591). #2610.
 func (s *ExportService) processPolicyViolationsExport(ctx context.Context, export *Export) error {
-	export.Progress = 50
+	export.Progress = 25
 	s.repo.Update(ctx, export)
-	// TODO: Implement policy violations export
+
+	records, err := s.repo.GetPolicyViolations(ctx, export.OrgID, export.DateFrom, export.DateTo)
+	if err != nil {
+		return fmt.Errorf("query policy violations: %w", err)
+	}
+
+	export.Progress = 60
+	s.repo.Update(ctx, export)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"export_id":         export.ID,
+		"org_id":            export.OrgID,
+		"export_type":       export.ExportType,
+		"date_from":         export.DateFrom,
+		"date_to":           export.DateTo,
+		"record_count":      len(records),
+		"policy_violations": records,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal policy violations: %w", err)
+	}
+
+	if err := s.finalizeExportPayload(ctx, export, len(records), payload, "policy-violations"); err != nil {
+		return err
+	}
+	export.Progress = 90
+	s.repo.Update(ctx, export)
 	return nil
 }
 
-// processAccuracyExport processes an accuracy metrics export.
+// processAccuracyExport processes an accuracy metrics export — the
+// euaiact_accuracy_metrics rows for the org + window (Article 15 accuracy
+// record-keeping). Real data, true count, fail-on-error (#2591). #2610.
 func (s *ExportService) processAccuracyExport(ctx context.Context, export *Export) error {
-	export.Progress = 50
+	export.Progress = 25
 	s.repo.Update(ctx, export)
-	// TODO: Implement accuracy export
+
+	metrics, err := s.repo.GetAccuracyMetrics(ctx, export.OrgID, export.DateFrom, export.DateTo)
+	if err != nil {
+		return fmt.Errorf("query accuracy metrics: %w", err)
+	}
+
+	export.Progress = 60
+	s.repo.Update(ctx, export)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"export_id":        export.ID,
+		"org_id":           export.OrgID,
+		"export_type":      export.ExportType,
+		"date_from":        export.DateFrom,
+		"date_to":          export.DateTo,
+		"record_count":     len(metrics),
+		"accuracy_metrics": metrics,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal accuracy metrics: %w", err)
+	}
+
+	if err := s.finalizeExportPayload(ctx, export, len(metrics), payload, "accuracy-metrics"); err != nil {
+		return err
+	}
+	export.Progress = 90
+	s.repo.Update(ctx, export)
 	return nil
 }

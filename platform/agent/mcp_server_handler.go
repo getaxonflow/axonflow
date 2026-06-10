@@ -1214,7 +1214,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
 				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
-				overriddenPolicyID, overriddenPolicyVersion)
+				overriddenPolicyID, overriddenPolicyVersion,
+				"") // #2598: MCP-server session has no inbound traceparent → singleton
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
 			delete(resp, "block_reason")
@@ -1228,7 +1229,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
 			"mcp_check_policy", statement, computeStatementHash(statement),
-			outcome.StaticResult.BlockReason, topRisk, matches)
+			outcome.StaticResult.BlockReason, topRisk, matches,
+			"") // #2598: MCP-server session has no inbound traceparent → singleton
 	}
 
 	if topRisk != "" {
@@ -1345,7 +1347,8 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
 				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
-				overriddenPolicyID, overriddenPolicyVersion)
+				overriddenPolicyID, overriddenPolicyVersion,
+				"") // #2598: MCP-server session has no inbound traceparent → singleton
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
 			delete(resp, "block_reason")
@@ -1364,7 +1367,8 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
 			"mcp_check_output", query, computeStatementHash(query),
-			outcome.StaticResult.BlockReason, topRisk, matches)
+			outcome.StaticResult.BlockReason, topRisk, matches,
+			"") // #2598: MCP-server session has no inbound traceparent → singleton
 	}
 
 	if topRisk != "" {

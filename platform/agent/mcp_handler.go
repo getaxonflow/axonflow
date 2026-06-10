@@ -709,7 +709,9 @@ func evaluateInputPolicies(
 
 	// Request-phase static policy evaluation (SQLi, PII, compliance)
 	policyEngine := sharedpolicy.GetGlobalEngine()
-	mcpDetectionCfg := GetMCPDetectionConfig()
+	// #2581: per-org posture. orgID is the auth-derived org for this request; an
+	// org with no override row resolves to the deployment-global config.
+	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, orgID)
 	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
 		// Security + compliance categories stay explicit; the PII categories are
 		// policy-derived (every enabled PII-category system policy) so a new
@@ -789,8 +791,11 @@ func evaluateInputPolicies(
 // Returns (masked, redacted, evaluated). redacted implies evaluated.
 func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, statement string) (masked string, redacted, evaluated bool) {
 	policyEngine := sharedpolicy.GetGlobalEngine()
-	mcpCfg := GetMCPDetectionConfig()
-	gwCfg := GetGatewayDetectionConfig()
+	// #2581: per-org posture. The auth-stamped request context carries the org
+	// (check-input stamps it before this path); empty → deployment-global.
+	orgID := OrgIDFromContext(ctx)
+	mcpCfg := ResolveMCPDetectionConfig(ctx, orgID)
+	gwCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 	// Effective config = whichever surface is enabled (prefer MCP for managed
 	// connectors). The two derive their PII action from the same PII_ACTION env.
 	effective := mcpCfg
@@ -845,7 +850,7 @@ func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, 
 	// check-input for critical Indonesia PII (gateway_handlers / decision_handler),
 	// so check-input MUST actually mask it here — otherwise the obligation is
 	// unfulfillable and the PEP forwards NIK unredacted (#2571).
-	if idMasked, changed := redactIndonesiaPIIInString(working); changed {
+	if idMasked, changed := maskJSONSafe(working, redactIndonesiaPIIInString); changed {
 		working = idMasked
 		anyRedacted = true
 	}
@@ -902,6 +907,84 @@ type OutputPolicyOutcome struct {
 // Set checkExfiltration true for query-style responses, false for execute responses.
 //
 // Shared by mcpQueryHandler, mcpExecuteHandler, and mcpCheckOutputHandler (Issue #1258).
+// maskJSONSafe applies masker to s while guaranteeing the result stays valid JSON
+// when s was valid JSON. The EE Indonesia detector (redactIndonesiaPIIInString) and
+// the static redactor mask matched spans IN the serialized string; when a PII value
+// sits in a NON-string JSON position — a bare number, e.g. a NIK stored as an integer
+// `{"nik":3174012509900001}` — flat masking yields invalid JSON and a downstream JSON
+// consumer (the Claude Desktop proxy re-validates redacted_data) fail-closes the whole
+// benign response. When s is valid JSON, maskJSONSafe applies masker per leaf (string
+// leaves in place; a matched NUMBER leaf coerces to its masked STRING form) and
+// re-serializes; otherwise it applies masker to the whole string unchanged.
+func maskJSONSafe(s string, masker func(string) (string, bool)) (string, bool) {
+	if !json.Valid([]byte(s)) {
+		return masker(s)
+	}
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var root interface{}
+	if err := dec.Decode(&root); err != nil || dec.More() {
+		return masker(s) // not a single clean JSON document
+	}
+	changed := false
+	var walk func(n interface{}) interface{}
+	walk = func(n interface{}) interface{} {
+		switch v := n.(type) {
+		case map[string]interface{}:
+			for k, val := range v {
+				v[k] = walk(val)
+			}
+			return v
+		case []interface{}:
+			for i, val := range v {
+				v[i] = walk(val)
+			}
+			return v
+		case string:
+			if m, c := masker(v); c {
+				changed = true
+				return m
+			}
+			return v
+		case json.Number:
+			if m, c := masker(v.String()); c {
+				changed = true
+				return m // coerce masked number -> string (keeps JSON valid)
+			}
+			return v
+		default:
+			return n // bool, nil
+		}
+	}
+	root = walk(root)
+	if !changed {
+		// The per-leaf walk masked nothing. If the whole-string masker WOULD mask
+		// (a match only across a JSON leaf boundary), fall back to it — a
+		// redacted-but-possibly-invalid result, never the original unmasked
+		// (fail-closed, never fail-open on a PII path).
+		if flat, fc := masker(s); fc {
+			return flat, true
+		}
+		return s, false
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // don't gratuitously escape <>& on the repair path
+	if err := enc.Encode(root); err != nil {
+		return masker(s) // fall back rather than emit nothing
+	}
+	out := strings.TrimRight(buf.String(), "\n")
+	// A span matching across a JSON leaf boundary is invisible to the per-leaf walk
+	// and would survive in `out` even though we masked OTHER leaves. If the masker
+	// still finds something in `out`, fall back to the flat whole-string result
+	// (fail-closed) rather than forward a partially-redacted document.
+	if _, residual := masker(out); residual {
+		flat, _ := masker(s)
+		return flat, true
+	}
+	return out, true
+}
+
 func evaluateOutputPolicies(
 	ctx context.Context,
 	tenantID, userID, connectorName string,
@@ -941,7 +1024,10 @@ func evaluateOutputPolicies(
 		}
 	}
 
-	mcpDetectionCfg := GetMCPDetectionConfig()
+	// #2581: per-org posture. check-output stamps orgID into ctx; the managed-
+	// connector query/execute paths may not, in which case orgID is empty →
+	// deployment-global (fail-safe, identical to pre-#2581).
+	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, OrgIDFromContext(ctx))
 	// Connector-agnostic gateway path: a PEP/gateway caller (isGateway, e.g.
 	// check-output submitting pre-executed output) has no managed connector, so
 	// the MCP connector allowlist (IsConnectorEnabled, permissive-when-empty)
@@ -995,7 +1081,7 @@ func evaluateOutputPolicies(
 					for _, row := range rows {
 						for k, v := range row {
 							if s, ok := v.(string); ok {
-								if masked, changed := redactIndonesiaPIIInString(s); changed {
+								if masked, changed := maskJSONSafe(s, redactIndonesiaPIIInString); changed {
 									row[k] = masked
 									anyRedacted = true
 								}
@@ -1007,7 +1093,7 @@ func evaluateOutputPolicies(
 						out.IndonesiaRedactedTypes = indonesiaDetectedTypeNames(idResult)
 					}
 				} else if message != "" {
-					if masked, changed := redactIndonesiaPIIInString(message); changed {
+					if masked, changed := maskJSONSafe(message, redactIndonesiaPIIInString); changed {
 						message = masked
 						out.RedactedMessage = masked
 						out.IndonesiaRedactedTypes = indonesiaDetectedTypeNames(idResult)
@@ -1109,6 +1195,114 @@ func (o OutputPolicyOutcome) RedactedFieldNames() []string {
 		fields = sharedpolicy.GetRedactedFieldPaths(o.StaticResult)
 	}
 	return append(fields, o.IndonesiaRedactedTypes...)
+}
+
+// mcpOutputDecisionVerdict maps a response-phase OutputPolicyOutcome to the
+// canonical Decision Mode (verdict, policy_ids, reasons) triple recorded into
+// audit_logs via recordDecideDecision. The branch order mirrors
+// mcpCheckOutputHandler exactly (SQLi → static block → exfil → allow), so the
+// recorded verdict always matches the HTTP branch that fires.
+//
+// Redaction is an allow-with-obligation, NOT a deny: a masked response still
+// reaches the caller, so it records verdict=allow and surfaces the redacted
+// field names in reasons (#2563 AUDIT-A1 HARD RULE 1 — redact must be
+// portal-visible too, and distinguishable from a clean allow on the explain
+// endpoint).
+// blockedPolicyIDs returns the policy ids to attribute a response-phase block
+// to. Most blocks populate MatchedPolicies, but a few single-policy blocks (the
+// Indonesia NIK/KTP hard-deny) set only BlockedBy. Fall back to BlockedBy so the
+// portal feed's policy_id column is populated for those cases too, instead of an
+// empty attribution.
+func blockedPolicyIDs(r *sharedpolicy.ResponseResult) []string {
+	if ids := extractMatchedPolicyIDs(r.MatchedPolicies); len(ids) > 0 {
+		return ids
+	}
+	if r.BlockedBy != nil && r.BlockedBy.PolicyID != "" {
+		return []string{r.BlockedBy.PolicyID}
+	}
+	return nil
+}
+
+func mcpOutputDecisionVerdict(outcome OutputPolicyOutcome) (verdict string, policyIDs, reasons []string) {
+	switch {
+	case outcome.SQLiBlocked:
+		return VerdictDeny, []string{"sqli_response_scan"},
+			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)}
+	case outcome.StaticResult != nil && outcome.StaticResult.Blocked:
+		return VerdictDeny, blockedPolicyIDs(outcome.StaticResult),
+			[]string{outcome.StaticResult.BlockReason}
+	case outcome.ExfilResult != nil && outcome.ExfilResult.Exceeded:
+		return VerdictDeny, []string{"exfiltration_limit"},
+			[]string{outcome.ExfilResult.BlockReason}
+	}
+	// Terminal allow. Static redactions carry their matched policy ids; surface
+	// the redacted field names so a redact is distinguishable from a clean allow.
+	if outcome.StaticResult != nil {
+		policyIDs = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
+	}
+	if outcome.WasRedacted() {
+		if fields := outcome.RedactedFieldNames(); len(fields) > 0 {
+			reasons = []string{"response PII redacted: " + strings.Join(fields, ", ")}
+		} else {
+			reasons = []string{"response PII redacted"}
+		}
+	}
+	return VerdictAllow, policyIDs, reasons
+}
+
+// extractDynamicPolicyIDs returns the policy ids of the dynamic matches that
+// drove a check-input decision, for canonical audit_logs attribution. Falls back
+// to a generic "dynamic_policy" sentinel when the evaluator returned no per-policy
+// match (e.g. a degraded/aggregate block), so the portal feed's policy_id column
+// is never empty for a dynamic deny — mirroring blockedPolicyIDs' fallback on the
+// response plane.
+func extractDynamicPolicyIDs(info *sharedpolicy.DynamicPolicyInfo) []string {
+	if info == nil {
+		return []string{"dynamic_policy"}
+	}
+	ids := make([]string, 0, len(info.MatchedPolicies))
+	for _, m := range info.MatchedPolicies {
+		if m.PolicyID != "" {
+			ids = append(ids, m.PolicyID)
+		}
+	}
+	if len(ids) == 0 {
+		return []string{"dynamic_policy"}
+	}
+	return ids
+}
+
+// mcpInputDecisionVerdict maps a terminal request-phase InputPolicyOutcome to the
+// canonical Decision Mode (verdict, policy_ids, reasons) triple recorded into
+// audit_logs via recordDecideDecision — the request-plane mirror of
+// mcpOutputDecisionVerdict (#2627, mirroring #2586). The branch order matches the
+// uncovered terminal branches of mcpCheckInputHandler: dynamic-block deny → allow.
+//
+// The static-block deny is deliberately NOT routed here: that path already
+// dual-writes a richer canonical audit_logs row via writeExplainableAuditLog
+// (policy_matches + risk_level), and the override-flip allow already writes one via
+// writeOverrideUsedEvent. Routing those through this triple would double-write a
+// second audit_logs row under the same decision_id. This helper covers exactly the
+// two branches that previously wrote only the mcp_query_audits satellite.
+//
+// Redaction is an allow-with-obligation, NOT a deny (same as the response plane):
+// a masked statement still forwards to the caller, so it records verdict=allow and
+// surfaces the redaction in reasons so a redact is distinguishable from a clean
+// allow on the explain endpoint (#2563 AUDIT-A1 HARD RULE 1).
+func mcpInputDecisionVerdict(outcome InputPolicyOutcome, didRedact bool) (verdict string, policyIDs, reasons []string) {
+	if outcome.DynamicBlocked {
+		return VerdictDeny, extractDynamicPolicyIDs(outcome.DynamicInfo),
+			[]string{outcome.DynamicBlockReason}
+	}
+	// Terminal allow. A non-blocking static (redact) policy carries its matched
+	// ids; surface them so the portal feed attributes the allow correctly.
+	if outcome.StaticResult != nil {
+		policyIDs = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
+	}
+	if didRedact {
+		reasons = []string{"request PII redacted"}
+	}
+	return VerdictAllow, policyIDs, reasons
 }
 
 // applyResponseRedactionAudit records response-side redactions into the audit
@@ -1987,6 +2181,38 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			operation = "execute"
 		}
 
+		// emitInputDecision converges this check-input verdict onto the canonical
+		// audit_logs decision feed the customer portal reads (GET /api/v1/decisions
+		// filters audit_logs WHERE policy_details->>'decision_id' IS NOT NULL), keyed
+		// by the SAME decisionID as the mcp_query_audits satellite — the request-plane
+		// mirror of #2586 (#2627). Reuses the writer /decide uses (recordDecideDecision
+		// → writeDecisionAuditLog); plane=mcp. Called from the dynamic-block and the
+		// terminal allow/redact branches — the ONLY two that previously wrote only the
+		// satellite. The static-block deny + override-flip allow branches write their
+		// own richer canonical rows (writeExplainableAuditLog / writeOverrideUsedEvent)
+		// and must NOT be routed here, or they'd double-write a second audit_logs row
+		// under the same decision_id. audit_logs is deliberately not FORCE-RLS (mig
+		// 101), so this plain insert succeeds under AXONFLOW_DB_USE_APP_ROLE on AND off
+		// — identical to the production /decide path. query is a non-PII descriptor
+		// (connector type) — the raw statement MUST NOT land in audit_logs.query.
+		emitInputDecision := func(verdict string, policyIDs, reasons []string) {
+			recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageTool,
+				verdict, policyIDs, time.Since(startTime).Milliseconds(), reasons,
+				"", nil, false, &decisionAuditInput{
+					clientID:  auth.Client.ID,
+					requestID: auditEntry.AuditID,
+					userEmail: userEmail,
+					userRole:  userRole,
+					userID:    user.ID,
+					query:     fmt.Sprintf("mcp check-input: %s", req.ConnectorType),
+					plane:     PlaneMCP, // #2627: MCP request plane → audit_logs.plane=mcp
+					// #2598: correlate with the response-plane check-output (and any
+					// /decide stage) of the SAME logical tool call when the gateway
+					// propagates a W3C traceparent. Absent header → "" → singleton.
+					correlationID: traceIDFromHeader(r.Header.Get("traceparent")),
+				})
+		}
+
 		// v9 Phase 8 #2384 PR-C1: orgID plumbed through.
 		outcome := evaluateInputPolicies(ctx,
 			tenantID, orgID, userID, userRole,
@@ -2004,6 +2230,11 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			auditEntry.RequestBlockReason = outcome.DynamicBlockReason
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 			logMCPQueryAudit(auditEntry)
+			// #2627: a dynamic-policy block previously wrote ONLY the
+			// mcp_query_audits satellite, so the portal feed showed it as
+			// "Logged", not "Blocked". Emit the canonical audit_logs deny row.
+			v, pids, reasons := mcpInputDecisionVerdict(outcome, false)
+			emitInputDecision(v, pids, reasons)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
@@ -2059,7 +2290,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 					}
 					writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
 						decisionID, tenantID, orgID, auth.Client.ID, userEmail,
-						overriddenPolicyID, overriddenPolicyVersion)
+						overriddenPolicyID, overriddenPolicyVersion,
+						traceIDFromHeader(r.Header.Get("traceparent"))) // #2598 correlation
 					log.Printf("[MCP] Override %s applied — flipping deny to allow for decision %s",
 						usedOverrideID, decisionID)
 					// Fall through to the non-block success path below by
@@ -2091,7 +2323,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 					tenantID, orgID, auth.Client.ID, userEmail,
 					userID, userRole,
 					"mcp_check_input", req.Statement, auditEntry.StatementHash,
-					outcome.StaticResult.BlockReason, topRisk, matches)
+					outcome.StaticResult.BlockReason, topRisk, matches,
+					traceIDFromHeader(r.Header.Get("traceparent"))) // #2598 correlation
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -2140,6 +2373,13 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.Success = true
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
+		// #2627: the terminal allow (clean or redacted) previously wrote ONLY the
+		// mcp_query_audits satellite, so an allowed governance decision never reached
+		// the portal feed. Emit the canonical audit_logs allow row. A redact is an
+		// allow-with-obligation, recorded verdict=allow + surfaced in reasons so it
+		// stays distinguishable from a clean allow on /explain.
+		v, pids, reasons := mcpInputDecisionVerdict(outcome, didRedact)
+		emitInputDecision(v, pids, reasons)
 
 		resp := MCPCheckInputResponse{
 			Allowed:           true,
@@ -2291,6 +2531,39 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		ids := extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
 		auditEntry.PolicyVersions = lookupPolicyVersionsByID(ctx, usageDB, ids)
 	}
+
+	// #2563 (AUDIT-A1): converge the MCP response plane onto the canonical
+	// audit_logs decision feed the customer portal reads (GET /api/v1/decisions
+	// filters audit_logs WHERE policy_details->>'decision_id' IS NOT NULL). The
+	// mcp_query_audits satellite written by logMCPQueryAudit in each branch below
+	// is never read there, so a NIK/NPWP response block otherwise surfaces as
+	// "Logged", not "Blocked" — undermining the audit story. Reuse the SAME
+	// writer /decide uses (recordDecideDecision → writeDecisionAuditLog), keyed by
+	// the SAME decisionID as the satellite, so the decision lands in the portal
+	// feed with no portal-side change. audit_logs is deliberately not FORCE-RLS
+	// (migration 101 deferred it for the cross-org cleanup worker), so this plain
+	// insert succeeds under AXONFLOW_DB_USE_APP_ROLE on AND off — identical to the
+	// production /decide path. Emitted once here, before the branch dispatch:
+	// mcpOutputDecisionVerdict mirrors the branch order so the recorded verdict
+	// matches the branch that fires. query is a non-PII descriptor (connector +
+	// operation) — raw response_data MUST NOT land in audit_logs.query.
+	outVerdict, outPolicyIDs, outReasons := mcpOutputDecisionVerdict(outcome)
+	recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageTool,
+		outVerdict, outPolicyIDs, time.Since(startTime).Milliseconds(), outReasons,
+		"", nil, false, &decisionAuditInput{
+			clientID:  auth.Client.ID,
+			requestID: auditEntry.AuditID,
+			userEmail: user.Email,
+			userRole:  user.Role,
+			userID:    user.ID,
+			query:     fmt.Sprintf("mcp check-output: %s", req.ConnectorType),
+			plane:     PlaneMCP, // #2592: MCP response plane → audit_logs.plane=mcp
+			// #2598: correlate this response-plane decision with the request-plane
+			// check-input (and any /decide stage) of the SAME logical tool call when
+			// the proxy/gateway propagates a W3C traceparent across the hops. Absent
+			// header → "" → singleton, preserving the chronological-only behavior.
+			correlationID: traceIDFromHeader(r.Header.Get("traceparent")),
+		})
 
 	if outcome.SQLiBlocked {
 		auditEntry.RequestBlocked = true

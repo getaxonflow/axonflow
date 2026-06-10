@@ -137,16 +137,22 @@ func getPluginCompatibility() PluginCompatInfo {
 		// claude-code + cursor to 1.5.3 during the v8.5.2 release-train —
 		// 1.5.3 ships the headersHelper ${CLAUDE_PLUGIN_ROOT} fix so the
 		// plugins send Basic auth correctly against self-hosted/Enterprise.
-		// codex stays 1.5.2 (its v8.5.2 fix was documentation-only; no codex
-		// 1.5.3 was cut); openclaw bumped 2.6.1 -> 2.6.5 to track its latest
-		// published release (the prior value lagged the registry). Plugin tags
-		// are live on their registries (openclaw 2.6.5 on npm, claude/cursor
-		// 1.5.3 + codex 1.5.2 on ClawHub) — plugins below the recommended
-		// version receive an actionable upgrade-warning header on every
-		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0.
+		// claude-code bumped 1.5.3 -> 1.6.0 (2026-06-10) — 1.6.0 adds the
+		// endpoint-gated Community-SaaS credential + the self-hosted-auth.json
+		// Enterprise credential fallback so MCP tool execution no longer 401s
+		// on self-hosted/Enterprise agents (axonflow-claude-plugin#94/#95);
+		// cursor stays 1.5.3 (no 1.6.0 cut). codex stays 1.5.2 (its v8.5.2 fix
+		// was documentation-only; no codex 1.5.3 was cut); openclaw bumped
+		// 2.6.1 -> 2.6.5 to track its latest published release (the prior value
+		// lagged the registry). Plugin tags are live on their registries
+		// (openclaw 2.6.5 on npm, claude-code 1.6.0 + cursor 1.5.3 + codex
+		// 1.5.2 — claude-code/cursor on the GitHub marketplace, codex on
+		// ClawHub) — plugins below the recommended version receive an
+		// actionable upgrade-warning header on every governed call; the
+		// MinPluginVersion floor stays 1.4.0 / 2.4.0.
 		RecommendedPluginVersion: map[string]string{
 			"openclaw":    "2.6.5",
-			"claude-code": "1.5.3",
+			"claude-code": "1.6.0",
 			"cursor":      "1.5.3",
 			"codex":       "1.5.2",
 		},

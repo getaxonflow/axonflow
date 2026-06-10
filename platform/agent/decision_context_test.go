@@ -357,6 +357,10 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 				wantDecisionID: "dec-1",
 				wantContext:    reqContext,
 			},
+			"dec-1",         // decision_id (first-class column; #2592)
+			PlaneDecision,   // plane defaults to decision (input.plane unset)
+			nil,             // obligations (none)
+			"trace-corr-99", // correlation_id (#2598): the shared cross-stage key
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -365,12 +369,13 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 		[]string{"p_pii_us"}, []string{"clean"},
 		reqContext, false,
 		decisionAuditInput{
-			clientID:  "client-x",
-			requestID: "dec-1",
-			userEmail: "svc@axonflow.local",
-			userRole:  "service",
-			userID:    7,
-			query:     "hello",
+			clientID:      "client-x",
+			requestID:     "dec-1",
+			userEmail:     "svc@axonflow.local",
+			userRole:      "service",
+			userID:        7,
+			query:         "hello",
+			correlationID: "trace-corr-99",
 		},
 	)
 
@@ -445,6 +450,10 @@ func TestRecordDecideDecision_WithTracerAndAudit(t *testing.T) {
 			"u@x.local", "service", "client", "tenant", "org",
 			"decision_tool", "q", sqlmock.AnyArg(), "deny",
 			policyDetailsHasContext{wantDecisionID: "dec-t", wantContext: map[string]string{"x_ai_agent": "claude-code"}, wantTruncated: true},
+			"dec-t",       // decision_id (first-class column; #2592)
+			PlaneDecision, // plane defaults to decision
+			nil,           // obligations (none)
+			nil,           // correlation_id (#2598): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -483,6 +492,10 @@ func TestWriteDecisionAuditLog_FallbackPlaceholders(t *testing.T) {
 			"decision_llm", "(empty)", // request_type + query fallback
 			sqlmock.AnyArg(), "allow",
 			sqlmock.AnyArg(), // policy_details — no reason/context keys
+			"dec-fb",         // decision_id (first-class column; #2592)
+			PlaneDecision,    // plane defaults to decision (input.plane unset)
+			nil,              // obligations (none)
+			nil,              // correlation_id (#2598): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -557,6 +570,10 @@ func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
 			"org-acme", "decision_tool", "list merchants", sqlmock.AnyArg(),
 			"allow",
 			policyDetailsHasGatewayID{wantGatewayID: "claude_desktop.fleet-mac"},
+			"dec-gw",      // decision_id (first-class column; #2592)
+			PlaneDecision, // plane defaults to decision
+			nil,           // obligations (none)
+			nil,           // correlation_id (#2598): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -571,6 +588,80 @@ func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
 			userID:    7,
 			query:     "list merchants",
 			gatewayID: "claude_desktop.fleet-mac",
+		},
+	)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// obligationsJSONMatcher asserts the audit row's obligations JSONB column
+// carries an obligation of the wanted type (#2592 / ADR-058 Phase 1).
+type obligationsJSONMatcher struct {
+	wantType string
+}
+
+func (m obligationsJSONMatcher) Match(v driver.Value) bool {
+	var raw []byte
+	switch x := v.(type) {
+	case []byte:
+		raw = x
+	case string:
+		raw = []byte(x)
+	default:
+		return false
+	}
+	var obs []DecisionObligation
+	if err := json.Unmarshal(raw, &obs); err != nil {
+		return false
+	}
+	for _, o := range obs {
+		if o.Type == m.wantType {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWriteDecisionAuditLog_PersistsPlaneAndObligations is the #2592 red-on-revert
+// guard for the writer half: the audit row must carry the first-class
+// decision_id column, the plane taken from the audit input (NOT the default),
+// and the structured obligations JSONB (not flattened into reasons). If the
+// writer stops appending these columns the positional WithArgs match fails.
+func TestWriteDecisionAuditLog_PersistsPlaneAndObligations(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(
+			"decide_dec-ob", "dec-ob", sqlmock.AnyArg(), 7,
+			"svc@axonflow.local", "service", "client-x", "tenant-rocket",
+			"org-acme", "decision_tool", "lookup merchant", sqlmock.AnyArg(),
+			"allow",
+			sqlmock.AnyArg(), // policy_details JSONB
+			"dec-ob",         // decision_id (first-class column)
+			PlaneMCP,         // plane from the audit input (not the default)
+			obligationsJSONMatcher{wantType: ObligationRedactPII}, // obligations JSONB
+			nil, // correlation_id (#2598): unset on input → NULL
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	writeDecisionAuditLog(context.Background(), mockDB,
+		"dec-ob", "org-acme", "tenant-rocket", "tool", "allow",
+		[]string{"pii-id"}, []string{"redact"}, nil, false,
+		decisionAuditInput{
+			clientID:    "client-x",
+			requestID:   "dec-ob",
+			userEmail:   "svc@axonflow.local",
+			userRole:    "service",
+			userID:      7,
+			query:       "lookup merchant",
+			plane:       PlaneMCP,
+			obligations: []DecisionObligation{newRedactPIIObligation("NIK detected")},
 		},
 	)
 

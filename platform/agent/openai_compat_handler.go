@@ -296,7 +296,8 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 
 	// Policy evaluation via the shared policy engine.
 	queryText := extractTextFromMessages(req.Messages)
-	gwDetectionCfg := GetGatewayDetectionConfig()
+	// #2581: resolve per-org posture (org with no override → deployment-global).
+	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 
 	var policyResult *StaticPolicyResult
 	var blockingPolicyID string
