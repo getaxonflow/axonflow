@@ -216,4 +216,4 @@ COMMENT ON COLUMN static_policy_versions.snapshot IS 'Complete policy state at t
 COMMENT ON COLUMN static_policy_versions.change_type IS 'Type of change: create, update, delete, enable, disable, override';
 
 -- Migration complete
--- Next: 031_seed_system_policies.sql (seeds all 63 system policies with categories)
+-- Next: 031_seed_system_policies.sql (seeds the initial 63 system policies: 53 static + 10 dynamic)

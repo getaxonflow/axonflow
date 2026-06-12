@@ -1,7 +1,12 @@
 -- Migration 031: Seed System Policies
 -- Date: 2025-12-24
--- Purpose: Seed all 63 system policies (53 static + 10 dynamic) with proper categories
--- Related: ADR-020 - Unified Policy Architecture, Issue #724
+-- Purpose: Seed the INITIAL 63 system policies (53 static + 10 dynamic) with proper categories.
+--          NOTE: this is not the complete system-policy set. Later migrations add more system
+--          (tier='system') patterns: 035 (sensitive-data, +6), 042 (Singapore PII, +5),
+--          116 (Indonesia KTP + prompt-injection guards, +5). The authoritative LIVE total is
+--          79 system policies (69 static + 10 dynamic), pinned by
+--          platform/agent/system_policy_count_realpg_test.go (the single source of truth — #2696).
+-- Related: ADR-020 - Unified Policy Architecture, Issue #724, #2696
 
 -- =============================================================================
 -- PHASE 1: Static System Policies (53 total)
@@ -505,4 +510,6 @@ BEGIN
 END $$;
 
 -- Migration complete
--- Total system policies: 63 (53 static + 10 dynamic)
+-- Seeded by THIS migration: 63 system policies (53 static + 10 dynamic).
+-- Authoritative LIVE total across all migrations: 79 system (69 static + 10 dynamic) —
+-- see platform/agent/system_policy_count_realpg_test.go (#2696).

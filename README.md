@@ -39,7 +39,7 @@ AxonFlow is not a workflow engine, observability dashboard, or prompt gateway. Y
 
 ## What AxonFlow Does
 
-**Policy Enforcement** — 60+ built-in policies across multiple categories:
+**Policy Enforcement** — 100+ pre-populated policies across multiple categories:
 - **Security**: SQL injection detection (37 patterns), unsafe admin access, schema exposure
 - **Sensitive Data**: PII detection (SSN, credit cards, PAN, Aadhaar, email, phone), salary, medical records
 - **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, DORA frameworks with retention and exports (Enterprise)

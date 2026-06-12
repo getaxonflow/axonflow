@@ -354,6 +354,12 @@ type ModeDetectionConfig struct {
 	// SQLIAction is the action for SQL injection detection in this mode.
 	SQLIAction DetectionAction
 
+	// SensitiveDataAction is the action for sensitive-data (credentials, tokens,
+	// secrets) detection in this mode. Wired into BuildActionOverrides so the
+	// SENSITIVE_DATA_ACTION lever + governance profile actually drive enforcement
+	// of the system sensitive-data policies (#2705).
+	SensitiveDataAction DetectionAction
+
 	// DangerousQueryAction is the action for dangerous SQL query detection in this mode.
 	DangerousQueryAction DetectionAction
 
@@ -382,6 +388,7 @@ func MCPDetectionConfigFromEnv() ModeDetectionConfig {
 		Enabled:                parseBoolEnv(EnvMCPStaticPoliciesEnabled, true),
 		PIIAction:              globalCfg.PIIAction,
 		SQLIAction:             globalCfg.SQLIAction,
+		SensitiveDataAction:    globalCfg.SensitiveDataAction,
 		DangerousQueryAction:   globalCfg.DangerousQueryAction,
 		DangerousCommandAction: globalCfg.DangerousCommandAction,
 	}
@@ -419,8 +426,8 @@ func MCPDetectionConfigFromEnv() ModeDetectionConfig {
 	if !cfg.Enabled {
 		log.Printf("[Detection] MCP static policies DISABLED")
 	} else {
-		log.Printf("[Detection] MCP static policies: PII=%s, SQLI=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
-			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
+		log.Printf("[Detection] MCP static policies: PII=%s, SQLI=%s, SensitiveData=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
+			cfg.PIIAction, cfg.SQLIAction, cfg.SensitiveDataAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
 	}
 
 	return cfg
@@ -439,6 +446,7 @@ func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
 		Enabled:                parseBoolEnv(EnvGatewayStaticPoliciesEnabled, true),
 		PIIAction:              globalCfg.PIIAction,
 		SQLIAction:             globalCfg.SQLIAction,
+		SensitiveDataAction:    globalCfg.SensitiveDataAction,
 		DangerousQueryAction:   globalCfg.DangerousQueryAction,
 		DangerousCommandAction: globalCfg.DangerousCommandAction,
 	}
@@ -467,8 +475,8 @@ func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
 	if !cfg.Enabled {
 		log.Printf("[Detection] Gateway static policies DISABLED")
 	} else {
-		log.Printf("[Detection] Gateway static policies: PII=%s, SQLI=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
-			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
+		log.Printf("[Detection] Gateway static policies: PII=%s, SQLI=%s, SensitiveData=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
+			cfg.PIIAction, cfg.SQLIAction, cfg.SensitiveDataAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
 	}
 
 	return cfg
@@ -495,13 +503,30 @@ func (c *ModeDetectionConfig) BuildActionOverrides() map[sharedpolicy.PolicyCate
 	sqliAction := c.SQLIAction.ToPolicyAction()
 	overrides[sharedpolicy.CategorySecuritySQLi] = sqliAction
 
-	dangerousQueryAction := c.DangerousQueryAction.ToPolicyAction()
-	// dangerous_queries category uses the SQL-specific action
-	// (no explicit category constant — these are legacy policies using "dangerous_queries" string)
+	// sensitive-data (credentials/tokens/secrets, migration 035) was omitted
+	// here, so the system sensitive-data rows — which carry NULL phase columns —
+	// resolved via GetActionForPhase's category fallback to a hardcoded 'log',
+	// regardless of profile or SENSITIVE_DATA_ACTION. That made the documented
+	// posture (default=warn, strict/compliance=block — see
+	// docs/policies/system-policies.md + docs/guides/governance-profiles.md) a
+	// no-op. Map it to the SENSITIVE_DATA_ACTION lever like every other detection
+	// category so the profile + env override actually drive enforcement (#2705).
+	overrides[sharedpolicy.CategorySensitiveData] = c.SensitiveDataAction.ToPolicyAction()
 
 	dangerousCommandAction := c.DangerousCommandAction.ToPolicyAction()
 	overrides[sharedpolicy.CategorySecurityDangerous] = dangerousCommandAction
-	_ = dangerousQueryAction // Used by legacy engine for "dangerous_queries" category
+
+	// NOTE — intentionally NOT mapped here:
+	//   * HighRiskAction has no static text-engine category: "high risk" is a
+	//     risk-SCORE concept (risk_score > 0.8), enforced by the dynamic-risk
+	//     policy (sys_dyn_high_risk_block) in the orchestrator + the
+	//     AXONFLOW_ENFORCE opt-in (enforce.go), not by a static_policies
+	//     category. Adding it to this static-category override map is a no-op.
+	//   * DangerousQueryAction ("dangerous_queries") is a legacy string category
+	//     (no constant) carried only by tenant-tier starter policies, which the
+	//     gateway/decision Categories filters do not evaluate. Whether wiring it
+	//     here would have any effect is unverified, so it is deferred to a
+	//     follow-up rather than guessed (#2706).
 
 	return overrides
 }
