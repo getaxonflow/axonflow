@@ -379,6 +379,32 @@ func (e *UnifiedPolicyEngine) EnabledPIICategories(ctx context.Context, tenantID
 	return cats
 }
 
+// EnabledSensitiveDataCategories returns []{CategorySensitiveData} when this
+// tenant has at least one ENABLED sensitive-data (secrets) policy for the phase,
+// else nil. It mirrors EnabledPIICategories so the secrets category can be folded
+// into the request/response evaluation set the same policy-derived way — without
+// the empty-Categories whitelist footgun (nil = "no sensitive-data to evaluate",
+// callers must NOT pass it as an empty include set).
+//
+// Sensitive-data is a seeded system category (migration core/035: passwords, API
+// keys, tokens, secrets, credentials, connection strings); its runtime action is
+// driven by the profile / SENSITIVE_DATA_ACTION lever via ActionOverrides
+// (default warn, strict/compliance block). Folding the category in here is what
+// makes that lever reach the request AND response planes (#2705) — previously
+// only PII categories were evaluated, so secrets were never block/warn-enforced.
+func (e *UnifiedPolicyEngine) EnabledSensitiveDataCategories(ctx context.Context, tenantID string, orgID *string, phase Phase) []PolicyCategory {
+	policies, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
+	if err != nil {
+		return nil
+	}
+	for i := range policies {
+		if policies[i].Enabled && policies[i].Category == CategorySensitiveData {
+			return []PolicyCategory{CategorySensitiveData}
+		}
+	}
+	return nil
+}
+
 // InvalidateCache forces a cache refresh for a tenant.
 func (e *UnifiedPolicyEngine) InvalidateCache(tenantID string, orgID *string) {
 	e.cache.Invalidate(tenantID, orgID)

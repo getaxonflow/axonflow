@@ -120,11 +120,27 @@ type HITLApprovalResponse struct {
 	ExpiresAt  time.Time
 }
 
+// hitlAuditLogger is the audit dependency of the HITL engine: just the canonical
+// workflow-operation writer. Narrowing to an interface (rather than holding the
+// concrete *AuditLogger) lets a test inject a recording fake and assert the
+// step_gate row deterministically, with no async worker or database. *AuditLogger
+// satisfies it.
+type hitlAuditLogger interface {
+	LogWorkflowOperation(ctx context.Context, entry *WorkflowAuditEntry)
+}
+
 // HITLWorkflowEngine wraps WorkflowEngine with HITL support.
 type HITLWorkflowEngine struct {
 	engine          *WorkflowEngine
 	policyChecker   HITLPolicyChecker
 	approvalService HITLApprovalService
+
+	// auditLogger records the policy GATE decision (block / require_approval) for
+	// each step to the canonical audit_logs feed (#2693). Optional: a nil logger
+	// (engine constructed without one) makes the audit a no-op. Wired via
+	// SetAuditLogger so the existing 3-arg constructor and all its callers are
+	// unchanged.
+	auditLogger hitlAuditLogger
 }
 
 // NewHITLWorkflowEngine creates a new HITL-aware workflow engine.
@@ -134,6 +150,78 @@ func NewHITLWorkflowEngine(engine *WorkflowEngine, checker HITLPolicyChecker, ap
 		policyChecker:   checker,
 		approvalService: approval,
 	}
+}
+
+// SetAuditLogger wires the canonical audit writer onto the engine so the
+// block / require_approval gate decisions are recorded to audit_logs (#2693).
+// Mirrors the SetAuditLogger pattern used for the MAP/WCP services in run.go. A
+// nil logger leaves the engine in its (audit-silent) default state.
+func (e *HITLWorkflowEngine) SetAuditLogger(l hitlAuditLogger) {
+	e.auditLogger = l
+}
+
+// auditStepGate records a policy GATE decision (block or require_approval) for a
+// workflow step to the canonical audit_logs feed via the established
+// LogWorkflowOperation writer (#2693). The legacy in-memory HITL engine
+// (AXONFLOW_HITL_ENABLED, default-OFF) previously ENFORCED these terminal
+// verdicts — failing the workflow on block, pausing on require_approval — with no
+// audit row, asymmetric with the WCP path. No new writer or table:
+// WorkflowAuditEntry.Decision ("block" | "require_approval") is mapped onto the
+// canonical policy_decision vocabulary by workflowAuditDecision. A nil
+// auditLogger is a no-op.
+func (e *HITLWorkflowEngine) auditStepGate(ctx context.Context, exec *HITLWorkflowExecution, workflowName string, step WorkflowStep, pr *PolicyCheckResult, user UserContext) {
+	if e.auditLogger == nil || pr == nil {
+		return
+	}
+	e.auditLogger.LogWorkflowOperation(ctx, &WorkflowAuditEntry{
+		WorkflowID:   exec.ID,
+		WorkflowName: workflowName,
+		StepName:     step.Name,
+		Operation:    "step_gate",
+		Decision:     pr.Action, // "block" | "require_approval" → canonical via workflowAuditDecision
+		Reason:       pr.Reason,
+		TenantID:     user.TenantID,
+		OrgID:        user.OrgID,
+		UserEmail:    user.Email,
+		UserRole:     user.Role,
+		Metadata: map[string]interface{}{
+			"policy_id":   pr.PolicyID,
+			"policy_name": pr.PolicyName,
+			"severity":    pr.Severity,
+			"step_type":   step.Type,
+		},
+	})
+}
+
+// auditStepGateError records the FAIL-OPEN-on-policy-ERROR path (#2698) to the
+// canonical audit_logs feed. The legacy in-memory HITL engine fails OPEN when the
+// policy checker returns an error — it proceeds with execution for availability,
+// a deliberate design choice — but the errored governance verdict was previously
+// LOST (only a log.Printf). This records a canonical `error` step_gate row via the
+// same LogWorkflowOperation seam #2693 used; the engine STILL proceeds (fail-open
+// behavior unchanged), the verdict is just no longer silently unrecorded. The
+// reason is the policy-check failure text (an engine/eval error string, no
+// request content). A nil auditLogger is a no-op.
+func (e *HITLWorkflowEngine) auditStepGateError(ctx context.Context, exec *HITLWorkflowExecution, workflowName string, step WorkflowStep, checkErr error, user UserContext) {
+	if e.auditLogger == nil || checkErr == nil {
+		return
+	}
+	e.auditLogger.LogWorkflowOperation(ctx, &WorkflowAuditEntry{
+		WorkflowID:   exec.ID,
+		WorkflowName: workflowName,
+		StepName:     step.Name,
+		Operation:    "step_gate",
+		Decision:     "error", // → canonical DecisionError via workflowAuditDecision (#2698)
+		Reason:       fmt.Sprintf("policy check error (fail-open): %v", checkErr),
+		TenantID:     user.TenantID,
+		OrgID:        user.OrgID,
+		UserEmail:    user.Email,
+		UserRole:     user.Role,
+		Metadata: map[string]interface{}{
+			"fail_open": true,
+			"step_type": step.Type,
+		},
+	})
 }
 
 // ExecuteWithHITL executes a workflow with HITL pause/resume support.
@@ -157,14 +245,23 @@ func (e *HITLWorkflowEngine) ExecuteWithHITL(ctx context.Context, workflow Workf
 				// For fail-closed behavior, configure the policy checker to return
 				// a blocking PolicyCheckResult on error instead of returning an error.
 				log.Printf("[HITL] WARNING: Policy check error for step %s: %v - proceeding with execution (fail-open)", step.Name, err)
+				// #2698: record the errored governance verdict before proceeding.
+				// The engine still fails OPEN (availability), but the error is no
+				// longer lost from the audit trail.
+				e.auditStepGateError(ctx, hitlExec, workflow.Metadata.Name, step, err, user)
 			} else if policyResult != nil {
 				switch policyResult.Action {
 				case "block":
+					// Audit the terminal block BEFORE returning — this verdict
+					// withholds the step and must leave a trail (#2693).
+					e.auditStepGate(ctx, hitlExec, workflow.Metadata.Name, step, policyResult, user)
 					hitlExec.Status = "failed"
 					hitlExec.Error = fmt.Sprintf("Blocked by policy %s: %s", policyResult.PolicyName, policyResult.Reason)
 					return hitlExec, fmt.Errorf("execution blocked by policy: %s", policyResult.PolicyName)
 
 				case "require_approval":
+					// Audit the gate decision before pausing for approval (#2693).
+					e.auditStepGate(ctx, hitlExec, workflow.Metadata.Name, step, policyResult, user)
 					return e.pauseForApproval(ctx, hitlExec, i, step, policyResult, user)
 
 				case "warn":

@@ -87,7 +87,7 @@ services:
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.0.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.1.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -194,10 +194,14 @@ services:
       # Generate tokens using: scripts/generate-jwt.sh
       JWT_SECRET: ${JWT_SECRET:-axonflow-local-dev-jwt-secret-do-not-use-in-production}
 
-      # Internal service auth (orchestrator-to-agent HMAC token signing)
-      # When set, agent validates HMAC-signed tokens from orchestrator.
-      # When unset, falls back to hardcoded token (acceptable for development).
-      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
+      # Internal service auth (orchestrator/portal-to-agent HMAC token signing).
+      # In enterprise mode the agent REQUIRES this to authenticate internal
+      # callers (e.g. the customer-portal's /static-policies/effective fetch);
+      # an empty value hid every system policy in the unified-policies UI (#2689).
+      # A local-dev default is provided so the stack works out-of-box; it MUST be
+      # identical across agent, orchestrator, and customer-portal.
+      # SECURITY: override for any shared/real deployment.
+      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-localdev-internal-service-secret-change-me}
 
       # Misc
       ORG_ID: ${ORG_ID:-local-dev-org}
@@ -261,7 +265,7 @@ services:
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.0.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.1.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
@@ -304,7 +308,7 @@ services:
 
       # Internal service auth (orchestrator-to-agent HMAC token signing)
       # Must match the agent's AXONFLOW_INTERNAL_SERVICE_SECRET value.
-      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
+      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-localdev-internal-service-secret-change-me}
 
       # Model overrides (optional - providers use sensible defaults)
       OPENAI_MODEL: ${OPENAI_MODEL:-}

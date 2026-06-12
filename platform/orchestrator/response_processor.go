@@ -205,6 +205,24 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 		processedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
 	}
 
+	// Engine-level governance BLOCK (sensitive-data under strict/compliance, #2705):
+	// WITHHOLD the LLM response entirely and return early — BEFORE the warn/log
+	// skipRedaction revert (which would otherwise restore the original secret-
+	// bearing response) and BEFORE the redacted/allowed verdict overwrite below.
+	// Mirrors the validation-deny path: replace the content with an error and keep
+	// Verdict=blocked so run.go writes a canonical blocked row + returns forbidden.
+	if redactionInfo != nil && redactionInfo.Verdict == responseVerdictBlocked {
+		reason := redactionInfo.ValidationError
+		if reason == "" {
+			reason = "Response withheld by policy"
+		}
+		log.Printf("[ResponseProcessor] LLM response BLOCKED by policy: %s", reason)
+		return map[string]string{
+			"error":   "Response blocked by policy",
+			"details": reason,
+		}, redactionInfo
+	}
+
 	// Indonesia (OJK/UU PDP) checksum-validated NIK/NPWP governance. Neither the
 	// shared engine's PII validators nor the EnhancedPIIDetector carry a NIK
 	// checksum detector, so without this NIK/NPWP leak on the orchestrator/LLM-
@@ -269,14 +287,18 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		return data, &RedactionInfo{}
 	}
 
-	// Policy-derived PII categories: evaluate every enabled PII-category system
-	// policy for this tenant rather than a hardcoded literal (which had silently
-	// omitted pii-indonesia). nil = no enabled PII policies → nothing to redact;
-	// must NOT fall through to EvaluateResponse with empty Categories (that would
-	// evaluate ALL policies — the whitelist footgun).
+	// Policy-derived evaluation categories: every enabled PII-category system
+	// policy (so a newly-seeded pii-* like pii-indonesia is auto-covered) PLUS the
+	// sensitive-data (secrets) category, so the SENSITIVE_DATA_ACTION / profile
+	// lever reaches the response plane too (#2705) — previously only PII was
+	// evaluated, so a credential-shaped LLM response was never warn/block-enforced.
+	// nil+nil = nothing enabled → skip; must NOT fall through to EvaluateResponse
+	// with empty Categories (that evaluates ALL policies — the whitelist footgun).
 	piiCats := p.sharedPolicyEngine.EnabledPIICategories(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse)
-	if len(piiCats) == 0 {
-		log.Printf("[ResponseProcessor] No enabled PII-category policies, skipping shared engine")
+	sensCats := p.sharedPolicyEngine.EnabledSensitiveDataCategories(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse)
+	evalCats := append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...)
+	if len(evalCats) == 0 {
+		log.Printf("[ResponseProcessor] No enabled PII/sensitive-data policies, skipping shared engine")
 		return data, &RedactionInfo{}
 	}
 
@@ -285,7 +307,7 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		TenantID:        user.TenantID,
 		OrgID:           user.OrgID,
 		UserID:          fmt.Sprintf("%d", user.ID),
-		Categories:      piiCats,
+		Categories:      evalCats,
 		SkipCategories:  gwCfg.SkipCategories,
 		ActionOverrides: gwCfg.BuildActionOverrides(),
 		MaxRedactions:   100, // Reasonable limit for LLM responses
@@ -294,6 +316,15 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 	redactionInfo := &RedactionInfo{
 		HasRedactions:  result.Redacted,
 		RedactionCount: len(result.RedactedFields),
+	}
+	// A policy whose EFFECTIVE response-phase action is `block` (sensitive-data
+	// under strict/compliance) WITHHOLDS the LLM response: propagate the engine's
+	// block verdict so ProcessResponse replaces the content and run.go writes a
+	// canonical blocked row (#2705). Independent of the PII warn/log skipRedaction
+	// path below — block is enforcement, not redaction, so it is NOT reverted.
+	if result.Blocked {
+		redactionInfo.Verdict = responseVerdictBlocked
+		redactionInfo.ValidationError = result.BlockReason
 	}
 
 	// Convert redacted field paths to slice

@@ -498,6 +498,11 @@ func workflowAuditDecision(decision string) string {
 		return sharedaudit.DecisionBlocked
 	case "require_approval":
 		return sharedaudit.DecisionNeedsApproval
+	case "error":
+		// #2698: a fail-open-on-policy-ERROR gate verdict (HITL) records the
+		// errored decision as canonical `error` — it must NEVER fall through to
+		// the `allowed` default, which would silently inflate the allowed counts.
+		return sharedaudit.DecisionError
 	default:
 		return sharedaudit.DecisionAllowed
 	}

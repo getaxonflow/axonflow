@@ -6,8 +6,8 @@
 --          surface in the policy menu.
 -- Related: Issue #2522 (a design partner's R&C policy pack), epic #2518.
 --
--- Mirrors the Go canonical seed in platform/agent/system_policies_seed.go
--- (getDangerousInstructionPatterns + the sys_pii_indonesia_ktp entry). The
+-- This migration is the canonical source for these system policies (migrations
+-- are the single source of truth for system-tier policies — #2696). The
 -- runtime KTP BLOCK decision is made by the Enterprise Indonesia PII detector
 -- (ee/platform/agent/indonesia), which additionally validates the digit-
 -- normalized core as a real NIK; this row provides the menu/spec parity and

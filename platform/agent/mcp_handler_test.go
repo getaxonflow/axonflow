@@ -1907,7 +1907,7 @@ func TestValidateServiceLicense_EmptyLicenseKey(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	w := httptest.NewRecorder()
-	granted, err := validateServiceLicense(context.Background(), w, "", "postgres", "query", "query")
+	granted, err := validateServiceLicense(context.Background(), w, "", "postgres", "query", "query", "tenant-test", "org-test", "client-test")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -1941,7 +1941,7 @@ func TestValidateServiceLicense_CommunityMode(t *testing.T) {
 			}
 
 			w := httptest.NewRecorder()
-			granted, err := validateServiceLicense(context.Background(), w, tt.licenseKey, "postgres", "query", "query")
+			granted, err := validateServiceLicense(context.Background(), w, tt.licenseKey, "postgres", "query", "query", "tenant-test", "org-test", "client-test")
 			if err != nil {
 				t.Errorf("expected no error in community mode, got: %v", err)
 			}
@@ -1966,7 +1966,7 @@ func TestValidateServiceLicense_EnterpriseMode_LicenseValidated(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	w := httptest.NewRecorder()
-	granted, err := validateServiceLicense(context.Background(), w, "not-a-valid-key", "postgres", "query", "query")
+	granted, err := validateServiceLicense(context.Background(), w, "not-a-valid-key", "postgres", "query", "query", "tenant-test", "org-test", "client-test")
 
 	// Community build: ValidateLicense returns Valid=true for any key.
 	// The key assertion is that validation WAS attempted (no early return like community mode)
@@ -1988,7 +1988,7 @@ func TestValidateServiceLicense_EnterpriseMode_FakeKey(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	w := httptest.NewRecorder()
-	granted, err := validateServiceLicense(context.Background(), w, "AXON-fake-key.fake-signature", "postgres", "query", "query")
+	granted, err := validateServiceLicense(context.Background(), w, "AXON-fake-key.fake-signature", "postgres", "query", "query", "tenant-test", "org-test", "client-test")
 
 	// Community build: ValidateLicense returns Valid=true.
 	// Fake key parsing may fail, falling back to community result (no service name).
@@ -2028,7 +2028,7 @@ func TestValidateServiceLicense_EnterpriseMode_WithServiceLicense(t *testing.T) 
 	licenseKey := "AXON-" + payloadBase64 + "." + sigBase64
 
 	w := httptest.NewRecorder()
-	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query")
+	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query", "tenant-test", "org-test", "client-test")
 
 	// With a valid service license, permission evaluation should run
 	// It may grant or deny based on permission evaluator logic, but should not error on validation
@@ -2073,7 +2073,7 @@ func TestValidateServiceLicense_EnterpriseMode_ServicePermissionDenied(t *testin
 	licenseKey := "AXON-" + payloadBase64 + "." + sigBase64
 
 	w := httptest.NewRecorder()
-	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query")
+	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query", "tenant-test", "org-test", "client-test")
 
 	// Should be denied since service only has redis permission, not postgres
 	if err == nil {

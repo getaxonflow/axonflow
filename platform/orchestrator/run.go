@@ -1333,6 +1333,11 @@ func initializeComponents() {
 				log.Println("HITL Enterprise adapters initialized (policy checker + approval service)")
 			}
 			hitlWorkflowEngine = NewHITLWorkflowEngine(workflowEngine, policyChecker, approvalService)
+			// Wire the canonical audit writer so block / require_approval gate
+			// decisions on this legacy path are recorded to audit_logs (#2693).
+			if auditLogger != nil {
+				hitlWorkflowEngine.SetAuditLogger(auditLogger)
+			}
 			log.Println("HITL Workflow Engine initialized ✅")
 		} else {
 			log.Println("HITL mode disabled (set AXONFLOW_HITL_ENABLED=true to enable)")

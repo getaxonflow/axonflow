@@ -211,7 +211,7 @@ type PolicyFieldError struct {
 // are used by the MCP Dynamic Policy Handler for connector-level policy enforcement.
 var ValidPolicyTypes = []string{
 	"content", "user", "risk", "cost", // Standard policy types
-	"context_aware",                       // Context-aware (tenant isolation, debug restrict, sensitive-data control — see system_policies_seed.go)
+	"context_aware",                       // Context-aware (tenant isolation, debug restrict, sensitive-data control — seeded by migration core/031)
 	"media",                               // Media governance policies
 	"rate-limit", "budget", "time-access", // MCP rate/budget controls
 	"role-access", "mcp", "connector", // MCP access controls

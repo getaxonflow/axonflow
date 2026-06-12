@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
@@ -1768,6 +1769,40 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("✅ Tenant isolation check passed")
 	log.Printf("[TIMING] Tenant isolation check: %v", tenantCheckTime)
 
+	// Canonical audit_logs coverage for the agent /api/request proxy plane
+	// (#2684 — closes the audit-coverage gate DEFERRED for clientRequestHandler).
+	// Every TERMINAL deny below — circuit breaker, static/tenant policy, HITL
+	// gate, budget — records an explainable plane=agent row through the
+	// established decide writer, so the portal /decisions feed + the SEBI/
+	// EU-AI-Act/OJK/RBI exporters see the agent-side block. Previously these
+	// denies were recorded only on the legacy agent_audit_logs plane, which has
+	// NO portal reader and is slated for retirement (#2674, ADR-058 Phase 4); an
+	// ALLOW forwards to the orchestrator, which audits the forwarded request.
+	// Identity is fixed now (user resolved + tenant verified) so it is stable
+	// across every deny branch. plane=agent stores the verdict verbatim (the
+	// writer only canonicalizes the decision/openai_compat planes), so the
+	// canonical AuditVerdict* / needs_approval values are passed directly.
+	proxyTraceID := traceIDFromHeader(r.Header.Get("traceparent"))
+	if proxyTraceID == "" {
+		proxyTraceID = newW3CTraceID()
+	}
+	proxyDecisionID := uuid.New().String()
+	proxyAudit := &decisionAuditInput{
+		clientID:      client.ClientID,
+		requestID:     proxyDecisionID,
+		userEmail:     user.Email,
+		userRole:      user.Role,
+		userID:        user.ID,
+		query:         req.Query,
+		plane:         PlaneAgent,
+		correlationID: proxyTraceID,
+	}
+	auditProxyDeny := func(verdict string, policyIDs, reasons []string) {
+		recordDecideDecision(r.Context(), proxyDecisionID, user.OrgID, user.TenantID,
+			DecisionStageLLM, verdict, policyIDs, time.Since(startTime).Milliseconds(),
+			reasons, proxyTraceID, nil, false, proxyAudit)
+	}
+
 	// 3.5 Circuit breaker check — block if circuit is open for this client/tenant/org (#1176)
 	//
 	// ADR-052 §5 (issue #2318): the CircuitBreaker has four scopes (Client,
@@ -1789,6 +1824,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("⚠️ Circuit breaker check error: %v", cbErr)
 		} else if !cbResult.Allowed {
 			log.Printf("🔴 Request blocked by circuit breaker: scope=%s reason=%s", logutil.Sanitize(string(cbResult.Scope)), logutil.Sanitize(string(cbResult.Reason)))
+			auditProxyDeny(AuditVerdictBlocked, []string{"circuit_breaker"},
+				[]string{fmt.Sprintf("circuit breaker active (scope=%s, reason=%s)", cbResult.Scope, cbResult.Reason)})
 			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
 				w.Header().Set("Retry-After", retryAfter)
 			}
@@ -1867,6 +1904,9 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if policyResult.Blocked {
 		log.Printf("Request blocked by static policy for user %s: %s", logutil.Sanitize(user.Email), logutil.Sanitize(policyResult.Reason))
 
+		// Canonical audit row for the static/tenant policy block (#2684).
+		auditProxyDeny(AuditVerdictBlocked, policyResult.TriggeredPolicies, []string{policyResult.Reason})
+
 		// Record policy violation for auto-trip threshold tracking (#1176)
 		// ADR-052 §5 (issue #2318): clientID is the credential identity, not
 		// legacy `client.ID`. See contract block at the Check call above.
@@ -1918,6 +1958,13 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	requiresHITL := policyResult.RequiresApproval && !isCommunityMode()
 	if requiresHITL {
 		log.Printf("⏸️ [Proxy Mode] HITL required - blocking request for human approval")
+
+		// Canonical audit row for the HITL gate decision (#2684): needs_approval.
+		// VerdictNeedsApproval == the canonical audit value "needs_approval", and
+		// plane=agent stores it verbatim, so it lands canonical without a remap.
+		auditProxyDeny(VerdictNeedsApproval,
+			append(policyResult.TriggeredPolicies, "hitl_compliance"),
+			[]string{"human approval required by policy"})
 
 		// Track HITL blocked request metrics
 		if agentMetrics != nil {
@@ -1984,6 +2031,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			// Block if budget exceeded and action is block
 			if !budgetDecision.Allowed {
 				log.Printf("💰 [clientRequestHandler] Request blocked by budget: %s", budgetDecision.Message)
+				// Canonical audit row for the budget block (#2684).
+				auditProxyDeny(AuditVerdictBlocked, []string{"budget_exceeded"}, []string{budgetDecision.Message})
 				response := ClientResponse{
 					Success:     false,
 					Blocked:     true,

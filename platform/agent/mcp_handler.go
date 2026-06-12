@@ -76,10 +76,19 @@ func init() {
 	serviceauth.LogAuthWarning()
 }
 
-// validateServiceLicense validates a service license key and checks MCP permissions.
-// In community mode, license validation is skipped entirely since MCP features are community features.
-// Returns (servicePermissionGranted, error). On error, the HTTP response has already been sent.
-func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseKey, connector, operation, fallbackOperation string) (bool, error) {
+// validateServiceLicense validates a service license key and checks MCP
+// permissions. In community mode, license validation is skipped entirely since
+// MCP features are community features. Returns (servicePermissionGranted, error);
+// on error the HTTP response has already been sent.
+//
+// For service licenses it gates the requested connector:operation through
+// EvaluateMCPPermission — making it a Policy Enforcement Point.
+// auditTenantID/auditOrgID/auditClientID carry the AUTHENTICATED request identity
+// (resolved by the caller) used to key the canonical audit_logs row on a
+// permission-denied deny (#2684); they are NOT the service-license identity
+// (ValidationResult.OrgID is the licensee/deployment, which must never land in a
+// customer-data row).
+func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseKey, connector, operation, fallbackOperation, auditTenantID, auditOrgID, auditClientID string) (bool, error) {
 	if licenseKey == "" || isCommunityMode() || isCommunitySaasMode() {
 		return false, nil
 	}
@@ -108,6 +117,23 @@ func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseK
 		allowed, err := pe.EvaluateMCPPermission(validationResult, connector, op)
 		if !allowed {
 			log.Printf("[MCP] Permission denied: %v", err)
+			// #2684: the EvaluateMCPPermission gate is a PEP; its authz-failure deny
+			// previously wrote NO canonical row (sibling of #2683 HOLE D). Record a
+			// canonical plane=mcp "blocked" row keyed on the AUTHENTICATED request
+			// identity passed by the caller — never the service-license deployment id
+			// (the licensee, not a customer tenant). The reason is connector:op only
+			// (the license key never appears). 403 stays authoritative; audit is
+			// best-effort.
+			writeMCPDecisionAudit(ctx, usageDB,
+				uuid.New().String(), "",
+				auditTenantID, auditOrgID, auditClientID, "",
+				"", "service",
+				"mcp_permission_check", fmt.Sprintf("mcp permission: %s:%s", connector, op), "",
+				mcpVerdictBlocked,
+				[]string{"mcp_permission_denied"},
+				[]string{fmt.Sprintf("service permission denied for %s:%s", connector, op)},
+				nil,
+				"")
 			sendErrorResponse(w, fmt.Sprintf("Permission denied: %v", err), http.StatusForbidden, nil)
 			return false, fmt.Errorf("permission denied: %v", err)
 		}
@@ -727,6 +753,11 @@ func evaluateInputPolicies(
 			sharedpolicy.CategoryComplianceMASFEAT,
 		}
 		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
+		// #2705: also evaluate the sensitive-data (secrets) category so the
+		// SENSITIVE_DATA_ACTION / profile lever governs MCP request input too — the
+		// one request plane that previously omitted it (block is already honored
+		// below via out.StaticResult.Blocked).
+		inputCats = append(inputCats, policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
 			TenantID:        tenantID,
 			OrgID:           orgID,
@@ -1118,12 +1149,18 @@ func evaluateOutputPolicies(
 		// skip the static PII pass; must NOT pass empty Categories, which would
 		// evaluate ALL policies (the whitelist short-circuits on empty).
 		piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
-		if responseContent != nil && len(piiCats) > 0 {
+		// #2705: also evaluate the sensitive-data (secrets) category so a credential-
+		// shaped connector RESPONSE is warn/block-enforced per the profile lever (the
+		// block is already honored below via out.StaticResult.Blocked). nil+nil => skip
+		// (must NOT pass empty Categories — the whitelist footgun evaluates ALL).
+		sensCats := policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		outCats := append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...)
+		if responseContent != nil && len(outCats) > 0 {
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
 				TenantID:        tenantID,
 				ConnectorName:   connectorName,
 				UserID:          userID,
-				Categories:      piiCats,
+				Categories:      outCats,
 				SkipCategories:  mcpDetectionCfg.SkipCategories,
 				ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 				MaxRedactions:   100,
@@ -1429,7 +1466,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	// In community mode, skip license validation entirely - these are community features
-	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, "query")
+	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, "query", user.TenantID, client.OrgID, client.ClientID)
 	if err != nil {
 		return // response already sent by validateServiceLicense
 	}
@@ -1815,7 +1852,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	// In community mode, skip license validation entirely - these are community features
-	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, strings.ToLower(req.Action))
+	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, strings.ToLower(req.Action), user.TenantID, auth.OrgID, client.ClientID)
 	if err != nil {
 		return // response already sent by validateServiceLicense
 	}
