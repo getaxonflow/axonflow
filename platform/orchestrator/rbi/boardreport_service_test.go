@@ -190,8 +190,12 @@ func TestBoardReportService_GenerateReport(t *testing.T) {
 		if report.ApprovalStatus != ReportApprovalDraft {
 			t.Errorf("ApprovalStatus = %v, want %v", report.ApprovalStatus, ReportApprovalDraft)
 		}
-		if report.GenerationMethod != "automated" {
-			t.Errorf("GenerationMethod = %v, want automated", report.GenerationMethod)
+		// Pinned to 'automatic' — the DB check constraint (migration 301)
+		// only accepts 'automatic' or 'manual'. The literal 'automated'
+		// in the old value was the very bug this test was supposed to
+		// prevent; it would have 500'd on write every time.
+		if report.GenerationMethod != "automatic" {
+			t.Errorf("GenerationMethod = %v, want automatic", report.GenerationMethod)
 		}
 	})
 
@@ -608,6 +612,9 @@ func (m *MockValidationRepoForBoardReport) GetLatestBySystem(ctx context.Context
 // MockIncidentRepoForBoardReport implements AIIncidentRepository for board report testing.
 type MockIncidentRepoForBoardReport struct {
 	incidents []*AIIncident
+	// pending maps notificationType ("board"/"rbi") to the incidents that
+	// legally require but have not yet sent that notification. nil → none.
+	pending map[string][]*AIIncident
 }
 
 func (m *MockIncidentRepoForBoardReport) Create(ctx context.Context, i *AIIncident) error {
@@ -635,7 +642,10 @@ func (m *MockIncidentRepoForBoardReport) GetOpenIncidents(ctx context.Context, o
 	return nil, nil
 }
 func (m *MockIncidentRepoForBoardReport) GetPendingNotifications(ctx context.Context, orgID, notificationType string) ([]*AIIncident, error) {
-	return nil, nil
+	if m.pending == nil {
+		return nil, nil
+	}
+	return m.pending[notificationType], nil
 }
 
 // MockKillSwitchRepoForBoardReport implements KillSwitchRepository for board report testing.
@@ -943,6 +953,154 @@ func TestBoardReportService_ComplianceScoreCalculation(t *testing.T) {
 		// With no systems, no incidents, no issues - score should be 100
 		if report.ComplianceScore != 100 {
 			t.Errorf("ComplianceScore = %f, want 100 for clean slate", report.ComplianceScore)
+		}
+	})
+}
+
+// findIssue returns the first compliance issue with the given category, or nil.
+func findIssue(issues []ComplianceIssue, category string) *ComplianceIssue {
+	for i := range issues {
+		if issues[i].Category == category {
+			return &issues[i]
+		}
+	}
+	return nil
+}
+
+// TestBoardReportService_PendingNotificationVisibility proves #2640 P2: the
+// board report consults GetPendingNotifications and surfaces an unsent-but-
+// legally-required RBI / board notification as a distinct compliance issue
+// (not a generic open-critical incident), penalizing the compliance score.
+//
+// Red-on-revert: if GenerateReport stops calling GetPendingNotifications, the
+// pending counts stay zero, the regulatory_notification / board_notification
+// issues disappear, and the score is not penalized — every assertion below
+// fails.
+func TestBoardReportService_PendingNotificationVisibility(t *testing.T) {
+	now := time.Now().UTC()
+	resolvedAt := now.Add(-1 * time.Hour)
+
+	t.Run("unsent required RBI+board notifications surface as distinct issues", func(t *testing.T) {
+		// A critical incident that was already RESOLVED but whose RBI/board
+		// notification was never sent. GetOpenIncidents would miss it; only
+		// the pending-notification query catches it.
+		critical := &AIIncident{
+			ID:                        "inc-unreported",
+			OrgID:                     "org-pending",
+			Severity:                  IncidentSeverityCritical,
+			IncidentType:              IncidentTypeModelFailure,
+			Status:                    IncidentStatusResolved,
+			DetectedAt:                now.Add(-3 * time.Hour),
+			ResolvedAt:                &resolvedAt,
+			BoardNotificationRequired: true,
+			RBINotificationRequired:   true,
+		}
+		incidentRepo := &MockIncidentRepoForBoardReport{
+			incidents: []*AIIncident{critical},
+			pending: map[string][]*AIIncident{
+				"board": {critical},
+				"rbi":   {critical},
+			},
+		}
+		boardRepo := NewMockBoardReportRepository()
+		service := NewBoardReportService(boardRepo, nil, nil, incidentRepo, nil)
+
+		report, err := service.GenerateReport(context.Background(), "org-pending", &GenerateReportRequest{
+			ReportType: "quarterly",
+		})
+		if err != nil {
+			t.Fatalf("GenerateReport failed: %v", err)
+		}
+
+		if report.PendingRBINotifications != 1 {
+			t.Errorf("PendingRBINotifications = %d, want 1", report.PendingRBINotifications)
+		}
+		if report.PendingBoardNotifications != 1 {
+			t.Errorf("PendingBoardNotifications = %d, want 1", report.PendingBoardNotifications)
+		}
+
+		rbiIssue := findIssue(report.ComplianceIssues, "regulatory_notification")
+		if rbiIssue == nil {
+			t.Fatal("expected a 'regulatory_notification' compliance issue for the unsent RBI notification")
+		}
+		if rbiIssue.Severity != "critical" {
+			t.Errorf("regulatory_notification severity = %q, want critical", rbiIssue.Severity)
+		}
+		if findIssue(report.ComplianceIssues, "board_notification") == nil {
+			t.Error("expected a 'board_notification' compliance issue for the unsent board notification")
+		}
+
+		// Score must be penalized below a clean 100. The unsent RBI (15) +
+		// board (5) deductions stack on top of the critical-incident (10)
+		// deduction, so the score is strictly < 100.
+		if report.ComplianceScore >= 100 {
+			t.Errorf("ComplianceScore = %f, want < 100 (unsent required notifications must penalize)", report.ComplianceScore)
+		}
+	})
+
+	t.Run("notification deductions are bounded (caps RBI=30, board=15)", func(t *testing.T) {
+		// Five pending of each — the deductions must cap, not run away:
+		// RBI 5*15=75 → capped at 30, board 5*5=25 → capped at 15. With no
+		// other issues, score = 100 - 30 - 15 = 55.
+		mk := func(id string) *AIIncident {
+			return &AIIncident{OrgID: "org-many", ID: id, Severity: IncidentSeverityCritical}
+		}
+		incidentRepo := &MockIncidentRepoForBoardReport{
+			// incidents is empty so severity aggregation adds no extra
+			// deduction — this isolates the notification caps.
+			incidents: nil,
+			pending: map[string][]*AIIncident{
+				"rbi":   {mk("r1"), mk("r2"), mk("r3"), mk("r4"), mk("r5")},
+				"board": {mk("b1"), mk("b2"), mk("b3"), mk("b4"), mk("b5")},
+			},
+		}
+		boardRepo := NewMockBoardReportRepository()
+		service := NewBoardReportService(boardRepo, nil, nil, incidentRepo, nil)
+
+		report, err := service.GenerateReport(context.Background(), "org-many", &GenerateReportRequest{
+			ReportType: "quarterly",
+		})
+		if err != nil {
+			t.Fatalf("GenerateReport failed: %v", err)
+		}
+		if report.PendingRBINotifications != 5 || report.PendingBoardNotifications != 5 {
+			t.Fatalf("pending counts = (rbi=%d, board=%d), want (5, 5)",
+				report.PendingRBINotifications, report.PendingBoardNotifications)
+		}
+		if report.ComplianceScore != 55 {
+			t.Errorf("ComplianceScore = %f, want 55 (100 - capped RBI 30 - capped board 15)", report.ComplianceScore)
+		}
+	})
+
+	t.Run("no pending notifications => no notification issues, no penalty", func(t *testing.T) {
+		// Precondition-absent control: a clean slate with an incident repo
+		// that returns NO pending notifications must not invent the issues.
+		incidentRepo := &MockIncidentRepoForBoardReport{
+			incidents: nil,
+			pending:   nil, // GetPendingNotifications returns empty
+		}
+		boardRepo := NewMockBoardReportRepository()
+		service := NewBoardReportService(boardRepo, nil, nil, incidentRepo, nil)
+
+		report, err := service.GenerateReport(context.Background(), "org-clean", &GenerateReportRequest{
+			ReportType: "quarterly",
+		})
+		if err != nil {
+			t.Fatalf("GenerateReport failed: %v", err)
+		}
+
+		if report.PendingRBINotifications != 0 || report.PendingBoardNotifications != 0 {
+			t.Errorf("pending counts = (rbi=%d, board=%d), want (0, 0)",
+				report.PendingRBINotifications, report.PendingBoardNotifications)
+		}
+		if findIssue(report.ComplianceIssues, "regulatory_notification") != nil {
+			t.Error("did not expect a 'regulatory_notification' issue with no pending notifications")
+		}
+		if findIssue(report.ComplianceIssues, "board_notification") != nil {
+			t.Error("did not expect a 'board_notification' issue with no pending notifications")
+		}
+		if report.ComplianceScore != 100 {
+			t.Errorf("ComplianceScore = %f, want 100 (clean slate, no penalty)", report.ComplianceScore)
 		}
 	})
 }

@@ -98,6 +98,7 @@ type OJKAuditExportData struct {
 	HITLRecords      []OJKHITLRecord            `json:"hitl_records,omitempty"`
 	PIIRedactions    []OJKPIIRedactionRecord    `json:"pii_redactions,omitempty"`
 	CrossBorder      []CrossBorderTransferRecord `json:"cross_border_transfers,omitempty"`
+	BreachNotifications []OJKBreachNotificationRecord `json:"breach_notifications,omitempty"`
 }
 
 // OJKPolicyViolationRecord is a single policy violation audit entry.
@@ -272,7 +273,38 @@ type OJKBreachNotification struct {
 	RemediationSteps     []string `json:"remediation_steps"`
 	NotifiedAuthority    string  `json:"notified_authority,omitempty"` // MOCDA (until DPA constituted)
 	Status               string  `json:"status,omitempty"`
+	// SubmittedAt is set when the notification is transmitted to the authority
+	// (the draft→submitted transition). Timely iff <= NotificationDeadline.
+	SubmittedAt          *time.Time `json:"submitted_at,omitempty"`
+	// AcknowledgedAt is set when the authority confirms receipt
+	// (the submitted→acknowledged transition).
+	AcknowledgedAt       *time.Time `json:"acknowledged_at,omitempty"`
 	CreatedAt            time.Time `json:"created_at,omitempty"`
+}
+
+// OJKBreachNotificationRecord is a single breach-notification audit entry as
+// surfaced by ExportAuditData for OJKDataTypeBreachNotify. Status is the
+// EFFECTIVE lifecycle status (the deadline evaluator is applied at export time),
+// while StoredStatus is the durable operator-driven value persisted in the row.
+type OJKBreachNotificationRecord struct {
+	ID                   string     `json:"id"`
+	IncidentTimestamp    time.Time  `json:"incident_timestamp"`
+	DiscoveryTime        time.Time  `json:"discovery_time"`
+	NotificationDeadline time.Time  `json:"notification_deadline"`
+	DataSubjectsAffected int        `json:"data_subjects_affected"`
+	DataTypesInvolved    []string   `json:"data_types_involved,omitempty"`
+	NotifiedAuthority    string     `json:"notified_authority,omitempty"`
+	// Status is the effective status at export time — an un-acknowledged breach
+	// past its 72h window reads "overdue" even if never explicitly flipped.
+	Status               string     `json:"status"`
+	// StoredStatus is the durable lifecycle value persisted in the row.
+	StoredStatus         string     `json:"stored_status,omitempty"`
+	SubmittedAt          *time.Time `json:"submitted_at,omitempty"`
+	AcknowledgedAt       *time.Time `json:"acknowledged_at,omitempty"`
+	// WithinDeadline is the UU PDP Art. 46 timeliness verdict: false once the
+	// breach is overdue (never transmitted in time / submitted late) or failed.
+	WithinDeadline       bool       `json:"within_deadline"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 // OJKDashboardResponse contains the OJK compliance dashboard data.
@@ -284,6 +316,10 @@ type OJKDashboardResponse struct {
 	RecentViolations int                    `json:"recent_violations"`
 	RetentionStatus  string                 `json:"retention_status"`
 	BreachNotifications int                 `json:"breach_notifications"`
+	// OverdueBreachNotifications is the count of breaches whose effective status
+	// is overdue (past the 72h window without a timely submission, not yet
+	// acknowledged/failed) — the UU PDP Art. 46 compliance-risk signal.
+	OverdueBreachNotifications int          `json:"overdue_breach_notifications"`
 	LastUpdated      time.Time              `json:"last_updated"`
 }
 
@@ -294,6 +330,13 @@ type OJKAuditExportService interface {
 	GetExportStatus(ctx context.Context, tenantID string, exportID string) (*OJKAuditExportResponse, error)
 	ValidateComplianceReadiness(ctx context.Context, tenantID string) (*OJKComplianceReadinessResponse, error)
 	SubmitBreachNotification(ctx context.Context, tenantID string, req *OJKBreachNotification) (*OJKBreachNotification, error)
+	// AcknowledgeBreachNotification records authority receipt for a previously
+	// submitted breach (gated submitted→acknowledged transition; sets
+	// acknowledged_at). Returns ErrBreachNotFound / ErrInvalidBreachTransition.
+	AcknowledgeBreachNotification(ctx context.Context, tenantID string, id string) (*OJKBreachNotification, error)
+	// EvaluateBreachDeadlines flips never-submitted drafts whose 72h window has
+	// lapsed to overdue, durably. Returns the number of rows flipped.
+	EvaluateBreachDeadlines(ctx context.Context, tenantID string) (int, error)
 	GetDashboard(ctx context.Context, tenantID string) (*OJKDashboardResponse, error)
 }
 

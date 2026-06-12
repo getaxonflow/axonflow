@@ -19,8 +19,10 @@ package agent
 import (
 	"bytes"
 	"context"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,7 +30,9 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"axonflow/platform/agent/circuitbreaker"
 	sharedpolicy "axonflow/platform/shared/policy"
@@ -828,4 +832,441 @@ func isValidW3CTraceID(s string) bool {
 	}
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+
+// ============================================================================
+// #2643 — /decide early-return deny audit completeness.
+//
+// Every early-return deny (decode / invalid stage / empty query / cross-tenant
+// & cross-org impersonation / tenant mismatch / rejected user token) must write
+// a canonical plane=decision audit_logs row BEFORE returning. Each test below is
+// red-on-revert: removing the auditEarlyDeny call (or reverting the canonical
+// vocabulary) leaves the INSERT expectation unmet and fails the test.
+// ============================================================================
+
+// jsonbBytes extracts the raw JSON bytes from a JSONB driver value (sqlmock
+// hands either []byte or string depending on the driver path).
+func jsonbBytes(v driver.Value) ([]byte, bool) {
+	switch x := v.(type) {
+	case []byte:
+		return x, true
+	case string:
+		return []byte(x), true
+	default:
+		return nil, false
+	}
+}
+
+// decideSecurityDetailsMatcher asserts the policy_details JSONB carries the
+// security-event classification + the attempted (impersonated) identity (#2643).
+// Empty want* fields are not checked.
+type decideSecurityDetailsMatcher struct {
+	wantEvent           string
+	wantAttemptedTenant string
+	wantAttemptedOrg    string
+}
+
+func (m decideSecurityDetailsMatcher) Match(v driver.Value) bool {
+	raw, ok := jsonbBytes(v)
+	if !ok {
+		return false
+	}
+	var d map[string]interface{}
+	if json.Unmarshal(raw, &d) != nil {
+		return false
+	}
+	if d["security_event"] != m.wantEvent {
+		return false
+	}
+	if m.wantAttemptedTenant != "" && d["attempted_tenant_id"] != m.wantAttemptedTenant {
+		return false
+	}
+	if m.wantAttemptedOrg != "" && d["attempted_org_id"] != m.wantAttemptedOrg {
+		return false
+	}
+	return true
+}
+
+// redactedFieldsMatcher asserts the redacted_fields JSONB array column carries
+// the wanted field path (#2643 structural fix).
+type redactedFieldsMatcher struct{ want string }
+
+func (m redactedFieldsMatcher) Match(v driver.Value) bool {
+	raw, ok := jsonbBytes(v)
+	if !ok {
+		return false
+	}
+	var fields []string
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	for _, f := range fields {
+		if f == m.want {
+			return true
+		}
+	}
+	return false
+}
+
+// decideAuditInsertArgs builds the positional WithArgs matcher for the 19-column
+// audit_logs INSERT: every column is AnyArg except policy_decision (canonical,
+// pos 13), policy_details (optional matcher, pos 14) and plane (=decision, pos
+// 16). Callers override individual positions (e.g. tenant_id pos 8) to assert
+// the actual authenticated identity alongside the attempted one.
+func decideAuditInsertArgs(policyDecision string, details driver.Value) []driver.Value {
+	args := make([]driver.Value, 19)
+	for i := range args {
+		args[i] = sqlmock.AnyArg()
+	}
+	args[12] = policyDecision // policy_decision
+	if details != nil {
+		args[13] = details // policy_details JSONB
+	}
+	args[15] = PlaneDecision // plane
+	return args
+}
+
+// withMockUsageDB swaps the package usageDB for a sqlmock for the duration of a
+// test and returns the mock.
+func withMockUsageDB(t *testing.T) sqlmock.Sqlmock {
+	t.Helper()
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mockDB.Close() })
+	orig := usageDB
+	usageDB = mockDB
+	t.Cleanup(func() { usageDB = orig })
+	return mock
+}
+
+// mintUserTokenWithTenant signs an HS256 user token carrying a tenant_id claim,
+// so ResolveUser (enterprise) returns a user whose tenant can be made to
+// disagree with the authenticated client tenant. jwtSecret must be set first.
+func mintUserTokenWithTenant(t *testing.T, tenant string) string {
+	t.Helper()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"tenant_id": tenant,
+		"email":     "user@example.com",
+		"role":      "user",
+		"exp":       time.Now().Add(time.Hour).Unix(),
+	}).SignedString(jwtSecret)
+	if err != nil {
+		t.Fatalf("mint user token: %v", err)
+	}
+	return tok
+}
+
+// TestCanonicalAuditVerdict pins the wire->canonical mapping (#2643 / #2638):
+// allow->allowed, deny->blocked, needs_approval unchanged, canonical values
+// idempotent, and any UNKNOWN value fails SAFE to error (never allowed). This
+// is the structural guard that the legacy `deny` token can never reach
+// audit_logs.policy_decision again.
+func TestCanonicalAuditVerdict(t *testing.T) {
+	cases := map[string]string{
+		VerdictAllow:         AuditVerdictAllowed,
+		VerdictDeny:          AuditVerdictBlocked,
+		VerdictNeedsApproval: VerdictNeedsApproval,
+		AuditVerdictAllowed:  AuditVerdictAllowed,
+		AuditVerdictBlocked:  AuditVerdictBlocked,
+		AuditVerdictRedacted: AuditVerdictRedacted,
+		AuditVerdictError:    AuditVerdictError,
+		"some-future-token":  AuditVerdictError, // fail-safe
+		"":                   AuditVerdictError, // fail-safe
+	}
+	for in, want := range cases {
+		if got := canonicalAuditVerdict(in); got != want {
+			t.Errorf("canonicalAuditVerdict(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if canonicalAuditVerdict(VerdictDeny) == VerdictDeny {
+		t.Fatal("wire 'deny' must never be the audit_logs value")
+	}
+	if canonicalAuditVerdict(VerdictAllow) == VerdictAllow {
+		t.Fatal("wire 'allow' must never be the audit_logs value")
+	}
+}
+
+// TestHandleDecide_AuditsDecodeError_AsError: a malformed body — never evaluated
+// — still writes a canonical plane=decision row classified as 'error'.
+func TestHandleDecide_AuditsDecodeError_AsError(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	t.Setenv("ENVIRONMENT", "development")
+	mock := withMockUsageDB(t)
+
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(decideAuditInsertArgs(AuditVerdictError, nil)...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	rr := decideForTest(t, []byte("{not json"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("decode-error early deny must write an audit row: %v", err)
+	}
+}
+
+// TestHandleDecide_AuditsInvalidStage_AsError + EmptyQuery: malformed-request
+// validation denies also produce a canonical 'error' row.
+func TestHandleDecide_AuditsInvalidStage_AsError(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	t.Setenv("ENVIRONMENT", "development")
+	mock := withMockUsageDB(t)
+
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(decideAuditInsertArgs(AuditVerdictError, nil)...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	b, _ := json.Marshal(DecideRequest{Stage: "database", Query: "hello"})
+	rr := decideForTest(t, b)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("invalid-stage early deny must write an audit row: %v", err)
+	}
+}
+
+func TestHandleDecide_AuditsEmptyQuery_AsError(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	t.Setenv("ENVIRONMENT", "development")
+	mock := withMockUsageDB(t)
+
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(decideAuditInsertArgs(AuditVerdictError, nil)...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	b, _ := json.Marshal(DecideRequest{Stage: DecisionStageLLM, Query: ""})
+	rr := decideForTest(t, b)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("empty-query early deny must write an audit row: %v", err)
+	}
+}
+
+// decideEnterpriseReq builds a handler request with enterprise identity stamped
+// into context (no middleware), mirroring TestHandleDecide_TenantMismatch_403.
+func decideEnterpriseReq(t *testing.T, body DecideRequest, ctxTenant, ctxOrg string) *http.Request {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", decisionHandlerPath, bytes.NewBuffer(b))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := req.Context()
+	ctx = context.WithValue(ctx, ContextKeyTenantID, ctxTenant)
+	ctx = context.WithValue(ctx, ContextKeyOrgID, ctxOrg)
+	ctx = context.WithValue(ctx, ContextKeyClientID, "auth-client")
+	ctx = context.WithValue(ctx, ContextKeyAuthKind, AuthKindEnterprise)
+	return req.WithContext(ctx)
+}
+
+// TestHandleDecide_AuditsTenantImpersonation_AsBlocked: a body caller_identity
+// asserting a DIFFERENT tenant than the authenticated credentials is denied 403
+// AND audited as a `blocked` security row capturing attempted-vs-actual.
+func TestHandleDecide_AuditsTenantImpersonation_AsBlocked(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	mock := withMockUsageDB(t)
+
+	args := decideAuditInsertArgs(AuditVerdictBlocked,
+		decideSecurityDetailsMatcher{wantEvent: "tenant_impersonation", wantAttemptedTenant: "victim-tenant"})
+	args[7] = "auth-tenant" // tenant_id COLUMN = actual authenticated identity
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(args...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := decideEnterpriseReq(t, DecideRequest{
+		Stage:          DecisionStageLLM,
+		CallerIdentity: DecisionCallerIdentity{TenantID: "victim-tenant"},
+		Target:         DecisionTarget{Type: "llm", Model: "gpt-4o"},
+		Query:          "hello",
+	}, "auth-tenant", "auth-org")
+	rr := httptest.NewRecorder()
+	handleDecide(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("tenant-impersonation deny must write a blocked audit row: %v", err)
+	}
+}
+
+// TestHandleDecide_AuditsOrgImpersonation_AsBlocked: a body caller_identity
+// asserting a different org (tenant matching) is denied + audited as blocked.
+func TestHandleDecide_AuditsOrgImpersonation_AsBlocked(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	mock := withMockUsageDB(t)
+
+	args := decideAuditInsertArgs(AuditVerdictBlocked,
+		decideSecurityDetailsMatcher{wantEvent: "org_impersonation", wantAttemptedOrg: "victim-org"})
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(args...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := decideEnterpriseReq(t, DecideRequest{
+		Stage:          DecisionStageLLM,
+		CallerIdentity: DecisionCallerIdentity{TenantID: "auth-tenant", OrgID: "victim-org"},
+		Target:         DecisionTarget{Type: "llm", Model: "gpt-4o"},
+		Query:          "hello",
+	}, "auth-tenant", "auth-org")
+	rr := httptest.NewRecorder()
+	handleDecide(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("org-impersonation deny must write a blocked audit row: %v", err)
+	}
+}
+
+// TestHandleDecide_AuditsUserTokenRejected_AsBlocked: an enterprise caller that
+// supplies a NON-empty but invalid user_token is a rejected access attempt —
+// audited as blocked, not 401-ing invisibly.
+func TestHandleDecide_AuditsUserTokenRejected_AsBlocked(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	origSecret := jwtSecret
+	jwtSecret = []byte(testJWTSecret)
+	t.Cleanup(func() { jwtSecret = origSecret })
+	mock := withMockUsageDB(t)
+
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(decideAuditInsertArgs(AuditVerdictBlocked,
+			decideSecurityDetailsMatcher{wantEvent: "user_token_rejected"})...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := decideEnterpriseReq(t, DecideRequest{
+		Stage:     DecisionStageLLM,
+		Target:    DecisionTarget{Type: "llm", Model: "gpt-4o"},
+		Query:     "hello",
+		UserToken: "not.a.valid.jwt",
+	}, "ent-tenant", "ent-org")
+	rr := httptest.NewRecorder()
+	handleDecide(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("rejected user_token must write a blocked audit row: %v", err)
+	}
+}
+
+// TestHandleDecide_AuditsTenantMismatch_AsBlocked: a VALID user_token whose
+// tenant_id claim disagrees with the authenticated client tenant is denied 403
+// and audited as a blocked tenant_mismatch capturing the attempted tenant.
+func TestHandleDecide_AuditsTenantMismatch_AsBlocked(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	origSecret := jwtSecret
+	jwtSecret = []byte(testJWTSecret)
+	t.Cleanup(func() { jwtSecret = origSecret })
+	mock := withMockUsageDB(t)
+
+	token := mintUserTokenWithTenant(t, "other-tenant")
+
+	args := decideAuditInsertArgs(AuditVerdictBlocked,
+		decideSecurityDetailsMatcher{wantEvent: "tenant_mismatch", wantAttemptedTenant: "other-tenant"})
+	args[7] = "ent-tenant" // tenant_id COLUMN = actual authenticated identity
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(args...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := decideEnterpriseReq(t, DecideRequest{
+		Stage:     DecisionStageLLM,
+		Target:    DecisionTarget{Type: "llm", Model: "gpt-4o"},
+		Query:     "hello",
+		UserToken: token,
+	}, "ent-tenant", "ent-org")
+	rr := httptest.NewRecorder()
+	handleDecide(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("tenant-mismatch deny must write a blocked audit row: %v", err)
+	}
+}
+
+// TestWriteDecisionAuditLog_PersistsRedactedFields proves the agent INSERT now
+// carries the redacted_fields JSONB column (#2643), previously omitted so only
+// the orchestrator BatchWriter populated it.
+func TestWriteDecisionAuditLog_PersistsRedactedFields(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	args := decideAuditInsertArgs(AuditVerdictAllowed, nil)
+	args[18] = redactedFieldsMatcher{want: "$.customer.ssn"} // redacted_fields column
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(args...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	writeDecisionAuditLog(context.Background(), mockDB,
+		"dec-rf", "org", "tenant", "llm", VerdictAllow,
+		nil, nil, nil, false,
+		decisionAuditInput{clientID: "c", redactedFields: []string{"$.customer.ssn"}})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("redacted_fields must be persisted to the agent INSERT: %v", err)
+	}
+}
+
+// TestWriteDecisionAuditLog_NilDBIncrementsFailureMetric proves the best-effort
+// write is OBSERVABLE, not silent (#2643): a nil DB increments the reason=nodb
+// failure counter instead of returning silently.
+func TestWriteDecisionAuditLog_NilDBIncrementsFailureMetric(t *testing.T) {
+	before := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("nodb"))
+	writeDecisionAuditLog(context.Background(), nil,
+		"dec-x", "o", "t", "llm", VerdictDeny, nil, nil, nil, false,
+		decisionAuditInput{})
+	after := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("nodb"))
+	if after <= before {
+		t.Errorf("nil-db write must increment the nodb failure metric: before=%v after=%v", before, after)
+	}
+}
+
+// TestWriteDecisionAuditLog_InsertFailureIncrementsMetric proves a failing
+// INSERT is observable via reason=insert (and never panics — best-effort).
+func TestWriteDecisionAuditLog_InsertFailureIncrementsMetric(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+	mock.ExpectExec("INSERT INTO audit_logs").WillReturnError(errors.New("boom"))
+
+	before := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("insert"))
+	writeDecisionAuditLog(context.Background(), mockDB,
+		"dec-x", "o", "t", "llm", VerdictDeny, nil, nil, nil, false,
+		decisionAuditInput{clientID: "c"})
+	after := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("insert"))
+	if after <= before {
+		t.Errorf("insert failure must increment the insert failure metric: before=%v after=%v", before, after)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// TestSanitizeAuditIdentity bounds an untrusted attempted identity (#2643).
+func TestSanitizeAuditIdentity(t *testing.T) {
+	if got := sanitizeAuditIdentity("  tenant-x  "); got != "tenant-x" {
+		t.Errorf("trim: got %q", got)
+	}
+	if got := sanitizeAuditIdentity("ten\x00ant\x07-y"); got != "tenant-y" {
+		t.Errorf("strip control: got %q", got)
+	}
+	if got := sanitizeAuditIdentity(""); got != "" {
+		t.Errorf("empty: got %q", got)
+	}
+	long := strings.Repeat("a", 200)
+	if got := sanitizeAuditIdentity(long); len(got) != maxGatewayIDLen {
+		t.Errorf("cap: len=%d want %d", len(got), maxGatewayIDLen)
+	}
 }

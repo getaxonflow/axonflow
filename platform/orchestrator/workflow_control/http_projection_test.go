@@ -143,6 +143,53 @@ func TestProjectStepGateToHTTP_RejectedStep(t *testing.T) {
 	}
 }
 
+// TestProjectStepGateToHTTP_ExpiredStep verifies the #2654 auto-timeout path:
+// an expired require_approval step blocks like a reject, but is surfaced
+// DISTINCTLY ("Expired" reason + status="expired"), and — because a timeout is
+// not a human decision — neither approved_* NOR rejected_* identity is populated.
+func TestProjectStepGateToHTTP_ExpiredStep(t *testing.T) {
+	expiredAt := time.Date(2026, 4, 23, 11, 0, 0, 0, time.UTC)
+	firstAttempt := time.Date(2026, 4, 22, 11, 0, 0, 0, time.UTC)
+	expired := ApprovalStatusExpired
+
+	step := &WorkflowStep{
+		WorkflowID:     "wf_exp",
+		StepID:         "step-3",
+		Decision:       GateDecisionRequireApproval,
+		DecisionReason: "PII leak risk",
+		ApprovalStatus: &expired,
+		ApprovedBy:     "system:auto-expired", // system actor marker, not a human reviewer
+		ApprovedAt:     &expiredAt,
+		GateCount:      1,
+		LastDecision:   GateDecisionRequireApproval,
+		FirstAttemptAt: &firstAttempt,
+		GateCheckedAt:  firstAttempt,
+	}
+
+	resp := ProjectStepGateToHTTP("wf_exp", "", step, ApproverMeta{}, "Step expired, workflow aborted", false)
+
+	if resp.Decision != GateDecisionBlock {
+		t.Errorf("Decision = %q, want block (expired require_approval → block)", resp.Decision)
+	}
+	if !strings.HasPrefix(resp.Reason, "Expired") {
+		t.Errorf("Reason = %q, want 'Expired' prefix", resp.Reason)
+	}
+	if resp.Status != "expired" {
+		t.Errorf("Status mirror = %q, want 'expired'", resp.Status)
+	}
+	// A timeout is not a human rejection — RejectedBy/RejectedAt must stay empty
+	// so the expiry is never attributed to a human reviewer.
+	if resp.RejectedBy != "" {
+		t.Errorf("RejectedBy = %q, want empty on expiry", resp.RejectedBy)
+	}
+	if resp.RejectedAt != nil {
+		t.Errorf("RejectedAt = %v, want nil on expiry", resp.RejectedAt)
+	}
+	if resp.ApprovedBy != "" {
+		t.Errorf("ApprovedBy = %q, want empty on expiry", resp.ApprovedBy)
+	}
+}
+
 // TestProjectStepGateToHTTP_PendingStep verifies the edge case of projecting
 // a step whose approval is still pending — neither approved_* nor rejected_*
 // populate, and decision stays as require_approval.

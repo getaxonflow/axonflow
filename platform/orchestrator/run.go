@@ -1808,6 +1808,12 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		if mediaErr != nil {
 			log.Printf("[MEDIA] Analysis failed for request %s: %v", logutil.Sanitize(req.RequestID), mediaErr)
 			if mediaPipeline.GetEnforcementStrategy(ctx) == media.EnforcementFailClosed {
+				// #2680: this fail-closed media deny is a terminal block; record a
+				// canonical audit_logs row (plane=media, verdict=blocked) before the
+				// 403 so the auditor sees it like every other plane's deny.
+				if auditLogger != nil {
+					_ = auditLogger.LogBlockedMedia(ctx, req, mediaErr)
+				}
 				sendErrorResponse(w, fmt.Sprintf("media analysis failed: %v", mediaErr), http.StatusForbidden)
 				return
 			}
@@ -2547,11 +2553,10 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 	var searchReq struct {
 		UserEmail   string    `json:"user_email,omitempty"`
 		ClientID    string    `json:"client_id,omitempty"`
-		TenantID    string    `json:"-"` // force-set from X-Tenant-ID; never client-controlled
-		StartTime   time.Time `json:"start_time"`
-		EndTime     time.Time `json:"end_time"`
-		RequestType string    `json:"request_type,omitempty"`
-		DecisionID  string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
+		TenantID   string    `json:"-"` // force-set from X-Tenant-ID; never client-controlled
+		StartTime  time.Time `json:"start_time"`
+		EndTime    time.Time `json:"end_time"`
+		DecisionID string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
 		PolicyName  string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
 		OverrideID  string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
 		Action      string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")

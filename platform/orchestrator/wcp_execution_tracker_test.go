@@ -39,6 +39,7 @@ func TestMapWCPStepDecisionToStatus(t *testing.T) {
 	pending := workflow_control.ApprovalStatusPending
 	approved := workflow_control.ApprovalStatusApproved
 	rejected := workflow_control.ApprovalStatusRejected
+	expired := workflow_control.ApprovalStatusExpired
 
 	tests := []struct {
 		name           string
@@ -52,6 +53,10 @@ func TestMapWCPStepDecisionToStatus(t *testing.T) {
 		{"require_approval pending", workflow_control.GateDecisionRequireApproval, &pending, execution.StepStatusApproval},
 		{"require_approval approved", workflow_control.GateDecisionRequireApproval, &approved, execution.StepStatusRunning},
 		{"require_approval rejected", workflow_control.GateDecisionRequireApproval, &rejected, execution.StepStatusFailed},
+		// #2654: an auto-expired (timed-out) approval is terminal-failed, NOT
+		// StepStatusApproval — a timed-out step must never show as still awaiting
+		// approval in the execution timeline.
+		{"require_approval expired", workflow_control.GateDecisionRequireApproval, &expired, execution.StepStatusFailed},
 		{"unknown decision maps to pending", workflow_control.GateDecision("unknown"), nil, execution.StepStatusPending},
 	}
 
@@ -65,6 +70,44 @@ func TestMapWCPStepDecisionToStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestMapWCPApprovalStatus(t *testing.T) {
+	pending := workflow_control.ApprovalStatusPending
+	approved := workflow_control.ApprovalStatusApproved
+	rejected := workflow_control.ApprovalStatusRejected
+	expired := workflow_control.ApprovalStatusExpired
+	unknown := workflow_control.ApprovalStatus("weird")
+
+	tests := []struct {
+		name  string
+		input *workflow_control.ApprovalStatus
+		want  *execution.ApprovalStatus // nil = expect nil
+	}{
+		{"nil maps to nil", nil, nil},
+		{"pending", &pending, ptrApproval(execution.ApprovalStatusPending)},
+		{"approved", &approved, ptrApproval(execution.ApprovalStatusApproved)},
+		{"rejected", &rejected, ptrApproval(execution.ApprovalStatusRejected)},
+		// #2654: expired must surface distinctly, NOT collapse to nil or rejected.
+		{"expired", &expired, ptrApproval(execution.ApprovalStatusExpired)},
+		{"unknown maps to nil", &unknown, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapWCPApprovalStatus(tt.input)
+			switch {
+			case tt.want == nil && got != nil:
+				t.Errorf("mapWCPApprovalStatus(%v) = %q, want nil", tt.input, *got)
+			case tt.want != nil && got == nil:
+				t.Errorf("mapWCPApprovalStatus(%v) = nil, want %q", tt.input, *tt.want)
+			case tt.want != nil && got != nil && *got != *tt.want:
+				t.Errorf("mapWCPApprovalStatus(%v) = %q, want %q", tt.input, *got, *tt.want)
+			}
+		})
+	}
+}
+
+func ptrApproval(s execution.ApprovalStatus) *execution.ApprovalStatus { return &s }
 
 func TestMapWCPStatus(t *testing.T) {
 	tests := []struct {

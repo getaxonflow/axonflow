@@ -121,15 +121,15 @@ func TestIncidentRepository_Create_Success(t *testing.T) {
 			sql.NullTime{},
 			sql.NullString{},
 			sql.NullString{},
-			false,
-			false,
-			sql.NullTime{},
-			sql.NullString{},
-			false,
-			false,
-			sql.NullTime{},
-			sql.NullString{},
-			sql.NullString{},
+			// board_notification_required / rbi_notification_required are
+			// GENERATED columns and are NOT in the INSERT arg list.
+			false,            // board_notified
+			sql.NullTime{},   // board_notification_date
+			sql.NullString{}, // board_notification_reference
+			false,            // rbi_notified
+			sql.NullTime{},   // rbi_notification_date
+			sql.NullString{}, // rbi_notification_reference
+			sql.NullString{}, // rbi_response
 			sqlmock.AnyArg(), // evidence_files JSON
 			sqlmock.AnyArg(), // tags JSON
 			sqlmock.AnyArg(), // metadata JSON
@@ -617,4 +617,95 @@ func TestIncidentRepository_Create_PresetIDAndIncidentID(t *testing.T) {
 	assert.Equal(t, "preset-id", incident.ID)
 	assert.Equal(t, "INC-preset", incident.IncidentID)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// execSQLCapture builds a sqlmock whose query matcher records the executed SQL
+// into the returned pointer (it always matches), so a test can assert the built
+// INSERT/UPDATE statement does NOT write a GENERATED column. WithArgs still
+// validates the argument count/shape independently of the SQL text.
+func execSQLCapture(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *string) {
+	t.Helper()
+	captured := new(string)
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(
+		sqlmock.QueryMatcherFunc(func(_, actualSQL string) error {
+			*captured = actualSQL
+			return nil
+		}),
+	))
+	require.NoError(t, err)
+	return db, mock, captured
+}
+
+// anyArgs returns n AnyArg matchers. WithArgs(anyArgs(n)...) asserts the
+// statement was executed with EXACTLY n arguments — re-adding a column shifts
+// the count and fails the expectation — without pinning each concrete value.
+func anyArgs(n int) []driver.Value {
+	a := make([]driver.Value, n)
+	for i := range a {
+		a[i] = sqlmock.AnyArg()
+	}
+	return a
+}
+
+// TestIncidentRepository_Create_OmitsGeneratedColumns guards #2640: the INSERT
+// must NOT write the GENERATED ALWAYS columns board_notification_required /
+// rbi_notification_required (migration 301 — Postgres rejects a direct write),
+// and must pass exactly 35 arguments. PG-free; runs in CI. Red-on-revert:
+// re-adding either column makes the SQL contain it AND pushes the arg count to
+// 37, so both the NotContains and the WithArgs(35) expectation fail.
+func TestIncidentRepository_Create_OmitsGeneratedColumns(t *testing.T) {
+	db, mock, sqlText := execSQLCapture(t)
+	defer db.Close()
+	repo := NewPostgresAIIncidentRepository(db)
+
+	mock.ExpectExec("INSERT INTO rbi_ai_incidents").
+		WithArgs(anyArgs(35)...).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.Create(context.Background(), &AIIncident{
+		OrgID:        "org-1",
+		IncidentType: IncidentTypeModelFailure,
+		Severity:     IncidentSeverityCritical,
+		DetectedAt:   time.Now().UTC(),
+		DetectedBy:   DetectionMethodAutomated,
+		Title:        "t",
+		Description:  "d",
+		Status:       IncidentStatusOpen,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.NotContains(t, *sqlText, "board_notification_required",
+		"incident INSERT must not write the GENERATED board_notification_required column")
+	assert.NotContains(t, *sqlText, "rbi_notification_required",
+		"incident INSERT must not write the GENERATED rbi_notification_required column")
+}
+
+// TestIncidentRepository_Update_OmitsGeneratedColumns is the UPDATE counterpart
+// (exactly 33 arguments; the SET clause must omit both GENERATED columns).
+func TestIncidentRepository_Update_OmitsGeneratedColumns(t *testing.T) {
+	db, mock, sqlText := execSQLCapture(t)
+	defer db.Close()
+	repo := NewPostgresAIIncidentRepository(db)
+
+	mock.ExpectExec("UPDATE rbi_ai_incidents").
+		WithArgs(anyArgs(33)...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := repo.Update(context.Background(), &AIIncident{
+		ID:           "inc-1",
+		OrgID:        "org-1",
+		IncidentType: IncidentTypeModelFailure,
+		Severity:     IncidentSeverityCritical,
+		DetectedAt:   time.Now().UTC(),
+		DetectedBy:   DetectionMethodAutomated,
+		Title:        "t",
+		Description:  "d",
+		Status:       IncidentStatusResolved,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.NotContains(t, *sqlText, "board_notification_required",
+		"incident UPDATE must not write the GENERATED board_notification_required column")
+	assert.NotContains(t, *sqlText, "rbi_notification_required",
+		"incident UPDATE must not write the GENERATED rbi_notification_required column")
 }

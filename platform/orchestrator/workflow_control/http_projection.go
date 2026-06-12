@@ -196,6 +196,15 @@ func ProjectStepGateToHTTP(
 			} else {
 				reason = "Rejected"
 			}
+		case ApprovalStatusExpired:
+			// Auto-timeout — blocked like a reject, but surfaced distinctly so
+			// it is never reported as a human rejection (#2654).
+			decision = GateDecisionBlock
+			if reason != "" {
+				reason = "Expired (approval timed out): " + reason
+			} else {
+				reason = "Expired (approval timed out)"
+			}
 		}
 	}
 

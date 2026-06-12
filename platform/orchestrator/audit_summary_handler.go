@@ -18,6 +18,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/lib/pq"
+
+	"axonflow/platform/shared/audit"
 	logutil "axonflow/platform/shared/logger"
 )
 
@@ -39,12 +42,18 @@ type AuditSummaryRequest struct {
 // broken.
 type ComplianceSummary struct {
 	// Card-view aggregates (v7.4.1+). Primary contract with the portal UI.
-	TotalRequests    int     `json:"total_requests"`
-	AllowedRequests  int     `json:"allowed_requests"`
-	BlockedRequests  int     `json:"blocked_requests"`
-	ModifiedRequests int     `json:"modified_requests"`
-	BlockRatePercent float64 `json:"block_rate_percent"`
-	AvgLatencyMs     float64 `json:"avg_latency_ms"`
+	// total_requests is the sum of the five verdict buckets — allowed + blocked +
+	// modified(=redacted) + needs_approval + error — so it always closes against
+	// them. It excludes non-verdict override-lifecycle rows (those are routed out
+	// of the verdict triage); total_events below still counts every audit row.
+	TotalRequests         int     `json:"total_requests"`
+	AllowedRequests       int     `json:"allowed_requests"`
+	BlockedRequests       int     `json:"blocked_requests"`
+	ModifiedRequests      int     `json:"modified_requests"`
+	NeedsApprovalRequests int     `json:"needs_approval_requests"`
+	ErrorRequests         int     `json:"error_requests"`
+	BlockRatePercent      float64 `json:"block_rate_percent"`
+	AvgLatencyMs          float64 `json:"avg_latency_ms"`
 
 	// Legacy aggregates retained for backward compatibility.
 	TotalEvents     int                `json:"total_events"`
@@ -166,10 +175,13 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 	}
 	defer rows.Close()
 
-	totalEvents := 0
+	totalEvents := 0  // every audit row in the window (legacy total_events)
+	verdictTotal := 0 // verdict rows only — drives total_requests + rates
 	allowedCount := 0
 	blockedCount := 0
 	modifiedCount := 0
+	needsApprovalCount := 0
+	errorCount := 0
 	for rows.Next() {
 		var requestType, policyDecision string
 		var cnt int
@@ -180,48 +192,62 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		if requestType != "" {
 			summary.ByAction[requestType] += cnt
 		}
-		// Triage for the card view. Two explicit blocking categories
-		// (`blocked`/`deny`, `redacted=modified`); everything else rolls into
-		// "allowed" so Total = Allowed + Blocked + Modified always closes.
-		// NOTE: the write paths are not consistent about the deny vocabulary —
-		// the agent's check_policy path (the one the Claude Code / Cursor /
-		// Codex plugin PreToolUse hooks call) records a denied tool call as
-		// policy_decision="deny", while gateway-mode records "blocked". BOTH
-		// must count as blocked here, or a real block (e.g. an SSN caught by
-		// sys_pii_ssn) is silently bucketed as "allowed" and the card view
-		// reports 0 blocked / 100% compliance right after blocking critical
-		// PII. `pending_approval` (emitted when workflow_step_gate fires
-		// require_approval) and `error` are "not blocked" outcomes — the
-		// HITL decision that follows writes its own workflow_step_approved /
-		// workflow_step_rejected row. Unknown values fall through to allowed.
-		switch policyDecision {
-		case "blocked", "deny", "denied":
+		// Triage for the card view, keyed on the canonical verdict from the
+		// shared normalizer (audit.Normalize) rather than a hand-maintained
+		// switch. This makes every write-path spelling converge — the agent
+		// check_policy path records a denied tool call as "deny" while
+		// gateway-mode records "blocked"; both normalize to DecisionBlocked, so
+		// a real block (e.g. an SSN caught by sys_pii_ssn) can never be silently
+		// counted as allowed. Crucially, needs_approval and error are NO LONGER
+		// swept into "allowed" by a default arm (the #2636 metric-corruption
+		// bug): Normalize fails an UNKNOWN value safe to DecisionError, never to
+		// allowed, and each canonical verdict gets its own bucket so
+		// total_requests = allowed + blocked + modified + needs_approval + error
+		// always closes. Override grant/revoke lifecycle rows
+		// (DecisionOverrideLifecycle) are NOT verdicts — they are routed out of
+		// the triage entirely (still counted in total_events / by_action above,
+		// but excluded from total_requests and the block-rate so a lifecycle
+		// event can never move a compliance metric).
+		switch audit.Normalize(policyDecision) {
+		case audit.DecisionOverrideLifecycle:
+			continue
+		case audit.DecisionBlocked:
 			blockedCount += cnt
 			summary.BySeverity["critical"] += cnt
-		case "redacted":
+		case audit.DecisionRedacted:
 			modifiedCount += cnt
 			summary.BySeverity["warning"] += cnt
-		default:
+		case audit.DecisionNeedsApproval:
+			needsApprovalCount += cnt
+			summary.BySeverity["info"] += cnt
+		case audit.DecisionError:
+			errorCount += cnt
+			summary.BySeverity["warning"] += cnt
+		default: // DecisionAllowed
 			allowedCount += cnt
 			summary.BySeverity["info"] += cnt
 		}
+		verdictTotal += cnt
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
 	summary.TotalEvents = totalEvents
-	summary.TotalRequests = totalEvents
+	summary.TotalRequests = verdictTotal
 	summary.AllowedRequests = allowedCount
 	summary.BlockedRequests = blockedCount
 	summary.ModifiedRequests = modifiedCount
+	summary.NeedsApprovalRequests = needsApprovalCount
+	summary.ErrorRequests = errorCount
 
-	// Compliance score: ratio of non-blocked events
-	if totalEvents > 0 {
-		summary.ComplianceScore = float64(totalEvents-blockedCount) / float64(totalEvents) * 100
-		summary.BlockRatePercent = float64(blockedCount) / float64(totalEvents) * 100
+	// Compliance score + block rate are ratios over the verdict total (override
+	// lifecycle rows excluded), so a burst of override events can't dilute them.
+	if verdictTotal > 0 {
+		summary.ComplianceScore = float64(verdictTotal-blockedCount) / float64(verdictTotal) * 100
+		summary.BlockRatePercent = float64(blockedCount) / float64(verdictTotal) * 100
 	} else {
-		summary.ComplianceScore = 100 // No events = fully compliant
+		summary.ComplianceScore = 100 // No verdict events = fully compliant
 		summary.BlockRatePercent = 0
 	}
 
@@ -247,11 +273,14 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 	}
 
 	// Query 2: Top policies by trigger count
+	// block_count counts the blocking verdicts via audit.Spellings(DecisionBlocked)
+	// — every DB spelling that normalizes to "blocked" (blocked/block/deny/denied)
+	// — rather than a hardcoded IN list that can drift from the shared vocabulary.
 	policyQuery := `
 		SELECT
 			COALESCE(policy_details->>'policy_name', 'unknown') as policy_name,
 			COUNT(*) as trigger_count,
-			COUNT(*) FILTER (WHERE policy_decision IN ('blocked', 'deny', 'denied')) as block_count
+			COUNT(*) FILTER (WHERE policy_decision = ANY($4)) as block_count
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
@@ -263,7 +292,7 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		LIMIT 10
 	`
 
-	policyRows, err := h.db.Query(policyQuery, tenantID, startTime, endTime)
+	policyRows, err := h.db.Query(policyQuery, tenantID, startTime, endTime, pq.Array(audit.Spellings(audit.DecisionBlocked)))
 	if err != nil {
 		// Non-fatal: log and return partial results
 		log.Printf("[AuditSummary] policy query failed: %v", err)

@@ -7,6 +7,7 @@ package ojk
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,6 +34,8 @@ func (h *OJKAuditExportHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/ojk/audit/retention", h.handleRetentionStatus)
 	mux.HandleFunc("/api/v1/ojk/audit/readiness", h.handleComplianceReadiness)
 	mux.HandleFunc("/api/v1/ojk/breach/notify", h.handleBreachNotify)
+	mux.HandleFunc("/api/v1/ojk/breach/acknowledge", h.handleBreachAcknowledge)
+	mux.HandleFunc("/api/v1/ojk/breach/evaluate-deadlines", h.handleBreachEvaluateDeadlines)
 	mux.HandleFunc("/api/v1/ojk/dashboard", h.handleDashboard)
 }
 
@@ -269,6 +272,86 @@ func (h *OJKAuditExportHandler) getDashboard(w http.ResponseWriter, r *http.Requ
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *OJKAuditExportHandler) handleBreachAcknowledge(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.acknowledgeBreach(w, r)
+	case http.MethodOptions:
+		h.handleCORS(w, r)
+	default:
+		h.writeError(w, "method_not_allowed", "Method not allowed", "", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *OJKAuditExportHandler) handleBreachEvaluateDeadlines(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.evaluateBreachDeadlines(w, r)
+	case http.MethodOptions:
+		h.handleCORS(w, r)
+	default:
+		h.writeError(w, "method_not_allowed", "Method not allowed", "", http.StatusMethodNotAllowed)
+	}
+}
+
+// acknowledgeBreach records authority receipt for a previously submitted breach.
+// Maps service sentinels to client-correctable HTTP codes: 404 for an unknown
+// id, 409 when the breach is not in a submittable→acknowledgeable state.
+func (h *OJKAuditExportHandler) acknowledgeBreach(w http.ResponseWriter, r *http.Request) {
+	tenantID := h.getTenantID(r)
+	if tenantID == "" {
+		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		h.writeError(w, "invalid_request", "Invalid request body", err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.ID) == "" {
+		h.writeError(w, "validation_error", "id is required", "", http.StatusBadRequest)
+		return
+	}
+
+	resp, err := h.service.AcknowledgeBreachNotification(r.Context(), tenantID, strings.TrimSpace(body.ID))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrBreachNotFound):
+			h.writeError(w, "not_found", "Breach notification not found", err.Error(), http.StatusNotFound)
+		case errors.Is(err, ErrInvalidBreachTransition):
+			h.writeError(w, "invalid_transition", "Breach cannot be acknowledged from its current status", err.Error(), http.StatusConflict)
+		default:
+			log.Printf("OJK breach acknowledge error for tenant %s: %v", tenantID, err)
+			h.writeError(w, "internal_error", "Failed to acknowledge breach notification", err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
+// evaluateBreachDeadlines durably flips never-submitted lapsed drafts to overdue
+// and returns how many rows changed.
+func (h *OJKAuditExportHandler) evaluateBreachDeadlines(w http.ResponseWriter, r *http.Request) {
+	tenantID := h.getTenantID(r)
+	if tenantID == "" {
+		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+		return
+	}
+
+	flipped, err := h.service.EvaluateBreachDeadlines(r.Context(), tenantID)
+	if err != nil {
+		log.Printf("OJK breach deadline evaluation error for tenant %s: %v", tenantID, err)
+		h.writeError(w, "internal_error", "Failed to evaluate breach deadlines", err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]int{"flipped_overdue": flipped})
 }
 
 func (h *OJKAuditExportHandler) validateExportRequest(req *OJKAuditExportRequest) error {

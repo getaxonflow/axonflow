@@ -21,6 +21,11 @@ type mockOJKService struct {
 	readinessCalled bool
 	breachCalled    bool
 	dashboardCalled bool
+	ackCalled       bool
+	evalCalled      bool
+	ackErr          error
+	evalErr         error
+	evalFlipped     int
 }
 
 func (m *mockOJKService) ExportAuditData(ctx context.Context, tenantID string, req *OJKAuditExportRequest) (*OJKAuditExportResponse, error) {
@@ -84,6 +89,22 @@ func (m *mockOJKService) GetDashboard(ctx context.Context, tenantID string) (*OJ
 		ComplianceScore: 100,
 		LastUpdated:     time.Now().UTC(),
 	}, nil
+}
+
+func (m *mockOJKService) AcknowledgeBreachNotification(ctx context.Context, tenantID string, id string) (*OJKBreachNotification, error) {
+	m.ackCalled = true
+	if m.ackErr != nil {
+		return nil, m.ackErr
+	}
+	return &OJKBreachNotification{ID: id, Status: string(BreachStatusAcknowledged)}, nil
+}
+
+func (m *mockOJKService) EvaluateBreachDeadlines(ctx context.Context, tenantID string) (int, error) {
+	m.evalCalled = true
+	if m.evalErr != nil {
+		return 0, m.evalErr
+	}
+	return m.evalFlipped, nil
 }
 
 func TestHandleExport_POST(t *testing.T) {

@@ -255,6 +255,17 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 	authKind := AuthKindFromContext(r.Context())
 	ctx := r.Context()
 
+	// Generate decision ID + trace ID for audit correlation. Hoisted ABOVE user
+	// resolution (#2686) so the auth-failure early-deny below writes a canonical
+	// audit_logs row keyed by the same decision_id. correlationID is the inbound
+	// traceparent's trace-id (or "" → singleton chain), NOT the minted id.
+	correlationID := traceIDFromHeader(r.Header.Get("traceparent"))
+	decisionID := uuid.New().String()
+	traceID := correlationID
+	if traceID == "" {
+		traceID = newW3CTraceID()
+	}
+
 	// Resolve user (mirrors Decision Mode pattern).
 	client := &Client{
 		ID:       clientID,
@@ -277,17 +288,19 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 				Role:     "service",
 			}
 		} else {
+			// #2686: an auth-failure here is a terminal refusal that must leave a
+			// canonical audit_logs row, mirroring the gateway pre-check refusal
+			// (gateway_handlers.go). Identity is auth-derived from context (never a
+			// caller-claimed body value); the reason is a FIXED label — no token
+			// material lands on the row.
+			recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny,
+				[]string{"authentication_error"}, time.Since(startTime).Milliseconds(),
+				[]string{"authentication failed"}, traceID, nil, false,
+				&decisionAuditInput{clientID: clientID, plane: PlaneOpenAICompat, correlationID: correlationID})
 			openaiCompatRequests.WithLabelValues("error").Inc()
 			sendOpenAIError(w, userErr.Message, "authentication_error", "", userErr.HTTPStatus)
 			return
 		}
-	}
-
-	// Generate decision ID + trace ID for audit correlation.
-	decisionID := uuid.New().String()
-	traceID := traceIDFromHeader(r.Header.Get("traceparent"))
-	if traceID == "" {
-		traceID = newW3CTraceID()
 	}
 
 	// Set AxonFlow headers on response (always, even on deny).
@@ -359,10 +372,23 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 			reasons = append(reasons, policyResult.Reason)
 		}
 
-		// OpenAI-compat records its own llm_call_audits row (recordOpenAICompatAudit
-		// below) and does not set DecideRequest.context, so it passes a nil context
-		// + nil audit input: OTel-span-only, no audit_logs double-write.
-		traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny, policyIDs, time.Since(startTime).Milliseconds(), reasons, traceID, nil, false, nil)
+		// #2686: the policy DENY must write a canonical audit_logs row — the portal
+		// /decisions feed, /explain, the audit summary, and the SEBI/EU-AI-Act
+		// exporters all read audit_logs, so a SQLi/PII/compliance block here was
+		// invisible while ONLY the llm_call_audits satellite (recordOpenAICompatAudit
+		// below) was written. Pass a non-nil decisionAuditInput (plane=openai_compat)
+		// — the #2642 gateway / #2682 connector-exec pattern. The llm_call_audits row
+		// is a DIFFERENT table; the two are complementary, not a double-write.
+		auditInput := &decisionAuditInput{
+			clientID:      clientID,
+			userEmail:     user.Email,
+			userRole:      user.Role,
+			userID:        user.ID,
+			query:         queryText,
+			plane:         PlaneOpenAICompat,
+			correlationID: correlationID,
+		}
+		traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny, policyIDs, time.Since(startTime).Milliseconds(), reasons, traceID, nil, false, auditInput)
 		w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
 		// Record audit for the denied request.

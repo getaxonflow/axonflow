@@ -352,7 +352,7 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 			"decision_llm",       // request_type
 			"hello",              // query
 			sqlmock.AnyArg(),     // query_hash
-			"allow",              // policy_decision
+			"allowed",            // policy_decision canonicalized from wire "allow" (#2643)
 			policyDetailsHasContext{
 				wantDecisionID: "dec-1",
 				wantContext:    reqContext,
@@ -361,6 +361,7 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 			PlaneDecision,   // plane defaults to decision (input.plane unset)
 			nil,             // obligations (none)
 			"trace-corr-99", // correlation_id (#2598): the shared cross-stage key
+			nil,             // redacted_fields (#2643): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -448,12 +449,13 @@ func TestRecordDecideDecision_WithTracerAndAudit(t *testing.T) {
 		WithArgs(
 			"decide_dec-t", "dec-t", sqlmock.AnyArg(), 0,
 			"u@x.local", "service", "client", "tenant", "org",
-			"decision_tool", "q", sqlmock.AnyArg(), "deny",
+			"decision_tool", "q", sqlmock.AnyArg(), "blocked", // policy_decision canonicalized from wire "deny" (#2643)
 			policyDetailsHasContext{wantDecisionID: "dec-t", wantContext: map[string]string{"x_ai_agent": "claude-code"}, wantTruncated: true},
 			"dec-t",       // decision_id (first-class column; #2592)
 			PlaneDecision, // plane defaults to decision
 			nil,           // obligations (none)
 			nil,           // correlation_id (#2598): unset on input → NULL
+			nil,           // redacted_fields (#2643): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -490,12 +492,13 @@ func TestWriteDecisionAuditLog_FallbackPlaceholders(t *testing.T) {
 			"unknown",                 // tenant_id fallback
 			"",                        // org_id (empty allowed; nullable)
 			"decision_llm", "(empty)", // request_type + query fallback
-			sqlmock.AnyArg(), "allow",
+			sqlmock.AnyArg(), "allowed", // policy_decision canonicalized from wire "allow" (#2643)
 			sqlmock.AnyArg(), // policy_details — no reason/context keys
 			"dec-fb",         // decision_id (first-class column; #2592)
 			PlaneDecision,    // plane defaults to decision (input.plane unset)
 			nil,              // obligations (none)
 			nil,              // correlation_id (#2598): unset on input → NULL
+			nil,              // redacted_fields (#2643): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -568,12 +571,13 @@ func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
 			"decide_dec-gw", "dec-gw", sqlmock.AnyArg(), 7,
 			"svc@axonflow.local", "service", "client-x", "tenant-rocket",
 			"org-acme", "decision_tool", "list merchants", sqlmock.AnyArg(),
-			"allow",
+			"allowed", // policy_decision canonicalized from wire "allow" (#2643)
 			policyDetailsHasGatewayID{wantGatewayID: "claude_desktop.fleet-mac"},
 			"dec-gw",      // decision_id (first-class column; #2592)
 			PlaneDecision, // plane defaults to decision
 			nil,           // obligations (none)
 			nil,           // correlation_id (#2598): unset on input → NULL
+			nil,           // redacted_fields (#2643): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -641,12 +645,13 @@ func TestWriteDecisionAuditLog_PersistsPlaneAndObligations(t *testing.T) {
 			"decide_dec-ob", "dec-ob", sqlmock.AnyArg(), 7,
 			"svc@axonflow.local", "service", "client-x", "tenant-rocket",
 			"org-acme", "decision_tool", "lookup merchant", sqlmock.AnyArg(),
-			"allow",
+			"allow",          // policy_decision — plane=mcp is NOT canonicalized (#2643 scopes to plane=decision)
 			sqlmock.AnyArg(), // policy_details JSONB
 			"dec-ob",         // decision_id (first-class column)
 			PlaneMCP,         // plane from the audit input (not the default)
 			obligationsJSONMatcher{wantType: ObligationRedactPII}, // obligations JSONB
 			nil, // correlation_id (#2598): unset on input → NULL
+			nil, // redacted_fields (#2643): unset on input → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

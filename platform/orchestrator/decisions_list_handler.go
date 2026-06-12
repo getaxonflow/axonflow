@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"axonflow/platform/agent/license"
+	"axonflow/platform/shared/audit"
 )
 
 // V1.1 decision-list endpoint (issue #1982 / project_v1_1_decision_record_2026_05_07).
@@ -46,11 +49,16 @@ import (
 // Five-field summary per ADR-043 §"List companion endpoint" — full
 // explanation is fetched separately via the per-id explain endpoint.
 type DecisionListItem struct {
-	DecisionID    string    `json:"decision_id"`
-	Timestamp     time.Time `json:"timestamp"`
-	Decision      string    `json:"decision"` // "allow"|"deny"|"require_approval"
-	PolicyID      string    `json:"policy_id,omitempty"`
-	ToolSignature string    `json:"tool_signature,omitempty"`
+	DecisionID string    `json:"decision_id"`
+	Timestamp  time.Time `json:"timestamp"`
+	// Decision is the canonical policy_decision verdict (audit.All():
+	// "allowed"|"blocked"|"redacted"|"needs_approval"|"error"). The raw
+	// audit_logs value is run through audit.Normalize on read so legacy/historical
+	// rows (e.g. "allow"/"deny"/"require_approval") surface as the canonical
+	// spelling and the feed never shows a divergent verdict (#2636/#2653).
+	Decision      string `json:"decision"`
+	PolicyID      string `json:"policy_id,omitempty"`
+	ToolSignature string `json:"tool_signature,omitempty"`
 
 	// Context is the sanitized request context the PEP attached to the
 	// decision (a design partner's Layer-2 audit headers — canonical snake_case
@@ -185,19 +193,35 @@ func listDecisionsHandler(w http.ResponseWriter, r *http.Request) {
 		since = parsed
 	}
 
+	// The decision filter is validated against the canonical verdict vocabulary
+	// (audit.All()). This both ACCEPTS the canonical values every writer now
+	// emits — including needs_approval, which the old allow/deny/require_approval
+	// allowlist rejected with a 400 — and REJECTS phantoms like the legacy
+	// "require_approval" spelling (no row carries it; it normalizes to
+	// needs_approval, which is the value to filter on) and the wire-only
+	// "allow"/"deny" (the agent Decision-API verdicts, converted to
+	// allowed/blocked before the audit write). For the SQL we expand the
+	// canonical value to every DB spelling it covers (audit.Spellings) so a
+	// legacy/historical row that predates the canonical cutover still matches —
+	// canonical-first, NOT the divergence-codifying expansion of PR #2637.
 	decisionFilter := strings.TrimSpace(q.Get("decision"))
-	switch decisionFilter {
-	case "", "allow", "deny", "require_approval":
-		// allowed
-	default:
-		sendErrorResponse(w, "decision must be one of: allow, deny, require_approval", http.StatusBadRequest)
+	if decisionFilter != "" && !audit.IsCanonical(decisionFilter) {
+		sendErrorResponse(w, "decision must be one of: "+strings.Join(audit.All(), ", "), http.StatusBadRequest)
 		return
+	}
+	// Non-nil empty slice when there is no filter: pq.Array of a nil slice
+	// serializes to SQL NULL, and `cardinality(NULL) = 0` evaluates to NULL (not
+	// TRUE), which would silently drop EVERY row. An empty array serializes to
+	// '{}', whose cardinality is 0 → the "no filter" arm matches all rows.
+	decisionVals := []string{}
+	if decisionFilter != "" {
+		decisionVals = audit.Spellings(audit.Normalize(decisionFilter))
 	}
 
 	policyIDFilter := strings.TrimSpace(q.Get("policy_id"))
 	toolSigFilter := strings.TrimSpace(q.Get("tool_signature"))
 
-	rows, err := queryDecisionList(callerTenant, since, decisionFilter, policyIDFilter, toolSigFilter, requestedLimit)
+	rows, err := queryDecisionList(callerTenant, since, decisionVals, policyIDFilter, toolSigFilter, requestedLimit)
 	if err != nil {
 		log.Printf("list decisions: query failed: tenant=%q err=%v", callerTenant, err)
 		sendErrorResponse(w, "Internal error", http.StatusInternalServerError)
@@ -238,7 +262,7 @@ func resolveDecisionListTier(r *http.Request) (license.Tier, license.TierLimits)
 // same defense as explainDecisionHandler (#1623 retro). Filters are passed
 // as positional args; absent filters short-circuit with TRUE so the index
 // usage stays predictable.
-func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyID, toolSig string, limit int) ([]DecisionListItem, error) {
+func queryDecisionList(tenantID string, since time.Time, decisionVals []string, policyID, toolSig string, limit int) ([]DecisionListItem, error) {
 	if usageDB == nil {
 		return []DecisionListItem{}, nil
 	}
@@ -272,7 +296,7 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
 		  AND (decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL)
-		  AND ($3::text = '' OR policy_decision = $3)
+		  AND (cardinality($3::text[]) = 0 OR policy_decision = ANY($3))
 		  AND ($4::text = '' OR (
 		        policy_details->>'policy_id' = $4
 		        OR policy_details->'policy_ids' @> to_jsonb($4::text)
@@ -292,7 +316,7 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 		effectiveLimit = 100000
 	}
 
-	rows, err := usageDB.Query(q, tenantID, since, decisionFilter, policyID, toolSig, effectiveLimit)
+	rows, err := usageDB.Query(q, tenantID, since, pq.Array(decisionVals), policyID, toolSig, effectiveLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -308,6 +332,19 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 		)
 		if err := rows.Scan(&item.DecisionID, &item.Timestamp, &item.Decision, &policyIDCol, &toolSigCol, &contextCol); err != nil {
 			return nil, err
+		}
+		// Normalize the raw policy_decision so a legacy/historical row surfaces
+		// the canonical verdict (audit.All()), matching the canonical-only filter
+		// allowlist and the documented wire shape.
+		item.Decision = audit.Normalize(item.Decision)
+		// Drop the recognized non-verdict marker: an override grant/revoke
+		// lifecycle row is not a PEP decision and must never appear in the
+		// verdict-centric feed. Today no override writer populates a decision_id
+		// (so the WHERE clause already excludes these rows), but guard on read so
+		// the "feed emits only audit.All()" contract holds structurally even if a
+		// future writer attaches a decision_id to a lifecycle row.
+		if item.Decision == audit.DecisionOverrideLifecycle {
+			continue
 		}
 		if policyIDCol.Valid {
 			item.PolicyID = policyIDCol.String

@@ -175,18 +175,32 @@ func startPostgresContainer(t *testing.T) (string, func()) {
 	cleanup := func() {
 		_ = exec.Command("docker", "rm", "-f", containerName).Run()
 	}
-	portBytes, err := exec.Command("docker", "port", containerName, "5432/tcp").CombinedOutput()
-	if err != nil {
-		cleanup()
-		t.Fatalf("docker port: %v\n%s", err, string(portBytes))
+	// `docker port` can transiently fail (exit status 1) or return an empty
+	// mapping for a brief window right after `docker run -d`: the container
+	// exists but the daemon hasn't finished publishing the port yet. The race
+	// widens sharply under concurrent container starts — `go test ./...` runs
+	// many container-spinning packages in parallel, and a single-shot query
+	// then intermittently reddens CI (observed: "docker port: exit status 1").
+	// Poll until the mapping resolves instead of fataling on the first miss.
+	var hostPort string
+	portDeadline := time.Now().Add(30 * time.Second)
+	for {
+		portBytes, portErr := exec.Command("docker", "port", containerName, "5432/tcp").CombinedOutput()
+		if portErr == nil {
+			portLine := strings.TrimSpace(strings.Split(string(portBytes), "\n")[0])
+			if parts := strings.Split(portLine, ":"); len(parts) >= 2 {
+				if hp := parts[len(parts)-1]; hp != "" {
+					hostPort = hp
+					break
+				}
+			}
+		}
+		if time.Now().After(portDeadline) {
+			cleanup()
+			t.Fatalf("docker port did not resolve a host port for %s within 30s (last err: %v)", containerName, portErr)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	portLine := strings.TrimSpace(strings.Split(string(portBytes), "\n")[0])
-	parts := strings.Split(portLine, ":")
-	if len(parts) < 2 {
-		cleanup()
-		t.Fatalf("unexpected docker port output: %q", portLine)
-	}
-	hostPort := parts[len(parts)-1]
 	url := fmt.Sprintf("postgres://postgres:testpass@localhost:%s/axonflow_test?sslmode=disable", hostPort)
 
 	deadline := time.Now().Add(30 * time.Second)

@@ -65,7 +65,7 @@ func sampleBoardReportRow(id, orgID string) []driver.Value {
 		sql.NullString{String: "compliance-officer", Valid: true},
 		sql.NullString{String: "officer@example.com", Valid: true},
 		now,
-		sql.NullString{String: "automated", Valid: true},
+		sql.NullString{String: "automatic", Valid: true},
 		string(ReportApprovalApproved),
 		sql.NullString{String: "board-chair", Valid: true},
 		sql.NullString{String: "chair@example.com", Valid: true},

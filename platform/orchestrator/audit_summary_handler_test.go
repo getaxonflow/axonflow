@@ -51,7 +51,7 @@ func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
 		AddRow("demo-block-bulk-email", 8, 8).
 		AddRow("pii-detection", 5, 2)
 	mock.ExpectQuery("SELECT").
-		WithArgs("travel-us", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("travel-us", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(policyRows)
 
 	body := `{"start_time":"2026-01-01T00:00:00Z","end_time":"2026-04-01T00:00:00Z"}`
@@ -149,7 +149,7 @@ func TestAuditSummaryHandler_HandleSummary_CountsDenyAsBlocked(t *testing.T) {
 	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}).
 		AddRow("SSN Detection", 1, 1)
 	mock.ExpectQuery("SELECT").
-		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(policyRows)
 
 	body := `{"start_time":"2026-01-01T00:00:00Z","end_time":"2026-04-01T00:00:00Z"}`
@@ -464,7 +464,7 @@ func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
 		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
 	mock.ExpectQuery("SELECT").
-		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
@@ -497,14 +497,16 @@ func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
 	}
 }
 
-// TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed
-// pins the arithmetic invariant: total_requests == allowed + blocked +
-// modified. Any policy_decision that isn't 'blocked' or 'redacted' rolls
-// into allowed (including 'pending_approval' from HITL step_gates and
-// 'error' from failed requests). Prior to this fix the handler dropped
-// pending_approval, leaving a visible gap on the portal card between
-// Total and Allowed+Blocked+Modified.
-func TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed(t *testing.T) {
+// TestAuditSummaryHandler_CardAggregates_NeedsApprovalAndErrorBucketed
+// pins the corrected card-view triage (#2636/#2653): pending_approval and
+// error are NO LONGER swept into allowed by a default arm — pending_approval
+// normalizes to needs_approval and lands in needs_approval_requests, error
+// lands in error_requests, and the arithmetic invariant
+// total_requests == allowed + blocked + modified + needs_approval + error
+// still closes. The old behavior (everything-not-blocked-or-redacted →
+// allowed) corrupted block-rate/compliance metrics by inflating "allowed"
+// with deferred-to-human and failed requests.
+func TestAuditSummaryHandler_CardAggregates_NeedsApprovalAndErrorBucketed(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -522,7 +524,7 @@ func TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed(t *te
 		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
 	mock.ExpectQuery("SELECT").
-		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
@@ -537,8 +539,14 @@ func TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed(t *te
 	if summary.TotalRequests != 385 {
 		t.Errorf("total_requests = %d, want 385", summary.TotalRequests)
 	}
-	if summary.AllowedRequests != 385 {
-		t.Errorf("allowed_requests = %d, want 385 (pending_approval + error roll into allowed)", summary.AllowedRequests)
+	if summary.AllowedRequests != 369 {
+		t.Errorf("allowed_requests = %d, want 369 (pending_approval + error NO LONGER counted as allowed)", summary.AllowedRequests)
+	}
+	if summary.NeedsApprovalRequests != 12 {
+		t.Errorf("needs_approval_requests = %d, want 12 (pending_approval normalized to needs_approval)", summary.NeedsApprovalRequests)
+	}
+	if summary.ErrorRequests != 4 {
+		t.Errorf("error_requests = %d, want 4", summary.ErrorRequests)
 	}
 	if summary.BlockedRequests != 0 {
 		t.Errorf("blocked_requests = %d, want 0", summary.BlockedRequests)
@@ -546,12 +554,13 @@ func TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed(t *te
 	if summary.ModifiedRequests != 0 {
 		t.Errorf("modified_requests = %d, want 0", summary.ModifiedRequests)
 	}
-	// Core invariant: math always closes.
-	if summary.AllowedRequests+summary.BlockedRequests+summary.ModifiedRequests != summary.TotalRequests {
-		t.Errorf("allowed(%d)+blocked(%d)+modified(%d)=%d != total(%d)",
+	// Core invariant: math always closes across all five verdict buckets.
+	sum := summary.AllowedRequests + summary.BlockedRequests + summary.ModifiedRequests +
+		summary.NeedsApprovalRequests + summary.ErrorRequests
+	if sum != summary.TotalRequests {
+		t.Errorf("allowed(%d)+blocked(%d)+modified(%d)+needs_approval(%d)+error(%d)=%d != total(%d)",
 			summary.AllowedRequests, summary.BlockedRequests, summary.ModifiedRequests,
-			summary.AllowedRequests+summary.BlockedRequests+summary.ModifiedRequests,
-			summary.TotalRequests)
+			summary.NeedsApprovalRequests, summary.ErrorRequests, sum, summary.TotalRequests)
 	}
 }
 
@@ -574,7 +583,7 @@ func TestAuditSummaryHandler_CardAggregates_AllBlocked(t *testing.T) {
 		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
 	mock.ExpectQuery("SELECT").
-		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`

@@ -53,11 +53,12 @@ CREATE TABLE audit_retention_defaults (
 );
 
 CREATE TABLE audit_retention_config (
-	id             SERIAL PRIMARY KEY,
-	org_id         VARCHAR(255) NOT NULL,
-	data_type      VARCHAR(100) NOT NULL,
-	retention_days INTEGER NOT NULL,
-	is_active      BOOLEAN NOT NULL DEFAULT true,
+	id              SERIAL PRIMARY KEY,
+	org_id          VARCHAR(255) NOT NULL,
+	data_type       VARCHAR(100) NOT NULL,
+	retention_days  INTEGER NOT NULL,
+	is_active       BOOLEAN NOT NULL DEFAULT true,
+	last_cleanup_at TIMESTAMPTZ,
 	UNIQUE (org_id, data_type)
 );
 
@@ -259,5 +260,96 @@ func TestRetentionExecutorRealPG_PerOrgOverride(t *testing.T) {
 	}
 	for _, r := range rows {
 		assertExists(r.org, r.ts, r.keep)
+	}
+}
+
+// TestRetentionExecutorRealPG_AdvancesLastCleanup is the #2661 real-Postgres
+// proof: after an ENFORCE pass, audit_retention_config.last_cleanup_at is
+// advanced to ~now for the config rows whose data was pruned (so the SEBI export
+// reads a fresh timestamp instead of the perpetually-stale 1970 sentinel), while
+// a DRY-RUN pass leaves it untouched. Covers both an active per-org override row
+// and an inactive row (default-bucket pruned) — both must advance, mirroring the
+// dead PL/pgSQL that advanced every existing config row for the data_type.
+func TestRetentionExecutorRealPG_AdvancesLastCleanup(t *testing.T) {
+	db := newRetentionPG(t)
+
+	// Two config rows for decision_chain: one ACTIVE override (org-active,
+	// pruned in the scoped step) and one INACTIVE row (org-inactive, whose data
+	// the default bucket prunes). Both start with a NULL last_cleanup_at.
+	mustExec(t, db,
+		"INSERT INTO audit_retention_config (org_id, data_type, retention_days, is_active) VALUES ('org-active', 'decision_chain', 90, true)")
+	mustExec(t, db,
+		"INSERT INTO audit_retention_config (org_id, data_type, retention_days, is_active) VALUES ('org-inactive', 'decision_chain', 1, false)")
+	// Grain control: a config row for 'policy_violations' — intentionally NOT in
+	// retentionGovernedTables (handled elsewhere) — seeded BEFORE the run. The
+	// data_type-scoped advance must never touch it, proving the UPDATE is scoped
+	// to the data_types the executor processes (not a blanket all-rows update).
+	mustExec(t, db,
+		"INSERT INTO audit_retention_config (org_id, data_type, retention_days, is_active) VALUES ('org-control', 'policy_violations', 90, true)")
+	seedGovernedTables(t, db, "org-active")
+
+	lastCleanup := func(org string) (interface{}, bool) {
+		t.Helper()
+		var ts sql.NullTime
+		if err := db.QueryRow(
+			"SELECT last_cleanup_at FROM audit_retention_config WHERE org_id = $1 AND data_type = 'decision_chain'", org,
+		).Scan(&ts); err != nil {
+			t.Fatalf("read last_cleanup_at(%s): %v", org, err)
+		}
+		if !ts.Valid {
+			return nil, false
+		}
+		return ts.Time, true
+	}
+
+	// Baseline: both NULL.
+	for _, org := range []string{"org-active", "org-inactive"} {
+		if _, ok := lastCleanup(org); ok {
+			t.Fatalf("%s baseline last_cleanup_at should be NULL", org)
+		}
+	}
+
+	svc := NewAuditCleanupService(db, &mockLicenseChecker{})
+
+	// --- DRY-RUN must NOT advance last_cleanup_at.
+	if _, err := svc.CleanupRetentionGovernedAudits(context.Background()); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	for _, org := range []string{"org-active", "org-inactive"} {
+		if _, ok := lastCleanup(org); ok {
+			t.Errorf("%s last_cleanup_at advanced during DRY-RUN (must stay NULL)", org)
+		}
+	}
+
+	// --- ENFORCE must advance last_cleanup_at to ~now for BOTH rows.
+	before := time.Now().UTC().Add(-2 * time.Second)
+	svc.SetRetentionEnforce(true)
+	if _, err := svc.CleanupRetentionGovernedAudits(context.Background()); err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	after := time.Now().UTC().Add(2 * time.Second)
+	for _, org := range []string{"org-active", "org-inactive"} {
+		v, ok := lastCleanup(org)
+		if !ok {
+			t.Errorf("%s last_cleanup_at NULL after ENFORCE (should be advanced)", org)
+			continue
+		}
+		ts := v.(time.Time).UTC()
+		if ts.Before(before) || ts.After(after) {
+			t.Errorf("%s last_cleanup_at = %s, want within [%s, %s]", org, ts, before, after)
+		}
+	}
+
+	// Grain proof: the non-governed 'policy_violations' control row seeded BEFORE
+	// the enforce pass must remain NULL — the executor only advances data_types
+	// it actually processes, never a blanket all-rows update.
+	var controlTS sql.NullTime
+	if err := db.QueryRow(
+		"SELECT last_cleanup_at FROM audit_retention_config WHERE org_id = 'org-control' AND data_type = 'policy_violations'",
+	).Scan(&controlTS); err != nil {
+		t.Fatalf("read org-control: %v", err)
+	}
+	if controlTS.Valid {
+		t.Errorf("org-control/policy_violations last_cleanup_at advanced (=%v) — advance is not data_type-scoped", controlTS.Time)
 	}
 }

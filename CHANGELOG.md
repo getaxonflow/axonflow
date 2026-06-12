@@ -12,6 +12,55 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [9.0.0] - 2026-06-12 — Canonical audit vocabulary: one decision spelling across every plane, enforced at the database
+
+**Community.** v9.0.0 completes the audit-trail consolidation begun in v8.7.0: every enforcement plane now writes the **same canonical `policy_decision` vocabulary**, a database `CHECK` constraint makes a non-canonical write fail loudly, and every reader — the decisions feed, the audit summary, and the SEBI / EU AI Act compliance exports — consumes that vocabulary through one shared normalizer. The audit-coverage work also closes the remaining early-return-deny holes on the MCP, gateway, `/decide`, and control-plane surfaces, so a denied request can no longer slip through unaudited. This is a **major release** because the canonical-verdict cutover changes externally-observable values: the `policy_decision` an integrator reads back, the `decision` filter the `/decisions` API accepts, the outcome strings in regulator-facing exports, and the status of a timed-out HITL approval. See the [v8 → v9 migration guide](https://docs.getaxonflow.com/docs/deployment/v8-to-v9-migration/) for the full impact analysis and upgrade steps. The decision-record convergence this release executes is specified in [ADR-058](technical-docs/architecture-decisions/ADR-058-unified-audit-decision-log.md).
+
+### Breaking changes at a glance
+
+- **`policy_decision`** values are canonicalized and DB-`CHECK`-enforced — `allow`→`allowed`, `deny`/`denied`→`blocked`, `pending_approval`→`needs_approval`.
+- **`/decisions?decision=`** rejects the legacy `allow` / `deny` / `require_approval`; filter on `blocked` / `needs_approval` (historical rows still match).
+- **SEBI / EU AI Act export outcomes** canonicalized — `allowed`→`approved`, `needs_approval`→`pending_review`. *(Enterprise)*
+- **HITL timeout status** — `rejected` → `expired`.
+
+### ⚠️ BREAKING CHANGES
+
+- **`policy_decision` is canonicalized to a single vocabulary, enforced by a DB `CHECK`.** Every writer now persists one of `allowed` · `blocked` · `redacted` · `needs_approval` · `error` (plus the non-verdict marker `override_lifecycle`), and migration `core/123` adds a `CHECK` constraint on `audit_logs.policy_decision` that rejects anything else.
+  - **Old → new:** the agent `/decide` writer previously persisted the wire verdicts `allow` → now `allowed` and `deny` / `denied` → now `blocked`; the orchestrator workflow gate previously wrote `pending_approval` → now `needs_approval`. Migration `core/122` backfills the historical `allow` / `deny` / `denied` rows and `core/123` normalizes any residual divergent spelling (an unrecognized value fails **safe** to `error`, never `allowed`) before adding the constraint, so existing history is preserved and uniform.
+  - **Impact:** any consumer that reads `audit_logs.policy_decision` directly (or the `decision` field of the `/decisions` list / `/explain` responses) must expect the canonical spellings. A custom writer that inserts a non-canonical value will now be rejected by the database.
+- **The `/decisions?decision=` filter is validated against the canonical vocabulary.** The endpoint now accepts the canonical set (including `needs_approval`, which the old `allow` / `deny` / `require_approval` allowlist rejected with a `400`) and **returns `400` for the legacy / phantom spellings** `allow`, `deny`, and `require_approval`. The SQL still expands each canonical value to every historical spelling it covers, so a filtered query matches legacy rows. **Old → new:** filter on `blocked` (was `deny`) and `needs_approval` (was `require_approval`).
+- **SEBI and EU AI Act export outcomes use the canonical-derived strings.** *(Enterprise)* Both exports now run each raw `policy_decision` through the shared normalizer before mapping it to a regulator-facing outcome, closing a leak where a raw `allowed` reached the export un-mapped. **Old → new:** `allowed` → `approved`, `needs_approval` → `pending_review` (a human-deferred decision is flagged as requires-review, never silently downgraded to `approved`).
+- **A timed-out evaluation-tier HITL approval is recorded as `expired`, not `rejected`.** The auto-timeout path (`expireEvalApprovals`) now writes `status='expired'` to `hitl_approval_queue` and `approval_status='expired'` to `workflow_steps`, and no longer stamps `reviewed_at` (an auto-expiry is not a human review). **Old → new:** a consumer that treated a timed-out request as `rejected` must now handle the terminal `expired` status (the OpenAPI approval-status enum is widened accordingly); the regulator-facing `eu_ai_act_hitl_metrics` view now buckets these as `expired_count` instead of over-counting `rejected_count`.
+
+### Added
+
+- **Canonical audit vocabulary + shared normalizer.** A shared `platform/shared/audit` package (with a TypeScript mirror) defines the canonical verdict set, a `Normalize` function that maps every legacy / divergent / case / whitespace spelling to its canonical value (failing safe to `error`), `IsCanonical` / `All` validation helpers, and a read-side `Spellings` expansion so a canonical filter still matches historical rows. (#2638, #2655)
+- **Every writer plane emits the canonical vocabulary.** The agent, orchestrator, MCP, gateway, and decision-API writers were converged onto the shared package; `LogWorkflowOperation` now emits `needs_approval`. (#2638, #2659)
+- **Audit-coverage completeness across every early-return-deny path.** A denied request can no longer return before writing its audit row:
+  - `/decide` early-return denies (decode / stage / empty-input errors, impersonation / tenant-mismatch blocks) now write a canonical `audit_logs` row with `plane=decision`, carrying the attempted-vs-actual tenant. Migration `core/122` backfills history. (#2643)
+  - MCP-plane completeness: previously `StaticResult`-gated dynamic-policy, SQL-injection, and redaction decisions, plus the early-return holes, now write a canonical row via the MCP-plane decision writer (carrying `redacted_fields`). (#2641)
+  - The gateway pre-check writes a canonical `audit_logs` row on every verdict and on every deny, with redaction distinguishable from a clean allow. (#2642)
+  - Control-plane and auth completeness: `AdminAuthMiddleware` records `AUTH_SUCCESS` / `AUTH_FAILURE`, every admin early-deny audits, and SCIM missing-tenant / invalid-JSON requests write to their dedicated audit tables. (#2644)
+  - MCP connector-execution routes (`/mcp/resources/query`, `/mcp/tools/execute`) write a canonical row on every terminal verdict — block, redaction (with `redacted_fields`), and error — that previously landed only in a reader-less satellite, so a connector-level block/redaction is now visible in the decisions feed and exports. (#2625)
+  - The OpenAI-compatible `/v1/chat/completions` plane records a policy block as a canonical `audit_logs` row (`plane=openai_compat`), previously trace-only. (#2625)
+  - Control-plane mutation completeness: detection-posture set/delete, SSO-config create/update/toggle/delete, and API-key issue/revoke write a config/admin audit row on every outcome (secret-free); the orchestrator media fail-closed block writes a canonical `audit_logs` row before the 403; SCIM group-role-mapping missing-tenant / invalid-JSON early-returns audit like every sibling. (#2625)
+
+### Changed
+
+- **`/health` reports the version baked into the binary.** The platform version is now stamped into the binary at build time via `-X` ldflags (new `platform/shared/version` package) rather than read from the `AXONFLOW_VERSION` environment variable at runtime, so `/health.version` and the `io.opencontainer.image.version` image label can no longer drift. (#2664)
+
+### Fixed
+
+- **MCP `list_recent_decisions` advertises the canonical decision filter.** The agent MCP tool's `decision` argument is forwarded verbatim to `GET /api/v1/decisions`, whose `?decision=` filter now rejects non-canonical values with a `400` (above). The tool's advertised enum was still the legacy `allow` / `deny` / `require_approval`, so any client that picked one of those values got a `400`. The enum is now built from the shared canonical set (`allowed` · `blocked` · `redacted` · `needs_approval` · `error`). (#2676)
+- **Removed the broken Request Type filter from the `/audit` page.** *(Enterprise)* The portal filter offered six options (`query`, `completion`, `embedding`, `chat`, `search`, `connector`) that never matched the internal `request_type` values actually stored in `audit_logs` (e.g. `decision_llm`, `llm-call`, `mcp-query`), so five of the six always returned zero rows and the sixth missed the primary LLM path. The dead control is removed, along with the now-unused `request_type` field on the `/api/v1/audit/search` request and its orchestrator filter branch. (#2678)
+- **Audit retention advances `last_cleanup_at`.** The retention executor now records `audit_retention_config.last_cleanup_at` per `(org, data_type)` after an enforce-prune run, so an operator can see when each table was last pruned. (#2663)
+- **RBI board-report generation method + unsent-notification visibility.** *(Enterprise)* The board-report `generation_method` value is corrected to `automatic` (aligned with the migration `CHECK`), and `GenerateReport` now surfaces pending regulatory notifications. (#2640)
+- **OJK breach-status lifecycle + 72-hour deadline evaluator.** *(Enterprise)* The breach-notification state machine (`draft → submitted → acknowledged`, with `overdue` / `failed`) now persists and reads `submitted_at` / `acknowledged_at`, evaluates the 72-hour deadline, and exports real values. Migration `enterprise/131` adds the status `CHECK`. (#2639)
+
+### CI / Internal
+
+- **Enterprise-tagged and real-Postgres tests now run in CI.** A new job runs `go test -tags enterprise` plus the `TEST_PG_INTEGRATION` testcontainer suites over `platform/` and `ee/` (orchestrator + agent), wired into the test summary, closing the gap where `//go:build enterprise` code and real-DB tests were shipped but never exercised in standard CI. (#2666)
+
 ## [8.7.0] - 2026-06-11 — Governance integrity: audit-trail consolidation, per-org detection posture on every plane, and compliance-export fixes
 
 **Community.** Every change in this release lives in the `platform/` binaries — the agent, the orchestrator, and the shared policy engine — so this release ships to the community mirror; Enterprise-only surfaces (the customer-portal write paths, the SEBI / EU AI Act compliance exports, SCIM) are tagged inline. v8.7.0 consolidates policy decisions onto a single canonical audit record, lets each organization set its own detection enforcement posture independently on every plane, closes a class of compliance-export defects that let regulator-facing exports report success with no data, and corrects audit-feed pagination and PII detection false positives. **No breaking changes.** The new `audit_logs` columns are additive and nullable (migrations 119–121) and require no backfill; every API addition is additive and backward-compatible.

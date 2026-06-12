@@ -112,8 +112,12 @@ func (s *BoardReportServiceImpl) GenerateReport(ctx context.Context, orgID strin
 		GeneratedBy:       req.GeneratedBy,
 		GeneratedByEmail:  req.GeneratedByEmail,
 		GeneratedAt:       time.Now().UTC(),
-		GenerationMethod:  "automated",
-		ApprovalStatus:    ReportApprovalDraft,
+		// DB check constraint (migration 301) allows only 'automatic'
+		// or 'manual'. The literal 'automated' here used to violate the
+		// constraint and every auto-generated board report 500'd with
+		// "rbi_board_reports_generation_method_check".
+		GenerationMethod: "automatic",
+		ApprovalStatus:   ReportApprovalDraft,
 	}
 
 	// Aggregate AI Systems data if repository available
@@ -205,6 +209,22 @@ func (s *BoardReportServiceImpl) GenerateReport(ctx context.Context, orgID strin
 				}
 				report.KillSwitchDetails = details
 			}
+		}
+	}
+
+	// Surface incidents that LEGALLY REQUIRE a board / RBI notification that
+	// has not yet been sent. GetPendingNotifications keys off the GENERATED
+	// *_notification_required columns and the *_notified flags (migration
+	// 301), so a critical incident that was already resolved but never
+	// reported still counts here — this is distinct from a generic
+	// open-critical incident and must be visible to the board. Best-effort:
+	// a query error leaves the counts at zero rather than failing the report.
+	if s.incidentRepo != nil {
+		if pending, err := s.incidentRepo.GetPendingNotifications(ctx, orgID, "board"); err == nil {
+			report.PendingBoardNotifications = len(pending)
+		}
+		if pending, err := s.incidentRepo.GetPendingNotifications(ctx, orgID, "rbi"); err == nil {
+			report.PendingRBINotifications = len(pending)
 		}
 	}
 
@@ -510,6 +530,21 @@ func (s *BoardReportServiceImpl) calculateComplianceScore(report *BoardReport) f
 	// Deduct for active kill switches (10 points each)
 	score -= float64(report.KillSwitchActivations) * 10
 
+	// Deduct for legally-required notifications that have not been sent.
+	// An unsent RBI notification is a regulatory breach (15 each, max 30);
+	// an unsent board notification is a governance gap (5 each, max 15).
+	rbiNotifyDeduction := float64(report.PendingRBINotifications) * 15
+	if rbiNotifyDeduction > 30 {
+		rbiNotifyDeduction = 30
+	}
+	score -= rbiNotifyDeduction
+
+	boardNotifyDeduction := float64(report.PendingBoardNotifications) * 5
+	if boardNotifyDeduction > 15 {
+		boardNotifyDeduction = 15
+	}
+	score -= boardNotifyDeduction
+
 	// Ensure score doesn't go below 0
 	if score < 0 {
 		score = 0
@@ -541,6 +576,28 @@ func (s *BoardReportServiceImpl) identifyComplianceIssues(report *BoardReport) [
 				Remediation: "Review and resolve critical incidents immediately",
 			})
 		}
+	}
+
+	// Check for incidents whose RBI notification is legally required but has
+	// not been sent — a regulatory breach, independent of incident status.
+	if report.PendingRBINotifications > 0 {
+		issues = append(issues, ComplianceIssue{
+			Category:    "regulatory_notification",
+			Description: fmt.Sprintf("%d AI incident(s) require an RBI notification that has not been sent", report.PendingRBINotifications),
+			Severity:    "critical",
+			Remediation: "Submit the outstanding RBI incident notification(s) without delay",
+		})
+	}
+
+	// Check for incidents whose board notification is legally required but has
+	// not been sent — a governance gap, independent of incident status.
+	if report.PendingBoardNotifications > 0 {
+		issues = append(issues, ComplianceIssue{
+			Category:    "board_notification",
+			Description: fmt.Sprintf("%d AI incident(s) require a board notification that has not been sent", report.PendingBoardNotifications),
+			Severity:    "high",
+			Remediation: "Escalate the outstanding board notification(s) to the board",
+		})
 	}
 
 	// Check for active kill switches

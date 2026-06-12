@@ -425,7 +425,12 @@ func mapWCPStepDecisionToStatus(decision workflow_control.GateDecision, approval
 			switch *approvalStatus {
 			case workflow_control.ApprovalStatusApproved:
 				return execution.StepStatusRunning
-			case workflow_control.ApprovalStatusRejected:
+			case workflow_control.ApprovalStatusRejected,
+				workflow_control.ApprovalStatusExpired:
+				// Both are terminal "not approved" outcomes (the workflow is
+				// aborted). Expired (auto-timeout) must NOT fall through to
+				// StepStatusApproval, which would wrongly show a timed-out step
+				// as still awaiting approval (#2654).
 				return execution.StepStatusFailed
 			default:
 				return execution.StepStatusApproval
@@ -529,6 +534,9 @@ func projectApproverIdentity(step *workflow_control.WorkflowStep) (approvedBy st
 	case workflow_control.ApprovalStatusRejected:
 		rejectedBy = step.ApprovedBy
 		rejectedAt = step.ApprovedAt
+	// ApprovalStatusExpired intentionally has no case: an auto-timeout has no
+	// human actor, so neither approved_* nor rejected_* identity is populated —
+	// the expiry must never be attributed to a human reviewer (#2654).
 	}
 	return
 }
@@ -546,6 +554,11 @@ func mapWCPApprovalStatus(s *workflow_control.ApprovalStatus) *execution.Approva
 		mapped = execution.ApprovalStatusApproved
 	case workflow_control.ApprovalStatusRejected:
 		mapped = execution.ApprovalStatusRejected
+	case workflow_control.ApprovalStatusExpired:
+		// #2654: surface the auto-timeout distinctly in the unified status
+		// surface rather than collapsing it to nil (which would hide the
+		// expired-vs-rejected distinction at the step approval_status level).
+		mapped = execution.ApprovalStatusExpired
 	default:
 		return nil
 	}

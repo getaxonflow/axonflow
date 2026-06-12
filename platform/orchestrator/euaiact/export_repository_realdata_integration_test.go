@@ -71,9 +71,9 @@ func TestExportRepository_Integration_RealDataMethods_OrgScoped(t *testing.T) {
 			t.Fatalf("insert audit_logs: %v", err)
 		}
 	}
-	insAudit(orgA, 1, "allow")
-	insAudit(orgA, 2, "deny")
-	insAudit(orgB, 1, "allow")
+	insAudit(orgA, 1, "allowed")
+	insAudit(orgA, 2, "blocked")
+	insAudit(orgB, 1, "allowed")
 
 	// --- seed policy_violations: 2 for A, 1 for B ---
 	insViol := func(org, vtype string) {

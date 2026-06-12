@@ -50,6 +50,12 @@ const (
 	ApprovalStatusPending  ApprovalStatus = "pending"
 	ApprovalStatusApproved ApprovalStatus = "approved"
 	ApprovalStatusRejected ApprovalStatus = "rejected"
+	// ApprovalStatusExpired is written when a require_approval step times out
+	// (Evaluation-tier auto-expiry) instead of being explicitly reviewed. It is
+	// a terminal "not approved" state for execution flow (workflow aborted, gate
+	// blocked), but is kept DISTINCT from ApprovalStatusRejected so a timeout is
+	// never counted as a human rejection in compliance metrics (#2654).
+	ApprovalStatusExpired ApprovalStatus = "expired"
 )
 
 // PriorCompletionStatus describes whether a prior execution of this

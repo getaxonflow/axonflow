@@ -59,8 +59,10 @@ func (m *OJKModule) RegisterRoutesWithMux(r *mux.Router) {
 	r.HandleFunc("/api/v1/ojk/audit/retention", m.AuditHandler.handleRetentionStatus).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/ojk/audit/readiness", m.AuditHandler.handleComplianceReadiness).Methods("GET", "OPTIONS")
 
-	// UU PDP breach notification
+	// UU PDP breach notification lifecycle (notify → acknowledge; deadline sweep)
 	r.HandleFunc("/api/v1/ojk/breach/notify", m.AuditHandler.handleBreachNotify).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/ojk/breach/acknowledge", m.AuditHandler.handleBreachAcknowledge).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/ojk/breach/evaluate-deadlines", m.AuditHandler.handleBreachEvaluateDeadlines).Methods("POST", "OPTIONS")
 
 	// Dashboard
 	r.HandleFunc("/api/v1/ojk/dashboard", m.AuditHandler.handleDashboard).Methods("GET", "OPTIONS")

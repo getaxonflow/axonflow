@@ -86,6 +86,11 @@ func (r *PostgresAIIncidentRepository) Create(ctx context.Context, incident *AII
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
+	// board_notification_required and rbi_notification_required are
+	// GENERATED ALWAYS AS (...) STORED columns (migration 301): Postgres
+	// computes them from severity / incident_type and REJECTS any attempt to
+	// write them ("cannot insert a non-DEFAULT value into column ..."). They
+	// are intentionally omitted from this INSERT and read back via scan.
 	query := `
 		INSERT INTO rbi_ai_incidents (
 			id, org_id, incident_id, system_id,
@@ -96,9 +101,9 @@ func (r *PostgresAIIncidentRepository) Create(ctx context.Context, incident *AII
 			financial_impact_inr, reputational_impact,
 			remediation_actions, immediate_action_taken, long_term_fix,
 			status, resolved_at, resolution_summary, lessons_learned,
-			board_notification_required, board_notified,
+			board_notified,
 			board_notification_date, board_notification_reference,
-			rbi_notification_required, rbi_notified,
+			rbi_notified,
 			rbi_notification_date, rbi_notification_reference, rbi_response,
 			evidence_files, tags, metadata,
 			created_at, updated_at
@@ -106,7 +111,7 @@ func (r *PostgresAIIncidentRepository) Create(ctx context.Context, incident *AII
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
 			$21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-			$31, $32, $33, $34, $35, $36, $37
+			$31, $32, $33, $34, $35
 		)
 	`
 
@@ -134,11 +139,9 @@ func (r *PostgresAIIncidentRepository) Create(ctx context.Context, incident *AII
 		nullTime(incident.ResolvedAt),
 		nullString(incident.ResolutionSummary),
 		nullString(incident.LessonsLearned),
-		incident.BoardNotificationRequired,
 		incident.BoardNotified,
 		nullTime(incident.BoardNotificationDate),
 		nullString(incident.BoardNotificationReference),
-		incident.RBINotificationRequired,
 		incident.RBINotified,
 		nullTime(incident.RBINotificationDate),
 		nullString(incident.RBINotificationReference),
@@ -376,6 +379,11 @@ func (r *PostgresAIIncidentRepository) Update(ctx context.Context, incident *AII
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
+	// board_notification_required / rbi_notification_required are GENERATED
+	// ALWAYS columns (migration 301) — Postgres recomputes them from
+	// severity / incident_type and rejects any direct write. They are
+	// omitted from this SET clause; updating severity/incident_type updates
+	// them automatically.
 	query := `
 		UPDATE rbi_ai_incidents SET
 			system_id = $3,
@@ -386,12 +394,12 @@ func (r *PostgresAIIncidentRepository) Update(ctx context.Context, incident *AII
 			financial_impact_inr = $14, reputational_impact = $15,
 			remediation_actions = $16, immediate_action_taken = $17, long_term_fix = $18,
 			status = $19, resolved_at = $20, resolution_summary = $21, lessons_learned = $22,
-			board_notification_required = $23, board_notified = $24,
-			board_notification_date = $25, board_notification_reference = $26,
-			rbi_notification_required = $27, rbi_notified = $28,
-			rbi_notification_date = $29, rbi_notification_reference = $30, rbi_response = $31,
-			evidence_files = $32, tags = $33, metadata = $34,
-			updated_at = $35
+			board_notified = $23,
+			board_notification_date = $24, board_notification_reference = $25,
+			rbi_notified = $26,
+			rbi_notification_date = $27, rbi_notification_reference = $28, rbi_response = $29,
+			evidence_files = $30, tags = $31, metadata = $32,
+			updated_at = $33
 		WHERE id = $1 AND org_id = $2
 	`
 
@@ -418,11 +426,9 @@ func (r *PostgresAIIncidentRepository) Update(ctx context.Context, incident *AII
 		nullTime(incident.ResolvedAt),
 		nullString(incident.ResolutionSummary),
 		nullString(incident.LessonsLearned),
-		incident.BoardNotificationRequired,
 		incident.BoardNotified,
 		nullTime(incident.BoardNotificationDate),
 		nullString(incident.BoardNotificationReference),
-		incident.RBINotificationRequired,
 		incident.RBINotified,
 		nullTime(incident.RBINotificationDate),
 		nullString(incident.RBINotificationReference),

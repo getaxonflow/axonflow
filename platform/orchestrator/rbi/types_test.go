@@ -779,7 +779,7 @@ func TestBoardReport_JSONSerialization(t *testing.T) {
 		KillSwitchActivations: 1,
 		GeneratedBy:           "system",
 		GeneratedAt:           now,
-		GenerationMethod:      "automated",
+		GenerationMethod:      "automatic",
 		ApprovalStatus:        ReportApprovalApproved,
 		ApprovedBy:            "CRO",
 		ApprovedByEmail:       "cro@example.com",

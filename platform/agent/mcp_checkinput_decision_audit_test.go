@@ -68,7 +68,7 @@ func TestMCPInputDecisionVerdict(t *testing.T) {
 					},
 				},
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"rate-limit-1"},
 			wantReasons: []string{"Rate limit exceeded"},
 		},
@@ -79,7 +79,7 @@ func TestMCPInputDecisionVerdict(t *testing.T) {
 				DynamicBlockReason: "Budget exhausted",
 				DynamicInfo:        &sharedpolicy.DynamicPolicyInfo{},
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"dynamic_policy"},
 			wantReasons: []string{"Budget exhausted"},
 		},
@@ -89,19 +89,19 @@ func TestMCPInputDecisionVerdict(t *testing.T) {
 				DynamicBlocked:     true,
 				DynamicBlockReason: "blocked",
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"dynamic_policy"},
 			wantReasons: []string{"blocked"},
 		},
 		{
-			name:        "clean allow → allow, no policy ids, no reasons",
+			name:        "clean allow → allowed, no policy ids, no reasons",
 			outcome:     InputPolicyOutcome{},
-			wantVerdict: VerdictAllow,
+			wantVerdict: mcpVerdictAllowed,
 			wantPolicy:  nil,
 			wantReasons: nil,
 		},
 		{
-			name: "allow with a matched (non-blocking redact) static policy → allow, policy ids surfaced",
+			name: "matched (non-blocking redact) static policy + didRedact → redacted, policy ids surfaced",
 			outcome: InputPolicyOutcome{
 				StaticResult: &sharedpolicy.RequestResult{
 					MatchedPolicies: []sharedpolicy.PolicyMatch{
@@ -110,15 +110,15 @@ func TestMCPInputDecisionVerdict(t *testing.T) {
 				},
 			},
 			didRedact:   true,
-			wantVerdict: VerdictAllow,
+			wantVerdict: mcpVerdictRedacted,
 			wantPolicy:  []string{"pii-us-ssn"},
 			wantReasons: []string{"request PII redacted"},
 		},
 		{
-			name:        "redact with no static result (engine-only redactor) → allow, redact reason still surfaced",
+			name:        "redact with no static result (engine-only redactor) → redacted, redact reason surfaced",
 			outcome:     InputPolicyOutcome{},
 			didRedact:   true,
-			wantVerdict: VerdictAllow,
+			wantVerdict: mcpVerdictRedacted,
 			wantPolicy:  nil,
 			wantReasons: []string{"request PII redacted"},
 		},
@@ -136,9 +136,13 @@ func TestMCPInputDecisionVerdict(t *testing.T) {
 			if !reflect.DeepEqual(gotReasons, tc.wantReasons) {
 				t.Errorf("reasons: got %v, want %v", gotReasons, tc.wantReasons)
 			}
-			// allow/deny are the only verdicts the request plane can emit
-			// (needs_approval is not a check-input outcome).
-			if tc.wantVerdict != VerdictAllow && tc.wantVerdict != VerdictDeny {
+			// #2641: the request plane emits the canonical past-tense vocab the portal
+			// decisions feed keys on — blocked | redacted | allowed (never the legacy
+			// allow/deny). needs_approval is not a check-input outcome.
+			switch tc.wantVerdict {
+			case mcpVerdictBlocked, mcpVerdictRedacted, mcpVerdictAllowed:
+				// canonical
+			default:
 				t.Fatalf("unexpected verdict in fixture: %q", tc.wantVerdict)
 			}
 		})
@@ -204,7 +208,7 @@ func TestMCPCheckInputHandler_DynamicBlockEmitsAuditLogsDecisionRow(t *testing.T
 			"decision_tool",  // request_type
 			sqlmock.AnyArg(), // query (non-PII descriptor)
 			sqlmock.AnyArg(), // query_hash
-			"deny",           // policy_decision
+			"blocked",        // policy_decision
 			sqlmock.AnyArg(), // policy_details (JSONB)
 			sqlmock.AnyArg(), // decision_id (first-class column; #2592)
 			PlaneMCP,         // plane — MCP request surface (#2627)
@@ -212,6 +216,7 @@ func TestMCPCheckInputHandler_DynamicBlockEmitsAuditLogsDecisionRow(t *testing.T
 			// correlation_id (#2598): the inbound traceparent's W3C trace-id, pinned
 			// to prove the request plane threads it just like the response plane.
 			"0af7651916cd43dd8448eb211c80319c",
+			nil, // redacted_fields (#2643): MCP block has none → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -285,12 +290,13 @@ func TestMCPCheckInputHandler_AllowEmitsAuditLogsDecisionRow(t *testing.T) {
 			"decision_tool",  // request_type
 			sqlmock.AnyArg(), // query
 			sqlmock.AnyArg(), // query_hash
-			"allow",          // policy_decision
+			"allowed",        // policy_decision
 			sqlmock.AnyArg(), // policy_details
 			sqlmock.AnyArg(), // decision_id (first-class column; #2592)
 			PlaneMCP,         // plane — MCP request surface (#2627)
 			nil,              // obligations (none on a clean allow)
 			nil,              // correlation_id (#2598): no traceparent → NULL → singleton
+			nil,              // redacted_fields (#2643): clean allow → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

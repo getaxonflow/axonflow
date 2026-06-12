@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+
+	"axonflow/platform/shared/audit"
 )
 
 // ExportRepository defines the interface for export persistence.
@@ -313,7 +315,7 @@ func (r *PostgresExportRepository) GetDecisionChain(ctx context.Context, orgID s
 		}
 
 		rec.DecisionOutcome = mapDecisionVerdict(policyDecision)
-		rec.RequiresReview = policyDecision == "needs_approval" || policyDecision == "require_approval"
+		rec.RequiresReview = requiresReview(policyDecision)
 		if rec.PoliciesEvaluated == "null" {
 			rec.PoliciesEvaluated = ""
 		}
@@ -637,20 +639,43 @@ func (r *PostgresExportRepository) GetConformityAssessments(ctx context.Context,
 	return assessments, rows.Err()
 }
 
-// mapDecisionVerdict translates a canonical audit_logs policy_decision verdict
-// into the EU AI Act decision-outcome vocabulary. Unknown verdicts pass through
-// unchanged so a new verdict is never silently dropped.
+// mapDecisionVerdict translates an audit_logs policy_decision verdict into the
+// EU AI Act decision-outcome vocabulary. The raw value is run through the shared
+// normalizer (audit.Normalize) FIRST so every writer spelling and era converges
+// before mapping — critically, the canonical "allowed"/"blocked" that all
+// forward writers now emit map to approved/blocked, where the old present-tense
+// switch ("allow"/"deny") let them fall through to the raw value and leak an
+// un-mapped "allowed" into a regulator-facing export. needs_approval is flagged
+// as requires-review ("pending_review"), never silently downgraded to approved.
 func mapDecisionVerdict(verdict string) string {
-	switch verdict {
-	case "allow":
+	switch audit.Normalize(verdict) {
+	case audit.DecisionAllowed:
 		return "approved"
-	case "deny":
+	case audit.DecisionBlocked:
 		return "blocked"
-	case "needs_approval", "require_approval":
+	case audit.DecisionRedacted:
+		return "redacted"
+	case audit.DecisionNeedsApproval:
 		return "pending_review"
+	case audit.DecisionError:
+		return "error"
 	default:
-		return verdict
+		// Recognized non-verdict marker (override_lifecycle): surface it as-is
+		// rather than a distorted decision outcome. Normalize guarantees an
+		// unrecognized value can never reach here as "approved".
+		return audit.Normalize(verdict)
 	}
+}
+
+// requiresReview reports whether a raw policy_decision is a human-deferred
+// (needs-approval) verdict. It consumes the shared normalizer so it stays in
+// lock-step with mapDecisionVerdict — a raw string compare against
+// "needs_approval"/"require_approval" would miss legacy/defensive spellings
+// (e.g. pending_approval), which mapDecisionVerdict maps to "pending_review"
+// while RequiresReview reported false, telling a regulator a human-deferred
+// decision needed no review (#2636/#2653).
+func requiresReview(policyDecision string) bool {
+	return audit.Normalize(policyDecision) == audit.DecisionNeedsApproval
 }
 
 // nullTime converts a time.Time to sql.NullTime.

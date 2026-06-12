@@ -607,6 +607,30 @@ func TestBuildCachedResponse_RequireApproval_Rejected(t *testing.T) {
 	}
 }
 
+// TestBuildCachedResponse_RequireApproval_Expired covers the #2654 auto-timeout
+// branch: an expired require_approval step resolves to block (terminal not-approved)
+// and surfaces a distinct "expired" reason — never attributed as a human rejection.
+func TestBuildCachedResponse_RequireApproval_Expired(t *testing.T) {
+	expired := ApprovalStatusExpired
+	step := &WorkflowStep{
+		StepID:            "step-1",
+		Decision:          GateDecisionRequireApproval,
+		DecisionReason:    "needs human approval",
+		ApprovalStatus:    &expired,
+		PoliciesEvaluated: mustMarshal([]PolicyMatch{}),
+		PoliciesMatched:   mustMarshal([]PolicyMatch{}),
+	}
+
+	resp := buildCachedResponse(step, "wf-1", "https://portal.test", false)
+
+	if resp.Decision != GateDecisionBlock {
+		t.Errorf("expired step should resolve to block, got %s", resp.Decision)
+	}
+	if !strings.Contains(resp.Reason, "expired") {
+		t.Errorf("expired step reason should mention 'expired', got %q", resp.Reason)
+	}
+}
+
 func TestBuildCachedResponse_RequireApproval_Pending(t *testing.T) {
 	pending := ApprovalStatusPending
 	step := &WorkflowStep{

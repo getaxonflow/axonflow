@@ -4,8 +4,9 @@
 package orchestrator
 
 import (
-	"os"
 	"regexp"
+
+	"axonflow/platform/shared/version"
 )
 
 // PlatformCapability describes a feature supported by the platform.
@@ -38,13 +39,16 @@ type PluginCompatInfo struct {
 
 var orchVersionRegex = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$`)
 
-// getPlatformVersion returns the platform version from the AXONFLOW_VERSION env var.
+// getPlatformVersion returns the platform version, preferring the value baked
+// into the binary at build time (#2662) and falling back to the AXONFLOW_VERSION
+// env var only for unbaked dev builds. A baked value always wins over the env so
+// /health cannot be spoofed by a runtime override.
 func getPlatformVersion() string {
-	version := os.Getenv("AXONFLOW_VERSION")
-	if version == "" || !orchVersionRegex.MatchString(version) {
-		version = "1.0.0"
+	v := version.Resolve()
+	if v == "" || !orchVersionRegex.MatchString(v) {
+		v = "1.0.0"
 	}
-	return version
+	return v
 }
 
 func getCapabilities() []PlatformCapability {

@@ -281,7 +281,7 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 			"mcp_check_input", // request_type
 			"SELECT 1",        // query
 			"h1",              // query_hash
-			"deny",            // policy_decision
+			"blocked",         // policy_decision (#2641/#2638)
 			sqlmock.AnyArg(),  // policy_details JSON
 			"dec-1",           // decision_id (first-class column; #2592)
 			PlaneMCP,          // plane — MCP check-input surface
@@ -370,7 +370,7 @@ func TestWriteOverrideUsedEvent_FallbackPlaceholders(t *testing.T) {
 			"override_used",          // request_type
 			"override applied",       // query
 			"none",                   // query_hash
-			"allow",                  // policy_decision
+			"allowed",                // policy_decision (#2641/#2638)
 			sqlmock.AnyArg(),         // policy_details JSON
 			"dec-1",                  // decision_id (first-class column; #2592)
 			PlaneMCP,                 // plane — MCP check-input override surface
@@ -405,7 +405,7 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 			"mcp_check_input",
 			"q",
 			"h",
-			"deny",
+			"blocked",
 			sqlmock.AnyArg(),
 			"dec-1",       // decision_id (first-class column; #2592)
 			PlaneMCP,      // plane — MCP check-input surface
@@ -903,7 +903,7 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 				WithArgs(
 					sqlmock.AnyArg(), "req-1", sqlmock.AnyArg(), 0,
 					"u@e.com", "user", "c1", "t1", "o1",
-					"mcp_check_input", "SELECT 1", "h1", "deny",
+					"mcp_check_input", "SELECT 1", "h1", "blocked",
 					jsonCaptureArg{dst: &capturedJSON},
 					"dec-1",   // decision_id (first-class column; #2592)
 					PlaneMCP,  // plane — MCP check-input surface
@@ -985,7 +985,7 @@ func TestWriteOverrideUsedEvent_PolicyVersionInJSONB(t *testing.T) {
 		WithArgs(
 			sqlmock.AnyArg(), "dec-1", sqlmock.AnyArg(), 0,
 			"u@e.com", "user", "c1", "t1", "o1",
-			"override_used", "override applied", "none", "allow",
+			"override_used", "override applied", "none", "allowed",
 			jsonCaptureArg{dst: &capturedJSON},
 			"dec-1",   // decision_id (first-class column; #2592)
 			PlaneMCP,  // plane — MCP check-input override surface
@@ -1085,7 +1085,7 @@ func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 			"mcp_check_output",
 			"(empty statement)", // statement fallback
 			"none",              // statementHash fallback
-			"deny",
+			"blocked",
 			sqlmock.AnyArg(),
 			"dec-1",    // decision_id (first-class column; #2592)
 			PlaneMCP,   // plane — MCP check-input surface

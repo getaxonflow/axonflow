@@ -386,7 +386,7 @@ func TestMigration094Precondition_RealPostgres(t *testing.T) {
 				) VALUES (
 					'test-precondition-row-1', 'req-test-1', NOW(), 0, 'test@example',
 					'unknown', 'client-test', 'tenant-not-csaas', '', 'mcp', 'test',
-					'hash-test', 'allow'
+					'hash-test', 'allowed'
 				)
 			`); err != nil {
 				t.Fatalf("seed audit_logs: %v", err)

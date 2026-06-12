@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	sharedaudit "axonflow/platform/shared/audit"
 	logutil "axonflow/platform/shared/logger"
 
 	"axonflow/platform/shared/serviceauth"
@@ -484,9 +485,16 @@ func getMCPTools() []mcpTool {
 						"description": "Optional RFC3339 lower bound (e.g. 2026-05-01T00:00:00Z). Silently clamped to the tier's lookback window when reaching further back.",
 					},
 					"decision": map[string]interface{}{
-						"type":        "string",
-						"enum":        []string{"allow", "deny", "require_approval"},
-						"description": "Filter to decisions of this kind.",
+						"type": "string",
+						// Forwarded verbatim to GET /api/v1/decisions, whose
+						// ?decision= filter accepts ONLY the canonical audit
+						// verdicts (decisions_list_handler.go: !audit.IsCanonical
+						// → 400). Advertising the legacy allow/deny/require_approval
+						// spellings here made every host-supplied filter 400 after
+						// the #2638/#2653 canonical-vocab cutover. Build the enum
+						// from the single source of truth so it can never drift.
+						"enum":        sharedaudit.All(),
+						"description": "Filter to decisions of this canonical audit verdict: allowed, blocked, redacted, needs_approval, or error.",
 					},
 					"policy_id": map[string]interface{}{
 						"type":        "string",
@@ -672,10 +680,20 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 	// Verify the caller has valid credentials for this session's tenant
 	_, _, _, _, _, clientID, _, auth, err := authenticateMCPServerRequest(r)
 	if err != nil && !isCommunityMode() {
+		// #2641 (MCPSRV-SESSIONDELETE-AUTHZ, unauth arm): an unauthenticated DELETE
+		// against an existing session is a denied attempt. Record it against the
+		// TARGET session's tenant (the resource being protected) for security audit.
+		auditMCPServerDeny(r.Context(), session, "mcp_session_delete", "delete_session",
+			mcpVerdictBlocked, "unauthenticated session delete attempt", []string{"unauthenticated"})
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 	if !isCommunityMode() && clientID != session.clientID {
+		// #2641 (MCPSRV-SESSIONDELETE-AUTHZ): a cross-client session-delete attempt is
+		// an authz refusal that previously left no audit trail. Record the "blocked"
+		// decision against the target session's tenant.
+		auditMCPServerDeny(r.Context(), session, "mcp_session_delete", "delete_session",
+			mcpVerdictBlocked, "cross-client session delete denied", []string{"session_authz"})
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -811,9 +829,42 @@ func handleMCPPing(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) 
 	writeJSONRPCResult(w, req.ID, map[string]interface{}{})
 }
 
+// auditMCPServerDeny records a canonical audit_logs row for a JSON-RPC MCP-server
+// tools/call deny that never reaches (or completes) policy evaluation (#2641:
+// MCPSRV-DAILYCAP-DENY, MCPSRV-TIERGATE-DENY, MCPSRV-TOOLERR-FAILCLOSED,
+// MCPSRV-SESSIONDELETE-AUTHZ). Identity comes from the authenticated session, so
+// the row lands in that tenant's portal decisions feed. Best-effort; mints its own
+// decision_id. query is a non-PII descriptor — no tool arguments are recorded.
+func auditMCPServerDeny(ctx context.Context, session *mcpSession, requestType, toolName, verdict, reason string, policyIDs []string) {
+	if session == nil {
+		return
+	}
+	writeMCPDecisionAudit(ctx, usageDB,
+		uuid.New().String(), "",
+		session.tenantID, session.orgID, session.clientID, session.userEmail,
+		session.userID, session.userRole,
+		requestType, fmt.Sprintf("mcp tools/call: %s", toolName), "",
+		verdict, policyIDs, []string{reason}, nil, "")
+}
+
 func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
 	session, r := requireMCPAuth(w, r, req)
 	if session == nil {
+		// #2641 (MCPSRV-UNAUTH-JSONRPC): an unauthenticated tools/call is a denied
+		// governance attempt that previously left no audit trail. Record it under the
+		// `mcpUnauthenticatedTenant` sentinel (NOT a caller-claimed tenant → no
+		// spoofing) with the credential the caller presented, for security audit.
+		// Scoped to tools/call (the governance-bearing method) to bound volume.
+		writeMCPDecisionAudit(r.Context(), usageDB,
+			uuid.New().String(), "",
+			mcpUnauthenticatedTenant, "", extractClientID(r), "",
+			"", "service",
+			"mcp_tools_call", "mcp tools/call: unauthenticated", "",
+			mcpVerdictBlocked,
+			[]string{"unauthenticated"},
+			[]string{"authentication required for tools/call"},
+			nil,
+			"")
 		return
 	}
 
@@ -852,6 +903,9 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	// matrix harness at runtime-e2e/v1_pro_full_matrix exercises this
 	// path on real wire traffic.
 	if enforceMCPSessionDailyCap(w, req, session) {
+		// #2641 (MCPSRV-DAILYCAP-DENY): the daily-cap 429 was portal-invisible.
+		auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
+			mcpVerdictBlocked, "daily usage cap exceeded", []string{"daily_cap"})
 		return
 	}
 
@@ -869,6 +923,10 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	for _, t := range append(getMCPTools(), v1ProMCPTools()...) {
 		if t.Name == params.Name {
 			if enforceMCPToolGate(r.Context(), w, req, session, t, authDB) {
+				// #2641 (MCPSRV-TIERGATE-DENY): the tier/usage-limit rejection was
+				// portal-invisible.
+				auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
+					mcpVerdictBlocked, "tier/usage gate denied tool access", []string{"tier_gate"})
 				return
 			}
 			break
@@ -916,6 +974,17 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	}
 
 	if toolErr != nil {
+		// #2641 (MCPSRV-TOOLERR-FAILCLOSED): when a GOVERNANCE tool (check_policy /
+		// check_output) errors, the caller gets IsError and must not proceed — a
+		// fail-closed deny. It previously left no audit trail. Record an "error" row so
+		// the unrendered governance decision is portal-visible. Scoped to the two
+		// governance tools: a benign proxy/validation error on a non-governance tool
+		// (e.g. list_policies) is not a fail-closed governance verdict.
+		if params.Name == "check_policy" || params.Name == "check_output" {
+			auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
+				mcpVerdictError, "governance tool error (fail-closed): "+toolErr.Error(),
+				[]string{"tool_error"})
+		}
 		writeJSONRPCResult(w, req.ID, mcpToolCallResult{
 			Content: []mcpContent{{Type: "text", Text: toolErr.Error()}},
 			IsError: true,
@@ -1184,6 +1253,22 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 
 	if outcome.DynamicBlocked {
 		resp["block_reason"] = outcome.DynamicBlockReason
+		// #2641 (MCPSRV-CHECKPOLICY-DYNAMIC-ONLY-BLOCK): a dynamic-only block carries
+		// no StaticResult, so the audit write below (gated on StaticResult.Blocked)
+		// never fired — the block was invisible to the portal decisions feed. Emit the
+		// canonical "blocked" row here. Dynamic blocks have no override flow (overrides
+		// are static-policy-only), so this is the single terminal write for this branch.
+		// query is a non-PII descriptor — the raw statement MUST NOT land in audit_logs.query.
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
+			mcpVerdictBlocked,
+			extractDynamicPolicyIDs(outcome.DynamicInfo),
+			[]string{outcome.DynamicBlockReason},
+			nil,
+			"") // MCP-server session has no inbound traceparent → singleton
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
 		resp["blocked_by"] = outcome.StaticResult.BlockedBy.PolicyID
@@ -1224,11 +1309,15 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		}
 
 		// Dual-write so explainDecision(id) resolves against audit_logs.
+		// #2641 (R3 Finding 12 / PII safety): the `query` column gets a NON-PII
+		// descriptor, never the raw statement (the /explain + /decisions endpoints
+		// read policy_details, not this column; the StatementHash preserves
+		// correlation).
 		writeExplainableAuditLog(ctx, usageDB,
 			decisionID, uuid.New().String(),
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
-			"mcp_check_policy", statement, computeStatementHash(statement),
+			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), computeStatementHash(statement),
 			outcome.StaticResult.BlockReason, topRisk, matches,
 			"") // #2598: MCP-server session has no inbound traceparent → singleton
 	}
@@ -1313,6 +1402,23 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		resp["exfiltration_info"] = outcome.ExfilInfo
 	}
 
+	// #2641 (MCPSRV-CHECKOUTPUT-REDACT-NO-AUDIT — the worst writer): a
+	// redact-and-allow leaves blocked=false and early-returns below, writing ZERO
+	// audit rows, so an OJK NIK/NPWP response mask was completely invisible to the
+	// portal. Emit the canonical "redacted" row (with redacted_fields) before the
+	// allow return. query is a non-PII descriptor — raw response_data MUST NOT land
+	// in audit_logs.query.
+	if !blocked && outcome.WasRedacted() {
+		_, redactPolicyIDs, redactReasons := mcpOutputDecisionVerdict(outcome)
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
+			mcpVerdictRedacted, redactPolicyIDs, redactReasons, outcome.RedactedFieldNames(),
+			"") // MCP-server session has no inbound traceparent → singleton
+	}
+
 	// Allowed — no richer context or override flow needed.
 	if !blocked {
 		return resp, nil
@@ -1323,6 +1429,20 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	// check_policy across the MCP surface.
 	if outcome.SQLiBlocked {
 		resp["block_reason"] = fmt.Sprintf("SQL injection detected: %s", outcome.SQLiPattern)
+		// #2641 (MCPSRV-CHECKOUTPUT-SQLI-NO-AUDIT): a SQLi block carries no
+		// StaticResult, so the writeExplainableAuditLog call below (gated on
+		// StaticResult.Blocked) never fired — the block was portal-invisible. Emit the
+		// canonical "blocked" row here. SQLi blocks have no override flow.
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
+			mcpVerdictBlocked,
+			[]string{"sqli_response_scan"},
+			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)},
+			nil,
+			"") // MCP-server session has no inbound traceparent → singleton
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
 	}
@@ -1355,18 +1475,20 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			return resp, nil
 		}
 
-		// Dual-write for explainability. Use the message (or a stable
-		// marker) as the query text since check_output has no single
-		// statement to hash.
-		query := message
-		if query == "" {
-			query = fmt.Sprintf("(rows=%d)", rowCount)
+		// Dual-write for explainability. #2641 (R3 Finding 12 / PII safety): hash the
+		// actual response content for correlation, but record only a NON-PII
+		// descriptor in the `query` column (the /explain + /decisions endpoints read
+		// policy_details, not this column) so a PII-bearing response never lands in a
+		// long-retained audit column.
+		hashed := message
+		if hashed == "" {
+			hashed = fmt.Sprintf("(rows=%d)", rowCount)
 		}
 		writeExplainableAuditLog(ctx, usageDB,
 			decisionID, uuid.New().String(),
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
-			"mcp_check_output", query, computeStatementHash(query),
+			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), computeStatementHash(hashed),
 			outcome.StaticResult.BlockReason, topRisk, matches,
 			"") // #2598: MCP-server session has no inbound traceparent → singleton
 	}
