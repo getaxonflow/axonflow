@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"axonflow/platform/agent/license"
+	"axonflow/platform/shared/audit"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 )
 
 // recentTimestamp is a sqlmock.Argument matcher that asserts the bound
@@ -70,11 +72,11 @@ func TestListDecisions_TenantFilterIsInWhereClause(t *testing.T) {
 	mock.ExpectQuery(`SELECT[\s\S]*?FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WithArgs(
 			"tenant-a",
-			sqlmock.AnyArg(), // since
-			"",               // decision filter (empty = wildcard)
-			"",               // policy_id filter (empty = wildcard)
-			"",               // tool_signature filter (empty = wildcard)
-			5,                // tier-default limit (Community)
+			sqlmock.AnyArg(),     // since
+			pq.Array([]string{}), // decision filter (empty array = wildcard)
+			"",                   // policy_id filter (empty = wildcard)
+			"",                   // tool_signature filter (empty = wildcard)
+			5,                    // tier-default limit (Community)
 		).
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
@@ -127,7 +129,7 @@ func TestListDecisions_ReadsDecisionIdColumnWithJSONBFallback(t *testing.T) {
 	// admit the column arm (decision_id IS NOT NULL) — both required so a
 	// column-only row (no JSONB decision_id) still surfaces post-backfill.
 	mock.ExpectQuery(`COALESCE\(decision_id, policy_details->>'decision_id'\)[\s\S]*?FROM audit_logs[\s\S]*?WHERE tenant_id = \$1[\s\S]*?\(decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL\)`).
-		WithArgs("tenant-a", sqlmock.AnyArg(), "", "", "", 5).
+		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", 5).
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
 		).AddRow("dec-from-column", time.Now().UTC(), "deny", "pol-mcp", "", nil))
@@ -302,7 +304,7 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 		WithArgs(
 			"tenant-a",
 			sqlmock.AnyArg(),
-			"",
+			sqlmock.AnyArg(), // no decision filter → pq.Array([]string{}) (empty, non-nil)
 			"",
 			"",
 			5, // Community max page
@@ -337,8 +339,17 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 	if body.Decisions[0].DecisionID != "dec-3" {
 		t.Errorf("decisions[0]: got %q, want dec-3", body.Decisions[0].DecisionID)
 	}
-	if body.Decisions[0].Decision != "deny" {
-		t.Errorf("decisions[0].decision: got %q, want deny", body.Decisions[0].Decision)
+	// Raw "deny" is normalized to the canonical "blocked" on read (#2636/#2653).
+	if body.Decisions[0].Decision != audit.DecisionBlocked {
+		t.Errorf("decisions[0].decision: got %q, want %q", body.Decisions[0].Decision, audit.DecisionBlocked)
+	}
+	// Legacy "require_approval" surfaces as canonical "needs_approval".
+	if body.Decisions[1].Decision != audit.DecisionNeedsApproval {
+		t.Errorf("decisions[1].decision: got %q, want %q", body.Decisions[1].Decision, audit.DecisionNeedsApproval)
+	}
+	// Wire-only "allow" surfaces as canonical "allowed".
+	if body.Decisions[2].Decision != audit.DecisionAllowed {
+		t.Errorf("decisions[2].decision: got %q, want %q", body.Decisions[2].Decision, audit.DecisionAllowed)
 	}
 	if body.Decisions[0].PolicyID != "pol-sqli" {
 		t.Errorf("decisions[0].policy_id: got %q", body.Decisions[0].PolicyID)
@@ -380,11 +391,14 @@ func TestListDecisions_FiltersForwardedToSQL(t *testing.T) {
 	usageDB = mockDB
 	defer func() { usageDB = origDB }()
 
+	// The canonical "blocked" filter is expanded to every DB spelling it covers
+	// (audit.Spellings) so legacy/historical rows still match — canonical-first,
+	// not PR #2637's phantom-label expansion.
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WithArgs(
 			"tenant-a",
 			sqlmock.AnyArg(),
-			"deny",           // decision filter
+			pq.Array(audit.Spellings(audit.DecisionBlocked)), // decision filter, expanded
 			"pol-sqli",       // policy_id filter
 			"postgres.query", // tool_signature filter
 			3,
@@ -393,7 +407,7 @@ func TestListDecisions_FiltersForwardedToSQL(t *testing.T) {
 			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
 		))
 
-	url := "/api/v1/decisions?limit=3&decision=deny&policy_id=pol-sqli&tool_signature=postgres.query"
+	url := "/api/v1/decisions?limit=3&decision=blocked&policy_id=pol-sqli&tool_signature=postgres.query"
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("X-Tenant-ID", "tenant-a")
 	w := httptest.NewRecorder()
@@ -430,7 +444,7 @@ func TestListDecisions_ContextTruncatedToFiveKeys(t *testing.T) {
 	}).AddRow("dec-ctx", time.Now().UTC(), "allow", "pol-default", "", ctxJSON)
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
-		WithArgs("tenant-a", sqlmock.AnyArg(), "", "", "", 5).
+		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", 5).
 		WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
@@ -526,7 +540,7 @@ func TestListDecisions_SinceClampedToTierWindow(t *testing.T) {
 		WithArgs(
 			"tenant-a",
 			recentTimestamp{maxAge: 25 * time.Hour},
-			"", "", "",
+			pq.Array([]string{}), "", "",
 			5,
 		).
 		WillReturnRows(sqlmock.NewRows(

@@ -104,13 +104,22 @@ func (r *PostgresAISystemRepository) Create(ctx context.Context, system *AISyste
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
+	// board_approval_required is a GENERATED ALWAYS STORED column
+	// (`risk_category = 'high'`) per migration
+	// 301_rbi_free_ai_compliance.sql — Postgres rejects any explicit
+	// value with "cannot insert a non-DEFAULT value into column
+	// board_approval_required", so every AI system registration failed
+	// before this change. The Go struct field is still populated at
+	// scan time; the service-layer assignment kept the business logic
+	// self-consistent before the DB rejected the write, but the DB
+	// always owns the authoritative value.
 	query := `
 		INSERT INTO rbi_ai_system_registry (
 			id, org_id, system_id, system_name, system_version, description,
 			risk_category, deployment_status, model_type, model_provider,
 			use_case, use_case_description, data_sources, sensitive_data_categories,
 			data_residency, owner_id, owner_name, owner_department, owner_email,
-			board_approval_required, board_approval_status, board_approval_date,
+			board_approval_status, board_approval_date,
 			board_approval_reference, board_approver_name, board_approval_notes,
 			last_validation_date, next_validation_due, validation_frequency_days,
 			tags, metadata, created_at, updated_at
@@ -119,10 +128,10 @@ func (r *PostgresAISystemRepository) Create(ctx context.Context, system *AISyste
 			$7, $8, $9, $10,
 			$11, $12, $13, $14,
 			$15, $16, $17, $18, $19,
-			$20, $21, $22,
-			$23, $24, $25,
-			$26, $27, $28,
-			$29, $30, $31, $32
+			$20, $21,
+			$22, $23, $24,
+			$25, $26, $27,
+			$28, $29, $30, $31
 		)
 	`
 
@@ -131,7 +140,7 @@ func (r *PostgresAISystemRepository) Create(ctx context.Context, system *AISyste
 		system.RiskCategory, system.DeploymentStatus, system.ModelType, system.ModelProvider,
 		system.UseCase, system.UseCaseDescription, dataSourcesJSON, sensitiveDataJSON,
 		system.DataResidency, system.OwnerID, system.OwnerName, system.OwnerDepartment, system.OwnerEmail,
-		system.BoardApprovalRequired, system.BoardApprovalStatus, system.BoardApprovalDate,
+		system.BoardApprovalStatus, system.BoardApprovalDate,
 		system.BoardApprovalReference, system.BoardApproverName, system.BoardApprovalNotes,
 		system.LastValidationDate, system.NextValidationDue, system.ValidationFrequencyDays,
 		tagsJSON, metadataJSON, system.CreatedAt, system.UpdatedAt,
@@ -523,17 +532,21 @@ func (r *PostgresAISystemRepository) Update(ctx context.Context, system *AISyste
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
+	// board_approval_required is a GENERATED ALWAYS column (see INSERT
+	// comment above) — UPDATE must also skip it. Postgres surfaces
+	// "column board_approval_required can only be updated to DEFAULT"
+	// when it's in the SET list.
 	query := `
 		UPDATE rbi_ai_system_registry SET
 			system_name = $1, system_version = $2, description = $3,
 			risk_category = $4, deployment_status = $5, model_type = $6, model_provider = $7,
 			use_case = $8, use_case_description = $9, data_sources = $10, sensitive_data_categories = $11,
 			data_residency = $12, owner_id = $13, owner_name = $14, owner_department = $15, owner_email = $16,
-			board_approval_required = $17, board_approval_status = $18, board_approval_date = $19,
-			board_approval_reference = $20, board_approver_name = $21, board_approval_notes = $22,
-			last_validation_date = $23, next_validation_due = $24, validation_frequency_days = $25,
-			tags = $26, metadata = $27, updated_at = $28, deprecated_at = $29
-		WHERE org_id = $30 AND id = $31
+			board_approval_status = $17, board_approval_date = $18,
+			board_approval_reference = $19, board_approver_name = $20, board_approval_notes = $21,
+			last_validation_date = $22, next_validation_due = $23, validation_frequency_days = $24,
+			tags = $25, metadata = $26, updated_at = $27, deprecated_at = $28
+		WHERE org_id = $29 AND id = $30
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
@@ -541,7 +554,7 @@ func (r *PostgresAISystemRepository) Update(ctx context.Context, system *AISyste
 		system.RiskCategory, system.DeploymentStatus, system.ModelType, system.ModelProvider,
 		system.UseCase, system.UseCaseDescription, dataSourcesJSON, sensitiveDataJSON,
 		system.DataResidency, system.OwnerID, system.OwnerName, system.OwnerDepartment, system.OwnerEmail,
-		system.BoardApprovalRequired, system.BoardApprovalStatus, system.BoardApprovalDate,
+		system.BoardApprovalStatus, system.BoardApprovalDate,
 		system.BoardApprovalReference, system.BoardApproverName, system.BoardApprovalNotes,
 		system.LastValidationDate, system.NextValidationDue, system.ValidationFrequencyDays,
 		tagsJSON, metadataJSON, system.UpdatedAt, system.DeprecatedAt,

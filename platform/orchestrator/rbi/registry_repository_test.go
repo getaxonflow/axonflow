@@ -539,3 +539,54 @@ func TestRegistryRepository_GetSummary_RiskCountError(t *testing.T) {
 	assert.Contains(t, err.Error(), "count by risk")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestRegistryRepository_Create_OmitsGeneratedColumn guards #2640: the INSERT
+// must NOT write the GENERATED ALWAYS column board_approval_required (migration
+// 301 — Postgres rejects a direct write), and must pass exactly 31 arguments.
+// PG-free; runs in CI. Red-on-revert: re-adding the column makes the SQL
+// contain it AND pushes the arg count to 32, so both assertions fail.
+// (execSQLCapture / anyArgs are defined in incident_repository_test.go.)
+func TestRegistryRepository_Create_OmitsGeneratedColumn(t *testing.T) {
+	db, mock, sqlText := execSQLCapture(t)
+	defer db.Close()
+	repo := NewPostgresAISystemRepository(db)
+
+	mock.ExpectExec("INSERT INTO rbi_ai_system_registry").
+		WithArgs(anyArgs(31)...).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.Create(context.Background(), &AISystem{
+		OrgID:        "org-1",
+		SystemID:     "sys-1",
+		SystemName:   "n",
+		RiskCategory: RiskCategoryHigh,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.NotContains(t, *sqlText, "board_approval_required",
+		"registry INSERT must not write the GENERATED board_approval_required column")
+}
+
+// TestRegistryRepository_Update_OmitsGeneratedColumn is the UPDATE counterpart
+// (exactly 30 arguments; the SET clause must omit board_approval_required).
+func TestRegistryRepository_Update_OmitsGeneratedColumn(t *testing.T) {
+	db, mock, sqlText := execSQLCapture(t)
+	defer db.Close()
+	repo := NewPostgresAISystemRepository(db)
+
+	mock.ExpectExec("UPDATE rbi_ai_system_registry").
+		WithArgs(anyArgs(30)...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := repo.Update(context.Background(), &AISystem{
+		ID:           "id-1",
+		OrgID:        "org-1",
+		SystemID:     "sys-1",
+		SystemName:   "n",
+		RiskCategory: RiskCategoryHigh,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.NotContains(t, *sqlText, "board_approval_required",
+		"registry UPDATE must not write the GENERATED board_approval_required column")
+}

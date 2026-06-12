@@ -6,6 +6,8 @@ package orchestrator
 import (
 	"context"
 	"time"
+
+	sharedaudit "axonflow/platform/shared/audit"
 )
 
 // Override audit event types (ADR-044).
@@ -64,7 +66,10 @@ func (l *AuditLogger) LogOverrideEvent(ctx context.Context, eventType string, en
 		policyDetails["revoked_by"] = entry.RevokedBy
 	}
 
-	policyDecision := "override_lifecycle"
+	// Recognized non-verdict marker in the shared vocabulary (platform/shared/audit,
+	// #2638): an override grant/revoke is a lifecycle event, not a PEP verdict.
+	// Included in the migration-123 CHECK set so these rows persist.
+	policyDecision := sharedaudit.DecisionOverrideLifecycle
 
 	auditEntry := &AuditEntry{
 		ID:             generateAuditID(),

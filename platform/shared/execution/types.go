@@ -78,6 +78,11 @@ const (
 	ApprovalStatusPending  ApprovalStatus = "pending"
 	ApprovalStatusApproved ApprovalStatus = "approved"
 	ApprovalStatusRejected ApprovalStatus = "rejected"
+	// ApprovalStatusExpired is a terminal "not approved" state produced when a
+	// require_approval step times out (auto-expiry) rather than being explicitly
+	// reviewed. It is surfaced distinctly from a human reject so a timeout is
+	// never reported as a rejection (#2654).
+	ApprovalStatusExpired ApprovalStatus = "expired"
 )
 
 // ExecutionStatus is the unified status response for both MAP and WCP.

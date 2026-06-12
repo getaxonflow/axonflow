@@ -23,9 +23,10 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 
 	"axonflow/platform/agent"
+	sharedaudit "axonflow/platform/shared/audit"
 )
 
 // auditSearchCriteria is the normalized shape SearchAuditLogs matches against.
@@ -34,18 +35,17 @@ import (
 // breaking change to test callers while still letting the handler carry the
 // JSON tags it needs for request decoding.
 type auditSearchCriteria struct {
-	UserEmail   string
-	ClientID    string
-	TenantID    string
-	StartTime   time.Time
-	EndTime     time.Time
-	RequestType string
-	DecisionID  string
-	PolicyName  string
-	OverrideID  string
-	Action      string
-	Limit       int
-	Offset      int
+	UserEmail  string
+	ClientID   string
+	TenantID   string
+	StartTime  time.Time
+	EndTime    time.Time
+	DecisionID string
+	PolicyName string
+	OverrideID string
+	Action     string
+	Limit      int
+	Offset     int
 }
 
 // asAuditSearchCriteria is a best-effort adapter from the various anonymous
@@ -87,10 +87,6 @@ func asAuditSearchCriteria(criteria interface{}) (auditSearchCriteria, bool) {
 		case "EndTime":
 			if ts, ok := fv.Interface().(time.Time); ok {
 				out.EndTime = ts
-			}
-		case "RequestType":
-			if fv.Kind() == reflect.String {
-				out.RequestType = fv.String()
 			}
 		case "DecisionID":
 			if fv.Kind() == reflect.String {
@@ -357,6 +353,65 @@ func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRe
 	return entry
 }
 
+// LogBlockedMedia writes the canonical audit_logs row when the orchestrator
+// WITHHOLDS a request because media-governance analysis failed under the
+// fail-closed enforcement strategy (#2680). This deny ran BEFORE policy
+// evaluation (so there is no PolicyEvaluationResult), yet it is a terminal deny
+// the auditor must see — previously it only emitted a log.Printf before the 403,
+// leaving no audit row.
+//
+// The row is canonical like every other plane: verdict "blocked" + plane=media +
+// a fresh decision_id + the request's correlation_id (#2597 / #2611), so the
+// portal decisions/audit feed and the lineage exporters treat it uniformly. The
+// analysis failure reason is preserved (error_message + policy_details) for the
+// auditor; it is an operational analyzer error, never media content.
+func (l *AuditLogger) LogBlockedMedia(ctx context.Context, req OrchestratorRequest, mediaErr error) *AuditEntry {
+	if l == nil {
+		return nil
+	}
+
+	decisionID := generateDecisionID()
+	correlationID := correlationIDFromContext(ctx, req.RequestID)
+
+	reason := ""
+	if mediaErr != nil {
+		reason = mediaErr.Error()
+	}
+
+	entry := &AuditEntry{
+		ID:             generateAuditID(),
+		RequestID:      req.RequestID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         req.User.ID,
+		UserEmail:      req.User.Email,
+		UserRole:       req.User.Role,
+		ClientID:       req.Client.ID,
+		TenantID:       req.User.TenantID,
+		OrgID:          req.Client.OrgID,
+		RequestType:    req.RequestType,
+		Query:          req.Query,
+		QueryHash:      hashQuery(req.Query),
+		PolicyDecision: sharedaudit.DecisionBlocked,
+		PolicyDetails: map[string]interface{}{
+			"decision_id":      decisionID,
+			"correlation_id":   correlationID,
+			"plane":            agent.PlaneMedia,
+			"block_phase":      "media_analysis",
+			"enforcement":      "fail_closed",
+			"media_item_count": len(req.Media),
+			"reason":           reason,
+		},
+		ErrorMessage:    reason,
+		ComplianceFlags: l.detectComplianceFlags(req, nil),
+		DecisionID:      decisionID,
+		Plane:           agent.PlaneMedia,
+		CorrelationID:   correlationID,
+	}
+
+	l.enqueueEntry(entry)
+	return entry
+}
+
 // LogBlockedRequest logs a blocked request
 func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorRequest, 
 	policyResult *PolicyEvaluationResult) {
@@ -374,7 +429,7 @@ func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorReq
 		RequestType:   req.RequestType,
 		Query:         req.Query,
 		QueryHash:     hashQuery(req.Query),
-		PolicyDecision: "blocked",
+		PolicyDecision: sharedaudit.DecisionBlocked,
 		PolicyDetails: map[string]interface{}{
 			"applied_policies":  policyResult.AppliedPolicies,
 			"risk_score":        policyResult.RiskScore,
@@ -403,7 +458,7 @@ func (l *AuditLogger) LogFailedRequest(ctx context.Context, req OrchestratorRequ
 		RequestType:   req.RequestType,
 		Query:         req.Query,
 		QueryHash:     hashQuery(req.Query),
-		PolicyDecision: "error",
+		PolicyDecision: sharedaudit.DecisionError,
 		ErrorMessage:   err.Error(),
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 	}
@@ -427,6 +482,25 @@ type WorkflowAuditEntry struct {
 	UserEmail    string // v7.4.1+: reviewer email for step_approved/step_rejected
 	UserRole     string // v7.4.1+: reviewer role
 	Metadata     map[string]interface{}
+}
+
+// workflowAuditDecision maps a workflow-control decision (WorkflowAuditEntry.Decision:
+// allow | block | require_approval) onto the canonical audit_logs.policy_decision
+// vocabulary (platform/shared/audit, #2638). require_approval → needs_approval —
+// NOT the off-set "pending_approval" this writer historically emitted, which is
+// neither canonical nor accepted by the migration-123 CHECK (it would have made
+// every step_gate row fail to persist once the constraint lands). Any other value
+// (the common "allow" + an empty/unknown step decision) maps to allowed, matching
+// the pre-existing default.
+func workflowAuditDecision(decision string) string {
+	switch decision {
+	case "block":
+		return sharedaudit.DecisionBlocked
+	case "require_approval":
+		return sharedaudit.DecisionNeedsApproval
+	default:
+		return sharedaudit.DecisionAllowed
+	}
 }
 
 // LogWorkflowOperation logs a workflow control plane operation
@@ -459,16 +533,8 @@ func (l *AuditLogger) LogWorkflowOperation(ctx context.Context, entry *WorkflowA
 		}
 	}
 
-	// Map workflow decision to policy decision format
-	var policyDecision string
-	switch entry.Decision {
-	case "block":
-		policyDecision = "blocked"
-	case "require_approval":
-		policyDecision = "pending_approval"
-	default:
-		policyDecision = "allowed"
-	}
+	// Map the workflow-control decision onto the canonical audit vocabulary.
+	policyDecision := workflowAuditDecision(entry.Decision)
 
 	auditEntry := &AuditEntry{
 		ID:             generateAuditID(),
@@ -529,10 +595,10 @@ func (l *AuditLogger) LogPlanOperation(ctx context.Context, entry *PlanAuditEntr
 		}
 	}
 
-	// Map plan status to policy decision format
-	policyDecision := "allowed"
+	// Map plan status to the canonical audit vocabulary (platform/shared/audit).
+	policyDecision := sharedaudit.DecisionAllowed
 	if entry.Operation == "failed" {
-		policyDecision = "error"
+		policyDecision = sharedaudit.DecisionError
 	}
 
 	auditEntry := &AuditEntry{
@@ -609,9 +675,9 @@ func (l *AuditLogger) LogToolCallAudit(ctx context.Context, entry *ToolCallAudit
 		policyDetails["error_message"] = entry.ErrorMessage
 	}
 
-	policyDecision := "allowed"
+	policyDecision := sharedaudit.DecisionAllowed
 	if entry.Success != nil && !*entry.Success {
-		policyDecision = "error"
+		policyDecision = sharedaudit.DecisionError
 	}
 
 	auditEntry := &AuditEntry{
@@ -704,11 +770,6 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 			args = append(args, searchReq.EndTime)
 			argIndex++
 		}
-		if searchReq.RequestType != "" {
-			query += fmt.Sprintf(" AND request_type = $%d", argIndex)
-			args = append(args, searchReq.RequestType)
-			argIndex++
-		}
 		// Plugin Batch 1 filters — decision_id + policy_name + override_id.
 		// policy_details is JSONB; filters use ->> operator against the same
 		// field the writers populate. Indexes on audit_logs per migration 010.
@@ -739,8 +800,16 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 			argIndex++
 		}
 		if searchReq.Action != "" {
-			query += fmt.Sprintf(" AND policy_decision = $%d", argIndex)
-			args = append(args, searchReq.Action)
+			// Canonical-first action filter (#2636/#2653; supersedes PR #2637).
+			// Normalize the filter input to its canonical verdict, then expand to
+			// every DB spelling that verdict covers (sharedaudit.Spellings) so the
+			// filter matches BOTH the canonical value every writer emits today
+			// AND any legacy/historical row. This replaces #2637's
+			// expandActionValues, which keyed on the frontend's phantom display
+			// labels (logged/alerted/modified) and codified the divergence; the
+			// portal now sends the canonical verdict directly.
+			query += fmt.Sprintf(" AND policy_decision = ANY($%d)", argIndex)
+			args = append(args, pq.Array(sharedaudit.Spellings(sharedaudit.Normalize(searchReq.Action))))
 		}
 
 		query += " ORDER BY timestamp DESC"

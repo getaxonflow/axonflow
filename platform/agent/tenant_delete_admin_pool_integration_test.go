@@ -85,7 +85,7 @@ func td2397Seed(t *testing.T, master *sql.DB) (tenantID string) {
 		if _, err := master.Exec(`
 			INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_role,
 				client_id, tenant_id, request_type, query, query_hash, policy_decision)
-			VALUES ($1, $2, NOW(), 1, $3, 'test', 'client-x', $4, 'test', 'q', 'h', 'allow')`,
+			VALUES ($1, $2, NOW(), 1, $3, 'test', 'client-x', $4, 'test', 'q', 'h', 'allowed')`,
 			fmt.Sprintf("audit-2397-%d-%d", time.Now().UnixNano(), i),
 			fmt.Sprintf("req-2397-%d-%d", time.Now().UnixNano(), i),
 			td2397TestEmail, tenantID); err != nil {

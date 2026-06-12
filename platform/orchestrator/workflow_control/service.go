@@ -525,7 +525,7 @@ func buildCachedResponse(step *WorkflowStep, workflowID, baseURL string, include
 	decision := step.Decision
 	reason := step.DecisionReason
 
-	// Resolve approval state: approved require_approval → allow, rejected → block
+	// Resolve approval state: approved require_approval → allow, rejected/expired → block
 	if step.Decision == GateDecisionRequireApproval && step.ApprovalStatus != nil {
 		switch *step.ApprovalStatus {
 		case ApprovalStatusApproved:
@@ -534,6 +534,11 @@ func buildCachedResponse(step *WorkflowStep, workflowID, baseURL string, include
 		case ApprovalStatusRejected:
 			decision = GateDecisionBlock
 			reason = "Previously rejected: " + step.DecisionReason
+		case ApprovalStatusExpired:
+			// Auto-timeout — terminal not-approved, blocked like a reject but
+			// distinct so it is never reported as a human rejection (#2654).
+			decision = GateDecisionBlock
+			reason = "Previously expired (approval timed out): " + step.DecisionReason
 		}
 	}
 
@@ -1116,6 +1121,9 @@ func (s *Service) ResumeWorkflow(ctx context.Context, workflowID, tenantID, orgI
 			}
 			if *lastStep.ApprovalStatus == ApprovalStatusRejected {
 				return fmt.Errorf("workflow step %s was rejected", lastStep.StepID)
+			}
+			if *lastStep.ApprovalStatus == ApprovalStatusExpired {
+				return fmt.Errorf("workflow step %s expired (approval timed out)", lastStep.StepID)
 			}
 		}
 	}

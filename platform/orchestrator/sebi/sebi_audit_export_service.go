@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"axonflow/platform/orchestrator/cloudstorage"
+	"axonflow/platform/shared/audit"
 	logutil "axonflow/platform/shared/logger"
 )
 
@@ -623,7 +624,7 @@ func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, te
 
 		c.DecisionType = decisionType
 		c.DecisionOutcome = mapDecisionOutcome(policyDecision)
-		c.RequiresReview = policyDecision == "needs_approval" || policyDecision == "require_approval"
+		c.RequiresReview = requiresReview(policyDecision)
 		c.ModelID = modelID
 		if policiesEvaluated != "" && policiesEvaluated != "null" {
 			c.PoliciesEvaluated = policiesEvaluated
@@ -685,21 +686,44 @@ func groupSEBIDecisionChain(records []SEBIDecisionChainRecord) []SEBIDecisionCha
 	return groups
 }
 
-// mapDecisionOutcome translates a canonical audit_logs policy_decision verdict
-// (allow|deny|needs_approval|require_approval|error) into the SEBI decision
-// outcome vocabulary used by regulator-facing exports. Unknown verdicts pass
-// through unchanged so a new verdict is never silently dropped.
+// mapDecisionOutcome translates an audit_logs policy_decision verdict into the
+// SEBI decision-outcome vocabulary used by regulator-facing exports. The raw
+// value is run through the shared normalizer (audit.Normalize) FIRST so every
+// writer spelling and era converges before mapping — critically, the canonical
+// "allowed"/"blocked" that all forward writers now emit map to approved/blocked,
+// where the old present-tense switch ("allow"/"deny") let them fall through to
+// the raw value and leak an un-mapped "allowed" into a regulator export.
+// needs_approval is flagged as requires-review ("pending_review"), never
+// silently downgraded to approved.
 func mapDecisionOutcome(verdict string) string {
-	switch verdict {
-	case "allow":
+	switch audit.Normalize(verdict) {
+	case audit.DecisionAllowed:
 		return "approved"
-	case "deny":
+	case audit.DecisionBlocked:
 		return "blocked"
-	case "needs_approval", "require_approval":
+	case audit.DecisionRedacted:
+		return "redacted"
+	case audit.DecisionNeedsApproval:
 		return "pending_review"
+	case audit.DecisionError:
+		return "error"
 	default:
-		return verdict
+		// Recognized non-verdict marker (override_lifecycle): surface it as-is
+		// rather than a distorted decision outcome. Normalize guarantees an
+		// unrecognized value can never reach here as "approved".
+		return audit.Normalize(verdict)
 	}
+}
+
+// requiresReview reports whether a raw policy_decision is a human-deferred
+// (needs-approval) verdict. It consumes the shared normalizer so it stays in
+// lock-step with mapDecisionOutcome — a raw string compare against
+// "needs_approval"/"require_approval" would miss legacy/defensive spellings
+// (e.g. pending_approval), which mapDecisionOutcome maps to "pending_review"
+// while RequiresReview reported false, telling a regulator a human-deferred
+// decision needed no review (#2636/#2653).
+func requiresReview(policyDecision string) bool {
+	return audit.Normalize(policyDecision) == audit.DecisionNeedsApproval
 }
 
 func (s *SEBIAuditExportServiceImpl) exportHITLOversight(ctx context.Context, tenantID string, req *SEBIAuditExportRequest) ([]SEBIHITLRecord, int, error) {

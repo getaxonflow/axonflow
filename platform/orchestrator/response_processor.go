@@ -24,6 +24,7 @@ import (
 
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/indonesia"
+	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -39,14 +40,17 @@ type ResponseProcessor struct {
 	useSharedEngine     bool // Use shared policy engine for PII detection/redaction
 }
 
-// Canonical response-plane verdicts (#2626). These mirror the audit_logs
-// policy_decision vocabulary the orchestrator already writes ("allowed",
-// "redacted", "blocked") so the portal decisions/audit feed and the lineage
-// exporters classify response-plane rows identically to every other row.
+// Canonical response-plane verdicts (#2626). Now ALIASES onto the single shared
+// vocabulary in platform/shared/audit (#2638 S-WRITERS const-swap) — the same
+// audit_logs.policy_decision set every plane converges on (enforced by the
+// migration-123 CHECK), so the portal decisions/audit feed and the lineage
+// exporters classify response-plane rows identically to every other row. The
+// response-plane names are retained; the VALUES come from the shared package so
+// they can never drift.
 const (
-	responseVerdictAllowed  = "allowed"
-	responseVerdictRedacted = "redacted"
-	responseVerdictBlocked  = "blocked"
+	responseVerdictAllowed  = sharedaudit.DecisionAllowed
+	responseVerdictRedacted = sharedaudit.DecisionRedacted
+	responseVerdictBlocked  = sharedaudit.DecisionBlocked
 )
 
 // RedactionInfo contains information about redactions made

@@ -14,6 +14,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"testing"
 	"time"
 
@@ -76,14 +77,30 @@ func expectRetentionPass(mock sqlmock.Sqlmock, enforce bool, rowsPerTable int64)
 			mock.ExpectExec("DELETE FROM " + rt.table + " WHERE " + where).
 				WithArgs(cutoffArg{days}).
 				WillReturnResult(sqlmock.NewResult(0, rowsPerTable))
+			// #2661: every enforce pass over a (positive-default) data_type
+			// advances last_cleanup_at for that data_type's config rows.
+			expectAdvanceLastCleanup(mock, rt.dataType)
 		} else {
 			mock.ExpectQuery("SELECT COUNT(*) FROM " + rt.table + " WHERE " + where).
 				WithArgs(cutoffArg{days}).
 				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(rowsPerTable))
+			// Dry-run NEVER advances last_cleanup_at — no UPDATE is programmed,
+			// so an unexpected one would fail the ordered mock.
 		}
 		total += rowsPerTable
 	}
 	return total
+}
+
+// expectAdvanceLastCleanup programs the #2661 data_type-scoped UPDATE the
+// executor issues after a successful enforce prune (positive default window).
+// The WHERE is data_type-only (not org-scoped): the schema's
+// per-(org,data_type) grain expressed in a single statement because the two
+// prune buckets together cover every org for the data_type.
+func expectAdvanceLastCleanup(mock sqlmock.Sqlmock, dataType string) {
+	mock.ExpectExec("UPDATE audit_retention_config SET last_cleanup_at = CURRENT_TIMESTAMP WHERE data_type = $1").
+		WithArgs(dataType).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 }
 
 func newRetentionMock(t *testing.T) (sqlmock.Sqlmock, *AuditCleanupService, func()) {
@@ -199,6 +216,8 @@ func TestRetention_PerOrgOverride(t *testing.T) {
 				WillReturnResult(sqlmock.NewResult(0, 1))
 			want++
 		}
+		// #2661: data_type-scoped last_cleanup_at advance after the prune(s).
+		expectAdvanceLastCleanup(mock, rt.dataType)
 	}
 
 	results, err := svc.CleanupRetentionGovernedAudits(context.Background())
@@ -266,6 +285,8 @@ func TestRetention_SubFloorOverrideClampedToFloor(t *testing.T) {
 				WithArgs(cutoffArg{days}).
 				WillReturnResult(sqlmock.NewResult(0, 0))
 		}
+		// #2661: data_type-scoped last_cleanup_at advance after the prune(s).
+		expectAdvanceLastCleanup(mock, rt.dataType)
 	}
 
 	if _, err := svc.CleanupRetentionGovernedAudits(context.Background()); err != nil {
@@ -359,5 +380,138 @@ func TestRetention_EnforceFlagFromEnv(t *testing.T) {
 		if auditRetentionEnforceEnabled() {
 			t.Errorf("%q should NOT enable enforce", v)
 		}
+	}
+}
+
+// TestRetention_EnforceAdvancesLastCleanup is the #2661 red-on-revert guard for
+// the common path: a no-override enforce pass must, for every governed table,
+// issue exactly one data_type-scoped
+//
+//	UPDATE audit_retention_config SET last_cleanup_at = CURRENT_TIMESTAMP WHERE data_type = $1
+//
+// with the table's data_type as the arg (the per-(org,data_type) grain). Remove
+// the advanceLastCleanup call and the programmed UPDATEs go unfulfilled → red.
+// The arg matcher also catches a wrong grain (e.g. a blanket no-WHERE update).
+func TestRetention_EnforceAdvancesLastCleanup(t *testing.T) {
+	mock, svc, done := newRetentionMock(t)
+	defer done()
+	svc.SetRetentionEnforce(true)
+
+	_ = expectRetentionPass(mock, true /* enforce */, 0)
+
+	if _, err := svc.CleanupRetentionGovernedAudits(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+// TestRetention_DryRunDoesNotAdvanceLastCleanup pins the other half of #2661: a
+// dry-run pass must NOT advance last_cleanup_at (no UPDATE at all), because
+// nothing was actually pruned. expectRetentionPass programs only the COUNTs; an
+// UPDATE issued in dry-run would be an unexpected statement and fail the mock.
+func TestRetention_DryRunDoesNotAdvanceLastCleanup(t *testing.T) {
+	mock, svc, done := newRetentionMock(t)
+	defer done()
+	// enforce defaults to false.
+
+	_ = expectRetentionPass(mock, false /* enforce */, 3)
+
+	results, err := svc.CleanupRetentionGovernedAudits(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, r := range results {
+		if r.Enforced {
+			t.Errorf("%s: expected dry-run", r.Table)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations (an UPDATE in dry-run would show here): %v", err)
+	}
+}
+
+// TestRetention_NoDefaultScopedAdvance exercises the pathological branch: when a
+// data_type has a non-positive system default (a 0/negative row in
+// audit_retention_defaults) the default bucket is skipped, so only orgs with a
+// positive active override are pruned — and last_cleanup_at must advance ONLY
+// for those org rows via the org-scoped UPDATE, never the blanket data_type
+// update. Red-on-revert: drop the scoped branch and the expected UPDATE goes
+// unfulfilled; widen it to the data_type-only form and the arg matcher fails.
+func TestRetention_NoDefaultScopedAdvance(t *testing.T) {
+	mock, svc, done := newRetentionMock(t)
+	defer done()
+	svc.SetRetentionEnforce(true)
+
+	const overrideOrg = "org-with-override"
+	const overrideDays = 100 // positive → effDays = max(100, 0) = 100 > 0 → pruned
+
+	for _, rt := range retentionGovernedTables {
+		// System default is ZERO for every data_type → default bucket skipped.
+		mock.ExpectQuery("SELECT retention_days FROM audit_retention_defaults WHERE data_type = $1").
+			WithArgs(rt.dataType).
+			WillReturnRows(sqlmock.NewRows([]string{"retention_days"}).AddRow(0))
+
+		overrideRows := sqlmock.NewRows([]string{"org_id", "retention_days"})
+		if rt.dataType == "decision_chain" {
+			overrideRows.AddRow(overrideOrg, overrideDays)
+		}
+		mock.ExpectQuery("SELECT org_id, retention_days FROM audit_retention_config WHERE data_type = $1 AND is_active = true").
+			WithArgs(rt.dataType).
+			WillReturnRows(overrideRows)
+
+		if rt.dataType == "decision_chain" {
+			// Only the override org is pruned (no default bucket).
+			mock.ExpectExec("DELETE FROM decision_chain WHERE org_id = $1 AND created_at < $2").
+				WithArgs(overrideOrg, cutoffArg{overrideDays}).
+				WillReturnResult(sqlmock.NewResult(0, 2))
+			// Org-scoped advance (NOT the blanket data_type form).
+			mock.ExpectExec("UPDATE audit_retention_config SET last_cleanup_at = CURRENT_TIMESTAMP WHERE data_type = $1 AND org_id = ANY($2)").
+				WithArgs("decision_chain", sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+		}
+		// Non-decision_chain tables: no default window, no override → nothing
+		// pruned and NO last_cleanup_at advance (no UPDATE programmed).
+	}
+
+	if _, err := svc.CleanupRetentionGovernedAudits(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+// TestRetention_AdvanceToleratesMissingConfigTable asserts a self-hosted build
+// without migration 026 (audit_retention_config absent) degrades gracefully: a
+// 42P01 on the advance UPDATE is swallowed, not surfaced as a pass error.
+func TestRetention_AdvanceToleratesMissingConfigTable(t *testing.T) {
+	mock, svc, done := newRetentionMock(t)
+	defer done()
+	svc.SetRetentionEnforce(true)
+
+	for _, rt := range retentionGovernedTables {
+		days := realDefaultDays(rt.dataType)
+		mock.ExpectQuery("SELECT retention_days FROM audit_retention_defaults WHERE data_type = $1").
+			WithArgs(rt.dataType).
+			WillReturnRows(sqlmock.NewRows([]string{"retention_days"}).AddRow(days))
+		mock.ExpectQuery("SELECT org_id, retention_days FROM audit_retention_config WHERE data_type = $1 AND is_active = true").
+			WithArgs(rt.dataType).
+			WillReturnRows(sqlmock.NewRows([]string{"org_id", "retention_days"}))
+		mock.ExpectExec("DELETE FROM " + rt.table + " WHERE " + rt.tsColumn + " < $1").
+			WithArgs(cutoffArg{days}).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		// The advance UPDATE errors with a relation-does-not-exist — swallowed.
+		mock.ExpectExec("UPDATE audit_retention_config SET last_cleanup_at = CURRENT_TIMESTAMP WHERE data_type = $1").
+			WithArgs(rt.dataType).
+			WillReturnError(fmt.Errorf(`pq: relation "audit_retention_config" does not exist (SQLSTATE 42P01)`))
+	}
+
+	if _, err := svc.CleanupRetentionGovernedAudits(context.Background()); err != nil {
+		t.Fatalf("missing audit_retention_config should not fail the pass: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
 	}
 }

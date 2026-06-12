@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"axonflow/platform/shared/version"
 )
 
 // TestSDKCompatibilityPinnedToReleaseTrain pins the orchestrator's SDK
@@ -152,5 +154,38 @@ func TestPluginFloorCommentAttribution(t *testing.T) {
 
 	if strings.Contains(pluginBlock, "alongside the SDK v8.0.0 release-train") {
 		t.Errorf("getPluginCompatibility() comment must NOT say 'alongside the SDK v8.0.0 release-train' — that is historically false (plugin tags shipped at v7.9.0 release-train, #2102). Got:\n%s", pluginBlock)
+	}
+}
+
+// TestGetPlatformVersionBakedWinsOverEnv is the #2662 anti-spoof guard at the
+// orchestrator /health reader level: a version baked into the binary must win
+// over a conflicting AXONFLOW_VERSION env var, so /health reports the true
+// shipped binary version and cannot be overridden at runtime.
+func TestGetPlatformVersionBakedWinsOverEnv(t *testing.T) {
+	prev := version.Version
+	version.Version = "8.7.0"
+	t.Cleanup(func() { version.Version = prev })
+	t.Setenv("AXONFLOW_VERSION", "1.2.3-spoofed")
+
+	if got := getPlatformVersion(); got != "8.7.0" {
+		t.Errorf("getPlatformVersion() = %q, want baked 8.7.0 (env must NOT win)", got)
+	}
+}
+
+// TestGetPlatformVersionEnvFallbackWhenUnbaked covers the dev path: with no
+// baked version, the env var is used; an invalid env value falls to the default.
+func TestGetPlatformVersionEnvFallbackWhenUnbaked(t *testing.T) {
+	prev := version.Version
+	version.Version = ""
+	t.Cleanup(func() { version.Version = prev })
+
+	t.Setenv("AXONFLOW_VERSION", "4.8.0")
+	if got := getPlatformVersion(); got != "4.8.0" {
+		t.Errorf("getPlatformVersion() = %q, want env fallback 4.8.0", got)
+	}
+
+	t.Setenv("AXONFLOW_VERSION", "not-a-semver")
+	if got := getPlatformVersion(); got != "1.0.0" {
+		t.Errorf("getPlatformVersion() = %q, want default 1.0.0 for invalid env", got)
 	}
 }

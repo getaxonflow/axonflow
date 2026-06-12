@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     policies_matched JSONB DEFAULT '[]',
 
     -- Approval workflow (if require_approval)
-    approval_status VARCHAR(50),  -- null, pending, approved, rejected
+    approval_status VARCHAR(50),  -- null, pending, approved, rejected, expired (auto-timeout, #2654)
     approved_by VARCHAR(255),
     approved_at TIMESTAMP WITH TIME ZONE,
 
@@ -105,7 +105,7 @@ COMMENT ON TABLE workflow_steps IS 'Tracks gate decisions for each step in a wor
 COMMENT ON COLUMN workflows.source IS 'External orchestrator: langgraph, langchain, crewai, or external';
 COMMENT ON COLUMN workflows.status IS 'Workflow state: in_progress, completed, aborted, failed';
 COMMENT ON COLUMN workflow_steps.decision IS 'Gate decision: allow (proceed), block (stop), require_approval (HITL)';
-COMMENT ON COLUMN workflow_steps.approval_status IS 'Approval state when decision=require_approval: pending, approved, rejected';
+COMMENT ON COLUMN workflow_steps.approval_status IS 'Approval state when decision=require_approval: pending, approved, rejected, expired (auto-timeout)';
 
 -- Log migration
 DO $$

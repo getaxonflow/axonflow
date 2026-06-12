@@ -32,6 +32,7 @@ import (
 	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/orchestrator/cost"
+	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 
 	"github.com/google/uuid"
@@ -466,7 +467,25 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		Enabled:  true,
 	}
 
+	// Canonical audit identity, built once and threaded into every terminal
+	// verdict + early-return deny below (#2642). User fields are filled in after
+	// ResolveUser; the deny paths that fire BEFORE resolution (client disabled /
+	// invalid token) fall back to writeDecisionAuditLog's NOT-NULL placeholders.
+	// plane is stamped PlaneGateway inside recordGatewayPreCheckAudit.
+	precheckStage := decisionStageForPreCheck(req)
+	preCheckAudit := decisionAuditInput{
+		clientID: effectiveClientID,
+		query:    req.Query,
+		// correlationID groups this decision with the PEP's downstream hops when it
+		// propagated a W3C traceparent; absent → "" → NULL → singleton chain.
+		correlationID: traceIDFromHeader(r.Header.Get("traceparent")),
+	}
+
 	if !client.Enabled {
+		// Defense-in-depth: Enabled is hard-set true above today, so this branch is
+		// currently unreachable — but if client provisioning ever gates Enabled, the
+		// refusal must still be auditable. Canonical row first, then deny (#2642).
+		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"client_disabled"}, []string{"Client disabled"}, preCheckAudit)
 		sendGatewayError(w, "Client disabled", http.StatusForbidden)
 		return
 	}
@@ -479,13 +498,26 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	user, userErr := ResolveUser(authResult, req.UserToken)
 	if userErr != nil {
 		log.Printf("❌ [Pre-check] User resolution failed: %v", userErr.Message)
+		// Audit the refusal (#2642). The user token never resolved, so the row
+		// carries the writer's user placeholders; org/tenant/client identity is the
+		// auth-derived context. Reason is FIXED — no token material on the row.
+		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"user_token_invalid"}, []string{"user token validation failed"}, preCheckAudit)
 		sendGatewayError(w, userErr.Message, userErr.HTTPStatus)
 		return
 	}
 
+	// Enrich the audit identity now that the user is resolved — every verdict from
+	// here on records the real user (#2642).
+	preCheckAudit.userEmail = user.Email
+	preCheckAudit.userRole = user.Role
+	preCheckAudit.userID = user.ID
+
 	// Verify tenant isolation
 	if user.TenantID != client.TenantID {
 		log.Printf("❌ [Pre-check] Tenant mismatch: user=%s, client=%s", user.TenantID, client.TenantID)
+		// Security-relevant deny: a token whose tenant doesn't match the client it
+		// was presented with. Auditable against the client's asserted tenant (#2642).
+		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"tenant_mismatch"}, []string{"tenant mismatch"}, preCheckAudit)
 		sendGatewayError(w, "Tenant mismatch", http.StatusForbidden)
 		return
 	}
@@ -504,6 +536,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
 				w.Header().Set("Retry-After", retryAfter)
 			}
+			// Circuit-breaker is a (transient) deny — the request WAS refused, so it
+			// is auditable as blocked; the reason makes the transient nature clear (#2642).
+			recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"circuit_breaker"}, []string{string(cbResult.Reason)}, preCheckAudit)
 			sendGatewayError(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable)
 			return
 		}
@@ -522,7 +557,8 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			BlockReason: killSwitchResult.Reason,
 			ExpiresAt:   time.Now(),
 		}
-		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), killSwitchResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, killSwitchResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{killSwitchResult.Reason}, preCheckAudit)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -552,7 +588,8 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			BlockReason: indonesiaPIIResult.Reason,
 			ExpiresAt:   time.Now(),
 		}
-		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), indonesiaPIIResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, indonesiaPIIResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{indonesiaPIIResult.Reason}, preCheckAudit)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -584,7 +621,8 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			BlockReason: piiResult.Reason,
 			ExpiresAt:   time.Now(),
 		}
-		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), piiResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, piiResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{piiResult.Reason}, preCheckAudit)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -704,7 +742,8 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 					BudgetInfo:  budgetInfo,
 					ExpiresAt:   time.Now(),
 				}
-				response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), budgetDecision.Message, response.Policies, time.Since(startTime).Milliseconds())
+				response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, budgetDecision.Message, response.Policies, time.Since(startTime).Milliseconds())
+				recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{budgetDecision.Message}, preCheckAudit)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
 				_ = json.NewEncoder(w).Encode(response)
@@ -811,6 +850,16 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		gatewayAuditQueuedTotal.WithLabelValues("gateway_context", "success").Inc()
 	}
 
+	// Canonical plane=gateway audit_logs row (#2642), IN ADDITION to the
+	// gateway_contexts satellite above. This is the row the portal decisions feed
+	// (orchestrator GET /api/v1/decisions) reads: a redaction lands as 'redacted'
+	// (DISTINCT from a clean 'allowed' — the split-brain this session closes), a
+	// policy-engine block as 'blocked', a HITL hold as 'needs_approval'. Keyed by
+	// the same contextID as the satellite so the two records join.
+	recordGatewayPreCheckAudit(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
+		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
+		response.Policies, reasonsFromPreCheck(response, policyResult), preCheckAudit)
+
 	// Record metrics
 	latencyMs := time.Since(startTime).Milliseconds()
 	gatewayPreCheckDuration.Observe(float64(latencyMs))
@@ -830,7 +879,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			DecisionID: contextID,
 			OrgID:      client.OrgID,
 			TenantID:   client.TenantID,
-			Stage:      decisionStageForPreCheck(req),
+			Stage:      precheckStage,
 			Verdict:    verdictFromPreCheck(response, requiresHITL),
 			PolicyIDs:  response.Policies,
 			LatencyMs:  latencyMs,
@@ -852,6 +901,88 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("❌ [Pre-check] Failed to encode response: %v", err)
 	}
+}
+
+// Canonical audit_logs.policy_decision vocabulary for the Gateway pre-check
+// plane (#2642 / ADR-058 bucket D). These are now ALIASES onto the single shared
+// vocabulary in platform/shared/audit (#2638 S-WRITERS const-swap) — the same
+// past-tense set every plane converges on and which the migration-123 CHECK
+// enforces. The Gateway plane needs all four values for a reason specific to
+// THIS hole:
+//
+//  1. A redaction must be DISTINGUISHABLE from a clean allow — the legacy
+//     allow|deny wire set has no redaction value and would collapse a redacted
+//     pre-check to "allow", the exact split-brain #2642 closed.
+//  2. The portal reader (normalizeAuditAction, customer-portal-ui/lib/api.ts)
+//     maps allowed→Allowed, blocked→Blocked, redacted→Modified but falls back to
+//     "Logged" for the legacy allow/deny — so the canonical past-tense values
+//     are the ones that render correctly in the feed.
+//
+// The Gateway-plane names are retained (provenance + call-site readability); the
+// VALUES come from the shared package so they can never drift. needs_approval is
+// the HITL outcome; its portal-reader alignment is the frontend slice #2636.
+const (
+	gatewayAuditAllowed       = sharedaudit.DecisionAllowed
+	gatewayAuditBlocked       = sharedaudit.DecisionBlocked
+	gatewayAuditRedacted      = sharedaudit.DecisionRedacted
+	gatewayAuditNeedsApproval = sharedaudit.DecisionNeedsApproval
+)
+
+// gatewayPreCheckAuditVerdict maps a terminal pre-check outcome to the canonical
+// audit verdict. HITL takes precedence over a hard block (the request is pending
+// human approval, not refused), and a block takes precedence over redaction.
+// requiresHITL is passed separately from blocked so HITL maps to needs_approval
+// rather than the blocked label even though isBlocked = blocked || requiresHITL
+// at the call site.
+func gatewayPreCheckAuditVerdict(blocked, requiresHITL, requiresRedaction bool) string {
+	switch {
+	case requiresHITL:
+		return gatewayAuditNeedsApproval
+	case blocked:
+		return gatewayAuditBlocked
+	case requiresRedaction:
+		return gatewayAuditRedacted
+	default:
+		return gatewayAuditAllowed
+	}
+}
+
+// recordGatewayPreCheckAudit writes the canonical plane=gateway audit_logs
+// decision row for a pre-check terminal verdict or early-return deny, IN ADDITION
+// to the gateway_contexts satellite (which stays the detailed pre-half record,
+// queueGatewayContext). Before #2642 the pre-check persisted ONLY to
+// gateway_contexts (approved = !Blocked), which the portal's decisions feed never
+// reads — so every redaction collapsed to approved=true (indistinguishable from a
+// clean allow) and every early-return deny (kill-switch, circuit-breaker, PII
+// block, budget, tenant mismatch, invalid token) wrote no portal-visible row at
+// all. This routes the verdict onto the SAME audit_logs surface /api/v1/decide and
+// the MCP planes use, keyed by contextID, so the orchestrator GET /api/v1/decisions
+// resolves it.
+//
+// It reuses writeDecisionAuditLog — the DB half of recordDecideDecision — rather
+// than recordDecideDecision itself BECAUSE the Gateway handler already emits its
+// OTel decision span via the existing tracer path (recordPreCheckDecision and the
+// inline tracer call at the main exit); routing through recordDecideDecision would
+// double-emit that span. The OTel span's three-valued telemetry verdict
+// (allow|deny|needs_approval, verdictFromPreCheck) is a SEPARATE, deliberately
+// unchanged contract from this past-tense audit vocabulary.
+//
+// Fail posture — BEST-EFFORT / fail-open on the WRITE only. The deny verdict is
+// ALREADY enforced before this is called (the PEP holds the block; the caller is
+// refused regardless of whether the row persists), so a DB hiccup must never turn
+// an enforced block into a 500 — writeDecisionAuditLog logs and returns on error.
+// This matches every merged canonical writer (#2630 recordDecideDecision /
+// writeDecisionAuditLog). Durability for the security-relevant pre-half lives in
+// the gateway_contexts satellite, which writes through the retry + fallback-file
+// AuditQueue (queueGatewayContext). Net: defense in depth — durable satellite +
+// best-effort canonical row — identical to the other planes.
+func recordGatewayPreCheckAudit(ctx context.Context, contextID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, audit decisionAuditInput) {
+	audit.plane = PlaneGateway
+	// reqContext/contextTruncated are nil/false: the Gateway pre-check does not
+	// canonicalize req.Context onto the audit row (that SIEM-join enrichment is a
+	// Decision-API feature, #2509). The verdict, policies and reasons are the
+	// audit-completeness payload this session guarantees.
+	writeDecisionAuditLog(ctx, usageDB, contextID, orgID, tenantID, stage, verdict, policyIDs, reasons, nil, false, audit)
 }
 
 // recordPreCheckDecision emits the OTel decision span for an
@@ -1103,7 +1234,20 @@ func storeGatewayContext(db *sql.DB, contextID, clientID string, req PreCheckReq
 	return err
 }
 
-// validateGatewayContext checks if context exists and is not expired
+// validateGatewayContext checks if context exists and is not expired.
+//
+// #2642 sibling finding #4: this deliberately SELECTs only client_id + expires_at,
+// NOT gateway_contexts.approved / block_reason. That is intentional, not a missed
+// read. validateGatewayContext gates the SECOND gateway step (POST /api/audit/llm-call)
+// purely on identity binding (the same client that pre-checked) + expiry — it is a
+// replay/binding guard, not a re-adjudication of the verdict. The authoritative,
+// portal-visible decision record is now the canonical plane=gateway audit_logs row
+// written by recordGatewayPreCheckAudit at pre-check time; gateway_contexts.approved
+// remains as satellite detail for forensic joins. Re-deriving block from
+// `approved` here would also be wrong: a pre-check that returned approved=false
+// (blocked/HITL) never proceeds to the audit step anyway, so there is no second
+// request to gate. Wiring the column would change behavior with no decision it
+// could correctly make — hence documented-as-superseded rather than read.
 func validateGatewayContext(db *sql.DB, contextID, clientID string) (bool, error) {
 	var expiresAt time.Time
 	var storedClientID string

@@ -489,7 +489,13 @@ func (s *AuditCleanupService) CleanupRetentionGovernedAudits(ctx context.Context
 		var tableRows int64
 
 		// Per-org overrides — only meaningful for org-scoped tables.
+		// overrideOrgs is every override org (used to EXCLUDE them from the
+		// default bucket, even when skipped, so their data is never
+		// over-deleted). prunedOverrideOrgs is the subset this pass actually
+		// pruned — used to advance last_cleanup_at at the right (org, data_type)
+		// grain in the pathological no-default case (see advanceLastCleanup).
 		overrideOrgs := make([]string, 0, len(overrides))
+		prunedOverrideOrgs := make([]string, 0, len(overrides))
 		if rt.orgColumn != "" {
 			for orgID, days := range overrides {
 				overrideOrgs = append(overrideOrgs, orgID)
@@ -523,6 +529,7 @@ func (s *AuditCleanupService) CleanupRetentionGovernedAudits(ctx context.Context
 					return results, fmt.Errorf("%s prune (org=%s): %w", rt.table, orgID, err)
 				}
 				tableRows += n
+				prunedOverrideOrgs = append(prunedOverrideOrgs, orgID)
 			}
 		} else if len(overrides) > 0 {
 			// gateway_contexts has no org column, so per-org overrides cannot be
@@ -550,6 +557,20 @@ func (s *AuditCleanupService) CleanupRetentionGovernedAudits(ctx context.Context
 				return results, fmt.Errorf("%s prune (default): %w", rt.table, err)
 			}
 			tableRows += n
+		}
+
+		// #2661: advance audit_retention_config.last_cleanup_at for the config
+		// row(s) whose data this pass just pruned, replicating the dead PL/pgSQL
+		// (migration 026 line 254) so SEBI's retention-posture export
+		// (sebi_audit_export_service.go: COALESCE(last_cleanup_at, '1970-01-01'))
+		// reads a fresh timestamp instead of a perpetually-stale 1970 sentinel.
+		// Only in enforce mode: a dry-run mutates nothing, so claiming "cleanup
+		// ran" would itself misrepresent posture. Runs after a successful prune
+		// of this data_type (any earlier error already returned).
+		if enforce {
+			if err := s.advanceLastCleanup(ctx, db, rt.dataType, defaultDays, prunedOverrideOrgs); err != nil {
+				return results, fmt.Errorf("%s advance last_cleanup_at: %w", rt.table, err)
+			}
 		}
 
 		results = append(results, RetentionPruneResult{
@@ -588,6 +609,55 @@ func (s *AuditCleanupService) execRetention(ctx context.Context, db *sql.DB, tab
 		return 0, err
 	}
 	return n, nil
+}
+
+// advanceLastCleanup writes CURRENT_TIMESTAMP into
+// audit_retention_config.last_cleanup_at for the config rows of dataType whose
+// underlying data this pass actually pruned, mirroring the dead PL/pgSQL
+// cleanup_expired_audit_records() (migration 026 line 254). Caller invokes it
+// only in enforce mode — a dry-run never advances the timestamp.
+//
+// Grain is per (org, data_type), the schema's UNIQUE key:
+//   - When the default bucket ran (defaultDays > 0) the two prune buckets
+//     together cover EVERY org's data for this data_type — active-override orgs
+//     in the scoped step, all others (including inactive-override and
+//     no-config orgs) in the default bucket. So every config row for the
+//     data_type legitimately had cleanup run and is advanced with one
+//     data_type-scoped UPDATE — closely matching the legacy function, which
+//     iterated organizations and advanced each existing config row. (The
+//     blanket form also touches config rows for orgs no longer in
+//     organizations — orphaned config — which the legacy organizations-join
+//     skipped; harmless, since no live org reads an orphan row.)
+//   - In the pathological no-default case (defaultDays <= 0, e.g. a 0/negative
+//     row seeded in audit_retention_defaults) the default bucket was skipped,
+//     so ONLY the orgs with a positive active override were pruned — advance
+//     just those rows, never a blanket update.
+//
+// Touches only last_cleanup_at (not updated_at), matching the legacy semantics.
+// Tolerant of a missing audit_retention_config table (self-hosted without
+// migration 026): a relation-does-not-exist error is swallowed, mirroring the
+// read-side degradation in loadActiveRetentionOverrides.
+func (s *AuditCleanupService) advanceLastCleanup(ctx context.Context, db *sql.DB, dataType string, defaultDays int, prunedOverrideOrgs []string) error {
+	var err error
+	switch {
+	case defaultDays > 0:
+		_, err = db.ExecContext(ctx,
+			`UPDATE audit_retention_config SET last_cleanup_at = CURRENT_TIMESTAMP WHERE data_type = $1`,
+			dataType)
+	case len(prunedOverrideOrgs) > 0:
+		_, err = db.ExecContext(ctx,
+			`UPDATE audit_retention_config SET last_cleanup_at = CURRENT_TIMESTAMP WHERE data_type = $1 AND org_id = ANY($2)`,
+			dataType, pq.Array(prunedOverrideOrgs))
+	default:
+		// Nothing was pruned for this data_type (no default window AND no
+		// positive override) — leave last_cleanup_at untouched so the export
+		// truthfully shows no cleanup occurred.
+		return nil
+	}
+	if err != nil && !isRelationDoesNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // effectiveRetentionDefault returns the system-default retention (days) for a

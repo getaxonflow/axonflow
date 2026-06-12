@@ -59,7 +59,11 @@ type DecisionEvent struct {
 	// Attribute: decision.stage
 	Stage string
 
-	// Verdict is the policy outcome: "allow" | "deny" | "needs_approval".
+	// Verdict is the policy outcome: "allow" | "deny" | "needs_approval", or
+	// "error" for a /decide request rejected before evaluation (malformed body /
+	// invalid stage / empty query — #2643). This span attribute is free-form and
+	// is NOT the PEP-enforcement wire verdict (that stays allow/deny on the HTTP
+	// response).
 	// Attribute: decision.verdict
 	Verdict string
 

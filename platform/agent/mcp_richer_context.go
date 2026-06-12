@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
 
+	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -352,12 +354,200 @@ func writeOverrideUsedEvent(
 		"override_used",
 		"override applied",
 		"none",
-		"allow",
+		// #2641 (AUDIT-C) vocabulary contract (#2638): an override flips a deny to
+		// an allow, so the canonical past-tense verdict is "allowed" — NOT the
+		// legacy "allow" the agent /decide path still emits. Matches the
+		// orchestrator reference (audit_logger.go) so this override-used row reads
+		// consistently in the portal decisions feed alongside the redacted/blocked
+		// rows this PR adds across the MCP plane.
+		mcpVerdictAllowed,
 		detailsJSON,
 		decisionID,       // decision_id (first-class column)
 		PlaneMCP,         // plane
 		correlationIDArg, // correlation_id (#2598)
 	)
+}
+
+// MCP-plane canonical policy_decision vocabulary (#2641 / #2638). These are now
+// ALIASES onto the single shared vocabulary in platform/shared/audit (#2638
+// S-WRITERS const-swap): the same past-tense verdict strings the orchestrator
+// reference writer emits, which the customer-portal decisions feed +
+// audit-summary mapping both key on, and which the migration-123 CHECK enforces.
+// The MCP-plane names are retained (provenance + call-site readability); the
+// VALUES come from the shared package so they can never drift from the other
+// planes. The full canonical set is allowed | blocked | redacted |
+// needs_approval | error; needs_approval is not a terminal verdict any MCP
+// surface produces today, so it is intentionally not aliased here (the `unused`
+// linter is a CI gate). Add it when a needs_approval-emitting MCP path lands.
+const (
+	mcpVerdictAllowed  = sharedaudit.DecisionAllowed
+	mcpVerdictBlocked  = sharedaudit.DecisionBlocked
+	mcpVerdictRedacted = sharedaudit.DecisionRedacted
+	mcpVerdictError    = sharedaudit.DecisionError
+)
+
+// mcpUnauthenticatedTenant is the fixed tenant_id stamped on a canonical
+// audit_logs row recorded for an UNAUTHENTICATED MCP deny (#2641 — the JSON-RPC
+// MCPSRV-UNAUTH path and the check-input/check-output auth-failure early return).
+// An unauthenticated caller has no trustworthy tenant identity; reusing the
+// caller-CLAIMED tenant_id would let an attacker inject rows into another tenant's
+// decisions feed (audit spoofing). This sentinel + an empty org_id keep the row
+// out of every real tenant's portal scope while still recording the denied attempt
+// for security audit.
+const mcpUnauthenticatedTenant = "unauthenticated"
+
+// writeMCPDecisionAudit persists a canonical audit_logs row for an MCP-plane
+// terminal verdict that carries no rich policy-match payload — i.e. every hole
+// AUDIT-C (#2641) closes: a dynamic-only block, a SQLi block, a redact-and-allow,
+// a tool-error fail-close, and each pre-policy early-return deny (unauthenticated
+// JSON-RPC, tier-gate, daily-cap, session-delete authz, 415/tenant). It is the
+// MCP-plane analogue of the orchestrator's canonical response-plane writer
+// (#2630, audit_logger.go): policy_decision is the canonical PAST-TENSE vocab
+// (allowed|blocked|redacted|needs_approval|error), plane=mcp, decision_id +
+// correlation_id are first-class, and redacted_fields is populated on a redaction.
+//
+// Why a distinct writer rather than recordDecideDecision: writeDecisionAuditLog's
+// INSERT (decision_handler.go, owned by another workstream) omits redacted_fields,
+// so a redaction routed through it would land with an empty redacted_fields column
+// — violating the AUDIT-C DoD. This writer carries it. The legacy mcp_query_audits
+// satellite write each caller already performs is preserved and unaffected; the
+// canonical row is purely additive (keyed by the SAME decision_id).
+//
+// Best-effort: a DB error logs and returns. The verdict the PEP already holds is
+// authoritative — an audit write never changes the decision (mirrors
+// writeExplainableAuditLog / writeDecisionAuditLog).
+func writeMCPDecisionAudit(
+	ctx context.Context,
+	db *sql.DB,
+	decisionID, requestID string,
+	tenantID, orgID, clientID, userEmail string,
+	userIDStr, userRole string,
+	requestType, query, queryHash, policyDecision string,
+	policyIDs, reasons, redactedFields []string,
+	correlationID string,
+) {
+	if db == nil || decisionID == "" {
+		return
+	}
+
+	// Coerce user_id into an int — audit_logs.user_id is historically typed that
+	// way. Non-numeric ids (plugin pseudo-ids, emails) map to 0; the real identity
+	// travels via user_email. Mirrors writeExplainableAuditLog.
+	userIDInt := 0
+	if n, err := strconv.Atoi(userIDStr); err == nil {
+		userIDInt = n
+	}
+
+	if policyIDs == nil {
+		policyIDs = []string{}
+	}
+	if reasons == nil {
+		reasons = []string{}
+	}
+
+	details := map[string]interface{}{
+		"decision_id": decisionID,
+		"source":      "mcp_decision",
+		"policy_ids":  policyIDs,
+		"reasons":     reasons,
+	}
+	if len(reasons) > 0 {
+		// explain_handler.go + the portal read policy_details->>'reason' (scalar).
+		details["reason"] = strings.Join(reasons, "; ")
+	}
+	// Mirror redacted_fields into the JSONB too (read-path resilience, matching the
+	// decision_id/correlation_id dual-write pattern) so a consumer that only reads
+	// policy_details still sees what was masked even if the first-class column is
+	// ever rolled back.
+	if len(redactedFields) > 0 {
+		details["redacted_fields"] = redactedFields
+	}
+	// #2598: mirror the correlation key into JSONB so this MCP decision groups with
+	// the other stages of the same logical request when a W3C traceparent is
+	// propagated. Omitted when unset → singleton chain.
+	if correlationID != "" {
+		details["correlation_id"] = correlationID
+	}
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		log.Printf("mcp decision audit: marshal failed: %v", err)
+		return
+	}
+
+	// audit_logs NOT-NULL columns: fall back to placeholders rather than fail the
+	// insert (mirrors writeExplainableAuditLog / writeDecisionAuditLog).
+	if userEmail == "" {
+		userEmail = "unknown@axonflow.local"
+	}
+	if userRole == "" {
+		userRole = "service"
+	}
+	if clientID == "" {
+		clientID = "unknown"
+	}
+	if tenantID == "" {
+		tenantID = "unknown"
+	}
+	if query == "" {
+		query = "(empty)"
+	}
+	if queryHash == "" {
+		queryHash = "none"
+	}
+	if requestID == "" {
+		requestID = decisionID
+	}
+
+	// redacted_fields is a JSONB column (migration 059). Marshal the slice to a
+	// JSON array; pass SQL NULL (not the JSON literal "null") when there were no
+	// redactions so non-redaction rows are cleanly distinguishable and the
+	// compliance exporters that COALESCE on the column see NULL, not "[]".
+	var redactedFieldsArg interface{}
+	if len(redactedFields) > 0 {
+		if b, mErr := json.Marshal(redactedFields); mErr == nil {
+			redactedFieldsArg = b
+		} else {
+			log.Printf("mcp decision audit: redacted_fields marshal failed (non-fatal): %v", mErr)
+		}
+	}
+
+	// #2598: correlation_id → first-class column (NULL when unset → singleton),
+	// dual-written into policy_details above.
+	var correlationIDArg interface{}
+	if correlationID != "" {
+		correlationIDArg = correlationID
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO audit_logs (
+			id, request_id, timestamp, user_id, user_email, user_role,
+			client_id, tenant_id, org_id, request_type, query, query_hash,
+			policy_decision, policy_details, decision_id, plane, correlation_id,
+			redacted_fields
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+	`,
+		"audit_mcp_"+decisionID, // id (distinct prefix → no PK collision with audit_/audit_used_/decide_)
+		requestID,               // request_id
+		time.Now().UTC(),        // timestamp
+		userIDInt,               // user_id
+		userEmail,               // user_email
+		userRole,                // user_role
+		clientID,                // client_id
+		tenantID,                // tenant_id
+		orgID,                   // org_id (nullable)
+		requestType,             // request_type — e.g. "mcp_check_output"
+		query,                   // query — non-PII descriptor (NEVER raw statement/response)
+		queryHash,               // query_hash
+		policyDecision,          // policy_decision — canonical past-tense vocab (#2641/#2638)
+		detailsJSON,             // policy_details (JSONB)
+		decisionID,              // decision_id (first-class column; #2592)
+		PlaneMCP,                // plane (#2592)
+		correlationIDArg,        // correlation_id (first-class column or NULL; #2598)
+		redactedFieldsArg,       // redacted_fields (JSONB array or NULL; #2641)
+	)
+	if err != nil {
+		log.Printf("mcp decision audit: insert failed: %v", err)
+	}
 }
 
 // writeExplainableAuditLog persists a plugin-batch-1-compatible audit_logs
@@ -482,11 +672,18 @@ func writeExplainableAuditLog(
 		requestType,         // request_type — e.g. "mcp_check_input"
 		statement,           // query
 		statementHash,       // query_hash
-		"deny",              // policy_decision
-		detailsJSON,         // policy_details (JSONB) — decision_id still mirrored here
-		decisionID,          // decision_id (first-class column; #2592)
-		PlaneMCP,            // plane
-		correlationIDArg,    // correlation_id (#2598)
+		// #2641 (AUDIT-C) vocabulary contract (#2638): a check-input/output static
+		// block is a "blocked" verdict in the canonical past-tense vocab the portal
+		// decisions feed + audit-summary mapping key on — NOT the legacy "deny" this
+		// writer used to hardcode, which the audit-summary only mapped to a block by
+		// special-case and which the audit-page action filter ('blocked') never
+		// matched. All three callers of this writer are static-block paths, so the
+		// literal is unconditionally "blocked".
+		mcpVerdictBlocked, // policy_decision
+		detailsJSON,       // policy_details (JSONB) — decision_id still mirrored here
+		decisionID,        // decision_id (first-class column; #2592)
+		PlaneMCP,          // plane
+		correlationIDArg,  // correlation_id (#2598)
 	)
 	if err != nil {
 		log.Printf("explainable audit log: insert failed: %v", err)

@@ -193,6 +193,25 @@ curl -X POST "https://your-axonflow-host/api/v1/rbi/reports" \
   }'
 ```
 
+**Compliance issues surfaced in every report:**
+
+The generated report computes a compliance score and a list of compliance
+issues. Beyond overdue validations, critical incidents, and active kill
+switches, the report explicitly flags **notifications that are legally required
+but have not been sent**:
+
+- `regulatory_notification` (severity `critical`) — one or more AI incidents
+  require an RBI notification (`rbi_notification_required = true`) that has not
+  been sent (`rbi_notified = false`). This is independent of incident status: a
+  critical incident that was already resolved but never reported to RBI is still
+  flagged.
+- `board_notification` (severity `high`) — one or more AI incidents require a
+  board notification that has not been sent.
+
+These are derived at generation time from the incident notification state, so an
+unsent-but-required notification can never silently disappear into the
+generic open-incident count.
+
 ### 6. Audit Export
 
 Per RBI FREE-AI requirements, audit trails must be retained for 10 years.

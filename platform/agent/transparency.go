@@ -18,13 +18,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/shared/version"
 )
 
 // EU AI Act Article 13 - Transparency Requirements
@@ -439,14 +440,17 @@ func (tc *TransparencyContext) SetTenantContext(orgID, tenantID, clientID, userI
 	tc.UserID = userID
 }
 
-// GetPlatformVersion returns the platform version from the AXONFLOW_VERSION env var.
-// Invalid version formats fall back to the default version.
+// GetPlatformVersion returns the platform version, preferring the value baked
+// into the binary at build time (#2662) and falling back to the AXONFLOW_VERSION
+// env var only for unbaked dev builds. A baked value always wins over the env so
+// /health cannot be spoofed by a runtime override. Invalid version formats fall
+// back to the default version.
 func GetPlatformVersion() string {
-	version := os.Getenv("AXONFLOW_VERSION")
-	if version == "" || !versionRegex.MatchString(version) {
-		version = defaultVersion
+	v := version.Resolve()
+	if v == "" || !versionRegex.MatchString(v) {
+		v = defaultVersion
 	}
-	return version
+	return v
 }
 
 // getSystemID returns the system identifier with version.

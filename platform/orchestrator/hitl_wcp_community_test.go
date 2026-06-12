@@ -410,6 +410,60 @@ func TestExpireEvalApprovals_WorkflowAbortError(t *testing.T) {
 	}
 }
 
+// TestExpireEvalApprovals_WritesExpiredNotRejected is the red-on-revert guard for
+// #2654: the auto-timeout path MUST write status='expired' to hitl_approval_queue
+// and approval_status='expired' to workflow_steps — never 'rejected'. A timeout is
+// not a human rejection, and mislabeling it as 'rejected' inflates the
+// eu_ai_act_hitl_metrics rejected_count. Reverting either SET clause back to
+// 'rejected' breaks the regex matchers below and fails this test.
+func TestExpireEvalApprovals_WritesExpiredNotRejected(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	// Queue UPDATE must set status='expired' (precise path: context has IDs).
+	mock.ExpectQuery(`(?s)UPDATE hitl_approval_queue.*status = 'expired'`).WillReturnRows(
+		sqlmock.NewRows([]string{"request_id", "tenant_id", "original_query", "request_context"}).
+			AddRow("req-1", "tenant-1", "step-a", `{"workflow_id":"wf-1","step_id":"s-1"}`),
+	)
+	// Precise workflow_steps UPDATE must set approval_status='expired'.
+	mock.ExpectExec(`(?s)UPDATE workflow_steps.*approval_status = 'expired'`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE workflows.*status = 'aborted'`).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	expireEvalApprovals(db)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unmet expectations (expired-status writes regressed to 'rejected'?): %v", err)
+	}
+}
+
+// TestExpireEvalApprovals_FallbackWritesExpired is the red-on-revert guard for the
+// legacy fallback path (approval created before workflow_id/step_id were stored in
+// context): it too must write approval_status='expired', not 'rejected' (#2654).
+func TestExpireEvalApprovals_FallbackWritesExpired(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery(`(?s)UPDATE hitl_approval_queue.*status = 'expired'`).WillReturnRows(
+		sqlmock.NewRows([]string{"request_id", "tenant_id", "original_query", "request_context"}).
+			AddRow("req-legacy", "tenant-1", "step-a", `{}`),
+	)
+	// Fallback workflow_steps UPDATE (tenant + step_name join) must set 'expired'.
+	mock.ExpectExec(`(?s)UPDATE workflow_steps ws.*approval_status = 'expired'`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE workflows.*status = 'aborted'`).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	expireEvalApprovals(db)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unmet expectations (fallback expired-status regressed?): %v", err)
+	}
+}
+
 // hitlContains checks if s contains substr.
 func hitlContains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

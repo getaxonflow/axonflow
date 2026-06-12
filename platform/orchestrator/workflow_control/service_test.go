@@ -1331,6 +1331,38 @@ func TestResumeWorkflowAfterApproval(t *testing.T) {
 	}
 }
 
+// TestResumeWorkflowAfterExpiry covers the #2654 branch: a workflow whose last
+// require_approval step auto-expired (timed out) must NOT resume, and the error
+// must say "expired" — distinct from the "was rejected" human-reject path.
+func TestResumeWorkflowAfterExpiry(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Create step requiring approval.
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "test",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Simulate the auto-timeout path setting the step to 'expired'.
+	if err := repo.UpdateStepApproval(ctx, workflow.WorkflowID, "step-1", ApprovalStatusExpired, "system:auto-expired", "approval timed out"); err != nil {
+		t.Fatalf("set step expired: %v", err)
+	}
+
+	err := svc.ResumeWorkflow(ctx, workflow.WorkflowID, "", "")
+	if err == nil {
+		t.Fatal("resume after expiry should fail")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("resume error = %q, want it to mention 'expired'", err.Error())
+	}
+}
+
 func TestAbortAlreadyAbortedWorkflow(t *testing.T) {
 	repo := NewMockRepository()
 	svc := NewService(repo, nil, nil)

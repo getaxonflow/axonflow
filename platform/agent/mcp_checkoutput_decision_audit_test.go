@@ -56,7 +56,7 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 				SQLiBlocked: true,
 				SQLiPattern: "UNION SELECT",
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"sqli_response_scan"},
 			wantReasons: []string{"SQL injection detected in response: UNION SELECT"},
 		},
@@ -71,7 +71,7 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 					},
 				},
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"pii-indonesia-nik"},
 			wantReasons: []string{"Indonesia NIK detected in response"},
 		},
@@ -84,7 +84,7 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 					BlockedBy:   &sharedpolicy.CompiledPolicy{PolicyID: "sys_pii_indonesia_ktp"},
 				},
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"sys_pii_indonesia_ktp"},
 			wantReasons: []string{"Critical Indonesia PII detected (NIK or NPWP)"},
 		},
@@ -97,7 +97,7 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 					BlockReason: "row limit exceeded (5 > 2)",
 				},
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"exfiltration_limit"},
 			wantReasons: []string{"row limit exceeded (5 > 2)"},
 		},
@@ -114,7 +114,7 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 					},
 				},
 			},
-			wantVerdict: VerdictAllow,
+			wantVerdict: mcpVerdictRedacted,
 			wantPolicy:  []string{"pii-us-ssn"},
 			wantReasons: []string{"response PII redacted: rows[0].ssn"},
 		},
@@ -124,14 +124,14 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 				RedactedMessage:        "NIK 31**********0001",
 				IndonesiaRedactedTypes: []string{"nik"},
 			},
-			wantVerdict: VerdictAllow,
+			wantVerdict: mcpVerdictRedacted,
 			wantPolicy:  nil,
 			wantReasons: []string{"response PII redacted: nik"},
 		},
 		{
-			name:        "clean allow → allow, no policy ids, no reasons",
+			name:        "clean allow → allowed, no policy ids, no reasons",
 			outcome:     OutputPolicyOutcome{},
-			wantVerdict: VerdictAllow,
+			wantVerdict: mcpVerdictAllowed,
 			wantPolicy:  nil,
 			wantReasons: nil,
 		},
@@ -145,7 +145,7 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 					BlockReason: "should not be used",
 				},
 			},
-			wantVerdict: VerdictDeny,
+			wantVerdict: mcpVerdictBlocked,
 			wantPolicy:  []string{"sqli_response_scan"},
 			wantReasons: []string{"SQL injection detected in response: ; DROP TABLE"},
 		},
@@ -163,10 +163,13 @@ func TestMCPOutputDecisionVerdict(t *testing.T) {
 			if !reflect.DeepEqual(gotReasons, tc.wantReasons) {
 				t.Errorf("reasons: got %v, want %v", gotReasons, tc.wantReasons)
 			}
-			// A deny verdict must never escape into the allow filter values the
-			// portal feed accepts; allow/deny are the only verdicts this handler
-			// can emit (needs_approval is not a response-plane outcome).
-			if tc.wantVerdict != VerdictAllow && tc.wantVerdict != VerdictDeny {
+			// #2641: the response plane emits the canonical past-tense vocab the
+			// portal decisions feed keys on — blocked | redacted | allowed (never the
+			// legacy allow/deny). needs_approval is not a response-plane outcome.
+			switch tc.wantVerdict {
+			case mcpVerdictBlocked, mcpVerdictRedacted, mcpVerdictAllowed:
+				// canonical
+			default:
 				t.Fatalf("unexpected verdict in fixture: %q", tc.wantVerdict)
 			}
 		})
@@ -220,7 +223,7 @@ func TestMCPCheckOutputHandler_BlockEmitsAuditLogsDecisionRow(t *testing.T) {
 			"decision_tool",  // request_type
 			sqlmock.AnyArg(), // query (non-PII descriptor)
 			sqlmock.AnyArg(), // query_hash
-			"deny",           // policy_decision
+			"blocked",        // policy_decision
 			sqlmock.AnyArg(), // policy_details (JSONB)
 			sqlmock.AnyArg(), // decision_id (first-class column; #2592)
 			PlaneMCP,         // plane — MCP response surface (#2592)
@@ -229,6 +232,7 @@ func TestMCPCheckOutputHandler_BlockEmitsAuditLogsDecisionRow(t *testing.T) {
 			// traceparent's W3C trace-id so this block groups with the other stages
 			// of the SAME logical tool call. Pinned to prove the threading.
 			"0af7651916cd43dd8448eb211c80319c",
+			nil, // redacted_fields (#2643): MCP block has none → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -308,12 +312,13 @@ func TestMCPCheckOutputHandler_AllowEmitsAuditLogsDecisionRow(t *testing.T) {
 			"decision_tool",  // request_type
 			sqlmock.AnyArg(), // query
 			sqlmock.AnyArg(), // query_hash
-			"allow",          // policy_decision
+			"allowed",        // policy_decision
 			sqlmock.AnyArg(), // policy_details
 			sqlmock.AnyArg(), // decision_id (first-class column; #2592)
 			PlaneMCP,         // plane — MCP response surface (#2592)
 			nil,              // obligations (none on a clean allow)
 			nil,              // correlation_id (#2598): no traceparent → NULL → singleton
+			nil,              // redacted_fields (#2643): clean allow → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

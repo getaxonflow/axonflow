@@ -97,7 +97,7 @@ func seedAuditLog(t *testing.T, db *sql.DB, tenantID string) {
 		INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, request_type, query, query_hash, policy_decision)
 		VALUES ($1, $2, NOW(), 1, 'test@e.co', 'test',
-		    'client-x', $3, 'test', 'q', 'h', 'allow')`,
+		    'client-x', $3, 'test', 'q', 'h', 'allowed')`,
 		fmt.Sprintf("audit-%d-%d", time.Now().UnixNano(), len(tenantID)),
 		fmt.Sprintf("req-%d", time.Now().UnixNano()),
 		tenantID)

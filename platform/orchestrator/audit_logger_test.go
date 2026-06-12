@@ -20,7 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/shared/audit"
+
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 )
 
 // TestGenerateAuditID verifies audit ID generation
@@ -664,12 +667,11 @@ func TestSearchAuditLogs(t *testing.T) {
 		{
 			name: "Search by user email",
 			criteria: struct {
-				UserEmail   string
-				ClientID    string
-				StartTime   time.Time
-				EndTime     time.Time
-				RequestType string
-				Limit       int
+				UserEmail string
+				ClientID  string
+				StartTime time.Time
+				EndTime   time.Time
+				Limit     int
 			}{
 				UserEmail: "test@example.com",
 				Limit:     10,
@@ -699,17 +701,15 @@ func TestSearchAuditLogs(t *testing.T) {
 		{
 			name: "Search by multiple criteria",
 			criteria: struct {
-				UserEmail   string
-				ClientID    string
-				StartTime   time.Time
-				EndTime     time.Time
-				RequestType string
-				Limit       int
+				UserEmail string
+				ClientID  string
+				StartTime time.Time
+				EndTime   time.Time
+				Limit     int
 			}{
-				UserEmail:   "admin@example.com",
-				ClientID:    "client_002",
-				RequestType: "mutation",
-				Limit:       5,
+				UserEmail: "admin@example.com",
+				ClientID:  "client_002",
+				Limit:     5,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				rows := sqlmock.NewRows([]string{
@@ -721,20 +721,20 @@ func TestSearchAuditLogs(t *testing.T) {
 				}).
 					AddRow(
 						"audit_002", "req_002", time.Now(), 2, "admin@example.com", "admin",
-						"client_002", "tenant_002", "mutation", "update query", "allowed",
+						"client_002", "tenant_002", "llm-call", "update query", "allowed",
 						[]byte(`{"risk_score": 0.3}`), "anthropic", "claude-sonnet-4", 200, 150,
 						0.008, []byte(`["email"]`), "", []byte(`[]`),
 						2,
 					).
 					AddRow(
 						"audit_003", "req_003", time.Now(), 2, "admin@example.com", "admin",
-						"client_002", "tenant_002", "mutation", "delete query", "blocked",
+						"client_002", "tenant_002", "decision_llm", "delete query", "blocked",
 						[]byte(`{"risk_score": 0.8}`), "anthropic", "claude-sonnet-4", 180, 120,
 						0.006, []byte(`[]`), "", []byte(`["sox_relevant"]`),
 						2,
 					)
-				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) client_id ILIKE (.+) request_type = (.+) ORDER BY timestamp DESC LIMIT").
-					WithArgs("admin@example.com", "client_002", "mutation").
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) client_id ILIKE (.+) ORDER BY timestamp DESC LIMIT").
+					WithArgs("admin@example.com", "client_002").
 					WillReturnRows(rows)
 			},
 			expectCount: 2,
@@ -743,12 +743,11 @@ func TestSearchAuditLogs(t *testing.T) {
 		{
 			name: "Search with time range",
 			criteria: struct {
-				UserEmail   string
-				ClientID    string
-				StartTime   time.Time
-				EndTime     time.Time
-				RequestType string
-				Limit       int
+				UserEmail string
+				ClientID  string
+				StartTime time.Time
+				EndTime   time.Time
+				Limit     int
 			}{
 				StartTime: time.Now().Add(-24 * time.Hour),
 				EndTime:   time.Now(),
@@ -772,12 +771,11 @@ func TestSearchAuditLogs(t *testing.T) {
 		{
 			name: "Database query fails",
 			criteria: struct {
-				UserEmail   string
-				ClientID    string
-				StartTime   time.Time
-				EndTime     time.Time
-				RequestType string
-				Limit       int
+				UserEmail string
+				ClientID  string
+				StartTime time.Time
+				EndTime   time.Time
+				Limit     int
 			}{
 				UserEmail: "error@example.com",
 			},
@@ -815,8 +813,12 @@ func TestSearchAuditLogs(t *testing.T) {
 						0.004, []byte(`[]`), "", []byte(`[]`),
 						1,
 					)
-				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) tenant_id = (.+) policy_decision = (.+) ORDER BY timestamp DESC LIMIT").
-					WithArgs("tenant_001", "blocked").
+				// #2636/#2653 (supersedes #2637): the canonical "blocked" filter
+				// is expanded to every DB spelling it covers (audit.Spellings) via
+				// policy_decision = ANY(...), so legacy/historical "deny"/"denied"
+				// rows still match.
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) tenant_id = (.+) policy_decision = ANY(.+) ORDER BY timestamp DESC LIMIT").
+					WithArgs("tenant_001", pq.Array(audit.Spellings(audit.DecisionBlocked))).
 					WillReturnRows(rows)
 			},
 			expectCount: 1,
@@ -825,13 +827,12 @@ func TestSearchAuditLogs(t *testing.T) {
 		{
 			name: "Search with offset",
 			criteria: struct {
-				UserEmail   string
-				ClientID    string
-				StartTime   time.Time
-				EndTime     time.Time
-				RequestType string
-				Limit       int
-				Offset      int
+				UserEmail string
+				ClientID  string
+				StartTime time.Time
+				EndTime   time.Time
+				Limit     int
+				Offset    int
 			}{
 				Limit:  10,
 				Offset: 1,
@@ -907,12 +908,11 @@ func TestSearchAuditLogs_NilDatabase(t *testing.T) {
 	}
 
 	criteria := struct {
-		UserEmail   string
-		ClientID    string
-		StartTime   time.Time
-		EndTime     time.Time
-		RequestType string
-		Limit       int
+		UserEmail string
+		ClientID  string
+		StartTime time.Time
+		EndTime   time.Time
+		Limit     int
 	}{
 		UserEmail: "test@example.com",
 	}
@@ -954,16 +954,15 @@ func TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice(t *testing.T) {
 		}))
 
 	criteria := struct {
-		UserEmail   string    `json:"user_email,omitempty"`
-		ClientID    string    `json:"client_id,omitempty"`
-		TenantID    string    `json:"-"`
-		StartTime   time.Time `json:"start_time"`
-		EndTime     time.Time `json:"end_time"`
-		RequestType string    `json:"request_type,omitempty"`
-		DecisionID  string    `json:"decision_id,omitempty"`
-		PolicyName  string    `json:"policy_name,omitempty"`
-		OverrideID  string    `json:"override_id,omitempty"`
-		Limit       int       `json:"limit,omitempty"`
+		UserEmail  string    `json:"user_email,omitempty"`
+		ClientID   string    `json:"client_id,omitempty"`
+		TenantID   string    `json:"-"`
+		StartTime  time.Time `json:"start_time"`
+		EndTime    time.Time `json:"end_time"`
+		DecisionID string    `json:"decision_id,omitempty"`
+		PolicyName string    `json:"policy_name,omitempty"`
+		OverrideID string    `json:"override_id,omitempty"`
+		Limit      int       `json:"limit,omitempty"`
 	}{
 		TenantID: "tenant-1",
 		Limit:    10,

@@ -51,6 +51,7 @@ import (
 
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/telemetry"
+	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 
 	"github.com/google/uuid"
@@ -58,7 +59,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Verdict values returned by the Decision API.
+// Verdict values returned by the Decision API ON THE WIRE.
+//
+// These are the PEP-enforcement contract (OpenAPI agent-api.yaml
+// `enum: [allow, deny, needs_approval]` — "the PEP MUST enforce this verdict")
+// and are compared by the blessed PEP client (platform/shared/pep.VerdictAllow).
+// They MUST NOT change value — doing so silently breaks every PEP/SDK in the
+// field. They are DELIBERATELY DISTINCT from the canonical audit_logs vocabulary
+// below (#2643 / #2638): the wire verdict is the caller contract, the audit
+// verdict is the persisted decision label. writeDecisionAuditLog translates one
+// to the other via canonicalAuditVerdict (on the decision plane) so
+// audit_logs.policy_decision is canonical without disturbing the wire.
 const (
 	VerdictAllow         = "allow"
 	VerdictDeny          = "deny"
@@ -91,6 +102,52 @@ const (
 	maxContextKeys     = 10
 )
 
+// Canonical audit_logs.policy_decision vocabulary (#2643 / #2638 / ADR-058).
+//
+// These are now ALIASES onto the single shared vocabulary in
+// platform/shared/audit (#2638 S-WRITERS const-swap) — the one source of truth
+// every plane's audit writer converges on, so a query over
+// audit_logs.policy_decision is consistent across the decision / mcp / llm /
+// agent planes and enforced by the migration-123 CHECK. The names are retained
+// (decision-plane provenance, used by this file + tests); the VALUES come from
+// the shared package so they can never drift. DISTINCT from the wire Verdict*
+// values above: the legacy wire tokens `allow`/`deny` are value-WRONG for
+// audit_logs, so the /decide writer translates them via canonicalAuditVerdict.
+const (
+	AuditVerdictAllowed  = sharedaudit.DecisionAllowed
+	AuditVerdictBlocked  = sharedaudit.DecisionBlocked
+	AuditVerdictRedacted = sharedaudit.DecisionRedacted
+	AuditVerdictError    = sharedaudit.DecisionError
+)
+
+// canonicalAuditVerdict maps a verdict — either a wire Verdict* value OR an
+// already-canonical audit value — onto the canonical audit_logs vocabulary.
+//
+//   - allow  -> allowed   deny -> blocked   needs_approval -> needs_approval
+//   - already-canonical values pass through unchanged (idempotent), so a caller
+//     may pass AuditVerdictError/Blocked directly for a path that has no wire
+//     verdict (e.g. a malformed-request early return).
+//   - an UNRECOGNIZED value fails SAFE to `error` (never `allowed`), so a future
+//     verdict can never silently inflate the allowed/compliance counts.
+//
+// Localized to the audit-write boundary on purpose: the OTel decision span and
+// the wire response keep the caller-facing verdict untouched.
+func canonicalAuditVerdict(v string) string {
+	switch v {
+	case VerdictAllow:
+		return AuditVerdictAllowed
+	case VerdictDeny:
+		return AuditVerdictBlocked
+	case VerdictNeedsApproval:
+		return sharedaudit.DecisionNeedsApproval // wire + audit spelling coincide
+	case AuditVerdictAllowed, AuditVerdictBlocked, AuditVerdictRedacted, AuditVerdictError:
+		return v
+	default:
+		log.Printf("⚠️ [Decide] unrecognized verdict %q → recording canonical 'error' (fail-safe)", v)
+		return AuditVerdictError
+	}
+}
+
 // defaultDecisionContextAllowlist is the default for
 // AXONFLOW_DECISION_CONTEXT_ALLOWLIST: the common agent / session / leader
 // identity headers. Deployments that capture additional headers (e.g. a
@@ -122,6 +179,7 @@ const (
 	PlaneAgent        = "agent"         // agent gateway PEP
 	PlaneGateway      = "gateway"       // generic reference PEP adapter
 	PlaneOpenAICompat = "openai_compat" // OpenAI-compatible chat-completions surface
+	PlaneMedia        = "media"         // orchestrator media-governance analysis (#2680)
 )
 
 // Obligation contract constants (ADR-056, #2563).
@@ -286,11 +344,27 @@ var (
 			Buckets: []float64{1, 2, 5, 10, 20, 50, 100, 200, 500},
 		},
 	)
+	// decideAuditWriteFailures makes the best-effort canonical audit_logs write
+	// OBSERVABLE instead of silent (#2643 DECIDE-WRITE-BESTEFFORT-SILENT). Reason
+	// labels: `nodb` (no usage DB wired — expected in DB-less community
+	// deployments), `empty_decision_id` (guard), `marshal` (policy_details
+	// JSONB), `insert` (the INSERT itself). reason=insert|marshal indicates a
+	// real persistence failure to alert on; reason=nodb is informational. A
+	// write failure on a DENY path never changes the verdict — the request is
+	// already denied — so this is alerting signal, not a control.
+	decideAuditWriteFailures = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_decision_audit_write_failures_total",
+			Help: "POST /api/v1/decide canonical audit_logs write failures by reason (nodb|empty_decision_id|marshal|insert)",
+		},
+		[]string{"reason"},
+	)
 )
 
 func init() {
 	_ = prometheus.Register(decideRequests)
 	_ = prometheus.Register(decideDuration)
+	_ = prometheus.Register(decideAuditWriteFailures)
 }
 
 // handleDecide handles POST /api/v1/decide -- Decision Mode entry point.
@@ -307,36 +381,98 @@ func init() {
 //     configured fail-open / fail-closed posture (ADR-056 §Components)
 func handleDecide(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	ctx := r.Context()
+
+	// #2643: mint the correlation ids + capture the auth-derived identity
+	// UP-FRONT, before body decode, so EVERY early-return deny below — a decode
+	// failure, an invalid stage, a cross-tenant/org impersonation attempt — writes
+	// a canonical, correlatable plane=decision audit_logs row instead of returning
+	// invisibly. apiAuthMiddleware has already stamped tenant/org/client into ctx,
+	// so the identity is available even when the body never parses. The same
+	// decision_id/trace_id ride the error envelope returned to the PEP.
+	//
+	// W3C trace_id: reuse the incoming traceparent trace-id when present so
+	// multi-layer gateways stitch into one end-to-end trace (WS4); otherwise mint
+	// a fresh 16-byte (32 hex) id.
+	traceID := traceIDFromHeader(r.Header.Get("traceparent"))
+	if traceID == "" {
+		traceID = newW3CTraceID()
+	}
+	decisionID := uuid.New().String()
+	authClientID := ClientIDFromContext(ctx)
+	tenantID := TenantIDFromContext(ctx)
+	orgID := OrgIDFromContext(ctx)
+	authKind := AuthKindFromContext(ctx)
+
+	// Canonicalized request context (#2509) is computed after a successful decode
+	// (it needs req.Context); declared here so the early-deny audit closure can
+	// thread whatever is known so far — nil before decode.
+	var reqContext map[string]string
+	var contextTruncated bool
+
+	// Audit identity for the row, refined as the request is parsed/authorized and
+	// threaded into every recordDecideDecision call (incl. the early-return
+	// denies) so the decision is listable via GET /api/v1/decisions + explainable.
+	// correlationID is the SHARED cross-stage key (#2598): the inbound traceparent
+	// trace-id (or the freshly minted one), stable across the PEP's llm/tool/agent
+	// hops. Captured here, before recordDecideDecision may swap the RETURNED
+	// trace_id for an OTel-assigned one.
+	decisionAudit := &decisionAuditInput{
+		clientID:      authClientID,
+		requestID:     decisionID,
+		plane:         PlaneDecision, // every /api/v1/decide row records plane=decision
+		correlationID: traceID,
+	}
+
+	// auditEarlyDeny persists the canonical plane=decision audit row for an
+	// early-return path BEFORE the handler returns, then records the API metric.
+	// auditVerdict is canonical: AuditVerdictError for a malformed request (never
+	// evaluated), VerdictDeny for a security denial (canonicalizes to `blocked`).
+	// The "error" metric label is preserved from the prior behavior so existing
+	// Decision-Mode dashboards keep their cardinality.
+	auditEarlyDeny := func(auditVerdict, stg string, policyIDs, reasons []string) {
+		recordDecideDecision(ctx, decisionID, orgID, tenantID, stg, auditVerdict,
+			policyIDs, time.Since(startTime).Milliseconds(), reasons,
+			traceID, reqContext, contextTruncated, decisionAudit)
+		decideRequests.WithLabelValues("error", stg).Inc()
+	}
 
 	var req DecideRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		decideRequests.WithLabelValues("error", "unknown").Inc()
-		sendDecideError(w, "Invalid request body", http.StatusBadRequest, "", "")
+		// Malformed body — never evaluated → canonical 'error' (NOT 'blocked').
+		auditEarlyDeny(AuditVerdictError, "unknown", nil, []string{"invalid request body"})
+		sendDecideError(w, "Invalid request body", http.StatusBadRequest, decisionID, traceID)
 		return
 	}
+
+	// gateway_id + query are known now — capture them onto the audit identity so
+	// even the validation / impersonation denies record what was attempted.
+	decisionAudit.gatewayID = sanitizeGatewayID(req.CallerIdentity.GatewayID)
+	decisionAudit.query = req.Query
 
 	// Required field validation. Stage is required so the audit trail records
 	// which gateway layer issued the call; query is required so the policy
 	// engine has something to evaluate.
 	stage := strings.ToLower(strings.TrimSpace(req.Stage))
 	if !isValidStage(stage) {
-		decideRequests.WithLabelValues("error", "unknown").Inc()
-		sendDecideError(w, "stage is required and must be one of: llm, tool, agent", http.StatusBadRequest, "", "")
+		auditEarlyDeny(AuditVerdictError, "unknown", nil, []string{"invalid stage"})
+		sendDecideError(w, "stage is required and must be one of: llm, tool, agent", http.StatusBadRequest, decisionID, traceID)
 		return
 	}
 	if req.Query == "" {
-		decideRequests.WithLabelValues("error", stage).Inc()
-		sendDecideError(w, "query field is required", http.StatusBadRequest, "", "")
+		auditEarlyDeny(AuditVerdictError, stage, nil, []string{"query field is required"})
+		sendDecideError(w, "query field is required", http.StatusBadRequest, decisionID, traceID)
 		return
 	}
 
-	// Auth-derived identity is authoritative. apiAuthMiddleware has already
-	// stamped tenant/org/client into context; we read it back here.
-	authClientID := ClientIDFromContext(r.Context())
-	tenantID := TenantIDFromContext(r.Context())
-	orgID := OrgIDFromContext(r.Context())
-	authKind := AuthKindFromContext(r.Context())
-	ctx := r.Context()
+	// Body parsed + stage valid: canonicalize the customer-supplied request
+	// context once. The kept map (canonical keys -> sanitized values) is threaded
+	// into every verdict's OTel span attributes + audit row (incl. the
+	// impersonation denies below); contextTruncated flags that the key-count cap
+	// dropped surplus keys. A design partner's Layer-2 headers (X-AI-Agent /
+	// X-Session-ID / X-Leader-Identity) land here so the SIEM can join AxonFlow's
+	// decision record to BigQuery Cloud Audit Logs by session_id (#2509 / #2508).
+	reqContext, contextTruncated = canonicalizeRequestContext(req.Context, decisionContextAllowlist())
 
 	// In community mode the middleware defaults the client to "community";
 	// fall back to body-supplied caller_identity values so local-dev callers
@@ -352,21 +488,32 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			orgID = req.CallerIdentity.OrgID
 		}
 	} else {
-		// In non-community modes the body MUST NOT override the
-		// authenticated identity. We reject any body that asserts a
-		// different tenant/org than the credentials carry, to prevent
-		// a compromised PEP from impersonating a different tenant.
+		// In non-community modes the body MUST NOT override the authenticated
+		// identity. Reject any body that asserts a different tenant/org than the
+		// credentials carry, to prevent a compromised PEP from impersonating a
+		// different tenant. SECURITY (#2643): these denies were previously
+		// INVISIBLE — we now write an auditable `blocked` row capturing
+		// attempted-vs-actual. The row's tenant_id/org_id columns are the
+		// AUTHENTICATED (actual) identity; policy_details.attempted_* is what the
+		// caller tried to claim.
 		if req.CallerIdentity.TenantID != "" && req.CallerIdentity.TenantID != tenantID {
-			decideRequests.WithLabelValues("error", stage).Inc()
-			sendDecideError(w, "caller_identity.tenant_id does not match authenticated identity", http.StatusForbidden, "", "")
+			decisionAudit.securityEvent = "tenant_impersonation"
+			decisionAudit.attemptedTenantID = sanitizeAuditIdentity(req.CallerIdentity.TenantID)
+			auditEarlyDeny(VerdictDeny, stage, []string{"tenant_impersonation"}, []string{"caller_identity.tenant_id does not match authenticated identity"})
+			sendDecideError(w, "caller_identity.tenant_id does not match authenticated identity", http.StatusForbidden, decisionID, traceID)
 			return
 		}
 		if req.CallerIdentity.OrgID != "" && req.CallerIdentity.OrgID != orgID {
-			decideRequests.WithLabelValues("error", stage).Inc()
-			sendDecideError(w, "caller_identity.org_id does not match authenticated identity", http.StatusForbidden, "", "")
+			decisionAudit.securityEvent = "org_impersonation"
+			decisionAudit.attemptedOrgID = sanitizeAuditIdentity(req.CallerIdentity.OrgID)
+			auditEarlyDeny(VerdictDeny, stage, []string{"org_impersonation"}, []string{"caller_identity.org_id does not match authenticated identity"})
+			sendDecideError(w, "caller_identity.org_id does not match authenticated identity", http.StatusForbidden, decisionID, traceID)
 			return
 		}
 	}
+	// Audit row now records the effective (authenticated, or community-fallback)
+	// client identity.
+	decisionAudit.clientID = effectiveClientID
 
 	// Resolve user via the unified ResolveUser path so the policy engine
 	// receives the same user shape as Gateway Mode. In community mode this
@@ -400,58 +547,31 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 				Role: "service",
 			}
 		} else {
-			decideRequests.WithLabelValues("error", stage).Inc()
-			sendDecideError(w, userErr.Message, userErr.HTTPStatus, "", "")
+			// SECURITY (#2643): a supplied user_token that fails to resolve is a
+			// rejected access attempt — audit it as a blocked decision before
+			// returning, rather than 401-ing invisibly.
+			decisionAudit.securityEvent = "user_token_rejected"
+			auditEarlyDeny(VerdictDeny, stage, []string{"user_token_rejected"}, []string{userErr.Message})
+			sendDecideError(w, userErr.Message, userErr.HTTPStatus, decisionID, traceID)
 			return
 		}
 	}
 	if user.TenantID != client.TenantID {
-		decideRequests.WithLabelValues("error", stage).Inc()
-		sendDecideError(w, "Tenant mismatch", http.StatusForbidden, "", "")
+		// SECURITY (#2643): the resolved user's tenant disagrees with the client
+		// tenant — a token/tenant mismatch. Audit attempted-vs-actual before deny.
+		decisionAudit.securityEvent = "tenant_mismatch"
+		decisionAudit.attemptedTenantID = sanitizeAuditIdentity(user.TenantID)
+		auditEarlyDeny(VerdictDeny, stage, []string{"tenant_mismatch"}, []string{"Tenant mismatch"})
+		sendDecideError(w, "Tenant mismatch", http.StatusForbidden, decisionID, traceID)
 		return
 	}
 
-	// W3C trace_id: reuse the incoming traceparent header trace_id when
-	// present so multi-layer gateways stitch into one end-to-end trace
-	// (WS4 / closes design-partner gap #2). Otherwise mint a fresh
-	// 16-byte (32 hex) trace_id.
-	traceID := traceIDFromHeader(r.Header.Get("traceparent"))
-	if traceID == "" {
-		traceID = newW3CTraceID()
-	}
-
-	decisionID := uuid.New().String()
-
-	// Canonicalize + sanitize the customer-supplied request context once.
-	// The kept map (canonical keys -> sanitized values) is threaded into
-	// every verdict's OTel span attributes + audit row; contextTruncated
-	// flags that the key-count cap dropped surplus keys. A design partner's
-	// Layer-2 headers (X-AI-Agent / X-Session-ID / X-Leader-Identity)
-	// land here so the SIEM can join AxonFlow's decision record to BigQuery
-	// Cloud Audit Logs by session_id (#2509 / epic #2508).
-	reqContext, contextTruncated := canonicalizeRequestContext(req.Context, decisionContextAllowlist())
-
-	// Static identity for the audit_logs row, built once. Each verdict path
-	// below passes &decisionAudit so its decision (including the deny early
-	// returns) is listable via GET /api/v1/decisions and explainable.
-	decisionAudit := &decisionAuditInput{
-		clientID:  effectiveClientID,
-		requestID: decisionID,
-		userEmail: user.Email,
-		userRole:  user.Role,
-		userID:    user.ID,
-		query:     req.Query,
-		gatewayID: sanitizeGatewayID(req.CallerIdentity.GatewayID),
-		plane:     PlaneDecision, // every /api/v1/decide row records plane=decision
-		// correlationID is the SHARED key across the stages of one logical request
-		// (#2598). traceID here is the inbound traceparent's W3C trace-id when the
-		// PEP propagated one — the SAME value across its llm/tool/agent hops — or a
-		// freshly minted id otherwise (a single-shot call → its own singleton).
-		// Captured BEFORE recordDecideDecision, which may swap the RETURNED trace_id
-		// for an OTel-assigned one; the persisted correlation key stays this stable
-		// inbound/minted value so multi-stage grouping survives OTel being on.
-		correlationID: traceID,
-	}
+	// User identity is now resolved — complete the audit row so the terminal
+	// allow/deny path (and the policy-driven early returns below) carry the
+	// validated/synthesized user.
+	decisionAudit.userEmail = user.Email
+	decisionAudit.userRole = user.Role
+	decisionAudit.userID = user.ID
 
 	// Circuit breaker -- transient deny shape. Returns HTTP 503 so the PEP
 	// adapter can apply its configured fail-open / fail-closed posture.
@@ -1092,6 +1212,30 @@ type decisionAuditInput struct {
 	// JSONB so obligations are queryable structure, not flattened into the
 	// free-text policy_details->>'reason'. Empty/nil → NULL column.
 	obligations []DecisionObligation
+	// securityEvent, when set, classifies this row as a security-relevant denial
+	// (#2643): "tenant_impersonation" / "org_impersonation" (a body
+	// caller_identity that disagrees with the authenticated credentials),
+	// "tenant_mismatch" (the resolved user's tenant ≠ the client tenant), or
+	// "user_token_rejected" (a supplied user_token that failed to resolve). Lands
+	// at policy_details->>'security_event' so the audit feed can filter every
+	// impersonation attempt with one JSONB predicate. Empty for normal rows.
+	securityEvent string
+	// attemptedTenantID / attemptedOrgID capture the identity the caller ASSERTED
+	// on a rejected impersonation attempt (#2643) — the attempted-vs-actual pair:
+	// the row's tenant_id/org_id COLUMNS hold the authenticated (actual) identity;
+	// these (at policy_details->>'attempted_tenant_id' / 'attempted_org_id') hold
+	// what the caller tried to claim. Sanitized + length-capped (untrusted input).
+	// Empty when not applicable.
+	attemptedTenantID string
+	attemptedOrgID    string
+	// redactedFields → audit_logs.redacted_fields JSONB (#2643). Empty → NULL.
+	// /decide is a PDP — it emits redact_pii OBLIGATIONS (what the PEP must do) but
+	// does not itself redact content — so this is NULL on the decision plane
+	// today; the column is wired (was previously omitted from the agent INSERT, so
+	// only the orchestrator BatchWriter populated it) so an agent-side redaction
+	// path can populate it and keep agent redactions queryable alongside the
+	// orchestrator's.
+	redactedFields []string
 }
 
 // maxGatewayIDLen bounds a recorded gateway_id. Gateway ids are short origin
@@ -1104,6 +1248,22 @@ const maxGatewayIDLen = 128
 // Returns "" for an empty/whitespace input (the common case for callers that
 // don't assert an origin).
 func sanitizeGatewayID(s string) string {
+	return boundedAuditString(s, maxGatewayIDLen)
+}
+
+// sanitizeAuditIdentity bounds a caller-asserted identity (the attempted
+// tenant_id / org_id on a rejected impersonation attempt) before it lands in the
+// audit JSONB (#2643). The attempted value is UNTRUSTED — a hostile PEP could
+// send an oversized or control-char-laden string — so it gets the same
+// strip-unprintable + length-cap treatment as a gateway_id.
+func sanitizeAuditIdentity(s string) string {
+	return boundedAuditString(s, maxGatewayIDLen)
+}
+
+// boundedAuditString trims, strips control/unprintable runes, and caps a
+// caller-supplied string to max bytes on a rune boundary so the recorded value
+// is bounded, valid UTF-8. Returns "" for empty/whitespace input.
+func boundedAuditString(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
@@ -1113,7 +1273,7 @@ func sanitizeGatewayID(s string) string {
 		if !unicode.IsPrint(r) {
 			continue
 		}
-		if b.Len()+utf8.RuneLen(r) > maxGatewayIDLen {
+		if b.Len()+utf8.RuneLen(r) > max {
 			break
 		}
 		b.WriteRune(r)
@@ -1182,8 +1342,21 @@ func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stag
 // fallbacks. The sanitized request context lands at policy_details->'context'
 // (canonical snake_case keys, string values); truncation is flagged at
 // policy_details->'context_truncated'.
+//
+// Best-effort means the write never changes the verdict the PEP already holds —
+// but it is no longer SILENT (#2643): every no-write branch (no DB, empty
+// decision_id, marshal failure, INSERT error) increments
+// decideAuditWriteFailures{reason} so operators can alert on a degraded audit
+// path. A failure on a DENY path does NOT weaken the deny (the request is
+// already denied); we deliberately do not additionally hard-fail the response,
+// which would convert a clean security deny into a confusing 5xx for the PEP.
 func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, reqContext map[string]string, contextTruncated bool, audit decisionAuditInput) {
-	if db == nil || decisionID == "" {
+	if db == nil {
+		decideAuditWriteFailures.WithLabelValues("nodb").Inc()
+		return
+	}
+	if decisionID == "" {
+		decideAuditWriteFailures.WithLabelValues("empty_decision_id").Inc()
 		return
 	}
 	if policyIDs == nil {
@@ -1222,8 +1395,22 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	if audit.correlationID != "" {
 		details["correlation_id"] = audit.correlationID
 	}
+	// #2643: security-relevant denial classification + attempted-vs-actual
+	// identity. The row's tenant_id/org_id COLUMNS carry the ACTUAL (authenticated)
+	// identity; these record the security event + what the caller TRIED to claim,
+	// so a single JSONB predicate surfaces every impersonation/mismatch attempt.
+	if audit.securityEvent != "" {
+		details["security_event"] = audit.securityEvent
+	}
+	if audit.attemptedTenantID != "" {
+		details["attempted_tenant_id"] = audit.attemptedTenantID
+	}
+	if audit.attemptedOrgID != "" {
+		details["attempted_org_id"] = audit.attemptedOrgID
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
+		decideAuditWriteFailures.WithLabelValues("marshal").Inc()
 		log.Printf("⚠️ [Decide] audit log marshal failed (non-fatal): %v", err)
 		return
 	}
@@ -1283,13 +1470,47 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		correlationIDArg = audit.correlationID
 	}
 
+	// #2643 / #2638: persist the CANONICAL audit verdict (allowed|blocked|
+	// redacted|needs_approval|error), translated from the wire verdict — never the
+	// legacy token allow/deny, which the audit summary handler silently buckets as
+	// "not blocked".
+	//
+	// SCOPED to the planes that feed the WIRE verdict (allow/deny): plane=decision
+	// (/api/v1/decide) and, as of #2686, plane=openai_compat — the OpenAI-compat
+	// surface passes the same wire verdict so its OTel span vocab stays aligned with
+	// /decide, and it is NEW to audit_logs (no prior rows / E2E to disturb), so
+	// canonicalizing it here is safe. writeDecisionAuditLog is also SHARED with the
+	// MCP planes (mcp_handler.go routes through it), which already emit the CANONICAL
+	// vocabulary directly — re-canonicalizing them here would be a no-op at best and
+	// risk a freshly-merged plane's runtime E2E at worst, so they stay excluded. The
+	// one-time historical rows across ALL planes are normalized by migration 122; the
+	// reader-side normalizer is the #2638 follow-up.
+	policyDecision := verdict
+	if plane == PlaneDecision || plane == PlaneOpenAICompat {
+		policyDecision = canonicalAuditVerdict(verdict)
+	}
+
+	// #2643: redacted_fields → JSONB array column (NULL when none). Previously
+	// omitted from the agent INSERT (only the orchestrator BatchWriter populated
+	// it); wired here so agent redactions are queryable. /decide is a PDP — it
+	// emits redact_pii OBLIGATIONS, it does not itself redact — so it leaves this
+	// empty (→ NULL) today.
+	var redactedFieldsArg interface{}
+	if len(audit.redactedFields) > 0 {
+		if b, mErr := json.Marshal(audit.redactedFields); mErr == nil {
+			redactedFieldsArg = b
+		} else {
+			log.Printf("⚠️ [Decide] redacted_fields marshal failed (non-fatal): %v", mErr)
+		}
+	}
+
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, decision_id, plane, obligations,
-			correlation_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			correlation_id, redacted_fields
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`,
 		"decide_"+decisionID, // id (PK; one row per decision)
 		requestID,            // request_id
@@ -1303,14 +1524,16 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		"decision_"+stage,    // request_type — bounded: decision_llm|tool|agent
 		query,                // query
 		queryHash,            // query_hash
-		verdict,              // policy_decision — allow|deny|needs_approval
+		policyDecision,       // policy_decision — CANONICAL: allowed|blocked|redacted|needs_approval|error (#2643)
 		detailsJSON,          // policy_details (JSONB) — decision_id still mirrored here
 		decisionID,           // decision_id (first-class column; #2592)
 		plane,                // plane (surface discriminator; #2592)
 		obligationsJSON,      // obligations (JSONB or NULL; #2592)
 		correlationIDArg,     // correlation_id (first-class column or NULL; #2598)
+		redactedFieldsArg,    // redacted_fields (JSONB array or NULL; #2643)
 	)
 	if err != nil {
+		decideAuditWriteFailures.WithLabelValues("insert").Inc()
 		log.Printf("⚠️ [Decide] audit log insert failed (non-fatal): %v", err)
 	}
 }

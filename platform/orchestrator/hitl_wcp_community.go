@@ -145,7 +145,7 @@ func InitializeWCPHITL(db *sql.DB, wcpAdapter *WCPPolicyAdapter) error {
 	}
 	wcpAdapter.SetHITLApproval(adapter)
 
-	// Start auto-reject goroutine for expired eval approvals.
+	// Start auto-expiry goroutine for timed-out eval approvals.
 	// The goroutine runs until the context is cancelled (server shutdown).
 	ctx, cancel := context.WithCancel(context.Background())
 	go runEvalApprovalExpiryLoop(ctx, db)
@@ -171,7 +171,7 @@ func StopEvalApprovalExpiry() {
 	}
 }
 
-// runEvalApprovalExpiryLoop periodically checks for expired pending approvals and auto-rejects them.
+// runEvalApprovalExpiryLoop periodically checks for timed-out pending approvals and auto-expires them.
 // Runs every 5 minutes until ctx is cancelled.
 func runEvalApprovalExpiryLoop(ctx context.Context, db *sql.DB) {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -188,11 +188,22 @@ func runEvalApprovalExpiryLoop(ctx context.Context, db *sql.DB) {
 	}
 }
 
-// expireEvalApprovals auto-rejects expired pending approvals and aborts their workflows.
-// This mirrors the explicit reject API path (service.RejectStep) which:
-// 1. Updates hitl_approval_queue status to 'rejected'
-// 2. Updates workflow_steps.approval_status to 'rejected'
+// expireEvalApprovals auto-EXPIRES timed-out pending approvals and aborts their
+// workflows. A timeout is NOT a human rejection, so it MUST be recorded as
+// status='expired', distinct from the explicit reject API path (service.RejectStep)
+// which writes 'rejected'. Mislabeling timeouts as 'rejected' inflated the
+// eu_ai_act_hitl_metrics rejected_count — the regulator-facing reject rate — with
+// auto-timeouts (#2654, audit epic #2625 sibling #1).
+//
+// This path:
+// 1. Updates hitl_approval_queue status to 'expired' (NOT 'rejected')
+// 2. Updates workflow_steps.approval_status to 'expired' (NOT 'rejected')
 // 3. Aborts the associated workflow
+//
+// The 'expired' value is permitted by the hitl_valid_status CHECK (migration 025)
+// and matches the canonical expire_hitl_requests() SQL function. reviewed_at is
+// intentionally NOT set: an auto-expiry is not a human review, so setting it would
+// pollute the view's avg_review_time_seconds (which filters reviewed_at IS NOT NULL).
 func expireEvalApprovals(db *sql.DB) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -201,7 +212,7 @@ func expireEvalApprovals(db *sql.DB) {
 	// (contains workflow_id and step_id for precise workflow_steps targeting).
 	rows, err := db.QueryContext(ctx,
 		`UPDATE hitl_approval_queue
-		 SET status = 'rejected', reviewed_at = NOW(), reviewer_id = 'system:auto-expired'
+		 SET status = 'expired', updated_at = NOW()
 		 WHERE status = 'pending' AND expires_at < NOW()
 		 RETURNING request_id, tenant_id, original_query, request_context`)
 	if err != nil {
@@ -247,17 +258,20 @@ func expireEvalApprovals(db *sql.DB) {
 		return
 	}
 
-	log.Printf("🕐 [HITL-Expiry] Auto-rejected %d expired approval(s)", len(expired))
+	log.Printf("🕐 [HITL-Expiry] Auto-expired %d timed-out approval(s)", len(expired))
 
 	// Step 2: For each expired approval, update workflow_steps and abort the workflow.
 	// Uses workflow_id + step_id from request_context for precise targeting,
 	// falling back to tenant + step_name if context is missing (legacy approvals).
 	for _, ea := range expired {
 		if ea.workflowID != "" && ea.stepID != "" {
-			// Precise path: target exact workflow_step by (workflow_id, step_id)
+			// Precise path: target exact workflow_step by (workflow_id, step_id).
+			// approval_status='expired' (NOT 'rejected'): a timeout is not a human
+			// reject. approved_by='system:auto-expired' is preserved as the system
+			// actor marker (also matched by the fallback abort query below).
 			_, err := db.ExecContext(ctx,
 				`UPDATE workflow_steps
-				 SET approval_status = 'rejected', approved_by = 'system:auto-expired', approved_at = NOW()
+				 SET approval_status = 'expired', approved_by = 'system:auto-expired', approved_at = NOW()
 				 WHERE workflow_id = $1
 				 AND step_id = $2
 				 AND approval_status = 'pending'`,
@@ -271,7 +285,7 @@ func expireEvalApprovals(db *sql.DB) {
 			log.Printf("⚠️  [HITL-Expiry] Approval %s missing workflow_id/step_id in context, using fallback matching", ea.requestID)
 			_, err := db.ExecContext(ctx,
 				`UPDATE workflow_steps ws
-				 SET approval_status = 'rejected', approved_by = 'system:auto-expired', approved_at = NOW()
+				 SET approval_status = 'expired', approved_by = 'system:auto-expired', approved_at = NOW()
 				 FROM workflows w
 				 WHERE ws.workflow_id = w.workflow_id
 				 AND w.tenant_id = $1

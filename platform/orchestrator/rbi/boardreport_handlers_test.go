@@ -40,7 +40,7 @@ func (m *MockBoardReportService) GenerateReport(ctx context.Context, orgID strin
 		GeneratedBy:      req.GeneratedBy,
 		GeneratedByEmail: req.GeneratedByEmail,
 		GeneratedAt:      time.Now().UTC(),
-		GenerationMethod: "automated",
+		GenerationMethod: "automatic",
 		ApprovalStatus:   ReportApprovalDraft,
 		ComplianceScore:  95.0,
 		CreatedAt:        time.Now().UTC(),

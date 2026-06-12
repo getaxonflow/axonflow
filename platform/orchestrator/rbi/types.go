@@ -646,6 +646,15 @@ type BoardReport struct {
 	IncidentsOpen              int            `json:"incidents_open"`
 	AverageResolutionTimeHours float64        `json:"average_resolution_time_hours,omitempty"`
 
+	// Incidents that LEGALLY REQUIRE a board / RBI notification which has not
+	// been sent yet (the GENERATED *_notification_required column is true but
+	// the corresponding *_notified flag is still false). Derived at generation
+	// time from GetPendingNotifications — not a stored board_reports column —
+	// so the board sees an unsent-but-required notification distinctly from a
+	// generic open-critical incident.
+	PendingBoardNotifications int `json:"pending_board_notifications"`
+	PendingRBINotifications   int `json:"pending_rbi_notifications"`
+
 	// Key Metrics
 	KeyMetrics map[string]interface{} `json:"key_metrics,omitempty"`
 

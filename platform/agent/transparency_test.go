@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"axonflow/platform/shared/version"
 )
 
 // =============================================================================
@@ -687,6 +689,37 @@ func TestGetSystemIDWithEmptyVersion(t *testing.T) {
 	id := getSystemID()
 	if id != "axonflow-agent/1.0.0" {
 		t.Errorf("Empty version should fall back to default, got %s", id)
+	}
+}
+
+// TestGetPlatformVersionBakedWinsOverEnv is the #2662 anti-spoof guard at the
+// /health reader level: a version baked into the binary must win over a
+// conflicting AXONFLOW_VERSION env var, so the agent's /health reports the true
+// shipped binary version and cannot be overridden at runtime.
+func TestGetPlatformVersionBakedWinsOverEnv(t *testing.T) {
+	prev := version.Version
+	version.Version = "8.7.0"
+	t.Cleanup(func() { version.Version = prev })
+	t.Setenv("AXONFLOW_VERSION", "1.2.3-spoofed")
+
+	if got := GetPlatformVersion(); got != "8.7.0" {
+		t.Errorf("GetPlatformVersion() = %q, want baked 8.7.0 (env must NOT win)", got)
+	}
+	if id := getSystemID(); id != "axonflow-agent/8.7.0" {
+		t.Errorf("getSystemID() = %q, want axonflow-agent/8.7.0", id)
+	}
+}
+
+// TestGetPlatformVersionEnvFallbackWhenUnbaked covers the dev path: with no
+// baked version, the env var is used (existing behaviour preserved).
+func TestGetPlatformVersionEnvFallbackWhenUnbaked(t *testing.T) {
+	prev := version.Version
+	version.Version = ""
+	t.Cleanup(func() { version.Version = prev })
+	t.Setenv("AXONFLOW_VERSION", "4.8.0")
+
+	if got := GetPlatformVersion(); got != "4.8.0" {
+		t.Errorf("GetPlatformVersion() = %q, want env fallback 4.8.0", got)
 	}
 }
 

@@ -7776,7 +7776,7 @@ components:
           enum: [allow, block, require_approval]
         approval_status:
           type: string
-          enum: [pending, approved, rejected]
+          enum: [pending, approved, rejected, expired]
         gate_checked_at:
           type: string
           format: date-time
@@ -7784,8 +7784,9 @@ components:
           type: string
           description: |
             User email of the approver when `approval_status` is
-            `approved`. Empty for `pending` and may be empty for
-            `rejected` if the step was auto-expired.
+            `approved`. Empty for `pending`, and empty for `expired`
+            (auto-timeout — no human reviewer) or for `rejected` paths
+            without a recorded reviewer.
         completed_at:
           type: string
           format: date-time
@@ -8223,7 +8224,7 @@ components:
           example: "step-2"
         status:
           type: string
-          enum: [pending, approved, rejected]
+          enum: [pending, approved, rejected, expired]
           description: |
             Flat string alias of `approval_status`. Both fields always carry
             the same value — `status` is convenient for loggers, dashboards,
@@ -8248,8 +8249,11 @@ components:
           example: "Approved: High-value transfer requires oversight"
         approval_status:
           type: string
-          enum: [pending, approved, rejected]
-          description: Terminal approval status after the mutation landed
+          enum: [pending, approved, rejected, expired]
+          description: |
+            Terminal approval status after the mutation landed. `expired` is an
+            auto-timeout (Evaluation-tier) — a terminal not-approved state that
+            blocks the step, kept distinct from a human `rejected`.
           example: "approved"
         approval_id:
           type: string

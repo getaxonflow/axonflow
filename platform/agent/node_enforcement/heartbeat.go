@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/shared/version"
 )
 
 // HeartbeatService manages agent/orchestrator heartbeats for node count tracking
@@ -214,10 +216,12 @@ func hashLicenseKey(licenseKey string) string {
 func getHostInfo() (*HostInfo, error) {
 	hostname, _ := os.Hostname()
 
-	// Get version from environment or default
-	version := os.Getenv("AXONFLOW_VERSION")
-	if version == "" {
-		version = "1.0.0"
+	// Get version, preferring the build-baked value (#2662) over the env var so
+	// the heartbeat reports the true shipped binary version, falling back to env
+	// (dev) then a default.
+	ver := version.Resolve()
+	if ver == "" {
+		ver = "1.0.0"
 	}
 
 	// Get region from environment
@@ -244,7 +248,7 @@ func getHostInfo() (*HostInfo, error) {
 		Hostname:  hostname,
 		IPAddress: ipAddress,
 		Port:      port,
-		Version:   version,
+		Version:   ver,
 		OS:        fmt.Sprintf("%s/%s", os.Getenv("GOOS"), os.Getenv("GOARCH")),
 		Region:    region,
 	}, nil

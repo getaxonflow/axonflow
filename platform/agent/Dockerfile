@@ -5,6 +5,14 @@ FROM golang:1.26-alpine AS builder
 # Default to community - enterprise builds must explicitly set EDITION=enterprise
 ARG EDITION=community
 
+# Platform version, baked into the binary via -X ldflags (#2662) so /health
+# reports the true shipped version and cannot be spoofed by a runtime env var.
+# Fed by build.yml's AXONFLOW_VERSION build-arg (read from the repo VERSION file)
+# — the SAME source as the io.opencontainer.image.version label below, so the
+# baked binary version and the image label never drift. Re-declared here in the
+# builder stage (ARG scope is per-stage); the final stage declares it again.
+ARG AXONFLOW_VERSION=9.0.0
+
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -91,7 +99,7 @@ RUN --mount=type=bind,source=.,target=/src \
 # For enterprise builds, include the enterprise tag
 # For Community builds, no tag is needed (uses Community stubs)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
-    -trimpath -ldflags="-s -w" \
+    -trimpath -ldflags="-s -w -X axonflow/platform/shared/version.Version=${AXONFLOW_VERSION}" \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
     -o /app/agent ./cmd/agent
 
@@ -102,7 +110,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
 # - OSS repo: Only has migrations/core/
 # - Enterprise repo: Has migrations/core/, migrations/enterprise/, migrations/industry/
 # Just copy what exists - no conditional logic needed
-FROM alpine:3.23 AS migrations-prep
+FROM alpine:3.24 AS migrations-prep
 
 # Copy migrations directory as-is from the repo
 COPY migrations/ /migrations/
@@ -128,9 +136,9 @@ RUN set -e && \
     echo "Total: $total migration files"
 
 # Final stage - minimal runtime image
-FROM alpine:3.23
+FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=8.7.0
+ARG AXONFLOW_VERSION=9.0.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

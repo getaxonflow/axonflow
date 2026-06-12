@@ -37,8 +37,8 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 			wantOrgID,     // org_id — THIS is the v9 fix
 			"mcp_check_policy",
 			"SELECT 1",
-			sqlmock.AnyArg(), // query_hash
-			"deny",
+			sqlmock.AnyArg(),     // query_hash
+			"blocked",            // policy_decision — canonical past-tense vocab (#2641/#2638)
 			sqlmock.AnyArg(),     // policy_details JSONB
 			"decision-1",         // decision_id (first-class column; #2592)
 			PlaneMCP,             // plane — MCP check-input surface
@@ -84,7 +84,7 @@ func TestWriteOverrideUsedEvent_OrgIDPersisted(t *testing.T) {
 			"override_used",
 			"override applied",
 			"none",
-			"allow",
+			"allowed",          // policy_decision — override flips deny→allowed (#2641/#2638)
 			sqlmock.AnyArg(),   // policy_details JSONB
 			"decision-1",       // decision_id (first-class column; #2592)
 			PlaneMCP,           // plane — MCP check-input override surface

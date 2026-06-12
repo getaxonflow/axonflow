@@ -76,6 +76,7 @@ var Templates = []string{
 	"/api/v1/connectors/refresh",
 	"/api/v1/connectors/refresh/{tenant_id}",
 	"/api/v1/connectors/refresh/{tenant_id}/{connector_name}",
+	"/api/v1/decide",
 	"/api/v1/euaiact/export",
 	"/api/v1/euaiact/summary",
 	"/api/v1/hitl/queue",
@@ -99,6 +100,7 @@ var Templates = []string{
 	"/mcp/tools/execute",
 	"/metrics",
 	"/prometheus",
+	"/v1/chat/completions",
 }
 
 // paramSegmentRE matches a single OpenAPI path parameter (e.g.

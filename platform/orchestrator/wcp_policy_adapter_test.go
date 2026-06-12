@@ -10,6 +10,7 @@ import (
 
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
+	sharedaudit "axonflow/platform/shared/audit"
 
 	"github.com/google/uuid"
 )
@@ -909,8 +910,11 @@ func TestWCPAuditAdapter_LogWorkflowOperation_RequireApproval(t *testing.T) {
 
 	select {
 	case auditEntry := <-logger.auditQueue:
-		if auditEntry.PolicyDecision != "pending_approval" {
-			t.Errorf("Expected policy decision 'pending_approval', got %q", auditEntry.PolicyDecision)
+		// #2638: require_approval maps to the canonical 'needs_approval', NOT the
+		// off-set 'pending_approval' this writer historically emitted (which the
+		// migration-123 CHECK rejects). See workflowAuditDecision.
+		if auditEntry.PolicyDecision != sharedaudit.DecisionNeedsApproval {
+			t.Errorf("Expected policy decision %q, got %q", sharedaudit.DecisionNeedsApproval, auditEntry.PolicyDecision)
 		}
 	default:
 		t.Error("Expected audit entry to be enqueued")
