@@ -11,7 +11,7 @@ ARG EDITION=community
 # — the SAME source as the io.opencontainer.image.version label below, so the
 # baked binary version and the image label never drift. Re-declared here in the
 # builder stage (ARG scope is per-stage); the final stage declares it again.
-ARG AXONFLOW_VERSION=9.1.0
+ARG AXONFLOW_VERSION=9.1.1
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -149,7 +149,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=9.1.0
+ARG AXONFLOW_VERSION=9.1.1
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata
@@ -173,7 +173,11 @@ LABEL name="AxonFlow Orchestrator" \
       io.opencontainer.image.url="https://getaxonflow.com" \
       io.opencontainer.image.documentation="https://docs.getaxonflow.com"
 
-RUN apk --no-cache add ca-certificates curl tzdata
+# Install runtime deps and upgrade libssl3/libcrypto3 to pick up the
+# CVE-2026-45447 patch (OpenSSL 3.5.6-r0 -> >= 3.5.7-r0). The upgrade pulls
+# the latest patched build from the alpine 3.24 repo at build time.
+RUN apk --no-cache add ca-certificates curl tzdata && \
+    apk --no-cache upgrade libssl3 libcrypto3
 
 # Create non-root user
 RUN addgroup -g 1001 -S axonflow && \

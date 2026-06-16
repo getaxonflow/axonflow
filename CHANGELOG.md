@@ -10,6 +10,24 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.1.1] - 2026-06-16 (security patch: container CVE, CodeQL hardening, IaC encryption)
+
+**Security-only patch.** No feature or behavior changes. Remediates the high and critical findings from the 2026-06-16 security sweep (epic #2711).
+
+### Security
+
+**Community.**
+
+- **Base image: OpenSSL/libssl3 bumped past CVE-2026-45447.** The agent and orchestrator runtime images now run `apk upgrade libssl3 libcrypto3` so the layer ships OpenSSL >= 3.5.7-r0 (was 3.5.6-r0). A local Trivy rescan confirms the container CVE is gone.
+- **Reflected-XSS hardening on the HTTP response paths.** The community-SaaS recovery confirmation page now renders through `html/template` (contextual auto-escaping) instead of `fmt.Sprintf` with a hand-rolled escaper; the transparent response-writer wrappers (idempotency replay, transparency headers, telemetry status capture, customer-portal request logging) now set `X-Content-Type-Options: nosniff` so a reflected value cannot be MIME-sniffed as HTML.
+- **Session identifiers are masked in logs.** The MCP server handler now logs only a short prefix of session IDs (bearer-style handles), never the full value.
+- **Path-injection guard on the cross-system HITL webhook test harness.** Dump filenames are restricted to a flat token, so a crafted `approval_id` cannot traverse outside the dump directory.
+
+**Enterprise / infrastructure.**
+
+- **Alert SNS topics are now encrypted with a customer-managed KMS key.** The alarm, first-payment, and synthetic-monitoring alert topics use a CMK whose key policy grants exactly the CloudWatch alarm service / canary Lambda the publish permissions they require.
+- **New gitleaks CI workflow.** Runs the existing `.gitleaks.toml` rules on every PR/push commit delta, complementing the pre-commit hook and GitHub push-protection. The esbuild dev-dependency in the MCP-policies example was bumped to 0.28.1.
+
 ## [9.1.0] - 2026-06-12 — Audit coverage made permanent, policy-inventory truth, a portal policy-display fix, and the sensitive-data lever now enforced
 
 **Community.** v9.0.0 converged every enforcement plane onto one canonical audit vocabulary and closed the then-known early-return-deny holes by hand. v9.1.0 makes that coverage **durable** instead of a recurring pre-release sweep: a deterministic CI gate now fails the build whenever a Policy Enforcement Point's deny path doesn't write a canonical `audit_logs` row, the last remaining agent-plane gaps are closed (so the gate reports zero deferred exceptions), the built-in policy inventory is pinned to a single source of truth, a customer-portal bug that silently hid most seeded system policies is fixed, and the `sensitive-data` governance lever — long documented but inert — now actually enforces. **One behavior change to note:** the `strict` and `compliance` profiles now BLOCK credential/secret detections that previously only logged (see Fixed); set `SENSITIVE_DATA_ACTION=log` to retain the prior behavior. The audit and inventory changes are otherwise additive; a single data migration realigns a legacy sensitive-pattern phase column to the active action with no behavior change.

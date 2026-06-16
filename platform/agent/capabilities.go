@@ -92,12 +92,17 @@ func getSDKCompatibility() SDKCompatInfo {
 			"java":       "8.0.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
-		// with each SDK's release-train tag.
+		// with each SDK's release-train tag. java bumped 8.5.0 -> 8.5.1 in
+		// the 9.1.1 security patch (2026-06-16): 8.5.1 adds a production
+		// guard around the opt-in insecure-TLS dev hatch plus dependency
+		// CVE clears. python/typescript/go stay 8.5.0 (no SDK code change in
+		// those three for 9.1.1; their security fixes were dev-dep lockfile
+		// bumps that do not change the published artifact).
 		RecommendedSDKVersion: map[string]string{
 			"python":     "8.5.0",
 			"typescript": "8.5.0",
 			"go":         "8.5.0",
-			"java":       "8.5.0",
+			"java":       "8.5.1",
 		},
 	}
 }
@@ -144,14 +149,17 @@ func getPluginCompatibility() PluginCompatInfo {
 		// cursor stays 1.5.3 (no 1.6.0 cut). codex stays 1.5.2 (its v8.5.2 fix
 		// was documentation-only; no codex 1.5.3 was cut); openclaw bumped
 		// 2.6.1 -> 2.6.5 to track its latest published release (the prior value
-		// lagged the registry). Plugin tags are live on their registries
-		// (openclaw 2.6.5 on npm, claude-code 1.6.0 + cursor 1.5.3 + codex
-		// 1.5.2 — claude-code/cursor on the GitHub marketplace, codex on
-		// ClawHub) — plugins below the recommended version receive an
+		// lagged the registry). openclaw bumped 2.6.5 -> 2.6.6 in the 9.1.1
+		// security patch (2026-06-16): 2.6.6 clears a runtime protobufjs CVE
+		// and is republished on ClawHub/npm. claude-code/cursor/codex are
+		// unchanged for 9.1.1. Plugin tags are live on their registries
+		// (openclaw 2.6.6 on npm/ClawHub, claude-code 1.6.0 + cursor 1.5.3 +
+		// codex 1.5.2; claude-code/cursor on the GitHub marketplace, codex on
+		// ClawHub). Plugins below the recommended version receive an
 		// actionable upgrade-warning header on every governed call; the
 		// MinPluginVersion floor stays 1.4.0 / 2.4.0.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.6.5",
+			"openclaw":    "2.6.6",
 			"claude-code": "1.6.0",
 			"cursor":      "1.5.3",
 			"codex":       "1.5.2",

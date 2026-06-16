@@ -647,7 +647,7 @@ func handleMCPPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[MCP-Server] → %s (id=%v, session=%s)", logutil.Sanitize(req.Method), req.ID, logutil.Sanitize(r.Header.Get(mcpSessionHeaderKey)))
+	log.Printf("[MCP-Server] → %s (id=%v, session=%s)", logutil.Sanitize(req.Method), req.ID, logutil.MaskSecret(logutil.Sanitize(r.Header.Get(mcpSessionHeaderKey)), 8))
 
 	switch req.Method {
 	case "initialize":
@@ -759,7 +759,9 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 	mcpSessions[sessionID] = session
 	mcpSessionsMu.Unlock()
 
-	log.Printf("[MCP-Server] Session created: %s (tenant=%s, client=%s)", logutil.Sanitize(sessionID), logutil.Sanitize(tenantID), logutil.Sanitize(clientID))
+	// sessionID is a bearer-style session handle: log only a short prefix so a
+	// leaked log line cannot be replayed as a session token (go/clear-text-logging).
+	log.Printf("[MCP-Server] Session created: %s (tenant=%s, client=%s)", logutil.MaskSecret(sessionID, 8), logutil.Sanitize(tenantID), logutil.Sanitize(clientID))
 
 	// Parse initialize params for clientInfo and protocolVersion
 	var clientProtocolVersion string
@@ -1113,7 +1115,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		if session != nil {
 			// Enforce TTL on lookup
 			if time.Since(session.lastUsed) > mcpSessionTTL {
-				log.Printf("[MCP-Server] Session %s expired (last used %v ago)", logutil.Sanitize(sessionID), time.Since(session.lastUsed))
+				log.Printf("[MCP-Server] Session %s expired (last used %v ago)", logutil.MaskSecret(sessionID, 8), time.Since(session.lastUsed))
 				mcpSessionsMu.Lock()
 				delete(mcpSessions, sessionID)
 				mcpSessionsMu.Unlock()
@@ -1124,7 +1126,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 					callerClientID := extractClientID(r)
 					if callerClientID != "" && callerClientID != session.clientID {
 						log.Printf("[MCP-Server] Session %s: client ID mismatch (session=%s, caller=%s)",
-							logutil.Sanitize(sessionID), logutil.Sanitize(session.clientID), logutil.Sanitize(callerClientID))
+							logutil.MaskSecret(sessionID, 8), logutil.Sanitize(session.clientID), logutil.Sanitize(callerClientID))
 						return nil
 					}
 				}
