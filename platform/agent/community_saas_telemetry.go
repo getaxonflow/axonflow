@@ -472,6 +472,9 @@ func (sw *statusWriter) WriteHeader(code int) {
 		sw.statusCode = code
 		sw.written = true
 	}
+	// Defense-in-depth: telemetry endpoints emit application/json; nosniff
+	// stops a browser from MIME-sniffing a reflected value as HTML.
+	sw.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 	sw.ResponseWriter.WriteHeader(code)
 }
 
@@ -479,6 +482,7 @@ func (sw *statusWriter) Write(b []byte) (int, error) {
 	if !sw.written {
 		sw.written = true
 	}
+	sw.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 	return sw.ResponseWriter.Write(b)
 }
 

@@ -509,6 +509,9 @@ func (tw *TransparencyResponseWriter) WriteHeader(statusCode int) {
 		tw.tc.SetHeaders(tw.ResponseWriter)
 		tw.headersWritten = true
 	}
+	// Defense-in-depth: agent responses are application/json; nosniff stops a
+	// browser from MIME-sniffing a reflected value as HTML.
+	tw.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 	tw.mu.Unlock()
 	tw.ResponseWriter.WriteHeader(statusCode)
 }
@@ -521,6 +524,7 @@ func (tw *TransparencyResponseWriter) Write(data []byte) (int, error) {
 		tw.tc.SetHeaders(tw.ResponseWriter)
 		tw.headersWritten = true
 	}
+	tw.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 	tw.mu.Unlock()
 	return tw.ResponseWriter.Write(data)
 }

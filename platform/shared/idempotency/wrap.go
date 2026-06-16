@@ -66,6 +66,7 @@ func Wrap(
 		log.Printf("[Idempotency] lookup error endpoint=%s key=%s err=%v — falling through to handler", endpoint, redactKey(key), err)
 	} else if cached != nil {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Idempotent-Replayed", "true")
 		w.WriteHeader(cached.StatusCode)
 		if _, err := w.Write(cached.Body); err != nil {
@@ -105,6 +106,9 @@ func (rr *responseRecorder) WriteHeader(code int) {
 	}
 	rr.status = code
 	rr.wroteHeader = true
+	// Defense-in-depth: the wrapped endpoints emit application/json; nosniff
+	// stops a browser from MIME-sniffing a reflected value as HTML.
+	rr.ResponseWriter.Header().Set("X-Content-Type-Options", "nosniff")
 	rr.ResponseWriter.WriteHeader(code)
 }
 

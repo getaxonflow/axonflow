@@ -1,0 +1,59 @@
+name: Gitleaks
+
+# Secret-scanning guard. Runs the same gitleaks rules as the pre-commit hook
+# (.pre-commit-config.yaml / .gitleaks.toml) in CI so a hardcoded key cannot
+# land even if a contributor has not installed the hook. Complements GitHub's
+# native push-protection / secret-scanning.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+# Least privilege: gitleaks only needs to read the checked-out tree.
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Scan for hardcoded secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history so the commit range below can be diffed.
+          fetch-depth: 0
+
+      - name: Run gitleaks (scan PR/push delta only)
+        env:
+          # Keep in lockstep with the rev in .pre-commit-config.yaml.
+          GITLEAKS_VERSION: 8.21.2
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          # Scan ONLY the commits introduced by this PR/push. A full-tree scan
+          # would re-report the ~600 placeholder keys in *.env.example / test
+          # fixtures plus the already-revoked pre-rotation keys in git history,
+          # failing every run. This guard's job is to stop NEW secrets from
+          # entering the tree. --redact keeps any match value out of the log.
+          ZERO="0000000000000000000000000000000000000000"
+          if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = "${ZERO}" ]; then
+            # First push to a new branch / no resolvable base: scan the tip commit.
+            LOG_OPTS="-1 ${HEAD_SHA}"
+          else
+            LOG_OPTS="${BASE_SHA}..${HEAD_SHA}"
+          fi
+          echo "Scanning commit range: ${LOG_OPTS}"
+          /tmp/gitleaks detect \
+            --source . \
+            --log-opts="${LOG_OPTS}" \
+            --config .gitleaks.toml \
+            --redact \
+            --verbose \
+            --no-banner

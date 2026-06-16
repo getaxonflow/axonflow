@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"net/http"
@@ -660,10 +661,11 @@ func handleRecoveryConfirmPage(db *sql.DB) http.HandlerFunc {
 // HTML-escapes the email and embeds the token in a hidden form input.
 // (The token was already validated by the caller; including it in the form
 // is safe because POST will re-validate before consume.)
-func renderConfirmPage(w http.ResponseWriter, token, email string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	page := fmt.Sprintf(`<!DOCTYPE html>
+// confirmPageTmpl renders the recovery confirmation page. Using html/template
+// (not fmt.Sprintf) gives contextual auto-escaping for {{.Email}} (element text)
+// and {{.Token}} (attribute value), closing go/reflected-xss with a sanitizer
+// the analyzer recognizes rather than the custom htmlAttrEscape helper.
+var confirmPageTmpl = template.Must(template.New("confirm").Parse(`<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -679,22 +681,27 @@ func renderConfirmPage(w http.ResponseWriter, token, email string) {
 </style>
 </head><body>
 <h1>Confirm AxonFlow recovery</h1>
-<p>Recover the AxonFlow tenant associated with <span class="email">%s</span>?</p>
-<p>Clicking <strong>Confirm</strong> will issue fresh credentials. You'll be shown the new credentials once — save them in your plugin config.</p>
+<p>Recover the AxonFlow tenant associated with <span class="email">{{.Email}}</span>?</p>
+<p>Clicking <strong>Confirm</strong> will issue fresh credentials. You'll be shown the new credentials once. Save them in your plugin config.</p>
 <form method="POST" action="/api/v1/recover/verify">
-  <input type="hidden" name="token" value="%s">
+  <input type="hidden" name="token" value="{{.Token}}">
   <button type="submit">Confirm recovery</button>
 </form>
 <p class="warning">If you didn't request this, just close this page. No changes will be made.</p>
-</body></html>`, htmlAttrEscape(email), htmlAttrEscape(token))
-	_, _ = w.Write([]byte(page))
+</body></html>`))
+
+func renderConfirmPage(w http.ResponseWriter, token, email string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_ = confirmPageTmpl.Execute(w, struct{ Email, Token string }{Email: email, Token: token})
 }
 
-// renderConfirmErrorPage writes a minimal HTML error page for the GET endpoint.
-func renderConfirmErrorPage(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	page := fmt.Sprintf(`<!DOCTYPE html>
+// confirmErrorPageTmpl renders the recovery error page. All current callers
+// pass a static string literal as the message (no tainted source), but it is
+// rendered through html/template + nosniff for consistency with renderConfirmPage
+// so any future caller that passes a dynamic value stays safe by construction.
+var confirmErrorPageTmpl = template.Must(template.New("confirmError").Parse(`<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -706,9 +713,15 @@ func renderConfirmErrorPage(w http.ResponseWriter, status int, message string) {
 </style>
 </head><body>
 <h1>Recovery error</h1>
-<p>%s</p>
-</body></html>`, htmlAttrEscape(message))
-	_, _ = w.Write([]byte(page))
+<p>{{.Message}}</p>
+</body></html>`))
+
+// renderConfirmErrorPage writes a minimal HTML error page for the GET endpoint.
+func renderConfirmErrorPage(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	_ = confirmErrorPageTmpl.Execute(w, struct{ Message string }{Message: message})
 }
 
 // hashRecoveryToken returns the SHA-256 hex digest of the token. Tokens are
