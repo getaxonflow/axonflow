@@ -177,7 +177,15 @@ func (c *CassandraConnector) HealthCheck(ctx context.Context) (*base.HealthStatu
 	}, nil
 }
 
-// Query executes a CQL SELECT query and returns results
+// Query executes a CQL SELECT query and returns results.
+//
+// Read-only posture coverage boundary (#2733): unlike the PostgreSQL connector,
+// Cassandra/CQL has no read-only transaction primitive (there is no equivalent
+// of "BEGIN READ ONLY"), so the database cannot reject a smuggled write at the
+// session layer. The base.Query.ReadOnly flag is therefore NOT enforced here;
+// read-only posture for Cassandra is enforced upstream by the MCP gate's
+// statement-verb check. This is an explicit, documented boundary, not a silent
+// gap: only SQL connectors with read-only transactions are DB-enforced.
 func (c *CassandraConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	if c.session == nil {
 		return nil, base.NewConnectorError(c.Name(), "Query", "session not connected", nil)

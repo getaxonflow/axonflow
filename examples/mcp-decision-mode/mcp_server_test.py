@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from audit_log import AuditLog
-from decide_client import NEEDS_APPROVAL, DecideResult, PolicyDenied, PolicyUnavailable
+from decide_client import DecideResult, NeedsApproval, PolicyDenied, PolicyUnavailable
 from mcp_server import (
     GOVERNED_TOOLS,
     Governor,
@@ -123,10 +123,19 @@ async def test_governor_deny_blocks_and_audits(tmp_path):
 
 
 async def test_governor_needs_approval(tmp_path):
-    gov, _, path = _governor(NEEDS_APPROVAL, tmp_path)
+    gov, _, path = _governor(
+        NeedsApproval(decision_id="dec-na", trace_id="tr-na", evaluated_policies=["pol"]),
+        tmp_path,
+    )
     reply = await gov.run_tool("get_merchant_count_by_region", {"region": "Jakarta"}, lambda: ("d", 1))
     assert "approval" in reply.lower()
-    assert _last_row(path)["verdict"] == "needs_approval"
+    row = _last_row(path)
+    assert row["verdict"] == "needs_approval"
+    # The decision identity must be on the row so the paused call correlates in
+    # the SIEM (regression for the dropped-decision_id-on-needs_approval bug).
+    assert row["decision_id"] == "dec-na"
+    assert row["trace_id"] == "tr-na"
+    assert row["evaluated_policies"] == ["pol"]
 
 
 async def test_governor_unavailable_fails_closed(tmp_path):

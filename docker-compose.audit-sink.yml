@@ -1,0 +1,37 @@
+# AxonFlow central-store audit-exporter overlay (#2719 / #2716).
+#
+# Turns on the agent's built-in central-store audit exporter and points it at
+# the bundled MinIO (an S3-compatible store) so every policy decision is shipped
+# as a durable JSON record next to where BigQuery / Athena / a SIEM would read
+# it. This is the turnkey "Layer 3" path the SIEM correlation recipe documents.
+#
+# Usage:
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.audit-sink.yml up -d --build
+#
+# Records land in MinIO under:
+#   axonflow-test-bucket/runtime-e2e/decisions/<YYYY>/<MM>/<DD>/<decision_id>.json
+#
+# The runtime-e2e harness (runtime-e2e/2719_audit_central_store/) drives this.
+
+services:
+  axonflow-agent:
+    environment:
+      # Enable the central-store exporter and target the bundled MinIO. The
+      # endpoint + path-style + static creds make the AWS SDK talk to MinIO
+      # instead of real S3; in production only the bucket (and the standard AWS
+      # credential chain) are needed.
+      AXONFLOW_AUDIT_SINK: s3
+      AXONFLOW_AUDIT_S3_BUCKET: axonflow-test-bucket
+      AXONFLOW_AUDIT_S3_PREFIX: runtime-e2e/decisions
+      AXONFLOW_AUDIT_S3_REGION: us-east-1
+      AXONFLOW_AUDIT_S3_ENDPOINT: http://minio:9000
+      AXONFLOW_AUDIT_S3_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      # Keep the ship snappy + fail-fast in the test window.
+      AXONFLOW_AUDIT_SINK_TIMEOUT_MS: "3000"
+      AXONFLOW_TELEMETRY: "off"
+    depends_on:
+      minio:
+        condition: service_started

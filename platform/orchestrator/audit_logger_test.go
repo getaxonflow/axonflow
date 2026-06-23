@@ -470,6 +470,8 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						// #2626: decision_id, plane, correlation_id
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+						// #2718: transfer_basis, data_residency
+						sqlmock.AnyArg(), sqlmock.AnyArg(),
 					).
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectCommit()
@@ -533,7 +535,7 @@ func TestBatchWriter_Write(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
 				mock.ExpectPrepare("INSERT INTO audit_logs")
-				// First entry (27 args: +decision_id, plane, correlation_id per #2626)
+				// First entry (29 args: +transfer_basis, data_residency per #2718)
 				mock.ExpectExec("INSERT INTO audit_logs").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -543,9 +545,9 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				// Second entry (27 args: +decision_id, plane, correlation_id per #2626)
+				// Second entry (29 args: +transfer_basis, data_residency per #2718)
 				mock.ExpectExec("INSERT INTO audit_logs").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -555,7 +557,7 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(2, 1))
 				mock.ExpectCommit()
 			},
@@ -1504,7 +1506,7 @@ func TestLogBlockedResponse(t *testing.T) {
 	info := &RedactionInfo{Verdict: responseVerdictBlocked, ValidationError: "reasonable_size: response too large"}
 
 	ctx := context.WithValue(context.Background(), ctxKeyCorrelationID, "abc123trace")
-	entry := logger.LogBlockedResponse(ctx, req, policyResult, info)
+	entry := logger.LogBlockedResponse(ctx, req, policyResult, info, nil)
 
 	if entry.PolicyDecision != "blocked" {
 		t.Fatalf("response-plane denial must record 'blocked', got %q", entry.PolicyDecision)

@@ -310,6 +310,17 @@ var (
 	// pool is opened. nil-safe — handlers tolerate a nil store as a
 	// pass-through. Read-only after wiring.
 	mcpIdempStore *idempotency.Store
+	// decisionChainTracker is the WRITING per-record-signing tracker (#2732,
+	// FU-1 of epic #2716). It signs (Ed25519) and prev_hash-chains every live
+	// decision into decision_chain so the verify endpoints prove authorship of
+	// REAL traffic, not just synthetic records. Distinct from
+	// decisionTracerProvider above: that is OTel telemetry, this is the
+	// non-repudiation signing chain (#2722). Wired in run.go after usageDB is
+	// open; the SAME instance also backs the /api/v1/audit/*/verify endpoints.
+	// nil-safe: recordSignedDecision is a no-op when this is nil (DB-less
+	// deployments), so no handler needs a nil-check. Signing happens in the
+	// tracker's async workers, OFF the decision hot path.
+	decisionChainTracker *DecisionChainTracker
 )
 
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
@@ -1527,6 +1538,48 @@ func Run() {
 		}
 	}()
 
+	// Audit non-repudiation: per-record Ed25519 signing + prev_hash chain over
+	// decision_chain (#2722). The signing key is loaded from the environment;
+	// when unset, records are hash-chained but unsigned and the verify
+	// endpoints report that honestly. Registered before the reverse proxy so
+	// the /api/v1/audit/* verification routes are served locally rather than
+	// proxied. Reads are RLS-scoped to the authenticated org.
+	if usageDB != nil {
+		auditSigningKey, auditSigningKeyID, signErr := LoadAuditSigningKeyFromEnv()
+		if signErr != nil {
+			log.Printf("⚠️  [AuditSigning] %v; decision-chain records will be hash-chained but NOT signed", signErr)
+		}
+		auditVerifyKeys, verifyErr := LoadAuditVerifyKeysFromEnv()
+		if verifyErr != nil {
+			log.Printf("⚠️  [AuditSigning] %v; retired verification keys will be ignored", verifyErr)
+		}
+		// FU-1 (#2732): this is now a WRITING tracker. The live decision points
+		// (recordSignedDecision, called from handleDecide and the Gateway
+		// pre-check) enqueue real decisions here; the async workers sign +
+		// prev_hash-chain each one into decision_chain off the request hot path.
+		// AsyncQueueSize:0 takes the default (1000-deep buffer, 2 workers); a
+		// full queue degrades to a synchronous write rather than dropping the
+		// record. The SAME instance still backs the verify endpoints below, so a
+		// record signed here verifies against the keys loaded here.
+		var dctErr error
+		decisionChainTracker, dctErr = NewDecisionChainTracker(DecisionChainTrackerConfig{
+			DB:               usageDB,
+			SystemID:         "axonflow-agent/decision-chain",
+			AsyncQueueSize:   0, // writing instance: default 1000-deep async queue + workers
+			SigningKey:       auditSigningKey,
+			SigningKeyID:     auditSigningKeyID,
+			VerificationKeys: auditVerifyKeys,
+		})
+		if dctErr != nil {
+			log.Printf("⚠️  [AuditSigning] failed to initialize decision chain tracker: %v", dctErr)
+			decisionChainTracker = nil // keep recordSignedDecision a safe no-op
+		} else {
+			RegisterAuditVerificationHandlers(globalRouter, decisionChainTracker)
+			log.Println("✅ Audit verification endpoints enabled: GET /api/v1/audit/{chains,records}/.../verify")
+			log.Println("✅ Decision-chain signing ENABLED on the live decision path (signed, hash-chained records)")
+		}
+	}
+
 	// Register Reverse Proxy routes (ADR-026: Single Entry Point Architecture)
 	// Proxies requests to Orchestrator and Portal based on path
 	proxyConfig := GetProxyConfig()
@@ -1665,6 +1718,17 @@ func Run() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		if err := decisionTracerProvider.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[telemetry] decision tracer Shutdown error: %v", err)
+		}
+		cancel()
+	}
+	// Drain the decision-chain signing workers so any decisions still queued at
+	// SIGTERM are signed + persisted before exit (#2732). Bounded so a wedged DB
+	// can't hang shutdown; unflushed records are simply lost on a timeout, which
+	// is the same best-effort posture the live path already holds.
+	if decisionChainTracker != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		if err := decisionChainTracker.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[DecisionChain] Shutdown error: %v", err)
 		}
 		cancel()
 	}

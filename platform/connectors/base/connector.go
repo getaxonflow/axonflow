@@ -55,6 +55,30 @@ type Query struct {
 	Parameters map[string]interface{} `json:"parameters"` // Query parameters
 	Timeout    time.Duration          `json:"timeout"`    // Override default timeout
 	Limit      int                    `json:"limit"`      // Result limit (optional)
+
+	// ReadOnly signals that this query MUST run under a read-only posture
+	// (MCP_READ_ONLY). It is a per-call flag on the read path, NOT a global:
+	// the caller (the MCP gate) is responsible for setting it from the
+	// deployment posture so a connector can refuse writes at the strongest
+	// available layer. NOTE: this flag is the read-side contract; wiring it
+	// from the gate's request path is owned by the gate (WS-4 / #2720), so a
+	// connector may receive ReadOnly==false until that wiring lands.
+	//
+	// Honoring is connector-specific. The PostgreSQL connector enforces it as a
+	// database-enforced backstop via "BEGIN READ ONLY": the database itself
+	// rejects any INSERT/UPDATE/DELETE/DDL smuggled past the gate's
+	// statement-verb parser (stacked statements, CTEs, comment-hidden writes,
+	// or a future caller the parser never anticipated). Other SQL connectors
+	// that support read-only transactions (e.g. MySQL, Snowflake) MAY adopt the
+	// same backstop but do not yet, and rely on the gate's verb-path check;
+	// connectors with no read-only transaction primitive (e.g. Cassandra)
+	// cannot enforce it at the DB layer at all. For any connector that does not
+	// honor it, this flag is informational only. See each connector's Query doc
+	// for its coverage boundary.
+	//
+	// Default false: behavior is byte-identical to the legacy read path when
+	// unset, so there is no perf or semantic change outside read-only posture.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // QueryResult contains the results of a Query operation

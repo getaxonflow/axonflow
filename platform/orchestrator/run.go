@@ -2102,7 +2102,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// row and return a forbidden response instead of the mislabeled success
 		// the old path sent. Audit-write failure cannot fail-open governance here
 		// (the response was already withheld) — the row is enqueued fail-safe.
-		_ = auditLogger.LogBlockedResponse(ctx, req, policyResult, redactionInfo)
+		_ = auditLogger.LogBlockedResponse(ctx, req, policyResult, redactionInfo, providerInfo)
 
 		latencyMs := time.Since(startTime).Milliseconds()
 		promRequestsTotal.WithLabelValues("blocked").Inc()

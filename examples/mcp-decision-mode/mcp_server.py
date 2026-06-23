@@ -35,10 +35,10 @@ from dataclasses import dataclass
 
 from mcp.server.fastmcp import FastMCP
 
-from audit_log import AuditLog
+from audit_log import AuditLog, build_shipper_from_env
 from decide_client import (
-    NEEDS_APPROVAL,
     AxonFlowDecideClient,
+    NeedsApproval,
     PolicyDenied,
     PolicyUnavailable,
 )
@@ -137,8 +137,15 @@ class Governor:
             result = await self.client.decide_async(
                 stage="tool", query=query, tool=tool_name, context=self.session.context()
             )
-            if result is NEEDS_APPROVAL:
+            if isinstance(result, NeedsApproval):
                 verdict = "needs_approval"
+                # Carry the decision identity into the audit row so the paused
+                # call is correlatable in the SIEM (it is exactly the decision a
+                # reviewer will look up). Without this the needs_approval row
+                # would have an empty decision_id.
+                decision_id = result.decision_id
+                trace_id = result.trace_id
+                evaluated_policies = result.evaluated_policies
                 reply = (
                     f"⏳ Tool '{tool_name}' requires human approval before it can run. "
                     "The request has been queued for a Risk Committee approver. "
@@ -242,7 +249,13 @@ def build_from_env() -> FastMCP:
         tenant_id=os.environ.get("AXONFLOW_TENANT_ID", "mcp-decision-mode-demo"),
         fail_closed=fail_closed,
     )
-    audit = AuditLog(os.environ.get("MCP_AUDIT_LOG_PATH", "audit_log.jsonl"))
+    # Local JSONL is always written; a central-store shipper is attached when
+    # MCP_AUDIT_SINK is set (see audit_log.build_shipper_from_env) so Layer 3
+    # is turnkey, not a bespoke pipeline.
+    audit = AuditLog(
+        os.environ.get("MCP_AUDIT_LOG_PATH", "audit_log.jsonl"),
+        shipper=build_shipper_from_env(),
+    )
     session = LeaderSession(
         session_id=os.environ.get("MCP_SESSION_ID", str(uuid.uuid4())),
         leader_email=os.environ.get("MCP_LEADER_EMAIL", "leader@example.com"),

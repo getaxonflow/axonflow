@@ -13,6 +13,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -80,16 +81,52 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 	return p.shutdown(ctx)
 }
 
-// NewDecisionTracer constructs the DecisionTracer dictated by env
-// vars. Endpoint empty (or unset) returns the noop tracer with a no-op
-// Shutdown. Endpoint set wires up an OTLP/gRPC exporter, a parent-based
-// trace-id-ratio sampler, and a batch span processor.
+// NewDecisionTracer constructs the decision-telemetry Provider dictated by env
+// vars: the span tracer (newBaseProvider) plus, when AXONFLOW_AUDIT_SINK is
+// set, a durable central-store exporter layered on top via a recording
+// decorator. With no audit sink configured the returned Provider is identical
+// to newBaseProvider's: the decision path is byte-for-byte unchanged.
+func NewDecisionTracer(ctx context.Context) *Provider {
+	base := newBaseProvider(ctx)
+
+	exporter := NewCentralStoreExporter(ctx)
+	if exporter == nil {
+		return base
+	}
+	return wrapWithExporter(base, exporter)
+}
+
+// wrapWithExporter decorates a base Provider so every RecordDecision also ships
+// a durable record to the central store, and extends Shutdown to drain + close
+// the exporter before the span tracer. Kept separate so the env-resolution path
+// in NewDecisionTracer stays straight-line.
+func wrapWithExporter(base *Provider, exporter *CentralStoreExporter) *Provider {
+	baseShutdown := base.shutdown
+	return &Provider{
+		Tracer: &recordingTracer{inner: base.Tracer, exporter: exporter},
+		shutdown: func(ctx context.Context) error {
+			// Drain + close the exporter first so in-flight audit records get a
+			// chance to land, then close the span tracer. Both errors surface.
+			exportErr := exporter.Close(ctx)
+			var baseErr error
+			if baseShutdown != nil {
+				baseErr = baseShutdown(ctx)
+			}
+			return errors.Join(exportErr, baseErr)
+		},
+	}
+}
+
+// newBaseProvider constructs the span DecisionTracer dictated by env vars.
+// Endpoint empty (or unset) returns the noop tracer with a no-op Shutdown.
+// Endpoint set wires up an OTLP/gRPC exporter, a parent-based trace-id-ratio
+// sampler, and a batch span processor.
 //
 // Any OTel setup failure logs at WARN and falls back to the noop
 // tracer so a misconfigured exporter never blocks agent boot. This is
 // the Community-tier-safety rule: OTel is observability, never a hard
 // dependency.
-func NewDecisionTracer(ctx context.Context) *Provider {
+func newBaseProvider(ctx context.Context) *Provider {
 	endpoint := strings.TrimSpace(os.Getenv(envOTelEndpoint))
 	if endpoint == "" {
 		log.Printf("[telemetry] %s empty — decision tracer disabled (noop)", envOTelEndpoint)

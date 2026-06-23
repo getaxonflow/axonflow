@@ -44,10 +44,12 @@ func TestResponsePlaneAuditRow_RealPostgres(t *testing.T) {
 
 	// approletest.Setup runs migrations 1..111; apply the canonical-column
 	// migrations the response-plane row depends on (119 decision_id+plane,
-	// 121 correlation_id).
+	// 121 correlation_id) plus 126 (transfer_basis + data_residency), which the
+	// BatchWriter INSERT now always references (#2718).
 	for _, mig := range []string{
 		"../../migrations/core/119_audit_logs_decision_id_plane.sql",
 		"../../migrations/core/121_audit_logs_correlation_id.sql",
+		"../../migrations/core/126_audit_logs_cross_border_fields.sql",
 	} {
 		b, err := os.ReadFile(mig)
 		if err != nil {
@@ -93,7 +95,7 @@ func TestResponsePlaneAuditRow_RealPostgres(t *testing.T) {
 	// (2) Blocked (withheld) response for orgA.
 	ctxBlocked := context.WithValue(context.Background(), ctxKeyCorrelationID, "trace-bbbb")
 	blkEntry := logger.LogBlockedResponse(ctxBlocked, mkReq("req-blk-a", orgA), policyResult,
-		&RedactionInfo{Verdict: responseVerdictBlocked, ValidationError: "no_empty_response: empty response"})
+		&RedactionInfo{Verdict: responseVerdictBlocked, ValidationError: "no_empty_response: empty response"}, nil)
 
 	// (3) Clean allowed response for orgB (used for org-scoping assertion).
 	ctxB := context.WithValue(context.Background(), ctxKeyRedactionInfo,

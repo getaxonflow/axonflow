@@ -72,6 +72,13 @@ func (c *SnowflakeConnector) HealthCheck(ctx context.Context) (*base.HealthStatu
 
 // Query executes a SQL query against Snowflake.
 // Community stub: Always returns ErrEnterpriseFeature.
+//
+// Read-only posture coverage boundary (#2733): Snowflake supports read-only
+// transactions and could adopt the same database-enforced backstop the
+// PostgreSQL connector uses for the base.Query.ReadOnly flag. That is not yet
+// implemented in the enterprise connector, so read-only posture for Snowflake
+// is currently enforced only by the upstream MCP gate's statement-verb check.
+// Documented follow-up to #2733, not a silent gap.
 func (c *SnowflakeConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	return nil, base.NewConnectorError("snowflake", "Query", "snowflake connector requires enterprise license", ErrEnterpriseFeature)
 }

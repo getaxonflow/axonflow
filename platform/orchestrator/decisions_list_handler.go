@@ -68,6 +68,12 @@ type DecisionListItem struct {
 	// endpoint. omitempty so pre-#2509 rows + decisions with no context keep
 	// the original byte-shape. (#2509 / epic #2508)
 	Context map[string]string `json:"context,omitempty"`
+
+	// TransferBasis / DataResidency are the UU PDP Pasal 56 cross-border transfer
+	// fields auto-stamped on the LLM-forward decision row (#2718). omitempty so
+	// non-cross-border decisions keep their original byte-shape.
+	TransferBasis string `json:"transfer_basis,omitempty"`
+	DataResidency string `json:"data_residency,omitempty"`
 }
 
 // decisionListContextMaxKeys bounds how many request-context keys the LIST
@@ -291,7 +297,9 @@ func queryDecisionList(tenantID string, since time.Time, decisionVals []string, 
 				(policy_details->'policy_ids'->>0)
 			)                                                      AS policy_id,
 			COALESCE(policy_details->>'tool_signature', '')        AS tool_signature,
-			policy_details->'context'                              AS context
+			policy_details->'context'                              AS context,
+			COALESCE(transfer_basis, '')                           AS transfer_basis,
+			COALESCE(data_residency, '')                           AS data_residency
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
@@ -325,12 +333,14 @@ func queryDecisionList(tenantID string, since time.Time, decisionVals []string, 
 	out := make([]DecisionListItem, 0, 16)
 	for rows.Next() {
 		var (
-			item        DecisionListItem
-			policyIDCol sql.NullString
-			toolSigCol  sql.NullString
-			contextCol  sql.NullString // policy_details->'context' (JSONB or NULL)
+			item          DecisionListItem
+			policyIDCol   sql.NullString
+			toolSigCol    sql.NullString
+			contextCol    sql.NullString // policy_details->'context' (JSONB or NULL)
+			transferBasis sql.NullString
+			dataResidency sql.NullString
 		)
-		if err := rows.Scan(&item.DecisionID, &item.Timestamp, &item.Decision, &policyIDCol, &toolSigCol, &contextCol); err != nil {
+		if err := rows.Scan(&item.DecisionID, &item.Timestamp, &item.Decision, &policyIDCol, &toolSigCol, &contextCol, &transferBasis, &dataResidency); err != nil {
 			return nil, err
 		}
 		// Normalize the raw policy_decision so a legacy/historical row surfaces
@@ -351,6 +361,12 @@ func queryDecisionList(tenantID string, since time.Time, decisionVals []string, 
 		}
 		if toolSigCol.Valid {
 			item.ToolSignature = toolSigCol.String
+		}
+		if transferBasis.Valid && transferBasis.String != "" {
+			item.TransferBasis = transferBasis.String
+		}
+		if dataResidency.Valid && dataResidency.String != "" {
+			item.DataResidency = dataResidency.String
 		}
 		// Decode the context JSONB and truncate to the list cap. A malformed
 		// or non-object value is dropped (logged) rather than failing the
