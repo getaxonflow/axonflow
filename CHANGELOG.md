@@ -10,6 +10,14 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.2.1] - 2026-06-23 (patch on 9.2.0)
+
+**Patch.** A consistency fix on top of [9.2.0]; see the 9.2.0 entry below for the feature release.
+
+### Fixed
+
+- **Audit-verification endpoints registered in path normalization.** *(Community)* The three audit-verification endpoints added in 9.2.0 (`/api/v1/audit/chains/{chainID}/verify`, `/api/v1/audit/records/{recordID}/verify`, `/api/v1/audit/signing-key`) were present in the OpenAPI spec but missing from the request-path template table, so the spec/template consistency check (`TestTemplatesMatchAgentAPISpec`) failed and those paths were not normalized for telemetry roll-up. They are now registered. Routing and behavior were unaffected.
+
 ## [9.2.0] - 2026-06-23 (read-only MCP posture, tamper-evident audit signing, turnkey SIEM export, compliance-category enforcement)
 
 **Additive minor.** v9.2.0 hardens governance and audit assurance: a one-config read-only MCP posture, a connector-level database backstop, per-record cryptographic signing of the decision chain (now capturing live traffic) with read-only verification endpoints, a turnkey central-store / SIEM audit exporter, and automatic cross-border `transfer_basis` stamping on the canonical audit row. **Two behavior changes to note (both in Fixed):** the seeded RBI / SEBI / MAS-FEAT / EU-AI-Act compliance policies now actually fire on `/decide` and the gateway (they were silently excluded by a category-spelling mismatch), and a tool/connector response carrying an indirect prompt-injection pattern is now sanitized by default on the response plane (the statement carrying the injection is removed). Everything else is additive and off by default.

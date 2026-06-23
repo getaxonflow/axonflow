@@ -140,8 +140,8 @@ func TestStripTrailingParam(t *testing.T) {
 		{"/api/v1/conformity/assessments/{id}/checks/{checkId}", "/api/v1/conformity/assessments/{id}/checks"},
 		{"", ""},
 		{"/", "/"},
-		{"{id}", "{id}"},     // no leading slash — degenerate but defined
-		{"/{id}", "/{id}"},   // would strip to "" → returned unchanged
+		{"{id}", "{id}"},       // no leading slash — degenerate but defined
+		{"/{id}", "/{id}"},     // would strip to "" → returned unchanged
 		{"/users/", "/users/"}, // trailing slash without {param} — unchanged
 	}
 	for _, tc := range tests {
@@ -319,4 +319,28 @@ func extractAgentAPIPaths(yaml string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestAuditVerifyEndpointsRegistered is the regression guard for the 9.2.1 fix:
+// the three audit-verification endpoints shipped in 9.2.0's OpenAPI spec must
+// also be registered in Templates, so the spec/template consistency check holds
+// and the paths normalize for telemetry roll-up. TestTemplatesMatchAgentAPISpec
+// caught the original gap (and skips where the YAML is not locatable, e.g. the
+// community checkout); this asserts the specific paths so the intent is explicit
+// and edition-independent.
+func TestAuditVerifyEndpointsRegistered(t *testing.T) {
+	want := []string{
+		"/api/v1/audit/chains/{chainID}/verify",
+		"/api/v1/audit/records/{recordID}/verify",
+		"/api/v1/audit/signing-key",
+	}
+	have := make(map[string]bool, len(Templates))
+	for _, tmpl := range Templates {
+		have[tmpl] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			t.Errorf("audit-verify endpoint %q not registered in Templates (9.2.1 regression)", w)
+		}
+	}
 }
