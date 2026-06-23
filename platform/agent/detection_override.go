@@ -322,3 +322,33 @@ func applyOrgDetectionOverrides(ctx context.Context, orgID string, base ModeDete
 	}
 	return out
 }
+
+// ResolveResponseInjectionAction returns the action to apply to the
+// security-dangerous (indirect prompt-injection) category on the RESPONSE /
+// tool-output plane (#2727).
+//
+// DEFAULT is REDACT: strip the matched injection span from the tool output so it
+// never reaches the model, while the legitimate surrounding data passes through.
+// This is plane-specific and deliberately differs from the REQUEST plane, where
+// the DangerousCommandAction lever blocks by default: an injection instruction
+// in the user's input should be blocked, but an injection-shaped substring in
+// connector OUTPUT (markdown '### System', a '[SYSTEM]' log line, a CRM note
+// quoting "ignore previous instructions" as data) should be sanitized, not
+// turned into a full-response block.
+//
+// CONFIGURABLE: an org may override this via the EXISTING per-(org, category)
+// detection-posture override (#2581/#2609), keyed on the same 'dangerous_command'
+// category that drives the request plane, so a deployment can choose
+// redact (default) / warn / block per org. The override (when present) wins;
+// otherwise the response-plane default REDACT applies (NOT the request-plane
+// block default, and NOT warn, which would pass the injection through unchanged).
+func ResolveResponseInjectionAction(ctx context.Context, orgID string) DetectionAction {
+	if orgID != "" {
+		if cache := getDetectionOverrideCache(); cache != nil {
+			if a, ok := cache.get(ctx, orgID)[DetectionCategoryDangerousCommand]; ok {
+				return a
+			}
+		}
+	}
+	return DetectionActionRedact
+}

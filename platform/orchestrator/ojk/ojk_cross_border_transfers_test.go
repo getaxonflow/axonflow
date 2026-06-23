@@ -6,10 +6,11 @@
 package ojk
 
 // Unit tests for the UU PDP Pasal 56 cross-border transfer export path. These
-// use sqlmock to exercise the real transaction sequencing (BeginTx +
-// set_config + SELECT + Commit) and the verbatim surfacing contract without a
-// live Postgres. Round-trip against a real DB is covered by the
-// DATABASE_URL-gated integration test and the runtime E2E in the PR body.
+// use sqlmock to exercise the real query + the verbatim surfacing contract
+// without a live Postgres. After #2718 the export reads the canonical audit_logs
+// table (a plain QueryContext, no withOrgScope transaction, mirrors the SEBI
+// pattern). Round-trip against a real DB is covered by the DATABASE_URL-gated
+// integration test and the orchestrator-package end-to-end test.
 
 import (
 	"context"
@@ -27,8 +28,8 @@ var (
 )
 
 // TestQueryCrossBorderTransfers_SurfacesTransferBasisVerbatim is the core
-// guarantee: pasal_56b_dpa and safeguards are both surfaced exactly as stored —
-// never auto-translated to one another — so an auditor sees the Pasal 56(b)
+// guarantee: pasal_56b_dpa and safeguards are both surfaced exactly as stored,
+// never auto-translated to one another, so an auditor sees the Pasal 56(b)
 // value recorded at decision time.
 func TestQueryCrossBorderTransfers_SurfacesTransferBasisVerbatim(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -37,17 +38,12 @@ func TestQueryCrossBorderTransfers_SurfacesTransferBasisVerbatim(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
-		WithArgs("org-buku").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}).
-		AddRow(int64(101), cbRowTS, "US", "pasal_56b_dpa").
-		AddRow(int64(102), cbRowTS, "SG", "safeguards")
-	mock.ExpectQuery(`FROM orchestrator_audit_logs`).
+		AddRow("audit-101", cbRowTS, "US", "pasal_56b_dpa").
+		AddRow("audit-102", cbRowTS, "SG", "safeguards")
+	mock.ExpectQuery(`FROM audit_logs`).
 		WithArgs("org-buku", cbStart, cbEnd).
 		WillReturnRows(rows)
-	mock.ExpectCommit()
 
 	svc := &ojkAuditExportServiceImpl{db: db}
 	records, count, err := svc.queryCrossBorderTransfers(context.Background(), "org-buku", cbStart, cbEnd)
@@ -64,8 +60,8 @@ func TestQueryCrossBorderTransfers_SurfacesTransferBasisVerbatim(t *testing.T) {
 	if records[1].TransferBasis != "safeguards" {
 		t.Errorf("record[1].transfer_basis = %q, want safeguards (verbatim, no translation)", records[1].TransferBasis)
 	}
-	if records[0].ID != "101" {
-		t.Errorf("record[0].id = %q, want 101", records[0].ID)
+	if records[0].ID != "audit-101" {
+		t.Errorf("record[0].id = %q, want audit-101", records[0].ID)
 	}
 	if records[0].DataResidency != "US" || records[0].DestinationCountry != "US" {
 		t.Errorf("record[0] residency/destination = %q/%q, want US/US", records[0].DataResidency, records[0].DestinationCountry)
@@ -88,14 +84,9 @@ func TestQueryCrossBorderTransfers_Empty(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
-		WithArgs("org-empty").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`FROM orchestrator_audit_logs`).
+	mock.ExpectQuery(`FROM audit_logs`).
 		WithArgs("org-empty", cbStart, cbEnd).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}))
-	mock.ExpectCommit()
 
 	svc := &ojkAuditExportServiceImpl{db: db}
 	records, count, err := svc.queryCrossBorderTransfers(context.Background(), "org-empty", cbStart, cbEnd)
@@ -121,11 +112,7 @@ func TestQueryCrossBorderTransfers_QueryError(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
-		WithArgs("org-boom").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`FROM orchestrator_audit_logs`).
+	mock.ExpectQuery(`FROM audit_logs`).
 		WithArgs("org-boom", cbStart, cbEnd).
 		WillReturnError(errors.New("connection reset"))
 
@@ -136,8 +123,8 @@ func TestQueryCrossBorderTransfers_QueryError(t *testing.T) {
 	}
 }
 
-// TestQueryCrossBorderTransfers_ScanError surfaces a row whose id cannot be
-// scanned into int64, exercising the scan-error branch.
+// TestQueryCrossBorderTransfers_ScanError surfaces a row whose timestamp cannot
+// be scanned into time.Time, exercising the scan-error branch.
 func TestQueryCrossBorderTransfers_ScanError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -145,13 +132,9 @@ func TestQueryCrossBorderTransfers_ScanError(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
-		WithArgs("org-scan").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}).
-		AddRow("not-an-int", cbRowTS, "US", "pasal_56b_dpa")
-	mock.ExpectQuery(`FROM orchestrator_audit_logs`).
+		AddRow("audit-1", "not-a-timestamp", "US", "pasal_56b_dpa")
+	mock.ExpectQuery(`FROM audit_logs`).
 		WithArgs("org-scan", cbStart, cbEnd).
 		WillReturnRows(rows)
 
@@ -172,16 +155,11 @@ func TestExportAuditData_CrossBorderRoundTrip(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
-		WithArgs("org-buku").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}).
-		AddRow(int64(7), cbRowTS, "US", "pasal_56b_dpa")
-	mock.ExpectQuery(`FROM orchestrator_audit_logs`).
+		AddRow("audit-7", cbRowTS, "US", "pasal_56b_dpa")
+	mock.ExpectQuery(`FROM audit_logs`).
 		WithArgs("org-buku", cbStart, cbEnd).
 		WillReturnRows(rows)
-	mock.ExpectCommit()
 
 	svc := &ojkAuditExportServiceImpl{db: db}
 	resp, err := svc.ExportAuditData(context.Background(), "org-buku", &OJKAuditExportRequest{

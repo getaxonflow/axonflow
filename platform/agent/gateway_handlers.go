@@ -887,6 +887,16 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Non-repudiation (#2732): sign + chain this terminal pre-check verdict into
+	// decision_chain. Uses the canonical redaction-aware verdict (allowed /
+	// blocked / redacted / needs_approval), NOT the three-valued telemetry
+	// verdict above, so a redaction is recorded as a distinct, signed outcome
+	// rather than collapsed to an allow. Outside the OTel guard so it runs even
+	// when no OTel endpoint is configured; best-effort + off the hot path.
+	recordSignedDecision(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
+		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
+		response.Policies, reasonsFromPreCheck(response, policyResult), latencyMs)
+
 	log.Printf("✅ [Pre-check] Completed in %dms - contextID=%s, approved=%v, trace_id=%q",
 		latencyMs, contextID, response.Approved, response.TraceID)
 
@@ -991,6 +1001,13 @@ func recordGatewayPreCheckAudit(ctx context.Context, contextID, orgID, tenantID,
 // attribute mapping; the main exit calls the tracer inline for cheaper
 // stack reads. Always-on noop when AXONFLOW_OTEL_ENDPOINT is unset.
 func recordPreCheckDecision(ctx context.Context, contextID, orgID, tenantID, stage string, blockReason string, policyIDs []string, latencyMs int64) string {
+	// Non-repudiation (#2732): sign + chain this early-return deny (kill-switch /
+	// Indonesia-PII / RBI-PII / budget) into decision_chain. First, before the
+	// OTel nil-check, so the signed record is written even when no OTel endpoint
+	// is configured. Best-effort + off the hot path. "blocked" maps to a signed
+	// DecisionOutcomeBlocked.
+	recordSignedDecision(ctx, contextID, orgID, tenantID, stage, "blocked", policyIDs, []string{blockReason}, latencyMs)
+
 	if decisionTracerProvider == nil {
 		return ""
 	}
@@ -1163,6 +1180,26 @@ func fetchApprovedData(ctx context.Context, dataSources []string, query string, 
 		return result, nil
 	}
 
+	// Read-only enforcement posture (#2720, epic #2716). The pre-check data fetch
+	// runs the caller-supplied `query` through connector.Query, which SQL
+	// connectors execute verbatim, so a write DML (or a stacked statement) here
+	// would mutate under MCP_READ_ONLY. Classify the statement and refuse the
+	// fetch before any connector.Query, fail-closed on an unclassifiable
+	// statement. Non-overridable; best-effort canonical "blocked" audit row.
+	if readOnlyPostureEnabled() && statementIsWritePath(query) {
+		reason := "read-only posture active: write-path pre-check query is blocked; only read-path operations are permitted"
+		writeMCPDecisionAudit(ctx, usageDB,
+			uuid.New().String(), "",
+			user.TenantID, user.OrgID, client.ID, user.Email,
+			fmt.Sprintf("%d", user.ID), user.Role,
+			"policy_precheck_query", "policy pre-check data fetch", "",
+			mcpVerdictBlocked,
+			[]string{readOnlyPosturePolicyID},
+			[]string{reason},
+			nil, "")
+		return nil, fmt.Errorf("%s", reason)
+	}
+
 	for _, source := range dataSources {
 		// Check if user has permission for this data source
 		hasPermission := false
@@ -1193,6 +1230,11 @@ func fetchApprovedData(ctx context.Context, dataSources []string, query string, 
 				"tenant_id": user.TenantID,
 				"client_id": client.ID,
 			},
+			// Read-only posture (#2720, epic #2716): the statement-verb gate above
+			// already refuses classified writes; ReadOnly adds FU-4's (#2735)
+			// database-enforced backstop (Postgres BEGIN READ ONLY) so a write the
+			// parser misses is rejected by the DB at SQLSTATE 25006.
+			ReadOnly: readOnlyPostureEnabled(),
 		}
 
 		// Execute query

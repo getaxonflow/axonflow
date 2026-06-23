@@ -45,7 +45,7 @@ func TestListDecisions_AcceptsNeedsApprovalCanonical(t *testing.T) {
 			5,
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions?decision=needs_approval", nil)
@@ -93,11 +93,11 @@ func TestListDecisions_NormalizesLegacyDecisionOnRead(t *testing.T) {
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		).
-			AddRow("d1", time.Now().UTC(), "deny", "p", "", nil).
-			AddRow("d2", time.Now().UTC(), "require_approval", "p", "", nil).
-			AddRow("d3", time.Now().UTC(), "allowed", "p", "", nil))
+			AddRow("d1", time.Now().UTC(), "deny", "p", "", nil, "", "").
+			AddRow("d2", time.Now().UTC(), "require_approval", "p", "", nil, "", "").
+			AddRow("d3", time.Now().UTC(), "allowed", "p", "", nil, "", ""))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-a")
@@ -140,10 +140,10 @@ func TestListDecisions_DropsOverrideLifecycleRow(t *testing.T) {
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		).
-			AddRow("d-allow", time.Now().UTC(), "allowed", "p", "", nil).
-			AddRow("d-ovr", time.Now().UTC(), "override_lifecycle", "p", "", nil))
+			AddRow("d-allow", time.Now().UTC(), "allowed", "p", "", nil, "", "").
+			AddRow("d-ovr", time.Now().UTC(), "override_lifecycle", "p", "", nil, "", ""))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-a")

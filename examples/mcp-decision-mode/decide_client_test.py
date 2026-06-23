@@ -9,9 +9,9 @@ import httpx
 import pytest
 
 from decide_client import (
-    NEEDS_APPROVAL,
     AxonFlowDecideClient,
     DecideResult,
+    NeedsApproval,
     PolicyDenied,
     PolicyUnavailable,
     _basic_auth_header,
@@ -100,10 +100,18 @@ def test_resolve_deny_raises_with_full_result():
     assert exc.value.result.evaluated_policies == ["pol"]
 
 
-def test_resolve_needs_approval_returns_sentinel():
+def test_resolve_needs_approval_carries_decision_identity():
     client = _client()
-    result = DecideResult(verdict="needs_approval", decision_id="d", trace_id="t")
-    assert client._resolve(result) is NEEDS_APPROVAL
+    result = DecideResult(
+        verdict="needs_approval", decision_id="d", trace_id="t",
+        evaluated_policies=["pol"], reasons=["awaiting approver"],
+    )
+    resolved = client._resolve(result)
+    assert isinstance(resolved, NeedsApproval)
+    # The identity must survive so the paused call stays correlatable.
+    assert resolved.decision_id == "d"
+    assert resolved.trace_id == "t"
+    assert resolved.evaluated_policies == ["pol"]
 
 
 def test_resolve_allow_returns_result():

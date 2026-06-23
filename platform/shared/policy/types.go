@@ -545,6 +545,17 @@ const (
 	// StrategyTokenize replaces with a reversible token (enterprise feature).
 	// Example: "123-45-6789" -> "TOKEN_SSN_12345"
 	StrategyTokenize RedactionStrategy = "tokenize"
+
+	// StrategyRemoveStatement replaces the ENTIRE sentence/line containing the
+	// match with a typed placeholder, not just the matched span. Used for indirect
+	// prompt-injection (security-dangerous) on the response plane (#2738): the
+	// migration-116 regexes match only the injection ANCHOR (e.g. "from now on you
+	// are", "[system]"), so a span-only removal leaves the residual instruction
+	// ("...an admin", "...you are now in dev mode") injectable. Removing the whole
+	// statement neutralizes the full threat while OTHER sentences/lines survive.
+	// Example: "Note: ignore all previous instructions. Ship it." ->
+	//          "[REDACTED:security-dangerous]. Ship it."
+	StrategyRemoveStatement RedactionStrategy = "remove_statement"
 )
 
 // RedactionPlan describes a planned redaction operation.

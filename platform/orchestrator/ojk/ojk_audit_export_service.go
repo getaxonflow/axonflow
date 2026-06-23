@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -460,15 +459,15 @@ func (s *ojkAuditExportServiceImpl) GetDashboard(ctx context.Context, tenantID s
 	}
 
 	return &OJKDashboardResponse{
-		Framework:        OJKFrameworkCombined,
-		ComplianceScore:  score,
-		TotalAuditRecords: 0,
-		ActivePolicies:   8, // 8 Indonesia PII patterns
-		RecentViolations: 0,
-		RetentionStatus:  "compliant",
+		Framework:                  OJKFrameworkCombined,
+		ComplianceScore:            score,
+		TotalAuditRecords:          0,
+		ActivePolicies:             8, // 8 Indonesia PII patterns
+		RecentViolations:           0,
+		RetentionStatus:            "compliant",
 		BreachNotifications:        totalBreaches,
 		OverdueBreachNotifications: overdueBreaches,
-		LastUpdated:      time.Now().UTC(),
+		LastUpdated:                time.Now().UTC(),
 	}, nil
 }
 
@@ -485,57 +484,63 @@ func (s *ojkAuditExportServiceImpl) queryDecisionChains(ctx context.Context, ten
 }
 
 // queryCrossBorderTransfers returns cross-border data-transfer records for
-// UU PDP Pasal 56 surfacing. A transfer record is any orchestrator audit row
-// that carries a non-empty transfer_basis (set when a request routed personal
-// data to a foreign destination — see migration 129). The stored transfer_basis
-// is surfaced verbatim: both "safeguards" and "pasal_56b_dpa" flow through
-// unchanged so an auditor sees exactly the Pasal 56(b) value recorded at
-// decision time (no auto-translation).
+// UU PDP Pasal 56 surfacing. A transfer record is any canonical decision row
+// (audit_logs) that carries a non-empty transfer_basis, auto-stamped on the
+// LLM-forward path when the operator has declared a basis (#2718, core migration
+// 126). The stored transfer_basis is surfaced verbatim: both "safeguards" and
+// "pasal_56b_dpa" flow through unchanged so an auditor sees exactly the
+// Pasal 56(b) value recorded at decision time (no auto-translation).
 //
-// Rows are scoped by org_id explicitly (orchestrator_audit_logs does not yet
-// carry FORCE RLS — migration 101 deferred it pending org_id plumbing on the
-// audit INSERT path), so tenant isolation does not rely on the RLS policy
-// alone. withOrgScope additionally sets app.current_org_id for defense in depth.
+// This reads the canonical audit_logs table (the decision_id/correlation_id row
+// the audit-coverage epic standardized on), NOT the legacy
+// orchestrator_audit_logs/agent_audit_logs columns from migration 129; those
+// are left in place but unused (separate cleanup follow-up).
+//
+// audit_logs is NOT FORCE ROW LEVEL SECURITY (migration 101 deliberately left it
+// unprotected for the cross-org cleanup worker), so this read needs no
+// withOrgScope wrap; it mirrors the proven SEBI exportDecisionChain pattern
+// (#2588). The OJK tenantID argument is used loosely as either the org_id or
+// tenant_id label across callers, so both columns are matched. The
+// `transfer_basis IS NOT NULL` filter selects ONLY declared cross-border
+// transfers, so SEBI/euaiact decision rows (which never carry a basis) are never
+// swept in.
 func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Context, tenantID string, start, end time.Time) ([]CrossBorderTransferRecord, int, error) {
 	records := []CrossBorderTransferRecord{}
-	err := withOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
-		rows, qErr := tx.QueryContext(ctx,
-			`SELECT id, timestamp, COALESCE(data_residency, ''), COALESCE(transfer_basis, '')
-			   FROM orchestrator_audit_logs
-			  WHERE org_id = $1
-			    AND transfer_basis IS NOT NULL
-			    AND transfer_basis <> ''
-			    AND timestamp >= $2
-			    AND timestamp <= $3
-			  ORDER BY timestamp DESC`,
-			tenantID, start, end,
-		)
-		if qErr != nil {
-			return qErr
-		}
-		defer rows.Close()
+	rows, qErr := s.db.QueryContext(ctx,
+		`SELECT id, timestamp, COALESCE(data_residency, ''), COALESCE(transfer_basis, '')
+		   FROM audit_logs
+		  WHERE (tenant_id = $1 OR org_id = $1)
+		    AND transfer_basis IS NOT NULL
+		    AND transfer_basis <> ''
+		    AND timestamp >= $2
+		    AND timestamp <= $3
+		  ORDER BY timestamp DESC`,
+		tenantID, start, end,
+	)
+	if qErr != nil {
+		return nil, 0, qErr
+	}
+	defer rows.Close()
 
-		for rows.Next() {
-			var (
-				id            int64
-				ts            time.Time
-				dataResidency string
-				transferBasis string
-			)
-			if scanErr := rows.Scan(&id, &ts, &dataResidency, &transferBasis); scanErr != nil {
-				return scanErr
-			}
-			records = append(records, CrossBorderTransferRecord{
-				ID:                 strconv.FormatInt(id, 10),
-				Timestamp:          ts,
-				DataResidency:      dataResidency,
-				TransferBasis:      transferBasis, // surfaced as-written, never translated
-				DestinationCountry: dataResidency, // data_residency is the ISO destination code (migration 129)
-			})
+	for rows.Next() {
+		var (
+			id            string
+			ts            time.Time
+			dataResidency string
+			transferBasis string
+		)
+		if scanErr := rows.Scan(&id, &ts, &dataResidency, &transferBasis); scanErr != nil {
+			return nil, 0, scanErr
 		}
-		return rows.Err()
-	})
-	if err != nil {
+		records = append(records, CrossBorderTransferRecord{
+			ID:                 id,
+			Timestamp:          ts,
+			DataResidency:      dataResidency,
+			TransferBasis:      transferBasis, // surfaced as-written, never translated
+			DestinationCountry: dataResidency, // data_residency is the ISO destination code (migration 126)
+		})
+	}
+	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
 	return records, len(records), nil

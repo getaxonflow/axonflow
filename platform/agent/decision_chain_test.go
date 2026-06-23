@@ -106,8 +106,8 @@ func TestNewDecisionChainTrackerMemoryMode(t *testing.T) {
 // to ensure none silently accepts empty OrgID.
 func TestRecordDecision_EmptyOrgIDRejected(t *testing.T) {
 	for _, m := range []struct {
-		name           string
-		config         DecisionChainTrackerConfig
+		name   string
+		config DecisionChainTrackerConfig
 	}{
 		{"memory_mode", DecisionChainTrackerConfig{SystemID: "test-system/1.0.0"}},
 		{"async_mode", DecisionChainTrackerConfig{SystemID: "test-system/1.0.0", AsyncQueueSize: 100}},
@@ -115,8 +115,8 @@ func TestRecordDecision_EmptyOrgIDRejected(t *testing.T) {
 		t.Run(m.name, func(t *testing.T) {
 			tracker, _ := NewDecisionChainTracker(m.config)
 			err := tracker.RecordDecision(context.Background(), DecisionEntry{
-				ChainID:         "chain-noorg",
-				RequestID:       "req-noorg",
+				ChainID:   "chain-noorg",
+				RequestID: "req-noorg",
 				// OrgID deliberately empty
 				TenantID:        "tenant",
 				DecisionType:    DecisionTypePolicyEnforcement,
@@ -239,10 +239,10 @@ func TestRecordMultipleDecisionsInChain(t *testing.T) {
 
 	// Record 3 decisions in sequence
 	decisions := []struct {
-		stepNum     int
-		decType     DecisionType
-		outcome     DecisionOutcome
-		procTime    int64
+		stepNum  int
+		decType  DecisionType
+		outcome  DecisionOutcome
+		procTime int64
 	}{
 		{1, DecisionTypePolicyEnforcement, DecisionOutcomeApproved, 10},
 		{2, DecisionTypeDataRetrieval, DecisionOutcomeApproved, 50},
@@ -905,11 +905,18 @@ func TestRecordDecisionToDB(t *testing.T) {
 		AsyncQueueSize: -1, // Sync mode (negative = no async workers)
 	})
 
-	// v9 Phase 8 B2: recordToDB now wraps the INSERT in WithOrgScope.
-	// Mock expects BeginTx + set_config + INSERT + Commit.
+	// v9 Phase 8 B2: recordToDB wraps the INSERT in WithOrgScope.
+	// #2722: it now also takes a per-chain advisory lock and reads the chain
+	// tail (to compute prev_hash + chain_seq) before the INSERT. Mock expects:
+	// BeginTx + set_config + advisory lock + tail SELECT (empty = genesis) +
+	// INSERT + Commit.
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM decision_chain`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"})) // empty: genesis record
 	mock.ExpectExec("INSERT INTO decision_chain").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -963,6 +970,10 @@ func TestRecordDecisionToDBError(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM decision_chain`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"})) // empty: genesis record
 	mock.ExpectExec("INSERT INTO decision_chain").
 		WillReturnError(sql.ErrConnDone)
 	mock.ExpectRollback()
@@ -1215,11 +1226,18 @@ func TestRecordDecisionAsyncQueueFull(t *testing.T) {
 	// v9 Phase 8 B2: each INSERT wraps in WithOrgScope (BeginTx + set_config + INSERT + Commit).
 	// We use MatchExpectationsInOrder(false) so the two entries' tx sequences
 	// can interleave between async worker + sync fallback.
+	// #2722: recordToDB now also takes a per-chain advisory lock and reads the
+	// chain tail before the INSERT, so each entry's tx is:
+	// Begin + set_config + advisory lock + tail SELECT (empty) + INSERT + Commit.
 	mock.MatchExpectationsInOrder(false)
 	for i := 0; i < 2; i++ {
 		mock.ExpectBegin()
 		mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery(`FROM decision_chain`).
+			WillReturnRows(sqlmock.NewRows([]string{"id"}))
 		mock.ExpectExec("INSERT INTO decision_chain").
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()

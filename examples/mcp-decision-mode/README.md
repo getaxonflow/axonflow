@@ -52,8 +52,42 @@ produces the first two layers and is the join point for the other two:
 |-------|-----------|-------------|
 | **Layer 1** | MCP server logging (`timestamp, session_id, leader_email, tool_name, parameters_hash, response_record_count, duration_ms`) | `audit_log.py` → `audit_log.jsonl` |
 | **Layer 2** | `X-AI-Agent` / `X-Session-ID` / `X-Leader-Identity` propagation | `mcp_server.py` forwards them in the `decide()` `context` map; values land in the Layer 1 row (`ai_agent`, `session_id`, `leader_email`) |
-| **Layer 3** | Decision record → SIEM, correlated to BigQuery Cloud Audit Logs by `session_id` | AxonFlow decision record (`decision_id` + `trace_id`) exported via OpenTelemetry; correlate on `session_id` (the design partner's GCP-side config) |
+| **Layer 3** | Decision record → SIEM, correlated to BigQuery Cloud Audit Logs by `decision_id` / `session_id` | AxonFlow decision record (`decision_id` + `trace_id`) exported via OpenTelemetry **and** the Layer 1 row shipped to a central store (see [Turnkey central-store shipping](#turnkey-central-store-shipping-layer-3)); correlate on `decision_id` / `session_id` |
 | **Layer 4** | Anomaly alerts (volume, off-hours, bulk retrieval) | SIEM's job once Layer 1 + Layer 3 feeds are joined |
+
+## Turnkey central-store shipping (Layer 3)
+
+The local `audit_log.jsonl` is always written and is the durable source of
+truth. To make **Layer 3** turnkey rather than a bespoke pipeline, set
+`MCP_AUDIT_SINK` and each row is *also* shipped to a central store, landing next
+to BigQuery Cloud Audit Logs so a SIEM joins them on `decision_id` / `session_id`
+(see the [Decision Mode SIEM Correlation Recipe](https://enterprise-docs.getaxonflow.com/docs/compliance/decision-mode-siem-recipe)).
+
+```bash
+# Ship to an OTel collector / BigQuery proxy / any log-ingest URL (uses httpx):
+export MCP_AUDIT_SINK=http
+export MCP_AUDIT_HTTP_URL=http://otel-collector:4318/v1/audit
+
+# …or to S3 (objects: <prefix>/<YYYY>/<MM>/<DD>/<decision_id>.json):
+export MCP_AUDIT_SINK=s3
+export MCP_AUDIT_S3_BUCKET=my-axonflow-audit       # needs: pip install boto3
+```
+
+Shipping is **best-effort and fail-open**: if the central store is down, tool
+calls still succeed, rows are still written locally, and a small circuit breaker
+stops the dead sink from costing latency. It mirrors the platform agent's
+built-in exporter (`AXONFLOW_AUDIT_SINK`), so the same record layout lands
+whether the agent or this PEP wrote it.
+
+See it run, with no cloud account, against an in-process receiver:
+
+```bash
+python ship_audit_example.py
+```
+
+It records two governed calls with the central store up (rows land both locally
+and centrally, correlated on `decision_id`) and two with it down (rows stay
+durable locally), printing a `PASS` line per scenario.
 
 ## Quickstart
 
@@ -130,7 +164,8 @@ availability-first paths (the synthetic allow is tagged in the audit row's
 |------|---------|
 | `mcp_server.py` | The MCP server (PEP): two governed tools + the `Governor` wrapper |
 | `decide_client.py` | `AxonFlowDecideClient` — wraps `POST /api/v1/decide` (sync + async) |
-| `audit_log.py` | Layer 1 structured-JSON audit writer |
+| `audit_log.py` | Layer 1 structured-JSON audit writer + turnkey central-store shippers (S3 / HTTP) |
+| `ship_audit_example.py` | Runnable demo of central-store shipping against an in-process receiver (no cloud account) |
 | `e2e_harness.py` | Real stdio MCP client that drives the server for `test_e2e.sh` |
 | `test_e2e.sh` | End-to-end smoke test (5 scenarios) against a live stack |
 | `*_test.py` | Unit tests (`pytest`); run `pytest` after `pip install -r requirements-dev.txt` |

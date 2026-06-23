@@ -56,21 +56,33 @@ VERDICT_NEEDS_APPROVAL = "needs_approval"
 VALID_STAGES = ("llm", "tool", "agent")
 
 
-class _NeedsApproval:
-    """Sentinel returned when the PDP verdict is ``needs_approval``.
+@dataclass
+class NeedsApproval:
+    """Returned when the PDP verdict is ``needs_approval``.
 
-    A sentinel (rather than an exception) because needs_approval is not an
-    error: the MCP server should pause and route to a human approver, then
-    resume. Compared by identity via the module-level ``NEEDS_APPROVAL``.
+    A value (rather than an exception) because needs_approval is not an error:
+    the MCP server should pause and route to a human approver, then resume.
+    Detected with ``isinstance(result, NeedsApproval)``.
+
+    It carries the decision identity (decision_id, trace_id, evaluated_policies)
+    so the PEP writes a COMPLETE audit row for the paused call. Those are exactly
+    the decisions a reviewer must later correlate in the SIEM, so dropping the
+    decision_id here would blind the review trail.
     """
 
-    __slots__ = ()
+    decision_id: str = ""
+    trace_id: str = ""
+    evaluated_policies: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
 
-    def __repr__(self) -> str:  # pragma: no cover - trivial
-        return "NEEDS_APPROVAL"
-
-
-NEEDS_APPROVAL = _NeedsApproval()
+    @classmethod
+    def from_result(cls, result: DecideResult) -> NeedsApproval:
+        return cls(
+            decision_id=result.decision_id,
+            trace_id=result.trace_id,
+            evaluated_policies=list(result.evaluated_policies),
+            reasons=list(result.reasons),
+        )
 
 
 @dataclass
@@ -213,7 +225,7 @@ class AxonFlowDecideClient:
         if result.verdict == VERDICT_DENY:
             raise PolicyDenied(result)
         if result.verdict == VERDICT_NEEDS_APPROVAL:
-            return NEEDS_APPROVAL
+            return NeedsApproval.from_result(result)
         return result
 
     def _on_transport_failure(self, detail: str) -> DecideResult:

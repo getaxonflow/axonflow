@@ -1163,17 +1163,29 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 
 	var policies []DynamicPolicy
 
-	for name, policy := range e.policies {
+	for cacheKey, policy := range e.policies {
 		policyMap, ok := policy.(map[string]interface{})
 		if !ok {
 			continue
 		}
 
+		// The cache is keyed by policy_id (refreshPolicies uses policy_id as the
+		// map key to avoid cross-tenant name collisions), so the loop variable is
+		// the UUID, NOT a human-readable name. Default Name to the key only as a
+		// fallback; the real human name lives in policyMap["name"] and is set
+		// below. Without this, every matched-policy surfaced to callers (e.g. the
+		// MCP dynamic-policy evaluator's matched_policies → the decision feed the
+		// Risk Committee reads) showed the opaque UUID instead of the policy name.
 		dp := DynamicPolicy{
-			Name:     name,
+			Name:     cacheKey,
 			Type:     "database",
 			Enabled:  true,
 			Priority: 0,
+		}
+
+		// Extract the human-readable name (refreshPolicies stores it under "name").
+		if n, ok := policyMap["name"].(string); ok && n != "" {
+			dp.Name = n
 		}
 
 		// Extract policy_id

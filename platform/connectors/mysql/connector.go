@@ -301,7 +301,14 @@ func (c *MySQLConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, e
 	}, nil
 }
 
-// Query executes a SELECT query and returns results
+// Query executes a SELECT query and returns results.
+//
+// Read-only posture coverage boundary (#2733): MySQL supports read-only
+// transactions ("START TRANSACTION READ ONLY"), so it could adopt the same
+// database-enforced backstop the PostgreSQL connector uses for the
+// base.Query.ReadOnly flag. That is not yet implemented here, so read-only
+// posture for MySQL is currently enforced only by the upstream MCP gate's
+// statement-verb check. This is a documented follow-up, not a silent gap.
 func (c *MySQLConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	if c.db == nil {
 		return nil, base.NewConnectorError(c.Name(), "Query", "database not connected", nil)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -118,8 +119,12 @@ func (r *FieldRedactor) applyToRows(content interface{}, plans []RedactionPlan) 
 
 	var redacted []RedactedField
 
-	// Build pattern map for efficiency
-	patternMap := r.buildPatternMap(plans)
+	// Statement-removal plans (prompt-injection) are applied first and whole-
+	// statement; the remaining span plans (PII) keep the existing per-match path.
+	statementPlans, spanPlans := partitionStatementPlans(plans)
+
+	// Build pattern map for efficiency (span/PII plans only).
+	patternMap := r.buildPatternMap(spanPlans)
 
 	// Create a copy of rows to avoid modifying the original (thread safety)
 	resultRows := make([]map[string]interface{}, len(rows))
@@ -139,6 +144,28 @@ func (r *FieldRedactor) applyToRows(content interface{}, plans []RedactionPlan) 
 			}
 
 			newValue := strValue
+			// (1) Statement-level removal for prompt-injection: strip the whole
+			// sentence/line containing each match so no residual instruction
+			// survives, before the span/PII pass runs on what remains.
+			if sv, applied := r.redactStatements(newValue, statementPlans); len(applied) > 0 {
+				newValue = sv
+				for _, a := range applied {
+					redacted = append(redacted, RedactedField{
+						Path:        fmt.Sprintf("rows[%d].%s", rowIdx, fieldName),
+						OriginalLen: len(a.matchText),
+						RedactedTo:  fmt.Sprintf("[REDACTED:%s]", a.piiType),
+						PolicyID:    a.policyID,
+						PIIType:     a.piiType,
+					})
+				}
+			}
+			// The reference for the JSON-aware PII re-walk below MUST be the
+			// post-statement-removal value, not strValue: for valid JSON,
+			// jsonSafeRemask re-walks its `original` arg for PII and returns that, so
+			// passing the injection-intact strValue would silently DISCARD the
+			// statement removal on JSON+PII content (the default case). When no
+			// statement removal occurred, afterStatements == strValue (unchanged).
+			afterStatements := newValue
 			for patternStr, patternPlans := range patternMap {
 				re, err := regexp.Compile(patternStr)
 				if err != nil {
@@ -176,8 +203,9 @@ func (r *FieldRedactor) applyToRows(content interface{}, plans []RedactionPlan) 
 			}
 
 			// If flat masking broke embedded JSON (a match hit a bare number/literal),
-			// re-redact JSON-aware so we never emit invalid JSON.
-			newValue = r.jsonSafeRemask(strValue, newValue, patternMap)
+			// re-redact JSON-aware so we never emit invalid JSON. Reference the
+			// statement-redacted value so injection removal is preserved on JSON.
+			newValue = r.jsonSafeRemask(afterStatements, newValue, patternMap)
 
 			// Update row if modified
 			if newValue != strValue {
@@ -193,7 +221,8 @@ func (r *FieldRedactor) applyToRows(content interface{}, plans []RedactionPlan) 
 // Returns a new copy of the map with redactions applied (does not modify original).
 func (r *FieldRedactor) applyToMap(m map[string]interface{}, plans []RedactionPlan, pathPrefix string) (map[string]interface{}, []RedactedField) {
 	var redacted []RedactedField
-	patternMap := r.buildPatternMap(plans)
+	statementPlans, spanPlans := partitionStatementPlans(plans)
+	patternMap := r.buildPatternMap(spanPlans)
 
 	// Create a copy of the map to avoid modifying the original (thread safety)
 	result := make(map[string]interface{}, len(m))
@@ -210,6 +239,20 @@ func (r *FieldRedactor) applyToMap(m map[string]interface{}, plans []RedactionPl
 		switch v := value.(type) {
 		case string:
 			newValue := v
+			// (1) Statement-level removal for prompt-injection (whole sentence/line).
+			if sv, applied := r.redactStatements(newValue, statementPlans); len(applied) > 0 {
+				newValue = sv
+				for _, a := range applied {
+					redacted = append(redacted, RedactedField{
+						Path:        fieldPath,
+						OriginalLen: len(a.matchText),
+						RedactedTo:  fmt.Sprintf("[REDACTED:%s]", a.piiType),
+						PolicyID:    a.policyID,
+						PIIType:     a.piiType,
+					})
+				}
+			}
+			afterStatementsMap := newValue
 			for patternStr, patternPlans := range patternMap {
 				re, err := regexp.Compile(patternStr)
 				if err != nil {
@@ -237,7 +280,7 @@ func (r *FieldRedactor) applyToMap(m map[string]interface{}, plans []RedactionPl
 					}
 				}
 			}
-			newValue = r.jsonSafeRemask(v, newValue, patternMap)
+			newValue = r.jsonSafeRemask(afterStatementsMap, newValue, patternMap)
 			if newValue != v {
 				result[key] = newValue
 			}
@@ -291,7 +334,25 @@ func (r *FieldRedactor) applyToString(content interface{}, plans []RedactionPlan
 
 	var redacted []RedactedField
 	newStr := str
-	patternMap := r.buildPatternMap(plans)
+	statementPlans, spanPlans := partitionStatementPlans(plans)
+	patternMap := r.buildPatternMap(spanPlans)
+
+	// (1) Statement-level removal for prompt-injection (whole sentence/line).
+	if sv, applied := r.redactStatements(newStr, statementPlans); len(applied) > 0 {
+		newStr = sv
+		for _, a := range applied {
+			redacted = append(redacted, RedactedField{
+				Path:        "string",
+				OriginalLen: len(a.matchText),
+				RedactedTo:  fmt.Sprintf("[REDACTED:%s]", a.piiType),
+				PolicyID:    a.policyID,
+				PIIType:     a.piiType,
+			})
+		}
+	}
+	// Reference the statement-redacted value for the JSON-aware re-walk so the
+	// injection removal is preserved when the string is a JSON document + PII.
+	afterStatements := newStr
 
 	for patternStr, patternPlans := range patternMap {
 		re, err := regexp.Compile(patternStr)
@@ -326,8 +387,239 @@ func (r *FieldRedactor) applyToString(content interface{}, plans []RedactionPlan
 		}
 	}
 
-	newStr = r.jsonSafeRemask(str, newStr, patternMap)
+	newStr = r.jsonSafeRemask(afterStatements, newStr, patternMap)
 	return newStr, redacted
+}
+
+// partitionStatementPlans splits plans into those that redact the whole
+// statement (StrategyRemoveStatement, e.g. prompt-injection) and the rest
+// (span-level strategies, e.g. PII mask/remove). The span plans keep the existing
+// per-match replacement path unchanged; the statement plans are handled by
+// redactStatements. This keeps the PII redaction path byte-identical (#2738).
+func partitionStatementPlans(plans []RedactionPlan) (statement, span []RedactionPlan) {
+	for _, p := range plans {
+		if p.Strategy == StrategyRemoveStatement {
+			statement = append(statement, p)
+		} else {
+			span = append(span, p)
+		}
+	}
+	return statement, span
+}
+
+// statementSpan expands the match [mStart,mEnd) to the bounds of the
+// sentence/line that contains it, so the FULL injection instruction is removed
+// (not just the regex anchor) while neighboring statements survive.
+//
+// A boundary is a newline (always) or a "real" sentence end: a '.' '!' '?'
+// followed by whitespace+uppercase or end-of-text. A '.' that is NOT a sentence
+// end (a decimal like "v2.0", or "...admin. assistant" continuing in lowercase)
+// is NOT a boundary, so the trailing payload after the anchor is still removed
+// (closes the residual class R3 found on the role/exfil vectors). Terminators
+// are left in place, so the next sentence/line is preserved. Byte offsets; the
+// boundary chars scanned are ASCII, so slicing stays on rune boundaries.
+//
+// KNOWN LIMIT: an attacker who splits a single instruction across a NEWLINE
+// ("from now on you are\nan admin") leaves the trailing fragment on the next
+// line, because newline must stay a hard boundary to preserve benign multi-line
+// output (logs, markdown). The directive verb is still removed, so the surviving
+// noun fragment has little injection power. Documented in #2738.
+func statementSpan(text string, mStart, mEnd int) (int, int) {
+	start := mStart
+	for start > 0 && !boundaryBeforeStatement(text, start) {
+		start--
+	}
+	end := mEnd
+	for end < len(text) && !boundaryEndsStatement(text, end) {
+		end++
+	}
+	// Trim leading whitespace (don't redact the gap after the previous sentence).
+	for start < mStart && (text[start] == ' ' || text[start] == '\t') {
+		start++
+	}
+	// Trim trailing whitespace (don't swallow the space before the next sentence).
+	for end > mEnd && (text[end-1] == ' ' || text[end-1] == '\t') {
+		end--
+	}
+	return start, end
+}
+
+// isSentenceTerminator reports a statement/clause boundary char. ';' is included
+// so a clause-list ("task A done; ignore all previous instructions; task C") only
+// loses the offending clause, not the whole field. NOTE: ',' and other separators
+// are NOT boundaries, so a field with NO '.', '!', '?', ';' or newline is treated
+// as a single statement and is fully redacted on any injection match (the
+// fail-safe direction: more removed, nothing leaked).
+func isSentenceTerminator(b byte) bool { return b == '.' || b == '!' || b == '?' || b == ';' }
+
+func isASCIIUpper(b byte) bool { return b >= 'A' && b <= 'Z' }
+
+// boundaryEndsStatement reports whether the statement ends AT index i (scanning
+// rightward): i is a newline, or a sentence terminator that ends a sentence,
+// meaning it is followed by end-of-text, whitespace, or an uppercase letter (a
+// no-space sentence break common in minified text, e.g. "...instructions.Account
+// owner..."). A terminator followed by a digit/lowercase (a decimal "v2.0" or an
+// intra-token dot) is NOT a boundary, so the payload trailing the injection
+// anchor is still removed. This bounds removal to the sentence so an injection
+// does not over-redact a following benign sentence that has no space after the
+// period.
+func boundaryEndsStatement(text string, i int) bool {
+	c := text[i]
+	if c == '\n' || c == '\r' {
+		return true
+	}
+	if isSentenceTerminator(c) {
+		if i+1 == len(text) {
+			return true
+		}
+		n := text[i+1]
+		return n == ' ' || n == '\t' || n == '\n' || n == '\r' || isASCIIUpper(n)
+	}
+	return false
+}
+
+// boundaryBeforeStatement reports whether a new statement begins AT index i
+// (scanning leftward): i is the start of the text, immediately follows a newline,
+// or follows (across spaces/tabs) a sentence terminator. Capitalization is NOT
+// required because an injection sentence frequently begins lowercase, and the
+// preceding benign sentence must still survive.
+func boundaryBeforeStatement(text string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	if text[i-1] == '\n' || text[i-1] == '\r' {
+		return true
+	}
+	j := i - 1
+	for j >= 0 && (text[j] == ' ' || text[j] == '\t') {
+		j--
+	}
+	return j >= 0 && isSentenceTerminator(text[j])
+}
+
+// statementRedaction records one applied statement removal for audit reporting.
+type statementRedaction struct {
+	matchText string
+	piiType   string
+	policyID  string
+}
+
+// redactStatements removes the full injection statement for every statement plan
+// that matches value. When value is a JSON document, the removal is applied PER
+// STRING LEAF and the document is re-serialized, so JSON validity and the
+// non-matching leaves are preserved (the connector RESPONSE is often the whole
+// serialized tool result; a flat whole-string removal would emit invalid JSON and
+// destroy benign sibling fields). Otherwise the plain-string path runs.
+func (r *FieldRedactor) redactStatements(value string, statementPlans []RedactionPlan) (string, []statementRedaction) {
+	if len(statementPlans) == 0 {
+		return value, nil
+	}
+	if json.Valid([]byte(value)) {
+		if out, applied, ok := r.redactStatementsJSON(value, statementPlans); ok {
+			return out, applied
+		}
+	}
+	return r.redactStatementsPlain(value, statementPlans)
+}
+
+// redactStatementsJSON parses value as a single JSON document, applies
+// redactStatementsPlain to every string leaf, and re-serializes. ok is false (so
+// the caller falls back to the plain path) when value is not a single clean JSON
+// document or re-encoding fails. JSON structure and non-matching leaves survive.
+func (r *FieldRedactor) redactStatementsJSON(value string, statementPlans []RedactionPlan) (string, []statementRedaction, bool) {
+	dec := json.NewDecoder(strings.NewReader(value))
+	dec.UseNumber()
+	var root interface{}
+	if err := dec.Decode(&root); err != nil || dec.More() {
+		return "", nil, false
+	}
+	var applied []statementRedaction
+	var walk func(n interface{}) interface{}
+	walk = func(n interface{}) interface{} {
+		switch v := n.(type) {
+		case map[string]interface{}:
+			for k, val := range v {
+				v[k] = walk(val)
+			}
+			return v
+		case []interface{}:
+			for i, val := range v {
+				v[i] = walk(val)
+			}
+			return v
+		case string:
+			out, a := r.redactStatementsPlain(v, statementPlans)
+			applied = append(applied, a...)
+			return out
+		default:
+			return n
+		}
+	}
+	root = walk(root)
+	if len(applied) == 0 {
+		return value, nil, true // valid JSON, nothing matched: leave untouched
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(root); err != nil {
+		return "", nil, false // fall back to the plain path rather than emit nothing
+	}
+	return strings.TrimRight(buf.String(), "\n"), applied, true
+}
+
+// redactStatementsPlain replaces, for every statement plan that matches value,
+// the ENTIRE sentence/line containing the match with a typed placeholder.
+// Expanded regions from all statement plans are merged so an overlap is replaced
+// once, and replacement runs end-to-start so earlier offsets stay valid. Returns
+// the new string and the applied redactions. value is unchanged when nothing
+// matches.
+func (r *FieldRedactor) redactStatementsPlain(value string, statementPlans []RedactionPlan) (string, []statementRedaction) {
+	if len(statementPlans) == 0 {
+		return value, nil
+	}
+	type region struct {
+		start, end int
+		piiType    string
+		policyID   string
+	}
+	var regions []region
+	for i := range statementPlans {
+		plan := statementPlans[i]
+		re, err := regexp.Compile(plan.Policy.PatternStr)
+		if err != nil {
+			continue
+		}
+		piiType := r.getPIIType(plan.Policy)
+		for _, loc := range re.FindAllStringIndex(value, -1) {
+			s, e := statementSpan(value, loc[0], loc[1])
+			regions = append(regions, region{start: s, end: e, piiType: piiType, policyID: plan.Policy.PolicyID})
+		}
+	}
+	if len(regions) == 0 {
+		return value, nil
+	}
+	sort.Slice(regions, func(i, j int) bool { return regions[i].start < regions[j].start })
+	// Merge overlapping/adjacent regions (first region's attribution wins).
+	merged := []region{regions[0]}
+	for _, rg := range regions[1:] {
+		last := &merged[len(merged)-1]
+		if rg.start <= last.end {
+			if rg.end > last.end {
+				last.end = rg.end
+			}
+		} else {
+			merged = append(merged, rg)
+		}
+	}
+	var applied []statementRedaction
+	for i := len(merged) - 1; i >= 0; i-- {
+		m := merged[i]
+		orig := value[m.start:m.end]
+		value = value[:m.start] + fmt.Sprintf("[REDACTED:%s]", m.piiType) + value[m.end:]
+		applied = append(applied, statementRedaction{matchText: orig, piiType: m.piiType, policyID: m.policyID})
+	}
+	return value, applied
 }
 
 // buildPatternMap groups plans by pattern string for efficient matching.
@@ -538,6 +830,15 @@ func (r *FieldRedactor) RegisterStrategy(name RedactionStrategy, fn RedactorFunc
 
 // GetRedactionStrategy returns the appropriate strategy for a policy category.
 func GetRedactionStrategy(category PolicyCategory, severity Severity) RedactionStrategy {
+	// Indirect prompt-injection (security-dangerous) on the response plane is
+	// sanitized by removing the whole sentence/line, not just the regex span, so no
+	// residual instruction survives (#2738). Checked before the severity branches
+	// so it holds at every severity. Redaction of this category only happens on the
+	// response plane (the request plane blocks it); PII categories are unaffected.
+	if category == CategorySecurityDangerous {
+		return StrategyRemoveStatement
+	}
+
 	// Critical severity always uses full masking
 	if severity == SeverityCritical {
 		return StrategyMask

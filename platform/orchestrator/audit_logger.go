@@ -130,30 +130,30 @@ type AuditLogger struct {
 
 // AuditEntry represents a single audit log entry
 type AuditEntry struct {
-	ID               string                 `json:"id"`
-	RequestID        string                 `json:"request_id"`
-	Timestamp        time.Time              `json:"timestamp"`
-	UserID           int                    `json:"user_id"`
-	UserEmail        string                 `json:"user_email"`
-	UserRole         string                 `json:"user_role"`
-	ClientID         string                 `json:"client_id"`
-	TenantID         string                 `json:"tenant_id"`
-	OrgID            string                 `json:"org_id"`
-	RequestType      string                 `json:"request_type"`
-	Query            string                 `json:"query"`
-	QueryHash        string                 `json:"query_hash"`
-	PolicyDecision   string                 `json:"policy_decision"` // "allowed", "blocked", "redacted"
-	PolicyDetails    map[string]interface{} `json:"policy_details"`
-	Provider         string                 `json:"provider"`
-	Model            string                 `json:"model"`
-	ResponseTime     int64                  `json:"response_time_ms"`
-	TokensUsed       int                    `json:"tokens_used"`
-	Cost             float64                `json:"cost"`
-	RedactedFields   []string               `json:"redacted_fields"`
-	ErrorMessage     string                 `json:"error_message,omitempty"`
-	ResponseSample   string                 `json:"response_sample"`
-	ComplianceFlags  []string               `json:"compliance_flags"`
-	SecurityMetrics  map[string]interface{} `json:"security_metrics"`
+	ID              string                 `json:"id"`
+	RequestID       string                 `json:"request_id"`
+	Timestamp       time.Time              `json:"timestamp"`
+	UserID          int                    `json:"user_id"`
+	UserEmail       string                 `json:"user_email"`
+	UserRole        string                 `json:"user_role"`
+	ClientID        string                 `json:"client_id"`
+	TenantID        string                 `json:"tenant_id"`
+	OrgID           string                 `json:"org_id"`
+	RequestType     string                 `json:"request_type"`
+	Query           string                 `json:"query"`
+	QueryHash       string                 `json:"query_hash"`
+	PolicyDecision  string                 `json:"policy_decision"` // "allowed", "blocked", "redacted"
+	PolicyDetails   map[string]interface{} `json:"policy_details"`
+	Provider        string                 `json:"provider"`
+	Model           string                 `json:"model"`
+	ResponseTime    int64                  `json:"response_time_ms"`
+	TokensUsed      int                    `json:"tokens_used"`
+	Cost            float64                `json:"cost"`
+	RedactedFields  []string               `json:"redacted_fields"`
+	ErrorMessage    string                 `json:"error_message,omitempty"`
+	ResponseSample  string                 `json:"response_sample"`
+	ComplianceFlags []string               `json:"compliance_flags"`
+	SecurityMetrics map[string]interface{} `json:"security_metrics"`
 	// Canonical decision-row columns (#2597 / #2611 / ADR-058). Populated on the
 	// orchestrator response plane (#2626) so a redacted/blocked LLM response
 	// lands in audit_logs with a first-class plane + decision_id + correlation_id
@@ -162,7 +162,20 @@ type AuditEntry struct {
 	DecisionID    string `json:"decision_id,omitempty"`
 	Plane         string `json:"plane,omitempty"`
 	CorrelationID string `json:"correlation_id,omitempty"`
+	// UU PDP Pasal 56 cross-border transfer fields (#2718, core migration 126).
+	// Auto-stamped on the LLM-forward path via stampCrossBorderTransfer (enterprise
+	// only); empty on every other writer and in community builds → NULL columns.
+	// TransferBasis is the declared legal basis (adequacy/safeguards/pasal_56b_dpa/
+	// consent); DataResidency is the ISO 3166-1 alpha-2 destination country.
+	TransferBasis string `json:"transfer_basis,omitempty"`
+	DataResidency string `json:"data_residency,omitempty"`
 }
+
+// stampCrossBorderTransfer auto-stamps the UU PDP Pasal 56 transfer_basis +
+// data_residency onto an LLM-forward audit row. It is wired by the enterprise
+// build (cross_border_audit.go init); in a community build it stays nil so the
+// columns are written NULL and behavior is byte-identical (#2718).
+var stampCrossBorderTransfer func(entry *AuditEntry, req OrchestratorRequest, providerInfo *ProviderInfo)
 
 // BatchWriter handles batch writing of audit entries
 type BatchWriter struct {
@@ -238,18 +251,18 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 	correlationID := correlationIDFromContext(ctx, req.RequestID)
 
 	entry := &AuditEntry{
-		ID:            generateAuditID(),
-		RequestID:     req.RequestID,
-		Timestamp:     time.Now().UTC(),
-		UserID:        req.User.ID,
-		UserEmail:     req.User.Email,
-		UserRole:      req.User.Role,
-		ClientID:      req.Client.ID,
-		TenantID:      req.User.TenantID,
-		OrgID:         req.Client.OrgID,
-		RequestType:   req.RequestType,
-		Query:         req.Query,
-		QueryHash:     hashQuery(req.Query),
+		ID:             generateAuditID(),
+		RequestID:      req.RequestID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         req.User.ID,
+		UserEmail:      req.User.Email,
+		UserRole:       req.User.Role,
+		ClientID:       req.Client.ID,
+		TenantID:       req.User.TenantID,
+		OrgID:          req.Client.OrgID,
+		RequestType:    req.RequestType,
+		Query:          req.Query,
+		QueryHash:      hashQuery(req.Query),
 		PolicyDecision: responseVerdictAllowed,
 		PolicyDetails: map[string]interface{}{
 			"applied_policies": policyResult.AppliedPolicies,
@@ -288,6 +301,15 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 		}
 	}
 
+	// LLM-forward path: this is the moment data leaves the deployment, so it is
+	// the cross-border write path. Auto-stamp the UU PDP Pasal 56 transfer_basis
+	// + data_residency (enterprise only; no-op hook in community). Must run BEFORE
+	// enqueue so the stamped fields are visible to the BatchWriter without a race
+	// on the shared entry pointer (#2718).
+	if stampCrossBorderTransfer != nil {
+		stampCrossBorderTransfer(entry, req, providerInfo)
+	}
+
 	l.enqueueEntry(entry)
 	return entry
 }
@@ -298,8 +320,12 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 // (#2626 ORCH-RESP-VALIDATE-DENY-AS-ALLOWED) — never the "allowed" success the
 // old path silently persisted. The validation reason is preserved in
 // policy_details for the auditor.
+//
+// This is a POST-forward path: the request already reached the LLM (only the
+// response is withheld), so the cross-border transfer completed and is stamped
+// like the success path (#2718). providerInfo carries the resolved destination.
 func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRequest,
-	policyResult *PolicyEvaluationResult, info *RedactionInfo) *AuditEntry {
+	policyResult *PolicyEvaluationResult, info *RedactionInfo, providerInfo *ProviderInfo) *AuditEntry {
 	if l == nil {
 		return nil
 	}
@@ -327,26 +353,32 @@ func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRe
 	}
 
 	entry := &AuditEntry{
-		ID:             generateAuditID(),
-		RequestID:      req.RequestID,
-		Timestamp:      time.Now().UTC(),
-		UserID:         req.User.ID,
-		UserEmail:      req.User.Email,
-		UserRole:       req.User.Role,
-		ClientID:       req.Client.ID,
-		TenantID:       req.User.TenantID,
-		OrgID:          req.Client.OrgID,
-		RequestType:    req.RequestType,
-		Query:          req.Query,
-		QueryHash:      hashQuery(req.Query),
-		PolicyDecision: responseVerdictBlocked,
-		PolicyDetails:  policyDetails,
-		RedactedFields: redactedFields,
+		ID:              generateAuditID(),
+		RequestID:       req.RequestID,
+		Timestamp:       time.Now().UTC(),
+		UserID:          req.User.ID,
+		UserEmail:       req.User.Email,
+		UserRole:        req.User.Role,
+		ClientID:        req.Client.ID,
+		TenantID:        req.User.TenantID,
+		OrgID:           req.Client.OrgID,
+		RequestType:     req.RequestType,
+		Query:           req.Query,
+		QueryHash:       hashQuery(req.Query),
+		PolicyDecision:  responseVerdictBlocked,
+		PolicyDetails:   policyDetails,
+		RedactedFields:  redactedFields,
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
 		DecisionID:      decisionID,
 		Plane:           agent.PlaneLLM,
 		CorrelationID:   correlationID,
+	}
+
+	// Post-forward cross-border stamp (enterprise only; no-op hook in community).
+	// Must run BEFORE enqueue to avoid a race on the shared entry pointer (#2718).
+	if stampCrossBorderTransfer != nil {
+		stampCrossBorderTransfer(entry, req, providerInfo)
 	}
 
 	l.enqueueEntry(entry)
@@ -413,28 +445,28 @@ func (l *AuditLogger) LogBlockedMedia(ctx context.Context, req OrchestratorReque
 }
 
 // LogBlockedRequest logs a blocked request
-func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorRequest, 
+func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorRequest,
 	policyResult *PolicyEvaluationResult) {
-	
+
 	entry := &AuditEntry{
-		ID:            generateAuditID(),
-		RequestID:     req.RequestID,
-		Timestamp:     time.Now().UTC(),
-		UserID:        req.User.ID,
-		UserEmail:     req.User.Email,
-		UserRole:      req.User.Role,
-		ClientID:      req.Client.ID,
-		TenantID:      req.User.TenantID,
-		OrgID:         req.Client.OrgID,
-		RequestType:   req.RequestType,
-		Query:         req.Query,
-		QueryHash:     hashQuery(req.Query),
+		ID:             generateAuditID(),
+		RequestID:      req.RequestID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         req.User.ID,
+		UserEmail:      req.User.Email,
+		UserRole:       req.User.Role,
+		ClientID:       req.Client.ID,
+		TenantID:       req.User.TenantID,
+		OrgID:          req.Client.OrgID,
+		RequestType:    req.RequestType,
+		Query:          req.Query,
+		QueryHash:      hashQuery(req.Query),
 		PolicyDecision: sharedaudit.DecisionBlocked,
 		PolicyDetails: map[string]interface{}{
-			"applied_policies":  policyResult.AppliedPolicies,
-			"risk_score":        policyResult.RiskScore,
-			"required_actions":  policyResult.RequiredActions,
-			"processing_time":   policyResult.ProcessingTimeMs,
+			"applied_policies": policyResult.AppliedPolicies,
+			"risk_score":       policyResult.RiskScore,
+			"required_actions": policyResult.RequiredActions,
+			"processing_time":  policyResult.ProcessingTimeMs,
 		},
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
@@ -446,20 +478,20 @@ func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorReq
 // LogFailedRequest logs a failed request
 func (l *AuditLogger) LogFailedRequest(ctx context.Context, req OrchestratorRequest, err error) {
 	entry := &AuditEntry{
-		ID:            generateAuditID(),
-		RequestID:     req.RequestID,
-		Timestamp:     time.Now().UTC(),
-		UserID:        req.User.ID,
-		UserEmail:     req.User.Email,
-		UserRole:      req.User.Role,
-		ClientID:      req.Client.ID,
-		TenantID:      req.User.TenantID,
-		OrgID:         req.Client.OrgID,
-		RequestType:   req.RequestType,
-		Query:         req.Query,
-		QueryHash:     hashQuery(req.Query),
-		PolicyDecision: sharedaudit.DecisionError,
-		ErrorMessage:   err.Error(),
+		ID:              generateAuditID(),
+		RequestID:       req.RequestID,
+		Timestamp:       time.Now().UTC(),
+		UserID:          req.User.ID,
+		UserEmail:       req.User.Email,
+		UserRole:        req.User.Role,
+		ClientID:        req.Client.ID,
+		TenantID:        req.User.TenantID,
+		OrgID:           req.Client.OrgID,
+		RequestType:     req.RequestType,
+		Query:           req.Query,
+		QueryHash:       hashQuery(req.Query),
+		PolicyDecision:  sharedaudit.DecisionError,
+		ErrorMessage:    err.Error(),
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 	}
 
@@ -995,10 +1027,10 @@ func (l *AuditLogger) detectComplianceFlags(req OrchestratorRequest, response in
 // calculateSecurityMetrics calculates security metrics for the request
 func (l *AuditLogger) calculateSecurityMetrics(req OrchestratorRequest, policyResult *PolicyEvaluationResult) map[string]interface{} {
 	metrics := map[string]interface{}{
-		"risk_score":        policyResult.RiskScore,
-		"policies_applied":  len(policyResult.AppliedPolicies),
-		"query_complexity":  calculateQueryComplexity(req.Query),
-		"sensitive_access":  containsSensitiveAccess(req.Query),
+		"risk_score":       policyResult.RiskScore,
+		"policies_applied": len(policyResult.AppliedPolicies),
+		"query_complexity": calculateQueryComplexity(req.Query),
+		"sensitive_access": containsSensitiveAccess(req.Query),
 	}
 
 	return metrics
@@ -1070,7 +1102,7 @@ func containsSensitiveAccess(query string) bool {
 		"password", "secret", "key", "token",
 		"ssn", "social_security", "credit_card",
 	}
-	
+
 	lowerQuery := strings.ToLower(query)
 	for _, pattern := range sensitivePatterns {
 		if strings.Contains(lowerQuery, pattern) {
@@ -1142,8 +1174,9 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			policy_decision, policy_details, provider, model,
 			response_time_ms, tokens_used, cost, redacted_fields,
 			error_message, response_sample, compliance_flags, security_metrics,
-			decision_id, plane, correlation_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+			decision_id, plane, correlation_id,
+			transfer_basis, data_residency
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
 	`)
 	if err != nil {
 		return err
@@ -1188,6 +1221,11 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			nullIfEmpty(entry.DecisionID),
 			nullIfEmpty(entry.Plane),
 			nullIfEmpty(entry.CorrelationID),
+			// UU PDP Pasal 56 cross-border fields (#2718). Only the LLM-forward
+			// path populates these; every other writer leaves them empty → NULL,
+			// so the partial index + the OJK export only pick up declared transfers.
+			nullIfEmpty(entry.TransferBasis),
+			nullIfEmpty(entry.DataResidency),
 		)
 		if err != nil {
 			log.Printf("Failed to insert audit entry: %v", err)
@@ -1202,4 +1240,3 @@ func (b *BatchWriter) periodicFlush() {
 		b.Flush()
 	}
 }
-

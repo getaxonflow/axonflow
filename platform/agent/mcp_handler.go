@@ -1154,15 +1154,38 @@ func evaluateOutputPolicies(
 		// block is already honored below via out.StaticResult.Blocked). nil+nil => skip
 		// (must NOT pass empty Categories — the whitelist footgun evaluates ALL).
 		sensCats := policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
-		outCats := append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...)
+		// #2727: also evaluate the security-dangerous category (dangerous commands +
+		// indirect prompt-injection patterns, migrations 059/116) against the tool
+		// OUTPUT. These policies seeded phase='request', so a malicious instruction
+		// returned in a connector free-text field (a design-partner R&C policy pack,
+		// section 5.1, OWASP LLM01) re-entered the model's context ungoverned. Once
+		// migration core/128 flips them to phase='both' they load on the response
+		// plane; folding the category in here is what actually evaluates them
+		// (filterByCategories excludes any category not in the include set). On a
+		// match the response action is resolved just below (REDACT by default -
+		// sanitize the full injection statement, #2738 - configurable per-org to
+		// warn/block), and the outcome is audited through the existing
+		// out.StaticResult redacted/blocked path. nil => no enabled security-dangerous
+		// policy for this phase => skip (must NOT pass empty Categories, the footgun).
+		dangerCats := policyEngine.EnabledSecurityDangerousCategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		outCats := append(append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...), dangerCats...)
 		if responseContent != nil && len(outCats) > 0 {
+			// #2727: the security-dangerous (injection) category is REDACTED on the
+			// response plane by default (strip the injected span; surrounding data
+			// survives), overridable per-(org, dangerous_command) to warn/block via
+			// the detection-posture override. This is plane-specific: BuildActionOverrides
+			// carries the request-plane DangerousCommandAction (block) for this category,
+			// so we replace that entry for the response pass only. ResolveResponseInjectionAction
+			// returns the org override when set, else the REDACT default.
+			actionOverrides := mcpDetectionCfg.BuildActionOverrides()
+			actionOverrides[sharedpolicy.CategorySecurityDangerous] = ResolveResponseInjectionAction(ctx, OrgIDFromContext(ctx)).ToPolicyAction()
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
 				TenantID:        tenantID,
 				ConnectorName:   connectorName,
 				UserID:          userID,
 				Categories:      outCats,
 				SkipCategories:  mcpDetectionCfg.SkipCategories,
-				ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+				ActionOverrides: actionOverrides,
 				MaxRedactions:   100,
 			})
 			if out.StaticResult.Blocked {
@@ -1284,14 +1307,34 @@ func mcpOutputDecisionVerdict(outcome OutputPolicyOutcome) (verdict string, poli
 		policyIDs = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
 	}
 	if outcome.WasRedacted() {
+		// Label the redaction by class so the audit feed is accurate: an
+		// indirect-prompt-injection sanitization (#2727, security-dangerous) is NOT
+		// a PII redaction. PII/Indonesia redactions keep the existing wording.
+		label := "response PII redacted"
+		if outcome.StaticResult != nil && redactionInvolvesInjection(outcome.StaticResult.MatchedPolicies) {
+			label = "response prompt-injection sanitized"
+		}
 		if fields := outcome.RedactedFieldNames(); len(fields) > 0 {
-			reasons = []string{"response PII redacted: " + strings.Join(fields, ", ")}
+			reasons = []string{label + ": " + strings.Join(fields, ", ")}
 		} else {
-			reasons = []string{"response PII redacted"}
+			reasons = []string{label}
 		}
 		return mcpVerdictRedacted, policyIDs, reasons
 	}
 	return mcpVerdictAllowed, policyIDs, reasons
+}
+
+// redactionInvolvesInjection reports whether any matched response-phase policy is
+// the security-dangerous (indirect prompt-injection) category, so the audit
+// reason can describe an injection sanitization correctly rather than mislabeling
+// it as a PII redaction (#2727).
+func redactionInvolvesInjection(matches []sharedpolicy.PolicyMatch) bool {
+	for i := range matches {
+		if matches[i].Category == sharedpolicy.CategorySecurityDangerous {
+			return true
+		}
+	}
+	return false
 }
 
 // extractDynamicPolicyIDs returns the policy ids of the dynamic matches that
@@ -1514,6 +1557,13 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		Parameters: req.Parameters,
 		Timeout:    timeout,
 		Limit:      req.Limit,
+		// Read-only posture (#2720, epic #2716): under MCP_READ_ONLY, run the
+		// query inside the connector's read-only transaction (FU-4 #2735,
+		// Postgres BEGIN READ ONLY) as a database-enforced backstop. The
+		// statement-verb gate above already rejects classified writes; this
+		// ensures anything the parser misses (a write smuggled past via a form
+		// it never anticipated) is rejected by the DB at SQLSTATE 25006.
+		ReadOnly: readOnlyPostureEnabled(),
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -1539,6 +1589,23 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			"mcp_resources_query", queryDescriptor, auditEntry.StatementHash,
 			verdict, policyIDs, reasons, redactedFields,
 			correlationID)
+	}
+
+	// Read-only enforcement posture (#2720, epic #2716). resources/query hands the
+	// caller-supplied statement straight to connector.Query, and SQL connectors
+	// execute it verbatim, so a write DML (DELETE/UPDATE/DROP/...) would mutate
+	// even though the plane's operation is the fixed "query". Classify the
+	// STATEMENT verb and block writes here, before connector.Query, fail-closed on
+	// an unclassifiable statement. Non-overridable; canonical "blocked" audit row.
+	if readOnlyPostureEnabled() && statementIsWritePath(statement) {
+		reason := fmt.Sprintf("read-only posture active: write-path statement on connector %q is blocked; only read-path operations are permitted", req.Connector)
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = reason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		emitDecisionAudit(mcpVerdictBlocked, []string{readOnlyPosturePolicyID}, []string{reason}, nil)
+		sendErrorResponse(w, "Request blocked: "+reason, http.StatusForbidden, nil)
+		return
 	}
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
@@ -1849,6 +1916,33 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	auditEntry.OrgID = auth.OrgID
 	auditEntry.ClientID = client.ClientID
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
+
+	// Read-only enforcement posture (#2720, epic #2716). This is the connector
+	// EXECUTE plane, whose real side effect is connector.Execute below, so the
+	// posture gates it here as an early hard boundary, before connector
+	// resolution, policy evaluation, the override flow, and the Execute call.
+	// A write-path call is blocked (canonical "blocked" audit row,
+	// non-overridable); read-path calls fall through to normal governance.
+	// Mirrors the mcp_server_handler check_policy gate; reuses classifyMCPCall.
+	if readOnlyPostureEnabled() && classifyMCPCall(req.Connector, operation) == mcpAccessWrite {
+		reason := fmt.Sprintf("read-only posture active: write-path tool call %q is blocked; only read-path operations are permitted", req.Connector)
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = reason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		writeMCPDecisionAudit(ctx, usageDB,
+			auditEntry.DecisionID, auditEntry.AuditID,
+			user.TenantID, auditEntry.OrgID, client.ClientID, user.Email,
+			auditEntry.UserID, user.Role,
+			"mcp_tools_execute", fmt.Sprintf("mcp tools/execute: %s", req.Connector), auditEntry.StatementHash,
+			mcpVerdictBlocked,
+			[]string{readOnlyPosturePolicyID},
+			[]string{reason},
+			nil,
+			traceIDFromHeader(r.Header.Get("traceparent")))
+		sendErrorResponse(w, "Request blocked: "+reason, http.StatusForbidden, nil)
+		return
+	}
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	// In community mode, skip license validation entirely - these are community features
@@ -2422,6 +2516,38 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 					// propagates a W3C traceparent. Absent header → "" → singleton.
 					correlationID: traceIDFromHeader(r.Header.Get("traceparent")),
 				})
+		}
+
+		// Read-only enforcement posture (#2720, epic #2716). This is the
+		// SDK / Decision-Mode PEP request gate: a PEP forwards the call only if
+		// check-input returns allowed. Under MCP_READ_ONLY a write-path call must
+		// be refused here, before policy evaluation and the override flow, so the
+		// PEP never forwards it. Non-overridable; canonical "blocked" audit row.
+		// Mirrors the mcp_server_handler check_policy gate; reuses classifyMCPCall.
+		if readOnlyPostureEnabled() && classifyMCPCall(req.ConnectorType, operation) == mcpAccessWrite {
+			reason := fmt.Sprintf("read-only posture active: write-path tool call %q is blocked; only read-path operations are permitted", req.ConnectorType)
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = reason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+			writeMCPDecisionAudit(ctx, usageDB,
+				decisionID, auditEntry.AuditID,
+				tenantID, orgID, auth.Client.ID, userEmail,
+				userID, userRole,
+				"mcp_check_input", fmt.Sprintf("mcp check-input: %s", req.ConnectorType), auditEntry.StatementHash,
+				mcpVerdictBlocked,
+				[]string{readOnlyPosturePolicyID},
+				[]string{reason},
+				nil,
+				traceIDFromHeader(r.Header.Get("traceparent")))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+				Allowed:     false,
+				BlockReason: reason,
+				DecisionID:  decisionID,
+			})
+			return
 		}
 
 		// v9 Phase 8 #2384 PR-C1: orgID plumbed through.

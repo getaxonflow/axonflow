@@ -90,6 +90,18 @@ tags:
       Static policy management (ADR-018).
       Read-only access to system-managed policies for SQL injection detection,
       PII detection, and other pattern-based enforcement rules.
+  - name: Audit Verification
+    description: |
+      Non-repudiation verification of the signed decision chain (#2722).
+      Read-only endpoints that re-verify per-record Ed25519 signatures and
+      the prev_hash linkage of a tenant's decision records, and publish the
+      current public signing key for offline verification. These are not
+      Policy Enforcement Points (no decision-engine call); they are org-scoped
+      via the authenticated request context and read under RLS, so a caller can
+      only verify chains/records belonging to its own organization. Available in
+      any deployment mode once a usage database is configured; signatures verify
+      only when an `AXONFLOW_AUDIT_SIGNING_KEY` is set (otherwise records are
+      hash-chained but reported as unsigned).
 
 paths:
   /health:
@@ -3148,6 +3160,162 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # =============================================================================
+  # Audit Verification API (#2722): non-repudiation of the signed decision chain
+  # =============================================================================
+
+  /api/v1/audit/chains/{chainID}/verify:
+    get:
+      tags:
+        - Audit Verification
+      summary: Verify a decision chain
+      description: |
+        Re-verifies an entire decision chain: the `prev_hash` linkage across all
+        of its records (ordering / completeness) and every per-record Ed25519
+        signature (authorship). Read-only; never mutates the chain.
+
+        The chain is resolved by id **only within the authenticated caller's
+        organization** (RLS-scoped); the org is taken from the request
+        credentials, never from a path or query parameter. `chainID` is the
+        decision id (a UUID).
+
+        Inspect `authorship_proven` for the strong non-repudiation claim (every
+        record signed and all signatures + linkage verify). `valid` only means
+        no integrity violation was detected and can be `true` for a chain with
+        zero signed records, so do not gate non-repudiation on `valid` alone.
+      operationId: verifyAuditChain
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: chainID
+          in: path
+          required: true
+          description: Decision chain id (the decision UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Verification result (the chain exists in your organization)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainVerificationResult'
+        '400':
+          description: chainID is not a valid UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '401':
+          description: Missing authenticated org context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '404':
+          description: No decision chain found for this id in your organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '500':
+          description: Verification failed (internal error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+
+  /api/v1/audit/records/{recordID}/verify:
+    get:
+      tags:
+        - Audit Verification
+      summary: Verify a single decision record
+      description: |
+        Verifies ONE decision record standalone, proving its authorship from the
+        record alone without walking the rest of the chain. Read-only.
+
+        The response republishes the recomputed verification material so the
+        result is independently checkable offline: `digest_preimage_b64` is the
+        exact byte string that SHA-256-hashes to `record_digest`; an auditor can
+        base64-decode it, hash it, confirm it equals `record_digest`, rebuild it
+        from the raw record fields, and then run
+        `ed25519.Verify(public_key, []byte(chain_hash), base64decode(record_signature))`,
+        trusting neither this endpoint nor its digest.
+
+        The record is resolved by id only within the authenticated caller's
+        organization (RLS-scoped). `recordID` is the per-record UUID assigned at
+        signing time (distinct from the chain id).
+      operationId: verifyAuditRecord
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: recordID
+          in: path
+          required: true
+          description: Decision record id (the per-record UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Verification result (the record exists in your organization)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordVerificationResult'
+        '400':
+          description: recordID is not a valid UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '401':
+          description: Missing authenticated org context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '404':
+          description: No decision record found for this id in your organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '500':
+          description: Verification failed (internal error)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+
+  /api/v1/audit/signing-key:
+    get:
+      tags:
+        - Audit Verification
+      summary: Publish the current public signing key
+      description: |
+        Returns the current public Ed25519 verification key so an external
+        auditor can re-verify any record's signature offline. Read-only.
+
+        When no signing key is configured, `configured` is `false` and
+        `public_key` is empty: records are hash-chained but unsigned, and the
+        verify endpoints report that honestly.
+      operationId: getAuditSigningKey
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Current public signing key (or that none is configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditSigningKeyResponse'
+        '401':
+          description: Missing authenticated org context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
 
 components:
   securitySchemes:
@@ -6305,6 +6473,172 @@ components:
         last_conformity_assessment:
           type: string
           format: date-time
+
+    # ==========================================================================
+    # Audit Verification (#2722)
+    # ==========================================================================
+
+    ChainVerificationResult:
+      type: object
+      description: |
+        Outcome of verifying an entire decision chain's prev_hash linkage and
+        every per-record Ed25519 signature.
+      properties:
+        chain_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        total_records:
+          type: integer
+        valid:
+          type: boolean
+          description: |
+            True when no integrity violation was detected (linkage holds and
+            every signature that exists verifies). Can be true for a chain with
+            zero signed records. Use `authorship_proven` for the strong claim.
+        authorship_proven:
+          type: boolean
+          description: |
+            True only when every record is signed AND all signatures + linkage
+            verify. Gate non-repudiation on this flag.
+        linkage_valid:
+          type: boolean
+        signatures_valid:
+          type: boolean
+        signed_records:
+          type: integer
+        unsigned_records:
+          type: integer
+        first_broken_seq:
+          type: integer
+          format: int64
+          description: Sequence of the first detected break (omitted when valid).
+        first_broken_record_id:
+          type: string
+          description: Record id of the first detected break (omitted when valid).
+        break_reason:
+          type: string
+          description: Why the chain broke (omitted when valid).
+        signing_key_id:
+          type: string
+          description: Identifier of the tracker's current signing key.
+        public_key:
+          type: string
+          description: Base64 Ed25519 public key for offline re-verification.
+        verified_at:
+          type: string
+          format: date-time
+      required:
+        - chain_id
+        - org_id
+        - total_records
+        - valid
+        - authorship_proven
+        - linkage_valid
+        - signatures_valid
+        - verified_at
+
+    RecordVerificationResult:
+      type: object
+      description: |
+        Outcome of verifying a SINGLE decision record standalone. Republishes the
+        recomputed material so the result is independently checkable offline.
+      properties:
+        record_id:
+          type: string
+          format: uuid
+        chain_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        chain_seq:
+          type: integer
+          format: int64
+        signed:
+          type: boolean
+        signature_valid:
+          type: boolean
+        valid:
+          type: boolean
+        reason:
+          type: string
+          description: Explanation when the record does not verify (omitted when valid).
+        digest_preimage_b64:
+          type: string
+          description: |
+            Base64 of the exact byte string that SHA-256-hashes to
+            `record_digest`. Decode, hash, and confirm it equals `record_digest`,
+            then rebuild it from the raw record fields to verify independently.
+        record_digest:
+          type: string
+          description: SHA-256 hex of the record pre-image.
+        prev_hash:
+          type: string
+          description: Hash of the previous record in the chain.
+        chain_hash:
+          type: string
+          description: |
+            sha256_hex(record_digest + "|" + prev_hash); the message that the
+            Ed25519 signature is computed over.
+        record_signature:
+          type: string
+          description: Base64 Ed25519 signature over `chain_hash` (omitted when unsigned).
+        signing_key_id:
+          type: string
+        public_key:
+          type: string
+          description: Base64 Ed25519 public key for offline re-verification.
+        verified_at:
+          type: string
+          format: date-time
+      required:
+        - record_id
+        - chain_id
+        - org_id
+        - chain_seq
+        - signed
+        - signature_valid
+        - valid
+        - digest_preimage_b64
+        - record_digest
+        - prev_hash
+        - chain_hash
+        - verified_at
+
+    AuditSigningKeyResponse:
+      type: object
+      description: The current public Ed25519 verification key (or that none is configured).
+      properties:
+        algorithm:
+          type: string
+          example: ed25519
+        signing_key_id:
+          type: string
+          description: Identifier of the current signing key (empty when none configured).
+        public_key:
+          type: string
+          description: Base64 Ed25519 public key (empty when none configured).
+        configured:
+          type: boolean
+          description: False when no signing key is configured (records are hash-chained but unsigned).
+        verification_note:
+          type: string
+          description: How to verify a record offline with this key.
+      required:
+        - algorithm
+        - configured
+
+    AuditVerifyError:
+      type: object
+      description: Error envelope returned by the audit-verification endpoints.
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+      required:
+        - error
 
   responses:
     BadRequest:

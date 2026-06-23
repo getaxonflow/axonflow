@@ -1305,6 +1305,15 @@ func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stag
 		writeDecisionAuditLog(ctx, usageDB, decisionID, orgID, tenantID, stage, verdict, policyIDs, reasons, reqContext, contextTruncated, *audit)
 	}
 
+	// Non-repudiation (#2732): sign + prev_hash-chain this decision into
+	// decision_chain so GET /api/v1/audit/{chains,records}/.../verify can prove
+	// its authorship. Placed BEFORE the OTel early-return so signing happens even
+	// when AXONFLOW_OTEL_ENDPOINT is unset (the two trackers are independent).
+	// Best-effort + off the hot path (recordSignedDecision enqueues; the worker
+	// signs). Covers both /api/v1/decide and the OpenAI-compat path (audit==nil),
+	// both of which are genuine cross-border-auditable decisions.
+	recordSignedDecision(ctx, decisionID, orgID, tenantID, stage, verdict, policyIDs, reasons, latencyMs)
+
 	if decisionTracerProvider == nil {
 		return fallbackTraceID
 	}

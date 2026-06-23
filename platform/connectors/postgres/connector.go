@@ -25,6 +25,13 @@ import (
 	"axonflow/platform/connectors/sdk"
 )
 
+// rowQuerier is the read-side surface shared by *sql.DB and *sql.Tx. It lets
+// Query run either against the pool directly (default posture) or inside a
+// read-only transaction (#2733 backstop) without duplicating the scan path.
+type rowQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+}
+
 // PostgresConnector implements the MCP Connector interface for PostgreSQL
 type PostgresConnector struct {
 	sdk.BaseConnector
@@ -186,9 +193,41 @@ func (c *PostgresConnector) Query(ctx context.Context, query *base.Query) (*base
 		return nil, base.NewConnectorError(c.Name(), "Query", "failed to build query parameters", err)
 	}
 
+	// Read-only posture backstop (#2733, defense-in-depth for the WS-4 gate).
+	//
+	// When the MCP gate marks the query read-only, run it inside an explicit
+	// "BEGIN READ ONLY" transaction so PostgreSQL itself rejects any write that
+	// slipped past the gate's statement-verb parser (stacked statements, CTEs,
+	// comment-hidden writes, future callers). A write inside a read-only tx
+	// fails with SQLSTATE 25006 (read_only_sql_transaction). Depending on where
+	// it sits in a batch, that surfaces as either the "query execution failed"
+	// error below or, for a write stacked behind a SELECT, the "error during
+	// row iteration" error when the batch is drained. Either way the connector
+	// returns an error, never success, for a smuggled mutation.
+	//
+	// querier abstracts *sql.DB and *sql.Tx (both satisfy rowQuerier) so the
+	// scan path below is shared. When ReadOnly is false, querier is the bare
+	// *sql.DB and the execution path is byte-identical to the legacy read path:
+	// no transaction is opened, so there is no added round-trip or behavior
+	// change outside read-only posture.
+	var querier rowQuerier = c.db
+	var tx *sql.Tx
+	if query.ReadOnly {
+		tx, err = c.db.BeginTx(queryCtx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return nil, base.NewConnectorError(c.Name(), "Query", "failed to begin read-only transaction", err)
+		}
+		// Rollback unconditionally on every exit path. After a successful
+		// Commit this is a no-op (returns sql.ErrTxDone, intentionally
+		// ignored); on any early return it releases the transaction and its
+		// pooled connection, so there is no tx or connection leak.
+		defer func() { _ = tx.Rollback() }()
+		querier = tx
+	}
+
 	// Execute query
 	start := time.Now()
-	rows, err := c.db.QueryContext(queryCtx, query.Statement, args...)
+	rows, err := querier.QueryContext(queryCtx, query.Statement, args...)
 	if err != nil {
 		return nil, base.NewConnectorError(c.Name(), "Query", "query execution failed", err)
 	}
@@ -237,6 +276,18 @@ func (c *PostgresConnector) Query(ctx context.Context, query *base.Query) (*base
 	// Check for errors during iteration
 	if err := rows.Err(); err != nil {
 		return nil, base.NewConnectorError(c.Name(), "Query", "error during row iteration", err)
+	}
+
+	// Finalize the read-only transaction (no-op when posture is off). Close the
+	// rows explicitly first: committing with an open result set is undefined for
+	// database/sql, and the deferred Close above is idempotent so the second
+	// call is harmless. Commit (not Rollback) so a read-only SELECT settles
+	// cleanly; any write would already have errored above before reaching here.
+	if tx != nil {
+		_ = rows.Close()
+		if err := tx.Commit(); err != nil {
+			return nil, base.NewConnectorError(c.Name(), "Query", "failed to commit read-only transaction", err)
+		}
 	}
 
 	duration := time.Since(start)
