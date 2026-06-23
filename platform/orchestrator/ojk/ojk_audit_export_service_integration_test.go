@@ -246,12 +246,14 @@ func TestOJKAuditExportService_Integration_GetExportStatus(t *testing.T) {
 	}
 }
 
-// TestOJKAuditExportService_Integration_CrossBorderPasal56bRoundTrip seeds an
-// orchestrator_audit_logs row tagged with the explicit UU PDP Pasal 56(b)
-// value (transfer_basis = "pasal_56b_dpa") and asserts it round-trips
-// unchanged through the cross_border_transfers export — no auto-translation to
-// the generic "safeguards" label. Requires migration 129 (transfer_basis
-// column) applied to the test DB.
+// TestOJKAuditExportService_Integration_CrossBorderPasal56bRoundTrip seeds a
+// canonical audit_logs row tagged with the explicit UU PDP Pasal 56(b) value
+// (transfer_basis = "pasal_56b_dpa") and asserts it round-trips unchanged
+// through the cross_border_transfers export, no auto-translation to the generic
+// "safeguards" label. Requires core migration 126 (transfer_basis column on
+// audit_logs) applied to the test DB. This is the direct-seed variant; the
+// full stamp→write→export path is covered by the orchestrator-package end-to-end
+// test (TestCrossBorderAutoStamp_EndToEnd).
 func TestOJKAuditExportService_Integration_CrossBorderPasal56bRoundTrip(t *testing.T) {
 	db := getOJKTestDB(t)
 	defer db.Close()
@@ -263,16 +265,24 @@ func TestOJKAuditExportService_Integration_CrossBorderPasal56bRoundTrip(t *testi
 
 	ctx := context.Background()
 	rowTS := time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
+	auditID := "audit-cb-pasal56b-" + tenantID
 
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO orchestrator_audit_logs (org_id, service_id, action, resource, timestamp, data_residency, transfer_basis)
-		 VALUES ($1, 'orchestrator', 'llm_route', 'openai/gpt-4o', $2, 'US', 'pasal_56b_dpa')`,
-		tenantID, rowTS,
+		`INSERT INTO audit_logs (
+			id, request_id, timestamp, user_id, user_email, user_role,
+			client_id, tenant_id, org_id, request_type, query, query_hash,
+			policy_decision, data_residency, transfer_basis
+		) VALUES (
+			$1, 'req-cb-1', $2, 1, 'auditor@example.com', 'admin',
+			'client-1', $3, $3, 'completion', 'hello', 'h1',
+			'allowed', 'US', 'pasal_56b_dpa'
+		)`,
+		auditID, rowTS, tenantID,
 	)
 	if err != nil {
-		t.Skipf("Skipping — could not seed orchestrator_audit_logs (migration 129 may not be applied): %v", err)
+		t.Skipf("Skipping: could not seed audit_logs (core migration 126 may not be applied): %v", err)
 	}
-	defer db.ExecContext(ctx, `DELETE FROM orchestrator_audit_logs WHERE org_id = $1`, tenantID)
+	defer db.ExecContext(ctx, `DELETE FROM audit_logs WHERE id = $1`, auditID)
 
 	service := NewOJKAuditExportService(db, nil)
 	resp, err := service.ExportAuditData(ctx, tenantID, &OJKAuditExportRequest{

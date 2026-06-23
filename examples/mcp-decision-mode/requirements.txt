@@ -3,3 +3,7 @@
 mcp==1.27.1
 httpx==0.28.1
 python-dotenv==1.2.2
+
+# Optional: only needed when MCP_AUDIT_SINK=s3 (central-store shipping to S3).
+# The http sink and the local JSONL need nothing beyond httpx above.
+# boto3==1.40.47

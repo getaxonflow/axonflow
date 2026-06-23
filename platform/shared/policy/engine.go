@@ -323,9 +323,26 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 
 	// Apply redactions if not blocked
 	if !result.Blocked && len(redactionPlans) > 0 {
-		// Limit redactions if configured
+		// Limit redactions if configured. Statement-removal plans (prompt-injection
+		// sanitization, #2738) are SECURITY-critical and must never be dropped by the
+		// cap, so keep them all and apply the cap only to the span (PII) plans -
+		// otherwise a response crafted with many PII-shaped tokens ahead of the
+		// injection match could push the injection plan past MaxRedactions and let it
+		// through unsanitized.
 		if opts.MaxRedactions > 0 && len(redactionPlans) > opts.MaxRedactions {
-			redactionPlans = redactionPlans[:opts.MaxRedactions]
+			kept := make([]RedactionPlan, 0, opts.MaxRedactions)
+			spanBudget := opts.MaxRedactions
+			for _, p := range redactionPlans {
+				if p.Strategy == StrategyRemoveStatement {
+					kept = append(kept, p)
+					continue
+				}
+				if spanBudget > 0 {
+					kept = append(kept, p)
+					spanBudget--
+				}
+			}
+			redactionPlans = kept
 		}
 
 		// Detect content type
@@ -400,6 +417,37 @@ func (e *UnifiedPolicyEngine) EnabledSensitiveDataCategories(ctx context.Context
 	for i := range policies {
 		if policies[i].Enabled && policies[i].Category == CategorySensitiveData {
 			return []PolicyCategory{CategorySensitiveData}
+		}
+	}
+	return nil
+}
+
+// EnabledSecurityDangerousCategories returns []{CategorySecurityDangerous} when
+// this tenant has at least one ENABLED security-dangerous policy for the phase,
+// else nil. It mirrors EnabledSensitiveDataCategories so the dangerous-command /
+// indirect prompt-injection category can be folded into the request/response
+// evaluation set the same policy-derived way, without the empty-Categories
+// whitelist footgun (nil = "no security-dangerous to evaluate", callers must NOT
+// pass it as an empty include set).
+//
+// security-dangerous is a seeded system category covering dangerous shell
+// commands (migration core/059) and indirect prompt-injection patterns
+// (migration core/116: instruction-override, role-reassignment, system-prompt
+// exfiltration, template/bracket markers; R&C section 5.1, OWASP LLM01). Its
+// runtime action is driven by the profile / DANGEROUS_COMMAND_ACTION lever via
+// ActionOverrides (default/strict/compliance block, dev warn). Folding the
+// category in here on PhaseResponse is what makes a malicious instruction
+// returned in tool OUTPUT re-enter governance (#2727); previously only the
+// request plane evaluated it (these policies seeded phase='request'), so an
+// injection string in a connector free-text field reached the model ungoverned.
+func (e *UnifiedPolicyEngine) EnabledSecurityDangerousCategories(ctx context.Context, tenantID string, orgID *string, phase Phase) []PolicyCategory {
+	policies, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
+	if err != nil {
+		return nil
+	}
+	for i := range policies {
+		if policies[i].Enabled && policies[i].Category == CategorySecurityDangerous {
+			return []PolicyCategory{CategorySecurityDangerous}
 		}
 	}
 	return nil

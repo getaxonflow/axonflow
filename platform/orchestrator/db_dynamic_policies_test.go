@@ -1847,3 +1847,45 @@ func TestEvaluateCondition_InOperator_StringSlice(t *testing.T) {
 		})
 	}
 }
+
+// TestListActivePolicies_UsesHumanNameNotCacheKey is a regression guard for the
+// WS-1 (design-partner PoC dry-run) finding: ListActivePolicies keyed dp.Name to the
+// cache map key, which refreshPolicies sets to the policy_id (UUID) to avoid
+// cross-tenant name collisions. The human-readable name lives in
+// policyMap["name"]. Before the fix, every matched policy surfaced to callers
+// (the MCP dynamic-policy evaluator's matched_policies → the decision feed the
+// Risk Committee reads) showed the opaque UUID instead of the policy name.
+//
+// Red-on-revert: revert the policyMap["name"] read in ListActivePolicies and
+// dp.Name collapses to the UUID cache key, failing this test.
+func TestListActivePolicies_UsesHumanNameNotCacheKey(t *testing.T) {
+	const (
+		cacheKey   = "f42b4d6b-4e65-4088-9d24-d1d4967b9eb8" // policy_id UUID (the map key)
+		humanName  = "Tenant: junior leaders cannot execute writes"
+		policyIDul = "tenant_junior_writeguard"
+	)
+	e := &DatabaseDynamicPolicyEngine{
+		policies: map[string]interface{}{
+			// refreshPolicies keys the cache by policy_id (the UUID) and stores
+			// the human name under "name".
+			cacheKey: map[string]interface{}{
+				"policy_id": policyIDul,
+				"name":      humanName,
+				"type":      "mcp",
+				"category":  "dynamic-governance",
+			},
+		},
+	}
+
+	got := e.ListActivePolicies()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 active policy, got %d", len(got))
+	}
+	if got[0].Name != humanName {
+		t.Errorf("ListActivePolicies().Name = %q, want the human-readable name %q (not the UUID cache key %q)",
+			got[0].Name, humanName, cacheKey)
+	}
+	if got[0].Name == cacheKey {
+		t.Errorf("ListActivePolicies().Name leaked the UUID cache key %q: the matched-policy/decision-feed regression is back", cacheKey)
+	}
+}

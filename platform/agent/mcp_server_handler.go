@@ -1202,6 +1202,37 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	// Auto-detect integration from connector type (first call activates policies)
 	AutoDetectIntegration(usageDB, connectorType)
 
+	// Read-only enforcement posture (#2720, epic #2716). When MCP_READ_ONLY is
+	// on, every write-path tool call is blocked at the gate before any other
+	// policy evaluation or session-override flow runs: a deployment-wide
+	// read-only boundary that is intentionally NOT overridable (ADR-044).
+	// Read-path calls fall through to normal governance. See
+	// mcp_readonly_posture.go for the classification rule.
+	if readOnlyPostureEnabled() && classifyMCPCall(connectorType, operation) == mcpAccessWrite {
+		decisionID := uuid.New().String()
+		reason := fmt.Sprintf("read-only posture active: write-path tool call %q is blocked; only read-path operations are permitted", connectorType)
+		// Canonical "blocked" audit row so the deny is visible in the portal
+		// decisions feed. query is a non-PII descriptor (the raw statement MUST
+		// NOT land in audit_logs.query).
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
+			mcpVerdictBlocked,
+			[]string{readOnlyPosturePolicyID},
+			[]string{reason},
+			nil,
+			"") // MCP-server session has no inbound traceparent → singleton
+		return map[string]interface{}{
+			"allowed":           false,
+			"decision_id":       decisionID,
+			"block_reason":      reason,
+			"blocked_by":        readOnlyPosturePolicyID,
+			"read_only_posture": true,
+		}, nil
+	}
+
 	var params map[string]interface{}
 	if p, ok := args["parameters"].(map[string]interface{}); ok {
 		params = p

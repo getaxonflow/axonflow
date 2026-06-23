@@ -73,6 +73,37 @@ Execute a command:
 Note: Parameters are passed positionally to the driver. Use numeric keys
 ("1", "2") to indicate order when multiple parameters are needed.
 
+# Read-Only Posture Backstop
+
+When a query carries the base.Query.ReadOnly flag (set by the MCP gate from the
+MCP_READ_ONLY deployment posture), the connector executes it inside an explicit
+"BEGIN READ ONLY" transaction. PostgreSQL then rejects any write smuggled past
+the gate's statement-verb parser, including stacked statements, CTEs,
+comment-hidden writes, and callers the parser never anticipated:
+
+	result, err := connector.Query(ctx, &base.Query{
+	    Statement: "SELECT 1; DELETE FROM users", // DELETE fails: SQLSTATE 25006
+	    ReadOnly:  true,
+	})
+
+This is a defense-in-depth backstop, not a replacement for the gate's verb-path
+check. A write inside the read-only transaction fails with SQLSTATE 25006
+(read_only_sql_transaction) and is surfaced as a connector error (at query
+execution, or during row iteration when the write is stacked behind a SELECT),
+so the connector never reports success for a mutation under read-only posture.
+
+When ReadOnly is false (the default) no transaction is opened and the read path
+is byte-identical to the legacy behavior: no added round-trip, no semantic
+change.
+
+Coverage boundary: this database-enforced backstop is implemented here for
+PostgreSQL. Other SQL connectors that support read-only transactions (MySQL,
+Snowflake) could adopt the same flag but do not yet, and rely on the MCP gate's
+verb-path check (documented follow-up to #2733). Connectors with no read-only
+transaction primitive (e.g. the Cassandra connector, where CQL has no "BEGIN
+READ ONLY") cannot enforce read-only posture at the database layer at all and
+likewise rely on the gate's verb-path check.
+
 # Thread Safety
 
 PostgresConnector is safe for concurrent use. The underlying database/sql

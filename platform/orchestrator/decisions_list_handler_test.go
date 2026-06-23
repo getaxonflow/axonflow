@@ -79,7 +79,7 @@ func TestListDecisions_TenantFilterIsInWhereClause(t *testing.T) {
 			5,                    // tier-default limit (Community)
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
@@ -131,8 +131,8 @@ func TestListDecisions_ReadsDecisionIdColumnWithJSONBFallback(t *testing.T) {
 	mock.ExpectQuery(`COALESCE\(decision_id, policy_details->>'decision_id'\)[\s\S]*?FROM audit_logs[\s\S]*?WHERE tenant_id = \$1[\s\S]*?\(decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL\)`).
 		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", 5).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
-		).AddRow("dec-from-column", time.Now().UTC(), "deny", "pol-mcp", "", nil))
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
+		).AddRow("dec-from-column", time.Now().UTC(), "deny", "pol-mcp", "", nil, "", ""))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-a")
@@ -293,12 +293,12 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	rows := sqlmock.NewRows([]string{
-		"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context",
+		"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency",
 	}).
 		AddRow("dec-3", now.Add(-1*time.Hour), "deny", "pol-sqli", "postgres.query",
-			`{"x_ai_agent":"claude-code","x_session_id":"sess-abc123"}`).
-		AddRow("dec-2", now.Add(-2*time.Hour), "require_approval", "pol-pii", "slack.send_message", nil).
-		AddRow("dec-1", now.Add(-3*time.Hour), "allow", "pol-default", "", nil)
+			`{"x_ai_agent":"claude-code","x_session_id":"sess-abc123"}`, "pasal_56b_dpa", "US").
+		AddRow("dec-2", now.Add(-2*time.Hour), "require_approval", "pol-pii", "slack.send_message", nil, "", "").
+		AddRow("dec-1", now.Add(-3*time.Hour), "allow", "pol-default", "", nil, "", "")
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WithArgs(
@@ -370,6 +370,18 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 	if body.Decisions[1].Context != nil {
 		t.Errorf("decisions[1].context should be nil (NULL column), got %v", body.Decisions[1].Context)
 	}
+	// UU PDP Pasal 56 cross-border fields surface on the row that carried them
+	// (#2718) and are omitted (empty) on rows without a declared basis.
+	if body.Decisions[0].TransferBasis != "pasal_56b_dpa" {
+		t.Errorf("decisions[0].transfer_basis: got %q, want pasal_56b_dpa", body.Decisions[0].TransferBasis)
+	}
+	if body.Decisions[0].DataResidency != "US" {
+		t.Errorf("decisions[0].data_residency: got %q, want US", body.Decisions[0].DataResidency)
+	}
+	if body.Decisions[2].TransferBasis != "" || body.Decisions[2].DataResidency != "" {
+		t.Errorf("decisions[2] should have no cross-border fields, got basis=%q residency=%q",
+			body.Decisions[2].TransferBasis, body.Decisions[2].DataResidency)
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
@@ -404,7 +416,7 @@ func TestListDecisions_FiltersForwardedToSQL(t *testing.T) {
 			3,
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		))
 
 	url := "/api/v1/decisions?limit=3&decision=blocked&policy_id=pol-sqli&tool_signature=postgres.query"
@@ -440,8 +452,8 @@ func TestListDecisions_ContextTruncatedToFiveKeys(t *testing.T) {
 	// chosen deterministically (sorted): k0..k4 kept, k5..k7 dropped.
 	ctxJSON := `{"k0":"v0","k1":"v1","k2":"v2","k3":"v3","k4":"v4","k5":"v5","k6":"v6","k7":"v7"}`
 	rows := sqlmock.NewRows([]string{
-		"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context",
-	}).AddRow("dec-ctx", time.Now().UTC(), "allow", "pol-default", "", ctxJSON)
+		"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency",
+	}).AddRow("dec-ctx", time.Now().UTC(), "allow", "pol-default", "", ctxJSON, "", "")
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", 5).
@@ -544,7 +556,7 @@ func TestListDecisions_SinceClampedToTierWindow(t *testing.T) {
 			5,
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		))
 
 	thirtyDaysAgo := time.Now().UTC().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
