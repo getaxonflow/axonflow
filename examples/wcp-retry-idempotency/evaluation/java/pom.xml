@@ -13,10 +13,10 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Pin Jackson to 2.18.6 to override the SDK 5.5.0 transitive 2.17.0,
+        <!-- Pin Jackson to 2.22.0 to override the SDK 5.5.0 transitive 2.17.0,
              which is vulnerable to GHSA-72hv-8253-57qq (jackson-core async parser DoS).
              Drop this pin once the Java SDK ships a release that bumps Jackson. -->
-        <jackson.version>2.18.6</jackson.version>
+        <jackson.version>2.22.0</jackson.version>
     </properties>
 
     <dependencyManagement>

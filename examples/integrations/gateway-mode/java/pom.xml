@@ -23,7 +23,12 @@
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>2.18.6</version>
+                <version>2.22.0</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>2.22.0</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -34,11 +39,16 @@
             <artifactId>axonflow-sdk</artifactId>
             <version>8.5.1</version>
         </dependency>
-        <!-- Override transitive jackson-core for CVE fix -->
+        <!-- Override transitive jackson-core/databind for CVE fix (CVE-2026-54512, CVE-2026-54513) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.18.6</version>
+            <version>2.22.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.22.0</version>
         </dependency>
 
         <!-- OpenAI Java client -->

@@ -769,8 +769,12 @@ func evaluateInputPolicies(
 			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 		})
 		if out.StaticResult.Blocked {
+			policyID := "unknown"
+			if out.StaticResult.BlockedBy != nil {
+				policyID = out.StaticResult.BlockedBy.PolicyID
+			}
 			log.Printf("[MCP] Request blocked by static policy '%s': %s",
-				out.StaticResult.BlockedBy.PolicyID, out.StaticResult.BlockReason)
+				policyID, out.StaticResult.BlockReason)
 		}
 	}
 
@@ -1189,8 +1193,12 @@ func evaluateOutputPolicies(
 				MaxRedactions:   100,
 			})
 			if out.StaticResult.Blocked {
+				policyID := "unknown"
+				if out.StaticResult.BlockedBy != nil {
+					policyID = out.StaticResult.BlockedBy.PolicyID
+				}
 				log.Printf("[MCP] Response blocked by policy '%s': %s",
-					out.StaticResult.BlockedBy.PolicyID, out.StaticResult.BlockReason)
+					policyID, out.StaticResult.BlockReason)
 				return out
 			}
 			if out.StaticResult.Redacted {
