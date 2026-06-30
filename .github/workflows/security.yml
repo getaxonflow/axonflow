@@ -26,6 +26,10 @@ on:
       - 'platform/**/go.sum'
       - 'ee/platform/**/go.mod'
       - 'ee/platform/**/go.sum'
+      # Maven manifests: the Trivy FS scan covers Java example poms, so a
+      # dependency CVE in a pom must re-trigger the scan on push (otherwise
+      # the fix is only validated by the nightly schedule).
+      - '**/pom.xml'
       - '**/Dockerfile*'
       - '.github/workflows/security.yml'
   # Merge queue: Run security scans with path filtering
@@ -85,6 +89,9 @@ jobs:
               - 'ee/platform/**/*.go'
               - '**/go.mod'
               - '**/go.sum'
+              # Maven manifests so a Java dependency CVE is caught at PR /
+              # merge-queue time rather than only by the nightly schedule.
+              - '**/pom.xml'
               - '**/Dockerfile*'
               - '.github/workflows/security.yml'
 

@@ -1275,8 +1275,32 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		resp["dynamic_info"] = outcome.DynamicInfo
 	}
 
-	// Allowed — no richer-context fields needed, nothing to explain.
+	// Allowed — check for PII that should be redacted (redact-action policy, not block).
+	// Mirrors what mcpCheckInputHandler does on its allow path (#2563 ADR-056):
+	// call redactInputStatement so the plugin gets the engine-masked statement and
+	// can deny + retry with the clean version instead of letting the first Write
+	// execute with raw PII (issue #2746).
 	if !blocked {
+		masked, didRedact, evaluated := redactInputStatement(ctx, session.tenantID, session.userID, connectorType, statement)
+		resp["redaction_evaluated"] = evaluated
+		if didRedact {
+			resp["requires_redaction"] = true
+			resp["redacted_statement"] = masked
+			// Canonical "redacted" audit row so the decision is portal-visible —
+			// a redact-and-allow is its own verdict, not a clean allow (#2641 MCPIN).
+			// query is a non-PII descriptor; raw statement MUST NOT land in audit_logs.query.
+			_, pids, _ := mcpInputDecisionVerdict(outcome, didRedact)
+			writeMCPDecisionAudit(ctx, usageDB,
+				decisionID, uuid.New().String(),
+				session.tenantID, session.orgID, session.clientID, session.userEmail,
+				session.userID, session.userRole,
+				"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), computeStatementHash(fmt.Sprintf("mcp check_policy: %s", connectorType)),
+				mcpVerdictRedacted,
+				pids,
+				[]string{"request PII redacted"},
+				[]string{"statement"},
+				"") // MCP-server session has no inbound traceparent → singleton
+		}
 		return resp, nil
 	}
 
@@ -1304,7 +1328,11 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			"") // MCP-server session has no inbound traceparent → singleton
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
-		resp["blocked_by"] = outcome.StaticResult.BlockedBy.PolicyID
+		var blockedByID string
+		if outcome.StaticResult.BlockedBy != nil {
+			blockedByID = outcome.StaticResult.BlockedBy.PolicyID
+		}
+		resp["blocked_by"] = blockedByID
 	}
 
 	// Only static matches carry richer policy metadata; dynamic block

@@ -10,6 +10,20 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.2.2] - 2026-07-01 (patch on 9.2.1)
+
+**Patch.** Three fixes on top of [9.2.1]: the MCP `check_policy` advisory tool now redacts PII on its allow path, the Java example dependencies clear three Jackson CVEs, and an internal license-generation doc is corrected. No new behavior and no migrations; see the 9.2.0 entry below for the feature release.
+
+### Fixed
+
+- **`check_policy` now runs PII detection on the allow path.** *(Community)* The MCP `check_policy` advisory tool returned `allowed: true` without running input PII detection, so a write call carrying an Indonesian NIK (or other PII) could execute with raw PII before the host model had a chance to retry. It now runs the same input redaction as the `check-input` PEP gate and, when redaction fires, returns `requires_redaction: true` plus a `redacted_statement`, so a PEP/plugin (for example `pre-tool-check.sh`) denies the first call and retries with engine-masked content before raw PII reaches the tool. A latent nil-pointer dereference in `evaluateInputPolicies` on the fail-closed path — engine `Blocked` with `BlockedBy` nil when the database is unavailable and `GracefulDegradation=false` — is also guarded.
+- **Jackson bumped to 2.22.0 across the example poms.** *(Community)* `jackson-databind` resolved to a version affected by CVE-2026-54512 / CVE-2026-54513 (HIGH) and CVE-2026-54515 (MEDIUM) across the Java examples; 2.22.0 is the lowest published version clear of all three jackson CVEs at CRITICAL/HIGH/MEDIUM. The pins cover the `examples/` and `ee/examples/` poms (literal versions and the `jackson.version` / `jackson-bom.version` properties), with explicit `jackson-databind` overrides added to the gateway-mode and spring-boot examples that previously pulled it transitively via the OpenAI client. `**/pom.xml` is also added to the security-scan path filters so a Maven dependency CVE now blocks a PR instead of only turning the nightly scheduled scan red.
+- **Corrected a stale build command in the internal license-generation doc.** *(Enterprise)* The internal license-generation workflow doc (under `technical-docs/`, excluded from the community sync) described the deprecated V1 build — omitting `-tags enterprise` and building from `platform/` instead of the `ee/` module — which produces a binary that emits and validates stale keys. It now documents the correct `-tags enterprise` build from the `ee/` module and points to the canonical generation runbook.
+
+### Changed
+
+- **`/health` now advertises Claude Code plugin 1.7.0 as the recommended version.** *(Community)* The `RecommendedPluginVersion["claude-code"]` value reported by the agent and orchestrator `/health` capability blocks is bumped 1.6.0 → 1.7.0 to ride this patch; the recommended openclaw (2.6.6), cursor (1.5.3), and codex (1.5.2) versions, and every minimum-version floor, are unchanged.
+
 ## [9.2.1] - 2026-06-23 (patch on 9.2.0)
 
 **Patch.** A consistency fix on top of [9.2.0]; see the 9.2.0 entry below for the feature release.
