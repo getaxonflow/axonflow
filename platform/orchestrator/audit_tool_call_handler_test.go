@@ -86,6 +86,127 @@ func TestAuditToolCallHandler_AllFields(t *testing.T) {
 	}
 }
 
+// TestAuditToolCallHandler_UserEmailFromHeader is the #2754 core regression:
+// the post-tool audit_tool_call row must carry the real developer email that
+// the Agent proxy forwards as X-User-Email, landing in audit_logs.user_email.
+// Before the fix, auditToolCallHandler never read the header and user_email was
+// written from the (empty) UserID → the portal User column showed NULL/N/A.
+func TestAuditToolCallHandler_UserEmailFromHeader(t *testing.T) {
+	origLogger := auditLogger
+	auditLogger = &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+	defer func() { auditLogger = origLogger }()
+
+	body := map[string]interface{}{
+		"tool_name": "Bash",
+		"tool_type": "claude_code",
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	setBasicAuth(req)
+	req.Header.Set("X-User-Email", "alice@example.com")
+	req.Header.Set("X-Session-Id", "sess-xyz-789") // #2753 sibling identity
+
+	rr := httptest.NewRecorder()
+	auditToolCallHandler(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("Expected status 201, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+
+	// Drain the enqueued audit entry and assert BOTH the developer email and the
+	// session id landed in the DB-backed columns (the DoD paste-evidence shape).
+	select {
+	case entry := <-auditLogger.auditQueue:
+		if entry.UserEmail != "alice@example.com" {
+			t.Errorf("Expected user_email 'alice@example.com', got %q", entry.UserEmail)
+		}
+		if entry.SessionID != "sess-xyz-789" {
+			t.Errorf("Expected session_id 'sess-xyz-789', got %q", entry.SessionID)
+		}
+	default:
+		t.Fatal("Expected an audit entry to be enqueued")
+	}
+}
+
+// TestAuditToolCallHandler_NoUserEmailHeader proves graceful degradation: with
+// no X-User-Email header (no identity configured) the row is still written with
+// an empty user_email — never a spoofed or copy-paste value.
+func TestAuditToolCallHandler_NoUserEmailHeader(t *testing.T) {
+	origLogger := auditLogger
+	auditLogger = &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+	defer func() { auditLogger = origLogger }()
+
+	body := map[string]interface{}{"tool_name": "Bash", "tool_type": "claude_code"}
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	setBasicAuth(req)
+	// deliberately no X-User-Email header
+
+	rr := httptest.NewRecorder()
+	auditToolCallHandler(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("Expected status 201, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+	select {
+	case entry := <-auditLogger.auditQueue:
+		if entry.UserEmail != "" {
+			t.Errorf("Expected empty user_email with no header, got %q", entry.UserEmail)
+		}
+	default:
+		t.Fatal("Expected an audit entry to be enqueued")
+	}
+}
+
+// TestAuditToolCallHandler_UserEmailNotSpoofableViaBody proves the identity is
+// header-sourced only: a user_email placed in the JSON request body is ignored
+// (UserEmail has json:"-"), so a caller cannot forge the attributed developer.
+func TestAuditToolCallHandler_UserEmailNotSpoofableViaBody(t *testing.T) {
+	origLogger := auditLogger
+	auditLogger = &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+	defer func() { auditLogger = origLogger }()
+
+	// Attacker puts a forged user_email in the body but sends no header.
+	body := map[string]interface{}{
+		"tool_name":  "Bash",
+		"tool_type":  "claude_code",
+		"user_email": "attacker@evil.com",
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	setBasicAuth(req)
+
+	rr := httptest.NewRecorder()
+	auditToolCallHandler(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("Expected status 201, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+	select {
+	case entry := <-auditLogger.auditQueue:
+		if entry.UserEmail == "attacker@evil.com" {
+			t.Errorf("user_email must not be settable from the request body (#2754 spoofing guard)")
+		}
+		if entry.UserEmail != "" {
+			t.Errorf("Expected empty user_email (body value ignored), got %q", entry.UserEmail)
+		}
+	default:
+		t.Fatal("Expected an audit entry to be enqueued")
+	}
+}
+
 func TestAuditToolCallHandler_RequiredFieldsOnly(t *testing.T) {
 	origLogger := auditLogger
 	auditLogger = &AuditLogger{
@@ -558,13 +679,19 @@ func TestLogToolCallAudit(t *testing.T) {
 
 	successVal := true
 	entry := &ToolCallAuditEntry{
-		ToolName:        "getUserInfo",
-		ToolType:        "mcp",
-		Input:           map[string]interface{}{"user": "test"},
-		Output:          map[string]interface{}{"name": "Test User"},
-		WorkflowID:      "wf_abc123",
-		StepID:          "step-3",
-		UserID:          "user@example.com",
+		ToolName:   "getUserInfo",
+		ToolType:   "mcp",
+		Input:      map[string]interface{}{"user": "test"},
+		Output:     map[string]interface{}{"name": "Test User"},
+		WorkflowID: "wf_abc123",
+		StepID:     "step-3",
+		// #2754: UserID and UserEmail are distinct on purpose. user_email must
+		// come from UserEmail (the X-User-Email header), NOT from UserID — the
+		// pre-fix copy-paste bug wrote entry.UserID (empty in practice) into
+		// user_email, producing the NULL/N/A portal column.
+		UserID:          "synthetic-user-id",
+		UserEmail:       "alice@example.com",
+		SessionID:       "sess-xyz-789",
 		DurationMs:      45,
 		PoliciesApplied: []string{"pii_check"},
 		Success:         &successVal,
@@ -589,8 +716,16 @@ func TestLogToolCallAudit(t *testing.T) {
 	if result.PolicyDecision != "allowed" {
 		t.Errorf("Expected PolicyDecision 'allowed', got %s", result.PolicyDecision)
 	}
-	if result.UserEmail != "user@example.com" {
-		t.Errorf("Expected UserEmail 'user@example.com', got %s", result.UserEmail)
+	if result.UserEmail != "alice@example.com" {
+		t.Errorf("Expected UserEmail 'alice@example.com', got %s", result.UserEmail)
+	}
+	// Regression guard for the #2754 copy-paste bug: UserID must never leak
+	// into user_email. If this ever equals the UserID again, the bug is back.
+	if result.UserEmail == entry.UserID {
+		t.Errorf("UserEmail must not be derived from UserID (#2754 regression): got %s", result.UserEmail)
+	}
+	if result.SessionID != "sess-xyz-789" {
+		t.Errorf("Expected SessionID 'sess-xyz-789', got %s", result.SessionID)
 	}
 	if result.Query != "Tool: getUserInfo" {
 		t.Errorf("Expected Query 'Tool: getUserInfo', got %s", result.Query)

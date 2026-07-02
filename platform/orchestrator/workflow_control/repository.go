@@ -156,6 +156,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	var completedAt sql.NullTime
 	var traceID sql.NullString
 
+	var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, workflowID).Scan(
 		&workflow.WorkflowID,
 		&workflow.WorkflowName,
@@ -163,10 +164,10 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 		&workflow.Status,
 		&workflow.CurrentStepIndex,
 		&totalSteps,
-		&workflow.OrgID,
-		&workflow.TenantID,
-		&workflow.UserID,
-		&workflow.ClientID,
+		&wfOrgID,
+		&wfTenantID,
+		&wfUserID,
+		&wfClientID,
 		&traceID,
 		&workflow.Metadata,
 		&workflow.StartedAt,
@@ -181,6 +182,11 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	if err != nil {
 		return nil, err
 	}
+
+	workflow.OrgID = wfOrgID.String
+	workflow.TenantID = wfTenantID.String
+	workflow.UserID = wfUserID.String
+	workflow.ClientID = wfClientID.String
 
 	if totalSteps.Valid {
 		ts := int(totalSteps.Int64)
@@ -228,6 +234,7 @@ func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*W
 	var completedAt sql.NullTime
 	var traceID sql.NullString
 
+	var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, planID).Scan(
 		&workflow.WorkflowID,
 		&workflow.WorkflowName,
@@ -235,10 +242,10 @@ func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*W
 		&workflow.Status,
 		&workflow.CurrentStepIndex,
 		&totalSteps,
-		&workflow.OrgID,
-		&workflow.TenantID,
-		&workflow.UserID,
-		&workflow.ClientID,
+		&wfOrgID,
+		&wfTenantID,
+		&wfUserID,
+		&wfClientID,
 		&traceID,
 		&workflow.Metadata,
 		&workflow.StartedAt,
@@ -253,6 +260,11 @@ func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*W
 	if err != nil {
 		return nil, err
 	}
+
+	workflow.OrgID = wfOrgID.String
+	workflow.TenantID = wfTenantID.String
+	workflow.UserID = wfUserID.String
+	workflow.ClientID = wfClientID.String
 
 	if totalSteps.Valid {
 		ts := int(totalSteps.Int64)
@@ -470,6 +482,7 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		var completedAt sql.NullTime
 		var traceID sql.NullString
 
+		var wfOrgID, wfTenantID, wfUserID, wfClientID sql.NullString
 		err := rows.Scan(
 			&workflow.WorkflowID,
 			&workflow.WorkflowName,
@@ -477,10 +490,10 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 			&workflow.Status,
 			&workflow.CurrentStepIndex,
 			&totalSteps,
-			&workflow.OrgID,
-			&workflow.TenantID,
-			&workflow.UserID,
-			&workflow.ClientID,
+			&wfOrgID,
+			&wfTenantID,
+			&wfUserID,
+			&wfClientID,
 			&traceID,
 			&workflow.Metadata,
 			&workflow.StartedAt,
@@ -491,6 +504,11 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		if err != nil {
 			return nil, 0, err
 		}
+
+		workflow.OrgID = wfOrgID.String
+		workflow.TenantID = wfTenantID.String
+		workflow.UserID = wfUserID.String
+		workflow.ClientID = wfClientID.String
 
 		if totalSteps.Valid {
 			ts := int(totalSteps.Int64)
@@ -716,28 +734,32 @@ func scanWorkflowStepRow(row interface {
 	var approvedAt sql.NullTime
 	var approvalComment sql.NullString
 	var stepCompletedAt sql.NullTime
+	var stepInput []byte
 	var stepOutput []byte
 	var lastDecisionStr sql.NullString
 	var firstAttemptAt sql.NullTime
 	var idempotencyKey sql.NullString
+	// Nullable text columns (a tool_call/connector_call step legitimately has
+	// NULL model/provider; step_name/step_type/decision_reason are nullable too).
+	var stepName, stepType, decisionReason, model, provider sql.NullString
 
 	err := row.Scan(
 		&step.ID,
 		&step.WorkflowID,
 		&step.StepID,
 		&step.StepIndex,
-		&step.StepName,
-		&step.StepType,
+		&stepName,
+		&stepType,
 		&step.Decision,
-		&step.DecisionReason,
+		&decisionReason,
 		&step.PoliciesEvaluated,
 		&step.PoliciesMatched,
 		&approvalStatus,
 		&approvedBy,
 		&approvedAt,
-		&step.StepInput,
-		&step.Model,
-		&step.Provider,
+		&stepInput,
+		&model,
+		&provider,
 		&step.TokensIn,
 		&step.TokensOut,
 		&step.CostUSD,
@@ -755,6 +777,12 @@ func scanWorkflowStepRow(row interface {
 		return nil, err
 	}
 
+	step.StepName = stepName.String
+	step.StepType = StepType(stepType.String)
+	step.DecisionReason = decisionReason.String
+	step.Model = model.String
+	step.Provider = provider.String
+
 	if approvalStatus.Valid {
 		as := ApprovalStatus(approvalStatus.String)
 		step.ApprovalStatus = &as
@@ -770,6 +798,9 @@ func scanWorkflowStepRow(row interface {
 	}
 	if stepCompletedAt.Valid {
 		step.StepCompletedAt = &stepCompletedAt.Time
+	}
+	if stepInput != nil {
+		step.StepInput = json.RawMessage(stepInput)
 	}
 	if stepOutput != nil {
 		step.StepOutput = json.RawMessage(stepOutput)
@@ -946,18 +977,22 @@ func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID s
 	for rows.Next() {
 		var item PendingApprovalResponse
 		var approvalStatus sql.NullString
+		// step_name/step_type/decision_reason are nullable columns (a tool_call
+		// step legitimately has NULL model/name); step_input is nullable JSONB.
+		var stepName, stepType, decisionReason sql.NullString
+		var stepInput []byte
 
 		err := rows.Scan(
 			&item.WorkflowID,
 			&item.StepID,
 			&item.StepIndex,
-			&item.StepName,
-			&item.StepType,
+			&stepName,
+			&stepType,
 			&item.Decision,
-			&item.DecisionReason,
+			&decisionReason,
 			&item.PoliciesMatched,
 			&approvalStatus,
-			&item.StepInput,
+			&stepInput,
 			&item.CreatedAt,
 			&item.WorkflowName,
 		)
@@ -965,6 +1000,12 @@ func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID s
 			return nil, err
 		}
 
+		item.StepName = stepName.String
+		item.StepType = StepType(stepType.String)
+		item.DecisionReason = decisionReason.String
+		if stepInput != nil {
+			item.StepInput = json.RawMessage(stepInput)
+		}
 		if approvalStatus.Valid {
 			as := ApprovalStatus(approvalStatus.String)
 			item.ApprovalStatus = &as
@@ -1029,18 +1070,21 @@ func (r *PostgresRepository) GetPendingPlanApprovals(ctx context.Context, tenant
 		var item PendingApprovalResponse
 		var approvalStatus sql.NullString
 		var planID sql.NullString
+		// Nullable columns (see GetPendingApprovals): guard against NULL scan.
+		var stepName, stepType, decisionReason sql.NullString
+		var stepInput []byte
 
 		err := rows.Scan(
 			&item.WorkflowID,
 			&item.StepID,
 			&item.StepIndex,
-			&item.StepName,
-			&item.StepType,
+			&stepName,
+			&stepType,
 			&item.Decision,
-			&item.DecisionReason,
+			&decisionReason,
 			&item.PoliciesMatched,
 			&approvalStatus,
-			&item.StepInput,
+			&stepInput,
 			&item.CreatedAt,
 			&item.WorkflowName,
 			&planID,
@@ -1049,6 +1093,12 @@ func (r *PostgresRepository) GetPendingPlanApprovals(ctx context.Context, tenant
 			return nil, err
 		}
 
+		item.StepName = stepName.String
+		item.StepType = StepType(stepType.String)
+		item.DecisionReason = decisionReason.String
+		if stepInput != nil {
+			item.StepInput = json.RawMessage(stepInput)
+		}
 		if approvalStatus.Valid {
 			as := ApprovalStatus(approvalStatus.String)
 			item.ApprovalStatus = &as

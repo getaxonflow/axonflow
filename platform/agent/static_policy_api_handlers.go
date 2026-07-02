@@ -94,10 +94,11 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	sub.HandleFunc("/{id}/versions", handler.HandleGetVersionHistory).Methods("GET")
 
 	// Override endpoints (Enterprise only)
+	sub.HandleFunc("/{id}/override", handler.HandleGetOverrideByPolicy).Methods("GET")
 	sub.HandleFunc("/{id}/override", handler.HandleCreateOverride).Methods("POST")
 	sub.HandleFunc("/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
 
-	log.Println("✅ Static Policy API routes registered (12 endpoints, auth-protected)")
+	log.Println("✅ Static Policy API routes registered (13 endpoints, auth-protected)")
 
 	// Canonical policy-overrides alias — customer-portal (and any external
 	// client looking for a tenant-wide override list) expects this path.
@@ -649,6 +650,49 @@ func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *
 	log.Printf("[StaticPolicyAPI] Deleted override for policy %s (tenant: %s)", policyID, tenantIDHeader)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleGetOverrideByPolicy handles GET /api/v1/static-policies/{id}/override.
+// Returns the active override for a single policy (404 if none). Previously only
+// POST/DELETE were registered on this path, so the portal's "get override" proxy
+// received a 405. {id} may be the policy UUID or the human-readable slug.
+func (h *StaticPolicyAPIHandler) HandleGetOverrideByPolicy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	policyID := mux.Vars(r)["id"]
+	tenantIDHeader := TenantIDFromContext(ctx)
+	orgIDHeader := OrgIDFromContext(ctx)
+
+	if tenantIDHeader == "" {
+		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
+		return
+	}
+
+	// Resolve slug → canonical UUID so a caller passing either identifier gets a
+	// consistent result (overrides are keyed by the static_policies UUID).
+	if resolved, err := h.policyRepo.GetByID(ctx, policyID); err == nil && resolved != nil && resolved.ID != "" {
+		policyID = resolved.ID
+	}
+
+	var tenantID, orgID *string
+	if tenantIDHeader != "" {
+		tenantID = &tenantIDHeader
+	}
+	if orgIDHeader != "" {
+		orgID = &orgIDHeader
+	}
+
+	override, err := h.overrideRepo.GetOverrideForPolicy(ctx, policyID, tenantID, orgID)
+	if err != nil {
+		if errors.Is(err, ErrOverrideNotFound) {
+			writeJSONError(w, "Override not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[StaticPolicyAPI] Error getting override for policy %s: %v", policyID, err)
+		writeJSONError(w, "Failed to get override", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSONResponse(w, override, http.StatusOK)
 }
 
 // HandleListOverrides handles GET /api/v1/static-policies/overrides

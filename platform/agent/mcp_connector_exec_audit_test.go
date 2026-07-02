@@ -85,6 +85,7 @@ func expectCanonicalDecisionRow(mock sqlmock.Sqlmock, requestType, verdict strin
 			PlaneMCP,         // plane=mcp
 			nil,              // correlation_id (no traceparent → NULL → singleton)
 			nil,              // redacted_fields NULL — block/error/clean allow
+			nil,              // session_id NULL — no X-Session-Id on ctx (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }
@@ -113,6 +114,7 @@ func expectRedactedDecisionRow(mock sqlmock.Sqlmock, requestType string, dst *[]
 			PlaneMCP,             // plane=mcp
 			nil,                  // correlation_id NULL
 			captureArg{dst: dst}, // redacted_fields populated (#2641 DoD)
+			nil,                  // session_id NULL — no X-Session-Id on ctx (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }

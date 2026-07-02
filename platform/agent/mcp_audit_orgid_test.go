@@ -43,6 +43,7 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 			"decision-1",         // decision_id (first-class column; #2592)
 			PlaneMCP,             // plane — MCP check-input surface
 			"corr-trace-input-1", // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -89,6 +90,7 @@ func TestWriteOverrideUsedEvent_OrgIDPersisted(t *testing.T) {
 			"decision-1",       // decision_id (first-class column; #2592)
 			PlaneMCP,           // plane — MCP check-input override surface
 			"corr-trace-ovr-1", // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

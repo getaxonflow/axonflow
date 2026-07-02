@@ -22,6 +22,14 @@ type APICallEvent struct {
 	HTTPPath       string
 	HTTPStatusCode int
 	LatencyMs      int64
+	// Governance metrics (optional). Populated by the MCP-server governance
+	// path (check_policy / check_output) so the Usage page reflects policy
+	// activity, not just raw request counts. Zero for non-governance API
+	// calls (e.g. the SDK /process path). The usage_events table has carried
+	// these columns since migration 081; they were simply never written on
+	// the governance path (#2758).
+	PoliciesEvaluated int
+	PolicyViolations  int
 }
 
 // LLMRequestEvent represents an LLM API call event to be recorded

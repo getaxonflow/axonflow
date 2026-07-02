@@ -49,6 +49,14 @@ func FindActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, po
 		  AND revoked_at IS NULL
 		  AND (expires_at IS NULL OR expires_at > NOW())
 		  AND (tool_signature IS NULL OR tool_signature = $4)
+		  -- ADR-044 allow-flip applies ONLY to session "allow" overrides.
+		  -- policy_overrides is shared with action-overrides (agent static
+		  -- warn/block/redact, and any future dynamic action-override), which must
+		  -- NOT be mistaken for an allow-bypass — that would let a *tightening*
+		  -- override (e.g. block) silently flip a deny to allow. createOverrideHandler
+		  -- writes action_override='allow' for the session-override path; scope the
+		  -- match to that (or a legacy NULL) so action-overrides never grant bypass.
+		  AND (action_override IS NULL OR action_override = 'allow')
 		ORDER BY
 		  CASE WHEN tool_signature = $4 AND $4 <> '' THEN 0
 		       WHEN tool_signature IS NULL THEN 1

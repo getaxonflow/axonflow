@@ -335,12 +335,20 @@ func writeOverrideUsedEvent(
 	if correlationID != "" {
 		correlationIDArg = correlationID
 	}
+	// #2753: per-session identity → audit_logs.session_id (NULL when absent),
+	// read from the request context stamped in requireMCPAuth, for parity with
+	// the block/redact rows on the same check_policy surface.
+	var sessionIDArg interface{}
+	if sid := clientSessionIDFromContext(ctx); sid != "" {
+		sessionIDArg = sid
+	}
 	_, _ = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
-			policy_decision, policy_details, decision_id, plane, correlation_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			policy_decision, policy_details, decision_id, plane, correlation_id,
+			session_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`,
 		"audit_used_"+decisionID,
 		decisionID,
@@ -365,6 +373,7 @@ func writeOverrideUsedEvent(
 		decisionID,       // decision_id (first-class column)
 		PlaneMCP,         // plane
 		correlationIDArg, // correlation_id (#2598)
+		sessionIDArg,     // session_id (#2753)
 	)
 }
 
@@ -518,13 +527,22 @@ func writeMCPDecisionAudit(
 		correlationIDArg = correlationID
 	}
 
+	// #2753: per-session identity → first-class column (NULL when the caller
+	// didn't forward X-Session-Id). Read from the request context, stamped in
+	// requireMCPAuth, so every writeMCPDecisionAudit call site inherits it
+	// without a signature change.
+	var sessionIDArg interface{}
+	if sid := clientSessionIDFromContext(ctx); sid != "" {
+		sessionIDArg = sid
+	}
+
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, decision_id, plane, correlation_id,
-			redacted_fields
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			redacted_fields, session_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`,
 		"audit_mcp_"+decisionID, // id (distinct prefix → no PK collision with audit_/audit_used_/decide_)
 		requestID,               // request_id
@@ -544,6 +562,7 @@ func writeMCPDecisionAudit(
 		PlaneMCP,                // plane (#2592)
 		correlationIDArg,        // correlation_id (first-class column or NULL; #2598)
 		redactedFieldsArg,       // redacted_fields (JSONB array or NULL; #2641)
+		sessionIDArg,            // session_id (first-class column or NULL; #2753)
 	)
 	if err != nil {
 		log.Printf("mcp decision audit: insert failed: %v", err)
@@ -653,12 +672,22 @@ func writeExplainableAuditLog(
 	if correlationID != "" {
 		correlationIDArg = correlationID
 	}
+	// #2753: per-session identity → audit_logs.session_id (NULL when the caller
+	// didn't forward X-Session-Id). Read from the request context stamped in
+	// requireMCPAuth, matching writeMCPDecisionAudit. Static-block check_policy
+	// rows are written here, so this is required for session_id parity with the
+	// dynamic-block / redact rows.
+	var sessionIDArg interface{}
+	if sid := clientSessionIDFromContext(ctx); sid != "" {
+		sessionIDArg = sid
+	}
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
-			policy_decision, policy_details, decision_id, plane, correlation_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			policy_decision, policy_details, decision_id, plane, correlation_id,
+			session_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`,
 		"audit_"+decisionID, // id
 		requestID,           // request_id
@@ -684,6 +713,7 @@ func writeExplainableAuditLog(
 		decisionID,        // decision_id (first-class column; #2592)
 		PlaneMCP,          // plane
 		correlationIDArg,  // correlation_id (#2598)
+		sessionIDArg,      // session_id (#2753)
 	)
 	if err != nil {
 		log.Printf("explainable audit log: insert failed: %v", err)

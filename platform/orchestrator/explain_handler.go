@@ -428,6 +428,11 @@ func checkOverrideAvailability(tenantID, userEmail, toolSignature string, matche
 			WHERE policy_id = $1 AND created_by = $2 AND tenant_id = $3
 			  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
 			  AND (tool_signature IS NULL OR tool_signature = $4)
+			  -- Match FindActiveOverride: only ADR-044 session "allow" overrides
+			  -- count as an active bypass. Action-overrides (warn/block/redact)
+			  -- share this table but must not be reported as an available session
+			  -- override, keeping explain consistent with runtime enforcement.
+			  AND (action_override IS NULL OR action_override = 'allow')
 			ORDER BY
 			  CASE WHEN tool_signature = $4 AND $4 <> '' THEN 0
 			       WHEN tool_signature IS NULL THEN 1

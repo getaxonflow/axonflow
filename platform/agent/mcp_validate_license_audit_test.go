@@ -121,6 +121,7 @@ func TestValidateServiceLicense_PermissionDenied_AuditIsSecretFree(t *testing.T)
 			PlaneMCP,                      // plane=mcp
 			nil,                           // correlation_id
 			nil,                           // redacted_fields
+			nil,                           // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

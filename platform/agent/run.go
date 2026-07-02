@@ -1468,6 +1468,14 @@ func Run() {
 	hitlHandler.RegisterRoutes(hitlSub)
 	// which are set by proxyAuthMiddleware for proxied requests or directly by clients.
 
+	// #2760 (WS-6): Cowork / Claude Code OTEL ingest plane. Enterprise-gated
+	// (the community build mounts a 501 stub). Mounts POST /v1/logs behind
+	// apiAuthMiddleware so inbound telemetry is authenticated and org/tenant-tagged
+	// from the license — never from the (spoofable) OTEL resource attributes. Each
+	// event lands as a canonical audit_logs row (redacted at the collector, signed
+	// into decision_chain); it is NOT a parallel store.
+	registerCoworkOTELIngest(globalRouter)
+
 	// Start HITL expiration background job (1-hour ticker).
 	// Enterprise: expires stale pending approval requests + dispatches the
 	// notify_url webhook for any expired row that carried one. Community:

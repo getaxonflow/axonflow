@@ -237,6 +237,28 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 }
 
 // Update updates an existing static policy with tier enforcement.
+// callerOrgOwnsStaticPolicy reports whether the authenticated caller's org owns
+// (may access) the given policy — the org-match half of the tenant-isolation
+// guard enforced in GetByID (see there for how read vs write are covered and why
+// this matters). It is intentionally org-agnostic about tier; the tier exception
+// for the shared system baseline lives at the call site.
+//
+// Returns true (allow) when the caller org is genuinely unknown (single-tenant /
+// community contexts that do not populate an org) or the row predates the org
+// column — mirroring the existing WithOrgScope skip on an empty OrgID. The
+// empty-caller-org branch is not reachable by a real multi-tenant caller: portal
+// login always sets a session org (forwarded as X-Org-ID) and license auth
+// carries an org from the license, so callerOrg is populated wherever a second
+// tenant exists to protect; and the v9 org backfill (mig 094) set org_id on all
+// existing static_policies rows, so policy.OrgID is populated post-migration.
+func callerOrgOwnsStaticPolicy(ctx context.Context, policy *StaticPolicy) bool {
+	callerOrg := OrgIDFromContext(ctx)
+	if callerOrg == "" || policy.OrgID == "" {
+		return true
+	}
+	return policy.OrgID == callerOrg
+}
+
 // System tier policies cannot be modified.
 func (r *StaticPolicyRepository) Update(ctx context.Context, policyID string, update *UpdateStaticPolicyRequest, updatedBy string) (*StaticPolicy, error) {
 	// Get existing policy
@@ -249,6 +271,8 @@ func (r *StaticPolicyRepository) Update(ctx context.Context, policyID string, up
 	if policy.Tier == TierSystem {
 		return nil, ErrSystemPolicyModification
 	}
+	// Cross-org writes are already blocked: GetByID above returns ErrPolicyNotFound
+	// for a non-system policy owned by a different org than the caller.
 
 	// Build update query dynamically based on what's being updated
 	updates := []string{}
@@ -391,6 +415,7 @@ func (r *StaticPolicyRepository) Delete(ctx context.Context, policyID string, de
 	if policy.Tier == TierSystem {
 		return ErrSystemPolicyDeletion
 	}
+	// Cross-org deletes are already blocked by the GetByID tenant-isolation guard.
 
 	// Soft delete
 	query := `
@@ -486,6 +511,28 @@ func (r *StaticPolicyRepository) GetByID(ctx context.Context, id string) (*Stati
 	}
 	if deletedAt.Valid {
 		policy.DeletedAt = &deletedAt.Time
+	}
+
+	// Tenant-isolation guard (defense in depth), applied at the single point every
+	// by-id access flows through — the read handler (HandleGetStaticPolicy), the
+	// portal's GET /unified-policies/{id} → fetchStaticPolicy, ResolvePolicySource,
+	// and the Update/Delete/ToggleEnabled write methods that fetch through here.
+	//
+	// GetByID resolves ANY id: its WHERE is `id/policy_id + deleted_at IS NULL`,
+	// with no org predicate and no WithOrgScope. static_policies RLS only isolates
+	// rows when the Agent runs under a non-owner app_role; a deployment on the
+	// table owner (AXONFLOW_DB_USE_APP_ROLE unset/false — the docker-compose /
+	// pre-provision default, and any non-flipped install) bypasses RLS entirely.
+	// Without this guard one org could read (and, via the write methods, mutate)
+	// another org's custom static policy by id — reachable once the portal's
+	// unified dispatcher (#2774) made the static read+write paths live.
+	//
+	// System-tier policies are the shared baseline every tenant may see, so they
+	// are exempt; only tenant/organization-tier rows are org-private. In a
+	// correctly configured app_role deployment RLS already scopes this query, so
+	// the guard is a no-op there.
+	if policy.Tier != TierSystem && !callerOrgOwnsStaticPolicy(ctx, &policy) {
+		return nil, ErrPolicyNotFound
 	}
 
 	return &policy, nil
@@ -856,6 +903,7 @@ func (r *StaticPolicyRepository) ToggleEnabled(ctx context.Context, policyID str
 	if policy.Tier == TierSystem && !enabled {
 		return ErrSystemPolicyModification
 	}
+	// Cross-org toggles are already blocked by the GetByID tenant-isolation guard.
 
 	query := `
 		UPDATE static_policies

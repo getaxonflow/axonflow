@@ -50,6 +50,7 @@ func TestResponsePlaneAuditRow_RealPostgres(t *testing.T) {
 		"../../migrations/core/119_audit_logs_decision_id_plane.sql",
 		"../../migrations/core/121_audit_logs_correlation_id.sql",
 		"../../migrations/core/126_audit_logs_cross_border_fields.sql",
+		"../../migrations/core/129_audit_logs_session_id.sql",
 	} {
 		b, err := os.ReadFile(mig)
 		if err != nil {

@@ -13,10 +13,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"axonflow/platform/common/usage"
 	sharedaudit "axonflow/platform/shared/audit"
 	logutil "axonflow/platform/shared/logger"
 
@@ -178,6 +180,14 @@ type mcpSession struct {
 	userEmail string // per-user identity from X-User-Email header; distinct from userID so Plugin Batch 1 endpoints scope by real email, not synthetic "0".
 	userRole  string
 	clientID  string
+
+	// clientSessionID is the AI-tool session id the caller forwards via the
+	// X-Session-Id header (Claude Code / Desktop session_id) — issue #2753.
+	// Distinct from `id` above (the MCP-protocol session). Captured per request
+	// so audit rows (writeMCPDecisionAudit, via context) and the orchestrator
+	// proxy (mcpProxyToOrchestrator) carry it into audit_logs.session_id. Empty
+	// when the caller doesn't send it → NULL column.
+	clientSessionID string
 
 	// V1 Plugin Pro tier (umbrella #1958). Captured from auth.Client.EffectiveTier
 	// at session-create time. One of "Free" / "Pro" / "Premium" for SaaS
@@ -740,18 +750,19 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		sessAuthKind = auth.Kind
 	}
 	session := &mcpSession{
-		id:        sessionID,
-		createdAt: now,
-		lastUsed:  now,
-		tenantID:  tenantID,
-		orgID:     orgID,
-		userID:    userID,
-		userEmail: userEmail,
-		userRole:  userRole,
-		clientID:  clientID,
-		tier:      tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
-		client:    sessClient,
-		authKind:  sessAuthKind,
+		id:              sessionID,
+		createdAt:       now,
+		lastUsed:        now,
+		tenantID:        tenantID,
+		orgID:           orgID,
+		userID:          userID,
+		userEmail:       userEmail,
+		userRole:        userRole,
+		clientID:        clientID,
+		tier:            tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
+		client:          sessClient,
+		authKind:        sessAuthKind,
+		clientSessionID: strings.TrimSpace(r.Header.Get("X-Session-Id")), // #2753
 	}
 
 	mcpSessionsMu.Lock()
@@ -850,6 +861,9 @@ func auditMCPServerDeny(ctx context.Context, session *mcpSession, requestType, t
 }
 
 func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
+	// Captured up front so the usage_events row (#2758) records the true
+	// end-to-end handler latency for this governed call.
+	startTime := time.Now()
 	session, r := requireMCPAuth(w, r, req)
 	if session == nil {
 		// #2641 (MCPSRV-UNAUTH-JSONRPC): an unauthenticated tools/call is a denied
@@ -975,6 +989,18 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		return
 	}
 
+	// Meter this governed API call in usage_events (#2758). Every authenticated
+	// Claude Code governance request (check_policy / check_output / ... issued
+	// via tools/call) is one `api_call`, scoped to the session's license org so
+	// the portal Usage & Billing page reflects real plugin traffic instead of
+	// showing zero. audit_logs records the governance VERDICT; usage_events
+	// records request VOLUME — two tables, two purposes (do NOT conflate them).
+	// Reached only after auth + daily-cap + tier-gate pass and the tool is
+	// dispatched, so capped/gated/unknown-tool/unauthenticated calls are not
+	// metered (they return earlier). Runs for both the success and the
+	// governance fail-closed (toolErr) branches below.
+	recordMCPToolCallUsage(r, session, params.Name, result, toolErr, startTime)
+
 	if toolErr != nil {
 		// #2641 (MCPSRV-TOOLERR-FAILCLOSED): when a GOVERNANCE tool (check_policy /
 		// check_output) errors, the caller gets IsError and must not proceed — a
@@ -1007,6 +1033,98 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	})
 }
 
+// recordMCPToolCallUsage writes one `api_call` usage_events row for a served,
+// authenticated MCP-server tools/call (#2758). This is what makes the portal
+// Usage & Billing page reflect Claude Code (and other MCP-plugin) governance
+// traffic — previously the check_policy path wrote audit_logs but never a
+// usage_events row, so usage_daily (rolled up from usage_events) stayed empty
+// and "Total API calls" read 0 despite live traffic.
+//
+// The row carries session.orgID as the RLS pivot / scope key — the SAME org
+// the portal's HandleGetUsageSummary filters on (both derive from the signed
+// license), so no scoping mismatch — and session.clientID as the credential
+// identity, matching the audit rows this handler already writes.
+//
+// Best-effort and non-blocking (mirrors HandleRun): a metering failure never
+// affects the governance verdict the caller already holds. Request primitives
+// are captured before the goroutine so we never touch r after the handler
+// returns. Empty org (never expected for an authenticated session) is dropped
+// loudly by the recorder rather than written to a NULL bucket.
+func recordMCPToolCallUsage(r *http.Request, session *mcpSession, toolName string, result interface{}, toolErr error, startTime time.Time) {
+	if session == nil || session.orgID == "" || usageDB == nil {
+		return
+	}
+
+	instanceID := os.Getenv("HOSTNAME") // Docker container ID
+	if instanceID == "" {
+		instanceID = "agent-unknown"
+	}
+
+	event := buildMCPToolCallUsageEvent(session, result, toolErr,
+		r.Method, r.URL.Path, instanceID, time.Since(startTime).Milliseconds())
+
+	go func() {
+		recorder := usage.NewUsageRecorder(usageDB)
+		if err := recorder.RecordAPICall(event); err != nil {
+			log.Printf("[USAGE] MCP tools/call %q usage record failed (org=%s): %v", toolName, event.OrgID, err)
+		}
+	}()
+}
+
+// buildMCPToolCallUsageEvent maps a served MCP-server tools/call into the
+// api_call usage_events row (#2758). Pulled out as a pure function so the
+// identity mapping, status derivation, and governance-metric extraction are
+// unit-testable without a DB or HTTP server.
+//
+// Status derivation: a governance tool ERROR is a fail-closed deny (5xx-class);
+// a normal allow/block decision transports successfully (200). This feeds the
+// success_rate the Usage summary derives from status codes. A block is a
+// SUCCESSFUL decision, not an error — it must NOT map to an error status.
+func buildMCPToolCallUsageEvent(session *mcpSession, result interface{}, toolErr error, method, path, instanceID string, latencyMs int64) usage.APICallEvent {
+	httpStatus := http.StatusOK
+	if toolErr != nil {
+		httpStatus = http.StatusInternalServerError
+	}
+
+	policiesEvaluated, policyViolations := mcpUsageMetrics(result)
+
+	return usage.APICallEvent{
+		OrgID:             session.orgID,
+		ClientID:          session.clientID,
+		InstanceID:        instanceID,
+		InstanceType:      "agent",
+		HTTPMethod:        method,
+		HTTPPath:          path,
+		HTTPStatusCode:    httpStatus,
+		LatencyMs:         latencyMs,
+		PoliciesEvaluated: policiesEvaluated,
+		PolicyViolations:  policyViolations,
+	}
+}
+
+// mcpUsageMetrics extracts the governance metrics from a check_policy /
+// check_output tool result so the usage_events row reflects policy activity.
+// The result maps are built in this same file, so the keys are stable:
+//   - "policies_evaluated" (int) — number of static policies evaluated
+//   - "allowed" (bool)           — false ⇒ the decision blocked ⇒ one violation
+//
+// Returns (0, 0) for tool results that carry neither key (e.g. list_policies),
+// so a non-governance tools/call still counts as an api_call with no spurious
+// violations.
+func mcpUsageMetrics(result interface{}) (policiesEvaluated, policyViolations int) {
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		return 0, 0
+	}
+	if pe, ok := m["policies_evaluated"].(int); ok {
+		policiesEvaluated = pe
+	}
+	if allowed, ok := m["allowed"].(bool); ok && !allowed {
+		policyViolations = 1
+	}
+	return policiesEvaluated, policyViolations
+}
+
 // --- Auth Helpers ---
 
 // requireMCPAuth resolves a session or authenticates the request. Returns
@@ -1032,6 +1150,12 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 	// in that case we skip stamping rather than panic.
 	if session.client != nil {
 		r = r.WithContext(stampAuthContext(r.Context(), session.client, session.authKind))
+	}
+	// #2753: carry the AI-tool session id down the request context so the audit
+	// writers (writeMCPDecisionAudit) persist it into audit_logs.session_id
+	// without threading it through their ~28 call sites. No-op when unset.
+	if session.clientSessionID != "" {
+		r = r.WithContext(withClientSessionID(r.Context(), session.clientSessionID))
 	}
 	return session, r
 }
@@ -1105,6 +1229,37 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "unknown", auth.ClientID, resolvedTier, auth, nil
 }
 
+// clientSessionIDCtxKey carries the AI-tool session id (X-Session-Id) down the
+// request context so the audit writers (writeMCPDecisionAudit) can persist it
+// into audit_logs.session_id without threading it through every one of their
+// ~28 call sites. Stamped once in requireMCPAuth from the resolved session
+// (#2753). A private type prevents collisions with other packages' context keys.
+type clientSessionIDCtxKeyType struct{}
+
+var clientSessionIDCtxKey = clientSessionIDCtxKeyType{}
+
+// withClientSessionID returns ctx carrying the given AI-tool session id. A blank
+// id is a no-op (leaves ctx unchanged) so audit rows for callers that don't send
+// X-Session-Id get NULL, not an empty-string sentinel.
+func withClientSessionID(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, clientSessionIDCtxKey, sessionID)
+}
+
+// clientSessionIDFromContext returns the AI-tool session id stamped on ctx, or
+// "" when none was set.
+func clientSessionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(clientSessionIDCtxKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // resolveMCPSession resolves auth from session header or credentials.
 // Session ID is verified to belong to the same client (prevents session hijacking)
 // and checked against the TTL (24h).
@@ -1134,6 +1289,16 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 				mcpSessionsMu.Lock()
 				session.lastUsed = time.Now()
 				mcpSessionsMu.Unlock()
+				// #2753: do NOT mutate the shared cached session's clientSessionID
+				// here. That field is set once at session-create (cache-miss build
+				// / handleMCPInitialize) and stays immutable-after-create — like
+				// userEmail/tenantID — so the unlocked reads in requireMCPAuth and
+				// mcpProxyToOrchestrator stay race-free under concurrent reuse of
+				// one MCP-protocol session. The plugin's X-Session-Id travels ONLY
+				// on the hook path (a fresh, non-shared cache-miss session per
+				// request); the MCP-protocol session path (the only one that reaches
+				// this cache-hit branch) carries no per-call X-Session-Id, so a
+				// stamp here would be empty anyway.
 				// Populate telemetry for cached sessions (container is per-request)
 				SetTelemetryTenantID(r.Context(), session.tenantID)
 				return session
@@ -1160,15 +1325,16 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		sessAuthKind = auth.Kind
 	}
 	return &mcpSession{
-		tenantID:  tenantID,
-		orgID:     orgID,
-		userID:    userID,
-		userEmail: userEmail,
-		userRole:  userRole,
-		clientID:  clientID,
-		tier:      tier,
-		client:    sessClient,
-		authKind:  sessAuthKind,
+		tenantID:        tenantID,
+		orgID:           orgID,
+		userID:          userID,
+		userEmail:       userEmail,
+		userRole:        userRole,
+		clientID:        clientID,
+		tier:            tier,
+		client:          sessClient,
+		authKind:        sessAuthKind,
+		clientSessionID: strings.TrimSpace(r.Header.Get("X-Session-Id")), // #2753
 	}
 }
 
@@ -1998,6 +2164,11 @@ func mcpToolListRecentDecisions(session *mcpSession, args map[string]interface{}
 	if session.userEmail != "" {
 		req.Header.Set("X-User-Email", session.userEmail)
 	}
+	// #2753: forward the AI-tool session id alongside user identity so any
+	// audit row the agent-side handler writes carries session attribution too.
+	if session.clientSessionID != "" {
+		req.Header.Set("X-Session-Id", session.clientSessionID)
+	}
 	// Forward the per-tenant SaaS Plugin tier so the orchestrator-side
 	// resolveDecisionListTier picks Free/Pro/Premium correctly. The agent
 	// captured this tier at authenticate time from the X-License-Token
@@ -2115,6 +2286,12 @@ func mcpProxyToOrchestrator(session *mcpSession, method, path string, body inter
 	}
 	if session.userEmail != "" {
 		req.Header.Set("X-User-Email", session.userEmail)
+	}
+	// #2753: forward the AI-tool session id so the orchestrator's
+	// auditToolCallHandler persists it into audit_logs.session_id (sibling of
+	// X-User-Email). Omitted when the caller didn't send X-Session-Id.
+	if session.clientSessionID != "" {
+		req.Header.Set("X-Session-Id", session.clientSessionID)
 	}
 	// Basic auth required by Orchestrator audit endpoints. ADR-052 §5: the
 	// BasicAuth username is the credential identity (clientID), not the

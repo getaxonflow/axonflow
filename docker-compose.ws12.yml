@@ -1,0 +1,65 @@
+# WS-12 isolation overlay (#2778).
+#
+# Gives every service a unique container_name (ws12-*) and a remapped host port
+# so this full-portal E2E stack coexists with other worktrees' default-named
+# stacks (e.g. ws11 binds 8080/8081/8082/5432/6379/3000/9000/9090). Internal
+# service-to-service DNS is unaffected: compose still exposes each service under
+# its *service* name (postgres, redis, axonflow-agent, axonflow-orchestrator,
+# axonflow-customer-portal) as a network alias regardless of container_name.
+#
+# Driven by scripts/ws12-portal-e2e-up.sh. Use with:
+#   docker compose -p ws12 -f docker-compose.yml -f docker-compose.enterprise.yml \
+#     -f docker-compose.portal-ui.yml -f docker-compose.ws12.yml up -d
+#
+# `ports: !override` REPLACES the inherited port list (a plain merge would append
+# and re-bind the default host port, colliding with the ws11 stack).
+
+services:
+  postgres:
+    container_name: ws12-axonflow-postgres
+    ports: !override
+      - "5442:5432"
+
+  redis:
+    container_name: ws12-axonflow-redis
+    ports: !override
+      - "6389:6379"
+
+  axonflow-agent:
+    container_name: ws12-axonflow-agent
+    ports: !override
+      - "8090:8080"
+
+  axonflow-orchestrator:
+    container_name: ws12-axonflow-orchestrator
+    ports: !override
+      - "8091:8081"
+
+  axonflow-customer-portal:
+    container_name: ws12-axonflow-customer-portal
+    ports: !override
+      - "8092:8080"
+
+  axonflow-customer-portal-ui:
+    container_name: ws12-axonflow-customer-portal-ui
+    ports: !override
+      - "3200:3000"
+
+  prometheus:
+    container_name: ws12-axonflow-prometheus
+    ports: !override
+      - "9100:9090"
+
+  grafana:
+    container_name: ws12-axonflow-grafana
+    ports: !override
+      - "3010:3000"
+
+  minio:
+    container_name: ws12-axonflow-minio
+    ports: !override
+      - "9010:9000"
+      - "9011:9001"
+
+  minio-init:
+    container_name: ws12-axonflow-minio-init

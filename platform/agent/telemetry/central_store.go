@@ -136,6 +136,11 @@ type DecisionRecord struct {
 	// omitted when the caller asserted none.
 	GatewayID string `json:"gateway_id,omitempty"`
 
+	// Origin is the low-cardinality caller-integration bucket (WS-5, #2761):
+	// claude-code | claude-desktop | sdk | plugin | gateway | unknown. Omitted
+	// when unset (the legacy OTel-only callers that predate the field).
+	Origin string `json:"origin,omitempty"`
+
 	// Stage names the decision plane: "llm" | "tool" | "agent".
 	Stage string `json:"stage"`
 
@@ -177,6 +182,7 @@ func RecordFromEvent(evt DecisionEvent, traceID string, now time.Time) DecisionR
 		OrgID:            evt.OrgID,
 		TenantID:         evt.TenantID,
 		GatewayID:        evt.GatewayID,
+		Origin:           evt.Origin,
 		Stage:            evt.Stage,
 		Verdict:          evt.Verdict,
 		PolicyIDs:        evt.PolicyIDs,

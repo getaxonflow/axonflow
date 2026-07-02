@@ -55,6 +55,17 @@ type DecisionEvent struct {
 	// that don't assert a gateway id.
 	GatewayID string
 
+	// Origin is the low-cardinality caller-integration bucket (WS-5, #2761):
+	// "claude-code" | "claude-desktop" | "sdk" | "plugin" | "gateway" |
+	// "unknown", derived by the agent from the X-Axonflow-Client header +
+	// gateway_id. Emitted as the decision.origin span attribute (defaulting to
+	// "unknown" when empty) so trace search and the spanmetrics connector can
+	// filter decisions per integration without a cardinality blow-up. Distinct
+	// from GatewayID, which is the finer-grained (higher-cardinality) raw
+	// gateway origin used for audit-trail correlation, not for metric labels.
+	// Attribute: decision.origin
+	Origin string
+
 	// Stage names the decision plane: "llm" | "tool" | "agent".
 	// Attribute: decision.stage
 	Stage string
