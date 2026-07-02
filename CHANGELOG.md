@@ -10,6 +10,19 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.3.1] - 2026-07-02 (patch on 9.3.0)
+
+**Patch.** Two fixes on top of [9.3.0]: policy action override and organization-tier static-policy creation now work for deployments whose organization id is not UUID-shaped, and the customer-portal audit Log Explorer now shows the matched policy on redact/block rows. No new behavior; one idempotent migration (`core/133`) that auto-applies on deploy. See the 9.3.0 entry below for the feature release.
+
+### Fixed
+
+- **Policy override and organization-tier static-policy create no longer 500 for non-UUID organization ids.** *(Community)* AxonFlow organization ids are free-form strings sourced from the signed license, not UUIDs. Four policy tables (`static_policies`, `dynamic_policies`, `policy_overrides`, `policy_evaluations`) carried a legacy `organization_id` column typed `uuid`; binding a non-UUID org id into it failed with `invalid input syntax for type uuid`, which surfaced in 9.3.0 as a hard 500 on the policy action override create path (`POST /api/v1/static-policies/{id}/override`) and on organization-tier static-policy create (`POST /api/v1/static-policies` with `tier: organization`). Migration `core/133` retypes `organization_id` to `text` on all four tables, and `HandleCreateOverride` now scopes the override by the canonical varchar `org_id` plus `tenant_id`, leaving the legacy column NULL. The `valid_override_scope` CHECK constraint, the partial indexes on `organization_id`, and row-level security (which keys on `org_id`) are all type-transparent across the retype. `org_id` is the canonical organization column and RLS key; the legacy `organization_id` remains deprecated and is scheduled for removal.
+- **Portal audit Log Explorer shows the matched policy on redact and blocked rows.** *(Enterprise)* The customer-portal audit Log Explorer's Policy column and detail panel rendered blank on PII-redact and blocked rows, because the matched policy is nested in `policy_details` (a `policy_names` array plus `policy_matches` on blocks, and `policy_ids` only on PII redacts) and was never lifted for display. The portal now lifts the human policy name across every shape (scalar, `policy_names` string or array, and all `policy_matches[*].policy_name` joined) and falls back to the matched policy ids on redact rows that carry no name, so a genuinely-matched row is never rendered blank.
+
+### Migration
+
+- **`core/133`** *(Community)* — retypes the legacy `organization_id` column from `uuid` to `text` on the `static_policies`, `dynamic_policies`, `policy_overrides`, and `policy_evaluations` tables. Idempotent and guarded: it only alters a column still typed `uuid`. The retype is a full table rewrite, but the affected tables are small, bounded configuration tables, so it completes near-instantly. Auto-applies on deploy; no operator action required.
+
 ## [9.3.0] - 2026-07-02 (audit visibility: per-developer + per-session identity, audit read/report/export API, portal Log Explorer)
 
 **Additive minor.** v9.3.0 makes governed activity visible end to end: per-developer and per-session identity now flows through to the canonical audit row, a read/report/export API exposes the audit trail, and the customer portal gains a filterable, expandable Log Explorer. Claude Code traffic is brought into the same governed view via a Grafana dashboard and OpenTelemetry ingest. One additive migration (`core/129`); the new endpoints are backward-compatible and the remaining changes are behavior-preserving fixes.
