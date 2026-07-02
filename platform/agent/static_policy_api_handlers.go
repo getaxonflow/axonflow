@@ -570,10 +570,19 @@ func (h *StaticPolicyAPIHandler) HandleCreateOverride(w http.ResponseWriter, r *
 		}(),
 	}
 
-	// Set scope based on headers
-	if orgID != "" {
-		override.OrganizationID = &orgID
-	}
+	// Set scope based on headers.
+	//
+	// AxonFlow org ids are FREE-FORM STRINGS sourced from the signed license
+	// (e.g. "acme-eval") — they are NOT UUIDs. The multi-tenant scope key
+	// for policy_overrides is the varchar `org_id` column (added by v9 mig 110,
+	// carried here by override.OrgID) plus `tenant_id`. The legacy
+	// `organization_id` column is a `uuid` type; binding a non-uuid org id to it
+	// makes the INSERT fail with `invalid input syntax for type uuid: "<org>"`,
+	// which was a hard 500 on the portal "Create Override" flow for every
+	// deployment whose org id is not UUID-shaped. Do NOT write the string org id
+	// into the uuid column — org scope lives in org_id (set above via OrgID);
+	// tenant_id below satisfies the valid_override_scope CHECK and is the match
+	// key for both the existence check and the GetEffective apply-JOIN.
 	if tenantID != "" {
 		override.TenantID = &tenantID
 	}
