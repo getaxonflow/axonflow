@@ -45,8 +45,8 @@ import (
 	"axonflow/platform/orchestrator/euaiact"      // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
 	"axonflow/platform/orchestrator/masfeat"  // MAS FEAT module - Community stub or EE impl
-	"axonflow/platform/orchestrator/ojk"      // OJK module - Community stub or EE impl
 	"axonflow/platform/orchestrator/media"    // Media governance analysis pipeline
+	"axonflow/platform/orchestrator/ojk"      // OJK module - Community stub or EE impl
 	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
 	"axonflow/platform/orchestrator/rbi"      // RBI FREE-AI module - Community stub or EE impl
 	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
@@ -116,7 +116,7 @@ var (
 	rbiModule     *rbi.RBIModule   // RBI FREE-AI Framework compliance (India Banking)
 	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
 	masfeatModule *masfeat.Module  // MAS FEAT compliance (Singapore)
-	ojkModule     *ojk.OJKModule  // OJK AI Governance compliance (Indonesia)
+	ojkModule     *ojk.OJKModule   // OJK AI Governance compliance (Indonesia)
 
 	// Execution Replay/Debug Mode (#763)
 	replayService *replay.Service // Execution replay service
@@ -569,8 +569,18 @@ func Run() {
 	// Metrics and monitoring
 	r.HandleFunc("/api/v1/metrics", metricsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/search", auditSearchHandler).Methods("POST")
+	// Operational log export (#2756) is owned by WS-2 #2767 (richer implementation
+	// in this same package). WS-10 no longer registers it here to avoid a
+	// duplicate-symbol collision; the WS-10 export tests target #2767's endpoint.
 	r.HandleFunc("/api/v1/audit/tool-call", auditToolCallHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tenant/{tenant_id}", tenantAuditLogsHandler).Methods("GET")
+	// WS-2 (#2755/#2756/#2757) audit read/report/export. The literal export +
+	// report POST routes are registered before the greedy GET /api/v1/audit/{id}
+	// so they win; {id} only matches a single trailing segment, so the two-segment
+	// /audit/tenant/{tenant_id} and the POST routes are never shadowed by it.
+	r.HandleFunc("/api/v1/audit/export", auditExportHandler).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/audit/report", auditReportHandler).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/audit/{id}", auditGetByIDHandler).Methods("GET")
 
 	// Policy overrides (ADR-044) + explainability (ADR-043) — Plugin Batch 1
 	r.HandleFunc("/api/v1/overrides", createOverrideHandler).Methods("POST")
@@ -631,6 +641,9 @@ func Run() {
 	r.HandleFunc("/api/v1/policies/{id}", policyAPIGetUpdateDeleteHandler).Methods("GET", "PUT", "DELETE", "OPTIONS")
 	r.HandleFunc("/api/v1/policies/{id}/test", policyAPITestHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/policies/{id}/versions", policyAPIVersionsHandler).Methods("GET", "OPTIONS")
+	// NOTE: per-policy override is system/static-only (per the #2753 override
+	// decision; #2768 closed the dynamic variant). Overrides are handled by the
+	// agent static-policy override path; dynamic/tenant policies use edit/delete.
 
 	// Policy Templates API (Track D - Policy Templates)
 	r.HandleFunc("/api/v1/templates", templateAPIListHandler).Methods("GET", "OPTIONS")
@@ -1733,11 +1746,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	health := map[string]interface{}{
-		"status":            "healthy",
-		"service":           "axonflow-orchestrator",
-		"version":           getPlatformVersion(),
-		"timestamp":         time.Now().UTC(),
-		"components":        components,
+		"status":               "healthy",
+		"service":              "axonflow-orchestrator",
+		"version":              getPlatformVersion(),
+		"timestamp":            time.Now().UTC(),
+		"components":           components,
 		"capabilities":         getCapabilities(),
 		"sdk_compatibility":    getSDKCompatibility(),
 		"plugin_compatibility": getPluginCompatibility(),
@@ -2556,17 +2569,17 @@ func simpleMetricsHandler(w http.ResponseWriter, r *http.Request) {
 
 func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 	var searchReq struct {
-		UserEmail   string    `json:"user_email,omitempty"`
-		ClientID    string    `json:"client_id,omitempty"`
+		UserEmail  string    `json:"user_email,omitempty"`
+		ClientID   string    `json:"client_id,omitempty"`
 		TenantID   string    `json:"-"` // force-set from X-Tenant-ID; never client-controlled
 		StartTime  time.Time `json:"start_time"`
 		EndTime    time.Time `json:"end_time"`
 		DecisionID string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
-		PolicyName  string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
-		OverrideID  string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
-		Action      string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")
-		Limit       int       `json:"limit,omitempty"`
-		Offset      int       `json:"offset,omitempty"`
+		PolicyName string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
+		OverrideID string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
+		Action     string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")
+		Limit      int       `json:"limit,omitempty"`
+		Offset     int       `json:"offset,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&searchReq); err != nil {
@@ -2821,6 +2834,18 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 	req.ClientID = clientID
 	req.TenantID = tenantID
 	req.OrgID = r.Header.Get("X-Org-ID")
+	// #2754: per-developer identity forwarded by the Agent proxy
+	// (mcpProxyToOrchestrator sets X-User-Email from the authenticated MCP
+	// session). Read it into the entry so the post-tool audit_tool_call row
+	// carries the real developer in audit_logs.user_email instead of NULL.
+	// Header-sourced only (like X-Org-ID above) — never trusted from the body.
+	// Empty when no identity is configured; LogToolCallAudit degrades to an
+	// empty user_email (portal shows the tenant on the secondary line) rather
+	// than the previous copy-paste NULL.
+	req.UserEmail = strings.TrimSpace(r.Header.Get("X-User-Email"))
+	// #2753: per-session identity forwarded by the Agent proxy → audit_logs.session_id.
+	// Header-sourced only (never from the body); empty → NULL column.
+	req.SessionID = strings.TrimSpace(r.Header.Get("X-Session-Id"))
 
 	// Idempotency scope key. The agent-proxy path stamps X-Org-ID from
 	// the authenticated client; SDK direct callers (the majority) do
@@ -2840,27 +2865,27 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 	// original audit_id byte-for-byte — no double-counted metrics, no
 	// duplicate audit row (#2420).
 	idempotency.Wrap(w, r, orchIdempStore, idempOrgID, tenantID, "audit.tool-call", func(w http.ResponseWriter, r *http.Request) {
-	auditEntry := auditLogger.LogToolCallAudit(r.Context(), &req)
+		auditEntry := auditLogger.LogToolCallAudit(r.Context(), &req)
 
-	auditID := ""
-	var ts time.Time
-	if auditEntry != nil {
-		auditID = auditEntry.ID
-		ts = auditEntry.Timestamp
-	} else {
-		auditID = generateAuditID()
-		ts = time.Now().UTC()
-	}
+		auditID := ""
+		var ts time.Time
+		if auditEntry != nil {
+			auditID = auditEntry.ID
+			ts = auditEntry.Timestamp
+		} else {
+			auditID = generateAuditID()
+			ts = time.Now().UTC()
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"audit_id":  auditID,
-		"status":    "recorded",
-		"timestamp": ts,
-	}); err != nil {
-		log.Printf("Error encoding response: %v", err)
-	}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"audit_id":  auditID,
+			"status":    "recorded",
+			"timestamp": ts,
+		}); err != nil {
+			log.Printf("Error encoding response: %v", err)
+		}
 	}) // end idempotency.Wrap closure
 }
 

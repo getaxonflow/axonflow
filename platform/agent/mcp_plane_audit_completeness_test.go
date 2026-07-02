@@ -85,6 +85,7 @@ func TestWriteMCPDecisionAudit_RedactedPopulatesRedactedFields(t *testing.T) {
 			PlaneMCP,                             // plane=mcp
 			"corr-1",                             // correlation_id
 			captureArg{dst: &redactedFieldsJSON}, // redacted_fields JSONB (#2641)
+			nil,                                  // session_id NULL — no X-Session-Id on ctx (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -138,6 +139,7 @@ func TestWriteMCPDecisionAudit_NoRedactionNullColumn(t *testing.T) {
 			PlaneMCP,
 			nil, // correlation_id NULL (none supplied)
 			nil, // redacted_fields NULL — NOT [] or "null" (#2641)
+			nil, // session_id NULL — no X-Session-Id on ctx (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -229,6 +231,7 @@ func TestMcpToolCheckPolicy_DynamicBlock_EmitsCanonicalAudit(t *testing.T) {
 			PlaneMCP,
 			nil, // correlation_id (no traceparent on the MCP-server session)
 			nil, // redacted_fields NULL on a block
+			nil, // session_id NULL — session carries no clientSessionID (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -286,6 +289,7 @@ func TestMcpToolCheckOutput_SQLiBlock_EmitsCanonicalAudit(t *testing.T) {
 			PlaneMCP,
 			nil,
 			nil, // redacted_fields NULL
+			nil, // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -339,6 +343,7 @@ func TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit(t *testing.T) {
 			PlaneMCP,
 			nil,
 			captureArg{dst: &redactedFieldsJSON}, // redacted_fields populated
+			nil,                                  // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -428,7 +433,8 @@ func TestAuditMCPServerDeny(t *testing.T) {
 			mcpVerdictError, // tool-error → canonical 'error'
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
-			nil, nil,
+			nil, nil, // correlation_id, redacted_fields
+			nil, // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -470,7 +476,8 @@ func TestHandleMCPToolsCall_Unauthenticated_EmitsBlockedAudit(t *testing.T) {
 			mcpVerdictBlocked,
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
-			nil, nil,
+			nil, nil, // correlation_id, redacted_fields
+			nil, // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -518,6 +525,7 @@ func TestMCPCheckInputHandler_UnsupportedContentType_EmitsBlockedAudit(t *testin
 			PlaneMCP,
 			sqlmock.AnyArg(), // correlation_id (may be NULL)
 			nil,              // redacted_fields NULL
+			nil,              // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -581,6 +589,7 @@ func TestMCPCheckInputHandler_EvalUnavailable_EmitsErrorAudit(t *testing.T) {
 			PlaneMCP,
 			sqlmock.AnyArg(),
 			nil,
+			nil, // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -633,6 +642,7 @@ func TestMCPCheckOutputHandler_Redaction_EmitsRedactedWithFields(t *testing.T) {
 			PlaneMCP,
 			sqlmock.AnyArg(),
 			captureArg{dst: &redactedFieldsJSON},
+			nil, // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

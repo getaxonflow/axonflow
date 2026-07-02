@@ -10,6 +10,34 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.3.0] - 2026-07-02 (audit visibility: per-developer + per-session identity, audit read/report/export API, portal Log Explorer)
+
+**Additive minor.** v9.3.0 makes governed activity visible end to end: per-developer and per-session identity now flows through to the canonical audit row, a read/report/export API exposes the audit trail, and the customer portal gains a filterable, expandable Log Explorer. Claude Code traffic is brought into the same governed view via a Grafana dashboard and OpenTelemetry ingest. One additive migration (`core/129`); the new endpoints are backward-compatible and the remaining changes are behavior-preserving fixes.
+
+### Added
+
+- **Per-developer and per-session identity through to the canonical audit row.** *(Community)* Requests carrying `X-User-Email` and `X-Session-Id` now propagate that identity into `audit_logs`, so every governed decision can be attributed to the developer and session that produced it. Migration `core/129` adds the nullable `audit_logs.session_id` column; the user email lands on the existing identity columns.
+- **Audit read / report / export API.** *(Community)* New read-only endpoints expose the audit trail: `GET /api/v1/audit/{id}` returns a single decision record, `POST /api/v1/audit/report` returns per-action counts and top policies for a filter, and `POST /api/v1/audit/export` streams the filtered rows (with a truncation header when a row cap is reached). Redacted values are served as stored — there is no unmask path.
+- **Portal audit-logs Log Explorer.** *(Enterprise)* The customer-portal Audit Logs page is rebuilt as a Log Explorer: combinable filters (user email, action, tenant, date range) with pagination, per-row expansion to the full decision record, a report-by-action view, and export of the active filter. Redacted content is rendered as stored and labelled.
+- **Claude Code Grafana dashboard and decision origin label.** *(Community)* A new Grafana dashboard visualizes Claude Code governed traffic, and decisions now carry a bounded `origin` metric label (with obligations and blocks series) so decision volume can be sliced by call origin without unbounded cardinality.
+- **Cowork / Claude Code OpenTelemetry ingest to canonical `audit_logs`.** *(Enterprise)* An authenticated `POST /v1/logs` endpoint lands Cowork and Claude Code OpenTelemetry log events as canonical `audit_logs` rows (`plane=cowork` / `plane=claude_code`), so agent activity from those hosts is a first-class audit source rather than a satellite table. The ingest is a force-redact storage plane: PII is masked before the row is stored, and it fails closed (withholds the row) when detection is unavailable.
+- **Unified policy write dispatcher.** *(Enterprise)* A single `/unified-policies/*` write path now dispatches policy create/update/delete across the system and tenant policy stores, replacing the scattered per-store write handlers.
+
+### Fixed
+
+- **Portal Usage reflects governed Claude Code traffic.** *(Enterprise)* The portal Usage page under-counted governed activity because Claude Code MCP traffic was not attributed to the usage rollup; it now surfaces that traffic.
+- **Grafana agent and orchestrator blocked/allowed panels use the real metric names.** *(Community)* The agent and orchestrator dashboards referenced defunct synthetic-exporter series, so the blocked/allowed panels were empty; they now query the real emitted metric names.
+- **Policy action override on the static / system path.** *(Community)* The policy action override now applies on the static (system) policy path: it authenticates through the proxy, reads back via the agent `GET`, and keys on `policy.id`, with an allow-flip guard. The redundant dynamic-override path is removed — action override is a system/static-only capability (dynamic policies are edited or deleted directly).
+- **Cross-tenant static-policy read/write isolation.** *(Community)* Static-policy reads and writes are now scoped to the caller's tenant, closing a path where one tenant could read or write another tenant's static policies.
+- **Executions and Approvals no longer 500 on NULL columns.** *(Community)* The executions list and the approvals list / approve / reject paths failed to scan rows with legitimately-NULL columns (for example a MAP-plan row with a NULL `source`, or workflow-step rows with NULL identity or step fields); those scans now tolerate NULL.
+- **SSO setup flow.** *(Enterprise)* The portal SSO page treated a "not configured" backend response as already-configured and never showed the provider selector; the setup flow now renders correctly.
+- **SCIM and SSO modal z-index.** *(Enterprise)* The SCIM token and SSO confirmation modals sat beneath their own backdrop, leaving their buttons unclickable; the modal panels are now layered above the backdrop.
+- **Compliance evidence export no longer drops audit rows.** *(Enterprise)* The compliance evidence export selected columns that do not exist on the audit row, dropping every `audit_logs` entry from the export; it now derives the blocked flag from the policy decision and the risk score from the stored decision details, and includes the rows.
+
+### Migration
+
+- **`core/129`** *(Community)* — adds the nullable `audit_logs.session_id` column (additive; existing rows and existing callers are unaffected).
+
 ## [9.2.2] - 2026-07-01 (patch on 9.2.1)
 
 **Patch.** Three fixes on top of [9.2.1]: the MCP `check_policy` advisory tool now redacts PII on its allow path, the Java example dependencies clear three Jackson CVEs, and an internal license-generation doc is corrected. No new behavior and no migrations; see the 9.2.0 entry below for the feature release.

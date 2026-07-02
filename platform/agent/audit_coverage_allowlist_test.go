@@ -52,6 +52,16 @@ func auditCoverageAllowlist() map[string]string {
 		// (decide / gateway / mcp) records the redacted verdict.
 		"platform/agent/request_redaction_detector.go::textPIIDetector.Redact": "by-design: engine-backed redactor adapter (Redactor iface impl) wrapping redactInputStatement; no verdict, the invoking PEP records the redaction.",
 
+		// ---- BY-DESIGN: Cowork / Claude Code OTEL ingest plane (caller audits) ----
+		// coworkRedactDefault is the redact-at-collector helper: it wraps the SAME
+		// engine response-plane redactor (evaluateOutputPolicies) and returns a
+		// coworkRedactResult (masked/withheld/allowed + verdict). It writes no row
+		// itself; its only caller, processCoworkRecord, records the canonical
+		// audit_logs row via writeCoworkAuditLog AND signs it via recordSignedDecision
+		// on every terminal verdict (allowed/redacted/blocked/error) — the same
+		// split as the MCP evaluateOutputPolicies helper above. (#2760 / WS-6.)
+		"platform/agent/cowork_otel_ingest.go::coworkRedactDefault": "by-design: redact-at-collector helper wrapping evaluateOutputPolicies; caller processCoworkRecord audits via writeCoworkAuditLog + recordSignedDecision on every verdict (#2760).",
+
 		// ---- BY-DESIGN: orchestrator response plane (handler audits) ----
 		// DetectWithSharedEngine is the shared-engine detector; it returns a
 		// ResponseResult. The orchestrator response plane audits the outcome in

@@ -180,7 +180,76 @@ const (
 	PlaneGateway      = "gateway"       // generic reference PEP adapter
 	PlaneOpenAICompat = "openai_compat" // OpenAI-compatible chat-completions surface
 	PlaneMedia        = "media"         // orchestrator media-governance analysis (#2680)
+	PlaneCowork       = "cowork"        // Claude Desktop (Cowork) OTEL ingest plane (#2760 / WS-6)
+	PlaneClaudeCode   = "claude_code"   // Claude Code native OTEL ingest plane (#2760 / WS-6)
 )
+
+// Caller-origin buckets for the decision metrics `origin` label (WS-5, #2761).
+//
+// This is a CLOSED, low-cardinality enum: every request maps to exactly one of
+// these constants via classifyDecisionOrigin. Raw hostnames, emails, and client
+// version strings are NEVER used as label values (that would be a cardinality
+// bomb + a PII leak); they are bucketed down to the integration family. New
+// integrations get a new constant here, not a free-form value.
+const (
+	OriginClaudeCode    = "claude-code"    // Claude Code plugin (X-Axonflow-Client: claude-code-plugin | claude-code/<v>)
+	OriginClaudeDesktop = "claude-desktop" // Claude Desktop governance proxy (gateway_id claude_desktop.<host>)
+	OriginSDK           = "sdk"            // Any language SDK (X-Axonflow-Client: sdk-<lang>/<v>)
+	OriginPlugin        = "plugin"         // Other coding-agent plugins (openclaw, cursor-plugin, codex-plugin, *-plugin)
+	OriginGateway       = "gateway"        // A generic infrastructure PEP that asserted a caller_identity.gateway_id
+	OriginUnknown       = "unknown"        // No recognizable client header and no gateway_id
+)
+
+// classifyDecisionOrigin buckets a /decide caller into one of the low-cardinality
+// OriginXxx values from two signals:
+//
+//   - clientHeader: the X-Axonflow-Client request header (ADR-050 §4 convention,
+//     e.g. "claude-code-plugin", "sdk-go/1.2.3", "openclaw/2.1.0"). Only the
+//     segment before the first '/' (the client id, sans version) is inspected.
+//   - gatewayID: the sanitized caller_identity.gateway_id (e.g.
+//     "claude_desktop.<host>") — the /decide-native origin signal an
+//     infrastructure PEP asserts. Only its LEADING family token is used; the
+//     host suffix is never surfaced as a label.
+//
+// The gateway_id claude_desktop marker is authoritative for Desktop (the Desktop
+// proxy asserts a gateway_id and may not send an X-Axonflow-Client header), so
+// it is checked first. Everything unrecognized but gateway-asserted falls to
+// `gateway`; a request with neither signal is `unknown`. The result is always a
+// bucket constant — never caller-controlled free text — so it is safe as a
+// Prometheus label and an OTel span dimension.
+func classifyDecisionOrigin(clientHeader, gatewayID string) string {
+	// gateway_id is the /decide-native origin; claude_desktop is authoritative
+	// (the Desktop proxy asserts it and may omit X-Axonflow-Client).
+	gw := strings.ToLower(strings.TrimSpace(gatewayID))
+	if strings.HasPrefix(gw, "claude_desktop") || strings.HasPrefix(gw, "claude-desktop") {
+		return OriginClaudeDesktop
+	}
+
+	// X-Axonflow-Client header: the plugin/SDK identity. Strip the version
+	// suffix so "claude-code/1.6.0" and "claude-code-plugin" both bucket the same.
+	ch := strings.ToLower(strings.TrimSpace(clientHeader))
+	if slash := strings.IndexByte(ch, '/'); slash >= 0 {
+		ch = ch[:slash]
+	}
+	switch {
+	case ch == "claude-code" || ch == "claude-code-plugin":
+		return OriginClaudeCode
+	case strings.HasPrefix(ch, "claude-desktop"):
+		return OriginClaudeDesktop
+	case strings.HasPrefix(ch, "sdk-"):
+		return OriginSDK
+	case ch == "openclaw" || strings.HasSuffix(ch, "-plugin"):
+		return OriginPlugin
+	}
+
+	// A generic PEP that asserted some gateway_id but no recognized client
+	// header still gets a stable bucket; a request with no signal at all is
+	// unknown. Both keep the label a bounded enum.
+	if gw != "" {
+		return OriginGateway
+	}
+	return OriginUnknown
+}
 
 // Obligation contract constants (ADR-056, #2563).
 const (
@@ -329,20 +398,60 @@ type ObligationFulfillment struct {
 
 // Decision Mode Prometheus metrics. Mirrors gateway pre-check shape so
 // dashboards already wired for Gateway Mode can be reused.
+//
+// The `origin` label (WS-5, #2761) buckets the caller integration —
+// claude-code / claude-desktop / sdk / plugin / gateway / unknown, derived from
+// the X-Axonflow-Client header and caller_identity.gateway_id via
+// classifyDecisionOrigin. It is a CLOSED, low-cardinality enum by construction
+// (never a raw hostname/email/version), so per-integration filtering (e.g.
+// "Claude Code traffic only") is possible without a cardinality blow-up.
 var (
 	decideRequests = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "axonflow_decision_requests_total",
-			Help: "Total POST /api/v1/decide requests by verdict and stage",
+			Help: "Total POST /api/v1/decide requests by verdict, stage and caller origin",
 		},
-		[]string{"verdict", "stage"},
+		[]string{"verdict", "stage", "origin"},
 	)
-	decideDuration = prometheus.NewHistogram(
+	decideDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "axonflow_decision_duration_milliseconds",
-			Help:    "POST /api/v1/decide handler duration (ms)",
+			Help:    "POST /api/v1/decide handler duration (ms) by caller origin",
 			Buckets: []float64{1, 2, 5, 10, 20, 50, 100, 200, 500},
 		},
+		[]string{"origin"},
+	)
+	// decideObligations counts obligations attached to an allow verdict — today
+	// only redact_pii — so a dashboard can surface "allowed-with-redaction"
+	// (the closest thing to a `redacted` outcome on the decision plane, where
+	// redaction is an OBLIGATION on allow, not a distinct wire verdict). Labels
+	// are all bounded low-cardinality: obligation type (a fixed enum),
+	// stage (llm|tool|agent) and origin (the WS-5 caller bucket).
+	decideObligations = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_decision_obligations_total",
+			Help: "Obligations attached to a POST /api/v1/decide allow verdict (e.g. redact_pii) by type, stage and caller origin",
+		},
+		[]string{"obligation", "stage", "origin"},
+	)
+	// decideBlocks counts deny verdicts keyed by the single blocking policy so a
+	// dashboard can rank "top blocked policies". The `policy` label is BOUNDED to
+	// a low-cardinality set by boundedBlockPolicy: a SYSTEM/ENTERPRISE-tier policy
+	// keeps its human-readable seeded id (e.g. sys_sqli_union_select,
+	// rbi_pii_protection — a fixed, bounded set), but a per-tenant / per-org custom
+	// policy (tier=tenant|organization, id "custom_<hex>") is COLLAPSED to the
+	// single bucket "tenant_custom". This matters because /decide loads tenant +
+	// global policies (loader: WHERE tenant_id=$1 OR tenant_id='global'), so a
+	// custom static policy in an evaluated category CAN be the blocking policy —
+	// and its id is effectively unbounded across tenants (no tenant label here), so
+	// surfacing it raw would be a cardinality bomb. Only the SINGLE blocking policy
+	// is recorded per deny (never the full triggered list).
+	decideBlocks = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_decision_blocks_total",
+			Help: "POST /api/v1/decide deny verdicts by blocking policy (system/enterprise id kept, per-tenant custom collapsed to tenant_custom) and caller origin",
+		},
+		[]string{"policy", "origin"},
 	)
 	// decideAuditWriteFailures makes the best-effort canonical audit_logs write
 	// OBSERVABLE instead of silent (#2643 DECIDE-WRITE-BESTEFFORT-SILENT). Reason
@@ -364,6 +473,8 @@ var (
 func init() {
 	_ = prometheus.Register(decideRequests)
 	_ = prometheus.Register(decideDuration)
+	_ = prometheus.Register(decideObligations)
+	_ = prometheus.Register(decideBlocks)
 	_ = prometheus.Register(decideAuditWriteFailures)
 }
 
@@ -404,6 +515,15 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(ctx)
 	authKind := AuthKindFromContext(ctx)
 
+	// WS-5 (#2761): bucket the caller integration into the low-cardinality
+	// `origin` metric/span label. Computed up-front from the X-Axonflow-Client
+	// header so even the pre-decode early-return denies below carry an origin;
+	// refreshed once caller_identity.gateway_id is parsed (gateway_id is the
+	// authoritative Claude Desktop signal). clientHeader is read but never
+	// emitted raw — classifyDecisionOrigin maps it to a bucket constant.
+	clientHeader := r.Header.Get("X-Axonflow-Client")
+	origin := classifyDecisionOrigin(clientHeader, "")
+
 	// Canonicalized request context (#2509) is computed after a successful decode
 	// (it needs req.Context); declared here so the early-deny audit closure can
 	// thread whatever is known so far — nil before decode.
@@ -422,6 +542,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		requestID:     decisionID,
 		plane:         PlaneDecision, // every /api/v1/decide row records plane=decision
 		correlationID: traceID,
+		origin:        origin, // WS-5 caller bucket, mirrored onto the decision span
 	}
 
 	// auditEarlyDeny persists the canonical plane=decision audit row for an
@@ -434,7 +555,10 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		recordDecideDecision(ctx, decisionID, orgID, tenantID, stg, auditVerdict,
 			policyIDs, time.Since(startTime).Milliseconds(), reasons,
 			traceID, reqContext, contextTruncated, decisionAudit)
-		decideRequests.WithLabelValues("error", stg).Inc()
+		// origin is captured by reference: refreshed once gateway_id is parsed,
+		// so the later impersonation/token denies carry the resolved bucket while
+		// the pre-decode malformed-body deny carries the header-only bucket.
+		decideRequests.WithLabelValues("error", stg, origin).Inc()
 	}
 
 	var req DecideRequest
@@ -449,6 +573,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// even the validation / impersonation denies record what was attempted.
 	decisionAudit.gatewayID = sanitizeGatewayID(req.CallerIdentity.GatewayID)
 	decisionAudit.query = req.Query
+
+	// Refresh the origin bucket now that gateway_id is known (the authoritative
+	// Claude Desktop signal). Updates both the closure-captured `origin` used by
+	// the metric labels and the value mirrored onto the decision span.
+	origin = classifyDecisionOrigin(clientHeader, decisionAudit.gatewayID)
+	decisionAudit.origin = origin
 
 	// Required field validation. Stage is required so the audit trail records
 	// which gateway layer issued the call; query is required so the policy
@@ -596,7 +726,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			}
 			traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, nil, time.Since(startTime).Milliseconds(), []string{string(cbResult.Reason)}, traceID, reqContext, contextTruncated, decisionAudit)
 			sendDecideError(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable, decisionID, traceID)
-			recordDecideMetrics("circuit_breaker", stage, startTime)
+			recordDecideMetrics("circuit_breaker", stage, origin, startTime)
 			return
 		}
 	}
@@ -618,7 +748,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			EvaluatedPolicies: []string{"rbi_kill_switch"},
 			ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
 		})
-		recordDecideMetrics(VerdictDeny, stage, startTime)
+		recordDecideMetrics(VerdictDeny, stage, origin, startTime)
+		recordDecideBlock("rbi_kill_switch", origin)
 		return
 	}
 
@@ -633,6 +764,11 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// We read it off requestResult.BlockedBy below and use it directly
 	// when recording violations against the circuit breaker.
 	var blockingPolicyID string
+	// blockingPolicyTier is the tier ("system"/"enterprise"/"organization"/
+	// "tenant") of that blocking policy, captured alongside the id so the
+	// decideBlocks `policy` label can collapse per-tenant custom policies to a
+	// bounded bucket (boundedBlockPolicy). Empty when no engine block fired.
+	var blockingPolicyTier string
 
 	// Indonesia PII pre-check runs FIRST so Indonesia-specific bank account
 	// patterns (BCA/Mandiri/BRI/BNI) are attributed to indonesia_pii_protection
@@ -656,7 +792,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			EvaluatedPolicies: []string{"indonesia_pii_protection"},
 			ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
 		})
-		recordDecideMetrics(VerdictDeny, stage, startTime)
+		recordDecideMetrics(VerdictDeny, stage, origin, startTime)
+		recordDecideBlock("indonesia_pii_protection", origin)
 		return
 	}
 	// Under PII_ACTION=redact, critical Indonesia PII (NIK / NPWP) is detected
@@ -682,7 +819,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			EvaluatedPolicies: []string{"rbi_pii_protection"},
 			ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
 		})
-		recordDecideMetrics(VerdictDeny, stage, startTime)
+		recordDecideMetrics(VerdictDeny, stage, origin, startTime)
+		recordDecideBlock("rbi_pii_protection", origin)
 		return
 	}
 	if piiResult.HasPII && gwDetectionCfg.Enabled && piiResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
@@ -735,6 +873,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		// blocking SQLi policy must record the SQLi rule).
 		if requestResult != nil && requestResult.BlockedBy != nil {
 			blockingPolicyID = requestResult.BlockedBy.PolicyID
+			blockingPolicyTier = requestResult.BlockedBy.Tier
 		}
 	} else {
 		// No engine wired -- allow (mirrors Gateway Mode bypass shape).
@@ -824,7 +963,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		EvaluatedPolicies: evaluatedPolicies,
 		ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
 	})
-	recordDecideMetrics(verdict, stage, startTime)
+	recordDecideMetrics(verdict, stage, origin, startTime)
+	recordDecideOutcomeMetrics(verdict, stage, origin, obligations, blockingPolicyID, blockingPolicyTier, evaluatedPolicies)
 }
 
 // mapPolicyResultToVerdict translates a shared-policy StaticPolicyResult into
@@ -1000,10 +1140,88 @@ func writeDecideResponse(w http.ResponseWriter, statusCode int, resp DecideRespo
 
 // recordDecideMetrics observes duration + increments the verdict counter.
 // Pulled out so both the success and the early-return paths converge on
-// one set of metric writes.
-func recordDecideMetrics(verdict, stage string, startTime time.Time) {
-	decideDuration.Observe(float64(time.Since(startTime).Milliseconds()))
-	decideRequests.WithLabelValues(verdict, stage).Inc()
+// one set of metric writes. origin is the low-cardinality caller bucket
+// (WS-5, #2761) shared by both the duration histogram and the request counter.
+func recordDecideMetrics(verdict, stage, origin string, startTime time.Time) {
+	decideDuration.WithLabelValues(origin).Observe(float64(time.Since(startTime).Milliseconds()))
+	decideRequests.WithLabelValues(verdict, stage, origin).Inc()
+}
+
+// recordDecideOutcomeMetrics records the two supplementary decision-outcome
+// series the WS-5 dashboard reads (#2761), on the terminal allow/deny path only:
+//
+//   - decideObligations: one increment per obligation attached to an ALLOW
+//     verdict (today only redact_pii), so a dashboard can surface
+//     "allowed-with-redaction" volume. Skipped on deny/needs_approval, which
+//     carry no obligations.
+//   - decideBlocks: on DENY, one increment keyed by the SINGLE blocking system
+//     policy (bounded low-cardinality — see the metric's Help), so a dashboard
+//     can rank the top blocked policies. Falls back to evaluated_policies[0]
+//     (already hoisted to the blocking policy) when blockingPolicyID is empty
+//     (the engine-bypass deny paths); "unknown" if neither is available so a
+//     deny is never silently uncounted.
+//
+// This is deliberately split out of recordDecideMetrics because the early-return
+// deny paths (circuit-breaker / kill-switch / pre-check PII) have no obligations
+// and their blocking-policy attribution is already recorded via the
+// evaluated_policies they pass — only the shared-engine terminal path threads
+// blockingPolicyID.
+func recordDecideOutcomeMetrics(verdict, stage, origin string, obligations []DecisionObligation, blockingPolicyID, blockingPolicyTier string, evaluatedPolicies []string) {
+	switch verdict {
+	case VerdictAllow:
+		for _, o := range obligations {
+			if o.Type == "" {
+				continue
+			}
+			decideObligations.WithLabelValues(o.Type, stage, origin).Inc()
+		}
+	case VerdictDeny:
+		policy := blockingPolicyID
+		if policy == "" && len(evaluatedPolicies) > 0 {
+			policy = evaluatedPolicies[0]
+		}
+		recordDecideBlock(boundedBlockPolicy(policy, blockingPolicyTier), origin)
+	}
+}
+
+// boundedBlockPolicy keeps the decideBlocks `policy` label a low-cardinality set.
+// A system/enterprise-tier policy id comes from the fixed, seeded system-policy
+// set, so it is surfaced verbatim (that is the useful "top blocked policies"
+// ranking). A per-tenant / per-org custom policy (any other tier) has an
+// effectively unbounded id ("custom_<hex>", regenerated on recreate) and no
+// tenant label on the metric to scope it, so it is collapsed to the single
+// "tenant_custom" bucket to prevent a cardinality blow-up. An empty id (no
+// attribution available) is "unknown" so a deny is never silently uncounted.
+//
+// An empty tier is treated as system-safe: it only arises on the engine-bypass
+// fallback (no-engine / disabled detection), whose ids are always system checks
+// — a real shared-engine deny always carries BlockedBy.Tier.
+func boundedBlockPolicy(policyID, tier string) string {
+	if policyID == "" {
+		return "unknown"
+	}
+	switch tier {
+	case "system", "enterprise", "":
+		return policyID
+	default: // "organization" / "tenant" / custom → unbounded per-tenant id space
+		return "tenant_custom"
+	}
+}
+
+// recordDecideBlock increments the top-blocked-policies series for one deny,
+// keyed by the blocking system policy (low-cardinality — see decideBlocks Help)
+// and the caller origin. An empty policy falls back to "unknown" so a deny is
+// never silently uncounted. Shared by the terminal shared-engine deny path
+// (recordDecideOutcomeMetrics) and the validator-based early-return denies
+// (Indonesia / RBI PII, RBI kill switch), so "top blocked policies" is complete
+// across every policy-block path. The transient circuit-breaker 503 and the
+// security-impersonation/error denies are deliberately NOT recorded here — they
+// are not policy blocks (they still count in decideRequests{verdict}).
+func recordDecideBlock(policy, origin string) {
+	if policy == "" {
+		policy = "unknown"
+	}
+	decideBlocks.WithLabelValues(policy, origin).Inc()
 }
 
 // decisionContextAllowlist returns the active request-context key allowlist.
@@ -1193,6 +1411,16 @@ type decisionAuditInput struct {
 	// onto the decision span's decision.gateway_id attribute. Empty for callers
 	// that don't assert one.
 	gatewayID string
+	// origin is the low-cardinality caller-integration bucket (WS-5, #2761):
+	// one of the OriginXxx constants (claude-code / claude-desktop / sdk /
+	// plugin / gateway / unknown), derived by classifyDecisionOrigin from the
+	// X-Axonflow-Client header + gatewayID. Mirrored onto the decision span's
+	// decision.origin attribute so trace search + the OTel spanmetrics path can
+	// filter per integration. NOT persisted to audit_logs (the metric/span carry
+	// it; the audit row already records the finer-grained gateway_id). Empty only
+	// on the OTel-only (audit==nil) OpenAI-compat path, where the tracer defaults
+	// it to "unknown".
+	origin string
 	// plane is the surface that emitted the decision (#2592 / ADR-058):
 	// PlaneDecision for /api/v1/decide, PlaneMCP for the MCP handlers, etc.
 	// Persisted to the first-class audit_logs.plane column. Empty defaults to
@@ -1317,17 +1545,21 @@ func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stag
 	if decisionTracerProvider == nil {
 		return fallbackTraceID
 	}
-	// gateway_id rides on the span when the caller asserted one (audit may be
-	// nil for the OpenAI-compat OTel-only path).
+	// gateway_id + origin ride on the span when available (audit may be nil for
+	// the OpenAI-compat OTel-only path, which asserts neither — the tracer then
+	// defaults decision.origin to "unknown").
 	gatewayID := ""
+	origin := ""
 	if audit != nil {
 		gatewayID = audit.gatewayID
+		origin = audit.origin
 	}
 	otelTraceID := decisionTracerProvider.Tracer.RecordDecision(ctx, telemetry.DecisionEvent{
 		DecisionID:       decisionID,
 		OrgID:            orgID,
 		TenantID:         tenantID,
 		GatewayID:        gatewayID,
+		Origin:           origin,
 		Stage:            stage,
 		Verdict:          verdict,
 		PolicyIDs:        policyIDs,

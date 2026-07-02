@@ -323,6 +323,7 @@ func TestBatchWriter_WritesCrossBorderColumns(t *testing.T) {
 			any, any, any, any, any, any, any, any, any, // 10-18
 			any, any, any, any, any, any, any, any, any, // 19-27 (incl decision_id, plane, correlation_id)
 			"pasal_56b_dpa", "US", // 28 transfer_basis, 29 data_residency
+			any, // 30 session_id (#2753; unset here → NULL)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()

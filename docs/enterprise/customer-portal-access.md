@@ -308,6 +308,30 @@ Note: This goes through the Agent Gateway on port 443/8080 (which proxies to Por
 curl "https://{domain}:8090/api/v1/auth/sso/availability?org_id=acme-corp"
 ```
 
+## Reading the Audit Logs
+
+The **Audit Logs** page (`/audit`) is the tenant's compliance trail. It has two views:
+
+- **Log Explorer** — a filterable, paginated table of every governed request. Columns
+  include timestamp, verdict (Allowed / Blocked / Redacted / Needs Approval / Error),
+  **user email**, tenant, request type, matched policy, and latency.
+  - **Filters combine.** Narrow by user email (partial match), verdict, and date range
+    at the same time; the table and the export both respect the active filters.
+  - **Expand any row** (the ▸ chevron, or click the query) to see the full record:
+    the query / blocked command, redacted response, matched policy and the reasons it
+    fired, and the correlation / decision / session IDs used to stitch a request across
+    planes.
+- **Report by Action** — per-verdict counts for the selected range (filterable by user).
+  Select a verdict card to drill straight into the matching rows in the Log Explorer.
+
+**Redaction is preserved.** Values the engine masked before storage (e.g. an Indonesian
+NIK, an email) are shown exactly as stored and are clearly labelled *"Redacted before
+storage"*. The portal never reconstructs the original content — there is no "unmask".
+
+**Export.** *Export CSV* / *Export JSON* download the filtered result set (not just the
+current page). Large ranges are capped at the server row limit; when that happens the
+page warns that the file is partial so you can narrow the range and re-export.
+
 ## Related Resources
 
 | Resource | Path |

@@ -509,3 +509,47 @@ func TestOTLPTracer_EmitsGatewayID(t *testing.T) {
 		t.Errorf("decision.gateway_id must be absent when GatewayID is empty")
 	}
 }
+
+// TestOTLPTracer_EmitsOrigin verifies the WS-5 (#2761) caller-origin bucket:
+// a DecisionEvent carrying Origin emits that value on the decision.origin span
+// attribute, and — unlike gateway_id — an event with an EMPTY Origin still emits
+// decision.origin="unknown" (never a blank string), so the attribute is a
+// stable, always-present spanmetrics dimension. Real OTLP pipeline, same
+// in-process collector.
+func TestOTLPTracer_EmitsOrigin(t *testing.T) {
+	server, addr, recv := startInProcessCollector(t)
+	defer server.Stop()
+
+	t.Setenv("AXONFLOW_OTEL_ENDPOINT", addr)
+	t.Setenv("AXONFLOW_OTEL_SAMPLE_RATE", "1.0")
+
+	ctx := context.Background()
+	provider := NewDecisionTracer(ctx)
+
+	provider.Tracer.RecordDecision(ctx, DecisionEvent{
+		DecisionID: "dec-cc", Stage: "tool", Verdict: "allow",
+		Origin: "claude-code",
+	})
+	provider.Tracer.RecordDecision(ctx, DecisionEvent{
+		DecisionID: "dec-noorigin", Stage: "tool", Verdict: "allow",
+	})
+	if err := provider.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	spans := recv.spans(t, 2*time.Second)
+	if len(spans) < 2 {
+		t.Fatalf("expected >=2 spans, got %d", len(spans))
+	}
+	byDecision := map[string]map[string]string{}
+	for _, s := range spans {
+		a := attrsByKey(s)
+		byDecision[a["decision.id"]] = a
+	}
+	if got := byDecision["dec-cc"]["decision.origin"]; got != "claude-code" {
+		t.Errorf("origin span attr = %q, want claude-code", got)
+	}
+	if got, present := byDecision["dec-noorigin"]["decision.origin"]; !present || got != "unknown" {
+		t.Errorf("decision.origin for empty Origin = %q (present=%v), want unknown/always-present", got, present)
+	}
+}

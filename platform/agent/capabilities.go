@@ -153,9 +153,11 @@ func getPluginCompatibility() PluginCompatInfo {
 		// security patch (2026-06-16): 2.6.6 clears a runtime protobufjs CVE
 		// and is republished on ClawHub/npm. claude-code/cursor/codex are
 		// unchanged for 9.1.1. claude-code bumped 1.6.0 -> 1.7.0 in the
-		// 9.2.2 release-train (ships with the v9.2.2 platform patch; the
-		// 1.7.0 marketplace release fires immediately after the tag); cursor
-		// stays 1.5.3, codex stays 1.5.2, openclaw stays 2.6.6. The other
+		// 9.2.2 release-train. claude-code bumped 1.7.0 -> 1.8.0 in the
+		// 9.3.0 release-train (ships with the v9.3.0 platform minor carrying
+		// the audit-visibility bundle; the 1.8.0 marketplace release fires
+		// immediately after the tag); cursor stays 1.5.3, codex stays 1.5.2,
+		// openclaw stays 2.6.6. The other
 		// plugin tags are live on their registries (openclaw 2.6.6 on
 		// npm/ClawHub, cursor 1.5.3 + codex 1.5.2; claude-code/cursor on the
 		// GitHub marketplace, codex on ClawHub). Plugins below the recommended
@@ -163,7 +165,7 @@ func getPluginCompatibility() PluginCompatInfo {
 		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0.
 		RecommendedPluginVersion: map[string]string{
 			"openclaw":    "2.6.6",
-			"claude-code": "1.7.0",
+			"claude-code": "1.8.0",
 			"cursor":      "1.5.3",
 			"codex":       "1.5.2",
 		},

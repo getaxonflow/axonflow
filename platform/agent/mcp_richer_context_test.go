@@ -286,6 +286,7 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 			"dec-1",           // decision_id (first-class column; #2592)
 			PlaneMCP,          // plane — MCP check-input surface
 			"corr-trace-1",    // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -375,6 +376,7 @@ func TestWriteOverrideUsedEvent_FallbackPlaceholders(t *testing.T) {
 			"dec-1",                  // decision_id (first-class column; #2592)
 			PlaneMCP,                 // plane — MCP check-input override surface
 			"corr-fb-ovr",            // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -410,6 +412,7 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 			"dec-1",       // decision_id (first-class column; #2592)
 			PlaneMCP,      // plane — MCP check-input surface
 			"corr-fb-exp", // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -908,6 +911,7 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 					"dec-1",   // decision_id (first-class column; #2592)
 					PlaneMCP,  // plane — MCP check-input surface
 					"corr-tc", // correlation_id (#2598)
+					nil, // session_id (#2753)
 				).
 				WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -990,6 +994,7 @@ func TestWriteOverrideUsedEvent_PolicyVersionInJSONB(t *testing.T) {
 			"dec-1",   // decision_id (first-class column; #2592)
 			PlaneMCP,  // plane — MCP check-input override surface
 			"corr-pv", // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1090,6 +1095,7 @@ func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 			"dec-1",    // decision_id (first-class column; #2592)
 			PlaneMCP,   // plane — MCP check-input surface
 			"corr-out", // correlation_id (#2598)
+			nil, // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

@@ -62,6 +62,7 @@ func TestReadOnlyPosture_WriteBlockedAtGate(t *testing.T) {
 			PlaneMCP,
 			nil, // correlation_id
 			nil, // redacted_fields NULL on a block
+			nil, // session_id NULL (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

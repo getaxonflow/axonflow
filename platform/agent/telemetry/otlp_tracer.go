@@ -37,10 +37,20 @@ func (t *otlpTracer) RecordDecision(ctx context.Context, evt DecisionEvent) stri
 	_, span := t.tracer.Start(ctx, "axonflow.decision")
 	defer span.End()
 
+	// decision.origin is ALWAYS set (unlike gateway_id below) so it is a stable,
+	// always-present spanmetrics dimension. Empty (the OpenAI-compat OTel-only
+	// path, which asserts no origin) defaults to "unknown" — the same fail-safe
+	// bucket the agent's classifyDecisionOrigin uses — so the label is never a
+	// blank string.
+	origin := evt.Origin
+	if origin == "" {
+		origin = "unknown"
+	}
 	span.SetAttributes(
 		attribute.String("decision.id", evt.DecisionID),
 		attribute.String("decision.stage", evt.Stage),
 		attribute.String("decision.verdict", evt.Verdict),
+		attribute.String("decision.origin", origin),
 		attribute.StringSlice("decision.policy_ids", evt.PolicyIDs),
 		attribute.Int64("decision.latency_ms", evt.LatencyMs),
 		attribute.String("decision.reasons", truncateJoined(evt.Reasons, reasonsMaxAttrLen)),

@@ -313,9 +313,18 @@ func (h *EvidenceExportHandler) GetEvidenceSummary(w http.ResponseWriter, r *htt
 }
 
 // queryAuditLogs queries audit_logs for the given tenant and date range.
+//
+// #2784: audit_logs has no `blocked`/`risk_score` columns, so the original
+// SELECT errored ("column blocked does not exist") and every export silently
+// dropped ALL audit evidence (returned 200 with an empty audit_logs array).
+// `blocked` is derived from the canonical `policy_decision` vocab (migs 122/123),
+// and `risk_score` is read from the `policy_details` JSONB (NULL when absent).
 func (h *EvidenceExportHandler) queryAuditLogs(r *http.Request, tenantID string, start, end time.Time, limit int) ([]map[string]interface{}, error) {
 	rows, err := h.db.QueryContext(r.Context(),
-		`SELECT id, tenant_id, client_id, request_type, query, blocked, risk_score, created_at
+		`SELECT id, tenant_id, client_id, request_type, query,
+		        (policy_decision = 'blocked') AS blocked,
+		        policy_details->>'risk_score' AS risk_score,
+		        created_at
 		 FROM audit_logs
 		 WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
 		 ORDER BY created_at DESC

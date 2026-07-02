@@ -169,6 +169,11 @@ type AuditEntry struct {
 	// consent); DataResidency is the ISO 3166-1 alpha-2 destination country.
 	TransferBasis string `json:"transfer_basis,omitempty"`
 	DataResidency string `json:"data_residency,omitempty"`
+	// SessionID is the AI-tool session id (Claude Code / Desktop) forwarded via
+	// X-Session-Id (#2753/#2754, core migration 129). Sibling of UserEmail:
+	// asserted attribution, not an auth boundary. Empty on every writer that
+	// doesn't carry a session → NULL column (partial index skips it).
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // stampCrossBorderTransfer auto-stamps the UU PDP Pasal 56 transfer_basis +
@@ -673,6 +678,17 @@ type ToolCallAuditEntry struct {
 	TenantID        string                 `json:"-"`
 	OrgID           string                 `json:"-"`
 	ClientID        string                 `json:"-"`
+	// UserEmail is the per-developer identity forwarded by the Agent proxy as
+	// the X-User-Email header (issue #2754). It is header-sourced, never read
+	// from the request body — like TenantID/OrgID/ClientID above — so a caller
+	// cannot spoof the attributed user via the JSON payload. Populated by
+	// auditToolCallHandler; lands in audit_logs.user_email so the portal User
+	// column shows the real developer instead of NULL/N/A.
+	UserEmail string `json:"-"`
+	// SessionID is the AI-tool session id forwarded via the X-Session-Id header
+	// (#2753 addendum, core migration 129). Header-sourced (json:"-") for the
+	// same anti-spoofing reason; lands in audit_logs.session_id.
+	SessionID string `json:"-"`
 }
 
 // LogToolCallAudit logs a non-LLM tool call audit entry
@@ -718,11 +734,15 @@ func (l *AuditLogger) LogToolCallAudit(ctx context.Context, entry *ToolCallAudit
 	}
 
 	auditEntry := &AuditEntry{
-		ID:             generateAuditID(),
-		RequestID:      entry.WorkflowID,
-		Timestamp:      time.Now().UTC(),
-		UserID:         0,
-		UserEmail:      entry.UserID,
+		ID:        generateAuditID(),
+		RequestID: entry.WorkflowID,
+		Timestamp: time.Now().UTC(),
+		UserID:    0,
+		// #2754: was `entry.UserID` — a copy-paste bug that wrote the (always
+		// empty) UserID into user_email, producing NULL/N/A in the portal User
+		// column. Use the real per-developer email forwarded via X-User-Email.
+		UserEmail:      entry.UserEmail,
+		SessionID:      entry.SessionID, // #2753: X-Session-Id → audit_logs.session_id
 		ClientID:       entry.ClientID,
 		TenantID:       entry.TenantID,
 		OrgID:          entry.OrgID,
@@ -1175,8 +1195,8 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			response_time_ms, tokens_used, cost, redacted_fields,
 			error_message, response_sample, compliance_flags, security_metrics,
 			decision_id, plane, correlation_id,
-			transfer_basis, data_residency
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+			transfer_basis, data_residency, session_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 	`)
 	if err != nil {
 		return err
@@ -1226,6 +1246,10 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			// so the partial index + the OJK export only pick up declared transfers.
 			nullIfEmpty(entry.TransferBasis),
 			nullIfEmpty(entry.DataResidency),
+			// Per-session identity (#2753, core migration 129). Nullable: writers
+			// that don't forward X-Session-Id leave it empty → NULL, so the
+			// partial index only picks up rows that carry a session.
+			nullIfEmpty(entry.SessionID),
 		)
 		if err != nil {
 			log.Printf("Failed to insert audit entry: %v", err)

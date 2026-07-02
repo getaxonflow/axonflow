@@ -109,14 +109,14 @@ func (r *PostgresRepository) Get(ctx context.Context, executionID string) (*Exec
 	`
 
 	var exec ExecutionStatus
-	var tenantID, orgID, userID, clientID sql.NullString
+	var source, tenantID, orgID, userID, clientID sql.NullString
 	var completedAt sql.NullTime
 	var estimatedCost, actualCost sql.NullFloat64
 	var stepsJSON, metadataJSON []byte
 	var errorMsg sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, executionID).Scan(
-		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &exec.Source,
+		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &source,
 		&tenantID, &orgID, &userID, &clientID,
 		&exec.Status, &exec.CurrentStepIndex, &exec.TotalSteps,
 		&exec.StartedAt, &completedAt, &estimatedCost, &actualCost,
@@ -130,6 +130,7 @@ func (r *PostgresRepository) Get(ctx context.Context, executionID string) (*Exec
 	}
 
 	// Convert nullable fields
+	exec.Source = source.String
 	exec.TenantID = tenantID.String
 	exec.OrgID = orgID.String
 	exec.UserID = userID.String
@@ -296,14 +297,14 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 	var executions []ExecutionStatus
 	for rows.Next() {
 		var exec ExecutionStatus
-		var tenantID, orgID, userID, clientID sql.NullString
+		var source, tenantID, orgID, userID, clientID sql.NullString
 		var completedAt sql.NullTime
 		var estimatedCost, actualCost sql.NullFloat64
 		var stepsJSON, metadataJSON []byte
 		var errorMsg sql.NullString
 
 		err := rows.Scan(
-			&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &exec.Source,
+			&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &source,
 			&tenantID, &orgID, &userID, &clientID,
 			&exec.Status, &exec.CurrentStepIndex, &exec.TotalSteps,
 			&exec.StartedAt, &completedAt, &estimatedCost, &actualCost,
@@ -313,6 +314,7 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 			return nil, 0, fmt.Errorf("failed to scan execution: %w", err)
 		}
 
+		exec.Source = source.String
 		exec.TenantID = tenantID.String
 		exec.OrgID = orgID.String
 		exec.UserID = userID.String
@@ -541,7 +543,7 @@ func (r *PostgresRepository) getByMetadataHardcoded(ctx context.Context, key, va
 	}
 
 	var exec ExecutionStatus
-	var tenantID, orgID, userID, clientID sql.NullString
+	var source, tenantID, orgID, userID, clientID sql.NullString
 	var completedAt sql.NullTime
 	var estimatedCost, actualCost sql.NullFloat64
 	var stepsJSON, metadataJSON []byte
@@ -554,7 +556,7 @@ func (r *PostgresRepository) getByMetadataHardcoded(ctx context.Context, key, va
 		row = r.db.QueryRowContext(ctx, query, key, value)
 	}
 	err := row.Scan(
-		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &exec.Source,
+		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &source,
 		&tenantID, &orgID, &userID, &clientID,
 		&exec.Status, &exec.CurrentStepIndex, &exec.TotalSteps,
 		&exec.StartedAt, &completedAt, &estimatedCost, &actualCost,
@@ -567,6 +569,7 @@ func (r *PostgresRepository) getByMetadataHardcoded(ctx context.Context, key, va
 		return nil, fmt.Errorf("failed to get execution by metadata: %w", err)
 	}
 
+	exec.Source = source.String
 	exec.TenantID = tenantID.String
 	exec.OrgID = orgID.String
 	exec.UserID = userID.String
