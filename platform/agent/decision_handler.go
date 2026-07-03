@@ -856,11 +856,20 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			sharedpolicy.CategoryComplianceMASFEAT,
 		}
 		decideCats = append(decideCats, sharedEngine.EnabledPIICategories(ctx, user.TenantID, nil, sharedpolicy.PhaseRequest)...)
+		// #2801: when the PEP declares a tool target, its tool name feeds
+		// capability-scoped evaluation (text-document tools skip
+		// execution-class detectors; unknown tools get full evaluation).
+		// ConnectorName stays the synthetic "decision" for metrics/audit.
+		toolIdentity := ""
+		if strings.EqualFold(req.Target.Type, "tool") {
+			toolIdentity = req.Target.Tool
+		}
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
 			TenantID:        user.TenantID,
 			OrgID:           user.OrgID,
 			ConnectorName:   "decision",
 			UserID:          fmt.Sprintf("%d", user.ID),
+			ToolIdentity:    toolIdentity,
 			Categories:      decideCats,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),

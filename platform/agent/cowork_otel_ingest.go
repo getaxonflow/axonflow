@@ -333,6 +333,14 @@ func coworkRedactDefault(ctx context.Context, tenantID, userID, source, content 
 	if engine == nil {
 		return coworkRedactResult{text: "[redaction-unavailable: content withheld]", verdict: sharedaudit.DecisionError}
 	}
+	// #2820: fail closed on a policy-LOAD error. EnabledPIICategories below
+	// returns nil on BOTH "no PII categories" and a load error, so without this
+	// gate a transient load failure would SKIP the generic-PII pass and persist
+	// raw content (email / SSN / phone). PoliciesLoadable distinguishes the two;
+	// a storage redactor must never hold content it could not scan.
+	if err := engine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+		return coworkRedactResult{text: "[redaction-unavailable: content withheld]", verdict: sharedaudit.DecisionError}
+	}
 
 	working := content
 	anyRedacted := false
@@ -357,6 +365,12 @@ func coworkRedactDefault(ctx context.Context, tenantID, userID, source, content 
 				ActionOverrides: overrides,
 				MaxRedactions:   100,
 			})
+			// #2820: second line of defense — if the load raced to failure
+			// between PoliciesLoadable and here (cache expiry mid-request), the
+			// scan did not run; withhold rather than persist unscanned content.
+			if res != nil && res.EvaluationError {
+				return coworkRedactResult{text: "[redaction-unavailable: content withheld]", verdict: sharedaudit.DecisionError}
+			}
 			if res != nil && res.Redacted {
 				if rows, ok := res.Content.([]map[string]interface{}); ok && len(rows) > 0 {
 					if out, ok := rows[0]["statement"].(string); ok && out != working {

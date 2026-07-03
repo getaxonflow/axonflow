@@ -676,11 +676,34 @@ func validateIPAddress(match string, context string) (bool, float64) {
 		}
 	}
 
-	// Check for special addresses (reduce PII concern)
-	if match == "0.0.0.0" || match == "255.255.255.255" ||
-		strings.HasPrefix(match, "127.") || strings.HasPrefix(match, "192.168.") ||
-		strings.HasPrefix(match, "10.") || strings.HasPrefix(match, "172.") {
-		return true, 0.5 // Valid but likely not personal PII
+	firstOctet, _ := strconv.Atoi(parts[0])
+	secondOctet, _ := strconv.Atoi(parts[1])
+	thirdOctet, _ := strconv.Atoi(parts[2])
+
+	// RFC-special / documentation / non-host ranges are never a person's
+	// address, so they are not PII (#2802; mirrors platform/shared/policy
+	// ValidateIPAddress): 0.0.0.0/8 (unspecified, incl. `0.0.0.0/0` allow-all
+	// CIDR shorthand), 127.0.0.0/8 loopback, 169.254.0.0/16 link-local,
+	// 100.64.0.0/10 CGNAT, 224.0.0.0/4+ multicast/reserved, 255.255.255.255
+	// broadcast, and the RFC 5737 TEST-NET documentation blocks.
+	if firstOctet == 0 ||
+		firstOctet == 127 ||
+		firstOctet >= 224 || // multicast + reserved/experimental + 255.255.255.255 broadcast
+		(firstOctet == 169 && secondOctet == 254) ||
+		(firstOctet == 100 && secondOctet >= 64 && secondOctet <= 127) ||
+		(firstOctet == 192 && secondOctet == 0 && thirdOctet == 2) ||
+		(firstOctet == 198 && secondOctet == 51 && thirdOctet == 100) ||
+		(firstOctet == 203 && secondOctet == 0 && thirdOctet == 113) {
+		return false, 0
+	}
+
+	// RFC 1918 private ranges: valid but likely not personal PII. The 172
+	// check is scoped to 172.16.0.0/12 — the old bare "172." prefix wrongly
+	// treated public 172.32-255.x.x addresses as private.
+	if firstOctet == 10 ||
+		(firstOctet == 172 && secondOctet >= 16 && secondOctet <= 31) ||
+		(firstOctet == 192 && secondOctet == 168) {
+		return true, 0.5
 	}
 
 	// Context analysis
@@ -982,6 +1005,20 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 	// Skip detection if gateway static policies are disabled
 	if !gwCfg.Enabled {
 		log.Printf("[PIIDetector] Gateway static policies disabled, skipping shared engine detection")
+		return nil, false
+	}
+
+	// #2820: fail closed on a policy-LOAD error. EnabledPIICategories below
+	// returns nil on BOTH "no PII category" and a load error; without this gate
+	// a load error would return {Content: content} (raw) with ok=true — a
+	// fail-open a caller could forward. This helper currently has no production
+	// caller (the live orchestrator response plane goes through
+	// ResponseProcessor.processWithSharedEngine, which is guarded), but the
+	// guard keeps the fail-open from being inherited if it is ever wired. A
+	// couldn't-scan is signalled as ok=false (detector could not run), NOT as a
+	// clean {Content: content}.
+	if err := engine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+		log.Printf("[PIIDetector] Could not load response-phase policies; reporting detector-unavailable (fail-closed, #2820): %v", err)
 		return nil, false
 	}
 

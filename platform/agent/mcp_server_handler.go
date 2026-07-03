@@ -1365,6 +1365,19 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		return nil, fmt.Errorf("connector_type and statement are required")
 	}
 
+	// Governance-plane metadata exemption (#2803): when the governed tool is
+	// one of AxonFlow's own governance tools (create_override), its free-text
+	// metadata fields (the override justification) are stripped from the
+	// statement before evaluation — a justification explaining a `.env` block
+	// must be allowed to contain `.env`. The override's TARGET scope fields
+	// remain in the statement and are still evaluated. The sanitized statement
+	// is used consistently below (evaluation, redaction, audit hash) so every
+	// surface reflects what was actually governed. See governance_metadata.go.
+	if sanitized, exempt := stripGovernanceMetadata(connectorType, statement); len(exempt) > 0 {
+		log.Printf("[MCP] check_policy: exempted governance metadata fields %v for %s", exempt, stripLogCRLF(connectorType))
+		statement = sanitized
+	}
+
 	// Auto-detect integration from connector type (first call activates policies)
 	AutoDetectIntegration(usageDB, connectorType)
 
@@ -1412,6 +1425,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		session.userID,
 		session.userRole,
 		connectorType,
+		connectorType, // toolIdentity: advisory plane, caller-sent tool identity (#2801)
 		operation,
 		statement,
 		params,
@@ -1591,6 +1605,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		session.tenantID,
 		session.userID,
 		connectorType,
+		connectorType, // toolIdentity: advisory plane, caller-sent tool identity (#2801)
 		rows,
 		message,
 		nil, // messageMetadata

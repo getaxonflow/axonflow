@@ -418,7 +418,9 @@ func TestIPAddress_ValidFormats(t *testing.T) {
 	}{
 		{"IP: 192.168.1.1", "192.168.1.1"},
 		{"Server at 10.0.0.1", "10.0.0.1"},
-		{"Remote: 203.0.113.50", "203.0.113.50"},
+		// Routable public IP — RFC 5737 documentation blocks (203.0.113.0/24)
+		// are rejected as never-PII since #2802.
+		{"Remote: 54.210.8.50", "54.210.8.50"},
 	}
 
 	for _, tt := range tests {
@@ -438,6 +440,17 @@ func TestIPAddress_InvalidFormats(t *testing.T) {
 		"Not IP: 256.1.1.1",
 		"Invalid: 1.2.3.256",
 		"Version: 1.2.3",
+		// RFC-special / documentation ranges are never a person's address (#2802).
+		"Allow-all CIDR: 0.0.0.0/0 in the security group",
+		"Loopback: 127.0.0.1",
+		"Broadcast: 255.255.255.255",
+		"TEST-NET-1: 192.0.2.10",
+		"TEST-NET-2: 198.51.100.23",
+		"TEST-NET-3: 203.0.113.50",
+		"Link-local: 169.254.10.5",
+		"Cloud metadata: 169.254.169.254",
+		"CGNAT: 100.64.5.6",
+		"Multicast: 224.0.0.1",
 	}
 
 	for _, input := range tests {
@@ -457,7 +470,6 @@ func TestIPAddress_PrivateRangesLowerConfidence(t *testing.T) {
 		"192.168.1.1",
 		"10.0.0.1",
 		"172.16.0.1",
-		"127.0.0.1",
 	}
 
 	for _, ip := range privateIPs {
@@ -476,9 +488,9 @@ func TestIBAN_ValidFormats(t *testing.T) {
 	detector := NewEnhancedPIIDetector(DefaultPIIDetectorConfig())
 
 	tests := []string{
-		"IBAN: DE89370400440532013000", // Germany
+		"IBAN: DE89370400440532013000",    // Germany
 		"Account: GB82WEST12345698765432", // UK
-		"FR7630006000011234567890189",   // France
+		"FR7630006000011234567890189",     // France
 	}
 
 	for _, input := range tests {
@@ -942,76 +954,76 @@ func TestGetPatternStats(t *testing.T) {
 
 func TestValidateBankAccount(t *testing.T) {
 	tests := []struct {
-		name           string
-		match          string
-		context        string
-		expectedValid  bool
-		minConfidence  float64
-		maxConfidence  float64
+		name          string
+		match         string
+		context       string
+		expectedValid bool
+		minConfidence float64
+		maxConfidence float64
 	}{
 		{
-			name:           "valid routing and account with routing context",
-			match:          "021000021123456789", // Chase routing + account
-			context:        "routing number and account",
-			expectedValid:  true,
-			minConfidence:  0.9,
-			maxConfidence:  1.0,
+			name:          "valid routing and account with routing context",
+			match:         "021000021123456789", // Chase routing + account
+			context:       "routing number and account",
+			expectedValid: true,
+			minConfidence: 0.9,
+			maxConfidence: 1.0,
 		},
 		{
-			name:           "valid routing and account with bank context",
-			match:          "021000021123456789",
-			context:        "bank account details",
-			expectedValid:  true,
-			minConfidence:  0.9,
-			maxConfidence:  1.0,
+			name:          "valid routing and account with bank context",
+			match:         "021000021123456789",
+			context:       "bank account details",
+			expectedValid: true,
+			minConfidence: 0.9,
+			maxConfidence: 1.0,
 		},
 		{
-			name:           "valid format no context",
-			match:          "021000021123456789",
-			context:        "some random text",
-			expectedValid:  true,
-			minConfidence:  0.6,
-			maxConfidence:  0.8,
+			name:          "valid format no context",
+			match:         "021000021123456789",
+			context:       "some random text",
+			expectedValid: true,
+			minConfidence: 0.6,
+			maxConfidence: 0.8,
 		},
 		{
-			name:           "too short",
-			match:          "1234567890123456", // 16 digits
-			context:        "bank account",
-			expectedValid:  false,
-			minConfidence:  0,
-			maxConfidence:  0.1,
+			name:          "too short",
+			match:         "1234567890123456", // 16 digits
+			context:       "bank account",
+			expectedValid: false,
+			minConfidence: 0,
+			maxConfidence: 0.1,
 		},
 		{
-			name:           "too long",
-			match:          "123456789012345678901234567", // 27 digits
-			context:        "bank account",
-			expectedValid:  false,
-			minConfidence:  0,
-			maxConfidence:  0.1,
+			name:          "too long",
+			match:         "123456789012345678901234567", // 27 digits
+			context:       "bank account",
+			expectedValid: false,
+			minConfidence: 0,
+			maxConfidence: 0.1,
 		},
 		{
-			name:           "invalid routing checksum",
-			match:          "123456789123456789", // Invalid routing
-			context:        "routing number",
-			expectedValid:  false,
-			minConfidence:  0.2,
-			maxConfidence:  0.4,
+			name:          "invalid routing checksum",
+			match:         "123456789123456789", // Invalid routing
+			context:       "routing number",
+			expectedValid: false,
+			minConfidence: 0.2,
+			maxConfidence: 0.4,
 		},
 		{
-			name:           "with separators",
-			match:          "021-000-021-123456789",
-			context:        "ach transfer",
-			expectedValid:  true,
-			minConfidence:  0.9,
-			maxConfidence:  1.0,
+			name:          "with separators",
+			match:         "021-000-021-123456789",
+			context:       "ach transfer",
+			expectedValid: true,
+			minConfidence: 0.9,
+			maxConfidence: 1.0,
 		},
 		{
-			name:           "wire context",
-			match:          "021000021123456789",
-			context:        "wire transfer details",
-			expectedValid:  true,
-			minConfidence:  0.9,
-			maxConfidence:  1.0,
+			name:          "wire context",
+			match:         "021000021123456789",
+			context:       "wire transfer details",
+			expectedValid: true,
+			minConfidence: 0.9,
+			maxConfidence: 1.0,
 		},
 	}
 

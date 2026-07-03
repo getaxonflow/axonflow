@@ -266,10 +266,28 @@ func TestValidateIPAddress(t *testing.T) {
 	}{
 		{"Valid public IP", "8.8.8.8", "ip address", true},
 		{"Valid IP", "192.168.1.1", "server", true},
-		{"Localhost", "127.0.0.1", "", true},
 		{"Invalid octet", "256.1.1.1", "", false},
 		{"Invalid format", "1.2.3", "", false},
 		{"Invalid negative", "-1.2.3.4", "", false},
+		// RFC-special / documentation ranges are never a person's address (#2802):
+		// the partner's `0.0.0.0/0` AWS-hardening note was flagged as PII.
+		{"Unspecified allow-all", "0.0.0.0", "remove the 0.0.0.0/0 ingress rule", false},
+		{"Unspecified bare", "0.0.0.0", "", false},
+		{"Zero-net address", "0.1.2.3", "", false},
+		{"Loopback", "127.0.0.1", "connect to 127.0.0.1:8080", false},
+		{"Broadcast", "255.255.255.255", "", false},
+		{"RFC5737 TEST-NET-1", "192.0.2.10", "example host 192.0.2.10", false},
+		{"RFC5737 TEST-NET-2", "198.51.100.23", "docs use 198.51.100.23", false},
+		{"RFC5737 TEST-NET-3", "203.0.113.7", "server 203.0.113.7 responded", false},
+		{"Link-local", "169.254.10.5", "fell back to link-local 169.254.10.5", false},
+		{"Cloud metadata", "169.254.169.254", "curl the metadata endpoint 169.254.169.254", false},
+		{"CGNAT shared", "100.64.5.6", "carrier-grade NAT 100.64.5.6", false},
+		{"Multicast", "224.0.0.1", "multicast group 224.0.0.1", false},
+		{"Reserved 240/4", "240.0.0.1", "reserved 240.0.0.1", false},
+		// Real private-range (RFC 1918) addresses must STILL be detected (#2802 DoD).
+		{"Private 10/8", "10.1.2.3", "internal server 10.1.2.3", true},
+		{"Private 172.16/12", "172.20.1.5", "host 172.20.1.5", true},
+		{"Public 172.32+", "172.32.1.5", "host 172.32.1.5", true},
 		// A version LABEL immediately preceding the dotted value → reject (PR C FP fix).
 		{"Version full word", "10.20.30.40", "build version 10.20.30.40 in prod", false},
 		{"Ver json key", "10.20.30.40", `{"ver":"10.20.30.40"}`, false},
@@ -277,14 +295,16 @@ func TestValidateIPAddress(t *testing.T) {
 		{"Firmware adjacent", "1.2.3.4", "firmware 1.2.3.4 installed", false},
 		{"Semver adjacent", "2.5.10.1", "semver 2.5.10.1 tag", false},
 		// "server" contains "ver" but must NOT match \bver\b (word boundary).
-		{"Server not version", "203.0.113.7", "server 203.0.113.7 responded", true},
+		// (Routable public IPs here — RFC 5737 documentation blocks are now rejected
+		// unconditionally, so they can no longer serve as the "real IP" probe.)
+		{"Server not version", "54.210.8.7", "server 54.210.8.7 responded", true},
 		// Proximity gate (R3 r1): a version word NEAR but not abutting an IP → detect.
-		{"Version not adjacent", "203.0.113.7", "deployed to 203.0.113.7 this version", true},
+		{"Version not adjacent", "54.210.8.7", "deployed to 54.210.8.7 this version", true},
 		// Excluded common-verb labels (R3 r2): release/build/rev abutting a REAL IP must
 		// STILL be detected — they are too FP-prone to hard-reject.
-		{"Release verb adjacent", "203.0.113.7", "please release 203.0.113.7 to prod", true},
+		{"Release verb adjacent", "54.210.8.7", "please release 54.210.8.7 to prod", true},
 		{"Build verb adjacent", "10.0.0.5", "kicked off the build 10.0.0.5 host", true},
-		{"Indicator with release", "203.0.113.7", "the ip address to release 203.0.113.7 now", true},
+		{"Indicator with release", "54.210.8.7", "the ip address to release 54.210.8.7 now", true},
 	}
 
 	for _, tt := range tests {

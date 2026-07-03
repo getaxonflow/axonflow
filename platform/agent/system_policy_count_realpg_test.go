@@ -31,13 +31,13 @@ package agent
 // counted by this test against every applied core migration):
 //
 //	tier='system', enabled=true (immutable, always-on):
-//	  static  (static_policies) : 69
+//	  static  (static_policies) : 70
 //	  dynamic (dynamic_policies): 10
-//	  TOTAL                     : 79
+//	  TOTAL                     : 80
 //
 // Static system policies by category (tier='system', enabled=true):
 //
-//	security-sqli       : 37   (migration 031)
+//	security-sqli       : 38   (migrations 031 + 139)
 //	security-admin      :  4   (migration 031)
 //	security-dangerous  :  4   (migration 116 — prompt-injection guards)
 //	pii-global          :  7   (migration 031)
@@ -48,13 +48,13 @@ package agent
 //	pii-indonesia       :  1   (migration 116 — KTP/NIK)
 //	sensitive-data      :  6   (migration 035)
 //
-// Beyond the 79 immutable system policies, the migrations also seed tenant-tier
+// Beyond the 80 immutable system policies, the migrations also seed tenant-tier
 // "starter" policies that ship ENABLED (editable/deletable by the customer):
 // 22 static (legacy sql_injection/pii_detection/dangerous_queries +
 // eu_ai_act_compliance from migrations 010/014/059) and 2 dynamic (migration
 // 010). Plus 9 IDE/agent-integration static policies (migrations 060/064) that
-// ship DISABLED and are activated per deployment. So a fresh DB carries ~91
-// enabled static + 12 dynamic policies in total; the 79 counted here is the
+// ship DISABLED and are activated per deployment. So a fresh DB carries ~92
+// enabled static + 12 dynamic policies in total; the 80 counted here is the
 // immutable system subset that customers cannot remove.
 
 import (
@@ -75,15 +75,15 @@ import (
 // if you add/remove/re-tier a system policy, update the relevant constant in
 // the same PR (the test fails otherwise).
 const (
-	wantSystemStaticEnabled  = 69
+	wantSystemStaticEnabled  = 70
 	wantSystemDynamicEnabled = 10
-	wantSystemTotalEnabled   = wantSystemStaticEnabled + wantSystemDynamicEnabled // 79
+	wantSystemTotalEnabled   = wantSystemStaticEnabled + wantSystemDynamicEnabled // 80
 )
 
 // wantStaticByCategory is the per-category breakdown of enabled system-tier
 // static policies. The sum must equal wantSystemStaticEnabled.
 var wantStaticByCategory = map[string]int{
-	"security-sqli":      37,
+	"security-sqli":      38,
 	"security-admin":     4,
 	"security-dangerous": 4,
 	"pii-global":         7,

@@ -103,8 +103,11 @@ func TestMigration124_SQLiPhaseActionAligned_RealPostgres(t *testing.T) {
 		SELECT COUNT(*) FROM static_policies
 		WHERE tier='system' AND category='security-sqli'
 		  AND action_request='warn' AND action_response='warn'`)
-	if sqliTotal != 37 {
-		t.Errorf("security-sqli system count = %d, want 37 (count drift — see #2696)", sqliTotal)
+	// 38 since migration core/139 added sys_sqli_string_term_comment (#2811),
+	// which ships warn base + warn/warn phase — already aligned, so migration
+	// 124 is a no-op on it, but it is still a security-sqli system row.
+	if sqliTotal != 38 {
+		t.Errorf("security-sqli system count = %d, want 38 (count drift — see #2696)", sqliTotal)
 	}
 	if sqliWarnBase != sqliTotal {
 		t.Errorf("security-sqli base action: %d/%d rows are 'warn' (the migration must NOT change the base action)", sqliWarnBase, sqliTotal)
@@ -138,8 +141,10 @@ func TestMigration124_SQLiPhaseActionAligned_RealPostgres(t *testing.T) {
 	}
 
 	// (5) DOWN round-trip: the down migration restores the pre-124 'block' phase
-	// actions on the 37 SQLi rows, and re-applying the up migration re-aligns
-	// them — proving both directions are correct and idempotent.
+	// actions on the 38 SQLi rows (its scope is every warn/warn security-sqli
+	// system row, so it also flips the already-aligned migration-139 row), and
+	// re-applying the up migration re-aligns them — proving both directions are
+	// correct and idempotent.
 	downSQL, err := os.ReadFile("../../migrations/core/124_align_sqli_phase_action_with_base_down.sql")
 	if err != nil {
 		t.Fatalf("read down migration: %v", err)
@@ -151,12 +156,12 @@ func TestMigration124_SQLiPhaseActionAligned_RealPostgres(t *testing.T) {
 		SELECT COUNT(*) FROM static_policies
 		WHERE tier='system' AND category='security-sqli'
 		  AND action_request='block' AND action_response='block'`)
-	if afterDown != 37 {
-		t.Errorf("after down migration: %d/37 security-sqli rows restored to block/block phase actions", afterDown)
+	if afterDown != 38 {
+		t.Errorf("after down migration: %d/38 security-sqli rows restored to block/block phase actions", afterDown)
 	}
 	// Base action must STILL be warn after the down (the down is phase-only).
-	if base := scanInt(`SELECT COUNT(*) FROM static_policies WHERE tier='system' AND category='security-sqli' AND action='warn'`); base != 37 {
-		t.Errorf("after down migration: base action changed (%d/37 'warn') — down must be phase-only", base)
+	if base := scanInt(`SELECT COUNT(*) FROM static_policies WHERE tier='system' AND category='security-sqli' AND action='warn'`); base != 38 {
+		t.Errorf("after down migration: base action changed (%d/38 'warn') — down must be phase-only", base)
 	}
 
 	upSQL, err := os.ReadFile("../../migrations/core/124_align_sqli_phase_action_with_base.sql")

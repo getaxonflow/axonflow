@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -38,7 +40,7 @@ func TestEvaluateOutputPolicies_IndonesiaWarnNoMask(t *testing.T) {
 	for _, action := range []DetectionAction{DetectionActionWarn, DetectionActionLog} {
 		t.Run(string(action), func(t *testing.T) {
 			withMCPPIIAction(t, action)
-			out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test",
+			out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
 				nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 			if out.StaticResult != nil && out.StaticResult.Blocked {
 				t.Errorf("%s must not block", action)
@@ -56,7 +58,7 @@ func TestEvaluateOutputPolicies_IndonesiaWarnNoMask(t *testing.T) {
 // Under PII_ACTION=redact the Indonesia response step masks the NIK.
 func TestEvaluateOutputPolicies_IndonesiaRedactMasks(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionRedact)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test",
+	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
 		nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 	if out.RedactedMessage == "" {
 		t.Fatal("redact must mask the NIK on the response")
@@ -72,7 +74,7 @@ func TestEvaluateOutputPolicies_IndonesiaRedactMasks(t *testing.T) {
 // Under PII_ACTION=block a critical NIK is blocked (not masked) on the response.
 func TestEvaluateOutputPolicies_IndonesiaBlock(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionBlock)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test",
+	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
 		nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 	if out.StaticResult == nil || !out.StaticResult.Blocked {
 		t.Fatal("block mode must block a critical NIK on the response")
@@ -186,4 +188,66 @@ func TestRedactIndonesiaPIIInString(t *testing.T) {
 	if out, changed := redactIndonesiaPIIInString("favorite color blue"); changed || out != "favorite color blue" {
 		t.Errorf("clean text must be unchanged, got %q changed=%v", out, changed)
 	}
+}
+
+// #2801 regression lock (R3 round-2 F1): capability scoping must NEVER touch
+// Indonesia PII response governance — a NIK in a Jira document is still a
+// leak. Unlike the tests above, the shared engine is REAL (DB-less, graceful
+// degradation) so the capability classifier is actually active and positively
+// classifies the identity as text-document; redact/block per posture must
+// behave exactly as for any other identity.
+func TestEvaluateOutputPolicies_IndonesiaNIKUnaffectedByCapabilityScope(t *testing.T) {
+	const jiraTool = "claude_code.mcp__atlassian__getJiraIssue"
+
+	install := func(t *testing.T, action DetectionAction) {
+		t.Helper()
+		withMCPPIIAction(t, action) // sets posture, nils engine, registers restore
+		// #2820: a DB-backed engine that LOADS successfully with an empty policy
+		// set. A nil-DB engine now errors on GetPolicies (couldn't-scan), which
+		// the response plane fails CLOSED on — that would mask this test's real
+		// intent (Indonesia checksum detector, engine-independent, still governs
+		// NIK on a text-document tool).
+		mockDB, mockSQL, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("sqlmock.New: %v", err)
+		}
+		t.Cleanup(func() { _ = mockDB.Close() })
+		mockSQL.MatchExpectationsInOrder(false)
+		cols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
+			"description", "phase", "action_request", "action_response",
+			"enabled", "priority", "tenant_id", "organization_id", "metadata"}
+		for i := 0; i < 6; i++ {
+			mockSQL.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows(cols))
+		}
+		cfg := sharedpolicy.DefaultEngineConfig()
+		cfg.RefreshInterval = 0
+		cfg.EnableMetrics = false
+		engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, cfg, &sharedpolicy.NoOpAuditQueue{})
+		t.Cleanup(engine.Stop)
+		sharedpolicy.SetGlobalEngine(engine) // withMCPPIIAction's cleanup restores the original
+		if !engine.IsTextDocumentTool(jiraTool) {
+			t.Fatalf("%s must classify text-document — test would be vacuous", jiraTool)
+		}
+	}
+
+	t.Run("redact still masks NIK", func(t *testing.T) {
+		install(t, DetectionActionRedact)
+		out := evaluateOutputPolicies(context.Background(), "t1", "u1", jiraTool, jiraTool,
+			nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+		if out.RedactedMessage == "" {
+			t.Fatal("NIK via a text-document tool must still redact")
+		}
+		if strings.Contains(out.RedactedMessage, "3174042506780001") {
+			t.Errorf("raw NIK leaked through redaction: %q", out.RedactedMessage)
+		}
+	})
+
+	t.Run("block still blocks NIK", func(t *testing.T) {
+		install(t, DetectionActionBlock)
+		out := evaluateOutputPolicies(context.Background(), "t1", "u1", jiraTool, jiraTool,
+			nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+		if out.StaticResult == nil || !out.StaticResult.Blocked {
+			t.Fatal("block posture must block a critical NIK even via a text-document tool")
+		}
+	})
 }

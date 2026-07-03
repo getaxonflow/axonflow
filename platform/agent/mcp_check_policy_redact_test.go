@@ -33,22 +33,31 @@ func TestMCPToolCheckPolicy_PIIRedact_RequiresRedactionField(t *testing.T) {
 	// redactInputStatement passes its nil-guard and reaches the Indonesia detector.
 	withMCPPIIAction(t, DetectionActionRedact)
 
-	// Provide a non-nil engine backed by an empty mock DB. The stub DB returns
-	// no policy rows, so EnabledPIICategories returns nil and the static-engine
-	// PII pass is skipped. Only the checksum-validated Indonesia detector runs,
-	// which is sufficient to mask the NIK without any DB-seeded policy.
-	db, _, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	// Provide a non-nil engine backed by a mock DB that LOADS SUCCESSFULLY with
+	// an empty policy set (no rows). EnabledPIICategories returns nil (no PII
+	// categories → static PII pass skipped); only the checksum-validated
+	// Indonesia detector runs, which masks the NIK without any DB-seeded policy.
+	//
+	// #2820: the mock MUST return empty rows (a successful empty load), NOT run
+	// out of expectations (a load ERROR). redactInputStatement now fails CLOSED
+	// on a load error (returns evaluated=false so the PEP withholds) — an
+	// expectation-less mock would trip that path and mask nothing. A successful
+	// empty load is the honest "engine present, no PII policies" state this test
+	// intends.
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
+	emptyCols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
+		"description", "phase", "action_request", "action_response",
+		"enabled", "priority", "tenant_id", "organization_id", "metadata"}
+	for i := 0; i < 6; i++ {
+		mock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows(emptyCols))
+	}
 	// withMCPPIIAction set the engine to nil; replace it with the stub.
-	// The t.Cleanup registered by withMCPPIIAction will restore the original
-	// (pre-withMCPPIIAction) engine after this test.
-	// GracefulDegradation=true: if GetPolicies returns a DB error (the mock has
-	// no expectations), EvaluateRequest returns allowed rather than blocked-with-nil-policy.
-	// Without this the engine's fail-closed path sets Blocked=true, BlockedBy=nil,
-	// which triggers the evaluateInputPolicies log line on BlockedBy.PolicyID.
+	// The t.Cleanup registered by withMCPPIIAction restores the original engine.
 	sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(db, sharedpolicy.EngineConfig{GracefulDegradation: true}, nil))
 
 	resp, err := mcpToolCheckPolicy(context.Background(), &mcpSession{

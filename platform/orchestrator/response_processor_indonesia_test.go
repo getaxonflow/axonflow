@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -78,13 +80,33 @@ func TestProcessResponse_CleanTextNoRedact(t *testing.T) {
 }
 
 // withSharedEngineProcessor returns a ResponseProcessor backed by a real shared
-// engine with an empty cache (nil DB) — it returns response content UNCHANGED
-// (no redaction plans). This is the production path, and the one where the input
-// to the Indonesia step aliases the caller's original responseData. Regression
-// surface for the in-place-mutation aliasing bug.
+// engine that LOADS SUCCESSFULLY with an EMPTY policy set (sqlmock returns no
+// rows) — it returns response content UNCHANGED (no redaction plans). This is
+// the production path, and the one where the input to the Indonesia step aliases
+// the caller's original responseData. Regression surface for the in-place-mutation
+// aliasing bug.
+//
+// NB (#2820): this deliberately uses a DB-backed engine that returns an empty
+// result, NOT a nil-DB engine. A nil-DB engine's GetPolicies now ERRORS (a
+// couldn't-scan), which the response plane correctly fails CLOSED on — so it can
+// no longer stand in for "clean, empty policy set". sqlmock gives a genuine
+// successful-but-empty load, exercising the clean path these tests intend.
 func withSharedEngineProcessor(t *testing.T) *ResponseProcessor {
 	t.Helper()
-	eng := sharedpolicy.NewUnifiedPolicyEngine(nil, sharedpolicy.DefaultEngineConfig(), nil)
+	mockDB, mockSQL, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = mockDB.Close() })
+	mockSQL.MatchExpectationsInOrder(false)
+	cols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
+		"description", "phase", "action_request", "action_response",
+		"enabled", "priority", "tenant_id", "organization_id", "metadata"}
+	for i := 0; i < 8; i++ {
+		mockSQL.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows(cols))
+	}
+
+	eng := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.DefaultEngineConfig(), nil)
 	orig := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(eng)
 	t.Cleanup(func() {

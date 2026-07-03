@@ -30,6 +30,12 @@ type UnifiedPolicyEngine struct {
 	// Configuration
 	config EngineConfig
 
+	// extraTextDocumentTools is the precomputed lookup set from
+	// config.ExtraTextDocumentTools (capability-scoped evaluation, #2801).
+	// Nil when no operator extension is configured — the built-in registry
+	// in capability.go still applies.
+	extraTextDocumentTools map[string]bool
+
 	// State
 	initialized bool
 	stopChan    chan struct{}
@@ -52,9 +58,10 @@ var _ Evaluator = (*UnifiedPolicyEngine)(nil)
 // It initializes all components and starts background refresh.
 func NewUnifiedPolicyEngine(db *sql.DB, config EngineConfig, auditQueue AuditQueue) *UnifiedPolicyEngine {
 	engine := &UnifiedPolicyEngine{
-		db:       db,
-		config:   config,
-		stopChan: make(chan struct{}),
+		db:                     db,
+		config:                 config,
+		extraTextDocumentTools: buildToolNameSet(config.ExtraTextDocumentTools),
+		stopChan:               make(chan struct{}),
 	}
 
 	// Initialize cache
@@ -123,6 +130,11 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	if len(opts.Categories) > 0 || len(opts.SkipCategories) > 0 {
 		policies = e.filterByCategories(policies, opts.Categories, opts.SkipCategories)
 	}
+
+	// Capability-scoped evaluation (#2801): skip execution-class detectors for
+	// tools positively classified text-document. No-op for empty/unknown
+	// identities (fail-closed).
+	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
 
 	// Evaluate each policy
 	for i := range policies {
@@ -259,8 +271,15 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrganizationID, PhaseResponse)
 	if err != nil {
 		e.metrics.RecordError("load")
+		// #2820: mark couldn't-scan regardless of the degradation mode so a
+		// response-plane redactor can tell this apart from scanned-clean and
+		// fail closed. Under GracefulDegradation the content is returned
+		// unprocessed (unchanged behavior for the request plane), but the
+		// EvaluationError signal now lets a storage/response redactor withhold
+		// rather than forward raw PII.
+		result.EvaluationError = true
 		if e.config.GracefulDegradation {
-			log.Printf("[PolicyEngine] Failed to load policies, returning unprocessed: %v", err)
+			log.Printf("[PolicyEngine] Failed to load policies, returning unprocessed (evaluation_error): %v", err)
 			result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
 			return result
 		}
@@ -276,6 +295,12 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	if len(opts.Categories) > 0 || len(opts.SkipCategories) > 0 {
 		policies = e.filterByCategories(policies, opts.Categories, opts.SkipCategories)
 	}
+
+	// Capability-scoped evaluation (#2801): same partition as the request
+	// phase — a text-document tool's OUTPUT is document text, not a statement
+	// any downstream executor runs. The content-borne families (PII,
+	// sensitive-data, prompt-injection redaction per core/128) are untouched.
+	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
 
 	// Convert content to scannable string
 	scannable := e.toScannable(content)
@@ -453,6 +478,25 @@ func (e *UnifiedPolicyEngine) EnabledSecurityDangerousCategories(ctx context.Con
 	return nil
 }
 
+// PoliciesLoadable reports whether the engine can currently load the policy
+// set for (tenant, phase) — nil on success, the load error otherwise (#2820).
+//
+// It exists because the Enabled*Categories helpers return nil on BOTH "tenant
+// has no policies in this category" and a load error, so a response-plane
+// caller that enumerates categories cannot distinguish "nothing to redact"
+// from "could not load policies" and would skip its scan (fail OPEN) on a load
+// error. Response-plane redactors MUST call this before category enumeration
+// and fail CLOSED (withhold/block) when it returns an error. The call is
+// cache-backed (same cache the subsequent Enabled*/EvaluateResponse calls hit),
+// so on success it warms the entry those calls reuse within the request.
+func (e *UnifiedPolicyEngine) PoliciesLoadable(ctx context.Context, tenantID string, orgID *string, phase Phase) error {
+	if tenantID == "" {
+		tenantID = e.config.DefaultTenant
+	}
+	_, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
+	return err
+}
+
 // InvalidateCache forces a cache refresh for a tenant.
 func (e *UnifiedPolicyEngine) InvalidateCache(tenantID string, orgID *string) {
 	e.cache.Invalidate(tenantID, orgID)
@@ -488,6 +532,37 @@ func (e *UnifiedPolicyEngine) Stop() {
 	e.stopOnce.Do(func() {
 		close(e.stopChan)
 	})
+}
+
+// IsTextDocumentTool reports whether the identity positively classifies as a
+// text-document tool under this engine's registry (built-in + the Enterprise
+// AXONFLOW_TEXT_DOCUMENT_TOOLS extension), honoring the kill switch. Exposed
+// so adjacent execution-class detectors OUTSIDE this engine (the SQLi response
+// middleware in the agent) apply the identical scope — plane divergence here
+// would re-introduce the FP class on one plane while fixing the other.
+func (e *UnifiedPolicyEngine) IsTextDocumentTool(identity string) bool {
+	if e.config.DisableCapabilityScoping {
+		return false
+	}
+	return isTextDocumentTool(identity, e.extraTextDocumentTools)
+}
+
+// filterByToolCapability drops execution-class policies when — and only when
+// — the tool identity positively classifies as text-document (#2801). Both
+// legs fail closed: an empty/unclassified identity keeps every policy, and a
+// policy not positively classified execution-class keeps evaluating.
+func (e *UnifiedPolicyEngine) filterByToolCapability(policies []CompiledPolicy, toolIdentity string) []CompiledPolicy {
+	if toolIdentity == "" || !e.IsTextDocumentTool(toolIdentity) {
+		return policies
+	}
+	filtered := make([]CompiledPolicy, 0, len(policies))
+	for i := range policies {
+		if IsExecutionScopedPolicy(&policies[i]) {
+			continue
+		}
+		filtered = append(filtered, policies[i])
+	}
+	return filtered
 }
 
 // filterByCategories filters policies by category inclusion/exclusion.

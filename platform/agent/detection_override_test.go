@@ -252,14 +252,14 @@ func TestEvaluateOutputPolicies_PerOrgPosture_SameProcess(t *testing.T) {
 
 	// org-default → deployment-global block → the NIK is BLOCKED on output.
 	ctxDefault := context.WithValue(context.Background(), ContextKeyOrgID, "org-default")
-	outDefault := evaluateOutputPolicies(ctxDefault, "t1", "u1", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */)
+	outDefault := evaluateOutputPolicies(ctxDefault, "t1", "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */)
 	if outDefault.StaticResult == nil || !outDefault.StaticResult.Blocked {
 		t.Fatalf("org-default must BLOCK the NIK under global block; got %+v", outDefault.StaticResult)
 	}
 
 	// org-redact → per-org redact → the NIK is MASKED, not blocked.
 	ctxRedact := context.WithValue(context.Background(), ContextKeyOrgID, "org-redact")
-	outRedact := evaluateOutputPolicies(ctxRedact, "t1", "u1", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */)
+	outRedact := evaluateOutputPolicies(ctxRedact, "t1", "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */)
 	if outRedact.StaticResult != nil && outRedact.StaticResult.Blocked {
 		t.Fatalf("org-redact must NOT block (override=redact); got blocked")
 	}
@@ -268,7 +268,7 @@ func TestEvaluateOutputPolicies_PerOrgPosture_SameProcess(t *testing.T) {
 	}
 
 	// Empty org (no stamp) → deployment-global block (fail-safe).
-	outNoOrg := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", nil, nikMsg, nil, 0, false, true)
+	outNoOrg := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true)
 	if outNoOrg.StaticResult == nil || !outNoOrg.StaticResult.Blocked {
 		t.Fatalf("no-org request must fall back to global block; got %+v", outNoOrg.StaticResult)
 	}

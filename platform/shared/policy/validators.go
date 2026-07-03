@@ -411,7 +411,7 @@ func ValidatePhone(match string, context string) (bool, float64) {
 // and the value: {"ver":"10.20.30.40"}, "version: 2.5.0.1", "firmware 1.2.3.4"). It is
 // deliberately restricted to version-SPECIFIC tokens — "release"/"build"/"rev" were
 // excluded because they are common English verbs that frequently abut a real IP in ops
-// prose ("please release 203.0.113.7 to prod"), where rejecting would drop a real IP
+// prose ("please release 54.210.8.7 to prod"), where rejecting would drop a real IP
 // (a leak — worse than masking a version). Proximity-gated, so a version word merely
 // near (not abutting) an IP never rejects; word boundaries keep "server"/"review" out.
 var ipVersionLabelRe = regexp.MustCompile(`(?i)\b(version|ver|semver|firmware|revision)\b["':#=.\-\s]*$`)
@@ -431,22 +431,41 @@ func ValidateIPAddress(match string, context string) (bool, float64) {
 
 	confidence := 0.7
 
-	// Check for private/reserved ranges (lower risk)
 	firstOctet, _ := strconv.Atoi(parts[0])
 	secondOctet, _ := strconv.Atoi(parts[1])
+	thirdOctet, _ := strconv.Atoi(parts[2])
 
+	// RFC-special / documentation / non-host ranges are never a person's
+	// address, so they are not PII to govern (#2802: `0.0.0.0/0` in an
+	// AWS-hardening note was flagged as PII). Rejected outright:
+	//   * 0.0.0.0/8        — "this network" / unspecified (RFC 6890), incl. the
+	//                        `0.0.0.0/0` allow-all CIDR shorthand in prose
+	//   * 127.0.0.0/8      — loopback ("connect to 127.0.0.1:8080" is not PII)
+	//   * 169.254.0.0/16   — link-local (RFC 3927), incl. cloud metadata 169.254.169.254
+	//   * 100.64.0.0/10    — CGNAT shared address space (RFC 6598)
+	//   * 224.0.0.0/4 +    — multicast + reserved/experimental (>=224), never a host
+	//   * 255.255.255.255  — limited broadcast
+	//   * 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 — RFC 5737 TEST-NET
+	//     documentation blocks, reserved and never routed to a real host
+	// Real private-range (RFC 1918) and routable public addresses stay detected.
+	if firstOctet == 0 ||
+		firstOctet == 127 ||
+		firstOctet >= 224 || // multicast + reserved/experimental + 255.255.255.255 broadcast
+		(firstOctet == 169 && secondOctet == 254) ||
+		(firstOctet == 100 && secondOctet >= 64 && secondOctet <= 127) ||
+		(firstOctet == 192 && secondOctet == 0 && thirdOctet == 2) ||
+		(firstOctet == 198 && secondOctet == 51 && thirdOctet == 100) ||
+		(firstOctet == 203 && secondOctet == 0 && thirdOctet == 113) {
+		return false, 0
+	}
+
+	// Check for private/reserved ranges (lower risk)
 	isPrivate := false
 	if firstOctet == 10 || // 10.0.0.0/8
 		(firstOctet == 172 && secondOctet >= 16 && secondOctet <= 31) || // 172.16.0.0/12
-		(firstOctet == 192 && secondOctet == 168) || // 192.168.0.0/16
-		firstOctet == 127 { // 127.0.0.0/8 (loopback)
+		(firstOctet == 192 && secondOctet == 168) { // 192.168.0.0/16
 		isPrivate = true
 		confidence = 0.5 // Lower confidence for private IPs
-	}
-
-	// Special addresses
-	if match == "0.0.0.0" || match == "255.255.255.255" {
-		confidence = 0.4
 	}
 
 	// Context analysis

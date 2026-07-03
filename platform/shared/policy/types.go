@@ -315,6 +315,18 @@ type EvalOptions struct {
 	ConnectorName string
 	Parameters    map[string]interface{} // Optional parameters to scan individually
 
+	// ToolIdentity is the raw identity of the governed tool this content is
+	// bound for (or came from), used for capability-scoped evaluation (#2801):
+	// when it positively classifies as a text-document tool, execution-class
+	// detector families (security-sqli; the enumerated execution-class
+	// security-dangerous policies) are skipped. Empty or unclassified =>
+	// FULL evaluation (fail-closed). Pass whatever the plane has — the
+	// caller-sent connector_type (`claude_code.mcp__atlassian__editJiraIssue`),
+	// a managed connector name, or /decide's target.tool — classification
+	// happens server-side in capability.go, never from a caller-asserted
+	// capability claim. Planes with no tool identity leave it empty.
+	ToolIdentity string
+
 	// Category filtering
 	Categories     []PolicyCategory // Only evaluate these categories (empty = all)
 	SkipCategories []PolicyCategory // Exclude these categories
@@ -348,6 +360,24 @@ type ResponseResult struct {
 	Blocked     bool
 	BlockedBy   *CompiledPolicy
 	BlockReason string
+
+	// EvaluationError distinguishes "could not scan" from "scanned, found
+	// nothing" (#2820). It is set true when the engine could NOT complete
+	// evaluation — a policy-load / graceful-degradation error — as opposed to
+	// a clean scan (Blocked=false, Redacted=false with EvaluationError=false).
+	//
+	// Response-plane callers (check-output, gateway, orchestrator, cowork OTEL
+	// ingest) MUST fail CLOSED when this is set: a redactor that forwards or
+	// stores content it could not scan leaks raw PII. It is DISTINCT from
+	// Blocked (a policy verdict): EvaluationError is an availability failure,
+	// audited/handled as "could not govern", not "a policy said block".
+	//
+	// NOTE: the sibling fail-open sub-path — Enabled*Categories returning nil
+	// on a load error (so the caller skips EvaluateResponse entirely) — is
+	// covered by PoliciesLoadable, which response-plane callers check before
+	// category enumeration. EvaluationError is the second line of defense for
+	// callers that reach EvaluateResponse.
+	EvaluationError bool
 
 	// Content (possibly redacted)
 	Content        interface{}
@@ -507,6 +537,20 @@ type EngineConfig struct {
 
 	// Background refresh
 	RefreshInterval time.Duration // How often to refresh policies - default: 30 seconds
+
+	// Capability-scoped evaluation (#2801)
+	//
+	// ExtraTextDocumentTools extends the built-in text-document tool registry
+	// (capability.go) with additional tool identities (exact names,
+	// case-insensitive, matched against the full identity and its terminal
+	// segment). Populated from AXONFLOW_TEXT_DOCUMENT_TOOLS in the Enterprise
+	// edition only; community ships the built-in registry.
+	ExtraTextDocumentTools []string
+
+	// DisableCapabilityScoping restores pre-#2801 behavior (every policy
+	// evaluates regardless of tool identity). Safety valve for the behavior
+	// change; strictly MORE evaluation, never less.
+	DisableCapabilityScoping bool
 }
 
 // DefaultEngineConfig returns the recommended production configuration.

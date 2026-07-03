@@ -699,9 +699,20 @@ type InputPolicyOutcome struct {
 // metrics.RecordViolation can stamp shared AuditEntry.OrgID, which the
 // audit_queue persistence path uses to pin app.current_org_id under
 // axonflow_app_role for the policy_metrics / policy_violations INSERTs.
+//
+// toolIdentity (#2801) feeds capability-scoped evaluation and is DISTINCT
+// from connectorName: ADVISORY planes (check-input, mcp-server check_policy)
+// pass the caller-sent connector_type — the enforcing client is the trust
+// anchor for what tool it is about to run. MANAGED-CONNECTOR planes
+// (resources/query, tools/execute) MUST pass "" — there the AGENT executes
+// the statement against the real connector, and the connector NAME is
+// tenant-chosen free-form text: a postgres connector registered as
+// "jira_get_issue" would otherwise classify text-document and silently lose
+// SQLi enforcement on statements that genuinely execute. Empty = full
+// evaluation (fail-closed).
 func evaluateInputPolicies(
 	ctx context.Context,
-	tenantID, orgID, userID, userRole, connectorName, operation, statement string,
+	tenantID, orgID, userID, userRole, connectorName, toolIdentity, operation, statement string,
 	parameters map[string]interface{},
 ) InputPolicyOutcome {
 	var out InputPolicyOutcome
@@ -759,12 +770,18 @@ func evaluateInputPolicies(
 		// below via out.StaticResult.Blocked).
 		inputCats = append(inputCats, policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
-			TenantID:        tenantID,
-			OrgID:           orgID,
-			ConnectorName:   connectorName,
-			UserID:          userID,
-			Parameters:      parameters,
-			Categories:      inputCats,
+			TenantID:      tenantID,
+			OrgID:         orgID,
+			ConnectorName: connectorName,
+			UserID:        userID,
+			Parameters:    parameters,
+			Categories:    inputCats,
+			// #2801: capability-scoped evaluation. Advisory planes pass the
+			// caller-sent connector_type (e.g.
+			// claude_code.mcp__atlassian__editJiraIssue); managed-connector
+			// planes pass "" (see the function doc). Unclassified/empty
+			// identities get full evaluation.
+			ToolIdentity:    toolIdentity,
 			SkipCategories:  mcpDetectionCfg.SkipCategories,
 			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 		})
@@ -842,6 +859,17 @@ func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, 
 	}
 	if statement == "" {
 		return "", false, true // detector available; nothing to scan
+	}
+	// #2820: fail closed on a policy-LOAD error. EnabledPIICategories below
+	// returns nil on BOTH "no PII category" and a load error; without this gate
+	// a transient load failure would report evaluated=true, redacted=false —
+	// "redactor ran, nothing to mask" — and the PEP would forward the statement
+	// with PII unredacted (fulfilling a /decide redact_pii obligation it did not
+	// actually discharge). Reporting evaluated=false makes the PEP fail CLOSED
+	// (the #2563 B1 contract: redaction_evaluated=false → do not forward).
+	if err := policyEngine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseRequest); err != nil {
+		log.Printf("[MCP] redactInputStatement: could not load request-phase policies (fail-closed, #2820): %v", err)
+		return "", false, false
 	}
 	// working accumulates redactions across the static engine and the
 	// enterprise Indonesia checksum detector (the two diverged request-phase
@@ -1020,9 +1048,14 @@ func maskJSONSafe(s string, masker func(string) (string, bool)) (string, bool) {
 	return out, true
 }
 
+// toolIdentity (#2801): same contract as evaluateInputPolicies — advisory
+// planes (check-output, mcp-server check_output) pass the caller-sent
+// connector_type; managed-connector planes (query/execute responses) pass ""
+// because the connector NAME is tenant-chosen free-form text, not a
+// capability statement. Empty = full evaluation.
 func evaluateOutputPolicies(
 	ctx context.Context,
-	tenantID, userID, connectorName string,
+	tenantID, userID, connectorName, toolIdentity string,
 	rows []map[string]interface{},
 	message string,
 	messageMetadata map[string]interface{},
@@ -1032,8 +1065,22 @@ func evaluateOutputPolicies(
 ) OutputPolicyOutcome {
 	var out OutputPolicyOutcome
 
+	// #2801: capability scoping must be plane-consistent. The SQLi response
+	// middleware below is the same execution-class detector family as the
+	// static security-sqli category — SQL keywords in a text-document tool's
+	// OUTPUT are documentation, not a statement any executor runs — so it is
+	// gated by the identical engine-side classification (built-in registry +
+	// Enterprise extension + kill switch). Nil engine => scan runs
+	// (fail-closed).
+	textDocumentTool := false
+	if eng := sharedpolicy.GetGlobalEngine(); eng != nil {
+		textDocumentTool = eng.IsTextDocumentTool(toolIdentity)
+	}
+
 	// 1. SQLi response scan
-	if rows != nil {
+	if textDocumentTool {
+		// skip: execution-class scan on a text-document tool's output
+	} else if rows != nil {
 		scanResult, scanErr := sqli.GetGlobalMiddleware().ScanQueryResponse(ctx, connectorName, rows)
 		if scanErr != nil {
 			log.Printf("[MCP] SQLi scan error: %v", scanErr)
@@ -1070,6 +1117,28 @@ func evaluateOutputPolicies(
 	// response PII redaction for the gateway. Managed-connector responses
 	// (query/execute) keep the allowlist.
 	detectionGate := mcpDetectionCfg.Enabled && (isGateway || mcpDetectionCfg.IsConnectorEnabled(connectorName))
+
+	// #2820: fail closed on a policy-LOAD error before the static PII pass. The
+	// static pass (step 3) enumerates categories via Enabled*Categories, which
+	// return nil on BOTH "no enabled category" and a load error — so a transient
+	// load failure would leave outCats empty, SKIP EvaluateResponse, and forward
+	// the response with generic PII (email / SSN / phone) unredacted. Withhold
+	// the whole response instead: a redactor must never forward content it could
+	// not scan. Gated on detectionGate (only when detection would run for this
+	// connector) so a detection-off deployment is unaffected. The engine-independent
+	// Indonesia checksum masker (step 2) is NOT sufficient on its own — it cannot
+	// clear generic PII — so a load error must block, not fall through to it.
+	if policyEngine := sharedpolicy.GetGlobalEngine(); policyEngine != nil && detectionGate {
+		if err := policyEngine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+			log.Printf("[MCP] Response withheld: policy engine could not load response-phase policies (fail-closed, #2820): %v", err)
+			out.StaticResult = &sharedpolicy.ResponseResult{
+				Blocked:         true,
+				EvaluationError: true,
+				BlockReason:     "response withheld: policy engine could not evaluate (fail-closed)",
+			}
+			return out
+		}
+	}
 
 	// 2. Indonesia (OJK/UU PDP) checksum-validated PII governance on the response.
 	// The static policy engine CANNOT cover NIK on responses: sys_pii_indonesia_ktp
@@ -1184,14 +1253,32 @@ func evaluateOutputPolicies(
 			actionOverrides := mcpDetectionCfg.BuildActionOverrides()
 			actionOverrides[sharedpolicy.CategorySecurityDangerous] = ResolveResponseInjectionAction(ctx, OrgIDFromContext(ctx)).ToPolicyAction()
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
-				TenantID:        tenantID,
-				ConnectorName:   connectorName,
-				UserID:          userID,
-				Categories:      outCats,
+				TenantID:      tenantID,
+				ConnectorName: connectorName,
+				UserID:        userID,
+				Categories:    outCats,
+				// #2801: capability scoping on the response plane. For the
+				// categories evaluated here it only affects a text-document
+				// tool's security-dangerous EXECUTION-class policies (the
+				// content-borne injection guards and all PII/sensitive-data
+				// stay in); unknown/empty identities are unaffected.
+				ToolIdentity:    toolIdentity,
 				SkipCategories:  mcpDetectionCfg.SkipCategories,
 				ActionOverrides: actionOverrides,
 				MaxRedactions:   100,
 			})
+			// #2820: second line of defense — a load race between the
+			// PoliciesLoadable gate above and here (cache expiry mid-request)
+			// leaves EvaluationError set; withhold rather than forward unscanned
+			// content.
+			if out.StaticResult.EvaluationError {
+				log.Printf("[MCP] Response withheld: response-phase scan could not complete (fail-closed, #2820)")
+				out.StaticResult.Blocked = true
+				if out.StaticResult.BlockReason == "" {
+					out.StaticResult.BlockReason = "response withheld: policy engine could not evaluate (fail-closed)"
+				}
+				return out
+			}
 			if out.StaticResult.Blocked {
 				policyID := "unknown"
 				if out.StaticResult.BlockedBy != nil {
@@ -1620,7 +1707,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// v9 Phase 8 #2384 PR-C1: orgID is on the legacy *User struct as OrgID.
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		req.Connector, "query", statement, req.Parameters)
+		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503). Record a canonical
@@ -1692,6 +1779,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// Response-phase policy evaluation: SQLi scan, PII redaction, exfiltration (Issue #1258)
 	outputOutcome := evaluateOutputPolicies(ctx,
 		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
+		"", /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */
 		result.Rows, "", nil, result.RowCount, true, false /* isGateway: managed connector */)
 
 	// #2679: the response-phase verdict (SQLi/static-block/exfil-block → blocked;
@@ -2023,7 +2111,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		req.Connector, "execute", req.Statement, req.Parameters)
+		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503) → canonical error row.
@@ -2088,6 +2176,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// Exfiltration checking is not applied to execute results (execute returns rows_affected, not data rows).
 	outputOutcome := evaluateOutputPolicies(ctx,
 		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
+		"", /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */
 		nil, result.Message, result.Metadata, int(result.RowsAffected), false, false /* isGateway: managed connector */)
 
 	// #2679: response-phase verdict, computed once; branch order mirrors the
@@ -2287,6 +2376,12 @@ type MCPCheckOutputResponse struct {
 func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
+	// Bound the request body (#2803): the statement is parsed more than once
+	// (decode here, plus the governance-metadata duplicate-key scan + re-serialize
+	// for create_override), so cap the input the same way the MCP-server endpoint
+	// does to avoid a large-body parse-amplification.
+	r.Body = http.MaxBytesReader(w, r.Body, mcpMaxRequestBody)
+
 	var req MCPCheckInputRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
@@ -2329,6 +2424,19 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			traceIDFromHeader(r.Header.Get("traceparent")))
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
+	}
+
+	// Governance-plane metadata exemption (#2803): strip the create_override
+	// justification from the statement before evaluation so a justification
+	// explaining a `.env` block is not itself blocked by the policy it
+	// overrides. The override TARGET scope stays in the statement and is still
+	// evaluated. Applied AFTER Authenticate (so an unauthenticated caller can
+	// neither trigger the code path nor forge a log line via a crafted
+	// connector_type) but BEFORE every downstream use of req.Statement
+	// (evaluation, redaction, statement hash). See governance_metadata.go.
+	if sanitized, exempt := stripGovernanceMetadata(req.ConnectorType, req.Statement); len(exempt) > 0 {
+		log.Printf("[MCP] check-input: exempted governance metadata fields %v for %s", exempt, stripLogCRLF(req.ConnectorType))
+		req.Statement = sanitized
 	}
 
 	// Content-type-agnostic redaction (ADR-056 / #2563 addendum): reject a
@@ -2561,7 +2669,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		// v9 Phase 8 #2384 PR-C1: orgID plumbed through.
 		outcome := evaluateInputPolicies(ctx,
 			tenantID, orgID, userID, userRole,
-			req.ConnectorType, operation, req.Statement, req.Parameters)
+			req.ConnectorType, req.ConnectorType /* toolIdentity: advisory plane, caller-sent tool identity (#2801) */, operation, req.Statement, req.Parameters)
 
 		if outcome.EvalUnavailable {
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
@@ -2946,6 +3054,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 
 	outcome := evaluateOutputPolicies(ctx,
 		tenantID, userID, req.ConnectorType,
+		req.ConnectorType, /* toolIdentity: advisory plane, caller-sent tool identity (#2801) */
 		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration, true /* isGateway: check-output is a PEP/gateway caller */)
 
 	auditEntry.ExfilRowsReturned = req.RowCount

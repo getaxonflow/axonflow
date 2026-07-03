@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "category": "security-sqli",
+  "description": "SQL-injection / dangerous-SQL detectors (migrations core/031 + legacy core/010). Execution-class: capability-scoped to tools that can run SQL (#2801). Benign cases are documentation prose flowing through text-document tools; attacks are real payloads through shell/DB-shaped or unclassified identities.",
+  "cases": [
+    {
+      "id": "benign-admin-console-markdown-table",
+      "label": "benign",
+      "statement": "Enable SSO from the admin console or set SSO_ENFORCED = true before the cutover.\n\n| Step | Owner |\n|---|---|\n| Enable flag | Platform |",
+      "tool_identity": "claude_code.mcp__atlassian__editJiraIssue",
+      "expect": "allow",
+      "expected_policy_id": "sys_sqli_admin_bypass",
+      "must_trigger_without_scoping": true,
+      "source": "partner-report-2026-07-03-finding-1"
+    },
+    {
+      "id": "benign-revoke-prose",
+      "label": "benign",
+      "statement": "Grant the contractor temporary access; we will revoke immediately after the single edit call.",
+      "tool_identity": "claude_code.mcp__atlassian__editJiraIssue",
+      "expect": "allow",
+      "expected_policy_id": "sys_sqli_revoke",
+      "must_trigger_without_scoping": true,
+      "source": "partner-report-2026-07-03-finding-5"
+    },
+    {
+      "id": "attack-auth-bypass-comment",
+      "label": "attack",
+      "statement": "admin' OR '1'='1' --",
+      "tool_identity": "claude_code.Bash",
+      "expect": "block",
+      "expected_policy_id": "sys_sqli_admin_bypass"
+    },
+    {
+      "id": "attack-stacked-drop-table",
+      "label": "attack",
+      "statement": "SELECT id FROM users; DROP TABLE users; --",
+      "tool_identity": "postgres-main",
+      "expect": "block"
+    },
+    {
+      "id": "attack-revoke-statement",
+      "label": "attack",
+      "statement": "REVOKE ALL PRIVILEGES ON app.* FROM 'svc'@'%';",
+      "tool_identity": "mcp__db__run_query",
+      "expect": "block",
+      "expected_policy_id": "sys_sqli_revoke"
+    },
+    {
+      "id": "attack-grant-statement-no-identity",
+      "label": "attack",
+      "statement": "GRANT ALL ON *.* TO 'attacker'@'%' IDENTIFIED BY 'x';",
+      "tool_identity": "",
+      "expect": "block",
+      "expected_policy_id": "sys_sqli_grant"
+    },
+    {
+      "id": "attack-comment-out-bypass",
+      "label": "attack",
+      "statement": "admin' --",
+      "tool_identity": "postgres-main",
+      "expect": "block",
+      "expected_policy_id": "sys_sqli_string_term_comment",
+      "source": "owasp-comment-out-auth-bypass (#2811)"
+    },
+    {
+      "id": "attack-comment-out-no-space",
+      "label": "attack",
+      "statement": "x'--",
+      "tool_identity": "",
+      "expect": "block",
+      "expected_policy_id": "sys_sqli_string_term_comment"
+    },
+    {
+      "id": "attack-comment-out-mysql-hash",
+      "label": "attack",
+      "statement": "x'#",
+      "tool_identity": "claude_code.Bash",
+      "expect": "block",
+      "expected_policy_id": "sys_sqli_string_term_comment"
+    },
+    {
+      "id": "attack-comment-out-scoped-away-on-doc-tool",
+      "label": "benign",
+      "statement": "admin' --",
+      "tool_identity": "claude_code.mcp__atlassian__editJiraIssue",
+      "expect": "allow",
+      "expected_policy_id": "sys_sqli_string_term_comment",
+      "must_trigger_without_scoping": true,
+      "source": "the real comment-out payload is capability-scoped away on a text-document tool (#2801) but blocks on execution tools (attack-comment-out-bypass)"
+    },
+    {
+      "id": "benign-prose-dash-continuation",
+      "label": "benign",
+      "statement": "she said 'stop' -- then left the room",
+      "tool_identity": "",
+      "expect": "allow"
+    },
+    {
+      "id": "benign-sqli-doc-example-comment-out",
+      "label": "benign",
+      "statement": "The vulnerable clause reads WHERE user='admin'--' AND pass=... so always parameterize inputs.",
+      "tool_identity": "",
+      "expect": "allow"
+    },
+    {
+      "id": "benign-shell-quoted-arg-trailing-hash",
+      "label": "benign",
+      "statement": "echo 'done'  #",
+      "tool_identity": "claude_code.Bash",
+      "expect": "allow",
+      "source": "balanced-quote token + trailing empty comment on an execution tool; excluded by the first-quote breakout gate, NOT by capability scoping"
+    },
+    {
+      "id": "benign-sql-quoted-value-trailing-dash-comment",
+      "label": "benign",
+      "statement": "SELECT count(*) FROM t WHERE region='EU' --",
+      "tool_identity": "postgres-main",
+      "expect": "allow",
+      "source": "legit SQL with a trailing empty line comment on a DB tool; the balanced quote must not be read as a breakout"
+    }
+  ]
+}

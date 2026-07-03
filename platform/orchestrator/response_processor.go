@@ -287,6 +287,19 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		return data, &RedactionInfo{}
 	}
 
+	// #2820: fail closed on a policy-LOAD error. EnabledPIICategories below
+	// returns nil on BOTH "no enabled category" and a load error, so a transient
+	// load failure would leave evalCats empty and return the LLM response
+	// unredacted (fail-OPEN). Withhold the response instead — a redactor must
+	// never forward content it could not scan.
+	if err := p.sharedPolicyEngine.PoliciesLoadable(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+		log.Printf("[ResponseProcessor] Response withheld: could not load response-phase policies (fail-closed, #2820): %v", err)
+		return data, &RedactionInfo{
+			Verdict:         responseVerdictBlocked,
+			ValidationError: "response withheld: policy engine could not evaluate (fail-closed)",
+		}
+	}
+
 	// Policy-derived evaluation categories: every enabled PII-category system
 	// policy (so a newly-seeded pii-* like pii-indonesia is auto-covered) PLUS the
 	// sensitive-data (secrets) category, so the SENSITIVE_DATA_ACTION / profile
@@ -312,6 +325,17 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		ActionOverrides: gwCfg.BuildActionOverrides(),
 		MaxRedactions:   100, // Reasonable limit for LLM responses
 	})
+
+	// #2820: second line of defense — a load race between PoliciesLoadable and
+	// here (cache expiry mid-request) leaves EvaluationError set; withhold the
+	// response rather than forward it unscanned.
+	if result.EvaluationError {
+		log.Printf("[ResponseProcessor] Response withheld: response-phase scan could not complete (fail-closed, #2820)")
+		return data, &RedactionInfo{
+			Verdict:         responseVerdictBlocked,
+			ValidationError: "response withheld: policy engine could not evaluate (fail-closed)",
+		}
+	}
 
 	redactionInfo := &RedactionInfo{
 		HasRedactions:  result.Redacted,
