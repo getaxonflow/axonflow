@@ -87,7 +87,7 @@ services:
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.3.1}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.4.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -167,6 +167,10 @@ services:
       HIGH_RISK_ACTION: ${HIGH_RISK_ACTION:-warn}
       # DANGEROUS_QUERY_ACTION: block|warn|log (default: block - DROP/TRUNCATE)
       DANGEROUS_QUERY_ACTION: ${DANGEROUS_QUERY_ACTION:-block}
+      # Capability-scoped evaluation (#2801): text-document tools (Jira/
+      # Confluence edits) skip execution-class detectors (SQLi, dangerous
+      # commands). Set to "true" to restore pre-#2801 full evaluation.
+      AXONFLOW_CAPABILITY_SCOPING_DISABLED: ${AXONFLOW_CAPABILITY_SCOPING_DISABLED:-}
       # Deprecated: use SQLI_ACTION instead
       # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
@@ -265,7 +269,7 @@ services:
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.3.1}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.4.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.

@@ -276,11 +276,11 @@ func TestMCPCheckInputHandler_WithEngineNoPolicies_Allowed(t *testing.T) {
 	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 
 	// Engine with nil DB has an empty policy cache → all requests pass
-	engine := sharedpolicy.NewUnifiedPolicyEngine(nil, sharedpolicy.DefaultEngineConfig(), nil)
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-	defer engine.Stop()
+	// #2820: use a DB-backed engine that LOADS successfully with an empty
+	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
+	// (couldn't-scan), which the response plane correctly fails CLOSED on — so
+	// it can no longer stand in for "engine present, no policies → allow".
+	installSharedEngineWithMockDB(t)
 
 	t.Setenv("MCP_DETECTION_ENABLED", "true")
 
@@ -495,11 +495,11 @@ func TestMCPCheckOutputHandler_WithEngineNoPolicies_Allowed(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 
-	engine := sharedpolicy.NewUnifiedPolicyEngine(nil, sharedpolicy.DefaultEngineConfig(), nil)
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-	defer engine.Stop()
+	// #2820: use a DB-backed engine that LOADS successfully with an empty
+	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
+	// (couldn't-scan), which the response plane correctly fails CLOSED on — so
+	// it can no longer stand in for "engine present, no policies → allow".
+	installSharedEngineWithMockDB(t)
 
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)
@@ -821,7 +821,7 @@ func TestEvaluateInputPolicies_NilEvaluator_NilEngine(t *testing.T) {
 	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	ctx := context.Background()
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "query", "SELECT 1", nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")
@@ -853,7 +853,7 @@ func TestEvaluateInputPolicies_DynamicAllowed(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "query", "SELECT 1", nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")
@@ -885,7 +885,7 @@ func TestEvaluateInputPolicies_DynamicBlocked(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "query", "SELECT 1", nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil)
 
 	if !out.DynamicBlocked {
 		t.Error("expected DynamicBlocked=true")
@@ -915,7 +915,7 @@ func TestEvaluateInputPolicies_ConnectorNotEnabled(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "query", "SELECT 1", nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil)
 
 	if out.DynamicBlocked {
 		t.Error("expected DynamicBlocked=false when connector not enabled")
@@ -928,16 +928,16 @@ func TestEvaluateInputPolicies_WithStaticEngine(t *testing.T) {
 	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
 
-	engine := sharedpolicy.NewUnifiedPolicyEngine(nil, sharedpolicy.DefaultEngineConfig(), nil)
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-	defer engine.Stop()
+	// #2820: use a DB-backed engine that LOADS successfully with an empty
+	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
+	// (couldn't-scan), which the response plane correctly fails CLOSED on — so
+	// it can no longer stand in for "engine present, no policies → allow".
+	installSharedEngineWithMockDB(t)
 
 	t.Setenv("MCP_DETECTION_ENABLED", "true")
 
 	ctx := context.Background()
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "query", "SELECT 1", nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil)
 
 	if out.StaticResult == nil {
 		t.Fatal("expected StaticResult to be non-nil when engine is active")
@@ -962,7 +962,7 @@ func TestEvaluateOutputPolicies_NilEngine_NilChecker(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 1, true, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 1, true, false /* isGateway */)
 
 	if out.SQLiBlocked {
 		t.Error("expected SQLiBlocked=false")
@@ -981,7 +981,7 @@ func TestEvaluateOutputPolicies_MessageOnly(t *testing.T) {
 	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	ctx := context.Background()
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", nil, "3 rows affected", nil, 3, false, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", nil, "3 rows affected", nil, 3, false, false /* isGateway */)
 
 	if out.SQLiBlocked {
 		t.Error("expected SQLiBlocked=false")
@@ -1004,7 +1004,7 @@ func TestEvaluateOutputPolicies_ExfiltrationExceeded(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 3, true, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 3, true, false /* isGateway */)
 
 	if out.ExfilResult == nil {
 		t.Fatal("expected ExfilResult to be non-nil")
@@ -1034,7 +1034,7 @@ func TestEvaluateOutputPolicies_ExfiltrationNotChecked(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 3, false, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 3, false, false /* isGateway */)
 
 	if out.ExfilResult != nil {
 		t.Error("expected ExfilResult=nil when checkExfiltration=false")
@@ -1043,11 +1043,11 @@ func TestEvaluateOutputPolicies_ExfiltrationNotChecked(t *testing.T) {
 
 func TestEvaluateOutputPolicies_WithStaticEngine(t *testing.T) {
 	// Static engine with empty cache should evaluate but not block
-	engine := sharedpolicy.NewUnifiedPolicyEngine(nil, sharedpolicy.DefaultEngineConfig(), nil)
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-	defer engine.Stop()
+	// #2820: use a DB-backed engine that LOADS successfully with an empty
+	// policy set (sqlmock, no rows). A nil-DB engine's GetPolicies now ERRORS
+	// (couldn't-scan), which the response plane correctly fails CLOSED on — so
+	// it can no longer stand in for "engine present, no policies → allow".
+	installSharedEngineWithMockDB(t)
 
 	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
 	sharedpolicy.SetGlobalExfiltrationChecker(nil)
@@ -1064,7 +1064,7 @@ func TestEvaluateOutputPolicies_WithStaticEngine(t *testing.T) {
 	// removed, empty Categories would evaluate ALL policies (the whitelist
 	// "empty == all" footgun) and StaticResult would be non-nil — so this is a
 	// non-vacuous regression lock on the guard, not just a "not blocked" check.
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", rows, "", nil, 1, false, true /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 1, false, true /* isGateway */)
 
 	if out.StaticResult != nil {
 		t.Errorf("empty-set guard must skip the static pass when no PII policies are enabled; got StaticResult=%+v (the empty-Categories-evaluates-all footgun)", out.StaticResult)
@@ -1222,7 +1222,7 @@ func TestEvaluateInputPolicies_WithParameters(t *testing.T) {
 		"1": "1 OR 1=1; DROP TABLE users--",
 		"2": "normal-value",
 	}
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "query", "SELECT * FROM users WHERE id = $1", params)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT * FROM users WHERE id = $1", params)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")

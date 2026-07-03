@@ -561,7 +561,7 @@ func (t *DecisionChainTracker) recordToDB(ctx context.Context, entry DecisionEnt
 			created_at,
 			chain_seq, prev_hash, record_signature, signing_key_id
 		) VALUES (
-			$1, $2, $3, NULLIF($4, ''), $5,
+			$1, $2, $3, NULLIF($4, '')::uuid, $5,
 			$6, $7, $8, $9,
 			$10, $11,
 			$12, NULLIF($13, ''), NULLIF($14, ''),
@@ -574,6 +574,14 @@ func (t *DecisionChainTracker) recordToDB(ctx context.Context, entry DecisionEnt
 			$26, $27, NULLIF($28, ''), NULLIF($29, '')
 		)
 	`
+	// parent_request_id is a uuid column (migration 025); NULLIF($4,'') is a
+	// text-typed expression, and Postgres will NOT implicitly assign text→uuid
+	// (unlike a bare $N placeholder, which binds directly to the column type). So
+	// the ::uuid cast is REQUIRED — without it every INSERT fails with "column
+	// parent_request_id is of type uuid but expression is of type text", which
+	// silently emptied the signed decision chain on the live path (best-effort
+	// writer: the error was logged + metered, never surfaced). sqlmock does not
+	// type-check the parameter, so the regression guard is a real-Postgres test.
 
 	metadata, err := json.Marshal(entry.Metadata)
 	if err != nil {

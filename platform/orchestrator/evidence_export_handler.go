@@ -135,16 +135,9 @@ func (h *EvidenceExportHandler) ExportEvidence(w http.ResponseWriter, r *http.Re
 		return // resolveTenantOrFail already wrote a 401
 	}
 
-	// Rate limit
-	limit := h.tierChecker.MaxEvidenceExportsPerDay()
-	allowed, current := h.rateLimiter.tryConsume(tenantID, limit)
-	if !allowed {
-		writeJSONError(w, http.StatusTooManyRequests, ErrCodeEvidenceExportLimitExceeded,
-			"Daily export limit reached ("+strconv.Itoa(current)+"/"+strconv.Itoa(limit)+"). Upgrade to Enterprise for unlimited exports: https://getaxonflow.com/pricing")
-		return
-	}
-
-	// Parse dates
+	// Parse dates BEFORE consuming a rate-limit slot — a malformed date is a
+	// 400 the caller will retry after fixing, and burning one of the tier's
+	// daily export slots on a typo double-penalized the mistake.
 	startTime, err := parseDate(req.StartDate)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid start_date format (use YYYY-MM-DD or RFC3339)")
@@ -152,9 +145,31 @@ func (h *EvidenceExportHandler) ExportEvidence(w http.ResponseWriter, r *http.Re
 	}
 	endTime := time.Now()
 	if req.EndDate != "" {
-		if et, err := parseDate(req.EndDate); err == nil {
-			endTime = et
+		et, endIsDateOnly, err := parseEndDate(req.EndDate)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid end_date format (use YYYY-MM-DD or RFC3339)")
+			return
 		}
+		// A date-only end_date means "through the end of that day". Parsing
+		// it as midnight silently excluded the ENTIRE end day — the portal
+		// defaults end_date to today, so every default export was missing
+		// the current day's evidence (record_count 0 on a day-old org). Extend
+		// to the LAST microsecond of that day (not next-day 00:00:00, which
+		// the `created_at <= end` bound would over-include and which would
+		// misreport the exported date_range metadata as the following day).
+		if endIsDateOnly {
+			et = et.AddDate(0, 0, 1).Add(-time.Microsecond)
+		}
+		endTime = et
+	}
+
+	// Rate limit
+	limit := h.tierChecker.MaxEvidenceExportsPerDay()
+	allowed, current := h.rateLimiter.tryConsume(tenantID, limit)
+	if !allowed {
+		writeJSONError(w, http.StatusTooManyRequests, ErrCodeEvidenceExportLimitExceeded,
+			"Daily export limit reached ("+strconv.Itoa(current)+"/"+strconv.Itoa(limit)+"). Upgrade to Enterprise for unlimited exports: https://getaxonflow.com/pricing")
+		return
 	}
 
 	// Enforce window limit
@@ -429,4 +444,15 @@ func parseDate(s string) (time.Time, error) {
 	}
 	// Try YYYY-MM-DD
 	return time.Parse("2006-01-02", s)
+}
+
+// parseEndDate parses an end-bound date and reports whether it was date-only
+// (YYYY-MM-DD). Callers treat a date-only end as INCLUSIVE of that day; an
+// RFC3339 timestamp is an exact bound.
+func parseEndDate(s string) (time.Time, bool, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, false, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	return t, err == nil, err
 }

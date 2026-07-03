@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
@@ -928,5 +929,130 @@ func TestGetEvidenceSummary_RequiresTenant(t *testing.T) {
 	}
 	if errResp["code"] != "TENANT_REQUIRED" {
 		t.Errorf("Expected error code TENANT_REQUIRED, got %q", errResp["code"])
+	}
+}
+
+// TestExportEvidence_DateOnlyEndDateIncludesThatDay pins the #2808 E-6 fix:
+// a date-only end_date means "through the end of that day". The handler used
+// to parse it as midnight and pass it straight to `created_at <= $3`, so the
+// ENTIRE end day was excluded — and since the portal defaults end_date to
+// today, the default evidence bundle always missed the current day
+// (record_count 0 on a day-old org). The audit query must now receive
+// end = start-of-NEXT-day.
+func TestExportEvidence_DateOnlyEndDateIncludesThatDay(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	checker := &mockLicenseCheckerForSim{
+		tier:                     license.TierEnterprise,
+		evidenceExportEnabled:    true,
+		maxEvidenceExportsPerDay: 10,
+		maxEvidenceExportRecords: 5000,
+		maxEvidenceWindowDays:    0, // no window clamp — keep start_time exact
+	}
+	handler := NewEvidenceExportHandler(db, checker)
+	handler.rateLimiter = &exportRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	wantStart, _ := time.Parse("2006-01-02", "2026-02-01")
+	// 2026-02-15 inclusive → last microsecond of that day.
+	wantEnd, _ := time.Parse("2006-01-02", "2026-02-16")
+	wantEnd = wantEnd.Add(-time.Microsecond)
+
+	auditCols := []string{"id", "tenant_id", "client_id", "request_type", "query", "blocked", "risk_score", "created_at"}
+	mock.ExpectQuery("SELECT .+ FROM audit_logs").
+		WithArgs("test-tenant", wantStart, wantEnd, 5000/3). // record cap split across the 3 evidence types
+		WillReturnRows(sqlmock.NewRows(auditCols))
+
+	stepCols := []string{"id", "workflow_id", "step_id", "step_type", "status", "tenant_id", "started_at", "completed_at"}
+	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
+
+	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+
+	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body, _ := json.Marshal(EvidenceExportRequest{
+		StartDate: "2026-02-01",
+		EndDate:   "2026-02-15",
+	})
+	req := httptest.NewRequest("POST", "/api/v1/evidence/export", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	w := httptest.NewRecorder()
+
+	handler.ExportEvidence(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("audit query did not receive the inclusive end-of-day bound: %v", err)
+	}
+}
+
+// TestExportEvidence_RFC3339EndDateExactBound pins that an RFC3339 end_date
+// stays an EXACT bound (no day extension), and a malformed end_date is now a
+// 400 like start_date instead of being silently replaced with time.Now().
+func TestExportEvidence_RFC3339EndDateExactBound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	checker := &mockLicenseCheckerForSim{
+		tier:                     license.TierEnterprise,
+		evidenceExportEnabled:    true,
+		maxEvidenceExportsPerDay: 10,
+		maxEvidenceExportRecords: 5000,
+		maxEvidenceWindowDays:    0,
+	}
+	handler := NewEvidenceExportHandler(db, checker)
+	handler.rateLimiter = &exportRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	wantStart, _ := time.Parse("2006-01-02", "2026-02-01")
+	wantEnd, _ := time.Parse(time.RFC3339, "2026-02-15T13:45:00Z")
+
+	auditCols := []string{"id", "tenant_id", "client_id", "request_type", "query", "blocked", "risk_score", "created_at"}
+	mock.ExpectQuery("SELECT .+ FROM audit_logs").
+		WithArgs("test-tenant", wantStart, wantEnd, 5000/3). // record cap split across the 3 evidence types
+		WillReturnRows(sqlmock.NewRows(auditCols))
+	stepCols := []string{"id", "workflow_id", "step_id", "step_type", "status", "tenant_id", "started_at", "completed_at"}
+	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
+	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body, _ := json.Marshal(EvidenceExportRequest{
+		StartDate: "2026-02-01",
+		EndDate:   "2026-02-15T13:45:00Z",
+	})
+	req := httptest.NewRequest("POST", "/api/v1/evidence/export", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	w := httptest.NewRecorder()
+	handler.ExportEvidence(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("RFC3339 end bound must be exact: %v", err)
+	}
+
+	// Malformed end_date → 400 (was: silently time.Now()).
+	body, _ = json.Marshal(EvidenceExportRequest{StartDate: "2026-02-01", EndDate: "garbage"})
+	req = httptest.NewRequest("POST", "/api/v1/evidence/export", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	w = httptest.NewRecorder()
+	handler.ExportEvidence(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Expected 400 for malformed end_date, got %d: %s", w.Code, w.Body.String())
 	}
 }

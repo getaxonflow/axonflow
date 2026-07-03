@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "category": "pii",
+  "description": "PII detectors (all pii-* categories). Content-borne and UNIVERSAL: never capability-scoped (#2801) — a NIK or email in a Jira ticket is still a leak. Action is posture-driven (redact/warn/block), so cases use expect:detect unless a blocking posture is pinned.",
+  "cases": [
+    {
+      "id": "attack-email-via-doc-tool",
+      "label": "attack",
+      "statement": "Customer complaint filed by budi.santoso@example.co.id about checkout.",
+      "tool_identity": "claude_code.mcp__atlassian__editJiraIssue",
+      "expect": "detect",
+      "expected_policy_id": "sys_pii_email"
+    },
+    {
+      "id": "attack-nik-ktp-via-doc-tool",
+      "label": "attack",
+      "statement": "Customer KTP number is 3174042506780001, attached to the complaint.",
+      "tool_identity": "claude_code.mcp__atlassian__editJiraIssue",
+      "expect": "detect",
+      "expected_policy_id": "sys_pii_indonesia_ktp"
+    }
+  ]
+}

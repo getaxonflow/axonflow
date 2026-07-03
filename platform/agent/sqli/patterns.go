@@ -205,6 +205,24 @@ func defaultPatterns() []*Pattern {
 			Description: "Detects SQL commands after double-dash comment",
 			Severity:    8,
 		},
+		{
+			Name:     "string_term_comment",
+			Category: CategoryCommentInjection,
+			// Mirrors the sys_sqli_string_term_comment row (migration core/139,
+			// #2811). The OWASP comment-out auth bypass (admin' --, x'--, x'#)
+			// breaks out of the surrounding SQL literal with a lone trailing
+			// quote and comments out the rest of the line. Two gates keep
+			// benign input out: (1) first-quote breakout ^[^'"]*['"] — the value
+			// has no earlier quote, so a balanced quoted token (echo 'done' #,
+			// region='EU' --) whose first quote is followed by its own content
+			// does not match; (2) the comment ends the line, so prose/doc text
+			// after the comment does not match. The fully-concatenated form
+			// (WHERE user='admin' --' AND ...) is a documented residual —
+			// regex-indistinguishable from a benign trailing SQL comment.
+			Regex:       regexp.MustCompile(`(?m)^[^'"\r\n]*['"][ \t)]*(?:--|#)[ \t-]*\r?$`),
+			Description: "Detects a breakout string-literal terminator directly followed by a line comment ending the line (comment-out auth bypass)",
+			Severity:    8,
+		},
 
 		// Generic patterns
 		{
@@ -215,9 +233,13 @@ func defaultPatterns() []*Pattern {
 			Severity:    9,
 		},
 		{
-			Name:        "admin_bypass",
-			Category:    CategoryGeneric,
-			Regex:       regexp.MustCompile(`(?i)['"]?\s*OR\s+['"]?[^'"]*['"]?\s*=\s*['"]?[^'"]*['"]?\s*--`),
+			Name:     "admin_bypass",
+			Category: CategoryGeneric,
+			// Mirrors the sys_sqli_admin_bypass row (migration core/135, #2802).
+			// Requires a quote/paren breakout before OR (or a bare digit tautology)
+			// and the `--` comment on the same line, so Markdown table dividers and
+			// newline-spanning prose no longer satisfy the pattern.
+			Regex:       regexp.MustCompile(`(?i)(?:['"][\s)]*OR\s+\(?['"]?[^'"\r\n]{0,64}?['"]?\s*=\s*\(?['"]?[^'"\r\n]{0,64}?['"]?[ \t]*--|\bOR\s+\d{1,10}\s*=\s*\d{1,10}[ \t]*--)`),
 			Description: "Detects authentication bypass pattern with comment",
 			Severity:    10,
 		},
@@ -275,56 +297,64 @@ func defaultPatterns() []*Pattern {
 		{
 			Name:        "drop_table",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bDROP\s+TABLE\b`),
+			Regex:       regexp.MustCompile(`(?im)\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:(?s:/\*.*?\*/)\s*)?[\x60"'\w.$\[\]]+\s*(?:;|,|--|\#|\z|\bCASCADE\b|\bRESTRICT\b)`),
 			Description: "Detects DROP TABLE statement",
 			Severity:    10,
 		},
 		{
 			Name:        "drop_database",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bDROP\s+DATABASE\b`),
+			Regex:       regexp.MustCompile(`(?im)\bDROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?(?:(?s:/\*.*?\*/)\s*)?[\x60"'\w.$\[\]]+\s*(?:;|,|--|\#|\z)`),
 			Description: "Detects DROP DATABASE statement",
 			Severity:    10,
 		},
 		{
 			Name:        "truncate_table",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bTRUNCATE\s+TABLE\b`),
+			Regex:       regexp.MustCompile(`(?im)\bTRUNCATE\s+TABLE\s+(?:(?s:/\*.*?\*/)\s*)?[\x60"'\w.$\[\]]+\s*(?:;|,|--|\#|\z|\bCASCADE\b|\bRESTART\b|\bCONTINUE\b)`),
 			Description: "Detects TRUNCATE TABLE statement",
 			Severity:    10,
 		},
 		{
 			Name:        "alter_table",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bALTER\s+TABLE\b`),
+			Regex:       regexp.MustCompile(`(?im)\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:(?s:/\*.*?\*/)\s*)?[\x60"'\w.$\[\]]+\s+(?:ADD|DROP|ALTER|RENAME|MODIFY|CHANGE|ENABLE|DISABLE|OWNER|SET)\b`),
 			Description: "Detects ALTER TABLE statement (schema modification)",
 			Severity:    8,
 		},
 		{
 			Name:        "delete_without_where",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+\w+\s*(?:;|$)`),
+			Regex:       regexp.MustCompile(`(?im)\bDELETE\s+FROM\s+[\x60"'\w.$\[\]]+\s*(?:;|--|\#|\z)`),
 			Description: "Detects DELETE FROM without WHERE clause",
 			Severity:    9,
 		},
 		{
 			Name:        "create_user",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bCREATE\s+USER\b`),
+			Regex:       regexp.MustCompile(`(?im)\bCREATE\s+USER\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?s:/\*.*?\*/)\s*)?[\x60"'\w.$\[\]]+\s*(?:;|,|--|\#|@|(?:\bWITH\s+)?\b(?:IDENTIFIED|SUPERUSER|CREATEDB|CREATEROLE|LOGIN|NOLOGIN|PASSWORD|VALID)\b)`),
 			Description: "Detects CREATE USER statement",
 			Severity:    9,
 		},
 		{
 			Name:        "grant_privileges",
 			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bGRANT\s+`),
+			Regex:       regexp.MustCompile(`(?im)\bGRANT\s+(?:ALL(?:\s+PRIVILEGES)?|SELECT|INSERT|UPDATE|DELETE|TRUNCATE|MAINTAIN|EXECUTE|USAGE|CREATE|CONNECT|TEMPORARY|TEMP|TRIGGER|REFERENCES|INDEX|ALTER|DROP)\b[^;]{0,200}?\bON\b[^;]{0,200}?\bTO\s+(?:GROUP\s+|ROLE\s+|USER\s+)?(?:[\x60'"]|\w+\s*(?:;|,|@|$|--|\#|\bWITH\b|\bCASCADE\b))`),
 			Description: "Detects GRANT privilege statement",
 			Severity:    9,
 		},
 		{
-			Name:        "revoke_privileges",
-			Category:    CategoryDangerousQuery,
-			Regex:       regexp.MustCompile(`(?i)\bREVOKE\s+`),
+			Name:     "revoke_privileges",
+			Category: CategoryDangerousQuery,
+			// Mirrors the sys_sqli_revoke row (migration core/135, #2802). Requires
+			// SQL grammar — a privilege keyword plus ON ... FROM with an SQL-shaped
+			// grantee (quoted/backtick, user@host, or a bareword terminated by
+			// ;/,/@/end-of-line, optionally GROUP/ROLE/USER-qualified), or the MySQL
+			// `..., GRANT OPTION FROM` form — so English uses of the verb ("will
+			// revoke immediately after the single edit call") no longer match.
+			// Newlines are tolerated between REVOKE/ON/FROM (attacker-controlled
+			// formatting).
+			Regex:       regexp.MustCompile(`(?im)\bREVOKE\s+(?:GRANT\s+OPTION\s+FOR\s+)?(?:ALL(?:\s+PRIVILEGES)?|SELECT|INSERT|UPDATE|DELETE|TRUNCATE|MAINTAIN|EXECUTE|USAGE|CREATE|CONNECT|TEMPORARY|TEMP|TRIGGER|REFERENCES|INDEX|ALTER|DROP)\b(?:[^;]{0,200}?\bON\b[^;]{0,200}?\bFROM\s+(?:GROUP\s+|ROLE\s+|USER\s+)?(?:[\x60'"]|\w+\s*(?:;|,|@|$|--|\#|\bCASCADE\b|\bRESTRICT\b))|\s*,\s*GRANT\s+OPTION\s+FROM\b)`),
 			Description: "Detects REVOKE privilege statement",
 			Severity:    9,
 		},

@@ -1,0 +1,80 @@
+# Session-E isolation overlay (#2808) — portal 3-pass end-to-end sweep.
+#
+# Gives every service a unique container_name (sesse-*) and a remapped host
+# port so this full-portal E2E stack coexists with other worktrees' stacks
+# (ws12 binds 8090-8092/3200/5442/6389; bukuws1 binds 3300/8180/8182/5532).
+# Internal service-to-service DNS is unaffected: compose still exposes each
+# service under its *service* name as a network alias regardless of
+# container_name.
+#
+# Driven by scripts/sesse-portal-e2e-up.sh. Use with:
+#   docker compose -p sesse -f docker-compose.yml -f docker-compose.enterprise.yml \
+#     -f docker-compose.portal-ui.yml -f docker-compose.sesse.yml up -d
+#
+# `ports: !override` REPLACES the inherited port list (a plain merge would
+# append and re-bind the default host port, colliding with other stacks).
+#
+# The portal-ui is rebuilt with NEXT_PUBLIC_DEPLOYMENT_MODE=invpc — the
+# design-partner deployment this sweep mirrors is in-vpc Enterprise, and the
+# baked-in saas default would route dashboard/usage/nodes down the SaaS path
+# (the exact fidelity gap WS-12 hit).
+
+services:
+  postgres:
+    container_name: sesse-axonflow-postgres
+    ports: !override
+      - "5732:5432"
+
+  redis:
+    container_name: sesse-axonflow-redis
+    ports: !override
+      - "6589:6379"
+
+  axonflow-agent:
+    container_name: sesse-axonflow-agent
+    ports: !override
+      - "8280:8080"
+
+  axonflow-orchestrator:
+    container_name: sesse-axonflow-orchestrator
+    ports: !override
+      - "8281:8081"
+
+  axonflow-customer-portal:
+    container_name: sesse-axonflow-customer-portal
+    ports: !override
+      - "8282:8080"
+
+  axonflow-customer-portal-ui:
+    container_name: sesse-axonflow-customer-portal-ui
+    build:
+      context: ./ee/platform/customer-portal-ui
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ""
+        NEXT_PUBLIC_BASE_URL: "http://localhost:8282"
+        NEXT_PUBLIC_DEPLOYMENT_MODE: "invpc"
+    environment:
+      NEXT_PUBLIC_BASE_URL: http://localhost:8282
+      NEXT_PUBLIC_DEPLOYMENT_MODE: invpc
+    ports: !override
+      - "3500:3000"
+
+  prometheus:
+    container_name: sesse-axonflow-prometheus
+    ports: !override
+      - "9300:9090"
+
+  grafana:
+    container_name: sesse-axonflow-grafana
+    ports: !override
+      - "3030:3000"
+
+  minio:
+    container_name: sesse-axonflow-minio
+    ports: !override
+      - "9030:9000"
+      - "9031:9001"
+
+  minio-init:
+    container_name: sesse-axonflow-minio-init

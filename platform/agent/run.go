@@ -1084,7 +1084,9 @@ func Run() {
 		if auditManager != nil {
 			sharedAuditQueue = &SharedPolicyAuditAdapter{queue: auditManager.GetQueue()}
 		}
-		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(authDB, sharedpolicy.DefaultEngineConfig(), sharedAuditQueue))
+		// #2801: capability-scoping levers (kill switch + Enterprise
+		// text-document registry extension) ride the engine config.
+		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(authDB, capabilityScopedEngineConfig(), sharedAuditQueue))
 		log.Println("✅ Policy enforcement: DB-backed shared engine (with audit)")
 
 		// Cost service for budget enforcement (requires DB)
