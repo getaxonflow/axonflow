@@ -16,9 +16,12 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// registerCoworkOTELIngest (community) mounts a 501 stub at POST /v1/logs.
+// registerCoworkOTELIngest (community) mounts 501 stubs at POST /v1/logs and
+// POST /v1/metrics.
 func registerCoworkOTELIngest(r *mux.Router) {
-	r.HandleFunc("/v1/logs", func(w http.ResponseWriter, _ *http.Request) {
+	stub := func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, "Cowork OTEL ingest is an Enterprise feature", http.StatusNotImplemented)
-	}).Methods(http.MethodPost)
+	}
+	r.HandleFunc("/v1/logs", stub).Methods(http.MethodPost)
+	r.HandleFunc("/v1/metrics", stub).Methods(http.MethodPost)
 }

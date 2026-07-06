@@ -10,6 +10,24 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.5.0] - 2026-07-06 (Claude Code & Cowork OTLP ingest: /v1/metrics, record-level identity, ingest reject visibility)
+
+**Additive minor.** v9.5.0 completes AxonFlow's ingest of the native OpenTelemetry stream that Claude Code and Claude Cowork emit. A new `POST /v1/metrics` endpoint lands the tools' usage counters (tokens, cost, sessions, lines of code, tool-permission decisions, active time) as canonical, governed usage records; the log-ingest plane now reads the acting developer's identity and session from each record (not only the resource) so activity attributes to a real person; and both ingest planes now emit a per-tenant rejection counter and log line so a mis-configured exporter is diagnosable instead of failing silently. One idempotent migration (`core/140`) auto-applies on deploy.
+
+### Added
+
+- **OTLP metrics ingest (`POST /v1/metrics`).** *(Enterprise)* Claude Code and Cowork export usage as OpenTelemetry metrics (token, cost, session, lines-of-code, commit, pull-request, tool-permission-decision, and active-time counters). AxonFlow now accepts that OTLP metrics stream and lands each datapoint as a canonical `usage_events` row — delta-normalized from cumulative exports, keyed on session and developer, org-tagged from the authenticated license (never from the telemetry) — so aggregate per-developer and per-session usage reporting works over the same store the portal already reads. In Community the endpoint is present but returns 501 (it is an Enterprise capability).
+- **Record-level identity on the log-ingest plane.** *(Enterprise)* The OTLP log ingest now reads `user.email`, `session.id`, and the Anthropic account identifiers from each individual log record, with a resource-level fallback — real Claude Code and Cowork exporters place these per record, not on the resource — so governed activity attributes to the acting developer instead of an anonymous placeholder. Per-developer attribution requires the client to be signed in with an Anthropic account; an API-key-only client emits no developer email, and those records remain correctly session-keyed.
+- **Per-tenant ingest-reject visibility.** *(Enterprise)* Both ingest planes now emit an `axonflow_otel_ingest_rejected_total{route,tenant,reason}` counter and a log line for every rejected request, so a mis-configured or mis-authenticated exporter is diagnosable rather than appearing as a silent "zero rows, no error." Tenant labels are bounded so an unauthenticated caller cannot inflate metric cardinality.
+
+### Fixed
+
+- **Client control bytes in an OTLP field no longer lose an audit record or drop a metrics batch.** *(Enterprise)* A NUL or other C0/DEL control byte in a client-supplied OTLP field is valid UTF-8, so it survived the prior UTF-8 repair, but the database rejects it and would abort the insert — losing the governed audit row on the log-ingest plane, and rejecting the entire export batch (including every well-formed sibling datapoint) on the metrics plane. Every client-supplied string that reaches storage on either plane is now sanitized — control bytes stripped, ordinary prose whitespace preserved — before persistence.
+
+### Migration
+
+- **`core/140`** *(Community)*: adds nullable OTLP usage columns and three partial indexes to `usage_events` to back the metrics-ingest records above. Additive — no rewrite of existing rows, and a no-op for the new columns until Enterprise OTLP metrics ingest writes them. Auto-applies on deploy.
+
 ## [9.4.0] - 2026-07-03 (capability-scoped detection, documentation false-positive hardening, fresh-deploy and audit fixes)
 
 **Additive minor.** v9.4.0 sharpens detection so governed documentation workflows stop tripping execution-oriented detectors, while keeping every real attack governed. Execution-class detectors (SQL injection, dangerous commands) now skip tools whose input is prose rather than executable statements, the loose-verb and comment-based SQL-injection detectors are hardened against documentation text, and several fixes close a self-blocking override path, an empty signed decision chain, a response-plane fail-open on a policy-load error, and portal display and fresh-deploy issues. Three idempotent migrations (`core/135`, `core/138`, `core/139`) auto-apply on deploy.
