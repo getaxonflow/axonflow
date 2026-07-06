@@ -22,32 +22,19 @@ import (
 	"strings"
 	"testing"
 
-	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
-	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 
 	sharedaudit "axonflow/platform/shared/audit"
 	"axonflow/platform/testutil"
 )
 
-// coworkEventFixture is a (name, attrs) pair for building a multi-record OTLP req.
+// coworkEventFixture is a (name, attrs) pair for building a multi-record OTLP
+// req (consumed by coworkLogsReqRealShaped in cowork_otel_ingest_test.go, which
+// builds the REAL wire shape: eventName absent, prefixed body, identity per
+// record — #2838).
 type coworkEventFixture struct {
 	name  string
 	attrs []*commonpb.KeyValue
-}
-
-func coworkLogsReqMulti(resAttrs []*commonpb.KeyValue, events []coworkEventFixture) *collectorlogs.ExportLogsServiceRequest {
-	recs := make([]*logspb.LogRecord, 0, len(events))
-	for _, e := range events {
-		recs = append(recs, &logspb.LogRecord{EventName: e.name, Attributes: e.attrs})
-	}
-	return &collectorlogs.ExportLogsServiceRequest{
-		ResourceLogs: []*logspb.ResourceLogs{{
-			Resource:  &resourcepb.Resource{Attributes: resAttrs},
-			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: recs}},
-		}},
-	}
 }
 
 func TestCoworkOTEL_RealPostgres_RedactedQueryableBySession(t *testing.T) {
@@ -97,28 +84,36 @@ func TestCoworkOTEL_RealPostgres_RedactedQueryableBySession(t *testing.T) {
 	t.Cleanup(func() { usageDB = origDB })
 
 	const sessionID = "sess-e2e-1"
-	const userEmail = "andi@design-partner.example"
+	const userEmail = "andi@acme-eval.example"
 	const nik = coworkValidNIK
 
-	req := coworkLogsReqMulti(
-		[]*commonpb.KeyValue{
-			strAttr("service.name", "cowork"),
-			strAttr("session.id", sessionID),
-			strAttr("user.email", userEmail),
-			strAttr("organization.id", "org-SPOOFED"),
-		},
+	// REAL attribute placement (#2838): identity/session per LOG RECORD (with a
+	// telemetry-spoofed organization.id that must NOT become org_id), resource
+	// block identity-free, top-level eventName ABSENT (prefixed name in body,
+	// unprefixed in the event.name attribute) — the shape a real captured
+	// Claude Code / Cowork export has on the wire.
+	identity := func() []*commonpb.KeyValue {
+		return append(realShapedIdentityAttrs(userEmail, sessionID),
+			strAttr("organization.id", "org-SPOOFED"))
+	}
+	req := coworkLogsReqRealShaped("cowork",
 		[]coworkEventFixture{
-			{name: "cowork.user_prompt", attrs: []*commonpb.KeyValue{
+			{name: "cowork.user_prompt", attrs: append(identity(),
 				strAttr("prompt", "Cek pelanggan NIK "+nik),
 				strAttr("prompt.id", "prompt-e2e-1"),
-			}},
-			{name: "cowork.api_request", attrs: []*commonpb.KeyValue{
+			)},
+			{name: "cowork.api_request", attrs: append(identity(),
 				strAttr("model", "claude-sonnet-4-6"),
 				intAttr("input_tokens", 90),
 				intAttr("output_tokens", 50),
 				dblAttr("cost_usd", 0.02),
 				strAttr("prompt.id", "prompt-e2e-1"),
-			}},
+			)},
+			{name: "cowork.assistant_response", attrs: append(identity(),
+				strAttr("response", "Ditemukan: NIK "+nik+" atas nama pelanggan"),
+				strAttr("model", "claude-sonnet-4-6"),
+				strAttr("prompt.id", "prompt-e2e-1"),
+			)},
 		},
 	)
 
@@ -136,8 +131,8 @@ func TestCoworkOTEL_RealPostgres_RedactedQueryableBySession(t *testing.T) {
 		sessionID, userEmail).Scan(&total); err != nil {
 		t.Fatalf("count by session/user: %v", err)
 	}
-	if total != 2 {
-		t.Fatalf("rows queryable by session+user: got %d want 2", total)
+	if total != 3 {
+		t.Fatalf("rows queryable by session+user: got %d want 3 (identity travels on the LOG RECORDS — #2838)", total)
 	}
 
 	// --- the user_prompt row: redacted, canonical, correlated -----------------
@@ -179,6 +174,21 @@ func TestCoworkOTEL_RealPostgres_RedactedQueryableBySession(t *testing.T) {
 	}
 	if cost < 0.0199 || cost > 0.0201 {
 		t.Errorf("cost: got %v want ~0.02", cost)
+	}
+
+	// --- the assistant_response row: reply text landed, redacted (#2838) -------
+	var arVerdict, arQuery string
+	if err := db.QueryRow(`
+		SELECT policy_decision, query
+		  FROM audit_logs WHERE session_id=$1 AND request_type='cowork_assistant_response'`,
+		sessionID).Scan(&arVerdict, &arQuery); err != nil {
+		t.Fatalf("read assistant_response row: %v", err)
+	}
+	if arVerdict != sharedaudit.DecisionRedacted {
+		t.Errorf("assistant_response verdict: got %q want redacted", arVerdict)
+	}
+	if strings.Contains(arQuery, nik) {
+		t.Fatalf("REDACTION LEAK: raw NIK in assistant_response query: %q", arQuery)
 	}
 
 	// --- the raw NIK must appear NOWHERE (redact-before-persist) ---------------

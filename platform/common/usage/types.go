@@ -3,7 +3,10 @@
 
 package usage
 
-import "database/sql"
+import (
+	"database/sql"
+	"time"
+)
 
 // UsageRecorder handles recording usage events to the database.
 // In Community builds, all methods are no-ops.
@@ -31,6 +34,45 @@ type APICallEvent struct {
 	PoliciesEvaluated int
 	PolicyViolations  int
 }
+
+// OTELMetricEvent is one OTLP metric datapoint from the authenticated
+// /v1/metrics ingest (#2832), landing as a usage_events row with
+// event_type='claude_code_metric'. Value carries the datapoint exactly as
+// exported; the recorder normalizes it to a DELTA before insert (cumulative
+// streams are converted using the prior datapoint of the same series), so
+// SUM(metric_value) per metric_name is always correct.
+//
+// SessionID / UserEmail are ASSERTED attribution labels from the telemetry —
+// the org scope on the row comes from the authenticated license, never from
+// these fields.
+type OTELMetricEvent struct {
+	ClientID     string
+	InstanceID   string
+	InstanceType string
+
+	SessionID   string
+	UserEmail   string
+	MetricName  string            // e.g. "claude_code.token.usage"
+	Value       float64           // datapoint value as exported (see Temporality)
+	Temporality string            // TemporalityDelta or TemporalityCumulative
+	SeriesKey   string            // sha256 hex over org + metric name + full attribute set
+	Attributes  map[string]string // allowlisted structural attributes only
+	Time        time.Time         // datapoint TimeUnixNano (zero → NULL)
+	StartTime   time.Time         // datapoint StartTimeUnixNano (zero → NULL)
+
+	// Legacy-column mirroring: when set, the normalized delta is also written
+	// into the existing token/cost columns so the usage_hourly / usage_daily
+	// rollups (which sum those columns) carry Claude Code usage unchanged.
+	CountsTokens  bool   // metric counts tokens → prompt/completion/total_tokens
+	TokenType     string // "input" | "output" | cache types (from the `type` attribute)
+	CountsCostUSD bool   // metric counts USD cost → estimated_cost_cents (rounded)
+}
+
+// Aggregation temporality values for OTELMetricEvent.Temporality.
+const (
+	TemporalityDelta      = "delta"
+	TemporalityCumulative = "cumulative"
+)
 
 // LLMRequestEvent represents an LLM API call event to be recorded
 type LLMRequestEvent struct {

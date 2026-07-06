@@ -13,7 +13,10 @@
 //   - Usage dashboards and reporting
 package usage
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+)
 
 // NewUsageRecorder creates a new usage recorder.
 // Community Edition: Returns a no-op recorder.
@@ -31,4 +34,11 @@ func (r *UsageRecorder) RecordAPICall(event APICallEvent) error {
 // Community Edition: No-op implementation.
 func (r *UsageRecorder) RecordLLMRequest(event LLMRequestEvent) error {
 	return nil
+}
+
+// RecordOTELMetrics persists OTLP metric datapoints as usage rows.
+// Community Edition: No-op implementation (the /v1/metrics ingest is an
+// Enterprise feature; the community agent mounts a 501 stub).
+func (r *UsageRecorder) RecordOTELMetrics(ctx context.Context, orgID string, events []OTELMetricEvent) (int, error) {
+	return 0, nil
 }

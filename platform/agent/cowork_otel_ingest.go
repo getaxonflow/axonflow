@@ -19,11 +19,18 @@
 // Invariants (see the WS-6 brief + addendum):
 //   - Authenticated + tenant-tagged ingest. org_id/tenant_id come from the
 //     authenticated license (apiAuthMiddleware), NEVER from the (spoofable) OTEL
-//     resource attributes. user.email from the telemetry is attribution only.
+//     attributes. user.email from the telemetry is attribution only.
+//   - Identity/session attribution reads the LOG RECORD attributes first, then
+//     falls back to resource attributes (#2838): real Claude Code / Cowork
+//     exporters carry user.email / session.id / user.account_uuid on EVERY log
+//     record (verified against a real captured export), while their resource
+//     block holds only service.*/os.*/host.arch. The resource-level fallback
+//     stays for collectors that promote record attributes to the resource.
 //   - Redact BEFORE persist, fail-closed: content is routed through the engine
 //     (evaluateOutputPolicies — the SAME response-plane redactor check-output
 //     uses; no new regex). If no redactor is active, raw content is WITHHELD.
-//   - Reply text is NOT present in Cowork OTEL and is not synthesized here.
+//   - Reply text (assistant_response, emitted by Cowork ≥1.17377 and Claude
+//     Code) IS ingested (#2838) and force-redacted like all content fields.
 //   - Reuse the existing signed chain (recordSignedDecision → decision_chain,
 //     #2722/#2732); no signing is reimplemented.
 package agent
@@ -37,6 +44,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -73,27 +81,50 @@ const (
 
 	// Canonical (prefix-stripped) OTEL event names we map. Cowork and Claude Code
 	// emit these with a "cowork." / "claude_code." prefix which we normalize away.
-	evUserPrompt   = "user_prompt"
-	evToolResult   = "tool_result"
-	evToolDecision = "tool_decision"
-	evAPIRequest   = "api_request"
-	evAPIError     = "api_error"
+	evUserPrompt        = "user_prompt"
+	evToolResult        = "tool_result"
+	evToolDecision      = "tool_decision"
+	evAPIRequest        = "api_request"
+	evAPIError          = "api_error"
+	evAssistantResponse = "assistant_response"
+
+	// audit_logs column widths (migrations 059/119/121/129). EVERY client-supplied
+	// telemetry value bound for a bounded column is truncated/clamped: an
+	// oversized value would fail the row INSERT, and a client-triggerable
+	// insert failure on this plane is an audit-evasion channel (the event would
+	// be ACKed but never audited — R3 H1).
+	maxCoworkUserEmailLen     = 255
+	maxCoworkSessionIDLen     = 255
+	maxCoworkModelLen         = 100 // audit_logs.model VARCHAR(100)
+	maxCoworkCorrelationIDLen = 255 // audit_logs.correlation_id VARCHAR(255)
+	maxCoworkAccountUUIDLen   = 64  // UUID-shaped join key; free text is hostile
+	maxCoworkAccountIDLen     = 128 // user_…-tagged join key
+	maxCoworkToolNameLen      = 256 // descriptor identifiers (tool_name / decision) embedded in query
 )
+
+// maxCoworkCost caps audit_logs.cost (DECIMAL(10,6) → max 9999.999999). A
+// client-supplied cost_usd beyond it is nonsense; clamp instead of failing the
+// INSERT.
+const maxCoworkCost = 9999.999999
 
 var (
 	errUnsupportedContentType = errors.New("unsupported content-type (want application/x-protobuf or application/json)")
 	errOTLPBodyTooLarge       = errors.New("otlp body exceeds limit")
 )
 
-// registerCoworkOTELIngest mounts the authenticated OTLP logs ingest route. It
-// creates its own subrouter with apiAuthMiddleware so inbound telemetry is
-// authenticated and org/tenant-tagged from the license (mirrors the hitl mount).
-// In the community build a no-op stub with the same name mounts a 501 instead.
+// registerCoworkOTELIngest mounts the authenticated OTLP ingest routes (logs +
+// metrics). It creates its own subrouter with apiAuthMiddleware so inbound
+// telemetry is authenticated and org/tenant-tagged from the license (mirrors
+// the hitl mount). otelIngestRejectObserver wraps OUTSIDE the auth middleware
+// (mux applies Use() in order, first = outermost) so auth 401s — previously
+// silent, #2832 — are logged + counted per tenant. In the community build a
+// no-op stub with the same name mounts 501s instead.
 func registerCoworkOTELIngest(r *mux.Router) {
 	sub := r.NewRoute().Subrouter()
-	sub.Use(apiAuthMiddleware)
+	sub.Use(otelIngestRejectObserver, apiAuthMiddleware)
 	sub.HandleFunc(coworkOTELLogsPath, coworkOTELLogsHandler).Methods(http.MethodPost)
-	log.Printf("[CoworkOTEL] enterprise OTLP logs ingest mounted at POST %s (authenticated)", coworkOTELLogsPath)
+	sub.HandleFunc(coworkOTELMetricsPath, coworkOTELMetricsHandler).Methods(http.MethodPost)
+	log.Printf("[CoworkOTEL] enterprise OTLP ingest mounted at POST %s + POST %s (authenticated)", coworkOTELLogsPath, coworkOTELMetricsPath)
 }
 
 // coworkOTELLogsHandler receives an OTLP/HTTP ExportLogsServiceRequest (protobuf
@@ -151,8 +182,18 @@ func processCoworkLogs(ctx context.Context, orgID, tenantID, clientID string, re
 	}
 	for _, rl := range req.GetResourceLogs() {
 		resAttrs := attrsToMap(rl.GetResource().GetAttributes())
-		sessionID := firstNonEmpty(getStr(resAttrs, "session.id"), getStr(resAttrs, "session_id"))
-		userEmail := firstNonEmpty(getStr(resAttrs, "user.email"), getStr(resAttrs, "user_email"))
+		// Resource-level identity is the FALLBACK only (#2838): real Claude Code /
+		// Cowork exporters carry session.id / user.email per LOG RECORD, and their
+		// resource block has no identity at all. processCoworkRecord prefers the
+		// record-level values over these.
+		// Sanitize per candidate before picking (an all-control first spelling
+		// must not shadow a valid alternate — #2840 R3 L1 class).
+		resSessionID := firstNonEmpty(
+			truncateOTELString(getStr(resAttrs, "session.id"), maxCoworkSessionIDLen),
+			truncateOTELString(getStr(resAttrs, "session_id"), maxCoworkSessionIDLen))
+		resUserEmail := firstNonEmpty(
+			truncateOTELString(getStr(resAttrs, "user.email"), maxCoworkUserEmailLen),
+			truncateOTELString(getStr(resAttrs, "user_email"), maxCoworkUserEmailLen))
 		serviceName := getStr(resAttrs, "service.name")
 		plane := planeFromService(serviceName)
 
@@ -163,7 +204,7 @@ func processCoworkLogs(ctx context.Context, orgID, tenantID, clientID string, re
 					rejected++
 					continue
 				}
-				if processCoworkRecord(ctx, orgID, tenantID, clientID, plane, sessionID, userEmail, rec) {
+				if processCoworkRecord(ctx, orgID, tenantID, clientID, plane, resSessionID, resUserEmail, rec) {
 					accepted++
 				} else {
 					rejected++
@@ -175,17 +216,39 @@ func processCoworkLogs(ctx context.Context, orgID, tenantID, clientID string, re
 }
 
 // processCoworkRecord maps one OTLP LogRecord to a canonical audit_logs row.
+// resSessionID/resUserEmail are the resource-level FALLBACK values; the record's
+// own attributes win (#2838 — that is where real exporters put them).
 // Returns true when a row was persisted (recognized event), false otherwise.
-func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, sessionID, userEmail string, rec *logspb.LogRecord) bool {
+func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, resSessionID, resUserEmail string, rec *logspb.LogRecord) bool {
 	if rec == nil {
 		return false
 	}
 	attrs := attrsToMap(rec.GetAttributes())
 	base := normalizeEventName(firstNonEmpty(rec.GetEventName(), getStr(attrs, "event.name"), getStr(attrs, "name")))
 
-	promptID := firstNonEmpty(getStr(attrs, "prompt.id"), getStr(attrs, "prompt_id"))
-	toolName := getStr(attrs, "tool_name")
-	model := getStr(attrs, "model")
+	// Sanitize each candidate BEFORE the fallback pick: an all-control
+	// record-level value ("\x00") is non-empty pre-sanitize and would shadow a
+	// valid resource-level fallback into empty attribution (R3 #2840 L1).
+	sessionID := firstNonEmpty(
+		truncateOTELString(getStr(attrs, "session.id"), maxCoworkSessionIDLen),
+		truncateOTELString(getStr(attrs, "session_id"), maxCoworkSessionIDLen),
+		truncateOTELString(resSessionID, maxCoworkSessionIDLen))
+	userEmail := firstNonEmpty(
+		truncateOTELString(getStr(attrs, "user.email"), maxCoworkUserEmailLen),
+		truncateOTELString(getStr(attrs, "user_email"), maxCoworkUserEmailLen),
+		truncateOTELString(resUserEmail, maxCoworkUserEmailLen))
+	// Anthropic account identifiers (record-level, #2838): the documented join
+	// keys to Anthropic's Compliance API. Attribution only, stored in
+	// policy_details — length-capped so multi-MB junk under these keys can
+	// neither bloat the JSONB row nor smuggle unredacted free text (R3 M1).
+	accountUUID := truncateOTELString(getStr(attrs, "user.account_uuid"), maxCoworkAccountUUIDLen)
+	accountID := truncateOTELString(getStr(attrs, "user.account_id"), maxCoworkAccountIDLen)
+
+	promptID := firstNonEmpty(
+		truncateOTELString(getStr(attrs, "prompt.id"), maxCoworkCorrelationIDLen),
+		truncateOTELString(getStr(attrs, "prompt_id"), maxCoworkCorrelationIDLen))
+	toolName := truncateOTELString(getStr(attrs, "tool_name"), maxCoworkToolNameLen)
+	model := truncateOTELString(getStr(attrs, "model"), maxCoworkModelLen)
 	inputTokens := getInt(attrs, "input_tokens")
 	outputTokens := getInt(attrs, "output_tokens")
 	cost := firstNonZeroFloat(getFloat(attrs, "cost_usd"), getFloat(attrs, "cost"))
@@ -201,12 +264,19 @@ func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, 
 	var redactedFields []string
 
 	// Extract the content field per event type, then redact-at-collector.
+	// sanitizeOTELText first (#2840): a client NUL / control byte in the prose
+	// would otherwise abort the audit INSERT and lose the row — the audit store
+	// must capture the event, sanitized, not drop it. Tab/newline/CR survive.
 	var content string
 	switch base {
 	case evUserPrompt:
-		content = getStr(attrs, "prompt")
+		content = sanitizeOTELText(getStr(attrs, "prompt"))
 	case evToolResult:
-		content = firstNonEmpty(getStr(attrs, "tool_input"), getStr(attrs, "tool_parameters"))
+		content = firstNonEmpty(sanitizeOTELText(getStr(attrs, "tool_input")), sanitizeOTELText(getStr(attrs, "tool_parameters")))
+	case evAssistantResponse:
+		// Model reply text (#2838; present when the org's content capture /
+		// OTEL_LOG_* settings include responses). Free text → force-redacted.
+		content = sanitizeOTELText(getStr(attrs, "response"))
 	}
 
 	if content != "" {
@@ -234,10 +304,16 @@ func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, 
 			query = "cowork tool_result: " + defaultStr(toolName, "(tool)")
 		}
 	case evToolDecision:
-		decision := firstNonEmpty(getStr(attrs, "decision"), getStr(attrs, "decision_type"))
+		decision := firstNonEmpty(
+			truncateOTELString(getStr(attrs, "decision"), maxCoworkToolNameLen),
+			truncateOTELString(getStr(attrs, "decision_type"), maxCoworkToolNameLen))
 		query = "cowork tool_decision: " + defaultStr(toolName, "(tool)") + " → " + defaultStr(decision, "(unknown)")
 		if isRejectDecision(decision) {
 			verdict = sharedaudit.DecisionBlocked
+		}
+	case evAssistantResponse:
+		if query == "" {
+			query = "(cowork assistant response: content capture off)"
 		}
 	case evAPIRequest:
 		query = "cowork api_request: " + defaultStr(model, "(model)")
@@ -256,6 +332,8 @@ func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, 
 		tenantID:       tenantID,
 		clientID:       clientID,
 		userEmail:      userEmail,
+		accountUUID:    accountUUID,
+		accountID:      accountID,
 		userRole:       roleForPlane(plane),
 		plane:          plane,
 		requestType:    requestType,
@@ -266,12 +344,17 @@ func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, 
 		redactedFields: redactedFields,
 		model:          model,
 		responseTimeMs: durationMs,
-		tokensUsed:     int(inputTokens + outputTokens),
-		cost:           cost,
+		tokensUsed:     clampCoworkTokens(inputTokens, outputTokens),
+		cost:           clampCoworkCost(cost),
 		eventName:      base,
 		timestamp:      recordTimestamp(rec),
 	}
-	writeCoworkAuditLog(ctx, usageDB, row)
+	// Persist-then-sign, and count a failed persist as REJECTED (R3 H1): ACKing
+	// an event whose row was never stored is an audit-evasion channel, and a
+	// chain entry must never reference a row that does not exist.
+	if !writeCoworkAuditLog(ctx, usageDB, row) {
+		return false
+	}
 
 	// Sign + hash-chain the canonical row into decision_chain (#2722/#2732). Reuses
 	// the existing wiring; best-effort, off the hot path, never reimplemented. The
@@ -284,6 +367,35 @@ func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, 
 	}
 	recordSignedDecision(ctx, decisionID, orgID, tenantID, stageForEvent(base), verdict, nil, reasons, durationMs)
 	return true
+}
+
+// clampCoworkTokens folds client-supplied int64 token counts into the int32
+// audit_logs.tokens_used column without overflow (negative or absurd values
+// clamp instead of failing the INSERT — R3 H1).
+func clampCoworkTokens(in, out int64) int {
+	sum := in + out
+	if in > 0 && out > 0 && sum < 0 { // int64 overflow
+		return int(math.MaxInt32)
+	}
+	if sum < 0 {
+		return 0
+	}
+	if sum > math.MaxInt32 {
+		return int(math.MaxInt32)
+	}
+	return int(sum)
+}
+
+// clampCoworkCost bounds a client-supplied cost to what audit_logs.cost
+// (DECIMAL(10,6)) can hold; NaN/Inf/negative become 0.
+func clampCoworkCost(c float64) float64 {
+	if math.IsNaN(c) || math.IsInf(c, 0) || c < 0 {
+		return 0
+	}
+	if c > maxCoworkCost {
+		return maxCoworkCost
+	}
+	return c
 }
 
 // coworkRedactResult is the outcome of redact-at-collector for one content field.
@@ -409,6 +521,8 @@ type coworkAuditRow struct {
 	tenantID       string
 	clientID       string
 	userEmail      string
+	accountUUID    string // OTEL user.account_uuid — Anthropic Compliance API join key (#2838)
+	accountID      string // OTEL user.account_id (tagged form)
 	userRole       string
 	plane          string
 	requestType    string
@@ -429,11 +543,12 @@ type coworkAuditRow struct {
 // OTEL event. It writes to the SAME audit_logs table every other plane uses
 // (single audit source), carrying the OTEL-native usage fields (model / tokens /
 // cost) that already exist on audit_logs since migration 059, plus session_id
-// (migration 129) and correlation_id (= prompt.id, migration 121). Best-effort: a
-// DB error logs and returns; ingest never fabricates a verdict.
-func writeCoworkAuditLog(ctx context.Context, db *sql.DB, row coworkAuditRow) {
+// (migration 129) and correlation_id (= prompt.id, migration 121). Returns true
+// only when the row was PERSISTED — the caller counts a failed persist as
+// rejected and skips the chain entry (R3 H1: never ACK an unstored event).
+func writeCoworkAuditLog(ctx context.Context, db *sql.DB, row coworkAuditRow) bool {
 	if db == nil || row.decisionID == "" {
-		return
+		return false
 	}
 
 	if row.userEmail == "" {
@@ -467,6 +582,12 @@ func writeCoworkAuditLog(ctx context.Context, db *sql.DB, row coworkAuditRow) {
 	if row.sessionID != "" {
 		details["session_id"] = row.sessionID
 	}
+	if row.accountUUID != "" {
+		details["user_account_uuid"] = row.accountUUID
+	}
+	if row.accountID != "" {
+		details["user_account_id"] = row.accountID
+	}
 	if len(row.redactedFields) > 0 {
 		details["redacted_fields"] = row.redactedFields
 	}
@@ -482,7 +603,7 @@ func writeCoworkAuditLog(ctx context.Context, db *sql.DB, row coworkAuditRow) {
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		log.Printf("[CoworkOTEL] audit: marshal policy_details failed: %v", err)
-		return
+		return false
 	}
 
 	var redactedFieldsArg interface{}
@@ -529,7 +650,9 @@ func writeCoworkAuditLog(ctx context.Context, db *sql.DB, row coworkAuditRow) {
 	)
 	if err != nil {
 		log.Printf("[CoworkOTEL] audit: insert failed: %v", err)
+		return false
 	}
+	return true
 }
 
 // ------------------------------- parsing/helpers ----------------------------
