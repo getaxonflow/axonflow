@@ -10,6 +10,16 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.6.1] - 2026-07-08 (patch on 9.6.0: audit-search session_id drill-down)
+
+**Patch.** Fixes a correctness bug in the audit-search API surfaced while documenting the v9.6.0 session-summary reporting: a `session_id` filter was silently dropped, so the per-session drill-down returned the tenant's rows across all sessions instead of the one requested. Within-tenant only; tenant isolation was never affected. No migration.
+
+### Fixed
+
+- **`session_id` filter on `POST /api/v1/audit/search` is now applied.** *(Community)* The audit-search request handler's body-decode struct was missing the `session_id` field the query layer already supported, so a `session_id` filter was silently dropped and the session-summary "drill into this session" flow returned all of the tenant's rows across every session with a `200`. The filter now reaches the query as a parameterized, tenant-scoped condition, so drilling into a session bucket returns exactly that session's rows. Tenant scoping (from the trusted tenant header) was never affected. Pinned by a handler-level regression test and a runtime-e2e drill-down leg.
+
+---
+
 ## [9.6.0] - 2026-07-07 (session-summary reporting API + Claude Code usage dashboard)
 
 **Additive minor.** v9.6.0 turns the Claude Code and Cowork activity v9.5.0 began ingesting into reporting. A new session-summary API rolls governed activity into per-session (or per-user-day) buckets, additively enriched with the developer and session usage metrics when the OTLP ingest is wired; a new operator Grafana dashboard visualizes that usage; and the bundled Grafana datasources are provisioned with stable uids, closing a pre-existing bug that broke provisioned dashboards. One idempotent migration (`core/141`) auto-applies on deploy.

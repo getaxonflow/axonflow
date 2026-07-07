@@ -2583,6 +2583,7 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		PolicyName string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
 		OverrideID string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
 		Action     string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")
+		SessionID  string    `json:"session_id,omitempty"`  // #2759: session-summary bucket drill-down against the first-class column
 		Limit      int       `json:"limit,omitempty"`
 		Offset     int       `json:"offset,omitempty"`
 	}

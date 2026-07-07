@@ -17,6 +17,7 @@ import (
 	"axonflow/platform/orchestrator/rbi"
 	"axonflow/platform/orchestrator/sebi"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
 )
 
@@ -1780,6 +1781,74 @@ func TestAuditSearchHandler(t *testing.T) {
 				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
 		})
+	}
+}
+
+// TestAuditSearchHandler_SessionIDFilter pins the HTTP→SQL wiring of the
+// #2759 session-summary drill-down: a session_id in the POST body must reach
+// SearchAuditLogs as a criteria field and land in the SQL as a
+// session_id = $n filter. Regression it guards: the backend filter shipped
+// with #2759 (SearchAuditLogs + criteria adapter), but the handler's
+// body-decode struct never carried the field, so an HTTP caller's session_id
+// was silently dropped and the "drill into a session bucket" flow returned
+// the tenant's rows across ALL sessions with a 200 (#2857). The criteria
+// adapter reads whatever fields the caller's struct exposes, so this bug
+// class is invisible to SearchAuditLogs-level tests — it must be pinned at
+// the handler.
+func TestAuditSearchHandler_SessionIDFilter(t *testing.T) {
+	oldAuditLogger := auditLogger
+	defer func() { auditLogger = oldAuditLogger }()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	auditLogger = &AuditLogger{db: db}
+
+	rows := sqlmock.NewRows([]string{
+		"id", "request_id", "timestamp", "user_id", "user_email", "user_role",
+		"client_id", "tenant_id", "request_type", "query", "policy_decision",
+		"policy_details", "provider", "model", "response_time_ms", "tokens_used",
+		"cost", "redacted_fields", "error_message", "compliance_flags",
+		"response_sample", "session_id",
+		"total_count",
+	}).AddRow(
+		"audit_sess_001", "req_sess_001", time.Now(), 5, "user@example.com", "user",
+		"client_001", "tenant_001", "query", "session query", "allowed",
+		[]byte(`{}`), "openai", "gpt-4", 100, 80,
+		0.004, []byte(`[]`), "", []byte(`[]`),
+		"", "sess-1",
+		1,
+	)
+	// The tenant comes from the trusted header ($1), the session filter from
+	// the body ($2). WithArgs is the real assertion: it fails unless the
+	// handler actually forwarded session_id into the query.
+	mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) tenant_id = (.+) session_id = (.+) ORDER BY timestamp DESC LIMIT").
+		WithArgs("tenant_001", "sess-1").
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest("POST", "/api/v1/audit/search", strings.NewReader(`{"session_id":"sess-1","limit":50}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant_001")
+	w := httptest.NewRecorder()
+
+	auditSearchHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Entries []*AuditEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+	if len(resp.Entries) != 1 || resp.Entries[0].SessionID != "sess-1" {
+		t.Fatalf("want exactly the sess-1 entry back, got %+v", resp.Entries)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled mock expectations: %v", err)
 	}
 }
 
