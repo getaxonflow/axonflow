@@ -10,6 +10,25 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.6.0] - 2026-07-07 (session-summary reporting API + Claude Code usage dashboard)
+
+**Additive minor.** v9.6.0 turns the Claude Code and Cowork activity v9.5.0 began ingesting into reporting. A new session-summary API rolls governed activity into per-session (or per-user-day) buckets, additively enriched with the developer and session usage metrics when the OTLP ingest is wired; a new operator Grafana dashboard visualizes that usage; and the bundled Grafana datasources are provisioned with stable uids, closing a pre-existing bug that broke provisioned dashboards. One idempotent migration (`core/141`) auto-applies on deploy.
+
+### Added
+
+- **Session-summary reporting API.** *(Enterprise)* `GET /api/v1/audit/session-summary` aggregates `audit_logs` into per-session (or per-user-day fallback) buckets: request totals, an allow / block / redact breakdown, a per-tool (request-type) usage breakdown with tokens / cost / latency, and session-level totals — tenant-scoped, filterable by user, with a bucket cap (`?limit=`, default 200, max 1000) and a `truncated` flag. When the OTLP `/v1/metrics` ingest is configured, each bucket is additively enriched with the Claude Code usage metrics (lines of code, active time, commits, pull requests, tool-permission decisions, session count, and the metrics-export token and cost aggregates); the enrichment is best-effort and gracefully absent when the ingest is not wired, so the base view always works from `audit_logs` alone. In Community the endpoint returns `501` (it is an Enterprise capability).
+- **Claude Code Usage Grafana dashboard.** *(Enterprise)* New dashboard `axonflow-claude-code-usage` over the v9.5.0 OTLP-ingest usage records: per-developer and per-session tokens, cost, lines of code, tool-permission decisions, and active time (PostgreSQL panels over `usage_events`), plus an ingest-health row over `axonflow_otel_ingest_rejected_total` (Prometheus). It is an operator/admin cross-org reporting surface — its org filter is a display slice, not a tenant-isolation boundary. Provisioned by the OTel/Grafana overlay and baked into the deployed Grafana image.
+
+### Changed
+
+- **Grafana provisioned datasources now carry stable uids** (`prometheus`, `axonflow-postgres`). *(Community)* The baked dashboards already referenced `uid: prometheus`, which the deployed entrypoint never defined — those panels resolved to "datasource not found" on a fresh deployed Grafana. Dashboards referencing datasources by name are unaffected. **Upgrade note:** a user-authored dashboard saved against the previous auto-generated datasource uid must be re-pointed once. The deployed entrypoint also accepts `USAGE_DB_*` variables so the SQL datasource can target the platform database when `GF_DATABASE_*` points at a dedicated Grafana metadata DB.
+
+### Migration
+
+- **`core/141`** *(Community)*: adds an idempotent `(tenant_id, timestamp, session_id)` composite index to `audit_logs` so the session-summary aggregate scans are index-assisted on large tenants. Additive — no rewrite of existing rows; auto-applies on deploy.
+
+---
+
 ## [9.5.0] - 2026-07-06 (Claude Code & Cowork OTLP ingest: /v1/metrics, record-level identity, ingest reject visibility)
 
 **Additive minor.** v9.5.0 completes AxonFlow's ingest of the native OpenTelemetry stream that Claude Code and Claude Cowork emit. A new `POST /v1/metrics` endpoint lands the tools' usage counters (tokens, cost, sessions, lines of code, tool-permission decisions, active time) as canonical, governed usage records; the log-ingest plane now reads the acting developer's identity and session from each record (not only the resource) so activity attributes to a real person; and both ingest planes now emit a per-tenant rejection counter and log line so a mis-configured exporter is diagnosable instead of failing silently. One idempotent migration (`core/140`) auto-applies on deploy.

@@ -686,6 +686,7 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"response_sample", "session_id",
 					"total_count",
 				}).
 					AddRow(
@@ -693,6 +694,7 @@ func TestSearchAuditLogs(t *testing.T) {
 						"client_001", "tenant_001", "query", "test query", "allowed",
 						[]byte(`{"risk_score": 0.1}`), "openai", "gpt-4", 150, 100,
 						0.005, []byte(`[]`), "", []byte(`["gdpr_applicable"]`),
+						"", "",
 						1,
 					)
 				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) ORDER BY timestamp DESC LIMIT").
@@ -721,6 +723,7 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"response_sample", "session_id",
 					"total_count",
 				}).
 					AddRow(
@@ -728,6 +731,7 @@ func TestSearchAuditLogs(t *testing.T) {
 						"client_002", "tenant_002", "llm-call", "update query", "allowed",
 						[]byte(`{"risk_score": 0.3}`), "anthropic", "claude-sonnet-4", 200, 150,
 						0.008, []byte(`["email"]`), "", []byte(`[]`),
+						"", "",
 						2,
 					).
 					AddRow(
@@ -735,6 +739,7 @@ func TestSearchAuditLogs(t *testing.T) {
 						"client_002", "tenant_002", "decision_llm", "delete query", "blocked",
 						[]byte(`{"risk_score": 0.8}`), "anthropic", "claude-sonnet-4", 180, 120,
 						0.006, []byte(`[]`), "", []byte(`["sox_relevant"]`),
+						"", "",
 						2,
 					)
 				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email ILIKE (.+) client_id ILIKE (.+) ORDER BY timestamp DESC LIMIT").
@@ -763,6 +768,7 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"response_sample", "session_id",
 					"total_count",
 				})
 				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) timestamp >= (.+) timestamp <= (.+) ORDER BY timestamp DESC LIMIT").
@@ -808,6 +814,7 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"response_sample", "session_id",
 					"total_count",
 				}).
 					AddRow(
@@ -815,6 +822,7 @@ func TestSearchAuditLogs(t *testing.T) {
 						"client_001", "tenant_001", "query", "blocked query", "blocked",
 						[]byte(`{"risk_score": 0.9}`), "openai", "gpt-4", 100, 80,
 						0.004, []byte(`[]`), "", []byte(`[]`),
+						"", "",
 						1,
 					)
 				// #2636/#2653 (supersedes #2637): the canonical "blocked" filter
@@ -823,6 +831,43 @@ func TestSearchAuditLogs(t *testing.T) {
 				// rows still match.
 				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) tenant_id = (.+) policy_decision = ANY(.+) ORDER BY timestamp DESC LIMIT").
 					WithArgs("tenant_001", pq.Array(audit.Spellings(audit.DecisionBlocked))).
+					WillReturnRows(rows)
+			},
+			expectCount: 1,
+			expectError: false,
+		},
+		{
+			// #2759: session-summary buckets drill down into their raw events via
+			// ?session_id=X, backed by this filter against the first-class column.
+			name: "Search by session_id",
+			criteria: struct {
+				TenantID  string
+				SessionID string
+				Limit     int
+			}{
+				TenantID:  "tenant_001",
+				SessionID: "sess-1",
+				Limit:     50,
+			},
+			setupMock: func(mock sqlmock.Sqlmock) {
+				rows := sqlmock.NewRows([]string{
+					"id", "request_id", "timestamp", "user_id", "user_email", "user_role",
+					"client_id", "tenant_id", "request_type", "query", "policy_decision",
+					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
+					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"response_sample", "session_id",
+					"total_count",
+				}).
+					AddRow(
+						"audit_sess_001", "req_sess_001", time.Now(), 5, "user@example.com", "user",
+						"client_001", "tenant_001", "query", "session query", "allowed",
+						[]byte(`{}`), "openai", "gpt-4", 100, 80,
+						0.004, []byte(`[]`), "", []byte(`[]`),
+						"", "sess-1",
+						1,
+					)
+				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) tenant_id = (.+) session_id = (.+) ORDER BY timestamp DESC LIMIT").
+					WithArgs("tenant_001", "sess-1").
 					WillReturnRows(rows)
 			},
 			expectCount: 1,
@@ -847,6 +892,7 @@ func TestSearchAuditLogs(t *testing.T) {
 					"client_id", "tenant_id", "request_type", "query", "policy_decision",
 					"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 					"cost", "redacted_fields", "error_message", "compliance_flags",
+					"response_sample", "session_id",
 					"total_count",
 				}).
 					AddRow(
@@ -854,6 +900,7 @@ func TestSearchAuditLogs(t *testing.T) {
 						"client_010", "tenant_010", "query", "second page query", "allowed",
 						[]byte(`{"risk_score": 0.1}`), "openai", "gpt-4o", 110, 80,
 						0.003, []byte(`[]`), "", []byte(`[]`),
+						"", "",
 						1,
 					)
 				// Expect the SQL to contain OFFSET so we can assert the clause is present.
@@ -954,6 +1001,7 @@ func TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice(t *testing.T) {
 			"client_id", "tenant_id", "request_type", "query", "policy_decision",
 			"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 			"cost", "redacted_fields", "error_message", "compliance_flags",
+			"response_sample", "session_id",
 			"total_count",
 		}))
 
@@ -1022,6 +1070,7 @@ func TestSearchAuditLogs_TotalCountExceedsPageSize(t *testing.T) {
 		"client_id", "tenant_id", "request_type", "query", "policy_decision",
 		"policy_details", "provider", "model", "response_time_ms", "tokens_used",
 		"cost", "redacted_fields", "error_message", "compliance_flags",
+		"response_sample", "session_id",
 		"total_count",
 	})
 	// One page of rows; each carries the same window-function total (trueTotal),
@@ -1032,6 +1081,7 @@ func TestSearchAuditLogs_TotalCountExceedsPageSize(t *testing.T) {
 			"client_001", "tenant_001", "query", "page query", "allowed",
 			[]byte(`{"risk_score": 0.1}`), "openai", "gpt-4", 100, 80,
 			0.004, []byte(`[]`), "", []byte(`[]`),
+			"", "",
 			trueTotal,
 		)
 	}
