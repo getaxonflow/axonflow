@@ -44,8 +44,13 @@ type auditSearchCriteria struct {
 	PolicyName string
 	OverrideID string
 	Action     string
-	Limit      int
-	Offset     int
+	// SessionID filters to a single AI-tool session (#2753/#2754, core/129),
+	// mirroring the DecisionID/OverrideID JSONB filters below but against the
+	// first-class audit_logs.session_id column. Lets a session-summary bucket
+	// (#2759) drill down into its raw events via ?session_id=X.
+	SessionID string
+	Limit     int
+	Offset    int
 }
 
 // asAuditSearchCriteria is a best-effort adapter from the various anonymous
@@ -99,6 +104,10 @@ func asAuditSearchCriteria(criteria interface{}) (auditSearchCriteria, bool) {
 		case "OverrideID":
 			if fv.Kind() == reflect.String {
 				out.OverrideID = fv.String()
+			}
+		case "SessionID":
+			if fv.Kind() == reflect.String {
+				out.SessionID = fv.String()
 			}
 		case "Action":
 			if fv.Kind() == reflect.String {
@@ -770,6 +779,7 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 			   client_id, tenant_id, request_type, query, policy_decision,
 			   policy_details, provider, model, response_time_ms, tokens_used,
 			   cost, redacted_fields, error_message, compliance_flags,
+			   COALESCE(response_sample, ''), COALESCE(session_id, ''),
 			   COUNT(*) OVER() AS total_count
 		FROM audit_logs
 		WHERE 1=1
@@ -856,6 +866,15 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 			args = append(args, searchReq.OverrideID)
 			argIndex++
 		}
+		// session_id drill-down (#2759): lets a client page through a
+		// session-summary bucket's raw events by its real session_id, mirroring
+		// the decision_id/override_id filters above but against the first-class
+		// column rather than a JSONB path.
+		if searchReq.SessionID != "" {
+			query += fmt.Sprintf(" AND session_id = $%d", argIndex)
+			args = append(args, searchReq.SessionID)
+			argIndex++
+		}
 		if searchReq.Action != "" {
 			// Canonical-first action filter (#2636/#2653; supersedes PR #2637).
 			// Normalize the filter input to its canonical verdict, then expand to
@@ -925,6 +944,8 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 			&redactedFieldsJSON,
 			&errorMessage,
 			&complianceFlagsJSON,
+			&entry.ResponseSample,
+			&entry.SessionID,
 			&rowTotal,
 		)
 		if err != nil {

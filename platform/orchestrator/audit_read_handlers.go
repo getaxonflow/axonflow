@@ -466,6 +466,24 @@ type ActionReport struct {
 	TopPolicies  []PolicyHitSummary `json:"top_policies"`
 }
 
+// foldDecisionCount folds a raw policy_decision + its row count onto the
+// canonical verdict bucket in byAction (allowed/blocked/redacted/
+// needs_approval/error), returning the count actually folded. Non-verdict rows
+// — LogOverrideEvent's "override_lifecycle" is the one writer that isn't a
+// verdict — normalize to a non-canonical value and are skipped (return 0), so
+// a caller accumulating Total/latency alongside byAction never counts a
+// lifecycle event as though it were a governed decision. Shared by
+// ReportByAction (#2757) and the session-summary bucket aggregation (#2759)
+// so the canonical-folding rule has one implementation.
+func foldDecisionCount(byAction map[string]int, decision string, cnt int) int {
+	canonical := sharedaudit.Normalize(decision)
+	if !sharedaudit.IsCanonical(canonical) {
+		return 0
+	}
+	byAction[canonical] += cnt
+	return cnt
+}
+
 // ReportByAction aggregates audit_logs for the window into per-action counts +
 // average latency + top policies, tenant-scoped and optionally filtered by
 // user_email and a single canonical action. Counts reconcile with
@@ -522,21 +540,14 @@ func (l *AuditLogger) ReportByAction(tenantID, userEmail, action string, start, 
 			log.Printf("[audit/report] error scanning count row: %v", err)
 			continue
 		}
-		// Fold each stored spelling onto its canonical verdict so the report is
-		// stable regardless of legacy/historical values in the column. Skip
-		// NON-verdict rows: LogOverrideEvent writes policy_decision =
-		// 'override_lifecycle', which Normalize returns unchanged (it is not one
-		// of the five canonical verdicts). Counting it would add a phantom
-		// by_action key, inflate Total (the per-verdict cards would no longer sum
-		// to Total), and understate AvgLatencyMs (lifecycle rows carry no latency
-		// but would still add to the denominator).
-		canonical := sharedaudit.Normalize(decision)
-		if !sharedaudit.IsCanonical(canonical) {
-			continue
+		// foldDecisionCount returns 0 for a non-verdict row (e.g. LogOverrideEvent's
+		// "override_lifecycle") so it's excluded from Total/latencySum too — see
+		// the function doc for why that matters.
+		added := foldDecisionCount(report.ByAction, decision, cnt)
+		report.Total += added
+		if added > 0 {
+			latencySum += sumLatency
 		}
-		report.ByAction[canonical] += cnt
-		report.Total += cnt
-		latencySum += sumLatency
 	}
 	if err := countRows.Err(); err != nil {
 		return nil, err

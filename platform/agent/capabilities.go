@@ -156,8 +156,12 @@ func getPluginCompatibility() PluginCompatInfo {
 		// 9.2.2 release-train. claude-code bumped 1.7.0 -> 1.8.0 in the
 		// 9.3.0 release-train (ships with the v9.3.0 platform minor carrying
 		// the audit-visibility bundle; the 1.8.0 marketplace release fires
-		// immediately after the tag); cursor stays 1.5.3, codex stays 1.5.2,
-		// openclaw stays 2.6.6. The other
+		// immediately after the tag). claude-code bumped 1.8.0 -> 1.9.0 for
+		// the v1.9.0 identity-hardening release (attribution-forgery notice +
+		// control-byte sanitizer, #102/#103); the plugin is already released,
+		// and this recommended-version bump rides the next platform release
+		// (it was not folded into the v9.5.0 train). cursor stays 1.5.3, codex
+		// stays 1.5.2, openclaw stays 2.6.6. The other
 		// plugin tags are live on their registries (openclaw 2.6.6 on
 		// npm/ClawHub, cursor 1.5.3 + codex 1.5.2; claude-code/cursor on the
 		// GitHub marketplace, codex on ClawHub). Plugins below the recommended
@@ -165,7 +169,7 @@ func getPluginCompatibility() PluginCompatInfo {
 		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0.
 		RecommendedPluginVersion: map[string]string{
 			"openclaw":    "2.6.6",
-			"claude-code": "1.8.0",
+			"claude-code": "1.9.0",
 			"cursor":      "1.5.3",
 			"codex":       "1.5.2",
 		},

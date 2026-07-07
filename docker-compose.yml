@@ -87,7 +87,7 @@ services:
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.5.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.6.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -269,7 +269,7 @@ services:
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.5.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.6.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.

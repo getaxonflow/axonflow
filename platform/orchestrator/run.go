@@ -580,6 +580,11 @@ func Run() {
 	// /audit/tenant/{tenant_id} and the POST routes are never shadowed by it.
 	r.HandleFunc("/api/v1/audit/export", auditExportHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/audit/report", auditReportHandler).Methods("POST", "OPTIONS")
+	// Session-summary reporting (#2759, WS-7, Enterprise-gated). Registered
+	// before the greedy GET /api/v1/audit/{id} below so the literal path wins;
+	// sessionSummaryHandler itself lives in session_summary_handler.go
+	// (enterprise) / session_summary_handler_community.go (501 stub).
+	r.HandleFunc("/api/v1/audit/session-summary", sessionSummaryHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/{id}", auditGetByIDHandler).Methods("GET")
 
 	// Policy overrides (ADR-044) + explainability (ADR-043) — Plugin Batch 1

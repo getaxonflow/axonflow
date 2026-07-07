@@ -1,0 +1,34 @@
+# PostgreSQL Datasource Configuration
+# Auto-provisioned when Grafana starts (mounted alongside prometheus.yml).
+#
+# Backs the SQL-driven dashboards that read business tables directly —
+# e.g. the Enterprise "Claude Code Usage" dashboard, whose usage counters
+# land as usage_events rows (event_type = 'claude_code_metric'), not as
+# Prometheus metrics. Credentials match the local docker-compose postgres
+# service. Prometheus is provisioned by prometheus.yml — do NOT redefine
+# it here (duplicate defaults make Grafana error at startup).
+#
+# RLS note: the platform's usage tables are row-level-secured. The local
+# `axonflow` user is the table owner, so RLS does not apply to it. If you
+# point this datasource at a shared/production database, use a role that
+# is the table owner or BYPASSRLS — any other role silently gets zero rows
+# (the RLS predicate needs a session org setting Grafana never sets).
+# See: https://grafana.com/docs/grafana/latest/administration/provisioning/#datasources
+
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    type: postgres
+    uid: axonflow-postgres
+    url: postgres:5432
+    database: axonflow
+    user: axonflow
+    secureJsonData:
+      password: localdev123
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    editable: false
