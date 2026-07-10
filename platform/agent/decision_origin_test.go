@@ -65,6 +65,10 @@ func TestClassifyDecisionOrigin(t *testing.T) {
 		{"claude-desktop hyphen gateway", "", "claude-desktop.host", OriginClaudeDesktop},
 		{"desktop header form", "claude-desktop-proxy", "", OriginClaudeDesktop},
 		{"gateway desktop beats client header", "sdk-go/1.2.3", "claude_desktop.host", OriginClaudeDesktop},
+		// #2860: the Desktop proxy's on-wire client id — bucketed to Desktop
+		// even without the (normally authoritative) claude_desktop gateway_id.
+		{"mcp-proxy versioned header", "mcp-proxy/0.3.0", "", OriginClaudeDesktop},
+		{"mcp-proxy header with desktop gateway", "mcp-proxy/0.3.0", "claude_desktop.fleet-mac", OriginClaudeDesktop},
 
 		// SDKs.
 		{"sdk-go", "sdk-go/1.2.3", "", OriginSDK},

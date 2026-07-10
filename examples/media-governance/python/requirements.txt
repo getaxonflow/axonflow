@@ -1,2 +1,2 @@
-axonflow>=8.5.0
+axonflow>=8.5.1
 python-dotenv>=1.0.0

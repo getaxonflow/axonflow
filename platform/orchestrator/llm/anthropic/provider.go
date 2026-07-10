@@ -15,6 +15,7 @@
 package anthropic
 
 import (
+	"axonflow/platform/shared/llmdefaults"
 	"bufio"
 	"bytes"
 	"context"
@@ -46,19 +47,22 @@ const (
 
 // Model constants for supported Claude models
 const (
-	// Claude 4 / 4.5 models (current generation)
-	ModelClaude4Opus   = "claude-opus-4-20250514"
-	ModelClaude4Sonnet = "claude-sonnet-4-20250514"
-	ModelClaudeHaiku45 = "claude-haiku-4-5-20251001"
+	// Claude 4.x models (current generation).
+	// NB: the original Claude 4 launch ids (claude-opus-4-20250514,
+	// claude-sonnet-4-20250514) were retired by the API (404
+	// not_found_error) — keep these pinned to live catalog ids (#2871).
+	ModelClaude4Opus   = "claude-opus-4-1-20250805"
+	ModelClaude4Sonnet = "claude-sonnet-4-5-20250929"
+	ModelClaudeHaiku45 = llmdefaults.AnthropicModel
 
 	// Legacy aliases — point to current-generation models for backward compatibility.
 	// Code referencing these constants will automatically use the latest model.
-	ModelClaude35Sonnet    = ModelClaude4Sonnet  // was claude-3-5-sonnet-20241022
-	ModelClaude35SonnetOld = ModelClaude4Sonnet  // was claude-3-5-sonnet-20240620
-	ModelClaude35Haiku     = ModelClaudeHaiku45  // was claude-3-5-haiku-20241022
-	ModelClaude3Opus       = ModelClaude4Opus    // was claude-3-opus-20240229
-	ModelClaude3Sonnet     = ModelClaude4Sonnet  // was claude-3-sonnet-20240229
-	ModelClaude3Haiku      = ModelClaudeHaiku45  // was claude-3-haiku-20240307
+	ModelClaude35Sonnet    = ModelClaude4Sonnet // was claude-3-5-sonnet-20241022
+	ModelClaude35SonnetOld = ModelClaude4Sonnet // was claude-3-5-sonnet-20240620
+	ModelClaude35Haiku     = ModelClaudeHaiku45 // was claude-3-5-haiku-20241022
+	ModelClaude3Opus       = ModelClaude4Opus   // was claude-3-opus-20240229
+	ModelClaude3Sonnet     = ModelClaude4Sonnet // was claude-3-sonnet-20240229
+	ModelClaude3Haiku      = ModelClaudeHaiku45 // was claude-3-haiku-20240307
 
 	// Default model
 	DefaultModel = ModelClaude4Sonnet
@@ -86,30 +90,30 @@ type Config struct {
 	APIKey     string        // Required: Anthropic API key
 	BaseURL    string        // Optional: API base URL (default: https://api.anthropic.com)
 	APIVersion string        // Optional: API version (default: 2023-06-01)
-	Model      string        // Optional: Default model (default: claude-sonnet-4-20250514)
+	Model      string        // Optional: Default model (default: llmdefaults.AnthropicModel)
 	Timeout    time.Duration // Optional: HTTP timeout (default: 120s)
 }
 
 // CompletionRequest represents a completion request to Anthropic
 type CompletionRequest struct {
-	Prompt       string   // The prompt/user message
-	SystemPrompt string   // Optional system prompt
-	MaxTokens    int      // Maximum tokens to generate
-	Temperature  float64  // Temperature (0.0-1.0)
-	TopP         float64  // Top-p sampling
-	TopK         int      // Top-k sampling
-	Model        string   // Model override
+	Prompt        string   // The prompt/user message
+	SystemPrompt  string   // Optional system prompt
+	MaxTokens     int      // Maximum tokens to generate
+	Temperature   float64  // Temperature (0.0-1.0)
+	TopP          float64  // Top-p sampling
+	TopK          int      // Top-k sampling
+	Model         string   // Model override
 	StopSequences []string // Stop sequences
-	Stream       bool     // Enable streaming
+	Stream        bool     // Enable streaming
 }
 
 // CompletionResponse represents a completion response from Anthropic
 type CompletionResponse struct {
-	Content      string
-	Model        string
-	StopReason   string
-	Usage        UsageStats
-	Latency      time.Duration
+	Content    string
+	Model      string
+	StopReason string
+	Usage      UsageStats
+	Latency    time.Duration
 }
 
 // UsageStats contains token usage statistics

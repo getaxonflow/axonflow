@@ -196,7 +196,7 @@ func (l *AuditLogger) ExportAuditLogs(crit auditSearchCriteria) ([]*AuditEntry, 
 		       client_id, tenant_id, COALESCE(org_id, ''), request_type, query,
 		       policy_decision, policy_details, provider, model, response_time_ms,
 		       tokens_used, cost, redacted_fields, error_message, response_sample,
-		       COALESCE(correlation_id, '')
+		       COALESCE(correlation_id, ''), COALESCE(session_id, '')
 		FROM audit_logs
 		WHERE tenant_id = $1
 	`
@@ -211,6 +211,41 @@ func (l *AuditLogger) ExportAuditLogs(crit auditSearchCriteria) ([]*AuditEntry, 
 	if crit.ClientID != "" {
 		query += fmt.Sprintf(" AND client_id ILIKE '%%' || $%d || '%%'", argIndex)
 		args = append(args, crit.ClientID)
+		argIndex++
+	}
+	if crit.SessionID != "" {
+		// Exact match, mirroring SearchAuditLogs' session_id drill-down
+		// (#2857): a session-filtered export must reconcile with the on-screen
+		// search for the same session bucket.
+		query += fmt.Sprintf(" AND session_id = $%d", argIndex)
+		args = append(args, crit.SessionID)
+		argIndex++
+	}
+	// Plugin Batch 1 filters (decision_id / policy_name / override_id), identical
+	// to SearchAuditLogs. Without these an export narrowed by one of them in the
+	// search API silently returned the whole tenant window (same silent-dropped-
+	// filter class as the session_id gap #2857 fixed) — a "filtered" export must
+	// carry every filter the search endpoint honors.
+	if crit.DecisionID != "" {
+		query += fmt.Sprintf(" AND policy_details->>'decision_id' = $%d", argIndex)
+		args = append(args, crit.DecisionID)
+		argIndex++
+	}
+	if crit.PolicyName != "" {
+		// Three shapes audit writers use — scalar, CSV-ish, and nested
+		// policy_matches[*].policy_name — identical to SearchAuditLogs so a
+		// policy-name-filtered export reconciles with the on-screen search.
+		query += fmt.Sprintf(" AND ("+
+			"policy_details->>'policy_name' = $%d "+
+			"OR policy_details->>'policy_names' LIKE '%%' || $%d || '%%' "+
+			"OR EXISTS (SELECT 1 FROM jsonb_array_elements(policy_details->'policy_matches') AS _pm WHERE _pm->>'policy_name' = $%d)"+
+			")", argIndex, argIndex, argIndex)
+		args = append(args, crit.PolicyName)
+		argIndex++
+	}
+	if crit.OverrideID != "" {
+		query += fmt.Sprintf(" AND policy_details->>'override_id' = $%d", argIndex)
+		args = append(args, crit.OverrideID)
 		argIndex++
 	}
 	if !crit.StartTime.IsZero() {
@@ -255,6 +290,7 @@ func (l *AuditLogger) ExportAuditLogs(crit auditSearchCriteria) ([]*AuditEntry, 
 			&entry.OrgID, &entry.RequestType, &entry.Query, &entry.PolicyDecision,
 			&policyDetailsJSON, &provider, &model, &responseTime, &tokensUsed, &cost,
 			&redactedFieldsJSON, &errorMessage, &responseSample, &entry.CorrelationID,
+			&entry.SessionID,
 		); err != nil {
 			log.Printf("[audit/export] error scanning row: %v", err)
 			continue
@@ -316,6 +352,14 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 		UserEmail string    `json:"user_email,omitempty"`
 		ClientID  string    `json:"client_id,omitempty"`
 		Action    string    `json:"action,omitempty"`
+		// SessionID mirrors the /audit/search filter (#2857): without it a
+		// session-filtered export silently returns the whole tenant window.
+		SessionID string    `json:"session_id,omitempty"`
+		// Plugin Batch 1 filters — same silent-dropped-filter class as SessionID:
+		// the search API honors these, so a filtered export must too.
+		DecisionID string   `json:"decision_id,omitempty"`
+		PolicyName string   `json:"policy_name,omitempty"`
+		OverrideID string   `json:"override_id,omitempty"`
 		StartTime time.Time `json:"start_time"`
 		EndTime   time.Time `json:"end_time"`
 	}
@@ -334,13 +378,17 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	crit := auditSearchCriteria{
-		UserEmail: body.UserEmail,
-		ClientID:  body.ClientID,
-		Action:    body.Action,
-		TenantID:  tenantID,
-		StartTime: body.StartTime,
-		EndTime:   body.EndTime,
-		Limit:     auditExportMaxRows,
+		UserEmail:  body.UserEmail,
+		ClientID:   body.ClientID,
+		Action:     body.Action,
+		SessionID:  body.SessionID,
+		DecisionID: body.DecisionID,
+		PolicyName: body.PolicyName,
+		OverrideID: body.OverrideID,
+		TenantID:   tenantID,
+		StartTime:  body.StartTime,
+		EndTime:    body.EndTime,
+		Limit:      auditExportMaxRows,
 	}
 
 	// Apply the same tier-based retention floor as search so an export can't
@@ -378,7 +426,7 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 var auditExportCSVHeader = []string{
 	"id", "timestamp", "user_email", "tenant_id", "org_id", "policy_decision",
 	"request_type", "query", "response_sample", "provider", "model",
-	"response_time_ms", "correlation_id",
+	"response_time_ms", "correlation_id", "session_id",
 }
 
 func writeAuditExportCSV(w http.ResponseWriter, entries []*AuditEntry, ts string) {
@@ -408,6 +456,9 @@ func writeAuditExportCSV(w http.ResponseWriter, entries []*AuditEntry, ts string
 			csvFormulaSafe(e.Model),
 			strconv.FormatInt(e.ResponseTime, 10),
 			csvFormulaSafe(e.CorrelationID),
+			// session_id is server-generated (uuid/opaque id) but formula-safed
+			// like every other string cell for uniformity.
+			csvFormulaSafe(e.SessionID),
 		})
 	}
 	cw.Flush()

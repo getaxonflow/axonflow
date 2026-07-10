@@ -348,6 +348,23 @@ type RequestResult struct {
 	BlockedBy   *CompiledPolicy
 	BlockReason string
 
+	// EvaluationError distinguishes "could not scan" from "scanned, found
+	// nothing" on the request plane — the symmetric counterpart of
+	// ResponseResult.EvaluationError (#2820), added by #2862. It is set true
+	// when the engine could NOT complete evaluation (a policy-load /
+	// graceful-degradation error) as opposed to a clean scan (Blocked=false
+	// with EvaluationError=false).
+	//
+	// Unlike the response plane there is no "return unprocessed content" middle
+	// ground on the request plane — a request either proceeds or is blocked — so
+	// EvaluateRequest fails CLOSED (Blocked=true) when this is set, regardless of
+	// GracefulDegradation. A request gate that could not load policies cannot
+	// have scanned the input for SQLi / dangerous-command / PII-block content,
+	// so admitting it would silently disable enforcement on a DB blip. The flag
+	// lets callers audit this as an availability failure ("could not govern")
+	// distinct from a policy verdict.
+	EvaluationError bool
+
 	// Statistics
 	PoliciesEvaluated int
 	MatchedPolicies   []PolicyMatch
@@ -530,7 +547,7 @@ type EngineConfig struct {
 	// Behavior settings
 	EnableValidators    bool // Run semantic validators (Luhn, MOD97, etc.) - default: true
 	EnableMetrics       bool // Collect metrics via AuditQueue - default: true
-	GracefulDegradation bool // Continue if DB unavailable - default: true
+	GracefulDegradation bool // Continue if DB unavailable - default: true. NOTE: does NOT apply to the request plane, which always fails CLOSED on a policy-load error (#2862); it governs the response plane's return-unprocessed-with-EvaluationError behavior (#2820) and the dynamic evaluator.
 
 	// Defaults
 	DefaultTenant string // Default tenant when none specified - default: "global"

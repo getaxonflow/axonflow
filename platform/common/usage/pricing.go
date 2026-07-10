@@ -20,19 +20,21 @@ type ProviderPricing struct {
 // providerPricing maps provider-model combinations to pricing
 var providerPricing = map[string]ProviderPricing{
 	// OpenAI current models
-	"openai-gpt-4o":           {250, 1000},  // $0.0025/$0.01 per 1K tokens
-	"openai-gpt-4o-mini":      {15, 60},     // $0.00015/$0.0006 per 1K tokens
-	"openai-gpt-4":            {3000, 6000}, // $0.03/$0.06 per 1K tokens
+	"openai-gpt-4o":      {250, 1000},  // $0.0025/$0.01 per 1K tokens
+	"openai-gpt-4o-mini": {15, 60},     // $0.00015/$0.0006 per 1K tokens
+	"openai-gpt-4":       {3000, 6000}, // $0.03/$0.06 per 1K tokens
 
 	// OpenAI legacy (backward compat — users may still reference these)
-	"openai-gpt-4-turbo":      {1000, 3000}, // $0.01/$0.03 per 1K tokens
-	"openai-gpt-3.5-turbo":    {50, 150},    // $0.0005/$0.0015 per 1K tokens
-	"openai-gpt-3.5-turbo-1106": {100, 200}, // $0.001/$0.002 per 1K tokens
+	"openai-gpt-4-turbo":        {1000, 3000}, // $0.01/$0.03 per 1K tokens
+	"openai-gpt-3.5-turbo":      {50, 150},    // $0.0005/$0.0015 per 1K tokens
+	"openai-gpt-3.5-turbo-1106": {100, 200},   // $0.001/$0.002 per 1K tokens
 
 	// Anthropic current models
-	"anthropic-claude-opus-4":    {1500, 7500}, // $0.015/$0.075 per 1K tokens
-	"anthropic-claude-sonnet-4":  {300, 1500},  // $0.003/$0.015 per 1K tokens
-	"anthropic-claude-haiku-4.5": {80, 400},    // $0.0008/$0.004 per 1K tokens
+	"anthropic-claude-opus-4":              {1500, 7500}, // $0.015/$0.075 per 1K tokens
+	"anthropic-claude-sonnet-4":            {300, 1500},  // $0.003/$0.015 per 1K tokens
+	"anthropic-claude-haiku-4.5":           {80, 400},    // $0.0008/$0.004 per 1K tokens
+	"anthropic-claude-haiku-4-5-20251001":  {80, 400},    // current default (llmdefaults.AnthropicModel)
+	"anthropic-claude-sonnet-4-5-20250929": {300, 1500},  // $0.003/$0.015 per 1K tokens
 
 	// Anthropic legacy (backward compat — users may still reference these)
 	"anthropic-claude-3-opus":     {1500, 7500}, // $0.015/$0.075 per 1K tokens

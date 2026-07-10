@@ -92,7 +92,7 @@ func ListFactories() []ProviderType {
 //	    Name:   "anthropic-primary",
 //	    Type:   ProviderTypeAnthropic,
 //	    APIKey: "sk-ant-...",
-//	    Model:  "claude-sonnet-4-20250514",
+//	    Model:  "claude-sonnet-4-5-20250929",
 //	}
 //	provider, err := llm.CreateProvider(config)
 func CreateProvider(config ProviderConfig) (Provider, error) {

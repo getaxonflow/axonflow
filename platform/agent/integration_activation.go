@@ -40,11 +40,23 @@ type KnownIntegration struct {
 
 // knownIntegrations is the registry of supported integrations.
 // PolicyPrefix must match the actual policy_id prefix in migration 060.
+//
+// claude-desktop is registry-only: it is the canonical ID for the Claude
+// Desktop MCP governance proxy (axonflow-claude-desktop-plugin) so /health
+// can advertise its min/recommended versions (capabilities.go lockstep).
+// It never auto-activates — the proxy governs via HTTP decide/check-output
+// (not the agent's MCP clientInfo handshake) and fronts arbitrary backend
+// servers, so no "claude_desktop." connector types exist in practice, and
+// migration 060 carries no int_desktop policies to enable (the activation
+// function UPDATEs zero rows if it is ever invoked explicitly). The prefix
+// deliberately avoids claude-code's "int_claude" LIKE-prefix so neither
+// activation can ever shadow the other's policy set.
 var knownIntegrations = []KnownIntegration{
 	{ID: "openclaw", DisplayName: "OpenClaw", ConnectorPrefix: "openclaw.", PolicyPrefix: "int_openclaw"},
 	{ID: "claude-code", DisplayName: "Claude Code", ConnectorPrefix: "claude_code.", PolicyPrefix: "int_claude"},
 	{ID: "cursor", DisplayName: "Cursor IDE", ConnectorPrefix: "cursor.", PolicyPrefix: "int_cursor"},
 	{ID: "codex", DisplayName: "OpenAI Codex", ConnectorPrefix: "codex.", PolicyPrefix: "int_codex"},
+	{ID: "claude-desktop", DisplayName: "Claude Desktop", ConnectorPrefix: "claude_desktop.", PolicyPrefix: "int_desktop"},
 }
 
 var (

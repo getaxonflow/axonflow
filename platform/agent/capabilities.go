@@ -27,10 +27,13 @@ type SDKCompatInfo struct {
 // with that registry — a regression test (TestPluginCompatibilityKeysMatchKnownIntegrations)
 // fails if the two drift apart.
 //
-//   - openclaw     — npm @axonflow/openclaw (TypeScript plugin)
-//   - claude-code  — Claude Code CLI plugin (axonflow-claude-plugin)
-//   - cursor       — Cursor CLI plugin (axonflow-cursor-plugin)
-//   - codex        — OpenAI Codex CLI plugin (axonflow-codex-plugin)
+//   - openclaw       — npm @axonflow/openclaw (TypeScript plugin)
+//   - claude-code    — Claude Code CLI plugin (axonflow-claude-plugin)
+//   - cursor         — Cursor CLI plugin (axonflow-cursor-plugin)
+//   - codex          — OpenAI Codex CLI plugin (axonflow-codex-plugin)
+//   - claude-desktop — Claude Desktop MCP governance proxy
+//     (axonflow-claude-desktop-plugin; identifies on the wire as
+//     "mcp-proxy/<v>" via X-Axonflow-Client)
 //
 // `MinPluginVersion[id]` is the lowest version that speaks the current
 // platform's wire / hook contract. A plugin running below the floor logs
@@ -68,6 +71,7 @@ func getCapabilities() []PlatformCapability {
 		{Name: "v1_pro_graduated_freemium", Since: "7.8.0", Description: "Free tier exposes a taste of Pro capabilities — 2 active custom tenant policies + 1 HITL approval per rolling 7d — with structured 403 envelope on cap-hit; Pro tier removes both caps (Community SaaS only)"},
 		{Name: "decision_obligations", Since: "8.6.0", Description: "Decision Mode /api/v1/decide emits self-describing, engine-fulfillable redact_pii obligations carrying a fulfillment block (endpoint, method, phase, content_types) so a PEP discharges them via the engine instead of hand-rolling redaction (ADR-056/057)"},
 		{Name: "two_touch_redaction", Since: "8.6.0", Description: "Request-phase (POST /api/v1/mcp/check-input → redacted_statement + redaction_evaluated) and response-phase (POST /api/v1/mcp/check-output → redacted_data) PII redaction both return engine-masked content, so PEPs never hand-roll redaction on either leg"},
+		{Name: "client_version_telemetry", Since: "9.7.0", Description: "Per-client version-distribution telemetry: validated X-Axonflow-Client client id + version pairs are recorded into the axonflow_client_version_requests_total counter on the decide and MCP check-output planes (Enterprise builds; Community builds no-op and register no series). Telemetry-only — never consulted for auth or a verdict"},
 	}
 }
 
@@ -85,24 +89,37 @@ func getSDKCompatibility() SDKCompatInfo {
 		// handling and the new list endpoint. Note: Go's major bump
 		// also changes the import path (axonflow-sdk-go/v7 → /v8) per
 		// Go modules v2+ rules.
+		// rust joined the compat maps in the 9.7.0 release-train. Its 0.x
+		// preview line is versioned independently of the 8.x SDKs; the
+		// floor is 0.7.0 — the first rust release that speaks the current
+		// Decision Mode PEP contract (decide → fulfill → forward, engine-
+		// only fulfill, fail-closed on missing verdict; epic #2563). The
+		// 0.5/0.6 previews predate that contract.
 		MinSDKVersion: map[string]string{
 			"python":     "8.0.0",
 			"typescript": "8.0.0",
 			"go":         "8.0.0",
 			"java":       "8.0.0",
+			"rust":       "0.7.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each SDK's release-train tag. java bumped 8.5.0 -> 8.5.1 in
 		// the 9.1.1 security patch (2026-06-16): 8.5.1 adds a production
 		// guard around the opt-in insecure-TLS dev hatch plus dependency
-		// CVE clears. python/typescript/go stay 8.5.0 (no SDK code change in
-		// those three for 9.1.1; their security fixes were dev-dep lockfile
-		// bumps that do not change the published artifact).
+		// CVE clears. python/typescript/go bumped 8.5.0 -> 8.5.1 in the
+		// 9.7.0 release-train (epic #2861 SDK hostile sweep): go 8.5.1
+		// fails closed on 4xx auth errors instead of silently allowing,
+		// python 8.5.1 bridges sync interceptors onto a persistent event
+		// loop + detects AsyncOpenAI clients, typescript 8.5.1 sends auth
+		// on getPlanStatus. java stays 8.5.1 (no new java tag this train).
+		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
+		// examples baseline).
 		RecommendedSDKVersion: map[string]string{
-			"python":     "8.5.0",
-			"typescript": "8.5.0",
-			"go":         "8.5.0",
+			"python":     "8.5.1",
+			"typescript": "8.5.1",
+			"go":         "8.5.1",
 			"java":       "8.5.1",
+			"rust":       "0.8.1",
 		},
 	}
 }
@@ -126,11 +143,18 @@ func getPluginCompatibility() PluginCompatInfo {
 		// call. The plugin tags shipped within ~15-30 minutes of the
 		// v7.9.0 community sync per the release-train order locked at
 		// #2047.
+		// claude-desktop joined the registry in the 9.7.0 release-train.
+		// Its floor is 0.2.0 — the first release whose response redaction
+		// goes through the authoritative engine check-output endpoint and
+		// whose response plane is unconditionally fail-closed; the 0.1.x
+		// proxies hand-rolled a divergent local-regex redaction we no
+		// longer support.
 		MinPluginVersion: map[string]string{
-			"openclaw":    "2.4.0",
-			"claude-code": "1.4.0",
-			"cursor":      "1.4.0",
-			"codex":       "1.4.0",
+			"openclaw":       "2.4.0",
+			"claude-code":    "1.4.0",
+			"cursor":         "1.4.0",
+			"codex":          "1.4.0",
+			"claude-desktop": "0.2.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each plugin's release-train tag. Bumped to claude/cursor/codex
@@ -158,20 +182,27 @@ func getPluginCompatibility() PluginCompatInfo {
 		// the audit-visibility bundle; the 1.8.0 marketplace release fires
 		// immediately after the tag). claude-code bumped 1.8.0 -> 1.9.0 for
 		// the v1.9.0 identity-hardening release (attribution-forgery notice +
-		// control-byte sanitizer, #102/#103); the plugin is already released,
-		// and this recommended-version bump rides the next platform release
-		// (it was not folded into the v9.5.0 train). cursor stays 1.5.3, codex
+		// control-byte sanitizer, #102/#103), then 1.9.0 -> 1.9.1 in the
+		// 9.7.0 release-train (correct on-wire version reporting on the hook
+		// + MCP planes + a plugin.json alignment gate, plugin#105; released
+		// 2026-07-09). claude-desktop enters at 0.3.1 in the 9.7.0 train —
+		// 0.3.1 sends X-Axonflow-Client: mcp-proxy/<v> on decide +
+		// check-output so the per-client version telemetry can see the
+		// proxy fleet (desktop#23; the tag ships with this train).
+		// cursor stays 1.5.3, codex
 		// stays 1.5.2, openclaw stays 2.6.6. The other
 		// plugin tags are live on their registries (openclaw 2.6.6 on
 		// npm/ClawHub, cursor 1.5.3 + codex 1.5.2; claude-code/cursor on the
 		// GitHub marketplace, codex on ClawHub). Plugins below the recommended
 		// version receive an actionable upgrade-warning header on every
-		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0.
+		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0
+		// (claude-desktop's floor is 0.2.0, see above).
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.6.6",
-			"claude-code": "1.9.0",
-			"cursor":      "1.5.3",
-			"codex":       "1.5.2",
+			"openclaw":       "2.6.6",
+			"claude-code":    "1.9.1",
+			"cursor":         "1.5.3",
+			"codex":          "1.5.2",
+			"claude-desktop": "0.3.1",
 		},
 	}
 }

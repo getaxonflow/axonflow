@@ -53,7 +53,7 @@ func TestGetSDKCompatibility(t *testing.T) {
 	if len(compat.RecommendedSDKVersion) == 0 {
 		t.Error("expected non-empty RecommendedSDKVersion")
 	}
-	for _, lang := range []string{"python", "typescript", "go", "java"} {
+	for _, lang := range []string{"python", "typescript", "go", "java", "rust"} {
 		if compat.MinSDKVersion[lang] == "" {
 			t.Errorf("expected MinSDKVersion for %q", lang)
 		}
@@ -74,7 +74,7 @@ func TestGetPluginCompatibility(t *testing.T) {
 	// Every plugin id the agent's integration_activation.go knows about
 	// must have an entry here. A future plugin id added there without
 	// mirrored entries here trips this test.
-	for _, id := range []string{"openclaw", "claude-code", "cursor", "codex"} {
+	for _, id := range []string{"openclaw", "claude-code", "cursor", "codex", "claude-desktop"} {
 		if compat.MinPluginVersion[id] == "" {
 			t.Errorf("expected MinPluginVersion for %q", id)
 		}
@@ -150,6 +150,24 @@ func TestGetCapabilitiesContainsPluginCompatibility(t *testing.T) {
 		}
 	}
 	t.Error("expected plugin_compatibility capability to be present")
+}
+
+// TestGetCapabilitiesContainsClientVersionTelemetry pins the 9.7.0
+// `client_version_telemetry` capability (per-client version-distribution
+// telemetry, #2860/#2863) so a future cleanup that drops it from the list
+// trips the test instead of silently telling clients the platform doesn't
+// record client-version distribution.
+func TestGetCapabilitiesContainsClientVersionTelemetry(t *testing.T) {
+	caps := getCapabilities()
+	for _, cap := range caps {
+		if cap.Name == "client_version_telemetry" {
+			if cap.Since != "9.7.0" {
+				t.Errorf("client_version_telemetry since = %q, want %q", cap.Since, "9.7.0")
+			}
+			return
+		}
+	}
+	t.Error("expected client_version_telemetry capability to be present")
 }
 
 func TestGetPlatformVersion(t *testing.T) {

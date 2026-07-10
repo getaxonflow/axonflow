@@ -32,6 +32,7 @@ func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPoli
 		Reason:           result.BlockReason,
 		ProcessingTimeMs: result.ProcessingTimeMs,
 		ChecksPerformed:  []string{"shared_policy_engine"},
+		EvaluationError:  result.EvaluationError, // #2862: propagate fail-closed availability failure
 	}
 
 	// Convert matched policies to triggered policy IDs

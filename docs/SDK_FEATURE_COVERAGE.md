@@ -216,15 +216,15 @@ If you need an excluded API in the SDK:
 
 ## SDK Parity
 
-The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.5.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, and the v9 `X-Client-ID` outbound header; feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
+The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.8.1 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, and the Decision Mode PEP (`decide` / `fulfill_request` / `decide_and_fulfill`, engine-only fail-closed redaction); feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v8.3.0 | ~45 | ✅ |
-| Python | v8.3.0 | ~45 | ✅ |
-| TypeScript | v8.3.0 | ~46 | ✅ (+protect) |
-| Java | v8.3.0 | ~45 | ✅ |
-| Rust _(preview)_ | v0.5.0 | ~17 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + Indonesia PII + `X-Client-ID`) |
+| Go | v8.5.1 | ~45 | ✅ |
+| Python | v8.5.1 | ~45 | ✅ |
+| TypeScript | v8.5.1 | ~46 | ✅ (+protect) |
+| Java | v8.5.1 | ~45 | ✅ |
+| Rust _(preview)_ | v0.8.1 | ~21 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + Indonesia PII + `X-Client-ID` + Decision Mode PEP) |
 
 ### Infrastructure (v4.1.0)
 

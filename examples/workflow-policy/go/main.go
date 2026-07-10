@@ -72,7 +72,7 @@ func main() {
 	gate, err := client.StepGate(workflow.WorkflowID, "step-1", axonflow.StepGateRequest{
 		StepName: "Analyze Data",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-5-20250929",
 		Provider: "anthropic",
 		StepInput: map[string]interface{}{
 			"prompt": "Analyze customer sentiment",

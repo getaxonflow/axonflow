@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -252,21 +253,26 @@ var llmPricing = map[string]map[string]float64{
 		"gpt-3.5-turbo": 0.0005, // legacy, kept for backward compat
 	},
 	"anthropic": {
-		"claude-opus-4":     0.015,
-		"claude-sonnet-4":   0.003,
-		"claude-haiku-4.5":  0.0008,
-		"claude-3-opus":     0.015, // legacy, kept for backward compat
-		"claude-3-sonnet":   0.003, // legacy, kept for backward compat
-		"claude-3-haiku":    0.001, // legacy, kept for backward compat
-		"claude-3-5-sonnet": 0.003, // legacy, kept for backward compat
-		"claude-3-5-haiku":  0.001, // legacy, kept for backward compat
+		llmdefaults.AnthropicModel:   0.0008, // claude-haiku-4-5-20251001 (current default)
+		"claude-sonnet-4-5-20250929": 0.003,
+		"claude-opus-4-1-20250805":   0.015,
+		"claude-opus-4":              0.015,
+		"claude-sonnet-4":            0.003,
+		"claude-haiku-4.5":           0.0008,
+		"claude-3-opus":              0.015, // legacy, kept for backward compat
+		"claude-3-sonnet":            0.003, // legacy, kept for backward compat
+		"claude-3-haiku":             0.001, // legacy, kept for backward compat
+		"claude-3-5-sonnet":          0.003, // legacy, kept for backward compat
+		"claude-3-5-haiku":           0.001, // legacy, kept for backward compat
 	},
 	"bedrock": {
-		"anthropic.claude-sonnet-4-20250514-v1:0":  0.003,
-		"anthropic.claude-opus-4-20250514-v1:0":    0.015,
-		"anthropic.claude-haiku-4-5-20251001-v1:0": 0.0008,
-		"anthropic.claude-v2":                      0.008,
-		"amazon.titan-text":                        0.0008,
+		llmdefaults.BedrockModel:                       0.0008, // us.anthropic.claude-haiku-4-5-20251001-v1:0 (current default)
+		"us.anthropic.claude-sonnet-4-5-20250929-v1:0": 0.003,
+		"anthropic.claude-sonnet-4-20250514-v1:0":      0.003,  // retired id, kept for historical audit rows
+		"anthropic.claude-opus-4-20250514-v1:0":        0.015,  // retired id, kept for historical audit rows
+		"anthropic.claude-haiku-4-5-20251001-v1:0":     0.0008, // non-prefixed variant, kept for historical audit rows
+		"anthropic.claude-v2":                          0.008,
+		"amazon.titan-text":                            0.0008,
 	},
 	"ollama": {
 		"default": 0.0, // Local, no cost
@@ -829,8 +835,15 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 
 	if !policyResult.Blocked && !requiresHITL && requiresRedaction {
 		log.Printf("⚠️ [Pre-check] Request approved with redaction required: %s", policyResult.Reason)
-	} else {
-		// Fetch data from MCP connectors if data sources specified
+	}
+	// #2867: prefetch connector data ONLY for a clean-approved request (not
+	// blocked, not HITL-pending, no redaction owed). A blocked pre-check must
+	// NOT execute the caller's query against the connector — returning
+	// approved_data on a deny leaks the data the block was meant to withhold
+	// (incl. the #2862 policy-load fail-closed block); a HITL-pending pre-check
+	// must not surface connector data before a human approves. The previous
+	// else-branch fetched on every outcome except approved-with-redaction.
+	if shouldPrefetchApprovedData(policyResult.Blocked, requiresHITL, requiresRedaction) {
 		if len(req.DataSources) > 0 && mcpRegistry != nil {
 			approvedData, err := fetchApprovedData(ctx, req.DataSources, req.Query, user, client)
 			if err != nil {
@@ -1167,6 +1180,18 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("❌ [Audit] Failed to encode response: %v", err)
 	}
+}
+
+// shouldPrefetchApprovedData reports whether the pre-check may execute the
+// caller's query against connectors and return the rows as approved_data.
+// #2867: this is allowed ONLY for a clean-approved request — not blocked, not
+// HITL-pending, and with no redaction owed. A blocked request must not run the
+// query at all (returning data on a deny leaks what the block withheld); a
+// HITL-pending request must not surface connector data before human approval;
+// an approved-with-redaction request skips the prefetch so raw PII is never
+// returned unredacted.
+func shouldPrefetchApprovedData(blocked, requiresHITL, requiresRedaction bool) bool {
+	return !blocked && !requiresHITL && !requiresRedaction
 }
 
 // fetchApprovedData fetches data from MCP connectors based on policy-approved sources

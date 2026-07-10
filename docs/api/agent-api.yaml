@@ -5287,6 +5287,16 @@ components:
           items:
             $ref: '#/components/schemas/ExplainPolicy'
           description: Per-policy explainability records (ADR-043).
+        redaction_evaluated:
+          type: boolean
+          description: |
+            Whether the response-phase redaction pipeline actually ran
+            (#2865). Mirrors MCPCheckInputResponse.redaction_evaluated for the
+            response leg. A PEP fulfilling a response-phase redact_pii
+            obligation MUST fail closed when this is false/absent — the
+            redactor did not run (detection disabled for the connector, or no
+            policy engine), so absence of `redacted_data` cannot be trusted as
+            "nothing to mask." Omitted (false) preserves the pre-#2865 shape.
 
     ConnectorRefreshResponse:
       type: object

@@ -44,7 +44,7 @@ available providers based on which API keys are set:
 
 	# AWS Bedrock
 	export BEDROCK_REGION="us-east-1"
-	export BEDROCK_MODEL="anthropic.claude-sonnet-4-20250514-v1:0"
+	export BEDROCK_MODEL="us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 	# Ollama (self-hosted)
 	export OLLAMA_ENDPOINT="http://localhost:11434"

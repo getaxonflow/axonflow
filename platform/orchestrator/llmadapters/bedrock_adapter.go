@@ -7,6 +7,7 @@
 package llmadapters
 
 import (
+	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,7 +58,7 @@ type BedrockAdapterConfig struct {
 	// Region is the AWS region (e.g., "us-east-1", "eu-central-1").
 	Region string
 
-	// Model is the Bedrock model ID (e.g., "anthropic.claude-sonnet-4-20250514-v1:0").
+	// Model is the Bedrock model ID (e.g., "us.anthropic.claude-haiku-4-5-20251001-v1:0").
 	Model string
 
 	// ModelFamily overrides auto-detection for custom models.
@@ -81,7 +82,7 @@ func NewBedrockAdapter(cfg BedrockAdapterConfig) (*BedrockAdapter, error) {
 	}
 
 	if cfg.Model == "" {
-		cfg.Model = "anthropic.claude-sonnet-4-20250514-v1:0"
+		cfg.Model = llmdefaults.BedrockModel
 	}
 
 	modelFamily := cfg.ModelFamily
