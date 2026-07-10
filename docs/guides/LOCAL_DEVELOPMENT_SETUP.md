@@ -428,7 +428,7 @@ Recommended extensions:
 
 ```bash
 # Install SDK
-go get github.com/getaxonflow/axonflow-sdk-go/v3@v3.3.1
+go get github.com/getaxonflow/axonflow-sdk-go/v8@v8.5.1
 
 # Run example
 cd examples/hello-world/go

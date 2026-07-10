@@ -113,14 +113,19 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrganizationID, PhaseRequest)
 	if err != nil {
 		e.metrics.RecordError("load")
-		if e.config.GracefulDegradation {
-			log.Printf("[PolicyEngine] Failed to load policies, allowing request: %v", err)
-			result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
-			return result
-		}
+		// #2862: fail CLOSED on the request plane, symmetric with #2820's
+		// response-plane fix. A request gate that could not load policies has
+		// not scanned the input for SQLi / dangerous-command / PII-block
+		// content, so it MUST block — regardless of GracefulDegradation. Unlike
+		// the response plane there is no "return unprocessed content" middle
+		// ground here: the request either proceeds ungoverned or is blocked.
+		// EvaluationError marks this as an availability failure (could-not-scan)
+		// distinct from a policy verdict, so callers can audit it as such.
+		result.EvaluationError = true
 		result.Blocked = true
 		result.BlockReason = "Policy engine unavailable"
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+		log.Printf("[PolicyEngine] Failed to load policies, blocking request (fail-closed): %v", err)
 		return result
 	}
 
@@ -274,9 +279,11 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		// #2820: mark couldn't-scan regardless of the degradation mode so a
 		// response-plane redactor can tell this apart from scanned-clean and
 		// fail closed. Under GracefulDegradation the content is returned
-		// unprocessed (unchanged behavior for the request plane), but the
-		// EvaluationError signal now lets a storage/response redactor withhold
-		// rather than forward raw PII.
+		// unprocessed here, but the EvaluationError signal lets a storage/
+		// response redactor withhold rather than forward raw PII. (The request
+		// plane fails CLOSED outright under the same condition — see #2862 in
+		// EvaluateRequest; there is no "return unprocessed" middle ground when
+		// the decision is proceed-or-block rather than forward-or-withhold.)
 		result.EvaluationError = true
 		if e.config.GracefulDegradation {
 			log.Printf("[PolicyEngine] Failed to load policies, returning unprocessed (evaluation_error): %v", err)

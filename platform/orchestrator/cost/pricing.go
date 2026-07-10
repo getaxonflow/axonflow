@@ -33,8 +33,10 @@ var DefaultPricing = &PricingConfig{
 			"claude-sonnet-4":          {InputPer1K: 0.003, OutputPer1K: 0.015},
 			"claude-sonnet-4-20250514": {InputPer1K: 0.003, OutputPer1K: 0.015},
 			// Claude 4.5 models
-			"claude-haiku-4-5-20251001": {InputPer1K: 0.0008, OutputPer1K: 0.004},
-			"claude-haiku-4.5":          {InputPer1K: 0.0008, OutputPer1K: 0.004},
+			"claude-haiku-4-5-20251001":  {InputPer1K: 0.0008, OutputPer1K: 0.004},
+			"claude-sonnet-4-5-20250929": {InputPer1K: 0.003, OutputPer1K: 0.015},
+			"claude-opus-4-1-20250805":   {InputPer1K: 0.015, OutputPer1K: 0.075},
+			"claude-haiku-4.5":           {InputPer1K: 0.0008, OutputPer1K: 0.004},
 			// Legacy Claude 3/3.5 model IDs (backward compatibility)
 			"claude-3-5-sonnet":          {InputPer1K: 0.003, OutputPer1K: 0.015},
 			"claude-3-5-sonnet-20241022": {InputPer1K: 0.003, OutputPer1K: 0.015},
@@ -99,9 +101,11 @@ var DefaultPricing = &PricingConfig{
 		"bedrock": {
 			// Claude on Bedrock
 			// Claude 4 on Bedrock
-			"anthropic.claude-sonnet-4-20250514-v1:0":  {InputPer1K: 0.003, OutputPer1K: 0.015},
-			"anthropic.claude-opus-4-20250514-v1:0":    {InputPer1K: 0.015, OutputPer1K: 0.075},
-			"anthropic.claude-haiku-4-5-20251001-v1:0": {InputPer1K: 0.0008, OutputPer1K: 0.004},
+			"anthropic.claude-sonnet-4-20250514-v1:0":      {InputPer1K: 0.003, OutputPer1K: 0.015},
+			"anthropic.claude-opus-4-20250514-v1:0":        {InputPer1K: 0.015, OutputPer1K: 0.075},
+			"anthropic.claude-haiku-4-5-20251001-v1:0":     {InputPer1K: 0.0008, OutputPer1K: 0.004},
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0":  {InputPer1K: 0.0008, OutputPer1K: 0.004},
+			"us.anthropic.claude-sonnet-4-5-20250929-v1:0": {InputPer1K: 0.003, OutputPer1K: 0.015},
 			// Legacy Claude on Bedrock model IDs (backward compatibility)
 			"anthropic.claude-3-opus-20240229-v1:0":     {InputPer1K: 0.015, OutputPer1K: 0.075},
 			"anthropic.claude-3-sonnet-20240229-v1:0":   {InputPer1K: 0.003, OutputPer1K: 0.015},

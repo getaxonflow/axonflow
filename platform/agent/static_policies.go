@@ -36,4 +36,5 @@ type StaticPolicyResult struct {
 	Severity           string
 	RequiresRedaction  bool // True if PII detected and should be redacted (Issue #891)
 	RequiresApproval   bool // True if HITL approval is required (Issue #1081 - EU AI Act Article 14)
+	EvaluationError    bool // True when Blocked is a fail-closed availability failure (could-not-scan), not a policy verdict (#2862)
 }

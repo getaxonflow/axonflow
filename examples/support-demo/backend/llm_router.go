@@ -430,7 +430,7 @@ func NewLLMRouter() *LLMRouter {
 		},
 		"anthropic": &AnthropicProvider{
 			APIKey: anthropicKey,
-			Model:  "claude-sonnet-4-20250514",
+			Model:  "claude-sonnet-4-5-20250929",
 		},
 		"local": &LocalProvider{
 			ModelPath: "/models/local-llm",

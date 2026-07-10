@@ -99,7 +99,7 @@ gate_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -X POST "$AGENT_URL/api/v
     -d '{
         "step_name": "Data Processing",
         "step_type": "llm_call",
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-5-20250929",
         "provider": "anthropic",
         "tokens_in": 175,
         "tokens_out": 380,

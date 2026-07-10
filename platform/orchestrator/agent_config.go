@@ -68,7 +68,7 @@ type AgentDef struct {
 // LLMAgentConfig specifies LLM settings for an agent
 type LLMAgentConfig struct {
 	Provider    string  `yaml:"provider"`    // anthropic, openai, bedrock
-	Model       string  `yaml:"model"`       // claude-sonnet-4-20250514, gpt-4o, etc.
+	Model       string  `yaml:"model"`       // claude-sonnet-4-5-20250929, gpt-4o, etc.
 	Temperature float64 `yaml:"temperature"` // 0.0 - 1.0
 	MaxTokens   int     `yaml:"max_tokens"`  // Maximum response tokens
 }

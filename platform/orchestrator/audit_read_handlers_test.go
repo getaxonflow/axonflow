@@ -153,7 +153,7 @@ var auditExportColumns = []string{
 	"client_id", "tenant_id", "org_id", "request_type", "query",
 	"policy_decision", "policy_details", "provider", "model", "response_time_ms",
 	"tokens_used", "cost", "redacted_fields", "error_message", "response_sample",
-	"correlation_id",
+	"correlation_id", "session_id",
 }
 
 func TestExportAuditLogs_RequiresTenantScope(t *testing.T) {
@@ -175,7 +175,7 @@ func TestExportAuditLogs_TruncationDetected(t *testing.T) {
 	for i := 0; i < 3; i++ { // Limit(2)+1
 		rows.AddRow("id", "req", ts, 1, "u@a.com", "agent", "acme", "acme",
 			"org", "llm_call", "q", "allowed", []byte(`{}`), "", "", int64(0), 0, 0.0,
-			[]byte(`[]`), "", "", "")
+			[]byte(`[]`), "", "", "", "")
 	}
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("acme").
@@ -229,7 +229,7 @@ func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
 	rows := sqlmock.NewRows(auditExportColumns).AddRow(
 		"aud-9", "req-9", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "tool_call", "Tool: bash", "blocked", []byte(`{}`), "", "",
-		int64(5), 0, 0.0, []byte(`[]`), "", "resp [REDACTED:ssn]", "corr-9")
+		int64(5), 0, 0.0, []byte(`[]`), "", "resp [REDACTED:ssn]", "corr-9", "sess-9")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("acme").WillReturnRows(rows)
 
@@ -272,7 +272,7 @@ func TestAuditExportHandler_JSON_Body(t *testing.T) {
 	rows := sqlmock.NewRows(auditExportColumns).AddRow(
 		"aud-j", "req-j", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "llm_call", "hi", "allowed", []byte(`{}`), "", "", int64(1), 0, 0.0,
-		[]byte(`[]`), "", "", "")
+		[]byte(`[]`), "", "", "", "")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
 
 	withGlobalAuditLogger(al, func() {
@@ -294,6 +294,128 @@ func TestAuditExportHandler_JSON_Body(t *testing.T) {
 		}
 		if payload.Count != 1 || payload.RowCap != auditExportMaxRows {
 			t.Fatalf("unexpected payload: %+v", payload)
+		}
+	})
+}
+
+// TestAuditExportHandler_SessionIDFilter pins the HTTP→SQL wiring of the
+// session_id export filter, mirroring TestAuditSearchHandler_SessionIDFilter
+// (#2857): the search handler gained the field in v9.6.1 but the export
+// handler's body-decode struct never carried it, so a session-filtered export
+// silently returned the whole tenant window with a 200. WithArgs is the real
+// assertion — it fails unless the handler forwarded session_id into the query.
+// This bug class is invisible to ExportAuditLogs-level tests (the criteria
+// struct already had the field), so it is pinned at the handler.
+func TestAuditExportHandler_SessionIDFilter(t *testing.T) {
+	al, mock, done := newMockAuditLogger(t)
+	defer done()
+	ts := time.Now().UTC()
+	rows := sqlmock.NewRows(auditExportColumns).AddRow(
+		"aud-s", "req-s", ts, 1, "dev@acme.com", "agent", "acme", "acme",
+		"org", "llm_call", "session query", "allowed", []byte(`{}`), "", "",
+		int64(3), 0, 0.0, []byte(`[]`), "", "", "corr-s", "sess-42")
+	// Tenant from the trusted header ($1), session filter from the body ($2).
+	mock.ExpectQuery("SELECT id, request_id, timestamp(.+)session_id = ").
+		WithArgs("acme", "sess-42").
+		WillReturnRows(rows)
+
+	withGlobalAuditLogger(al, func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json",
+			strings.NewReader(`{"session_id":"sess-42"}`))
+		req.Header.Set("X-Tenant-ID", "acme")
+		rr := httptest.NewRecorder()
+		auditExportHandler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d (%s)", rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Entries []AuditEntry `json:"entries"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json: %v", err)
+		}
+		if len(payload.Entries) != 1 || payload.Entries[0].SessionID != "sess-42" {
+			t.Fatalf("want exactly the sess-42 entry back, got %+v", payload.Entries)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet: %v", err)
+		}
+	})
+}
+
+// TestAuditExportHandler_PluginBatch1Filters pins the HTTP->SQL wiring of the
+// decision_id / policy_name / override_id filters on the export path. Regression
+// it guards: SearchAuditLogs honors these three, but the export handler's
+// body-decode struct dropped them, so a filtered export silently returned the
+// whole tenant window (the same silent-dropped-filter bug class #2857 fixed for
+// session_id). WithArgs is the real assertion — it fails unless the handler
+// actually forwards the value into the query.
+func TestAuditExportHandler_PluginBatch1Filters(t *testing.T) {
+	ts := time.Now().UTC()
+	cases := []struct {
+		name    string
+		body    string
+		sqlFrag string
+		argVal  string
+	}{
+		{"decision_id", `{"decision_id":"dec-1"}`, "policy_details->>'decision_id' = ", "dec-1"},
+		{"override_id", `{"override_id":"ovr-1"}`, "policy_details->>'override_id' = ", "ovr-1"},
+		{"policy_name", `{"policy_name":"pii-block"}`, "jsonb_array_elements", "pii-block"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			al, mock, done := newMockAuditLogger(t)
+			defer done()
+			rows := sqlmock.NewRows(auditExportColumns).AddRow(
+				"aud-b", "req-b", ts, 1, "dev@acme.com", "agent", "acme", "acme",
+				"org", "llm_call", "q", "blocked", []byte(`{}`), "", "",
+				int64(3), 0, 0.0, []byte(`[]`), "", "", "corr-b", "sess-b")
+			// Tenant from the trusted header ($1), the filter value from the body ($2).
+			mock.ExpectQuery("SELECT id, request_id, timestamp(.+)" + tc.sqlFrag).
+				WithArgs("acme", tc.argVal).
+				WillReturnRows(rows)
+			withGlobalAuditLogger(al, func() {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json",
+					strings.NewReader(tc.body))
+				req.Header.Set("X-Tenant-ID", "acme")
+				rr := httptest.NewRecorder()
+				auditExportHandler(rr, req)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("want 200, got %d (%s)", rr.Code, rr.Body.String())
+				}
+				if err := mock.ExpectationsWereMet(); err != nil {
+					t.Fatalf("filter %q not forwarded into the export query (silently dropped): %v", tc.name, err)
+				}
+			})
+		})
+	}
+}
+
+// TestAuditExportHandler_CSV_SessionColumn pins session_id as the last CSV
+// column so a session-filtered export identifies its rows' session membership.
+func TestAuditExportHandler_CSV_SessionColumn(t *testing.T) {
+	al, mock, done := newMockAuditLogger(t)
+	defer done()
+	ts := time.Now().UTC()
+	rows := sqlmock.NewRows(auditExportColumns).AddRow(
+		"aud-c", "req-c", ts, 1, "dev@acme.com", "agent", "acme", "acme",
+		"org", "llm_call", "q", "allowed", []byte(`{}`), "", "",
+		int64(0), 0, 0.0, []byte(`[]`), "", "", "corr-c", "sess-c1")
+	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
+	withGlobalAuditLogger(al, func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=csv", strings.NewReader(`{}`))
+		req.Header.Set("X-Tenant-ID", "acme")
+		rr := httptest.NewRecorder()
+		auditExportHandler(rr, req)
+		recs, err := csv.NewReader(strings.NewReader(rr.Body.String())).ReadAll()
+		if err != nil {
+			t.Fatalf("csv parse: %v", err)
+		}
+		if recs[0][len(recs[0])-1] != "session_id" {
+			t.Fatalf("want session_id as last CSV column, got header %v", recs[0])
+		}
+		if recs[1][len(recs[1])-1] != "sess-c1" {
+			t.Fatalf("want sess-c1 in session_id cell, got %v", recs[1])
 		}
 	})
 }
@@ -622,7 +744,7 @@ func TestAuditExportHandler_NoTruncationHeaderOnSmallResult(t *testing.T) {
 	// handler is impractical for a unit test).
 	rows := sqlmock.NewRows(auditExportColumns).AddRow(
 		"id", "req", ts, 1, "u@a.com", "agent", "acme", "acme", "org",
-		"llm_call", "q", "allowed", []byte(`{}`), "", "", int64(0), 0, 0.0, []byte(`[]`), "", "", "")
+		"llm_call", "q", "allowed", []byte(`{}`), "", "", int64(0), 0, 0.0, []byte(`[]`), "", "", "", "")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=json", strings.NewReader(`{}`))
@@ -692,7 +814,7 @@ func TestAuditExportHandler_CSV_NeutralizesFormula(t *testing.T) {
 	rows := sqlmock.NewRows(auditExportColumns).AddRow(
 		"aud-x", "req", ts, 1, "dev@acme.com", "agent", "acme", "acme", "org",
 		"tool_call", "=cmd|'/c calc'!A1", "blocked", []byte(`{}`), "", "",
-		int64(0), 0, 0.0, []byte(`[]`), "", "", "")
+		int64(0), 0, 0.0, []byte(`[]`), "", "", "", "")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").WillReturnRows(rows)
 	withGlobalAuditLogger(al, func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/export?format=csv", strings.NewReader(`{}`))

@@ -1418,6 +1418,9 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	}
 
 	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
+	// #2581: per-org posture. orgID is the auth-derived org for this request; an
+	// org with no override row resolves to the deployment-global config.
+	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, session.orgID)
 	outcome := evaluateInputPolicies(
 		ctx,
 		session.tenantID,
@@ -1429,6 +1432,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		operation,
 		statement,
 		params,
+		mcpDetectionCfg,
+		true, // runDynamicPolicy
 	)
 
 	if outcome.EvalUnavailable {
@@ -1628,6 +1633,10 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	if outcome.StaticResult != nil {
 		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
 	}
+	// #2865: mirror check_input — report whether the response redaction pipeline
+	// ran so a plugin governing post-tool results via tools/call can fail closed
+	// when it did not (absence/false ⇒ don't trust an un-redacted response).
+	resp["redaction_evaluated"] = outcome.RedactionEvaluated
 	// Redacted content is surfaced independently of StaticResult: an Indonesia-only
 	// redaction (the OJK/UU-PDP NIK path) leaves StaticResult nil, and gating the
 	// masked data on StaticResult would forward the UNMASKED original to the MCP

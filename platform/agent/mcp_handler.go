@@ -692,8 +692,19 @@ type InputPolicyOutcome struct {
 }
 
 // evaluateInputPolicies runs dynamic + request-phase static policy checks without
-// calling any connector. Shared by mcpQueryHandler, mcpExecuteHandler, and
-// mcpCheckInputHandler (Issue #1258).
+// calling any connector. Shared by mcpQueryHandler, mcpExecuteHandler,
+// mcpCheckInputHandler, and handleDecide (Issues #1258, #2801).
+//
+// detectionCfg is caller-resolved (ResolveMCPDetectionConfig for the managed/
+// advisory MCP planes, ResolveGatewayDetectionConfig for /decide) so each
+// caller's org-override posture and connector-scoping rules stay exactly what
+// they are today; this function no longer resolves a config itself.
+//
+// runDynamicPolicy gates the dynamic policy engine (rate limits, budgets,
+// time/role access). /decide passes false: dynamic policy support there is
+// M2 scope per epic #2426 (see decision_handler.go doc comment) — the
+// orchestrator round-trip it requires doesn't fit /decide's inline
+// single-digit-millisecond RPC budget.
 //
 // v9 Phase 8 #2384 PR-C1: orgID is plumbed through to EvalOptions.OrgID so
 // metrics.RecordViolation can stamp shared AuditEntry.OrgID, which the
@@ -701,9 +712,9 @@ type InputPolicyOutcome struct {
 // axonflow_app_role for the policy_metrics / policy_violations INSERTs.
 //
 // toolIdentity (#2801) feeds capability-scoped evaluation and is DISTINCT
-// from connectorName: ADVISORY planes (check-input, mcp-server check_policy)
-// pass the caller-sent connector_type — the enforcing client is the trust
-// anchor for what tool it is about to run. MANAGED-CONNECTOR planes
+// from connectorName: ADVISORY planes (check-input, mcp-server check_policy,
+// /decide) pass the caller-sent tool identity — the enforcing client is the
+// trust anchor for what tool it is about to run. MANAGED-CONNECTOR planes
 // (resources/query, tools/execute) MUST pass "" — there the AGENT executes
 // the statement against the real connector, and the connector NAME is
 // tenant-chosen free-form text: a postgres connector registered as
@@ -714,61 +725,59 @@ func evaluateInputPolicies(
 	ctx context.Context,
 	tenantID, orgID, userID, userRole, connectorName, toolIdentity, operation, statement string,
 	parameters map[string]interface{},
+	detectionCfg ModeDetectionConfig,
+	runDynamicPolicy bool,
 ) InputPolicyOutcome {
 	var out InputPolicyOutcome
 
 	// Dynamic policy evaluation (rate limits, budgets, time/role access)
-	dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(connectorName) {
-		dynamicReq := sharedpolicy.DynamicPolicyRequest{
-			TenantID:      tenantID,
-			UserID:        userID,
-			UserRole:      userRole,
-			ConnectorName: connectorName,
-			Operation:     operation,
-			Statement:     statement,
-			Parameters:    parameters,
-		}
-		dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
-		out.DynamicInfo = info
-		if err != nil {
-			log.Printf("[MCP] Dynamic policy evaluation failed: %v", err)
-			out.EvalUnavailable = true
-			return out
-		}
-		if !dynamicResp.Allowed {
-			log.Printf("[MCP] Request blocked by dynamic policy: %s", logutil.Sanitize(dynamicResp.BlockReason))
-			out.DynamicBlocked = true
-			out.DynamicBlockReason = dynamicResp.BlockReason
-			return out
+	if runDynamicPolicy {
+		dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+		if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(connectorName) {
+			dynamicReq := sharedpolicy.DynamicPolicyRequest{
+				TenantID:      tenantID,
+				UserID:        userID,
+				UserRole:      userRole,
+				ConnectorName: connectorName,
+				Operation:     operation,
+				Statement:     statement,
+				Parameters:    parameters,
+			}
+			dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
+			out.DynamicInfo = info
+			if err != nil {
+				log.Printf("[MCP] Dynamic policy evaluation failed: %v", err)
+				out.EvalUnavailable = true
+				return out
+			}
+			if !dynamicResp.Allowed {
+				log.Printf("[MCP] Request blocked by dynamic policy: %s", logutil.Sanitize(dynamicResp.BlockReason))
+				out.DynamicBlocked = true
+				out.DynamicBlockReason = dynamicResp.BlockReason
+				return out
+			}
 		}
 	}
 
-	// Request-phase static policy evaluation (SQLi, PII, compliance)
+	// Request-phase static policy evaluation (SQLi, PII, sensitive-data, compliance)
 	policyEngine := sharedpolicy.GetGlobalEngine()
-	// #2581: per-org posture. orgID is the auth-derived org for this request; an
-	// org with no override row resolves to the deployment-global config.
-	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, orgID)
-	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
-		// Security + compliance categories stay explicit; the PII categories are
-		// policy-derived (every enabled PII-category system policy) so a new
-		// pii-* category (e.g. pii-indonesia) is auto-covered — no hardcoded PII
-		// list to forget. The non-PII categories keep the slice non-empty, so
-		// the empty-Categories-means-all whitelist footgun can't apply here.
+	if policyEngine != nil && detectionCfg.Enabled && detectionCfg.IsConnectorEnabled(connectorName) {
+		// Security + sensitive-data + compliance categories stay explicit; the
+		// PII categories are policy-derived (every enabled PII-category system
+		// policy) so a new pii-* category (e.g. pii-indonesia) is auto-covered —
+		// no hardcoded PII list to forget. The non-PII categories keep the slice
+		// non-empty, so the empty-Categories-means-all whitelist footgun can't
+		// apply here.
 		inputCats := []sharedpolicy.PolicyCategory{
 			sharedpolicy.CategorySecuritySQLi,
 			sharedpolicy.CategorySecurityDangerous,
+			sharedpolicy.CategorySensitiveData,
 			sharedpolicy.CategoryComplianceRBI,
 			sharedpolicy.CategoryComplianceSEBI,
 			sharedpolicy.CategoryComplianceEUAIAct,
 			sharedpolicy.CategoryComplianceMASFEAT,
 		}
 		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
-		// #2705: also evaluate the sensitive-data (secrets) category so the
-		// SENSITIVE_DATA_ACTION / profile lever governs MCP request input too — the
-		// one request plane that previously omitted it (block is already honored
-		// below via out.StaticResult.Blocked).
-		inputCats = append(inputCats, policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
 			TenantID:      tenantID,
 			OrgID:         orgID,
@@ -777,13 +786,13 @@ func evaluateInputPolicies(
 			Parameters:    parameters,
 			Categories:    inputCats,
 			// #2801: capability-scoped evaluation. Advisory planes pass the
-			// caller-sent connector_type (e.g.
+			// caller-sent tool identity (e.g.
 			// claude_code.mcp__atlassian__editJiraIssue); managed-connector
 			// planes pass "" (see the function doc). Unclassified/empty
 			// identities get full evaluation.
 			ToolIdentity:    toolIdentity,
-			SkipCategories:  mcpDetectionCfg.SkipCategories,
-			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+			SkipCategories:  detectionCfg.SkipCategories,
+			ActionOverrides: detectionCfg.BuildActionOverrides(),
 		})
 		if out.StaticResult.Blocked {
 			policyID := "unknown"
@@ -959,6 +968,16 @@ type OutputPolicyOutcome struct {
 
 	// ExfilInfo is the structured exfiltration info for inclusion in PolicyInfo.
 	ExfilInfo *sharedpolicy.ExfiltrationCheckInfo
+
+	// RedactionEvaluated reports whether the response-phase redaction pipeline
+	// actually RAN for this response (detection enabled for the connector and
+	// not withheld by a fail-closed load error), regardless of whether it masked
+	// anything. It is the response-plane mirror of the input plane's
+	// redaction.Evaluated (#2865): a PEP fulfilling a response-phase redact_pii
+	// obligation MUST fail closed when this is false, because "no redacted_data"
+	// is then indistinguishable from "looked, found nothing." Surfaced to callers
+	// as MCPCheckOutputResponse.redaction_evaluated on the allow path.
+	RedactionEvaluated bool
 }
 
 // evaluateOutputPolicies runs SQLi response scanning, response-phase static policy
@@ -1139,6 +1158,18 @@ func evaluateOutputPolicies(
 			return out
 		}
 	}
+
+	// #2865: record that the response redaction pipeline ran, so a response-phase
+	// PEP can tell "scanned, nothing to mask" from "not scanned" and fail closed
+	// on the latter. Set AFTER the #2820 load-error withhold (a withheld response
+	// returns Blocked above, never as an allow that could claim it was scanned)
+	// and guarded on a non-nil engine — with a nil engine the static PII pass
+	// below is skipped and only the Indonesia checksum masker runs, which cannot
+	// clear generic PII, so claiming "evaluated" would be a fail-open. This
+	// mirrors the input plane's redaction.Evaluated exactly (engine nil OR
+	// detection off ⇒ not evaluated). In a serving agent the engine is always
+	// wired before the MCP routes mount (run.go), so the normal path is unaffected.
+	out.RedactionEvaluated = detectionGate && sharedpolicy.GetGlobalEngine() != nil
 
 	// 2. Indonesia (OJK/UU PDP) checksum-validated PII governance on the response.
 	// The static policy engine CANNOT cover NIK on responses: sys_pii_indonesia_ktp
@@ -1705,9 +1736,13 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
 	// v9 Phase 8 #2384 PR-C1: orgID is on the legacy *User struct as OrgID.
+	// #2581: per-org posture. orgID is the auth-derived org for this request; an
+	// org with no override row resolves to the deployment-global config.
+	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, user.OrgID)
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters)
+		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters,
+		mcpDetectionCfg, true /* runDynamicPolicy */)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503). Record a canonical
@@ -2109,9 +2144,13 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
 	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
+	// #2581: per-org posture. orgID is the auth-derived org for this request; an
+	// org with no override row resolves to the deployment-global config.
+	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, user.OrgID)
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters)
+		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters,
+		mcpDetectionCfg, true /* runDynamicPolicy */)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503) → canonical error row.
@@ -2368,6 +2407,14 @@ type MCPCheckOutputResponse struct {
 	ExfiltrationInfo  *sharedpolicy.ExfiltrationCheckInfo `json:"exfiltration_info,omitempty"`
 	PolicyInfo        *sharedpolicy.PolicyInfo            `json:"policy_info,omitempty"`
 	DecisionID        string                              `json:"decision_id,omitempty"`
+
+	// RedactionEvaluated mirrors MCPCheckInputResponse.RedactionEvaluated for the
+	// response phase (#2865). True when the response redaction pipeline ran; a
+	// response-phase PEP MUST fail closed when it is false/absent (the redactor
+	// did not run, so absence of redacted_data cannot be trusted as
+	// "nothing to mask"). omitempty keeps the pre-#2865 byte shape and leaves a
+	// strict PEP fail-closed when detection is disabled for the connector.
+	RedactionEvaluated bool `json:"redaction_evaluated,omitempty"`
 }
 
 // mcpCheckInputHandler evaluates dynamic + request-phase static policies for a proposed
@@ -2667,9 +2714,13 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// v9 Phase 8 #2384 PR-C1: orgID plumbed through.
+		// #2581: per-org posture. orgID is the auth-derived org for this request; an
+		// org with no override row resolves to the deployment-global config.
+		mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, orgID)
 		outcome := evaluateInputPolicies(ctx,
 			tenantID, orgID, userID, userRole,
-			req.ConnectorType, req.ConnectorType /* toolIdentity: advisory plane, caller-sent tool identity (#2801) */, operation, req.Statement, req.Parameters)
+			req.ConnectorType, req.ConnectorType /* toolIdentity: advisory plane, caller-sent tool identity (#2801) */, operation, req.Statement, req.Parameters,
+			mcpDetectionCfg, true /* runDynamicPolicy */)
 
 		if outcome.EvalUnavailable {
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
@@ -2963,6 +3014,18 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
+	// #2860: Enterprise per-client version-distribution telemetry for the MCP
+	// response plane — the Desktop proxy (mcp-proxy/<v>) and the claude-code
+	// plugin both stamp X-Axonflow-Client on this call. Reached only after
+	// Authenticate() above succeeds (this route is POST-only and not behind
+	// apiAuthMiddleware), so unauthenticated junk can't mint label series.
+	// Telemetry-only + fail-open by contract (community no-op), so a
+	// missing/garbage header never affects the response verdict. Unlike the
+	// decide plane, this records post-decode+auth — the two planes' series are
+	// "attempts" (decide) vs "authenticated requests" (mcp) and don't reconcile
+	// 1:1 across Grafana.
+	recordClientVersionTelemetry(PlaneMCP, r.Header.Get("X-Axonflow-Client"))
+
 	// V1 Plugin Pro daily-cap enforcement (umbrella #1958 + #1976):
 	// /api/v1/mcp/check-output is registered directly on globalRouter
 	// without daily-cap middleware. Plugins call this on every governed
@@ -3200,6 +3263,9 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		// Plugin Batch 1: every governance decision surfaces decision_id —
 		// allow paths included, mirroring mcpCheckInputHandler.
 		DecisionID: decisionID,
+		// #2865: response-plane mirror of check-input's redaction_evaluated —
+		// lets a PEP fail closed when the redactor did not run.
+		RedactionEvaluated: outcome.RedactionEvaluated,
 	})
 }
 

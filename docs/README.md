@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: May 2026** | **Platform: v9.0.0** | **SDKs: Python / Go / TypeScript / Java v8.3.0 + Rust v0.5.0 (preview)**
+**Last Updated: July 2026** | **Platform: v9.7.0** | **SDKs: Python / Go / TypeScript / Java v8.5.1 + Rust v0.8.1 (preview)**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -31,7 +31,7 @@ Configuration and how-to guides for common tasks.
 
 ## SDK Documentation
 
-AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.3.0) plus Rust (preview v0.5.0).
+AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.5.1) plus Rust (preview v0.8.1).
 
 | Document | Description |
 |----------|-------------|
@@ -51,7 +51,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.
 ### Java SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java)
-- **Install:** Maven `com.getaxonflow:axonflow-sdk:8.3.0`
+- **Install:** Maven `com.getaxonflow:axonflow-sdk:8.5.1`
 
 ### TypeScript SDK
 
@@ -65,7 +65,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust)
 - **Install:** `cargo add axonflow-sdk-rust`
-- Preview line at v0.5.0 on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `list_decisions` + `explain_decision`, `create_hitl_request`, Indonesia PII category, plus the v9 `X-Client-ID` outbound header.
+- Preview line at v0.8.1 on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `list_decisions` + `explain_decision`, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction).
 
 ## Reference
 

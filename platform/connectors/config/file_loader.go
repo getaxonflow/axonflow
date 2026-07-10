@@ -25,33 +25,33 @@ import (
 
 // ConfigFile represents the root structure of a configuration file
 type ConfigFile struct {
-	Version      string                     `yaml:"version"`
-	Connectors   map[string]ConnectorFileConfig `yaml:"connectors,omitempty"`
+	Version      string                           `yaml:"version"`
+	Connectors   map[string]ConnectorFileConfig   `yaml:"connectors,omitempty"`
 	LLMProviders map[string]LLMProviderFileConfig `yaml:"llm_providers,omitempty"`
 }
 
 // ConnectorFileConfig represents a connector configuration in the config file
 type ConnectorFileConfig struct {
-	Type           string                 `yaml:"type"`
-	Enabled        bool                   `yaml:"enabled"`
-	DisplayName    string                 `yaml:"display_name,omitempty"`
-	Description    string                 `yaml:"description,omitempty"`
-	ConnectionURL  string                 `yaml:"connection_url,omitempty"`
-	Credentials    map[string]string      `yaml:"credentials,omitempty"`
-	Options        map[string]interface{} `yaml:"options,omitempty"`
-	TimeoutMs      int                    `yaml:"timeout_ms,omitempty"`
-	MaxRetries     int                    `yaml:"max_retries,omitempty"`
-	TenantID       string                 `yaml:"tenant_id,omitempty"`
+	Type          string                 `yaml:"type"`
+	Enabled       bool                   `yaml:"enabled"`
+	DisplayName   string                 `yaml:"display_name,omitempty"`
+	Description   string                 `yaml:"description,omitempty"`
+	ConnectionURL string                 `yaml:"connection_url,omitempty"`
+	Credentials   map[string]string      `yaml:"credentials,omitempty"`
+	Options       map[string]interface{} `yaml:"options,omitempty"`
+	TimeoutMs     int                    `yaml:"timeout_ms,omitempty"`
+	MaxRetries    int                    `yaml:"max_retries,omitempty"`
+	TenantID      string                 `yaml:"tenant_id,omitempty"`
 }
 
 // LLMProviderFileConfig represents an LLM provider configuration in the config file
 type LLMProviderFileConfig struct {
-	Enabled      bool                   `yaml:"enabled"`
-	DisplayName  string                 `yaml:"display_name,omitempty"`
-	Config       map[string]interface{} `yaml:"config,omitempty"`
-	Credentials  map[string]string      `yaml:"credentials,omitempty"`
-	Priority     int                    `yaml:"priority,omitempty"`
-	Weight       float64                `yaml:"weight,omitempty"`
+	Enabled     bool                   `yaml:"enabled"`
+	DisplayName string                 `yaml:"display_name,omitempty"`
+	Config      map[string]interface{} `yaml:"config,omitempty"`
+	Credentials map[string]string      `yaml:"credentials,omitempty"`
+	Priority    int                    `yaml:"priority,omitempty"`
+	Weight      float64                `yaml:"weight,omitempty"`
 }
 
 // YAMLConfigFileLoader loads configurations from a YAML file
@@ -352,7 +352,7 @@ llm_providers:
     display_name: "Amazon Bedrock"
     config:
       region: ${AWS_REGION:-us-east-1}
-      model: ${BEDROCK_MODEL:-anthropic.claude-sonnet-4-20250514-v1:0}
+      model: ${BEDROCK_MODEL:-us.anthropic.claude-haiku-4-5-20251001-v1:0}
     priority: 10
     weight: 0.7
 
@@ -383,7 +383,7 @@ llm_providers:
     enabled: false  # Enable when API key is available
     display_name: "Anthropic"
     config:
-      model: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      model: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
       max_tokens: 8192
     credentials:
       api_key: ${ANTHROPIC_API_KEY}

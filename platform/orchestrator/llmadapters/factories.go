@@ -13,6 +13,7 @@
 package llmadapters
 
 import (
+	"axonflow/platform/shared/llmdefaults"
 	"fmt"
 
 	"axonflow/platform/orchestrator/llm"
@@ -54,7 +55,7 @@ func NewBedrockProviderFactory(config llm.ProviderConfig) (llm.Provider, error) 
 
 	// Default model if not specified
 	if model == "" {
-		model = "anthropic.claude-sonnet-4-20250514-v1:0"
+		model = llmdefaults.BedrockModel
 	}
 
 	// Get optional model family override

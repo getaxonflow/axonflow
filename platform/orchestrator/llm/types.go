@@ -78,7 +78,7 @@ type CompletionRequest struct {
 	TopK int `json:"top_k,omitempty"`
 
 	// Model overrides the provider's default model.
-	// Format is provider-specific (e.g., "gpt-4o", "claude-sonnet-4-20250514").
+	// Format is provider-specific (e.g., "gpt-4o", "claude-sonnet-4-5-20250929").
 	Model string `json:"model,omitempty"`
 
 	// StopSequences are strings that cause generation to stop.

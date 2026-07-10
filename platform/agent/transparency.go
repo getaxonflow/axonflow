@@ -60,7 +60,7 @@ const (
 	HeaderAIModelProvider = "X-AI-Model-Provider"
 
 	// HeaderAIModelID identifies the specific model version used.
-	// Examples: "gpt-4o", "claude-opus-4-20250514", "amazon.titan-text-express-v1"
+	// Examples: "gpt-4o", "claude-opus-4-1-20250805", "amazon.titan-text-express-v1"
 	// EU AI Act: Article 13 (Transparency) - model version traceability
 	HeaderAIModelID = "X-AI-Model-ID"
 

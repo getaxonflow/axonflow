@@ -419,10 +419,11 @@ func TestKnownIntegrations_PolicyPrefixMatchesPolicyIDs(t *testing.T) {
 	// This prevents the bug where claude-code's policies couldn't be activated
 	// because the prefix didn't match the policy_id pattern
 	expectedPrefixes := map[string]string{
-		"openclaw":    "int_openclaw",
-		"claude-code": "int_claude",
-		"cursor":      "int_cursor",
-		"codex":       "int_codex",
+		"openclaw":       "int_openclaw",
+		"claude-code":    "int_claude",
+		"cursor":         "int_cursor",
+		"codex":          "int_codex",
+		"claude-desktop": "int_desktop",
 	}
 
 	for _, ki := range knownIntegrations {

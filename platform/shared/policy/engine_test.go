@@ -278,13 +278,19 @@ func TestUnifiedPolicyEngine_GracefulDegradation(t *testing.T) {
 	engine.loader = NewPolicyLoader(nil, engine.cache)
 	engine.initialized = true
 
-	// Should not block when DB unavailable
+	// #2862: the request plane fails CLOSED on a policy-load error even under
+	// GracefulDegradation — a gate that could not scan for SQLi must not admit
+	// the request. (Was previously asserted fail-open, which silently disabled
+	// enforcement on a DB blip; symmetric with the #2820 response-plane fix.)
 	result := engine.EvaluateRequest(context.Background(), "SELECT * UNION SELECT *", EvalOptions{
 		TenantID: "test-tenant",
 	})
 
-	if result.Blocked {
-		t.Error("Should allow request when DB unavailable with graceful degradation")
+	if !result.Blocked {
+		t.Error("request plane must fail CLOSED (block) when policies cannot be loaded")
+	}
+	if !result.EvaluationError {
+		t.Error("a couldn't-scan block must set EvaluationError to distinguish it from a policy verdict")
 	}
 }
 

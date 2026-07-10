@@ -52,7 +52,6 @@ import (
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/telemetry"
 	sharedaudit "axonflow/platform/shared/audit"
-	sharedpolicy "axonflow/platform/shared/policy"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -234,7 +233,11 @@ func classifyDecisionOrigin(clientHeader, gatewayID string) string {
 	switch {
 	case ch == "claude-code" || ch == "claude-code-plugin":
 		return OriginClaudeCode
-	case strings.HasPrefix(ch, "claude-desktop"):
+	case strings.HasPrefix(ch, "claude-desktop") || ch == "mcp-proxy":
+		// mcp-proxy is the Desktop governance proxy's on-wire client id
+		// (#2860, axonflow-claude-desktop-plugin). The gateway_id check above
+		// stays authoritative; this keeps the bucket correct even for a call
+		// that carries the header without a claude_desktop gateway_id.
 		return OriginClaudeDesktop
 	case strings.HasPrefix(ch, "sdk-"):
 		return OriginSDK
@@ -523,6 +526,23 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// emitted raw — classifyDecisionOrigin maps it to a bucket constant.
 	clientHeader := r.Header.Get("X-Axonflow-Client")
 	origin := classifyDecisionOrigin(clientHeader, "")
+
+	// #2860: Enterprise per-client version-distribution telemetry — record the
+	// validated client/version pair (e.g. mcp-proxy/0.3.0) for the decide
+	// plane. POST-only guard: this route is registered `.Methods("POST",
+	// "OPTIONS")` and apiAuthMiddleware forwards CORS preflights (OPTIONS)
+	// UNAUTHENTICATED straight to this handler (auth.go). Recording on OPTIONS
+	// would let an anonymous caller mint label series and exhaust the
+	// per-process series cap, permanently blinding the distribution — so an
+	// authenticated POST is the only request we count. Telemetry-only +
+	// fail-open by contract (community no-op): a missing/garbage header is
+	// dropped inside the recorder and can never influence the verdict below —
+	// a version-bearing caller whose POST is later DENIED by policy still
+	// lands in the distribution (denies are traffic too; this plane counts
+	// attempts, unlike the post-decode check-output plane).
+	if r.Method == http.MethodPost {
+		recordClientVersionTelemetry(PlaneDecision, clientHeader)
+	}
 
 	// Canonicalized request context (#2509) is computed after a successful decode
 	// (it needs req.Context); declared here so the early-deny audit closure can
@@ -827,70 +847,49 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		rbiPIIRequiresRedaction = true
 	}
 
-	// Static-policy evaluation via the shared policy engine. Same engine,
-	// same category set as Gateway Mode pre-check so a single policy author
-	// gets consistent enforcement across both callers.
-	var policyResult *StaticPolicyResult
-	sharedEngine := sharedpolicy.GetGlobalEngine()
-	if !gwDetectionCfg.Enabled {
-		policyResult = &StaticPolicyResult{
-			Blocked:           false,
-			TriggeredPolicies: []string{},
-			ChecksPerformed:   []string{"gateway_static_policies_disabled"},
-		}
-	} else if sharedEngine != nil {
-		// Security + compliance categories stay explicit; the PII subset is
-		// policy-derived via Session A's canonical EnabledPIICategories (#2565)
-		// — the same source of truth the W2 response engines use — so a new
-		// pii-* jurisdiction is auto-covered with no hardcoded list to forget.
-		// PhaseRequest because /decide is a pre-call (request-phase) decision.
-		// The non-PII categories keep the slice non-empty, so the
-		// empty-Categories-means-all whitelist footgun can't apply here.
-		decideCats := []sharedpolicy.PolicyCategory{
-			sharedpolicy.CategorySecuritySQLi,
-			sharedpolicy.CategorySecurityDangerous,
-			sharedpolicy.CategorySensitiveData,
-			sharedpolicy.CategoryComplianceRBI,
-			sharedpolicy.CategoryComplianceSEBI,
-			sharedpolicy.CategoryComplianceEUAIAct,
-			sharedpolicy.CategoryComplianceMASFEAT,
-		}
-		decideCats = append(decideCats, sharedEngine.EnabledPIICategories(ctx, user.TenantID, nil, sharedpolicy.PhaseRequest)...)
-		// #2801: when the PEP declares a tool target, its tool name feeds
-		// capability-scoped evaluation (text-document tools skip
-		// execution-class detectors; unknown tools get full evaluation).
-		// ConnectorName stays the synthetic "decision" for metrics/audit.
-		toolIdentity := ""
-		if strings.EqualFold(req.Target.Type, "tool") {
-			toolIdentity = req.Target.Tool
-		}
-		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
-			TenantID:        user.TenantID,
-			OrgID:           user.OrgID,
-			ConnectorName:   "decision",
-			UserID:          fmt.Sprintf("%d", user.ID),
-			ToolIdentity:    toolIdentity,
-			Categories:      decideCats,
-			SkipCategories:  gwDetectionCfg.SkipCategories,
-			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
-		})
-		policyResult = convertSharedResultToStatic(requestResult)
-		// Capture the blocking policy ID directly from requestResult so
-		// circuit-breaker violation recording targets the right rule
-		// regardless of which order the shared engine appended matches in
-		// (a request that triggers a non-blocking redact policy AND a
-		// blocking SQLi policy must record the SQLi rule).
-		if requestResult != nil && requestResult.BlockedBy != nil {
-			blockingPolicyID = requestResult.BlockedBy.PolicyID
-			blockingPolicyTier = requestResult.BlockedBy.Tier
-		}
-	} else {
-		// No engine wired -- allow (mirrors Gateway Mode bypass shape).
-		policyResult = &StaticPolicyResult{
-			Blocked:           false,
-			TriggeredPolicies: []string{},
-			ChecksPerformed:   []string{"no_policy_engine"},
-		}
+	// Static-policy evaluation via evaluateInputPolicies (#2801), the same
+	// helper mcpQueryHandler / mcpExecuteHandler / mcpCheckInputHandler use —
+	// same engine, same category set, so a single policy author gets
+	// consistent enforcement across every caller. runDynamicPolicy is false:
+	// dynamic policy (rate limits, budgets, time/role access) is M2 scope per
+	// epic #2426 (see file doc comment above) — /decide's inline RPC budget
+	// only covers static checks today. connectorName is the synthetic
+	// "decision" placeholder for metrics/audit; ResolveGatewayDetectionConfig
+	// has no connector-scoping mechanism (unlike the MCP surface), so this is
+	// never gated by it — /decide has no managed connector to scope against
+	// (ADR-056 addendum, Decision 3: "the connector axis is meaningless" for
+	// gateway/PDP mode).
+	//
+	// #2801: when the PEP declares a tool target, its tool name feeds
+	// capability-scoped evaluation (text-document tools skip execution-class
+	// detectors; unknown tools get full evaluation).
+	toolIdentity := ""
+	if strings.EqualFold(req.Target.Type, "tool") {
+		toolIdentity = req.Target.Tool
+	}
+	outcome := evaluateInputPolicies(ctx,
+		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
+		"decision", toolIdentity, "decide", req.Query, nil,
+		gwDetectionCfg, false /* runDynamicPolicy: M2, #2426 */)
+	// Defensive fail-closed: evaluateInputPolicies sets EvalUnavailable only when
+	// dynamic policy evaluation (runDynamicPolicy) hits a transient store error.
+	// /decide passes runDynamicPolicy=false, so this is never set today — but
+	// guard it so a future flip to dynamic eval fails closed with a 503 (like the
+	// MCP handlers) instead of silently allowing on an unavailable evaluator.
+	if outcome.EvalUnavailable {
+		log.Printf("⚠️ [Decide] policy evaluation unavailable — failing closed (503)")
+		sendDecideError(w, "policy evaluation temporarily unavailable", http.StatusServiceUnavailable, decisionID, traceID)
+		return
+	}
+	policyResult := convertSharedResultToStatic(outcome.StaticResult)
+	// Capture the blocking policy ID directly from the result so
+	// circuit-breaker violation recording targets the right rule regardless
+	// of which order the shared engine appended matches in (a request that
+	// triggers a non-blocking redact policy AND a blocking SQLi policy must
+	// record the SQLi rule).
+	if outcome.StaticResult != nil && outcome.StaticResult.BlockedBy != nil {
+		blockingPolicyID = outcome.StaticResult.BlockedBy.PolicyID
+		blockingPolicyTier = outcome.StaticResult.BlockedBy.Tier
 	}
 
 	// Map StaticPolicyResult onto the Decision API verdict/reasons/obligations

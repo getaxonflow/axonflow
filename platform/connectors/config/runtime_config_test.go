@@ -12,6 +12,7 @@
 package config
 
 import (
+	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"os"
 	"testing"
@@ -455,4 +456,49 @@ func TestRuntimeConfigService_GetConnectorConfig(t *testing.T) {
 			t.Error("expected nil config for nonexistent connector")
 		}
 	})
+}
+
+// Regression for #2871: the env-var fallback model ids must be CURRENT
+// catalog ids. claude-sonnet-4-20250514 was retired by the Anthropic API
+// (404 not_found_error), so any provider failover through anthropic (or the
+// non-region-prefixed bedrock variant, which also fails on-demand
+// invocation) died with "all providers failed".
+func TestRuntimeConfigService_LLMProviderFallbackModelsAreCurrent(t *testing.T) {
+	// Force the env-var source with the model vars UNSET so the code
+	// fallbacks are what's under test.
+	os.Setenv("ANTHROPIC_API_KEY", "test-key")
+	os.Setenv("BEDROCK_REGION", "us-east-1")
+	os.Unsetenv("ANTHROPIC_MODEL")
+	os.Unsetenv("BEDROCK_MODEL")
+	defer func() {
+		os.Unsetenv("ANTHROPIC_API_KEY")
+		os.Unsetenv("BEDROCK_REGION")
+	}()
+
+	svc := NewRuntimeConfigService(RuntimeConfigServiceOptions{
+		CacheTTL: 1 * time.Second,
+	})
+
+	configs, _, err := svc.GetLLMProviderConfigs(context.Background(), "test_tenant")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	models := map[string]string{}
+	for _, cfg := range configs {
+		if m, ok := cfg.Config["model"].(string); ok {
+			models[cfg.ProviderName] = m
+		}
+	}
+
+	// Pin the env-unset branch to the shared source of truth: the model-id
+	// VALUES are guarded (against the live catalog + region-prefix rule) in
+	// platform/shared/llmdefaults's own tests, so this only asserts the
+	// fallback plumbing picks them up.
+	if got := models["anthropic"]; got != llmdefaults.AnthropicModel {
+		t.Errorf("anthropic fallback model = %q, want llmdefaults.AnthropicModel %q", got, llmdefaults.AnthropicModel)
+	}
+	if got := models["bedrock"]; got != llmdefaults.BedrockModel {
+		t.Errorf("bedrock fallback model = %q, want llmdefaults.BedrockModel %q", got, llmdefaults.BedrockModel)
+	}
 }

@@ -12,6 +12,7 @@
 package config
 
 import (
+	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -603,7 +604,7 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 	if region := os.Getenv("BEDROCK_REGION"); region != "" {
 		model := os.Getenv("BEDROCK_MODEL")
 		if model == "" {
-			model = "anthropic.claude-sonnet-4-20250514-v1:0"
+			model = llmdefaults.BedrockModel
 		}
 		configs = append(configs, &LLMProviderConfig{
 			ProviderName: "bedrock",
@@ -665,7 +666,7 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
 		model := os.Getenv("ANTHROPIC_MODEL")
 		if model == "" {
-			model = "claude-sonnet-4-20250514"
+			model = llmdefaults.AnthropicModel
 		}
 		configs = append(configs, &LLMProviderConfig{
 			ProviderName: "anthropic",

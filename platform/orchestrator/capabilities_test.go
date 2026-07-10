@@ -28,12 +28,14 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"typescript": "8.0.0",
 		"go":         "8.0.0",
 		"java":       "8.0.0",
+		"rust":       "0.7.0",
 	}
 	wantRecommended := map[string]string{
-		"python":     "8.5.0",
-		"typescript": "8.5.0",
-		"go":         "8.5.0",
+		"python":     "8.5.1",
+		"typescript": "8.5.1",
+		"go":         "8.5.1",
 		"java":       "8.5.1",
+		"rust":       "0.8.1",
 	}
 
 	for lang, want := range wantMin {
@@ -46,8 +48,8 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 			t.Errorf("RecommendedSDKVersion[%q] = %q; want %q", lang, got, want)
 		}
 	}
-	if len(c.MinSDKVersion) != 4 || len(c.RecommendedSDKVersion) != 4 {
-		t.Errorf("expected 4 SDKs, got Min=%d Recommended=%d",
+	if len(c.MinSDKVersion) != 5 || len(c.RecommendedSDKVersion) != 5 {
+		t.Errorf("expected 5 SDKs, got Min=%d Recommended=%d",
 			len(c.MinSDKVersion), len(c.RecommendedSDKVersion))
 	}
 }
@@ -61,16 +63,18 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 	c := getPluginCompatibility()
 
 	wantMin := map[string]string{
-		"openclaw":    "2.4.0",
-		"claude-code": "1.4.0",
-		"cursor":      "1.4.0",
-		"codex":       "1.4.0",
+		"openclaw":       "2.4.0",
+		"claude-code":    "1.4.0",
+		"cursor":         "1.4.0",
+		"codex":          "1.4.0",
+		"claude-desktop": "0.2.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw":    "2.6.6",
-		"claude-code": "1.8.0",
-		"cursor":      "1.5.3",
-		"codex":       "1.5.2",
+		"openclaw":       "2.6.6",
+		"claude-code":    "1.9.1",
+		"cursor":         "1.5.3",
+		"codex":          "1.5.2",
+		"claude-desktop": "0.3.1",
 	}
 
 	for id, want := range wantMin {
@@ -83,8 +87,8 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 			t.Errorf("RecommendedPluginVersion[%q] = %q; want %q", id, got, want)
 		}
 	}
-	if len(c.MinPluginVersion) != 4 || len(c.RecommendedPluginVersion) != 4 {
-		t.Errorf("expected 4 plugins, got Min=%d Recommended=%d",
+	if len(c.MinPluginVersion) != 5 || len(c.RecommendedPluginVersion) != 5 {
+		t.Errorf("expected 5 plugins, got Min=%d Recommended=%d",
 			len(c.MinPluginVersion), len(c.RecommendedPluginVersion))
 	}
 }

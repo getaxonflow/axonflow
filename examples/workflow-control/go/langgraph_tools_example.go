@@ -84,7 +84,7 @@ func runToolsExample() int {
 
 	gateResult, err := adapter.CheckGate(ctx, "plan_research", axonflow.StepTypeLLMCall,
 		&axonflow.CheckGateOptions{
-			Model:    "claude-sonnet-4-20250514",
+			Model:    "claude-sonnet-4-5-20250929",
 			Provider: "anthropic",
 			StepInput: map[string]interface{}{
 				"prompt": "Plan research on AI governance",
@@ -214,7 +214,7 @@ func runToolsExample() int {
 	{
 		gate2, gate2Err := adapter.CheckGate(ctx, "synthesize_report", axonflow.StepTypeLLMCall,
 			&axonflow.CheckGateOptions{
-				Model:    "claude-sonnet-4-20250514",
+				Model:    "claude-sonnet-4-5-20250929",
 				Provider: "anthropic",
 				StepInput: map[string]interface{}{
 					"prompt": "Synthesize research findings",
