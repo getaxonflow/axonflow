@@ -39,14 +39,24 @@ func TestNormalize(t *testing.T) {
 			want: "/api/v1/static-policies/{id}/override",
 		},
 		{
-			name: "deep mid-path params preserved (single strip)",
-			path: "/api/v1/conformity/assessments/asmt_42/checks/chk_99",
-			want: "/api/v1/conformity/assessments/{id}/checks",
+			name: "trailing param after mid-path param strips only the last",
+			path: "/api/v1/circuit-breaker/notifications/notif_99",
+			want: "/api/v1/circuit-breaker/notifications",
 		},
 		{
 			name: "deeply nested path with action keeps all params",
-			path: "/api/v1/conformity/assessments/asmt_42/start",
-			want: "/api/v1/conformity/assessments/{id}/start",
+			path: "/api/v1/hitl/queue/hitl_42/override",
+			want: "/api/v1/hitl/queue/{id}/override",
+		},
+		{
+			name: "proxied euaiact action keeps mid-path param",
+			path: "/api/v1/euaiact/conformity/asmt_42/submit",
+			want: "/api/v1/euaiact/conformity/{assessment_id}/submit",
+		},
+		{
+			name: "proxied euaiact trailing param stripped",
+			path: "/api/v1/euaiact/export/exp_7",
+			want: "/api/v1/euaiact/export",
 		},
 		{
 			name: "two trailing params strips only ONE per epic decision",

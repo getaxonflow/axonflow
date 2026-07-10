@@ -131,8 +131,8 @@ func applyPRAEnterpriseSchema(t *testing.T, db *sql.DB) {
 			key_prefix VARCHAR(20) NOT NULL,
 			name VARCHAR(255) NOT NULL,
 			scopes JSONB DEFAULT '[]',
-			expires_at TIMESTAMP,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			expires_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)`,
 		// pricing_tiers (enterprise/100 minimal shape).
 		`CREATE TABLE IF NOT EXISTS pricing_tiers (

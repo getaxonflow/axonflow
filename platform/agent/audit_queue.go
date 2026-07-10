@@ -281,7 +281,13 @@ func NewAuditQueue(mode AuditMode, queueSize int, workers int, db *sql.DB, fallb
 //   - query: The query that triggered the violation
 func (aq *AuditQueue) LogViolation(entry AuditEntry) error {
 	entry.Type = AuditTypeViolation
-	entry.Timestamp = time.Now()
+	// UTC pinned (#2876), defense-in-depth: today entry.Timestamp reaches
+	// only the JSONL fallback and the (currently producer-less)
+	// AuditTypeAudit INSERT — the live DB writes use column DEFAULTs /
+	// handler-supplied values — but pinning UTC here means any future
+	// persistence of these stamps is correct regardless of host zone or
+	// column type. Same on the three Log* methods below.
+	entry.Timestamp = time.Now().UTC()
 
 	// In compliance mode, violations are synchronous
 	if aq.mode == AuditModeCompliance {
@@ -295,7 +301,7 @@ func (aq *AuditQueue) LogViolation(entry AuditEntry) error {
 // LogMetric logs a metric (always async)
 func (aq *AuditQueue) LogMetric(entry AuditEntry) error {
 	entry.Type = AuditTypeMetric
-	entry.Timestamp = time.Now()
+	entry.Timestamp = time.Now().UTC()
 
 	// Metrics are always async, even in compliance mode
 	select {
@@ -313,7 +319,7 @@ func (aq *AuditQueue) LogMetric(entry AuditEntry) error {
 // This is used when SDK calls the pre-check endpoint
 func (aq *AuditQueue) LogGatewayContext(entry AuditEntry) error {
 	entry.Type = AuditTypeGatewayContext
-	entry.Timestamp = time.Now()
+	entry.Timestamp = time.Now().UTC()
 
 	// In compliance mode, gateway contexts are synchronous (critical for audit trail)
 	if aq.mode == AuditModeCompliance {
@@ -328,7 +334,7 @@ func (aq *AuditQueue) LogGatewayContext(entry AuditEntry) error {
 // This is used when SDK reports completion of an LLM call
 func (aq *AuditQueue) LogLLMCallAudit(entry AuditEntry) error {
 	entry.Type = AuditTypeLLMCallAudit
-	entry.Timestamp = time.Now()
+	entry.Timestamp = time.Now().UTC()
 
 	// In compliance mode, LLM audits are synchronous (critical for audit trail)
 	if aq.mode == AuditModeCompliance {

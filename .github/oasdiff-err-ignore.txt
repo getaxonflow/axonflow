@@ -32,3 +32,196 @@ in API POST /api/v1/hitl/decisions api path removed without deprecation
 in API GET /api/v1/hitl/decisions/{id} api path removed without deprecation
 in API POST /api/v1/hitl/decisions/{id}/approve api path removed without deprecation
 in API POST /api/v1/hitl/decisions/{id}/reject api path removed without deprecation
+
+# PR axonflow-enterprise#2881 (docs session API-1) — agent-api.yaml corrections.
+# (a) The /api/v1/accuracy/*, /api/v1/conformity/*, and /api/v1/euaiact/*
+# families never existed on the agent (some never existed anywhere); the
+# shipped EU-AI-Act surface lives on the orchestrator at
+# /api/v1/euaiact/* (ee overlay) and is documented in
+# ee/docs/api/eu-ai-act-api.md. Removal is a doc-only correction.
+# (b) /mcp/check-input + /mcp/check-output were documented at the wrong
+# paths — the handlers have only ever been registered at
+# /api/v1/mcp/check-input|check-output (mcp_handler.go:575-576).
+# (c) /api/v1/circuit-breaker/activate|deactivate never existed — the
+# routes are /trip and /reset (circuitbreaker/handler.go:71-72).
+# (d) /decide 429 body is written by the auth middleware (shared
+# rate-limit envelope), never the DecideErrorResponse the spec claimed.
+# (e) HITL: the handler has always required client_id/original_query/
+# request_type/triggered_policy_* /trigger_reason (hitl/service.go:135-160),
+# parsed {id} as a UUID, and accepted comma-separated status filters.
+# In every case the platform behaviour is the contract; the YAML was the bug.
+in API GET /api/v1/accuracy/alerts api path removed without deprecation
+in API GET /api/v1/accuracy/bias api path removed without deprecation
+in API GET /api/v1/accuracy/metrics api path removed without deprecation
+in API GET /api/v1/accuracy/thresholds api path removed without deprecation
+in API GET /api/v1/conformity/assessments api path removed without deprecation
+in API GET /api/v1/conformity/assessments/{id} api path removed without deprecation
+in API GET /api/v1/conformity/summary api path removed without deprecation
+in API GET /api/v1/euaiact/summary api path removed without deprecation
+in API GET /api/v1/hitl/queue removed the enum value `approved` from the `query` request parameter `status`
+in API GET /api/v1/hitl/queue removed the enum value `expired` from the `query` request parameter `status`
+in API GET /api/v1/hitl/queue removed the enum value `pending` from the `query` request parameter `status`
+in API GET /api/v1/hitl/queue removed the enum value `rejected` from the `query` request parameter `status`
+in API GET /api/v1/hitl/queue/{id} for the `path` request parameter `id`, the `format` was changed from `none` to `uuid`
+in API POST /api/v1/accuracy/alerts/{id}/acknowledge api path removed without deprecation
+in API POST /api/v1/accuracy/alerts/{id}/resolve api path removed without deprecation
+in API POST /api/v1/accuracy/bias api path removed without deprecation
+in API POST /api/v1/accuracy/metrics api path removed without deprecation
+in API POST /api/v1/accuracy/thresholds api path removed without deprecation
+in API POST /api/v1/circuit-breaker/activate api path removed without deprecation
+in API POST /api/v1/circuit-breaker/deactivate api path removed without deprecation
+in API POST /api/v1/conformity/assessments api path removed without deprecation
+in API POST /api/v1/conformity/assessments/{id}/approve api path removed without deprecation
+in API POST /api/v1/conformity/assessments/{id}/findings api path removed without deprecation
+in API POST /api/v1/conformity/assessments/{id}/reject api path removed without deprecation
+in API POST /api/v1/conformity/assessments/{id}/start api path removed without deprecation
+in API POST /api/v1/conformity/assessments/{id}/submit api path removed without deprecation
+in API POST /api/v1/decide removed the required property `verdict` from the response with the `429` status
+in API POST /api/v1/decide the response property `error` became optional for the status `429`
+in API POST /api/v1/euaiact/export api path removed without deprecation
+in API POST /api/v1/hitl/queue added the new required request property `client_id`
+in API POST /api/v1/hitl/queue added the new required request property `original_query`
+in API POST /api/v1/hitl/queue added the new required request property `request_type`
+in API POST /api/v1/hitl/queue added the new required request property `trigger_reason`
+in API POST /api/v1/hitl/queue added the new required request property `triggered_policy_id`
+in API POST /api/v1/hitl/queue added the new required request property `triggered_policy_name`
+in API POST /api/v1/hitl/queue/{id}/approve for the `path` request parameter `id`, the `format` was changed from `none` to `uuid`
+in API POST /api/v1/hitl/queue/{id}/reject for the `path` request parameter `id`, the `format` was changed from `none` to `uuid`
+in API POST /mcp/check-input api path removed without deprecation
+in API POST /mcp/check-output api path removed without deprecation
+in API PUT /api/v1/conformity/assessments/{id}/checks/{checkId} api path removed without deprecation
+
+# PR axonflow-enterprise#2881 — policy-api.yaml corrections.
+# unified-policies (never implemented on the orchestrator — shipped later
+# on the Enterprise customer portal with a different schema, documented in
+# ee/docs/api/unified-policies-api.md) and the static-policies section
+# (agent-owned; canonically specified in agent-api.yaml, which the removed
+# paths had drifted from) are removed from this orchestrator-scoped spec.
+# /api/v1/effective-policies never existed (real path:
+# /api/v1/static-policies/effective). TemplateVariable.validation has
+# always been a plain regex string in code (template_api_types.go:44).
+in API DELETE /api/v1/static-policies/{policy_id}/override api path removed without deprecation
+in API GET /api/v1/effective-policies api path removed without deprecation
+in API GET /api/v1/static-policies api path removed without deprecation
+in API GET /api/v1/static-policies/overrides api path removed without deprecation
+in API GET /api/v1/static-policies/{policy_id} api path removed without deprecation
+in API GET /api/v1/templates the `templates/items/variables/items/validation` response's property `type` changed from `object` to `string` for status `200`
+in API GET /api/v1/templates/{id} the `template/variables/items/validation` response's property `type` changed from `object` to `string` for status `200`
+in API GET /api/v1/unified-policies api path removed without deprecation
+in API GET /api/v1/unified-policies/{policy_id} api path removed without deprecation
+in API PATCH /api/v1/static-policies/{policy_id} api path removed without deprecation
+in API POST /api/v1/static-policies/{policy_id}/override api path removed without deprecation
+
+# PR axonflow-enterprise#2881 — masfeat-api.yaml rewrite (spec v2.0.0).
+# The spec predated the shipped module and documented an earlier design:
+# 4 endpoints that do not exist or are unreachable under the production
+# mux (activate/check/enable/disable), a wrong method (configure PUT),
+# wrong request/response field names throughout the registry, bare-array
+# list responses where the handlers wrap ({systems,count} etc.), integer
+# scores where code returns floats, and body-sourced actor fields where
+# the handlers read X-User-ID/X-User-Email headers. Every entry below is
+# a correction to what platform/orchestrator/masfeat has always served.
+# This PR also wires masfeat-api.yaml into validate-openapi.yml for the
+# first time, so this is the spec's first gated diff.
+in API DELETE /api/v1/masfeat/registry/{system_id} for the `path` request parameter `system_id`, the `format` was changed from `none` to `uuid`
+in API DELETE /api/v1/masfeat/registry/{system_id} the `id` response's property `format` changed from `uuid` to `none` for status `200`
+in API GET /api/v1/masfeat/assessments for the `query` request parameter `limit`, default value was changed from `100.00` to `50.00`
+in API GET /api/v1/masfeat/assessments the response's body `type` changed from `array<object>` to `object` for status `200`
+in API GET /api/v1/masfeat/assessments/{assessment_id} for the `path` request parameter `assessment_id`, the `format` was changed from `none` to `uuid`
+in API GET /api/v1/masfeat/assessments/{assessment_id} the `accountability_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API GET /api/v1/masfeat/assessments/{assessment_id} the `ethics_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API GET /api/v1/masfeat/assessments/{assessment_id} the `fairness_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API GET /api/v1/masfeat/assessments/{assessment_id} the `findings/items/` response's property `type` changed from `string` to `object` for status `200`
+in API GET /api/v1/masfeat/assessments/{assessment_id} the `overall_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API GET /api/v1/masfeat/assessments/{assessment_id} the `transparency_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API GET /api/v1/masfeat/killswitch/{system_id}/history for the `query` request parameter `limit`, default value was changed from `100.00` to `50.00`
+in API GET /api/v1/masfeat/killswitch/{system_id}/history the response's body `type` changed from `array<object>` to `object` for status `200`
+in API GET /api/v1/masfeat/registry for the `query` request parameter `limit`, default value was changed from `100.00` to `50.00`
+in API GET /api/v1/masfeat/registry the response's body `type` changed from `array<object>` to `object` for status `200`
+in API GET /api/v1/masfeat/registry/{system_id} for the `path` request parameter `system_id`, the `format` was changed from `none` to `uuid`
+in API POST /api/v1/masfeat/assessments the `accountability_score` response's property `type/format` was widened from `integer` to `number/double` for status `201`
+in API POST /api/v1/masfeat/assessments the `ethics_score` response's property `type/format` was widened from `integer` to `number/double` for status `201`
+in API POST /api/v1/masfeat/assessments the `fairness_score` response's property `type/format` was widened from `integer` to `number/double` for status `201`
+in API POST /api/v1/masfeat/assessments the `findings/items/` response's property `type` changed from `string` to `object` for status `201`
+in API POST /api/v1/masfeat/assessments the `overall_score` response's property `type/format` was widened from `integer` to `number/double` for status `201`
+in API POST /api/v1/masfeat/assessments the `transparency_score` response's property `type/format` was widened from `integer` to `number/double` for status `201`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve for the `path` request parameter `assessment_id`, the `format` was changed from `none` to `uuid`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve removed the request body
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve the `accountability_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve the `ethics_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve the `fairness_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve the `findings/items/` response's property `type` changed from `string` to `object` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve the `overall_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/approve the `transparency_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject for the `path` request parameter `assessment_id`, the `format` was changed from `none` to `uuid`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject the `accountability_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject the `ethics_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject the `fairness_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject the `findings/items/` response's property `type` changed from `string` to `object` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject the `overall_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/reject the `transparency_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit for the `path` request parameter `assessment_id`, the `format` was changed from `none` to `uuid`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit the `accountability_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit the `ethics_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit the `fairness_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit the `findings/items/` response's property `type` changed from `string` to `object` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit the `overall_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/assessments/{assessment_id}/submit the `transparency_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API POST /api/v1/masfeat/killswitch/{system_id}/check api path removed without deprecation
+in API POST /api/v1/masfeat/killswitch/{system_id}/disable api path removed without deprecation
+in API POST /api/v1/masfeat/killswitch/{system_id}/enable api path removed without deprecation
+in API POST /api/v1/masfeat/registry added the new required request property `owner_email`
+in API POST /api/v1/masfeat/registry added the new required request property `risk_rating_complexity`
+in API POST /api/v1/masfeat/registry added the new required request property `risk_rating_impact`
+in API POST /api/v1/masfeat/registry added the new required request property `risk_rating_reliance`
+in API POST /api/v1/masfeat/registry/{system_id}/activate api path removed without deprecation
+in API PUT /api/v1/masfeat/assessments/{assessment_id} for the `path` request parameter `assessment_id`, the `format` was changed from `none` to `uuid`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `accountability_score` request property `type/format` changed from `integer` to `number/double`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `accountability_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `ethics_score` request property `type/format` changed from `integer` to `number/double`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `ethics_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `fairness_score` request property `type/format` changed from `integer` to `number/double`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `fairness_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `findings/items/` request property `type` changed from `string` to `object`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `findings/items/` response's property `type` changed from `string` to `object` for status `200`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `overall_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `transparency_score` request property `type/format` changed from `integer` to `number/double`
+in API PUT /api/v1/masfeat/assessments/{assessment_id} the `transparency_score` response's property `type/format` was widened from `integer` to `number/double` for status `200`
+in API PUT /api/v1/masfeat/killswitch/{system_id}/configure api removed without deprecation
+in API PUT /api/v1/masfeat/registry/{system_id} for the `path` request parameter `system_id`, the `format` was changed from `none` to `uuid`
+
+# PR axonflow-enterprise#2881 — orchestrator-api.yaml corrections.
+# (a) /api/v1/media/analyzers*, /api/v1/media/analyze, /api/v1/llm-providers/health,
+# and /api/v1/agents/domain/{domain} never existed in any shipped binary
+# (zero route registrations; the agents domain handler is dead code, #2884).
+# (b) The audit family has always 401'd without X-Tenant-ID
+# (run.go:2601-2607, :2684-2696), audit/tool-call has always required the
+# X-Axonflow-Proxy-Auth HMAC outside Community (run.go:2767-2785), and the
+# unified stream handler has always read X-Org-ID (unified_execution_handler.go:75-98)
+# — the spec previously omitted required headers the platform enforced.
+# (c) audit/search has always returned {entries,total,limit,offset}
+# (run.go:2635-2645), never a bare array.
+# (d) /health sdk_compatibility maps: same correction as PR #1764 made for
+# agent-api.yaml — per-language object maps since v4.8.0 (capabilities.go:20-23).
+in API GET /api/v1/agents/domain/{domain} api path removed without deprecation
+in API GET /api/v1/audit/tenant/{tenant_id} added the new required `header` request parameter `x-tenant-id`
+in API GET /api/v1/llm-providers/health api path removed without deprecation
+in API GET /api/v1/media/analyzers api path removed without deprecation
+in API GET /api/v1/media/analyzers/{name}/health api path removed without deprecation
+in API GET /api/v1/unified/executions/{id}/stream added the new required `header` request parameter `x-org-id`
+in API GET /health the `sdk_compatibility/min_sdk_version` response's property `type` changed from `string` to `object` for status `200`
+in API GET /health the `sdk_compatibility/recommended_sdk_version` response's property `type` changed from `string` to `object` for status `200`
+in API POST /api/v1/audit/search added the new required `header` request parameter `x-tenant-id`
+in API POST /api/v1/audit/search the response's body `type` changed from `array<object>` to `object` for status `200`
+in API POST /api/v1/audit/tool-call added the new required `header` request parameter `x-axonflow-proxy-auth`
+in API POST /api/v1/media/analyze api path removed without deprecation
+
+# v9.8.0 (#2890): euaiact/export is now documented as a thin PROXIED pointer in
+# agent-api.yaml — the canonical request/response contract lives in
+# orchestrator-api.yaml (per the single-entry-point Option-C convention). The full
+# request body + response schema were intentionally moved to the orchestrator spec;
+# the agent-api entry is a reachability pointer. The endpoint itself is unchanged
+# (still POST → 202 async, proxied to the orchestrator). Ignore vs the v9.7.0 mirror
+# baseline, which carried the fully-inlined shape.
+in API POST /api/v1/euaiact/export removed the request body
+in API POST /api/v1/euaiact/export removed the success response with the status `200`

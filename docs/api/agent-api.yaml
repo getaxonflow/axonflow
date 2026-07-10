@@ -11,6 +11,23 @@ info:
     - **Authentication**: License and token validation
     - **Static Policy Enforcement**: Fast regex-based content filtering
 
+    ## Single Entry Point
+
+    The Agent is the single entry point for all client traffic (ADR-026):
+    clients never call the Orchestrator directly — it is an internal service
+    and must not be exposed. **Every `/api/v1/*` endpoint is reachable
+    through the Agent.** This spec documents the endpoints the Agent serves
+    natively; endpoints the Agent transparently proxies to the Orchestrator
+    (audit, decisions, overrides, plans/workflows, cost/budgets/usage,
+    connectors, LLM-provider management, evidence, and the
+    regulatory-compliance families — EU AI Act, SEBI, RBI, OJK/BI/UU-PDP,
+    MAS FEAT) are documented in their canonical specs: orchestrator-api.yaml
+    for most families, masfeat-api.yaml for MAS FEAT, and policy-api.yaml
+    for dynamic policies. They are still called via the Agent host and port.
+    The EU AI Act family additionally keeps pointer entries in this spec, and
+    a few agent-native subroutes under otherwise-proxied prefixes (audit
+    verification, connector cache refresh) are documented here as well.
+
     ## Authentication
 
     All endpoints require authentication via:
@@ -25,19 +42,19 @@ info:
     - **Enterprise**: Customer-deployed (`DEPLOYMENT_MODE=enterprise`)
     - **Community**: Local development (`DEPLOYMENT_MODE=community`) - bypasses license validation
 
-  version: 2.0.0
+  version: 2.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
   license:
-    name: Apache 2.0
-    url: https://www.apache.org/licenses/LICENSE-2.0
+    name: Business Source License 1.1
+    url: https://github.com/getaxonflow/axonflow/blob/main/LICENSE
 
 servers:
   - url: https://agent.getaxonflow.com
     description: Production (SaaS)
-  - url: https://agent-staging.getaxonflow.com
-    description: Staging
+  - url: https://axonflow.example.com
+    description: Self-hosted deployment (agent single entry point, ADR-026)
   - url: http://localhost:8080
     description: Local Development
 
@@ -63,22 +80,17 @@ tags:
     description: |
       Human-in-the-Loop decision queue (EU AI Act Article 14).
       Route high-risk AI decisions for human review before execution.
+  - name: EU AI Act (Proxied)
+    description: |
+      EU AI Act compliance module (conformity assessments, accuracy
+      monitoring, evidence exports). Served by the orchestrator and PROXIED
+      through the agent (`/api/v1/euaiact/*`) per the single-entry-point
+      architecture — clients call the agent, never the orchestrator.
+      Canonical operation schemas live in orchestrator-api.yaml. Enterprise only.
   - name: Circuit Breaker
     description: |
       Emergency circuit breaker for AI operations (EU AI Act Article 14).
       Instantly halt AI operations with two-person deactivation requirement.
-  - name: Accuracy
-    description: |
-      Accuracy metrics and bias detection (EU AI Act Article 15).
-      Track model accuracy, detect demographic bias, and manage alerts.
-  - name: Conformity
-    description: |
-      Conformity assessment workflow (EU AI Act Article 43).
-      Manage compliance assessments from draft through approval.
-  - name: EU AI Act
-    description: |
-      EU AI Act compliance data export and reporting.
-      Export compliance data in EU regulatory format.
   - name: OpenAI Compatible
     description: |
       OpenAI-compatible gateway endpoint (Issue #2351). Accepts standard
@@ -102,6 +114,21 @@ tags:
       any deployment mode once a usage database is configured; signatures verify
       only when an `AXONFLOW_AUDIT_SIGNING_KEY` is set (otherwise records are
       hash-chained but reported as unsigned).
+  - name: MCP Server
+    description: |
+      Streamable-HTTP MCP server (spec 2025-06-18) exposing AxonFlow
+      governance as MCP tools (check_policy, check_output, audit_tool_call,
+      list_policies, get_policy_stats, explain_decision + Pro tools).
+      Consumed by the Claude Code / Cursor / Codex plugins and any MCP
+      client. Authentication is HTTP Basic (org:license-key) — NOT OAuth;
+      the `/.well-known/oauth-*` discovery paths deliberately return an
+      advisory 404 saying so.
+  - name: OTLP Ingest
+    description: |
+      OpenTelemetry OTLP/HTTP ingest for Claude Code (cowork) telemetry
+      (#2832). **Enterprise only** — community builds mount the routes but
+      return 501. Org/tenant identity always comes from the authenticated
+      license, never from OTLP resource attributes.
 
 paths:
   /health:
@@ -296,6 +323,12 @@ paths:
         - Optional `approved_data` from MCP connectors
         - Rate limit information
 
+        **`approved_data` is only prefetched for clean approvals** (#2868):
+        when the request is blocked, requires HITL approval, or requires
+        redaction, connector prefetch is skipped and `approved_data` is
+        never populated — governed data is not fetched for a request that
+        may not proceed.
+
         **Context expires after 5 minutes.**
 
         ## Example Flow
@@ -391,8 +424,32 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '402':
+          description: |
+            Budget exceeded — a configured cost budget blocks this request
+            (Enterprise cost controls).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          description: |
+            Community SaaS tenants past the daily request cap (written by
+            the auth middleware; shared rate-limit envelope).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitEnvelope'
+        '503':
+          description: |
+            Circuit breaker is open — an emergency stop matching this
+            request's scope is active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/audit/llm-call:
     post:
@@ -486,6 +543,7 @@ paths:
         policy engine is the same one Gateway Mode uses.
       operationId: decide
       parameters:
+        - $ref: '#/components/parameters/AxonflowClient'
         - in: header
           name: traceparent
           description: |
@@ -597,16 +655,27 @@ paths:
           description: |
             Community SaaS tenants past the daily request cap. Only
             emitted on the SaaS surface; self-hosted Community and
-            Enterprise deployments do not return 429.
+            Enterprise deployments do not return 429. The 429 is written
+            by the auth middleware **before** the decide handler runs, so
+            the body is the shared rate-limit envelope — NOT the
+            DecideErrorResponse shape.
           headers:
             Retry-After:
               schema:
                 type: integer
               description: Seconds until the daily quota window resets.
+            X-Axonflow-Tier-Limit:
+              schema:
+                type: string
+              description: The tier limit that was hit.
+            X-Axonflow-Upgrade-URL:
+              schema:
+                type: string
+              description: Where to compare/upgrade tiers.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DecideErrorResponse'
+                $ref: '#/components/schemas/RateLimitEnvelope'
         '503':
           description: |
             Circuit breaker is open. The body carries
@@ -1063,7 +1132,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /mcp/check-input:
+  /api/v1/mcp/check-input:
     post:
       tags:
         - MCP Connectors
@@ -1094,6 +1163,8 @@ paths:
         `operation: "check-input"` for compliance tracking. Audit entries include
         `parameters_hash` (SHA-256) and `parameter_count` for forensic analysis.
       operationId: mcpCheckInput
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -1148,6 +1219,17 @@ paths:
                   policies_evaluated: 3
                   blocked: true
                   block_reason: "SQL injection detected in statement"
+        '415':
+          description: |
+            Unregistered `content_type` (ADR-056). The request named a
+            content type that no registered detector handles. A canonical
+            blocked audit row tagged `content_type_unsupported` is written
+            before the error returns — the request is treated as blocked,
+            not silently skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Dynamic policy evaluator unavailable (only when graceful degradation is disabled)
           content:
@@ -1155,7 +1237,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /mcp/check-output:
+  /api/v1/mcp/check-output:
     post:
       tags:
         - MCP Connectors
@@ -1188,6 +1270,8 @@ paths:
         All check-output evaluations are logged to the `mcp_query_audits` table with
         `operation: "check-output"` for compliance tracking.
       operationId: mcpCheckOutput
+      parameters:
+        - $ref: '#/components/parameters/AxonflowClient'
       requestBody:
         required: true
         content:
@@ -1312,6 +1396,180 @@ paths:
                 timestamp: "2025-01-15T10:30:00Z"
 
   # ==========================================================================
+  # MCP Server (Streamable HTTP, spec 2025-06-18)
+  # ==========================================================================
+
+  /api/v1/mcp-server:
+    post:
+      tags:
+        - MCP Server
+      summary: MCP JSON-RPC endpoint
+      description: |
+        Single Streamable-HTTP endpoint for the built-in MCP server. Accepts
+        MCP JSON-RPC 2.0 messages (`initialize`, `tools/list`, `tools/call`,
+        …) and returns JSON-RPC responses. Governance tools exposed:
+        `check_policy`, `check_output`, `audit_tool_call`, `list_policies`,
+        `get_policy_stats`, `explain_decision`, plus Pro-tier tools.
+
+        Authentication: HTTP Basic `org:license-key` on every request.
+        Tier rate limits (Community SaaS) are reported **inside** the
+        JSON-RPC result (`result.content[0].text`), not as an HTTP 429.
+
+        The JSON-RPC `check_output` tool result DOES include
+        `redacted_message` — unlike the standalone REST
+        `/api/v1/mcp/check-output` endpoint (#2870).
+      operationId: mcpServerJSONRPC
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: MCP JSON-RPC 2.0 message
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                id:
+                  description: Request ID (absent for notifications)
+                method:
+                  type: string
+                  example: "tools/call"
+                params:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: JSON-RPC response (errors are carried in the JSON-RPC error member)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      tags:
+        - MCP Server
+      summary: Not supported (405)
+      description: |
+        The MCP server does not offer a server-initiated SSE stream; GET
+        always returns 405 Method Not Allowed.
+      operationId: mcpServerGet
+      responses:
+        '405':
+          description: Method not allowed
+    delete:
+      tags:
+        - MCP Server
+      summary: Terminate MCP session
+      description: Terminates the MCP session identified by the `Mcp-Session-Id` header.
+      operationId: mcpServerDelete
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: Mcp-Session-Id
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session terminated
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ==========================================================================
+  # OTLP Ingest (Enterprise; community returns 501)
+  # ==========================================================================
+
+  /v1/metrics:
+    post:
+      tags:
+        - OTLP Ingest
+      summary: OTLP metrics ingest
+      description: |
+        OTLP/HTTP `ExportMetricsServiceRequest` ingest for Claude Code
+        telemetry. Content types: `application/x-protobuf` (default when
+        the header is empty), `application/protobuf`, or `application/json`;
+        anything else returns **415**. Success returns 200 with an OTLP
+        `ExportMetricsServiceResponse` in the request's content type.
+
+        **Enterprise only** — community builds return **501** with
+        `{"error": {"code", "message"}}`. Org/tenant comes from the
+        authenticated license (Basic auth), never from OTLP resource
+        attributes.
+      operationId: otlpIngestMetrics
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: OTLP export response (matching request content type)
+        '400':
+          description: Malformed OTLP payload
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          description: Unsupported Content-Type
+        '501':
+          description: Community build — OTLP ingest is an Enterprise feature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+
+  /v1/logs:
+    post:
+      tags:
+        - OTLP Ingest
+      summary: OTLP logs ingest
+      description: |
+        OTLP/HTTP `ExportLogsServiceRequest` ingest for Claude Code
+        telemetry. Same content-type, auth, edition, and error semantics as
+        `POST /v1/metrics`.
+      operationId: otlpIngestLogs
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: OTLP export response (matching request content type)
+        '400':
+          description: Malformed OTLP payload
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          description: Unsupported Content-Type
+        '501':
+          description: Community build — OTLP ingest is an Enterprise feature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+
+  # ==========================================================================
   # Connector Cache Management (ADR-007)
   # ==========================================================================
 
@@ -1326,9 +1584,12 @@ paths:
 
         **Performance Impact:** This operation clears all cached connectors.
         The next request for each connector will incur factory creation overhead.
+
+        ⚠️ **Ops/internal endpoint — currently unauthenticated** (#2883):
+        the connector refresh + cache-stats routes are registered without
+        the auth middleware. Deploy them behind network-level controls
+        until #2883 lands.
       operationId: refreshAllConnectors
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
       responses:
         '200':
           description: All connectors refreshed
@@ -1367,7 +1628,6 @@ paths:
         Use this after updating a tenant's connector configuration.
       operationId: refreshTenantConnectors
       parameters:
-        - $ref: '#/components/parameters/LicenseKey'
         - name: tenant_id
           in: path
           required: true
@@ -1410,7 +1670,6 @@ paths:
         Use this after updating a single connector's credentials or configuration.
       operationId: refreshConnector
       parameters:
-        - $ref: '#/components/parameters/LicenseKey'
         - name: tenant_id
           in: path
           required: true
@@ -1453,8 +1712,6 @@ paths:
         Returns cache performance statistics including hit rate, miss count,
         evictions, and factory operation counts. Useful for monitoring cache health.
       operationId: getConnectorCacheStats
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
       responses:
         '200':
           description: Cache statistics
@@ -1486,10 +1743,16 @@ paths:
     post:
       tags:
         - HITL
-      summary: Create HITL decision request
+      summary: Create HITL approval request
       description: |
         Route a high-risk AI decision for human review.
         EU AI Act Article 14 requires human oversight for high-risk AI systems.
+
+        Requires both `X-Org-ID` and `X-Tenant-ID` headers (stamped by the
+        auth middleware) — **400** when either is missing.
+
+        **Enterprise only** — community builds expose only
+        `GET /api/v1/hitl/status`.
       operationId: createHITLDecision
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -1499,86 +1762,157 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/HITLDecisionRequest'
+              $ref: '#/components/schemas/HITLCreateRequest'
       responses:
         '201':
-          description: Decision request created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HITLDecision'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-    get:
-      tags:
-        - HITL
-      summary: List pending HITL decisions
-      description: Retrieve pending decisions awaiting human review
-      operationId: listHITLDecisions
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [pending, approved, rejected, expired]
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 50
-      responses:
-        '200':
-          description: List of decisions
+          description: Approval request created
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  decisions:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/HITLApprovalRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            HITL approvals are disabled for the deployment's license tier
+            (e.g. an Enterprise build running a Community-tier license).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: |
+            Community SaaS pending-approvals cap reached for the tenant.
+            Not returned on self-hosted or Enterprise deployments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - HITL
+      summary: List HITL approval requests
+      description: |
+        Retrieve approval requests, filtered and paginated. Tenant scoping
+        comes from the authenticated request context (RLS), not a query
+        parameter.
+      operationId: listHITLDecisions
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: status
+          in: query
+          description: Comma-separated status filter (e.g. `pending` or `pending,approved`)
+          schema:
+            type: string
+            example: "pending"
+        - name: severity
+          in: query
+          description: Comma-separated severity filter
+          schema:
+            type: string
+            example: "high,critical"
+        - name: policy_id
+          in: query
+          schema:
+            type: string
+        - name: client_id
+          in: query
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: order_by
+          in: query
+          schema:
+            type: string
+        - name: order_dir
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        '200':
+          description: List of approval requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
                     type: array
                     items:
-                      $ref: '#/components/schemas/HITLDecision'
-                  count:
-                    type: integer
+                      $ref: '#/components/schemas/HITLApprovalRequest'
+                  meta:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                        format: int64
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
 
   /api/v1/hitl/queue/{id}:
     get:
       tags:
         - HITL
-      summary: Get HITL decision
+      summary: Get HITL approval request
       operationId: getHITLDecision
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
         - name: id
           in: path
           required: true
+          description: The request UUID (`request_id`)
           schema:
             type: string
+            format: uuid
       responses:
         '200':
-          description: Decision details
+          description: Approval request details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HITLDecision'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/HITLApprovalRequest'
+        '400':
+          description: Invalid request ID (not a UUID)
         '404':
-          description: Decision not found
+          description: Request not found
 
   /api/v1/hitl/queue/{id}/approve:
     post:
       tags:
         - HITL
-      summary: Approve HITL decision
-      description: Approve a pending decision to allow AI execution
+      summary: Approve HITL request
+      description: Approve a pending request to allow AI execution
       operationId: approveHITLDecision
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -1587,37 +1921,42 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - reviewer_id
-              properties:
-                reviewer_id:
-                  type: string
-                comments:
-                  type: string
+              $ref: '#/components/schemas/HITLReviewInput'
       responses:
         '200':
-          description: Decision approved
+          description: Request approved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HITLDecision'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: "approved"
         '400':
-          description: Invalid status transition
+          description: Invalid request ID or JSON body
         '404':
-          description: Decision not found
+          description: Request not found
+        '409':
+          description: Conflict — request is not pending (already reviewed or expired)
 
   /api/v1/hitl/queue/{id}/reject:
     post:
       tags:
         - HITL
-      summary: Reject HITL decision
-      description: Reject a pending decision to block AI execution
+      summary: Reject HITL request
+      description: Reject a pending request to block AI execution
       operationId: rejectHITLDecision
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -1626,45 +1965,246 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HITLReviewInput'
+      responses:
+        '200':
+          description: Request rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: "rejected"
+        '400':
+          description: Invalid request ID or JSON body
+        '404':
+          description: Request not found
+        '409':
+          description: Conflict — request is not pending
+
+  /api/v1/hitl/queue/{id}/override:
+    post:
+      tags:
+        - HITL
+      summary: Override HITL request
+      description: |
+        Record an authorized override of a pending request — the caller takes
+        responsibility for letting the action proceed outside the normal
+        approve/reject flow. Requires a justification for the audit trail.
+      operationId: overrideHITLDecision
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required:
-                - reviewer_id
-                - reason
               properties:
-                reviewer_id:
+                justification:
                   type: string
-                reason:
+                  description: Required by the service — missing justification returns 400
+                authorized_by_id:
+                  type: string
+                authorized_by_email:
+                  type: string
+                authorized_by_role:
                   type: string
       responses:
         '200':
-          description: Decision rejected
+          description: Request overridden
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HITLDecision'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        example: "overridden"
         '400':
-          description: Invalid status transition
+          description: Invalid request ID/JSON, or missing justification
         '404':
-          description: Decision not found
+          description: Request not found
+        '409':
+          description: Conflict — another reviewer decided this request first (lost race)
+
+  /api/v1/hitl/queue/{id}/history:
+    get:
+      tags:
+        - HITL
+      summary: Get HITL request audit history
+      description: Immutable audit-trail entries for a request (create/approve/reject/override/expire actions).
+      operationId: getHITLDecisionHistory
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: History entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HITLHistoryEntry'
+        '400':
+          description: Invalid request ID
+
+  /api/v1/hitl/stats:
+    get:
+      tags:
+        - HITL
+      summary: Pending-queue statistics
+      description: |
+        Dashboard summary of the pending queue for the caller's org.
+        Requires the `X-Org-ID` header (400 when missing).
+      operationId: getHITLStats
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Pending statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      total_pending:
+                        type: integer
+                        format: int64
+                      high_priority:
+                        type: integer
+                        format: int64
+                      critical_priority:
+                        type: integer
+                        format: int64
+                      oldest_pending_hours:
+                        type: number
+        '400':
+          description: Missing X-Org-ID header
+
+  /api/v1/hitl/status:
+    get:
+      tags:
+        - HITL
+      summary: HITL feature status
+      description: |
+        Reports whether HITL is enabled and which features are available.
+        This is the **only** HITL endpoint present in community builds
+        (returns `enabled: false`, `mode: "community"`); Enterprise builds
+        return `enabled: true`, `mode: "enterprise"` plus a feature map
+        (queue, approve_reject, override, expiration, audit_history,
+        pending_summary, notify_url, idempotency_key).
+      operationId: getHITLStatus
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Feature status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  mode:
+                    type: string
+                    enum: [community, enterprise]
+                  features:
+                    type: object
+                    additionalProperties:
+                      type: boolean
+
+  /api/v1/hitl/expire:
+    post:
+      tags:
+        - HITL
+      summary: Expire stale pending requests
+      description: |
+        Sweeps pending requests past their `expires_at` into the `expired`
+        state and returns the count. Intended for schedulers/ops automation;
+        the platform also expires lazily.
+      operationId: expireHITLDecisions
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Sweep result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      expired_count:
+                        type: integer
 
   # ==========================================================================
   # Circuit Breaker (EU AI Act Article 14)
   # ==========================================================================
 
-  /api/v1/circuit-breaker/activate:
+  /api/v1/circuit-breaker/trip:
     post:
       tags:
         - Circuit Breaker
-      summary: Activate circuit breaker
+      summary: Trip circuit breaker (emergency stop)
       description: |
-        Immediately halt all AI operations for an organization.
-        EU AI Act Article 14 requires ability to interrupt AI systems.
-      operationId: activateCircuitBreaker
+        Immediately halt matching AI operations for the organization
+        (EU AI Act Article 14). Also exposed as the alias
+        `POST /api/v1/emergency-stop`.
+
+        Identity comes from headers stamped by the auth middleware:
+        `X-Org-ID` (falls back to `X-Tenant-ID`) selects the org;
+        `X-User-ID` is **required** for the Article 14 audit trail
+        (400 when missing). `X-User-Email` is recorded when present.
+
+        **Enterprise only** — community builds register no circuit-breaker
+        routes (404).
+      operationId: tripCircuitBreaker
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
       requestBody:
@@ -1672,25 +2212,189 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CircuitBreakerActivateRequest'
+              $ref: '#/components/schemas/CircuitBreakerTripRequest'
       responses:
-        '200':
-          description: Circuit breaker activated
+        '201':
+          description: Circuit tripped — matching requests are now blocked
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CircuitBreaker'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      circuit_id:
+                        type: string
+                      state:
+                        type: string
+                      scope:
+                        type: string
+                      scope_id:
+                        type: string
+                      tripped_at:
+                        type: string
+                        format: date-time
+                      expires_at:
+                        type: string
+                        format: date-time
+                      message:
+                        type: string
+        '400':
+          description: Missing X-Org-ID/X-User-ID header, invalid JSON, invalid scope, or missing scope_id for a non-global scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/circuit-breaker/reset:
+    post:
+      tags:
+        - Circuit Breaker
+      summary: Reset circuit breaker (release emergency stop)
+      description: |
+        Release an emergency stop and resume normal operations. Also exposed
+        as the alias `POST /api/v1/emergency-stop/release`. Requires
+        `X-Org-ID` (or `X-Tenant-ID`) and `X-User-ID` headers (400 when
+        missing). **Enterprise only.**
+      operationId: resetCircuitBreaker
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerResetRequest'
+      responses:
+        '200':
+          description: Circuit reset — normal operations resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      scope:
+                        type: string
+                      scope_id:
+                        type: string
+                      state:
+                        type: string
+                        example: "closed"
+                      message:
+                        type: string
+        '400':
+          description: Missing X-Org-ID/X-User-ID header or invalid JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/circuit-breaker/check:
+    post:
+      tags:
+        - Circuit Breaker
+      summary: Check whether a request would be allowed
+      description: |
+        Evaluates the caller's scope hierarchy (global → tenant → client →
+        policy) and reports whether an open circuit would block the request.
+        Read-only; does not mutate circuit state. **Enterprise only.**
+      operationId: checkCircuitBreaker
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id:
+                  type: string
+                client_id:
+                  type: string
+                policy_id:
+                  type: string
+      responses:
+        '200':
+          description: Check result (allowed, or blocked with the tripping circuit's details)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      allowed:
+                        type: boolean
+                      circuit_id:
+                        type: string
+                        description: Present only when blocked
+                      scope:
+                        type: string
+                      scope_id:
+                        type: string
+                      reason:
+                        type: string
+                      tripped_by:
+                        type: string
+                      tripped_at:
+                        type: string
+                        format: date-time
+                      expires_at:
+                        type: string
+                        format: date-time
+                      comment:
+                        type: string
+        '400':
+          description: Missing X-Org-ID header or invalid JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/emergency-stop:
+    post:
+      tags:
+        - Circuit Breaker
+      summary: Emergency stop (alias of circuit-breaker trip)
+      description: |
+        Clearer Article 14 naming for `POST /api/v1/circuit-breaker/trip` —
+        identical handler, request body, and responses. **Enterprise only.**
+      operationId: emergencyStop
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerTripRequest'
+      responses:
+        '201':
+          description: Emergency stop activated (see the trip endpoint for the body shape)
         '400':
           $ref: '#/components/responses/BadRequest'
 
-  /api/v1/circuit-breaker/deactivate:
+  /api/v1/emergency-stop/release:
     post:
       tags:
         - Circuit Breaker
-      summary: Deactivate circuit breaker
+      summary: Release emergency stop (alias of circuit-breaker reset)
       description: |
-        Restore AI operations. Requires two-person authorization for high-risk systems.
-      operationId: deactivateCircuitBreaker
+        Clearer Article 14 naming for `POST /api/v1/circuit-breaker/reset` —
+        identical handler, request body, and responses. **Enterprise only.**
+      operationId: emergencyStopRelease
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
       requestBody:
@@ -1698,16 +2402,249 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CircuitBreakerDeactivateRequest'
+              $ref: '#/components/schemas/CircuitBreakerResetRequest'
       responses:
         '200':
-          description: Circuit breaker deactivated or pending second approval
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CircuitBreaker'
+          description: Emergency stop released (see the reset endpoint for the body shape)
         '400':
-          description: Invalid request or unauthorized
+          $ref: '#/components/responses/BadRequest'
+
+  # ---------------------------------------------------------------------------
+  # EU AI Act compliance module — PROXIED through the agent (single entry point).
+  # The agent forwards /api/v1/euaiact/* to the orchestrator (proxy.go
+  # PathPrefix("/api/v1/euaiact")); clients never call the orchestrator
+  # directly. Path shapes mirror the canonical operation docs in
+  # orchestrator-api.yaml — full request/response schemas live there.
+  # Restored per the single-entry-point ruling (#2881 follow-up): proxied =
+  # served. **Enterprise only.**
+  # ---------------------------------------------------------------------------
+  /api/v1/euaiact/export:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: List compliance evidence exports (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml `GET /api/v1/euaiact/export`.
+      operationId: euaiactListExportsViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Export request list (see orchestrator-api.yaml for the schema)
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Create a compliance evidence export (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml `POST /api/v1/euaiact/export`.
+      operationId: euaiactCreateExportViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '201':
+          description: Export request created (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/export/{export_id}:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: Get an export request (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactGetExportViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: export_id
+          in: path
+          required: true
+          description: Export request identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Export request status (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/export/{export_id}/download:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: Download a completed export (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactDownloadExportViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: export_id
+          in: path
+          required: true
+          description: Export request identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Evidence bundle download (see orchestrator-api.yaml for content types)
+
+  /api/v1/euaiact/conformity:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: List conformity assessments (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml `GET /api/v1/euaiact/conformity`.
+      operationId: euaiactListConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Assessment list (see orchestrator-api.yaml for the schema)
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Create a conformity assessment (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml `POST /api/v1/euaiact/conformity`.
+      operationId: euaiactCreateConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '201':
+          description: Assessment created (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/conformity/{assessment_id}:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: Get a conformity assessment (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactGetConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: assessment_id
+          in: path
+          required: true
+          description: Conformity assessment identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment detail (see orchestrator-api.yaml for the schema)
+    put:
+      tags: [EU AI Act (Proxied)]
+      summary: Update a conformity assessment (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactUpdateConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: assessment_id
+          in: path
+          required: true
+          description: Conformity assessment identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment updated (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/conformity/{assessment_id}/submit:
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Submit an assessment for review (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactSubmitConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: assessment_id
+          in: path
+          required: true
+          description: Conformity assessment identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment submitted (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/conformity/{assessment_id}/approve:
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Approve an assessment (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactApproveConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: assessment_id
+          in: path
+          required: true
+          description: Conformity assessment identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment approved (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/conformity/{assessment_id}/reject:
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Reject an assessment (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactRejectConformityViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: assessment_id
+          in: path
+          required: true
+          description: Conformity assessment identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment rejected (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/accuracy:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: Accuracy summary (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml `GET /api/v1/euaiact/accuracy`.
+      operationId: euaiactAccuracySummaryViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Per-model accuracy summary (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/accuracy/record:
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Record an accuracy metric (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactRecordAccuracyViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '201':
+          description: Metric recorded (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/accuracy/bias:
+    post:
+      tags: [EU AI Act (Proxied)]
+      summary: Record a bias measurement (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactRecordBiasViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '201':
+          description: Bias measurement recorded (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/accuracy/history:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: Accuracy metric history (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactAccuracyHistoryViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Metric history (see orchestrator-api.yaml for the schema)
+
+  /api/v1/euaiact/accuracy/alerts:
+    get:
+      tags: [EU AI Act (Proxied)]
+      summary: List accuracy alerts (proxied to orchestrator)
+      description: Agent-proxied. Canonical contract in orchestrator-api.yaml.
+      operationId: euaiactListAlertsViaAgent
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Alert list (see orchestrator-api.yaml for the schema)
 
   /api/v1/circuit-breaker/status:
     get:
@@ -1865,6 +2802,12 @@ paths:
                           $ref: '#/components/schemas/CircuitBreakerNotificationConfig'
                       count:
                         type: integer
+        '400':
+          description: Missing X-Org-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Circuit Breaker
@@ -1928,600 +2871,6 @@ paths:
           description: Notification config deleted
         '404':
           description: Notification config not found
-
-  # ==========================================================================
-  # Accuracy & Bias Detection (EU AI Act Article 15)
-  # ==========================================================================
-
-  /api/v1/accuracy/metrics:
-    post:
-      tags:
-        - Accuracy
-      summary: Record accuracy metric
-      description: Record an accuracy metric for a model
-      operationId: recordAccuracyMetric
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AccuracyMetricInput'
-      responses:
-        '201':
-          description: Metric recorded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AccuracyMetric'
-
-    get:
-      tags:
-        - Accuracy
-      summary: Get accuracy metrics
-      operationId: getAccuracyMetrics
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: model_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: metric_type
-          in: query
-          schema:
-            type: string
-            enum: [accuracy, precision, recall, f1_score, confidence, latency]
-        - name: from
-          in: query
-          schema:
-            type: string
-            format: date-time
-        - name: to
-          in: query
-          schema:
-            type: string
-            format: date-time
-      responses:
-        '200':
-          description: Accuracy metrics
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  metrics:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AccuracyMetric'
-
-  /api/v1/accuracy/bias:
-    post:
-      tags:
-        - Accuracy
-      summary: Record bias detection
-      description: Record bias detection results for demographic groups
-      operationId: recordBiasDetection
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BiasRecordInput'
-      responses:
-        '201':
-          description: Bias record created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BiasRecord'
-
-    get:
-      tags:
-        - Accuracy
-      summary: Get bias records
-      operationId: getBiasRecords
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: model_id
-          in: query
-          schema:
-            type: string
-        - name: category
-          in: query
-          schema:
-            type: string
-            enum: [gender, age, ethnicity, geography, language, socioeconomic, disability]
-      responses:
-        '200':
-          description: Bias records
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  records:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/BiasRecord'
-
-  /api/v1/accuracy/alerts:
-    get:
-      tags:
-        - Accuracy
-      summary: Get accuracy/bias alerts
-      operationId: getAccuracyAlerts
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: active_only
-          in: query
-          schema:
-            type: boolean
-            default: true
-      responses:
-        '200':
-          description: Alerts
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  alerts:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AccuracyAlert'
-
-  /api/v1/accuracy/alerts/{id}/acknowledge:
-    post:
-      tags:
-        - Accuracy
-      summary: Acknowledge alert
-      operationId: acknowledgeAccuracyAlert
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - user_id
-              properties:
-                user_id:
-                  type: string
-      responses:
-        '200':
-          description: Alert acknowledged
-
-  /api/v1/accuracy/alerts/{id}/resolve:
-    post:
-      tags:
-        - Accuracy
-      summary: Resolve alert
-      operationId: resolveAccuracyAlert
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - user_id
-              properties:
-                user_id:
-                  type: string
-                resolution_notes:
-                  type: string
-      responses:
-        '200':
-          description: Alert resolved
-
-  /api/v1/accuracy/thresholds:
-    post:
-      tags:
-        - Accuracy
-      summary: Set accuracy threshold
-      operationId: setAccuracyThreshold
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AccuracyThreshold'
-      responses:
-        '201':
-          description: Threshold set
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AccuracyThreshold'
-
-    get:
-      tags:
-        - Accuracy
-      summary: Get accuracy thresholds
-      operationId: getAccuracyThresholds
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Thresholds
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  thresholds:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/AccuracyThreshold'
-
-  # ==========================================================================
-  # Conformity Assessment (EU AI Act Article 43)
-  # ==========================================================================
-
-  /api/v1/conformity/assessments:
-    post:
-      tags:
-        - Conformity
-      summary: Create conformity assessment
-      description: Create a new EU AI Act conformity assessment
-      operationId: createConformityAssessment
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ConformityAssessmentInput'
-      responses:
-        '201':
-          description: Assessment created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityAssessment'
-
-    get:
-      tags:
-        - Conformity
-      summary: List conformity assessments
-      operationId: listConformityAssessments
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 50
-      responses:
-        '200':
-          description: Assessments
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  assessments:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ConformityAssessment'
-                  count:
-                    type: integer
-
-  /api/v1/conformity/assessments/{id}:
-    get:
-      tags:
-        - Conformity
-      summary: Get conformity assessment
-      operationId: getConformityAssessment
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Assessment details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityAssessment'
-        '404':
-          description: Assessment not found
-
-  /api/v1/conformity/assessments/{id}/start:
-    post:
-      tags:
-        - Conformity
-      summary: Start conformity assessment
-      description: Transition assessment from draft to in_progress
-      operationId: startConformityAssessment
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Assessment started
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityAssessment'
-        '400':
-          description: Invalid status transition
-
-  /api/v1/conformity/assessments/{id}/submit:
-    post:
-      tags:
-        - Conformity
-      summary: Submit assessment for review
-      description: Submit completed assessment for approval
-      operationId: submitConformityAssessment
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Assessment submitted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityAssessment'
-        '400':
-          description: Invalid status transition or incomplete checks
-
-  /api/v1/conformity/assessments/{id}/approve:
-    post:
-      tags:
-        - Conformity
-      summary: Approve conformity assessment
-      operationId: approveConformityAssessment
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - approved_by
-              properties:
-                approved_by:
-                  type: string
-                comments:
-                  type: string
-      responses:
-        '200':
-          description: Assessment approved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityAssessment'
-
-  /api/v1/conformity/assessments/{id}/reject:
-    post:
-      tags:
-        - Conformity
-      summary: Reject conformity assessment
-      operationId: rejectConformityAssessment
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - rejected_by
-                - reason
-              properties:
-                rejected_by:
-                  type: string
-                reason:
-                  type: string
-      responses:
-        '200':
-          description: Assessment rejected
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityAssessment'
-
-  /api/v1/conformity/assessments/{id}/checks/{checkId}:
-    put:
-      tags:
-        - Conformity
-      summary: Update compliance check
-      operationId: updateConformityCheck
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: checkId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ComplianceCheckUpdate'
-      responses:
-        '200':
-          description: Check updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ComplianceCheck'
-
-  /api/v1/conformity/assessments/{id}/findings:
-    post:
-      tags:
-        - Conformity
-      summary: Add finding to assessment
-      operationId: addConformityFinding
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ConformityFindingInput'
-      responses:
-        '201':
-          description: Finding added
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformityFinding'
-
-  /api/v1/conformity/summary:
-    get:
-      tags:
-        - Conformity
-      summary: Get compliance summary
-      operationId: getConformitySummary
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Compliance summary
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConformitySummary'
-
-  # ==========================================================================
-  # EU AI Act Export
-  # ==========================================================================
-
-  /api/v1/euaiact/export:
-    post:
-      tags:
-        - EU AI Act
-      summary: Export EU AI Act compliance data
-      description: |
-        Generate compliance export in EU regulatory format.
-        Includes decision chains, HITL records, accuracy metrics, and assessments.
-      operationId: exportEUAIActData
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EUAIActExportRequest'
-      responses:
-        '200':
-          description: Export generated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EUAIActExportResponse'
-
-  /api/v1/euaiact/summary:
-    get:
-      tags:
-        - EU AI Act
-      summary: Get EU AI Act compliance summary
-      operationId: getEUAIActSummary
-      parameters:
-        - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Compliance summary
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EUAIActSummary'
 
   # =============================================================================
   # Static Policies API (ADR-018)
@@ -2797,6 +3146,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/policy-overrides:
+    get:
+      tags:
+        - Static Policies
+      summary: List policy overrides (canonical alias)
+      description: |
+        Portal-facing alias of `GET /api/v1/static-policies/overrides` —
+        identical handler, parameters, and response.
+      operationId: listPolicyOverrides
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: include_expired
+          in: query
+          required: false
+          description: Include expired overrides in results
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: List of policy overrides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverridesListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/v1/static-policies/{id}:
     get:
       tags:
@@ -3033,6 +3410,37 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/{id}/override:
+    get:
+      tags:
+        - Static Policies
+      summary: Get active override for a policy
+      description: |
+        Returns the active override for a single policy (404 when none).
+        `{id}` may be the policy UUID or the human-readable slug — slugs
+        are resolved to the canonical UUID before lookup.
+      operationId: getStaticPolicyOverride
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The active override
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverride'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No override exists for this policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
     post:
       tags:
         - Static Policies
@@ -3384,6 +3792,22 @@ components:
         pattern: '^[A-Za-z0-9_.:\-/]+$'
         example: "n8n-exec-abc123-node-Approve"
 
+    AxonflowClient:
+      name: X-Axonflow-Client
+      in: header
+      required: false
+      description: |
+        Optional client-version telemetry header (`<client>/<version>`,
+        e.g. `mcp-proxy/0.3.1` or `claude-code/1.9.1`). Enterprise
+        deployments with the `client_version_telemetry` capability count
+        validated values in the `axonflow_client_version_requests_total`
+        metric on the decide and MCP check-output planes. Telemetry only —
+        never used for authentication or authorization; invalid values are
+        ignored.
+      schema:
+        type: string
+        example: "mcp-proxy/0.3.1"
+
     ClientSecret:
       name: X-Client-Secret
       in: header
@@ -3401,8 +3825,8 @@ components:
       properties:
         status:
           type: string
-          enum: [healthy, starting, unhealthy]
-          description: Service health status
+          enum: [healthy, starting]
+          description: Service health status (the handler emits only these two)
         service:
           type: string
           example: "axonflow-agent"
@@ -3412,7 +3836,10 @@ components:
         version:
           type: string
           description: Platform version from AXONFLOW_VERSION env var
-          example: "4.8.0"
+          example: "9.8.0"
+        tier:
+          type: string
+          description: License tier of the deployment (e.g. community, evaluation, enterprise)
         capabilities:
           type: array
           description: List of platform capabilities with the version that introduced them
@@ -4501,20 +4928,20 @@ components:
           type: string
           format: uuid
           description: |
-            Decision ID for the request when one was minted before the
-            error. The field is OMITTED from the envelope (not present
-            as empty) for request-format errors that were rejected
-            before a decision_id was minted.
+            Decision ID for the request. Since #2643 the agent mints
+            decision_id and trace_id BEFORE decoding the body, so in
+            practice both fields are present on every error the decide
+            handler writes, including 400s. The fields remain optional
+            in the schema (omitted-when-empty on the wire).
         trace_id:
           type: string
           minLength: 32
           maxLength: 32
           pattern: '^[0-9a-f]{32}$'
           description: |
-            W3C trace-id for the request when one was minted before the
-            error. The field is OMITTED from the envelope (not present
-            as empty) for request-format errors that were rejected
-            before a trace_id was minted.
+            W3C trace-id for the request. Minted before body decode
+            (see decision_id note) — present on every handler-written
+            error in practice; optional in the schema.
 
     ChatCompletionRequest:
       type: object
@@ -4856,8 +5283,10 @@ components:
       type: object
       description: |
         Per-policy explainability record (ADR-043). Surfaced in
-        MCPCheckInputResponse.policy_matches and MCPCheckOutputResponse.policy_matches
-        when dynamic policy evaluation produces non-empty matches.
+        DecisionExplanation.policy_matches (the explain_decision MCP tool).
+        Note: the standalone `/api/v1/mcp/check-output` response does NOT
+        carry policy_matches (#2870); check-input's policy_matches uses the
+        leaner RicherPolicyMatch shape.
       properties:
         policy_id:
           type: string
@@ -4878,6 +5307,29 @@ components:
         policy_description:
           type: string
           description: Optional description text shown to operators.
+
+    RicherPolicyMatch:
+      type: object
+      description: |
+        Per-policy match record on MCP check-input responses
+        (`platform/agent/mcp_handler.go`).
+      properties:
+        policy_id:
+          type: string
+          description: Unique policy identifier.
+        policy_name:
+          type: string
+          description: Human-readable policy name. Omitted when unknown.
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+          description: Risk level configured on this policy. Omitted when unset.
+        allow_override:
+          type: boolean
+          description: Whether this policy permits a session override.
+        policy_version:
+          type: integer
+          description: Policy version that matched. Omitted when zero.
 
     ExplainRule:
       type: object
@@ -5131,6 +5583,15 @@ components:
           enum: [query, execute]
           default: execute
           description: Operation type — affects dynamic policy evaluation (rate limits may differ)
+        content_type:
+          type: string
+          description: |
+            Declared content type of `statement` (ADR-056). Defaults to
+            `text/plain` when omitted. When set to a value no registered
+            detector handles, the request is rejected with **415** and a
+            canonical blocked audit row tagged `content_type_unsupported`
+            is written (fail-closed; see the 415 response). Source of
+            truth: `platform/agent/mcp_handler.go` (MCPCheckInputRequest).
 
     MCPCheckInputResponse:
       type: object
@@ -5164,10 +5625,11 @@ components:
         policy_matches:
           type: array
           items:
-            $ref: '#/components/schemas/ExplainPolicy'
+            $ref: '#/components/schemas/RicherPolicyMatch'
           description: |
             Per-policy explainability records (ADR-043). Surfaced when
-            dynamic policy evaluation produces non-empty matches.
+            dynamic policy evaluation produces non-empty matches. Source
+            of truth: `platform/agent/mcp_handler.go` (RicherPolicyMatch).
         override_available:
           type: boolean
           description: |
@@ -5259,17 +5721,18 @@ components:
           description: Human-readable reason if blocked (omitted when allowed)
         redacted_data:
           description: |
-            Tabular response data with PII fields masked (used when the
-            connector returned rows; e.g. SQL/CSV results). Omitted if no
-            redaction was needed or if the response was a text message.
-        redacted_message:
-          type: string
-          description: |
-            Text message with PII fields masked (used when the connector
-            returned a string message rather than tabular rows; e.g.
-            execute-style responses). Omitted if no redaction was needed
-            or if the response was tabular. Source of truth:
-            `platform/agent/mcp_server_handler.go:988`.
+            Response data with PII fields masked. For query-style checks
+            (tabular `response_data`) this carries the masked rows; for
+            execute-style checks (`message`) it carries the masked message
+            string. Omitted if no redaction was needed.
+
+            ⚠️ **Contract pending (#2870):** unlike the `/api/v1/mcp-server`
+            JSON-RPC `check_output` tool (which returns a separate
+            `redacted_message` field), this standalone REST endpoint returns
+            only `redacted_data` — it never emits `redacted_message`, even
+            though several SDK response types model that field. Do not rely
+            on `redacted_message` here until #2870 lands. Source of truth:
+            `platform/agent/mcp_handler.go` (MCPCheckOutputResponse).
         policies_evaluated:
           type: integer
           description: Total number of policies evaluated
@@ -5277,16 +5740,9 @@ components:
           $ref: '#/components/schemas/ExfiltrationCheckInfo'
         policy_info:
           $ref: '#/components/schemas/PolicyInfo'
-        # Plugin Batch 1 / ADR-043 — explainability context (matches the
-        # MCPCheckInputResponse fields on the same call site).
         decision_id:
           type: string
           description: Unique audit correlator for this policy decision.
-        policy_matches:
-          type: array
-          items:
-            $ref: '#/components/schemas/ExplainPolicy'
-          description: Per-policy explainability records (ADR-043).
         redaction_evaluated:
           type: boolean
           description: |
@@ -5438,6 +5894,10 @@ components:
 
     ErrorResponse:
       type: object
+      description: |
+        Handler-written error envelope. Note the agent has a second error
+        envelope for middleware-written errors (see JSONError) — clients
+        should tolerate both shapes on 4xx/5xx.
       properties:
         success:
           type: boolean
@@ -5445,6 +5905,63 @@ components:
         error:
           type: string
           description: Error message
+
+    JSONError:
+      type: object
+      description: |
+        Middleware-written error envelope (auth middleware 401s, static
+        policy API errors). Source of truth:
+        `platform/agent/static_policy_api_handlers.go` (writeJSONError).
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: integer
+              description: HTTP status code
+            message:
+              type: string
+
+    RateLimitEnvelope:
+      type: object
+      description: |
+        Shared tier rate-limit envelope written by the Community SaaS
+        limiter for daily-quota 429s (the same shape is used with 403 for
+        Pro-only feature limits). Per-minute 429s use a plain
+        `{"error": "..."}` body with only a Retry-After header — not this
+        envelope. Accompanied by the
+        `X-Axonflow-Tier-Limit`, `X-Axonflow-Upgrade-URL`, and
+        `Retry-After` headers. Source of truth:
+        `platform/agent/community_saas_ratelimit_response.go`
+        (rateLimitEnvelope).
+      properties:
+        error:
+          type: string
+        limit_type:
+          type: string
+          description: Which limiter fired (e.g. daily_quota)
+        tier:
+          type: string
+        limit:
+          type: integer
+        remaining:
+          type: integer
+        window:
+          type: string
+        resets_at:
+          type: string
+          format: date-time
+        upgrade:
+          type: object
+          properties:
+            tier:
+              type: string
+            wording:
+              type: string
+            compare_url:
+              type: string
+            buy_url:
+              type: string
 
     # ==========================================================================
     # Decision Chain Tracing (EU AI Act Article 12)
@@ -5623,35 +6140,51 @@ components:
     # HITL Schemas (EU AI Act Article 14)
     # ==========================================================================
 
-    HITLDecisionRequest:
+    HITLCreateRequest:
       type: object
+      description: |
+        Body for POST /api/v1/hitl/queue. Org/tenant identity comes from the
+        `X-Org-ID` / `X-Tenant-ID` headers, not the body. Source of truth:
+        `platform/agent/hitl/handler.go` (CreateRequestInput).
       required:
-        - org_id
-        - request_id
-        - decision_type
-        - content
+        - client_id
+        - original_query
+        - request_type
+        - triggered_policy_id
+        - triggered_policy_name
+        - trigger_reason
       properties:
-        org_id:
+        client_id:
           type: string
-        request_id:
+        user_id:
           type: string
-          format: uuid
-        decision_type:
+        original_query:
           type: string
-          enum: [policy_override, content_approval, high_risk_action, data_access]
-        content:
-          type: object
-          description: Decision content requiring review
-        priority:
+          description: The query/action awaiting human review
+        request_type:
           type: string
-          enum: [low, medium, high, critical]
-          default: medium
-        expires_in_minutes:
-          type: integer
-          default: 60
-        metadata:
+          description: Request classification (e.g. `mcp_query`, `llm_chat`)
+        request_context:
           type: object
           additionalProperties: true
+        triggered_policy_id:
+          type: string
+        triggered_policy_name:
+          type: string
+        trigger_reason:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        eu_ai_act_article:
+          type: string
+        compliance_framework:
+          type: string
+        risk_classification:
+          type: string
+        expires_in_seconds:
+          type: integer
+          description: TTL before the request auto-expires
         notify_url:
           type: string
           format: uri
@@ -5703,38 +6236,127 @@ components:
           additionalProperties: true
           description: Decision-context bag (org_id, tenant_id, client_id, triggered_policy_id, comment, justification).
 
-    HITLDecision:
+    HITLReviewInput:
       type: object
+      description: |
+        Body for approve/reject. Source of truth:
+        `platform/agent/hitl/handler.go` (ReviewInput).
+      properties:
+        reviewer_id:
+          type: string
+        reviewer_email:
+          type: string
+        reviewer_role:
+          type: string
+        comment:
+          type: string
+
+    HITLApprovalRequest:
+      type: object
+      description: |
+        An approval-queue row. Source of truth:
+        `platform/agent/hitl/repository.go` (ApprovalRequest).
       properties:
         id:
-          type: string
-        org_id:
-          type: string
+          type: integer
+          format: int64
         request_id:
           type: string
           format: uuid
-        decision_type:
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+        client_id:
+          type: string
+        user_id:
+          type: string
+        original_query:
+          type: string
+        request_type:
+          type: string
+        request_context:
+          type: object
+          additionalProperties: true
+        triggered_policy_id:
+          type: string
+        triggered_policy_name:
+          type: string
+        trigger_reason:
+          type: string
+        severity:
+          type: string
+        eu_ai_act_article:
+          type: string
+        compliance_framework:
+          type: string
+        risk_classification:
           type: string
         status:
           type: string
-          enum: [pending, approved, rejected, expired]
-        content:
-          type: object
-        priority:
-          type: string
+          enum: [pending, approved, rejected, overridden, expired]
         reviewer_id:
           type: string
-        reviewer_comments:
+        reviewer_email:
           type: string
-        rejection_reason:
+        reviewer_role:
           type: string
-        created_at:
+        review_comment:
+          type: string
+        reviewed_at:
           type: string
           format: date-time
+        override_justification:
+          type: string
+        override_authorized_by:
+          type: string
+        notify_url:
+          type: string
         expires_at:
           type: string
           format: date-time
-        reviewed_at:
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HITLHistoryEntry:
+      type: object
+      description: |
+        Immutable audit-trail entry for a request. Source of truth:
+        `platform/agent/hitl/repository.go` (ApprovalHistory).
+      properties:
+        id:
+          type: integer
+          format: int64
+        request_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+        action:
+          type: string
+        actor_id:
+          type: string
+        actor_email:
+          type: string
+        actor_role:
+          type: string
+        actor_ip:
+          type: string
+        comment:
+          type: string
+        justification:
+          type: string
+        previous_status:
+          type: string
+        new_status:
+          type: string
+        created_at:
           type: string
           format: date-time
 
@@ -5742,83 +6364,105 @@ components:
     # Circuit Breaker Schemas (EU AI Act Article 14)
     # ==========================================================================
 
-    CircuitBreakerActivateRequest:
+    CircuitBreakerTripRequest:
       type: object
-      required:
-        - org_id
-        - activated_by
-        - reason
+      description: |
+        Request body for trip / emergency-stop. Org and user identity come
+        from the `X-Org-ID` (or `X-Tenant-ID`) and `X-User-ID` headers, not
+        the body. Source of truth: `platform/agent/circuitbreaker/handler.go`
+        (TripRequest).
       properties:
-        org_id:
-          type: string
-        activated_by:
-          type: string
-          description: User ID activating the circuit breaker
-        reason:
-          type: string
-          description: Reason for emergency stop
         scope:
           type: string
-          enum: [all, policy, model, tenant]
-          default: all
+          enum: [global, tenant, client, policy]
+          default: global
+          description: Blast radius of the stop
         scope_id:
           type: string
-          description: ID for targeted scope (policy_id, model_id, tenant_id)
+          description: Required for non-global scopes (tenant/client/policy ID)
+        reason:
+          type: string
+          enum: [manual, policy_violation, risk_level, error_rate]
+          default: manual
+        comment:
+          type: string
+          description: Free-text audit-trail comment
+        duration_minutes:
+          type: integer
+          description: Auto-expire after N minutes; 0 or omitted = indefinite
 
-    CircuitBreakerDeactivateRequest:
+    CircuitBreakerResetRequest:
       type: object
-      required:
-        - org_id
-        - deactivated_by
+      description: |
+        Request body for reset / emergency-stop release. Org and user
+        identity come from headers, not the body. Source of truth:
+        `platform/agent/circuitbreaker/handler.go` (ResetRequest).
       properties:
-        org_id:
+        scope:
           type: string
-        deactivated_by:
+          enum: [global, tenant, client, policy]
+          default: global
+        scope_id:
           type: string
-          description: User ID requesting deactivation
-        justification:
+        comment:
           type: string
-          description: Reason for restoring operations
+          description: Free-text audit-trail comment
 
     CircuitBreaker:
       type: object
+      description: |
+        A circuit record as returned by the status and history endpoints.
+        Source of truth: `platform/agent/circuitbreaker/circuit_breaker.go`
+        (Circuit).
       properties:
         id:
+          type: string
+        scope:
+          type: string
+          enum: [global, tenant, client, policy]
+        scope_id:
           type: string
         org_id:
           type: string
         state:
           type: string
-          enum: [closed, open, pending_deactivation]
+          enum: [closed, open, half_open]
           description: |
             - closed: Normal operation
-            - open: AI operations blocked
-            - pending_deactivation: Awaiting second approver
-        scope:
+            - open: circuit tripped — matching requests are blocked
+            - half_open: testing recovery — limited requests allowed
+              (auto-recovery transition; can appear in status/history)
+        trip_reason:
           type: string
-        scope_id:
+          enum: [manual, policy_violation, risk_level, error_rate]
+        tripped_by:
           type: string
-        activated_by:
+        tripped_by_email:
           type: string
-        activation_reason:
+        trip_comment:
           type: string
-        activated_at:
-          type: string
-          format: date-time
-        first_approver_id:
-          type: string
-          description: First person to approve deactivation (two-person rule)
-        first_approved_at:
+        tripped_at:
           type: string
           format: date-time
-        deactivated_by:
-          type: string
-        deactivated_at:
+        expires_at:
           type: string
           format: date-time
-        requires_two_person:
-          type: boolean
-          description: Whether two-person authorization is required
+          description: Auto-expiry time when the trip carried a duration; absent for indefinite trips
+        reset_by:
+          type: string
+        reset_at:
+          type: string
+          format: date-time
+        error_count:
+          type: integer
+        violation_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     CircuitBreakerConfigResponse:
       type: object
@@ -5940,549 +6584,6 @@ components:
           type: string
         active:
           type: boolean
-
-    # ==========================================================================
-    # Accuracy & Bias Schemas (EU AI Act Article 15)
-    # ==========================================================================
-
-    AccuracyMetricInput:
-      type: object
-      required:
-        - org_id
-        - model_id
-        - metric_type
-        - value
-      properties:
-        org_id:
-          type: string
-        model_id:
-          type: string
-        metric_type:
-          type: string
-          enum: [accuracy, precision, recall, f1_score, confidence, latency, throughput, error_rate]
-        value:
-          type: number
-          format: double
-        sample_size:
-          type: integer
-        window_start:
-          type: string
-          format: date-time
-        window_end:
-          type: string
-          format: date-time
-        metadata:
-          type: object
-          additionalProperties: true
-
-    AccuracyMetric:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        model_id:
-          type: string
-        metric_type:
-          type: string
-        value:
-          type: number
-          format: double
-        sample_size:
-          type: integer
-        timestamp:
-          type: string
-          format: date-time
-        window_start:
-          type: string
-          format: date-time
-        window_end:
-          type: string
-          format: date-time
-        metadata:
-          type: object
-
-    BiasRecordInput:
-      type: object
-      required:
-        - org_id
-        - model_id
-        - category
-        - group_a
-        - group_b
-        - group_a_rate
-        - group_b_rate
-      properties:
-        org_id:
-          type: string
-        model_id:
-          type: string
-        category:
-          type: string
-          enum: [gender, age, ethnicity, geography, language, socioeconomic, disability, other]
-        group_a:
-          type: string
-          description: Reference group name
-        group_b:
-          type: string
-          description: Comparison group name
-        group_a_rate:
-          type: number
-          format: double
-          description: Positive outcome rate for group A
-        group_b_rate:
-          type: number
-          format: double
-          description: Positive outcome rate for group B
-        sample_size:
-          type: integer
-        metadata:
-          type: object
-
-    BiasRecord:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        model_id:
-          type: string
-        category:
-          type: string
-        score:
-          type: number
-          format: double
-          description: Calculated bias score (0.0 = no bias, 1.0 = maximum)
-        threshold:
-          type: number
-          format: double
-        is_violation:
-          type: boolean
-        group_a:
-          type: string
-        group_b:
-          type: string
-        group_a_rate:
-          type: number
-          format: double
-        group_b_rate:
-          type: number
-          format: double
-        sample_size:
-          type: integer
-        timestamp:
-          type: string
-          format: date-time
-
-    AccuracyAlert:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        model_id:
-          type: string
-        alert_type:
-          type: string
-          enum: [accuracy_degradation, bias_detected, threshold_breach, fairness_degradation]
-        severity:
-          type: string
-          enum: [info, warning, critical]
-        title:
-          type: string
-        description:
-          type: string
-        metric_type:
-          type: string
-        bias_category:
-          type: string
-        current_value:
-          type: number
-          format: double
-        threshold:
-          type: number
-          format: double
-        triggered_at:
-          type: string
-          format: date-time
-        acked_at:
-          type: string
-          format: date-time
-        acked_by:
-          type: string
-        resolved_at:
-          type: string
-          format: date-time
-        resolved_by:
-          type: string
-
-    AccuracyThreshold:
-      type: object
-      required:
-        - org_id
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        model_id:
-          type: string
-          description: Optional - empty means org-wide default
-        metric_type:
-          type: string
-        bias_category:
-          type: string
-        min_value:
-          type: number
-          format: double
-          description: Alert if value falls below
-        max_value:
-          type: number
-          format: double
-          description: Alert if value exceeds
-        severity:
-          type: string
-          enum: [info, warning, critical]
-        enabled:
-          type: boolean
-
-    # ==========================================================================
-    # Conformity Assessment Schemas (EU AI Act Article 43)
-    # ==========================================================================
-
-    ConformityAssessmentInput:
-      type: object
-      required:
-        - org_id
-        - name
-        - type
-        - risk_category
-      properties:
-        org_id:
-          type: string
-        name:
-          type: string
-        description:
-          type: string
-        type:
-          type: string
-          enum: [initial, periodic, change_based]
-        risk_category:
-          type: string
-          enum: [minimal, limited, high, unacceptable]
-        metadata:
-          type: object
-
-    ConformityAssessment:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        name:
-          type: string
-        description:
-          type: string
-        type:
-          type: string
-        risk_category:
-          type: string
-        status:
-          type: string
-          enum: [draft, in_progress, under_review, approved, rejected]
-        overall_score:
-          type: number
-          format: double
-        checks:
-          type: array
-          items:
-            $ref: '#/components/schemas/ComplianceCheck'
-        findings:
-          type: array
-          items:
-            $ref: '#/components/schemas/ConformityFinding'
-        recommendations:
-          type: array
-          items:
-            $ref: '#/components/schemas/ConformityRecommendation'
-        approved_by:
-          type: string
-        approved_at:
-          type: string
-          format: date-time
-        rejected_by:
-          type: string
-        rejection_reason:
-          type: string
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        started_at:
-          type: string
-          format: date-time
-        completed_at:
-          type: string
-          format: date-time
-
-    ComplianceCheck:
-      type: object
-      properties:
-        id:
-          type: string
-        article:
-          type: string
-          description: EU AI Act article reference (e.g., "Article 9")
-        requirement:
-          type: string
-        status:
-          type: string
-          enum: [pending, pass, fail, partial, not_applicable]
-        score:
-          type: number
-          format: double
-        evidence:
-          type: string
-        notes:
-          type: string
-        checked_by:
-          type: string
-        checked_at:
-          type: string
-          format: date-time
-
-    ComplianceCheckUpdate:
-      type: object
-      required:
-        - status
-      properties:
-        status:
-          type: string
-          enum: [pass, fail, partial, not_applicable]
-        score:
-          type: number
-          format: double
-        evidence:
-          type: string
-        notes:
-          type: string
-        checked_by:
-          type: string
-
-    ConformityFindingInput:
-      type: object
-      required:
-        - title
-        - severity
-      properties:
-        check_id:
-          type: string
-        severity:
-          type: string
-          enum: [low, medium, high, critical]
-        title:
-          type: string
-        description:
-          type: string
-        article:
-          type: string
-        impact:
-          type: string
-        remediation:
-          type: string
-
-    ConformityFinding:
-      type: object
-      properties:
-        id:
-          type: string
-        check_id:
-          type: string
-        severity:
-          type: string
-        title:
-          type: string
-        description:
-          type: string
-        article:
-          type: string
-        impact:
-          type: string
-        remediation:
-          type: string
-        status:
-          type: string
-          enum: [open, resolved]
-        resolved_by:
-          type: string
-        resolved_at:
-          type: string
-          format: date-time
-        resolution:
-          type: string
-        created_at:
-          type: string
-          format: date-time
-
-    ConformityRecommendation:
-      type: object
-      properties:
-        id:
-          type: string
-        article:
-          type: string
-        priority:
-          type: string
-          enum: [low, medium, high, critical]
-        title:
-          type: string
-        description:
-          type: string
-        benefit:
-          type: string
-        effort:
-          type: string
-          enum: [low, medium, high]
-        created_at:
-          type: string
-          format: date-time
-
-    ConformitySummary:
-      type: object
-      properties:
-        org_id:
-          type: string
-        total_assessments:
-          type: integer
-        approved_assessments:
-          type: integer
-        pending_assessments:
-          type: integer
-        overall_compliance_score:
-          type: number
-          format: double
-        open_findings:
-          type: integer
-        critical_findings:
-          type: integer
-        last_assessment_date:
-          type: string
-          format: date-time
-        next_assessment_due:
-          type: string
-          format: date-time
-
-    # ==========================================================================
-    # EU AI Act Export Schemas
-    # ==========================================================================
-
-    EUAIActExportRequest:
-      type: object
-      required:
-        - org_id
-      properties:
-        org_id:
-          type: string
-        from_date:
-          type: string
-          format: date-time
-        to_date:
-          type: string
-          format: date-time
-        include_decision_chains:
-          type: boolean
-          default: true
-        include_hitl_records:
-          type: boolean
-          default: true
-        include_accuracy_metrics:
-          type: boolean
-          default: true
-        include_bias_records:
-          type: boolean
-          default: true
-        include_assessments:
-          type: boolean
-          default: true
-        format:
-          type: string
-          enum: [json, xml, csv]
-          default: json
-
-    EUAIActExportResponse:
-      type: object
-      properties:
-        export_id:
-          type: string
-        org_id:
-          type: string
-        generated_at:
-          type: string
-          format: date-time
-        period:
-          type: object
-          properties:
-            from:
-              type: string
-              format: date-time
-            to:
-              type: string
-              format: date-time
-        statistics:
-          type: object
-          properties:
-            total_decisions:
-              type: integer
-            blocked_decisions:
-              type: integer
-            hitl_reviews:
-              type: integer
-            bias_violations:
-              type: integer
-            conformity_score:
-              type: number
-              format: double
-        data:
-          type: object
-          description: Export data based on requested sections
-
-    EUAIActSummary:
-      type: object
-      properties:
-        org_id:
-          type: string
-        compliance_status:
-          type: string
-          enum: [compliant, partial, non_compliant]
-        risk_category:
-          type: string
-        overall_score:
-          type: number
-          format: double
-        article_compliance:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              status:
-                type: string
-              score:
-                type: number
-        active_circuit_breakers:
-          type: integer
-        pending_hitl_decisions:
-          type: integer
-        active_bias_alerts:
-          type: integer
-        last_conformity_assessment:
-          type: string
-          format: date-time
 
     # ==========================================================================
     # Audit Verification (#2722)
@@ -6662,14 +6763,17 @@ components:
             error: "Invalid request body"
 
     Unauthorized:
-      description: Missing or invalid authentication
+      description: |
+        Missing or invalid authentication. Handler-written 401s use the
+        `{success, error}` envelope; 401s written by the auth middleware
+        use the `{"error": {"code", "message"}}` envelope (JSONError).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
             success: false
-            error: "X-License-Key header required"
+            error: "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)"
 
     Forbidden:
       description: Access denied by policy or tenant mismatch
