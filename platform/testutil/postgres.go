@@ -152,8 +152,8 @@ func GatewayContextsSchema() string {
 			policies_evaluated TEXT[],
 			approved BOOLEAN DEFAULT true,
 			block_reason TEXT,
-			expires_at TIMESTAMP NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
 	`
 }
@@ -166,17 +166,17 @@ func ConnectorRegistrySchema() string {
 			connector_type VARCHAR(50) NOT NULL,
 			config JSONB NOT NULL,
 			enabled BOOLEAN DEFAULT true,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		);
 
 		CREATE TABLE IF NOT EXISTS connector_state (
 			connector_id VARCHAR(255) PRIMARY KEY,
 			state JSONB NOT NULL,
-			last_health_check TIMESTAMP,
+			last_health_check TIMESTAMPTZ,
 			health_status VARCHAR(20) DEFAULT 'unknown',
 			error_message TEXT,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (connector_id) REFERENCES connector_registry(id) ON DELETE CASCADE
 		);
 	`
@@ -384,8 +384,8 @@ func WorkflowControlSchema() string {
 			description TEXT,
 			config JSONB NOT NULL,
 			enabled BOOLEAN DEFAULT true,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		);
 
 		CREATE TABLE IF NOT EXISTS workflow_executions (
@@ -396,8 +396,8 @@ func WorkflowControlSchema() string {
 			input JSONB,
 			output JSONB,
 			error TEXT,
-			started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			completed_at TIMESTAMP
+			started_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			completed_at TIMESTAMPTZ
 		)
 	`
 }
@@ -481,8 +481,8 @@ func RuntimeConfigSchema() string {
 			tenant_id VARCHAR(255) NOT NULL,
 			config_type VARCHAR(50) NOT NULL,
 			config JSONB NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(tenant_id, config_type)
 		)
 	`

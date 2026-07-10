@@ -41,7 +41,7 @@ const canonicalAuditLogsDDL = `
 CREATE TABLE IF NOT EXISTS audit_logs (
     id VARCHAR(255) PRIMARY KEY,
     request_id VARCHAR(255) NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     user_id INTEGER NOT NULL,
     user_email VARCHAR(255) NOT NULL,
     user_role VARCHAR(50) NOT NULL,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     response_sample TEXT,
     compliance_flags JSONB,
     security_metrics JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );`
 
 func TestMigration126_AuditLogsCrossBorder_RealPostgres(t *testing.T) {

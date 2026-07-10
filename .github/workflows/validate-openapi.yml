@@ -62,11 +62,12 @@ jobs:
         run: |
           set -e
           echo "Validating OpenAPI specification syntax..."
-          # All three specs validated — agent-api.yaml + orchestrator-api.yaml
+          # All four specs validated — agent-api.yaml + orchestrator-api.yaml
           # were left out of the gate originally and accumulated broken refs
-          # (#1759). With all three covered, swagger-cli fails the gate on
+          # (#1759), and masfeat-api.yaml was orphaned from the gate until
+          # #2881. With all four covered, swagger-cli fails the gate on
           # any new broken $ref, duplicate schema, or unparseable YAML.
-          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml; do
+          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml; do
             echo "  → $spec"
             swagger-cli validate "$spec"
           done
@@ -77,7 +78,7 @@ jobs:
           set -e
           echo "Linting OpenAPI specification..."
           # Fail on errors, allow warnings.
-          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml; do
+          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml; do
             echo "  → $spec"
             spectral lint "$spec" --ruleset .spectral.yaml --fail-severity error
           done
@@ -102,7 +103,7 @@ jobs:
           # the breaking-change diff with a notice — once that PR
           # merges, future PRs see a clean base and the diff runs
           # normally.
-          for spec in agent-api orchestrator-api policy-api; do
+          for spec in agent-api orchestrator-api policy-api masfeat-api; do
             key="${spec//-/_}"
             if ! git show "origin/${{ github.base_ref }}:docs/api/${spec}.yaml" > "base-${spec}.yaml" 2>/dev/null; then
               echo "has_${key}=false" >> "$GITHUB_OUTPUT"
@@ -151,11 +152,20 @@ jobs:
           fail-on: ERR
           err-ignore: .github/oasdiff-err-ignore.txt
 
+      - name: Check for breaking changes (masfeat-api)
+        if: github.event_name == 'pull_request' && steps.base-spec.outputs.has_masfeat_api == 'true'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base-masfeat-api.yaml
+          revision: docs/api/masfeat-api.yaml
+          fail-on: ERR
+          err-ignore: .github/oasdiff-err-ignore.txt
+
       - name: Generate documentation preview
         run: |
           set -e
           echo "Generating documentation previews..."
-          for spec in agent-api orchestrator-api policy-api; do
+          for spec in agent-api orchestrator-api policy-api masfeat-api; do
             npx @redocly/cli build-docs "docs/api/${spec}.yaml" -o "/tmp/${spec}-docs.html"
           done
           echo "✅ Documentation generated successfully"
@@ -169,6 +179,7 @@ jobs:
             /tmp/agent-api-docs.html
             /tmp/orchestrator-api-docs.html
             /tmp/policy-api-docs.html
+            /tmp/masfeat-api-docs.html
           retention-days: 7
 
   bundle:
@@ -194,7 +205,7 @@ jobs:
       - name: Bundle specifications
         run: |
           set -e
-          for spec in agent-api orchestrator-api policy-api; do
+          for spec in agent-api orchestrator-api policy-api masfeat-api; do
             npx @redocly/cli bundle "docs/api/${spec}.yaml" -o "docs/api/${spec}-bundled.yaml"
           done
           echo "✅ Bundled specifications created"
@@ -206,7 +217,7 @@ jobs:
           # docs landing URL doesn't move; the per-spec docs are uploaded
           # alongside as additional artifacts.
           npx @redocly/cli build-docs docs/api/policy-api.yaml -o docs/api/index.html
-          for spec in agent-api orchestrator-api; do
+          for spec in agent-api orchestrator-api masfeat-api; do
             npx @redocly/cli build-docs "docs/api/${spec}.yaml" -o "docs/api/${spec}.html"
           done
           echo "✅ Static documentation generated"
@@ -219,7 +230,9 @@ jobs:
             docs/api/agent-api-bundled.yaml
             docs/api/orchestrator-api-bundled.yaml
             docs/api/policy-api-bundled.yaml
+            docs/api/masfeat-api-bundled.yaml
             docs/api/index.html
             docs/api/agent-api.html
             docs/api/orchestrator-api.html
+            docs/api/masfeat-api.html
           retention-days: 30

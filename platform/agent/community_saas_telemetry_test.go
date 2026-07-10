@@ -691,8 +691,8 @@ func TestTelemetryMiddleware_NormalizesEndpointPath(t *testing.T) {
 		},
 		{
 			name: "literal-trailing action keeps mid-path id",
-			raw:  "/api/v1/conformity/assessments/asmt_42/start",
-			want: "/api/v1/conformity/assessments/{id}/start",
+			raw:  "/api/v1/hitl/queue/hitl_42/override",
+			want: "/api/v1/hitl/queue/{id}/override",
 		},
 		{
 			name: "unknown path fail-closed (as-is)",

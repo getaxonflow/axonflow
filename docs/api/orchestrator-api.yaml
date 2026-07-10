@@ -27,13 +27,13 @@ info:
     These endpoints are typically called by the Agent service, not directly by clients.
     For client-facing APIs, see the Agent API specification.
 
-  version: 1.0.0
+  version: 1.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
   license:
-    name: Apache 2.0
-    url: https://www.apache.org/licenses/LICENSE-2.0
+    name: Business Source License 1.1
+    url: https://github.com/getaxonflow/axonflow/blob/main/LICENSE
 
 servers:
   - url: https://orchestrator.getaxonflow.com
@@ -49,7 +49,10 @@ tags:
   - name: Multi-Agent Planning
     description: LLM-powered task decomposition and execution
   - name: Agents
-    description: Agent configuration management (MAP 0.8)
+    description: |
+      Agent configuration management (MAP 0.8). **Enterprise only** — the
+      `/api/v1/agents` route family is registered only in Enterprise builds
+      with a database connection; Community returns 404.
   - name: LLM Providers
     description: LLM provider management
   - name: Dynamic Policies
@@ -84,6 +87,16 @@ tags:
       EU AI Act compliance endpoints for technical documentation export,
       conformity assessments (Article 43), and accuracy/bias tracking (Article 15).
       Enterprise feature for EU regulatory compliance.
+  - name: OJK Compliance
+    description: |
+      OJK AI Governance + UU PDP compliance for Indonesian financial services.
+      Audit export, retention/readiness checks, UU PDP Art. 46 breach-notification
+      lifecycle, and a compliance dashboard. **Enterprise** feature.
+  - name: Decisions & Overrides
+    description: |
+      Decision explainability (ADR-043) and session-scoped policy overrides
+      (ADR-044). List recent governance decisions, explain a specific decision,
+      and create/list/revoke time-boxed policy overrides.
   - name: Metrics
     description: Performance monitoring
   - name: Decision & Execution Replay
@@ -137,7 +150,7 @@ paths:
               example:
                 status: healthy
                 service: axonflow-orchestrator
-                version: "1.0.0"
+                version: "9.8.0"
                 timestamp: "2025-01-15T10:30:00Z"
                 components:
                   policy_engine: true
@@ -450,6 +463,131 @@ paths:
                 error: "Authentication required: requests must be routed through AxonFlow Agent"
         '503':
           description: Planning engine unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/plan/execute:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Execute a stored plan
+      description: |
+        Executes a plan previously generated and stored via `POST /api/v1/plan`.
+        The plan to execute is identified by `context.plan_id` in the request body.
+        The execution mode is taken from the **stored plan** (not this request):
+        `auto`, `parallel`, `sequential`, `balanced`, or the Enterprise-only
+        HITL modes `confirm` / `step`.
+
+        **Requires authentication**: requests must be routed through the AxonFlow
+        Agent (`user.id` must be set). The `X-Tenant-ID` / `X-Org-ID` headers set
+        by the Agent auth chain override any identity fields in the body.
+
+        A plan can be executed once: re-executing returns 409, a cancelled plan
+        returns 409, and an expired plan returns 410.
+      operationId: executeStoredPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanRequest'
+            example:
+              query: "Find flights from NYC to LAX next week"
+              domain: "travel"
+              user:
+                id: 123
+                email: "traveler@company.com"
+                role: "employee"
+                permissions: ["query", "mcp_query"]
+                tenant_id: "tenant-abc"
+              context:
+                plan_id: "plan_1705312200_abc123"
+      responses:
+        '200':
+          description: |
+            Plan executed successfully. Body is a PlanResponse for normal
+            execution. HITL `confirm`/`step` dispatch returns an inline object
+            (`plan_id`, `workflow_id`, `status`, `current_step`, `total_steps`,
+            `step_name`, `approval_info`) instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+        '202':
+          description: Execution paused awaiting HITL approval
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan_id:
+                    type: string
+                  execution_id:
+                    type: string
+                  status:
+                    type: string
+                    example: "paused"
+                  paused_at_step:
+                    type: string
+                  paused_reason:
+                    type: string
+                  approval_id:
+                    type: string
+        '400':
+          description: Invalid request body or missing context.plan_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not routed through AxonFlow Agent (user.id missing)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Policy blocked execution, or HITL confirm/step mode requested in Community edition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+        '404':
+          description: Plan not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Plan already executed or cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: Plan expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Concurrent plan-execution limit reached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: "CONCURRENT_EXECUTION_LIMIT"
+                      message:
+                        type: string
+        '503':
+          description: Workflow engine or plan storage unavailable
           content:
             application/json:
               schema:
@@ -894,14 +1032,15 @@ paths:
     get:
       tags:
         - Agents
-      summary: List all agents
+      summary: List all agents (Enterprise)
       description: |
         Returns a paginated list of all agents from the registry.
         In hybrid mode, includes both file-based and database-backed agents.
         Database agents take priority over file agents with the same name.
 
-        **Community:** Returns agents loaded from YAML files.
-        **Enterprise:** Returns agents from both files and database.
+        **Enterprise only.** The entire `/api/v1/agents` route family is
+        registered only in Enterprise builds with a database connection;
+        Community deployments return 404 for every `/api/v1/agents` path.
       operationId: listAgents
       parameters:
         - name: page
@@ -1011,10 +1150,12 @@ paths:
     get:
       tags:
         - Agents
-      summary: Get agent by ID
+      summary: Get agent by ID (Enterprise)
       description: |
         Returns detailed information about a specific agent.
         The ID format is `domain/name` (e.g., `travel/flight-booking`).
+
+        **Enterprise only** - the `/api/v1/agents` family is not registered in Community.
       operationId: getAgent
       parameters:
         - name: id
@@ -1109,37 +1250,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /api/v1/agents/domain/{domain}:
-    get:
-      tags:
-        - Agents
-      summary: List agents by domain
-      description: Returns all agents for a specific domain (e.g., travel, healthcare)
-      operationId: listAgentsByDomain
-      parameters:
-        - name: domain
-          in: path
-          required: true
-          description: Domain name
-          schema:
-            type: string
-          example: "travel"
-      responses:
-        '200':
-          description: List of agents in domain
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentListResponse'
+  # NOTE: GET /api/v1/agents/domain/{domain} was removed from this spec (#2884).
+  # The Enterprise agent CRUD handler exposes no such subroute; use
+  # GET /api/v1/agents?domain={domain} instead.
 
   /api/v1/agents/validate:
     post:
       tags:
         - Agents
-      summary: Validate agent configuration
+      summary: Validate agent configuration (Enterprise)
       description: |
         Validates an agent configuration without creating it.
         Useful for dry-run validation before deployment.
+
+        **Enterprise only** - the `/api/v1/agents` family is not registered in Community.
 
         Checks:
         - Required fields present
@@ -1788,23 +1912,6 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/v1/llm-providers/health:
-    get:
-      tags:
-        - LLM Providers
-      summary: Get all providers health
-      description: Check health status of all configured LLM providers
-      operationId: getAllLLMProvidersHealth
-      responses:
-        '200':
-          description: All providers health status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LLMProviderHealthAllResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
   /api/v1/llm-providers/routing:
     get:
       tags:
@@ -2367,8 +2474,15 @@ paths:
       tags:
         - Audit
       summary: Search audit logs
-      description: Search audit logs by various criteria
+      description: |
+        Search audit logs by various criteria. The tenant scope is always forced
+        from the `X-Tenant-ID` header (the body cannot override it); requests
+        without the header are rejected with 401. `user_email` and `client_id`
+        are case-insensitive partial (ILIKE substring) matches. The search
+        start time is clamped to the tenant's tier-based retention window.
       operationId: searchAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
       requestBody:
         required: true
         content:
@@ -2380,17 +2494,50 @@ paths:
               client_id: "analytics-app"
               start_time: "2025-01-01T00:00:00Z"
               end_time: "2025-01-15T23:59:59Z"
-              request_type: "llm_chat"
+              action: "blocked"
+              session_id: "sess-4f6a2c"
               limit: 100
       responses:
         '200':
-          description: Audit search results
+          description: |
+            Audit search results. `total` is the true pre-LIMIT match count
+            for the filters, so callers can paginate with `limit`/`offset`.
+            `entries` is always a JSON array (`[]` when empty, never `null`).
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AuditLogEntry'
+                $ref: '#/components/schemas/AuditSearchResponse'
+              example:
+                entries:
+                  - id: "a1b2c3d4"
+                    request_id: "req_9f8e7d"
+                    timestamp: "2025-01-14T10:30:00Z"
+                    user_email: "analyst@company.com"
+                    tenant_id: "tenant-abc"
+                    request_type: "llm_chat"
+                    policy_decision: "blocked"
+                    session_id: "sess-4f6a2c"
+                total: 235
+                limit: 100
+                offset: 0
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header (tenant scoping required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Audit search failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/audit/summary:
     post:
@@ -2408,13 +2555,8 @@ paths:
           required: true
           description: |
             Tenant identifier for scoping results. Required to prevent cross-tenant
-            data aggregation. Falls back to X-Org-ID if X-Tenant-ID is not provided.
-          schema:
-            type: string
-          example: "travel-us"
-        - name: X-Org-ID
-          in: header
-          description: Organization identifier (fallback when X-Tenant-ID is absent)
+            data aggregation. There is no fallback header: the X-Org-ID fallback was
+            removed in v6.2.0, and a request without X-Tenant-ID is rejected with 400.
           schema:
             type: string
           example: "travel-us"
@@ -2495,7 +2637,13 @@ paths:
                     block_count: 3
                 compliance_score: 98.5
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            Invalid request (bad/missing RFC3339 timestamps, end_time not after
+            start_time, range over 1 year) or missing X-Tenant-ID header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
 
@@ -2504,16 +2652,41 @@ paths:
       tags:
         - Audit
       summary: Get tenant audit logs
-      description: Get recent audit logs for a specific tenant
+      description: |
+        Get recent audit logs for a specific tenant. The URL tenant must match
+        the session tenant carried in the `X-Tenant-ID` header: a missing header
+        is rejected with 401 (fail-closed), and a mismatch with 403. Results are
+        clamped to the tenant's tier-based retention window.
       operationId: getTenantAuditLogs
       parameters:
         - name: tenant_id
           in: path
           required: true
-          description: Tenant identifier
+          description: Tenant identifier (must equal the X-Tenant-ID header value)
           schema:
             type: string
           example: "tenant-abc"
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of rows to return (1-1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+        - name: page_size
+          in: query
+          required: false
+          description: |
+            Deprecated alias for `limit` (1-1000); ignored when `limit` is
+            supplied. Kept for backward compatibility.
+          deprecated: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
       responses:
         '200':
           description: Tenant audit logs
@@ -2525,6 +2698,18 @@ paths:
                   $ref: '#/components/schemas/AuditLogEntry'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: URL tenant does not match the session tenant (tenant scope mismatch)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/audit/tool-call:
     post:
@@ -2543,6 +2728,18 @@ paths:
           in: header
           required: true
           description: Tenant identifier (must match the client ID from Basic auth credentials)
+          schema:
+            type: string
+        - name: X-Axonflow-Proxy-Auth
+          in: header
+          required: true
+          description: |
+            Internal-service HMAC token proving the request was routed through the
+            AxonFlow Agent gateway (derived from `AXONFLOW_INTERNAL_SERVICE_SECRET`).
+            Enforced **fail-closed in every non-Community deployment**: a missing or
+            invalid token — or an unconfigured secret — is rejected with 403, in
+            addition to the Basic auth requirement below. Community deployments
+            without the secret configured skip this check.
           schema:
             type: string
         - name: Idempotency-Key
@@ -2603,6 +2800,779 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Client ID does not match tenant scope, or request not routed through Agent gateway
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/audit/export:
+    post:
+      tags:
+        - Audit
+      summary: Export audit logs (CSV or JSON)
+      description: |
+        Exports audit logs as a downloadable file. Filters mirror
+        `/api/v1/audit/search` (same ILIKE user/client matching, canonical
+        action expansion, JSONB policy filters and date range), so an export
+        always reconciles with the on-screen search for the same filters.
+        Tenant scope is forced from the `X-Tenant-ID` header.
+
+        The export is capped at **50,000 rows**; when the cap is hit the
+        response carries the `X-Audit-Export-Truncated: true` and
+        `X-Audit-Export-Row-Cap` headers so callers can warn that the file is
+        partial. Free-text CSV cells are formula-escaped (leading `=`, `+`,
+        `-`, `@`, tab or CR is prefixed with `'`) to neutralize spreadsheet
+        formula injection.
+      operationId: exportAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: format
+          in: query
+          required: false
+          description: Export format. Defaults to `json`.
+          schema:
+            type: string
+            enum: [csv, json]
+            default: json
+      requestBody:
+        required: false
+        description: |
+          Optional filters. An empty body exports the whole tenant window
+          (within the tier retention floor). A present-but-malformed body is a
+          400.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_email:
+                  type: string
+                  description: Case-insensitive partial (ILIKE substring) match
+                client_id:
+                  type: string
+                  description: Case-insensitive partial (ILIKE substring) match
+                action:
+                  type: string
+                  description: |
+                    Canonical verdict filter (allowed, blocked, redacted,
+                    needs_approval, error); expanded to all historical DB
+                    spellings of that verdict.
+                session_id:
+                  type: string
+                  description: Exact match on the first-class session_id column
+                decision_id:
+                  type: string
+                  description: Matches policy_details->>'decision_id'
+                policy_name:
+                  type: string
+                  description: Same three-shape policy_details match as /api/v1/audit/search
+                override_id:
+                  type: string
+                  description: Matches policy_details->>'override_id'
+                start_time:
+                  type: string
+                  format: date-time
+                end_time:
+                  type: string
+                  format: date-time
+            example:
+              action: "blocked"
+              start_time: "2026-06-01T00:00:00Z"
+              end_time: "2026-06-30T23:59:59Z"
+      responses:
+        '200':
+          description: |
+            Export file (Content-Disposition attachment). CSV columns, in
+            order: id, timestamp, user_email, tenant_id, org_id,
+            policy_decision, request_type, query, response_sample, provider,
+            model, response_time_ms, correlation_id, session_id.
+          headers:
+            X-Audit-Export-Truncated:
+              description: Present (value `true`) when the 50,000-row cap was hit
+              schema:
+                type: string
+            X-Audit-Export-Row-Cap:
+              description: The row cap in effect (50000). Present only when the cap was hit, alongside X-Audit-Export-Truncated
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLogEntry'
+                  count:
+                    type: integer
+                    description: Number of entries in this export
+                  truncated:
+                    type: boolean
+                    description: True when the row cap was hit
+                  row_cap:
+                    type: integer
+                    example: 50000
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: Invalid format value or malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header (tenant scoping required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Audit export failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Audit subsystem unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/audit/report:
+    post:
+      tags:
+        - Audit
+      summary: Per-action audit report
+      description: |
+        Aggregates audit logs for a window into per-action counts, average
+        latency, and top policies, tenant-scoped and optionally filtered by
+        user and a single canonical action. Counts reconcile with
+        `/api/v1/audit/search` for the same filters.
+      operationId: getAuditActionReport
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - start_time
+                - end_time
+              properties:
+                start_time:
+                  type: string
+                  format: date-time
+                  description: Window start (RFC3339)
+                end_time:
+                  type: string
+                  format: date-time
+                  description: Window end (RFC3339, must be after start_time; range at most 1 year)
+                user_email:
+                  type: string
+                  description: Optional case-insensitive partial match
+                action:
+                  type: string
+                  description: Optional single canonical action filter
+            example:
+              start_time: "2026-06-01T00:00:00Z"
+              end_time: "2026-06-30T23:59:59Z"
+      responses:
+        '200':
+          description: Per-action report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditActionReport'
+              example:
+                tenant_id: "tenant-abc"
+                start_time: "2026-06-01T00:00:00Z"
+                end_time: "2026-06-30T23:59:59Z"
+                total: 1523
+                by_action:
+                  allowed: 1400
+                  blocked: 100
+                  redacted: 20
+                  needs_approval: 3
+                  error: 0
+                avg_latency_ms: 245.7
+                top_policies:
+                  - policy_name: "pii-detection"
+                    trigger_count: 88
+                    block_count: 35
+        '400':
+          description: |
+            Invalid body, non-RFC3339 timestamps, end_time not after
+            start_time, or range over 1 year
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header (tenant scoping required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Audit report failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Audit subsystem unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/audit/session-summary:
+    get:
+      tags:
+        - Audit
+      summary: Session-level usage summary (Enterprise)
+      description: |
+        **Enterprise** — session-level usage reporting (#2759). The Community
+        build mounts the same route but returns **501 Not Implemented**.
+
+        Buckets audit logs into per-session aggregates for the date window:
+        a bucket is **per-session** when `session_id` is present on its rows,
+        otherwise rows without a session id fall back to a **per-user-day**
+        bucket (the `day` field is set instead of `session_id`). Buckets are
+        capped at `bucket_limit` (most-recent activity first); `truncated` is
+        true when the window held more buckets than the cap — narrow the
+        window or raise `limit`. Drill into a bucket's raw events via
+        `POST /api/v1/audit/search` with its `session_id` (#2857).
+
+        The window start is clamped to the tenant's tier retention floor,
+        like `/api/v1/audit/search` and `/api/v1/audit/export`.
+      operationId: getAuditSessionSummary
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: start_date
+          in: query
+          required: true
+          description: Window start, calendar day (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+          example: "2026-07-01"
+        - name: end_date
+          in: query
+          required: true
+          description: Window end, calendar day (YYYY-MM-DD), inclusive
+          schema:
+            type: string
+            format: date
+          example: "2026-07-07"
+        - name: user_email
+          in: query
+          required: false
+          description: Case-insensitive partial (ILIKE substring) filter
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Caps the number of returned buckets. Default 200. Values above the
+            server max (1000) are clamped; the effective bound is echoed back
+            as `bucket_limit`. A non-positive or non-integer value is a 400.
+          schema:
+            type: integer
+            minimum: 1
+            default: 200
+      responses:
+        '200':
+          description: Session summary buckets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummaryResponse'
+        '400':
+          description: |
+            Missing/invalid start_date or end_date, end_date before
+            start_date, range over 1 year, or invalid limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header (tenant scoping required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Session summary query failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Community edition — session summary reporting is an Enterprise feature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Audit subsystem unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/audit/{id}:
+    get:
+      tags:
+        - Audit
+      summary: Get a single audit entry by ID
+      description: |
+        Returns the full audit entry for the given id, tenant-scoped by the
+        `X-Tenant-ID` header. A record that exists but belongs to another
+        tenant returns 404 (not 403), so the endpoint cannot be used as a
+        cross-tenant existence oracle. Literal `/api/v1/audit/*` routes
+        (search, export, report, session-summary, tenant, tool-call) are
+        matched before this parameterized path.
+      operationId: getAuditLogById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Audit entry id
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+      responses:
+        '200':
+          description: Full audit entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogEntry'
+        '400':
+          description: Missing audit id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header (tenant scoping required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Audit record not found (or belongs to another tenant)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Audit detail lookup failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Audit subsystem unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # =============================================================================
+  # Policy Overrides (ADR-044) & Decision Explainability (ADR-043)
+  # =============================================================================
+
+  /api/v1/overrides:
+    post:
+      tags:
+        - Decisions & Overrides
+      summary: Create a session-scoped policy override
+      description: |
+        Creates a time-boxed override for a static or dynamic policy
+        (ADR-044). A justification (`override_reason`, max 500 chars) is
+        mandatory. TTL is clamped server-side: default 3600s when omitted,
+        minimum 60s, hard cap 86400s (24h) — the response reports the
+        requested value and the clamp reason when clamping occurred.
+
+        Critical-risk policies and policies with `allow_override=false`
+        cannot be overridden (403).
+      operationId: createPolicyOverride
+      parameters:
+        - name: X-User-Email
+          in: header
+          required: true
+          description: Authenticated user identity (falls back to X-User-ID); missing identity is a 401
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - $ref: '#/components/parameters/OrgIDHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOverrideRequest'
+            example:
+              policy_id: "pii-us-ssn-redact"
+              policy_type: "static"
+              tool_signature: "mcp:github/create_issue"
+              override_reason: "Approved incident-response exception INC-4432"
+              ttl_seconds: 1800
+      responses:
+        '201':
+          description: Override created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOverrideResponse'
+        '400':
+          description: |
+            Invalid body; missing/invalid policy_id, policy_type (must be
+            `static` or `dynamic`) or override_reason; or missing X-Tenant-ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing user identity (X-User-Email / X-User-ID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Policy is critical-risk or has allow_override=false
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags:
+        - Decisions & Overrides
+      summary: List policy overrides
+      description: |
+        Lists the tenant's policy overrides, newest first, capped at 100
+        rows. Revoked overrides are excluded unless `include_revoked=true`.
+      operationId: listPolicyOverrides
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: policy_id
+          in: query
+          required: false
+          description: Filter by policy UUID or slug/name
+          schema:
+            type: string
+        - name: include_revoked
+          in: query
+          required: false
+          description: Include revoked overrides (only the literal `true` enables it)
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Override list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overrides:
+                    type: array
+                    description: Always a JSON array (`[]` when empty)
+                    items:
+                      $ref: '#/components/schemas/OverrideSummary'
+                  count:
+                    type: integer
+        '400':
+          description: Missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/overrides/{id}:
+    get:
+      tags:
+        - Decisions & Overrides
+      summary: Get a policy override
+      description: |
+        Returns one override by id, tenant-scoped. Another tenant's override
+        returns 404.
+      operationId: getPolicyOverride
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Override id
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+      responses:
+        '200':
+          description: Override detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverrideDetail'
+        '400':
+          description: Missing override id or missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Override not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Decisions & Overrides
+      summary: Revoke a policy override
+      description: |
+        Revokes an active override (tenant-scoped). An already-revoked or
+        cross-tenant override returns 404.
+      operationId: revokePolicyOverride
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Override id
+          schema:
+            type: string
+        - name: X-User-Email
+          in: header
+          required: true
+          description: Authenticated user identity (falls back to X-User-ID); missing identity is a 401
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - $ref: '#/components/parameters/OrgIDHeader'
+      responses:
+        '200':
+          description: Override revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  revoked_at:
+                    type: string
+                    format: date-time
+        '400':
+          description: Missing override id or missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing user identity (X-User-Email / X-User-ID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Override not found or already revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/decisions:
+    get:
+      tags:
+        - Decisions & Overrides
+      summary: List recent governance decisions
+      description: |
+        Lists recent decisions for the tenant, newest first. The lookback
+        window and maximum page size are **tier-gated**: Community/Free sees
+        the last 5 decisions in 24h; Evaluation 100 decisions in 14 days;
+        Enterprise up to 1000 with an unbounded window. Requesting a `limit`
+        above the tier cap returns **429** with the upgrade envelope
+        (`error`, `limit_type: decision_list_size`, `tier`, `limit`,
+        `remaining`, `upgrade{tier, wording, compare_url, buy_url}`) plus the
+        `X-Axonflow-Tier-Limit` and `X-Axonflow-Upgrade-URL` headers. A
+        `since` earlier than the tier window is silently clamped to the
+        window.
+      operationId: listDecisions
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: limit
+          in: query
+          required: false
+          description: Page size (positive integer). Defaults to the tier maximum.
+          schema:
+            type: integer
+            minimum: 1
+        - name: since
+          in: query
+          required: false
+          description: RFC3339 lower bound; defaults to (and is clamped to) the tier lookback window
+          schema:
+            type: string
+            format: date-time
+        - name: decision
+          in: query
+          required: false
+          description: Canonical verdict filter
+          schema:
+            type: string
+            enum: [allowed, blocked, redacted, needs_approval, error]
+        - name: policy_id
+          in: query
+          required: false
+          description: Filter to decisions where this policy fired
+          schema:
+            type: string
+        - name: tool_signature
+          in: query
+          required: false
+          description: Filter by tool signature
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Decision list (`decisions` is `[]` when empty, never `null`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionListResponse'
+        '400':
+          description: Invalid limit, since (must be RFC3339), or decision value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Requested limit exceeds the tier page cap
+          headers:
+            X-Axonflow-Tier-Limit:
+              schema:
+                type: string
+                example: "decision_list_size"
+            X-Axonflow-Upgrade-URL:
+              schema:
+                type: string
+                example: "https://getaxonflow.com/pricing/"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionListLimitEnvelope'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/decisions/{id}/explain:
+    get:
+      tags:
+        - Decisions & Overrides
+      summary: Explain a governance decision
+      description: |
+        Returns the explanation for a decision id (ADR-043): matched
+        policies, verdict and reason, risk level, override availability (and
+        any existing override id), the caller's 24h hit count for the first
+        matched policy, and policy version drift (version at decision time vs
+        latest). Tenant-scoped via `X-Tenant-ID`; a decision belonging to
+        another tenant returns 404 (not 403) so the endpoint is not an
+        existence oracle.
+      operationId: explainDecision
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Decision id
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: X-User-Email
+          in: header
+          required: false
+          description: Caller identity used for the per-user historical hit count (falls back to X-User-ID)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Decision explanation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionExplanation'
+        '400':
+          description: Missing decision id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized to explain this decision (defensive tenant mismatch)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Decision not found or past retention window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error
           content:
             application/json:
               schema:
@@ -2834,6 +3804,549 @@ paths:
                     details: "Consider enabling for full audit trail"
                 recommendations:
                   - "Enable decision chain tracing to maintain full audit trail of AI decisions"
+
+  # =============================================================================
+  # OJK Compliance APIs (Enterprise)
+  # Indonesian Financial Services - OJK AI Governance & UU PDP
+  # =============================================================================
+  # All OJK endpoints scope the tenant from the X-Tenant-ID header (falling
+  # back to X-Org-ID); a request with neither header returns 400 with code
+  # `missing_tenant`. Errors use the {code, message, details?} envelope.
+
+  /api/v1/ojk/audit/export:
+    post:
+      tags:
+        - OJK Compliance
+      summary: Export OJK audit data
+      description: |
+        Export audit data for OJK/BI regulatory submission. Supports:
+        - Compliance frameworks: `OJK_AI_GOVERNANCE`, `UU_PDP`, `BI_PJP`,
+          `OJK_BI_COMBINED` (default)
+        - Data types: policy_violations, llm_calls, decision_chain,
+          cross_border_transfers, breach_notifications, all (default).
+          `hitl_oversight` and `pii_redactions` are accepted by request
+          validation but are **not implemented** by the export service —
+          requesting them (or expecting them under `all`) yields no rows
+          and no error (no `queryHITLRecords`/`queryPIIRedactions` exists
+          in `ojk_audit_export_service.go`).
+        - Formats: json (default), csv, xml
+
+        The date range may span at most 5 years, matching the OJK 5-year
+        (1825-day) retention requirement. The export runs synchronously and
+        returns `status: completed` with the data inline.
+
+        **Enterprise Feature**: Available only for Indonesian financial
+        services deployments.
+      operationId: exportOJKAuditData
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OJKAuditExportRequest'
+            example:
+              start_date: "2025-01-01"
+              end_date: "2025-12-31"
+              format: json
+              framework: OJK_BI_COMBINED
+              data_types:
+                - policy_violations
+                - llm_calls
+                - cross_border_transfers
+      responses:
+        '200':
+          description: Export completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAuditExportResponse'
+              example:
+                export_id: "3f6d2f4e-8f2a-4a1b-9a51-1de1c1b2c3d4"
+                status: "completed"
+                framework: "OJK_BI_COMBINED"
+                format: "json"
+                summary:
+                  total_records: 15420
+                  records_by_type:
+                    policy_violations: 142
+                    llm_calls: 15278
+                  date_range:
+                    start: "2025-01-01T00:00:00Z"
+                    end: "2025-12-31T00:00:00Z"
+                  compliance_score: 92.5
+                created_at: "2026-07-10T09:00:00Z"
+                metadata:
+                  export_version: "1.0.0"
+                  generated_by: "axonflow-ojk-module"
+                  tenant_id: "bank-indonesia-corp"
+        '400':
+          description: |
+            Missing tenant headers (code `missing_tenant`), malformed body
+            (`invalid_request`), or validation failure (`validation_error`:
+            missing/invalid YYYY-MM-DD dates, end before start, range over
+            5 years, unsupported format or framework)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Export failed (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/audit/export/{id}:
+    get:
+      tags:
+        - OJK Compliance
+      summary: Get OJK export status
+      description: |
+        Get the status of an OJK audit export by id.
+
+        **Enterprise Feature**.
+      operationId: getOJKExportStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Export ID from the export request
+          schema:
+            type: string
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            Export status. ⚠️ Current implementation is a **synchronous-echo
+            stub**: `GetExportStatus` performs no lookup and returns
+            `status: completed` for ANY id (with an empty `format` and a
+            fresh `created_at`) — it cannot distinguish a real export from a
+            fabricated id (`ojk_audit_export_service.go` GetExportStatus).
+            Exports run synchronously, so callers get the data inline from
+            the POST and normally never need this endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAuditExportResponse'
+        '400':
+          description: Missing tenant headers (`missing_tenant`) or missing export id (`missing_export_id`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '404':
+          description: |
+            Nominally "export not found" (code `not_found`) — in the current
+            stub this only fires on an internal error (e.g. database handle
+            unavailable), never for an unknown id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/audit/retention:
+    get:
+      tags:
+        - OJK Compliance
+      summary: Get OJK retention status
+      description: |
+        Reports 5-year (1825-day) retention compliance for OJK audit data.
+        `compliance_status` is `non_compliant` when the configured retention
+        is below the 1825-day minimum.
+
+        **Enterprise Feature**.
+      operationId: getOJKRetentionStatus
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+        - name: data_types
+          in: query
+          required: false
+          description: |
+            Comma-separated list of data types to report on. ⚠️ Parsed but
+            **ignored** by the current implementation — `GetRetentionStatus`
+            never reads it and always returns an empty `data_types` array
+            (`ojk_audit_export_service.go`).
+          schema:
+            type: string
+          example: "policy_violations,llm_calls"
+      responses:
+        '200':
+          description: Retention status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKRetentionStatusResponse'
+        '400':
+          description: Missing tenant headers (code `missing_tenant`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Failed to get retention status (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/audit/readiness:
+    get:
+      tags:
+        - OJK Compliance
+      summary: Check OJK compliance readiness
+      description: |
+        Validates readiness for an OJK regulatory audit across five checks:
+        Data Retention, PII Detection, Human Oversight, Audit Logging, and
+        Breach Notification. Returns a 0-100 score; `ready` is true at 80+.
+
+        **Enterprise Feature**.
+      operationId: getOJKComplianceReadiness
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compliance readiness assessment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKComplianceReadinessResponse'
+              example:
+                ready: true
+                score: 100
+                framework: "OJK_BI_COMBINED"
+                checks:
+                  - name: "Data Retention"
+                    description: "5-year (1825-day) retention configured"
+                    status: "pass"
+                  - name: "PII Detection"
+                    description: "Indonesian PII patterns active"
+                    status: "pass"
+        '400':
+          description: Missing tenant headers (code `missing_tenant`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Failed to validate readiness (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/breach/notify:
+    post:
+      tags:
+        - OJK Compliance
+      summary: Submit a UU PDP breach notification
+      description: |
+        Submits a personal-data breach notification per UU PDP Art. 46. The
+        server assigns the id, sets `notification_deadline` to
+        `discovery_time + 72h`, defaults `notified_authority` to `MOCDA`, and
+        stamps `submitted_at`. The returned `status` is normally `submitted`,
+        or `overdue` when the 72-hour deadline had already lapsed at
+        submission.
+
+        **Enterprise Feature**.
+      operationId: notifyOJKBreach
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OJKBreachNotification'
+            example:
+              incident_timestamp: "2026-07-08T14:00:00Z"
+              discovery_time: "2026-07-09T09:00:00Z"
+              data_subjects_affected: 1200
+              data_types_involved: ["nik", "phone_number"]
+              description: "Misconfigured export bucket exposed customer records"
+              remediation_steps:
+                - "Bucket policy corrected"
+                - "Access keys rotated"
+      responses:
+        '201':
+          description: Breach notification recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKBreachNotification'
+        '400':
+          description: |
+            Missing tenant headers (`missing_tenant`), malformed body
+            (`invalid_request`), or validation failure (`validation_error`:
+            incident_timestamp/discovery_time required, positive
+            data_subjects_affected, data_types_involved / description /
+            remediation_steps required per UU PDP Art. 46)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Failed to submit breach notification (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/breach/acknowledge:
+    post:
+      tags:
+        - OJK Compliance
+      summary: Acknowledge a breach notification
+      description: |
+        Marks a submitted breach notification as acknowledged by the
+        authority. Only the `submitted -> acknowledged` transition is valid;
+        acknowledging a draft/overdue/failed/already-acknowledged record
+        returns 409.
+
+        **Enterprise Feature**.
+      operationId: acknowledgeOJKBreach
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+              properties:
+                id:
+                  type: string
+                  description: Breach notification id
+      responses:
+        '200':
+          description: Breach notification acknowledged (returns the updated record)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKBreachNotification'
+        '400':
+          description: Missing tenant headers, malformed body, or missing id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '404':
+          description: Breach notification not found (code `not_found`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '409':
+          description: Breach cannot be acknowledged from its current status (code `invalid_transition`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Failed to acknowledge breach notification (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/breach/evaluate-deadlines:
+    post:
+      tags:
+        - OJK Compliance
+      summary: Sweep lapsed breach-notification deadlines
+      description: |
+        Flips draft (unsubmitted) breach notifications whose 72-hour UU PDP
+        notification deadline has lapsed to `overdue`. Intended to be called
+        periodically (deadline sweep).
+
+        **Enterprise Feature**.
+      operationId: evaluateOJKBreachDeadlines
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sweep result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  flipped_overdue:
+                    type: integer
+                    description: Number of notifications flipped to overdue
+              example:
+                flipped_overdue: 2
+        '400':
+          description: Missing tenant headers (code `missing_tenant`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Failed to evaluate breach deadlines (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+
+  /api/v1/ojk/dashboard:
+    get:
+      tags:
+        - OJK Compliance
+      summary: Get OJK compliance dashboard
+      description: |
+        Returns the OJK/UU PDP compliance dashboard: compliance score,
+        retention status, breach-notification counts (total and overdue),
+        active policies, and recent violations.
+
+        **Enterprise Feature**.
+      operationId: getOJKDashboard
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Tenant identifier. The OJK module falls back to X-Org-ID when
+            absent; a request carrying neither header is rejected with 400
+            (code `missing_tenant`).
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: Fallback tenant identifier when X-Tenant-ID is absent
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OJK compliance dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKDashboardResponse'
+              example:
+                framework: "OJK_BI_COMBINED"
+                compliance_score: 100
+                total_audit_records: 0
+                active_policies: 8
+                recent_violations: 0
+                retention_status: "compliant"
+                breach_notifications: 3
+                overdue_breach_notifications: 0
+                last_updated: "2026-07-10T09:00:00Z"
+        '400':
+          description: Missing tenant headers (code `missing_tenant`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
+        '500':
+          description: Failed to get dashboard (code `internal_error`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OJKAPIError'
 
   # ============================================================================
   # EU AI Act Compliance Endpoints
@@ -3830,6 +5343,61 @@ paths:
           description: Workflow completed
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/fail:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Mark workflow as failed
+      description: |
+        Marks the workflow as failed with an optional reason (defaults to
+        `Failed` when the body is empty or omitted). Tenant/org scoping comes
+        from the `X-Tenant-ID` / `X-Org-ID` headers. Failing a workflow that
+        is already in a terminal state returns 409.
+      operationId: failControlPlaneWorkflow
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for the failure (defaults to "Failed")
+            example:
+              reason: "Downstream connector unrecoverable"
+      responses:
+        '200':
+          description: Workflow marked as failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_id:
+                    type: string
+                  status:
+                    type: string
+                    example: "failed"
+                  message:
+                    type: string
+                    example: "Workflow marked as failed"
+                  reason:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Workflow is already in a terminal state (code WORKFLOW_TERMINAL)
 
   /api/v1/workflows/{workflow_id}/abort:
     post:
@@ -5139,7 +6707,8 @@ paths:
         Create a new budget with spending limits. Budgets can be scoped to
         organization, team, agent, workflow, or user level.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: createBudget
       parameters:
         - name: X-Org-ID
@@ -5184,7 +6753,8 @@ paths:
       description: |
         List all budgets for the organization.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: listBudgets
       parameters:
         - name: X-Org-ID
@@ -5227,7 +6797,8 @@ paths:
       description: |
         Get a specific budget by ID.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: getBudget
       parameters:
         - name: id
@@ -5252,7 +6823,8 @@ paths:
       description: |
         Update an existing budget configuration.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: updateBudget
       parameters:
         - name: id
@@ -5285,7 +6857,8 @@ paths:
       description: |
         Delete a budget by ID.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: deleteBudget
       parameters:
         - name: id
@@ -5309,7 +6882,8 @@ paths:
         Get real-time status of a budget including current usage,
         remaining amount, and whether the budget is exceeded.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: getBudgetStatus
       parameters:
         - name: id
@@ -5350,7 +6924,8 @@ paths:
       description: |
         Get alerts triggered for a specific budget.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: getBudgetAlerts
       parameters:
         - name: id
@@ -5384,7 +6959,8 @@ paths:
         Check if a request should be allowed based on budget constraints.
         Returns whether the request is allowed and the applicable budget status.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: checkBudget
       requestBody:
         required: true
@@ -5466,7 +7042,8 @@ paths:
       description: |
         Get usage broken down by a specific dimension.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: getUsageBreakdown
       parameters:
         - name: X-Org-ID
@@ -5523,7 +7100,8 @@ paths:
       description: |
         List individual usage records with filtering.
 
-        Enterprise only. Returns 403 Forbidden in Community edition.
+        Enterprise only. These routes are not registered in Community
+        edition, which returns 404 Not Found.
       operationId: listUsageRecords
       parameters:
         - name: X-Org-ID
@@ -5660,7 +7238,7 @@ paths:
                 - "policy.violation"
                 - "workflow.completed"
                 - "budget.exceeded"
-              secret: "whsec_abc123secretkey"
+              secret: "whsec_example_placeholder"
               active: true
       responses:
         '201':
@@ -5679,7 +7257,7 @@ paths:
                 active: true
                 tenant_id: "tenant-1"
                 org_id: "org-1"
-                secret: "whsec_abc123secretkey"
+                secret: "whsec_example_placeholder"
                 created_at: "2026-01-17T10:00:00Z"
                 updated_at: "2026-01-17T10:00:00Z"
         '400':
@@ -5794,8 +7372,167 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   # ============================================================================
-  # Real-time Streaming (SSE)
+  # Unified Execution Tracking + Real-time Streaming (SSE)
   # ============================================================================
+
+  /api/v1/unified/executions:
+    get:
+      tags:
+        - Unified Executions
+      summary: List executions (MAP plans + WCP workflows)
+      description: |
+        Lists unified executions across both MAP plans and WCP workflows,
+        scoped to the tenant/org identified by the `X-Tenant-ID` and
+        `X-Org-ID` headers. The page size is capped by the license tier's
+        execution-history limit (at most 100 per page); out-of-range `limit`
+        or `offset` values are silently ignored and the defaults used.
+      operationId: listUnifiedExecutions
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization identifier for scoping results
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 20, max 100 or the tier history cap, whichever is lower)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          description: Number of records to skip
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: execution_type
+          in: query
+          required: false
+          description: Filter by execution type
+          schema:
+            type: string
+            enum: [map_plan, wcp_workflow]
+        - name: status
+          in: query
+          required: false
+          description: Filter by execution status
+          schema:
+            type: string
+            enum: [pending, running, completed, failed, cancelled, aborted, expired]
+      responses:
+        '200':
+          description: Execution list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedExecutionListResponse'
+        '500':
+          description: Failed to list executions
+
+  /api/v1/unified/executions/{id}:
+    get:
+      tags:
+        - Unified Executions
+      summary: Get unified execution status
+      description: |
+        Returns the unified status record for a MAP plan or WCP workflow
+        execution. The id is resolved across both subsystems (direct
+        execution id, `plan_...` plan ids, `wf_`/`wcp_` workflow ids).
+        Requires both `X-Tenant-ID` and `X-Org-ID`; a tenant/org mismatch
+        returns 404 (not 403) to avoid a cross-tenant existence oracle.
+      operationId: getUnifiedExecutionStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution id (or plan_/wf_/wcp_ prefixed subsystem id)
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization identifier for scoping results
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Unified execution status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedExecutionStatus'
+        '400':
+          description: Missing execution id
+        '401':
+          description: Missing tenant or org identity headers
+        '404':
+          description: Execution not found (or belongs to another tenant/org)
+        '500':
+          description: Failed to resolve execution
+
+  /api/v1/unified/executions/{id}/cancel:
+    post:
+      tags:
+        - Unified Executions
+      summary: Cancel a unified execution
+      description: |
+        Cancels a running MAP plan or WCP workflow through the unified API.
+        The cancellation propagates to the owning subsystem (plan cancel or
+        workflow abort). Cancelling an execution already in a terminal state
+        returns 409.
+      operationId: cancelUnifiedExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution id (or plan_/wf_/wcp_ prefixed subsystem id)
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization identifier for scoping results
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Cancellation reason (defaults to "cancelled via unified API")
+      responses:
+        '200':
+          description: |
+            Execution cancelled; returns the refreshed unified status record
+            (or a `{execution_id, status: "cancelled", message}` fallback if
+            the post-cancel re-read fails).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedExecutionStatus'
+        '400':
+          description: Missing execution id or unknown execution type
+        '401':
+          description: Missing tenant or org identity headers
+        '404':
+          description: Execution not found (or belongs to another tenant/org)
+        '409':
+          description: Execution is already in a terminal state
+        '500':
+          description: Cancellation failed
 
   /api/v1/unified/executions/{id}/stream:
     get:
@@ -5819,6 +7556,15 @@ paths:
           required: true
           schema:
             type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: |
+            Organization identifier. Like X-Tenant-ID, required by the
+            unified-execution tenant-ownership check; missing either header
+            is a 401.
+          schema:
+            type: string
       responses:
         '200':
           description: SSE stream of execution events
@@ -5830,109 +7576,13 @@ paths:
           description: Too many concurrent connections (Community edition limit)
 
   # ============================================================================
-  # Media Governance (Enterprise)
-  # ============================================================================
-
-  /api/v1/media/analyzers:
-    get:
-      summary: List registered media analyzers
-      description: Returns all registered media analyzers and their status. Enterprise only.
-      operationId: listMediaAnalyzers
-      tags:
-        - Media Governance
-      security:
-        - BearerAuth: []
-      responses:
-        '200':
-          description: List of analyzers
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  analyzers:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/MediaAnalyzerInfo'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-
-  /api/v1/media/analyzers/{name}/health:
-    get:
-      summary: Check analyzer health
-      description: Returns health status for a specific media analyzer. Enterprise only.
-      operationId: checkMediaAnalyzerHealth
-      tags:
-        - Media Governance
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: name
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Analyzer name
-      responses:
-        '200':
-          description: Analyzer health status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  name:
-                    type: string
-                  healthy:
-                    type: boolean
-                  message:
-                    type: string
-        '404':
-          description: Analyzer not found
-
-  /api/v1/media/analyze:
-    post:
-      summary: Standalone media analysis
-      description: |
-        Analyze media content without routing to an LLM provider.
-        Useful for pre-screening images before sending to LLM workflows.
-        Enterprise only.
-      operationId: analyzeMedia
-      tags:
-        - Media Governance
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - media
-              properties:
-                media:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/MediaContentRequest'
-                  maxItems: 10
-      responses:
-        '200':
-          description: Media analysis results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MediaAnalysisResponse'
-        '400':
-          description: Invalid media content
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ============================================================================
   # Media Governance Configuration
   # ============================================================================
+  # NOTE: The former /api/v1/media/analyzers, /api/v1/media/analyzers/{name}/health
+  # and POST /api/v1/media/analyze paths were removed from this spec — no such
+  # routes exist in the orchestrator. Media governance runs inline on the LLM
+  # request path (media content on /api/v1/process) and is configured via the
+  # /api/v1/media-governance/* endpoints below.
 
   /api/v1/media-governance/config:
     get:
@@ -6006,6 +7656,76 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/media-governance/audit/export:
+    get:
+      tags: [Media Governance]
+      summary: Export media governance audit trail (Enterprise)
+      description: |
+        Exports the media governance audit trail (image analyses, policy
+        actions, block decisions) for the tenant as JSON or CSV.
+
+        **Enterprise only** — non-paid tiers receive 403
+        (`ENTERPRISE_REQUIRED`). Tenant scope comes from the `X-Tenant-ID`
+        header. The export is capped at 10,000 rows, newest first.
+      operationId: exportMediaGovernanceAudit
+      parameters:
+        - $ref: '#/components/parameters/TenantIDHeader'
+        - name: from
+          in: query
+          required: false
+          description: Window start (RFC3339). Defaults to 7 days ago.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Window end (RFC3339). Defaults to now.
+          schema:
+            type: string
+            format: date-time
+        - name: format
+          in: query
+          required: false
+          description: Export format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        '200':
+          description: |
+            Audit export. CSV columns: request_id, tenant_id, timestamp,
+            media_type, blocked, policy_actions (JSON-encoded array).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MediaAuditRecord'
+                  tenant_id:
+                    type: string
+                  from:
+                    type: string
+                    format: date-time
+                  to:
+                    type: string
+                    format: date-time
+                  count:
+                    type: integer
+            text/csv:
+              schema:
+                type: string
+        '400':
+          description: Missing X-Tenant-ID (MISSING_TENANT_ID) or invalid from/to/format
+        '403':
+          description: Requires Enterprise license (ENTERPRISE_REQUIRED)
+        '500':
+          description: Query failure (QUERY_ERROR)
+
   # Evaluation Tier Features
 
   /api/v1/policies/simulate:
@@ -6018,7 +7738,7 @@ paths:
       operationId: simulatePolicies
       security:
         - BearerAuth: []
-        - BasicAuth: []
+        - basicAuth: []
       requestBody:
         required: true
         content:
@@ -6094,7 +7814,7 @@ paths:
       operationId: generateImpactReport
       security:
         - BearerAuth: []
-        - BasicAuth: []
+        - basicAuth: []
       requestBody:
         required: true
         content:
@@ -6179,7 +7899,7 @@ paths:
       operationId: detectPolicyConflicts
       security:
         - BearerAuth: []
-        - BasicAuth: []
+        - basicAuth: []
       requestBody:
         required: false
         content:
@@ -6256,7 +7976,7 @@ paths:
       operationId: exportEvidence
       security:
         - BearerAuth: []
-        - BasicAuth: []
+        - basicAuth: []
       requestBody:
         required: true
         content:
@@ -6344,7 +8064,7 @@ paths:
       operationId: getEvidenceSummary
       security:
         - BearerAuth: []
-        - BasicAuth: []
+        - basicAuth: []
       responses:
         '200':
           description: Evidence summary
@@ -6385,6 +8105,21 @@ components:
     # declaration mirrors the inline shape used in older endpoints (e.g.
     # the inline X-Org-ID at line ~2415) so behaviour is identical
     # whether a path uses the ref or repeats the definition inline.
+    TenantIDHeader:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      description: |
+        Tenant identifier scoping the request. The AxonFlow Agent gateway
+        sets this header after authentication; the orchestrator fails closed
+        when it is absent (401 on audit/decision endpoints, 400 on others —
+        see each operation). Clients cannot widen their scope through it:
+        handlers force the tenant filter from this header, never from the
+        request body.
+      schema:
+        type: string
+      example: "travel-us"
+
     OrgIDHeader:
       name: X-Org-ID
       in: header
@@ -6446,6 +8181,13 @@ components:
   schemas:
     HealthResponse:
       type: object
+      description: |
+        Besides the component booleans, the health body always carries the
+        platform capability list (`capabilities`), the per-language SDK
+        version pins (`sdk_compatibility`) and the per-plugin version pins
+        (`plugin_compatibility`). The pin maps are additionalProperties-style
+        maps keyed by SDK language / canonical plugin id; the exact key sets
+        evolve per release and are not enumerated here.
       properties:
         status:
           type: string
@@ -6454,8 +8196,10 @@ components:
           type: string
         version:
           type: string
-          description: Platform version from AXONFLOW_VERSION env var
-          example: "4.8.0"
+          description: |
+            Platform version, preferring the value baked into the binary at
+            build time and falling back to AXONFLOW_VERSION for dev builds
+          example: "9.8.0"
         timestamp:
           type: string
           format: date-time
@@ -6466,6 +8210,8 @@ components:
             $ref: '#/components/schemas/PlatformCapability'
         sdk_compatibility:
           $ref: '#/components/schemas/SDKCompatInfo'
+        plugin_compatibility:
+          $ref: '#/components/schemas/PluginCompatInfo'
         components:
           type: object
           properties:
@@ -6509,13 +8255,40 @@ components:
       type: object
       properties:
         min_sdk_version:
-          type: string
-          description: Minimum SDK version compatible with this platform
-          example: "3.0.0"
+          type: object
+          description: |
+            Minimum SDK version compatible with this platform, keyed by SDK
+            language (e.g. go, python, typescript, java, rust)
+          additionalProperties:
+            type: string
+          example:
+            python: "8.0.0"
         recommended_sdk_version:
-          type: string
-          description: Recommended SDK version for full feature coverage
-          example: "3.8.0"
+          type: object
+          description: |
+            Recommended SDK version for full feature coverage, keyed by SDK
+            language
+          additionalProperties:
+            type: string
+          example:
+            python: "8.5.1"
+
+    PluginCompatInfo:
+      type: object
+      description: |
+        Plugin version pins, mirroring SDKCompatInfo. Keys are the canonical
+        plugin ids (e.g. openclaw, claude-code, cursor, codex,
+        claude-desktop). Versions below the minimum receive a
+        downgrade-warning header on every governed call.
+      properties:
+        min_plugin_version:
+          type: object
+          additionalProperties:
+            type: string
+        recommended_plugin_version:
+          type: object
+          additionalProperties:
+            type: string
 
     PlanStatusResponse:
       type: object
@@ -7416,19 +9189,38 @@ components:
 
     AuditSearchRequest:
       type: object
+      description: |
+        Search filters. The tenant scope is NOT part of this body — it is
+        always forced from the X-Tenant-ID header and cannot be overridden
+        by the payload.
       properties:
         user_email:
           type: string
+          description: Case-insensitive partial (ILIKE substring) match
         client_id:
           type: string
+          description: Case-insensitive partial (ILIKE substring) match
         start_time:
           type: string
           format: date-time
+          description: |
+            Window lower bound; clamped to the tenant's tier-based
+            retention cutoff when earlier (or when omitted)
         end_time:
           type: string
           format: date-time
-        request_type:
+        action:
           type: string
+          description: |
+            Filter by policy decision. The value is normalized to its
+            canonical verdict (allowed, blocked, redacted, needs_approval,
+            error) and expanded to every historical DB spelling of that
+            verdict, so it matches both current and legacy rows.
+        session_id:
+          type: string
+          description: |
+            Exact match on the first-class session_id column — used to
+            drill into a session-summary bucket's raw events (#2857).
         limit:
           type: integer
           default: 100
@@ -7445,22 +9237,47 @@ components:
           description: |
             Filter audit reads to a specific governance decision id
             (mints from MCPCheckInputResponse / MCPCheckOutputResponse
-            etc.). Useful when correlating a specific request through
-            its full audit trail.
+            etc.). Matches `policy_details->>'decision_id'`. Useful when
+            correlating a specific request through its full audit trail.
         override_id:
           type: string
           description: |
             Filter to audit entries that recorded an override-used
-            event for this override id.
+            event for this override id (matches
+            `policy_details->>'override_id'`).
         policy_name:
           type: string
           description: |
-            Filter to audit entries where this policy fired
-            (matches against the `policy_violations` array on the
-            audit entry).
+            Filter to audit entries where this policy fired. Matches the
+            three shapes audit writers store in the policy_details JSONB:
+            the scalar `policy_details.policy_name`, the CSV string
+            `policy_details.policy_names`, and
+            `policy_details.policy_matches[*].policy_name` (workflow step
+            gates + decision records).
+
+    AuditSearchResponse:
+      type: object
+      description: Paginated audit search results
+      properties:
+        entries:
+          type: array
+          description: Matching audit entries (always an array, `[]` when empty)
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        total:
+          type: integer
+          description: True pre-LIMIT match count for the filters (for pagination)
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     AuditLogEntry:
       type: object
+      description: |
+        A single audit_logs row as serialized on the wire (orchestrator
+        AuditEntry struct). Optional canonical-decision, cross-border and
+        session fields are omitted when empty.
       properties:
         id:
           type: string
@@ -7469,51 +9286,97 @@ components:
         timestamp:
           type: string
           format: date-time
+        user_id:
+          type: integer
         user_email:
+          type: string
+        user_role:
           type: string
         client_id:
           type: string
         tenant_id:
           type: string
+        org_id:
+          type: string
         request_type:
           type: string
-        query_summary:
+        query:
           type: string
-        success:
-          type: boolean
-        blocked:
-          type: boolean
-        risk_score:
-          type: number
+          description: The audited query/prompt (already redacted by the write path)
+        query_hash:
+          type: string
+        policy_decision:
+          type: string
+          description: |
+            Verdict for the request. Canonical values are allowed, blocked,
+            redacted, needs_approval, error; historical rows may carry
+            legacy spellings.
+        policy_details:
+          type: object
+          description: |
+            Nested decision detail exactly as the writer stored it
+            (policy_ids / reasons / latency_ms plus writer-specific keys
+            like gateway_id, tool_name, decision_id, override_id,
+            policy_matches). Treat keys as writer-specific.
+          additionalProperties: true
         provider:
           type: string
         model:
           type: string
           description: |
-            LLM model identifier the agent routed to (e.g.
-            `gpt-4o-mini`, `claude-3-5-sonnet-20241022`,
-            `llama3.2:latest`). Surfaced separately from `provider`
-            so callers can filter audit reads by model without parsing
-            the provider's vendor-specific naming.
-        policy_violations:
-          type: array
-          description: |
-            Policies that fired on the request. Each entry is the
-            canonical policy id (e.g. `sys_sqli_drop_table`,
-            `pii-us-ssn-redact`). Empty when no policy matched.
-          items:
-            type: string
-        metadata:
-          type: object
-          description: |
-            Free-form per-entry metadata captured by the agent at
-            audit time — request shape varies by audit source. Treat
-            keys as opaque on the client unless documented elsewhere.
-          additionalProperties: true
+            LLM model identifier the request was routed to (e.g.
+            `gpt-4o-mini`, `llama3.2:latest`). Surfaced separately from
+            `provider` so callers can filter audit reads by model without
+            parsing the provider's vendor-specific naming.
+        response_time_ms:
+          type: integer
+          format: int64
         tokens_used:
           type: integer
-        latency_ms:
-          type: integer
+        cost:
+          type: number
+          format: double
+        redacted_fields:
+          type: array
+          items:
+            type: string
+        error_message:
+          type: string
+          description: Omitted when empty
+        response_sample:
+          type: string
+        compliance_flags:
+          type: array
+          items:
+            type: string
+        security_metrics:
+          type: object
+          additionalProperties: true
+        decision_id:
+          type: string
+          description: |
+            Canonical decision-row id (#2597/ADR-058); present on planes
+            that mint decisions, omitted on legacy writers
+        plane:
+          type: string
+          description: Enforcement plane that wrote the row (e.g. mcp, llm); omitted on legacy writers
+        correlation_id:
+          type: string
+          description: Decision-chain correlation key (#2611); omitted when not stitched
+        transfer_basis:
+          type: string
+          description: |
+            UU PDP Pasal 56 cross-border transfer legal basis (adequacy,
+            safeguards, pasal_56b_dpa, consent) — Enterprise LLM-forward
+            path only (#2718)
+        data_residency:
+          type: string
+          description: ISO 3166-1 alpha-2 destination country (#2718); Enterprise only
+        session_id:
+          type: string
+          description: |
+            AI-tool session id (Claude Code / Desktop) forwarded via
+            X-Session-Id; asserted attribution, not an auth boundary
 
     AuditToolCallRequest:
       type: object
@@ -8402,7 +10265,7 @@ components:
         secret:
           type: string
           description: Secret key for HMAC-SHA256 signature verification of webhook payloads
-          example: "whsec_abc123secretkey"
+          example: "whsec_example_placeholder"
         active:
           type: boolean
           default: true
@@ -8460,7 +10323,7 @@ components:
         secret:
           type: string
           description: Secret key for HMAC-SHA256 signature verification
-          example: "whsec_abc123secretkey"
+          example: "whsec_example_placeholder"
         created_at:
           type: string
           format: date-time
@@ -9522,14 +11385,6 @@ components:
           type: string
         health:
           $ref: '#/components/schemas/LLMProviderHealthInfo'
-
-    LLMProviderHealthAllResponse:
-      type: object
-      properties:
-        providers:
-          type: object
-          additionalProperties:
-            $ref: '#/components/schemas/LLMProviderHealthInfo'
 
     LLMRoutingConfigResponse:
       type: object
@@ -10690,25 +12545,6 @@ components:
             additionalProperties:
               $ref: '#/components/schemas/ModelPricing'
 
-    MediaAnalyzerInfo:
-      type: object
-      properties:
-        name:
-          type: string
-          description: Analyzer name
-        type:
-          type: string
-          enum: [local-ocr, aws-rekognition, google-vision, azure-vision, custom]
-          description: Analyzer type
-        capabilities:
-          type: array
-          items:
-            type: string
-            enum: [ocr, face_detection, content_safety, document_classification, label_detection, pii_detection]
-        healthy:
-          type: boolean
-          description: Whether the analyzer is currently healthy
-
     MediaAnalysisItemResponse:
       type: object
       properties:
@@ -10871,6 +12707,1083 @@ components:
         tier:
           type: string
           description: Current license tier
+
+    MediaAuditRecord:
+      type: object
+      description: One media-governance audit row
+      properties:
+        request_id:
+          type: string
+        tenant_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        media_type:
+          type: string
+        analysis_results:
+          type: object
+          additionalProperties: true
+        policy_actions:
+          type: array
+          items:
+            type: string
+        blocked:
+          type: boolean
+
+    # ==========================================================================
+    # Audit report + session summary schemas
+    # ==========================================================================
+
+    AuditActionReport:
+      type: object
+      description: |
+        Per-action aggregate for a window. by_action always carries the full
+        canonical verdict set (allowed / blocked / redacted / needs_approval /
+        error) — a verdict with no rows reports 0 rather than being absent.
+      properties:
+        tenant_id:
+          type: string
+        user_email:
+          type: string
+          description: Echoed filter; omitted when not filtered
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        total:
+          type: integer
+          description: Governed decisions in the window (lifecycle events excluded)
+        by_action:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Counts folded onto the canonical verdicts
+        avg_latency_ms:
+          type: number
+          format: double
+        top_policies:
+          type: array
+          description: Top 10 policies by trigger count
+          items:
+            type: object
+            properties:
+              policy_name:
+                type: string
+              trigger_count:
+                type: integer
+              block_count:
+                type: integer
+
+    SessionSummaryResponse:
+      type: object
+      description: GET /api/v1/audit/session-summary payload (Enterprise)
+      properties:
+        tenant_id:
+          type: string
+        user_email:
+          type: string
+          description: Echoed filter; omitted when not filtered
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionSummaryBucket'
+        bucket_limit:
+          type: integer
+          description: Effective bucket cap applied to this response
+        truncated:
+          type: boolean
+          description: |
+            True when the window held more buckets than bucket_limit —
+            narrow the window or raise ?limit=
+
+    SessionSummaryBucket:
+      type: object
+      description: |
+        One session (or per-user-day fallback) bucket. Exactly one of
+        session_id / day is set: session_id for a real session bucket, day
+        (YYYY-MM-DD) for rows without a session id grouped by calendar day.
+      properties:
+        session_id:
+          type: string
+          description: Set when the bucket is a real session
+        day:
+          type: string
+          description: Set only for a per-user-day fallback bucket (YYYY-MM-DD)
+        user_email:
+          type: string
+        tenant_id:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        total:
+          type: integer
+        by_action:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Per-bucket counts folded onto the canonical verdicts
+        tools:
+          type: array
+          description: Per-request_type usage within the bucket
+          items:
+            type: object
+            properties:
+              request_type:
+                type: string
+              count:
+                type: integer
+              tokens_used:
+                type: integer
+              cost:
+                type: number
+                format: double
+              avg_latency_ms:
+                type: number
+                format: double
+        tokens_used:
+          type: integer
+          description: Per-request token sum over governed audit rows (authoritative gateway view)
+        cost:
+          type: number
+          format: double
+        avg_latency_ms:
+          type: number
+          format: double
+        usage_metrics:
+          $ref: '#/components/schemas/SessionSummaryUsageMetrics'
+
+    SessionSummaryUsageMetrics:
+      type: object
+      description: |
+        Optional Claude-export enrichment (#2852), sourced from the OTLP
+        metrics ingest. Absent when no metric rows match the bucket. These
+        are the CLI's own aggregates (everything the tool did, governed or
+        not) and are deliberately nested rather than merged with the
+        bucket-level tokens_used/cost, which remain the governed-gateway
+        sums. tokens_used here counts input/output only; cache tokens are
+        kept separately in cache_tokens and never inflate the headline.
+      properties:
+        lines_of_code:
+          type: integer
+        active_time_seconds:
+          type: number
+          format: double
+        commits:
+          type: integer
+        pull_requests:
+          type: integer
+        tool_permission_decisions:
+          type: object
+          properties:
+            accept:
+              type: integer
+            reject:
+              type: integer
+        session_count:
+          type: integer
+        tokens_used:
+          type: integer
+        cache_tokens:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+
+    # ==========================================================================
+    # Policy override (ADR-044) + decision explainability (ADR-043) schemas
+    # ==========================================================================
+
+    CreateOverrideRequest:
+      type: object
+      required:
+        - policy_id
+        - policy_type
+        - override_reason
+      properties:
+        policy_id:
+          type: string
+          description: Policy UUID, or the human-readable slug (static) / name (dynamic)
+        policy_type:
+          type: string
+          enum: [static, dynamic]
+        tool_signature:
+          type: string
+          description: Optional tool scope for the override
+        override_reason:
+          type: string
+          maxLength: 500
+          description: Mandatory justification (ADR-044)
+        ttl_seconds:
+          type: integer
+          format: int64
+          description: |
+            Override lifetime in seconds. Omitted/0 defaults to 3600.
+            Clamped server-side to [60, 86400]; the response reports any clamp.
+
+    CreateOverrideResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        policy_id:
+          type: string
+          description: Echoes the value sent in the request (not resolved to a UUID)
+        policy_type:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        ttl_seconds:
+          type: integer
+          format: int64
+          description: Effective TTL after clamping
+        requested_ttl:
+          type: integer
+          format: int64
+          description: Present when the requested TTL was clamped
+        clamped:
+          type: boolean
+          description: Present (true) when the TTL was clamped
+        clamped_reason:
+          type: string
+          description: exceeds_hard_cap or below_minimum; present when clamped
+        created_at:
+          type: string
+          format: date-time
+
+    OverrideSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        policy_id:
+          type: string
+        policy_type:
+          type: string
+        tenant_id:
+          type: string
+        override_reason:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          description: Present only on revoked overrides
+        created_at:
+          type: string
+          format: date-time
+
+    OverrideDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        policy_id:
+          type: string
+        policy_type:
+          type: string
+        tenant_id:
+          type: string
+        organization_id:
+          type: string
+        tool_signature:
+          type: string
+        override_reason:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+        revoked_by:
+          type: string
+
+    DecisionListResponse:
+      type: object
+      properties:
+        decisions:
+          type: array
+          description: Always an array (`[]` when empty)
+          items:
+            $ref: '#/components/schemas/DecisionListItem'
+
+    DecisionListItem:
+      type: object
+      properties:
+        decision_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        decision:
+          type: string
+          description: Canonical verdict
+          enum: [allowed, blocked, redacted, needs_approval, error]
+        policy_id:
+          type: string
+        tool_signature:
+          type: string
+        context:
+          type: object
+          additionalProperties:
+            type: string
+          description: Decision context, truncated to at most 5 keys (sorted)
+        transfer_basis:
+          type: string
+          description: UU PDP Pasal 56 transfer basis; Enterprise cross-border rows only
+        data_residency:
+          type: string
+          description: ISO 3166-1 alpha-2 destination country; Enterprise only
+
+    DecisionListLimitEnvelope:
+      type: object
+      description: |
+        Tier-limit envelope returned with 429 when the requested page size
+        exceeds the tier cap. Same shape as the plugin rate-limit envelopes.
+      properties:
+        error:
+          type: string
+          example: "Free tier shows the last 5 decisions in 24h. Pro raises this to 100 decisions in the last 30 days."
+        limit_type:
+          type: string
+          example: "decision_list_size"
+        tier:
+          type: string
+          description: Effective tier the request was evaluated under
+        limit:
+          type: integer
+          description: The tier's page cap
+        remaining:
+          type: integer
+          example: 0
+        upgrade:
+          type: object
+          properties:
+            tier:
+              type: string
+              example: "Pro"
+            wording:
+              type: string
+            compare_url:
+              type: string
+              example: "https://getaxonflow.com/pricing/"
+            buy_url:
+              type: string
+
+    DecisionExplanation:
+      type: object
+      description: ADR-043 decision explanation
+      properties:
+        decision_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        policy_matches:
+          type: array
+          description: Always an array (`[]` when empty)
+          items:
+            type: object
+            properties:
+              policy_id:
+                type: string
+              policy_name:
+                type: string
+              action:
+                type: string
+              risk_level:
+                type: string
+              allow_override:
+                type: boolean
+              policy_description:
+                type: string
+        matched_rules:
+          type: array
+          description: Per-rule match detail; omitted when unavailable
+          items:
+            type: object
+            properties:
+              policy_id:
+                type: string
+              rule_id:
+                type: string
+              rule_text:
+                type: string
+              matched_on:
+                type: string
+        decision:
+          type: string
+          description: |
+            Verdict echoed verbatim from the audit row's policy_decision
+            column (not normalized), so historical spellings can appear
+        reason:
+          type: string
+        risk_level:
+          type: string
+        override_available:
+          type: boolean
+          description: |
+            True when at least one matched policy has allow_override=true
+            and is not critical-risk
+        override_existing_id:
+          type: string
+          description: Id of an already-active override covering this decision, when one exists
+        historical_hit_count_session:
+          type: integer
+          description: Rolling-24h hit count for the first matched policy by this user
+        policy_source_link:
+          type: string
+        tool_signature:
+          type: string
+        policy_version_at_decision:
+          type: integer
+          description: Policy version recorded at decision time; omitted when unknown
+        latest_policy_version:
+          type: integer
+          description: Current head version of the first matched (static) policy
+        context:
+          type: object
+          additionalProperties:
+            type: string
+        context_truncated:
+          type: boolean
+
+    # ==========================================================================
+    # OJK Compliance schemas (Enterprise - Indonesia)
+    # ==========================================================================
+
+    OJKAPIError:
+      type: object
+      description: OJK module error envelope
+      properties:
+        code:
+          type: string
+          description: |
+            Machine-readable error code (e.g. missing_tenant,
+            invalid_request, validation_error, missing_export_id, not_found,
+            invalid_transition, internal_error, method_not_allowed)
+        message:
+          type: string
+        details:
+          type: string
+          description: Omitted when empty
+
+    OJKAuditExportRequest:
+      type: object
+      required:
+        - start_date
+        - end_date
+      properties:
+        start_date:
+          type: string
+          format: date
+          description: Window start (YYYY-MM-DD)
+        end_date:
+          type: string
+          format: date
+          description: Window end (YYYY-MM-DD, not before start_date; range at most 5 years)
+        format:
+          type: string
+          enum: [json, csv, xml]
+          default: json
+        framework:
+          type: string
+          enum: [OJK_AI_GOVERNANCE, UU_PDP, BI_PJP, OJK_BI_COMBINED]
+          default: OJK_BI_COMBINED
+        data_types:
+          type: array
+          description: Defaults to [all]
+          items:
+            type: string
+            enum: [policy_violations, llm_calls, decision_chain, hitl_oversight, pii_redactions, cross_border_transfers, breach_notifications, all]
+        filters:
+          type: object
+          properties:
+            agent_ids:
+              type: array
+              items:
+                type: string
+            user_ids:
+              type: array
+              items:
+                type: string
+            severity:
+              type: array
+              items:
+                type: string
+            policy_types:
+              type: array
+              items:
+                type: string
+        include_pii:
+          type: boolean
+          default: false
+
+    OJKAuditExportResponse:
+      type: object
+      properties:
+        export_id:
+          type: string
+        status:
+          type: string
+          description: Always `completed` (the export runs synchronously)
+        framework:
+          type: string
+          enum: [OJK_AI_GOVERNANCE, UU_PDP, BI_PJP, OJK_BI_COMBINED]
+        format:
+          type: string
+          enum: [json, csv, xml]
+        summary:
+          type: object
+          properties:
+            total_records:
+              type: integer
+            records_by_type:
+              type: object
+              additionalProperties:
+                type: integer
+            date_range:
+              type: object
+              properties:
+                start:
+                  type: string
+                  format: date-time
+                end:
+                  type: string
+                  format: date-time
+            compliance_score:
+              type: number
+              format: double
+        data:
+          type: object
+          description: |
+            Inline export payload; each key is present only when its data
+            type was requested and rows exist
+          properties:
+            policy_violations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  policy_id:
+                    type: string
+                  policy_name:
+                    type: string
+                  severity:
+                    type: string
+                  action:
+                    type: string
+                  description:
+                    type: string
+                  tenant_id:
+                    type: string
+            llm_calls:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  model_id:
+                    type: string
+                  provider:
+                    type: string
+                  input_tokens:
+                    type: integer
+                  output_tokens:
+                    type: integer
+                  cost:
+                    type: number
+                    format: double
+                  latency_ms:
+                    type: integer
+                    format: int64
+                  policy_decision:
+                    type: string
+            decision_chains:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  decision_id:
+                    type: string
+                  risk_level:
+                    type: string
+                  model_id:
+                    type: string
+                  requires_review:
+                    type: boolean
+            hitl_records:
+              type: array
+              description: |
+                Declared on the wire type but NEVER populated — the export
+                service has no hitl_oversight query implementation (field is
+                omitempty, so it is absent from real responses).
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  trigger_reason:
+                    type: string
+                  reviewer_id:
+                    type: string
+                  decision:
+                    type: string
+                  review_time_ms:
+                    type: integer
+                    format: int64
+            pii_redactions:
+              type: array
+              description: |
+                Declared on the wire type but NEVER populated — the export
+                service has no pii_redactions query implementation (field is
+                omitempty, so it is absent from real responses).
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  pii_type:
+                    type: string
+                  redaction_method:
+                    type: string
+                  confidence:
+                    type: number
+                    format: double
+            cross_border_transfers:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  data_residency:
+                    type: string
+                  transfer_basis:
+                    type: string
+                    enum: [adequacy, safeguards, pasal_56b_dpa, consent]
+                  destination_country:
+                    type: string
+                  data_categories:
+                    type: array
+                    items:
+                      type: string
+                  approval_status:
+                    type: string
+            breach_notifications:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  incident_timestamp:
+                    type: string
+                    format: date-time
+                  discovery_time:
+                    type: string
+                    format: date-time
+                  notification_deadline:
+                    type: string
+                    format: date-time
+                  data_subjects_affected:
+                    type: integer
+                  data_types_involved:
+                    type: array
+                    items:
+                      type: string
+                  notified_authority:
+                    type: string
+                  status:
+                    type: string
+                    description: Effective status after deadline evaluation
+                  stored_status:
+                    type: string
+                  submitted_at:
+                    type: string
+                    format: date-time
+                  acknowledged_at:
+                    type: string
+                    format: date-time
+                  within_deadline:
+                    type: boolean
+                  created_at:
+                    type: string
+                    format: date-time
+        download_url:
+          type: string
+          description: Omitted for inline exports
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          properties:
+            export_version:
+              type: string
+              example: "1.0.0"
+            generated_by:
+              type: string
+              example: "axonflow-ojk-module"
+            tenant_id:
+              type: string
+            checksum:
+              type: string
+              description: SHA-256 hex of the export data
+
+    OJKRetentionStatusResponse:
+      type: object
+      properties:
+        compliance_status:
+          type: string
+          enum: [compliant, non_compliant]
+        framework:
+          type: string
+          example: "OJK_BI_COMBINED"
+        retention_days:
+          type: integer
+        min_retention_days:
+          type: integer
+          example: 1825
+        data_types:
+          type: array
+          description: |
+            ⚠️ Always empty in the current implementation — per-type
+            retention reporting is not implemented (`GetRetentionStatus`
+            returns a fixed empty slice).
+          items:
+            type: object
+            properties:
+              data_type:
+                type: string
+              status:
+                type: string
+              oldest_record:
+                type: string
+                format: date-time
+              newest_record:
+                type: string
+                format: date-time
+              total_records:
+                type: integer
+                format: int64
+        next_cleanup:
+          type: string
+          format: date-time
+          description: Never set by the current implementation (omitted)
+
+    OJKComplianceReadinessResponse:
+      type: object
+      properties:
+        ready:
+          type: boolean
+          description: True at score 80+
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        framework:
+          type: string
+          example: "OJK_BI_COMBINED"
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              status:
+                type: string
+                enum: [pass, fail, warning]
+              details:
+                type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+
+    OJKBreachNotification:
+      type: object
+      description: |
+        UU PDP Art. 46 breach notification. On submission the server assigns
+        id / created_at / submitted_at and computes notification_deadline
+        (discovery_time + 72h) — client-supplied values for those fields
+        are ignored. notified_authority defaults to MOCDA only when the
+        client omits it; a supplied value is honored.
+      required:
+        - incident_timestamp
+        - discovery_time
+        - data_subjects_affected
+        - data_types_involved
+        - description
+        - remediation_steps
+      properties:
+        id:
+          type: string
+          description: Server-assigned
+        incident_timestamp:
+          type: string
+          format: date-time
+        discovery_time:
+          type: string
+          format: date-time
+        notification_deadline:
+          type: string
+          format: date-time
+          description: Server-computed (discovery_time + 72h)
+        data_subjects_affected:
+          type: integer
+          minimum: 1
+        data_types_involved:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        description:
+          type: string
+        remediation_steps:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        notified_authority:
+          type: string
+          description: Defaults to MOCDA
+        status:
+          type: string
+          enum: [draft, submitted, acknowledged, overdue, failed]
+        submitted_at:
+          type: string
+          format: date-time
+        acknowledged_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    OJKDashboardResponse:
+      type: object
+      properties:
+        framework:
+          type: string
+          example: "OJK_BI_COMBINED"
+        compliance_score:
+          type: integer
+        total_audit_records:
+          type: integer
+          format: int64
+        active_policies:
+          type: integer
+        recent_violations:
+          type: integer
+        retention_status:
+          type: string
+        breach_notifications:
+          type: integer
+        overdue_breach_notifications:
+          type: integer
+        last_updated:
+          type: string
+          format: date-time
+
+    # ==========================================================================
+    # Unified execution tracking schemas
+    # ==========================================================================
+
+    UnifiedExecutionListResponse:
+      type: object
+      properties:
+        executions:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnifiedExecutionStatus'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+
+    UnifiedExecutionStatus:
+      type: object
+      description: |
+        Unified status record covering both MAP plans and WCP workflows.
+        Distinct from the replay Execution schema and from the MAP
+        StepStatus schema.
+      properties:
+        execution_id:
+          type: string
+        execution_type:
+          type: string
+          enum: [map_plan, wcp_workflow]
+        name:
+          type: string
+        source:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled, aborted, expired]
+        current_step_index:
+          type: integer
+        total_steps:
+          type: integer
+        progress_percent:
+          type: number
+          format: double
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        estimated_cost_usd:
+          type: number
+          format: double
+        actual_cost_usd:
+          type: number
+          format: double
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnifiedStepStatus'
+        error:
+          type: string
+        tenant_id:
+          type: string
+        org_id:
+          type: string
+        user_id:
+          type: string
+        client_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UnifiedStepStatus:
+      type: object
+      properties:
+        step_id:
+          type: string
+        step_index:
+          type: integer
+        step_name:
+          type: string
+        step_type:
+          type: string
+          enum: [llm_call, tool_call, connector_call, human_task, synthesis, action, gate]
+        status:
+          type: string
+          enum: [pending, running, completed, failed, skipped, blocked, approval]
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        decision:
+          type: string
+          enum: [allow, block, require_approval]
+        decision_reason:
+          type: string
+        policies_matched:
+          type: array
+          items:
+            type: string
+        approval_status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        approved_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+        rejected_by:
+          type: string
+        rejected_at:
+          type: string
+          format: date-time
+        model:
+          type: string
+        provider:
+          type: string
+        cost_usd:
+          type: number
+          format: double
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        input:
+          description: Raw step input (JSON)
+        output:
+          description: Raw step output (JSON)
+        result_summary:
+          type: string
+        error:
+          type: string
 
   responses:
     BadRequest:
