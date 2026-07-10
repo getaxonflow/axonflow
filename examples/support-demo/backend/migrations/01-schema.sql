@@ -11,7 +11,7 @@ CREATE TABLE users (
     role VARCHAR(50) NOT NULL,
     region VARCHAR(50) NOT NULL,
     permissions TEXT[] DEFAULT '{}',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Customers table (contains PII that needs protection)
@@ -25,8 +25,8 @@ CREATE TABLE customers (
     address TEXT,
     region VARCHAR(50) NOT NULL,
     support_tier VARCHAR(20) DEFAULT 'standard',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Support tickets table
@@ -39,8 +39,8 @@ CREATE TABLE support_tickets (
     priority VARCHAR(20) DEFAULT 'medium',
     region VARCHAR(50) NOT NULL,
     assigned_to VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP NULL
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMPTZ NULL
 );
 
 -- Note: Audit logging is handled by AxonFlow Agent, not stored locally

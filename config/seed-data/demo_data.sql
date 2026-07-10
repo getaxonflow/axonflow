@@ -22,9 +22,9 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     priority VARCHAR(20) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'open',
     assigned_agent VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMPTZ,
     satisfaction_score INTEGER CHECK (satisfaction_score >= 1 AND satisfaction_score <= 5)
 );
 
@@ -136,7 +136,7 @@ INSERT INTO support_tickets (customer_name, customer_email, subject, description
 CREATE TABLE IF NOT EXISTS audit_logs (
     id VARCHAR(255) PRIMARY KEY,
     request_id VARCHAR(255) NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     user_id INTEGER NOT NULL,
     user_email VARCHAR(255) NOT NULL,
     user_role VARCHAR(50) NOT NULL,
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     response_sample TEXT,
     compliance_flags JSONB,
     security_metrics JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Insert sample audit logs for dashboard visualization

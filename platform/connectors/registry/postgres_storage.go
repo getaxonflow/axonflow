@@ -197,8 +197,8 @@ func (s *PostgreSQLStorage) initSchema() error {
 		org_id VARCHAR(255),
 		options JSONB NOT NULL DEFAULT '{}'::jsonb,
 		credentials JSONB NOT NULL DEFAULT '{}'::jsonb,
-		installed_at TIMESTAMP NOT NULL DEFAULT NOW(),
-		last_health_check TIMESTAMP,
+		installed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		last_health_check TIMESTAMPTZ,
 		health_status JSONB,
 		UNIQUE(name, tenant_id)
 	);

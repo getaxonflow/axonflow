@@ -91,8 +91,8 @@ func dbPolicyEngineSchema() string {
 			enabled BOOLEAN DEFAULT true,
 			risk_level VARCHAR(20) DEFAULT 'medium',
 			allow_override BOOLEAN DEFAULT false,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
 	`
 }

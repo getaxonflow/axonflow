@@ -83,8 +83,8 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 			policies_evaluated TEXT[],
 			approved BOOLEAN DEFAULT true,
 			block_reason TEXT,
-			expires_at TIMESTAMP NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 			latency_ms INTEGER NOT NULL DEFAULT 0,
 			estimated_cost_usd DECIMAL(10, 6) DEFAULT 0,
 			metadata JSONB,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {
@@ -465,8 +465,8 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 			policies_evaluated TEXT[],
 			approved BOOLEAN DEFAULT true,
 			block_reason TEXT,
-			expires_at TIMESTAMP NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {
@@ -486,7 +486,7 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 			latency_ms INTEGER NOT NULL DEFAULT 0,
 			estimated_cost_usd DECIMAL(10, 6) DEFAULT 0,
 			metadata JSONB,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {

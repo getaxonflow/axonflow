@@ -459,7 +459,7 @@ func setupTestTables(t *testing.T, db *sql.DB) {
 			tier VARCHAR(20) NOT NULL,
 			license_key VARCHAR(255),
 			max_nodes INT DEFAULT 10,
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMPTZ DEFAULT NOW()
 		)
 	`)
 	if err != nil {
@@ -474,7 +474,7 @@ func setupTestTables(t *testing.T, db *sql.DB) {
 			org_id VARCHAR(100),
 			host_name VARCHAR(255),
 			license_key_hash VARCHAR(512) NOT NULL,
-			last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			last_heartbeat TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			host_info JSONB,
 			UNIQUE(instance_id, instance_type)
 		)
@@ -492,12 +492,12 @@ func setupTestTables(t *testing.T, db *sql.DB) {
 			max_nodes_allowed INTEGER NOT NULL,
 			actual_node_count INTEGER NOT NULL,
 			excess_nodes INTEGER NOT NULL,
-			violation_start TIMESTAMP DEFAULT NOW(),
-			violation_end TIMESTAMP,
+			violation_start TIMESTAMPTZ DEFAULT NOW(),
+			violation_end TIMESTAMPTZ,
 			resolved BOOLEAN DEFAULT FALSE,
 			alert_sent BOOLEAN DEFAULT FALSE,
 			metadata JSONB,
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMPTZ DEFAULT NOW()
 		)
 	`)
 	if err != nil {

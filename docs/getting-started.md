@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: July 2026** | **Platform: v9.7.0** | **SDKs: Python / Go / TypeScript / Java v8.5.1 + Rust v0.8.1 (preview)**
+**Last Updated: July 2026** | **Platform: v9.8.0** | **SDKs: Python / Go / TypeScript / Java v8.5.1 + Rust v0.8.1 (preview)**
 
 **Get AxonFlow running locally in about 10 minutes.**
 

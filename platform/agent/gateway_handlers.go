@@ -766,7 +766,12 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Generate context ID
 	contextID := uuid.New().String()
-	expiresAt := time.Now().Add(defaultContextExpiry)
+	// UTC pinned (#2876): gateway_contexts.expires_at was TIMESTAMP (no time
+	// zone) until migration 142, and such a column discards the offset — a
+	// local-zone time.Now() silently stored a shifted wall clock on non-UTC
+	// hosts. The column is TIMESTAMPTZ now; .UTC() keeps this write correct
+	// independent of the column type.
+	expiresAt := time.Now().UTC().Add(defaultContextExpiry)
 
 	// Issue #1081: Check if HITL (Human-in-the-Loop) is required
 	// HITL is ONLY triggered by policy evaluation returning require_approval action.

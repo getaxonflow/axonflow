@@ -111,14 +111,14 @@ func TestHeartbeatService(t *testing.T) {
 			host_name VARCHAR(255),
 			license_key_hash VARCHAR(512) NOT NULL,
 			org_id VARCHAR(255),
-			last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			last_heartbeat TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			host_info JSONB,
 			ip_address INET,
 			port INTEGER,
 			version VARCHAR(50),
 			region VARCHAR(100),
 			heartbeat_count INTEGER DEFAULT 0,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(instance_id, instance_type)
 		)
 	`)

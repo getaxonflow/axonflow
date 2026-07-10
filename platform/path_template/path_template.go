@@ -18,7 +18,7 @@
 //  2. Drop ONE trailing /{param} segment from the matched template.
 //     That collapses "/api/v1/users/{id}" → "/api/v1/users" per the
 //     epic decision. Templates that end on a literal (e.g.
-//     "/api/v1/conformity/assessments/{id}/start") keep all params.
+//     "/api/v1/euaiact/conformity/{assessment_id}/submit") keep all params.
 //  3. Unmatched paths return as-is (fail-closed). No synthetic
 //     templates, no silent rejection — analytics gets the raw path
 //     and a downstream alarm can detect their growth.
@@ -50,42 +50,50 @@ var Templates = []string{
 	"/api/policies/test",
 	"/api/policy/pre-check",
 	"/api/request",
-	"/api/v1/accuracy/alerts",
-	"/api/v1/accuracy/alerts/{id}/acknowledge",
-	"/api/v1/accuracy/alerts/{id}/resolve",
-	"/api/v1/accuracy/bias",
-	"/api/v1/accuracy/metrics",
-	"/api/v1/accuracy/thresholds",
 	"/api/v1/audit/chains/{chainID}/verify",
 	"/api/v1/audit/records/{recordID}/verify",
 	"/api/v1/audit/signing-key",
-	"/api/v1/circuit-breaker/activate",
+	"/api/v1/circuit-breaker/check",
 	"/api/v1/circuit-breaker/config",
-	"/api/v1/circuit-breaker/deactivate",
 	"/api/v1/circuit-breaker/history",
 	"/api/v1/circuit-breaker/notifications",
 	"/api/v1/circuit-breaker/notifications/{id}",
+	"/api/v1/circuit-breaker/reset",
 	"/api/v1/circuit-breaker/status",
-	"/api/v1/conformity/assessments",
-	"/api/v1/conformity/assessments/{id}",
-	"/api/v1/conformity/assessments/{id}/approve",
-	"/api/v1/conformity/assessments/{id}/checks/{checkId}",
-	"/api/v1/conformity/assessments/{id}/findings",
-	"/api/v1/conformity/assessments/{id}/reject",
-	"/api/v1/conformity/assessments/{id}/start",
-	"/api/v1/conformity/assessments/{id}/submit",
-	"/api/v1/conformity/summary",
+	"/api/v1/circuit-breaker/trip",
 	"/api/v1/connectors/cache/stats",
 	"/api/v1/connectors/refresh",
 	"/api/v1/connectors/refresh/{tenant_id}",
 	"/api/v1/connectors/refresh/{tenant_id}/{connector_name}",
 	"/api/v1/decide",
+	"/api/v1/emergency-stop",
+	"/api/v1/emergency-stop/release",
+	"/api/v1/euaiact/accuracy",
+	"/api/v1/euaiact/accuracy/alerts",
+	"/api/v1/euaiact/accuracy/bias",
+	"/api/v1/euaiact/accuracy/history",
+	"/api/v1/euaiact/accuracy/record",
+	"/api/v1/euaiact/conformity",
+	"/api/v1/euaiact/conformity/{assessment_id}",
+	"/api/v1/euaiact/conformity/{assessment_id}/approve",
+	"/api/v1/euaiact/conformity/{assessment_id}/reject",
+	"/api/v1/euaiact/conformity/{assessment_id}/submit",
 	"/api/v1/euaiact/export",
-	"/api/v1/euaiact/summary",
+	"/api/v1/euaiact/export/{export_id}",
+	"/api/v1/euaiact/export/{export_id}/download",
+	"/api/v1/hitl/expire",
 	"/api/v1/hitl/queue",
 	"/api/v1/hitl/queue/{id}",
 	"/api/v1/hitl/queue/{id}/approve",
+	"/api/v1/hitl/queue/{id}/history",
+	"/api/v1/hitl/queue/{id}/override",
 	"/api/v1/hitl/queue/{id}/reject",
+	"/api/v1/hitl/stats",
+	"/api/v1/hitl/status",
+	"/api/v1/mcp-server",
+	"/api/v1/mcp/check-input",
+	"/api/v1/mcp/check-output",
+	"/api/v1/policy-overrides",
 	"/api/v1/static-policies",
 	"/api/v1/static-policies/effective",
 	"/api/v1/static-policies/overrides",
@@ -94,8 +102,6 @@ var Templates = []string{
 	"/api/v1/static-policies/{id}/override",
 	"/api/v1/static-policies/{id}/versions",
 	"/health",
-	"/mcp/check-input",
-	"/mcp/check-output",
 	"/mcp/connectors",
 	"/mcp/connectors/{name}/health",
 	"/mcp/health",
@@ -104,6 +110,8 @@ var Templates = []string{
 	"/metrics",
 	"/prometheus",
 	"/v1/chat/completions",
+	"/v1/logs",
+	"/v1/metrics",
 }
 
 // paramSegmentRE matches a single OpenAPI path parameter (e.g.
@@ -240,11 +248,11 @@ func compileTemplate(template string) (*templateEntry, error) {
 //
 // Singular-strip per the epic decision: only the FINAL /{param} is
 // dropped. Templates with mid-path params keep them. So
-// "/api/v1/conformity/assessments/{id}/checks/{checkId}" becomes
-// "/api/v1/conformity/assessments/{id}/checks", not the more aggressive
-// "/api/v1/conformity/assessments". That preserves the analyst's
-// ability to roll up by check-class without losing the assessment
-// dimension entirely.
+// "/api/v1/connectors/refresh/{tenant_id}/{connector_name}" becomes
+// "/api/v1/connectors/refresh/{tenant_id}", not the more aggressive
+// "/api/v1/connectors/refresh". That preserves the analyst's ability
+// to roll up by connector-class without losing the tenant dimension
+// entirely.
 func stripTrailingParam(template string) string {
 	idx := strings.LastIndexByte(template, '/')
 	if idx < 0 {

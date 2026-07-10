@@ -6,13 +6,15 @@ This directory contains OpenAPI 3.0 specifications for all AxonFlow APIs.
 
 | File | Service | Description |
 |------|---------|-------------|
-| [`agent-api.yaml`](./agent-api.yaml) | Agent | Authentication, Gateway Mode, MCP Connectors |
-| [`orchestrator-api.yaml`](./orchestrator-api.yaml) | Orchestrator | LLM Routing, Multi-Agent Planning, Workflows |
-| [`policy-api.yaml`](./policy-api.yaml) | Orchestrator | Policy CRUD, Templates |
+| [`agent-api.yaml`](./agent-api.yaml) | Agent | Authentication, Gateway Mode, Decision Mode, MCP Connectors, MCP Server, Static Policies, HITL, Circuit Breaker, OTLP Ingest |
+| [`orchestrator-api.yaml`](./orchestrator-api.yaml) | Orchestrator | LLM Routing, Multi-Agent Planning, Workflows, Audit & Compliance |
+| [`policy-api.yaml`](./policy-api.yaml) | Orchestrator (via Agent proxy) | Dynamic Policy CRUD, Templates, Simulation |
+| [`masfeat-api.yaml`](./masfeat-api.yaml) | Orchestrator (via Agent proxy) | MAS FEAT compliance (Singapore) — **Enterprise only** |
+| [`error-codes.md`](./error-codes.md) | All | Error code reference |
 
 ## Architecture Overview
 
-AxonFlow uses a **Single Entry Point Architecture** (ADR-024). All client requests go through the Agent service, which proxies to internal services automatically.
+AxonFlow uses a **Single Entry Point Architecture** (ADR-026). All client requests go through the Agent service, which proxies to internal services automatically.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -193,14 +195,14 @@ All policy management goes through the Agent (Single Entry Point).
 **List dynamic policies**
 ```bash
 curl -X GET "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
-  -H "X-Org-ID: tenant-123"
+  -H "X-Tenant-ID: tenant-123"
 ```
 
 **Create a dynamic policy**
 ```bash
 curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
-  -H "X-Org-ID: tenant-123" \
+  -H "X-Tenant-ID: tenant-123" \
   -H "X-User-ID: admin@company.com" \
   -d '{
     "name": "Block PII Access",
@@ -229,7 +231,7 @@ curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
 ```bash
 curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies/pol_abc123/test" \
   -H "Content-Type: application/json" \
-  -H "X-Org-ID: tenant-123" \
+  -H "X-Tenant-ID: tenant-123" \
   -d '{
     "query": "Show me the customer SSN",
     "user": {"email": "analyst@company.com", "role": "analyst"}
@@ -243,17 +245,17 @@ Static policies (PII detection, SQL injection) are managed directly on the Agent
 **List static policies**
 ```bash
 curl -X GET "https://agent.getaxonflow.com/api/v1/static-policies" \
-  -H "X-Org-ID: tenant-123"
+  -H "Authorization: Basic $(echo -n 'my-org:your_client_secret' | base64)"
 ```
 
 **Test a static policy pattern**
 ```bash
 curl -X POST "https://agent.getaxonflow.com/api/v1/static-policies/test" \
   -H "Content-Type: application/json" \
-  -H "X-Org-ID: tenant-123" \
+  -H "Authorization: Basic $(echo -n 'my-org:your_client_secret' | base64)" \
   -d '{
-    "input": "My SSN is 123-45-6789",
-    "policy_type": "pii"
+    "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+    "inputs": ["My SSN is 123-45-6789", "no pii here"]
   }'
 ```
 
@@ -364,12 +366,14 @@ JWT token identifying the end user. Include in request body.
 }
 ```
 
-### Organization Headers (Policy API)
+### Tenant Headers (Policy API)
 
-Required for policy management endpoints:
+Dynamic-policy management endpoints resolve the tenant from `X-Tenant-ID`
+(stamped by the agent proxy from the authenticated identity when calls go
+through the single entry point) and record the actor from `X-User-ID`:
 
 ```bash
--H "X-Org-ID: tenant-123"
+-H "X-Tenant-ID: tenant-123"
 -H "X-User-ID: admin@company.com"
 ```
 
@@ -385,11 +389,18 @@ Required for policy management endpoints:
 | `SERVICE_UNAVAILABLE` | 503 | Service starting or unavailable |
 | `INTERNAL_ERROR` | 500 | Internal server error |
 
-Error response format:
+Error response format (handler-written errors):
 ```json
 {
   "success": false,
-  "error": "X-License-Key header required"
+  "error": "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)"
+}
+```
+
+Middleware-written errors (auth 401s, static-policy API) use a second envelope:
+```json
+{
+  "error": { "code": 401, "message": "..." }
 }
 ```
 
@@ -444,6 +455,7 @@ npm install -g @redocly/cli
 redocly build-docs agent-api.yaml -o agent-api.html
 redocly build-docs orchestrator-api.yaml -o orchestrator-api.html
 redocly build-docs policy-api.yaml -o policy-api.html
+redocly build-docs masfeat-api.yaml -o masfeat-api.html
 ```
 
 ## Generating Client Libraries
@@ -469,12 +481,16 @@ npm install -g @apidevtools/swagger-cli
 swagger-cli validate agent-api.yaml
 swagger-cli validate orchestrator-api.yaml
 swagger-cli validate policy-api.yaml
+swagger-cli validate masfeat-api.yaml
 
 # Lint with Spectral
 npm install -g @stoplight/spectral-cli
-spectral lint agent-api.yaml
-spectral lint orchestrator-api.yaml
-spectral lint policy-api.yaml
+spectral lint agent-api.yaml --ruleset ../../.spectral.yaml
+spectral lint orchestrator-api.yaml --ruleset ../../.spectral.yaml
+spectral lint policy-api.yaml --ruleset ../../.spectral.yaml
+spectral lint masfeat-api.yaml --ruleset ../../.spectral.yaml
+# CI (validate-openapi.yml) lints all four specs with a pinned spectral;
+# see the workflow for the exact pinned versions.
 ```
 
 ## Related Resources

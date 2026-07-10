@@ -56,7 +56,7 @@ func runtimeConfigTestSchema() string {
 			tenant_id VARCHAR(255) NOT NULL UNIQUE,
 			name VARCHAR(255) NOT NULL,
 			status VARCHAR(20) DEFAULT 'active',
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		);
 
 		CREATE TABLE IF NOT EXISTS connector_configs (

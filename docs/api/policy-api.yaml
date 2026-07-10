@@ -11,37 +11,63 @@ info:
     - Cost management
 
     ## Authentication
-    All endpoints require tenant identification via the `X-Tenant-ID` header.
-    User identification is provided via `X-User-ID` header for audit purposes.
+    The Agent (port 8080) is the single entry point for all client traffic
+    (ADR-026). Clients authenticate at the Agent with HTTP Basic auth
+    (`clientId:clientSecret`); the Agent proxies policy requests to the
+    Orchestrator and stamps the `X-Tenant-ID` header from the authenticated
+    client's tenant. When calling the Orchestrator directly (internal
+    deployments only), supply `X-Tenant-ID` yourself. `X-User-ID` is optional
+    and used for audit attribution.
+
+    Note: `/api/v1/templates*` is NOT proxied by the Agent — the template
+    endpoints are reachable only on the Orchestrator directly (or via the
+    customer portal catch-all).
 
     ## Multi-tenancy
     Policies are isolated per tenant. Each API call operates only on policies
     belonging to the authenticated tenant.
-  version: 2.0.0
+
+    ## Related APIs
+    - The static policy enforcement API (`/api/v1/static-policies*`) is served
+      by the Agent and specified in `agent-api.yaml`.
+    - Unified policy read/write (an aggregated static + dynamic view) lives on
+      the Enterprise customer portal and is documented internally.
+      **Enterprise only**.
+
+    ## Terminology note
+    A terminology migration renaming static→system and dynamic→tenant policy
+    endpoints is planned (#1431). No alias routes exist yet; the paths below
+    are current.
+  version: 2.1.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
   license:
-    name: Apache 2.0
-    url: https://www.apache.org/licenses/LICENSE-2.0
+    name: Business Source License 1.1
+    url: https://github.com/getaxonflow/axonflow/blob/main/LICENSE
 
 servers:
-  - url: https://api.getaxonflow.com
-    description: Production
-  - url: https://api-staging.getaxonflow.com
-    description: Staging
+  - url: https://agent.getaxonflow.com
+    description: Production (Agent single entry point, ADR-026)
+  - url: http://localhost:8080
+    description: Local development (Agent single entry point)
+  - url: http://localhost:8081
+    description: Orchestrator direct (internal only)
 
 tags:
-  - name: Unified Policies
+  - name: Dynamic Policies
     description: |
-      Unified view of policies from both Agent (static) and Orchestrator (dynamic).
-      Static policies are read-only security patterns. Dynamic policies support full CRUD.
+      Dynamic policy CRUD via the ADR-026 `/api/v1/dynamic-policies` surface
+      (Orchestrator, proxied by the Agent). Accepts only policies whose
+      category starts with `dynamic-` or `media-`.
   - name: Policies
     description: Dynamic policy CRUD operations (Orchestrator)
-  - name: Static Policies
-    description: Read-only static policies from Agent
   - name: Testing
     description: Policy testing and validation
+  - name: Simulation
+    description: |
+      Policy simulation, impact reports, and conflict detection.
+      **Evaluation tier and above.**
   - name: Bulk Operations
     description: Import and export policies
   - name: Templates
@@ -49,42 +75,41 @@ tags:
 
 paths:
   # =============================================================================
-  # Unified Policies API (PLANNED - NOT YET IMPLEMENTED)
+  # Dynamic Policies API (ADR-026: Single Entry Point)
   # =============================================================================
-  # These endpoints are designed to provide a unified view across Agent (static)
-  # and Orchestrator (dynamic) policies. Implementation is pending.
+  # Preferred surface for dynamic policy management. Served by the Orchestrator
+  # and proxied by the Agent at port 8080. Accepts only policies whose category
+  # starts with "dynamic-" or "media-".
   # =============================================================================
-  /api/v1/unified-policies:
+  /api/v1/dynamic-policies:
     get:
       tags:
-        - Unified Policies
-      summary: List all policies (unified view)
+        - Dynamic Policies
+      summary: List dynamic policies
       description: |
-        **PLANNED - NOT YET IMPLEMENTED**
+        Retrieve a paginated list of dynamic policies. Only policies whose
+        category starts with `dynamic-` or `media-` are returned. When
+        `type=media` is passed without a category, results are filtered to
+        `media-*` categories.
 
-        Retrieves a unified view of policies from both Agent (static) and Orchestrator (dynamic).
-
-        Static policies are pre-configured security patterns (SQL injection, PII detection)
-        managed by AxonFlow and cannot be modified.
-
-        Dynamic policies are customer-created rules that can be managed through CRUD operations.
-
-        The response aggregates policies from both sources and provides a summary count.
-      operationId: listUnifiedPolicies
+        `limit` is the preferred pagination parameter; `page_size` is
+        deprecated but still accepted.
+      operationId: listDynamicPolicies
       parameters:
         - $ref: '#/components/parameters/TenantID'
         - name: type
           in: query
-          description: Filter by policy type (content, user, risk, cost for dynamic; sql_injection, pii_detection, etc. for static)
+          description: Filter by policy type
           schema:
-            type: string
-        - name: source
+            $ref: '#/components/schemas/PolicyType'
+        - name: category
           in: query
-          description: Filter by policy source
+          description: |
+            Filter by category. Must start with `dynamic-` or `media-`
+            (e.g., dynamic-risk, media-safety); other values are rejected
+            with a validation error.
           schema:
             type: string
-            enum: [agent, orchestrator, all]
-            default: all
         - name: enabled
           in: query
           description: Filter by enabled status
@@ -103,21 +128,29 @@ paths:
             type: integer
             minimum: 1
             default: 1
-        - name: page_size
+        - name: limit
           in: query
-          description: Items per page
+          description: Items per page (preferred over the deprecated page_size)
           schema:
             type: integer
             minimum: 1
             maximum: 100
             default: 20
+        - name: page_size
+          in: query
+          deprecated: true
+          description: Items per page (deprecated — use limit instead)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
         - name: sort_by
           in: query
           description: Sort field
           schema:
             type: string
-            enum: [name, created_at, updated_at, priority, source]
-            default: priority
+            enum: [name, created_at, updated_at, priority]
+            default: created_at
         - name: sort_dir
           in: query
           description: Sort direction
@@ -127,206 +160,194 @@ paths:
             default: desc
       responses:
         '200':
-          description: Unified policy list retrieved successfully
+          description: List of dynamic policies
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UnifiedPolicyListResponse'
+                $ref: '#/components/schemas/PoliciesListResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /api/v1/unified-policies/{policy_id}:
-    get:
+    post:
       tags:
-        - Unified Policies
-      summary: Get unified policy by ID
+        - Dynamic Policies
+      summary: Create a dynamic policy
       description: |
-        **PLANNED - NOT YET IMPLEMENTED**
-
-        Retrieves a single policy by its ID from either Agent (static) or Orchestrator (dynamic).
-        The policy_id format indicates the source:
-        - `static-*`: Static policy from Agent
-        - UUID format: Dynamic policy from Orchestrator
-      operationId: getUnifiedPolicy
+        Create a new dynamic policy. `category` is required and must start
+        with `dynamic-` or `media-` (e.g., dynamic-risk, media-safety).
+      operationId: createDynamicPolicy
       parameters:
         - $ref: '#/components/parameters/TenantID'
-        - name: policy_id
-          in: path
-          required: true
-          description: Policy ID (static-* for static policies, UUID for dynamic)
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Policy retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UnifiedPolicy'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-  /api/v1/static-policies:
-    get:
-      tags:
-        - Static Policies
-      summary: List static policies
-      description: |
-        Retrieves static policies from the Agent service.
-        These are pre-configured security patterns that cannot be modified.
-      operationId: listStaticPolicies
-      parameters:
-        - $ref: '#/components/parameters/TenantID'
-        - name: category
-          in: query
-          description: |
-            Filter by policy category. New categories use semantic naming:
-            - security-sqli: SQL injection detection (replaces sql_injection)
-            - security-admin: Admin access protection (replaces admin_access)
-            - pii-global, pii-us, pii-eu, pii-india: Regional PII detection (replaces pii_detection)
-            - dynamic-*: Dynamic policy categories
-            - custom: Custom tenant policies
-
-            Legacy categories (deprecated, will be mapped to new names):
-            - sql_injection → security-sqli
-            - admin_access → security-admin
-            - pii_detection → pii-global
-            - dangerous_queries → security-sqli
-          schema:
-            type: string
-            enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, dynamic-risk, dynamic-compliance, dynamic-security, dynamic-cost, dynamic-access, custom, sql_injection, admin_access, pii_detection, dangerous_queries]
-        - name: tier
-          in: query
-          description: Filter by policy tier
-          schema:
-            type: string
-            enum: [system, organization, tenant]
-        - name: enabled
-          in: query
-          description: Filter by enabled status
-          schema:
-            type: boolean
-      responses:
-        '200':
-          description: Static policy list retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StaticPolicyListResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-  /api/v1/static-policies/overrides:
-    get:
-      tags:
-        - Static Policies
-      summary: List policy overrides
-      description: |
-        Lists all policy overrides for a tenant.
-        Overrides allow Enterprise customers to modify system policy behavior
-        without changing the underlying pattern.
-      operationId: listStaticPolicyOverrides
-      parameters:
-        - $ref: '#/components/parameters/TenantID'
-        - name: include_expired
-          in: query
-          description: Include expired overrides in results
-          schema:
-            type: boolean
-            default: false
-      responses:
-        '200':
-          description: List of policy overrides
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  overrides:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/PolicyOverride'
-                  count:
-                    type: integer
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-  /api/v1/static-policies/{policy_id}:
-    get:
-      tags:
-        - Static Policies
-      summary: Get static policy by ID
-      description: Retrieves a single static policy from the Agent service
-      operationId: getStaticPolicy
-      parameters:
-        - $ref: '#/components/parameters/TenantID'
-        - name: policy_id
-          in: path
-          required: true
-          description: Static policy ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Static policy retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StaticPolicy'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
-    patch:
-      tags:
-        - Static Policies
-      summary: Toggle policy enabled status
-      description: |
-        Toggles the enabled status of a policy.
-        System-tier policies cannot be disabled via this endpoint (use overrides).
-      operationId: toggleStaticPolicy
-      parameters:
-        - $ref: '#/components/parameters/TenantID'
-        - name: policy_id
-          in: path
-          required: true
-          description: Static policy ID
-          schema:
-            type: string
-        - name: X-User-ID
-          in: header
-          description: User ID for audit trail
-          schema:
-            type: string
+        - $ref: '#/components/parameters/UserID'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - enabled
-              properties:
-                enabled:
-                  type: boolean
-                  description: New enabled status
+              $ref: '#/components/schemas/CreatePolicyRequest'
       responses:
-        '200':
-          description: Policy updated successfully
+        '201':
+          description: Dynamic policy created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StaticPolicy'
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '403':
-          description: System policies cannot be disabled
+          description: Tier validation failed (e.g., organization-tier policy without Enterprise license)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/dynamic-policies/import:
+    post:
+      tags:
+        - Dynamic Policies
+      summary: Import dynamic policies
+      description: |
+        Bulk import dynamic policies from JSON. Supports up to 100 policies
+        per request. Every policy must have a category starting with
+        `dynamic-` or `media-`.
+      operationId: importDynamicPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportPoliciesRequest'
+      responses:
+        '200':
+          description: Import results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPoliciesResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/dynamic-policies/export:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Export dynamic policies
+      description: |
+        Export the tenant's dynamic policies as JSON. Only policies with a
+        `dynamic-*` or `media-*` category are included.
+      operationId: exportDynamicPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Exported dynamic policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportPoliciesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/dynamic-policies/effective:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Get effective dynamic policies
+      description: |
+        Returns the enabled dynamic policies for the tenant (both `dynamic-*`
+        and `media-*` categories), sorted by priority ascending. Returns up to
+        100 policies.
+      operationId: getEffectiveDynamicPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Effective dynamic policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoliciesListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/dynamic-policies/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Get a dynamic policy
+      description: |
+        Retrieve a single dynamic policy by ID. Returns 404 if the policy
+        exists but is not a dynamic policy (category not `dynamic-*`/`media-*`).
+      operationId: getDynamicPolicy
+      responses:
+        '200':
+          description: Dynamic policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags:
+        - Dynamic Policies
+      summary: Update a dynamic policy
+      description: |
+        Update an existing dynamic policy. Only provided fields are updated.
+        If `category` is changed, the new value must still start with
+        `dynamic-` or `media-`.
+      operationId: updateDynamicPolicy
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePolicyRequest'
+      responses:
+        '200':
+          description: Dynamic policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tier validation failed
           content:
             application/json:
               schema:
@@ -336,147 +357,93 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /api/v1/static-policies/{policy_id}/override:
+    delete:
+      tags:
+        - Dynamic Policies
+      summary: Delete a dynamic policy
+      description: Soft-delete a dynamic policy. The policy is marked as deleted but retained for audit purposes.
+      operationId: deleteDynamicPolicy
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204':
+          description: Dynamic policy deleted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tier validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/dynamic-policies/{id}/test:
     parameters:
+      - $ref: '#/components/parameters/PolicyID'
       - $ref: '#/components/parameters/TenantID'
-      - name: policy_id
-        in: path
-        required: true
-        description: Static policy ID to override
-        schema:
-          type: string
 
     post:
       tags:
-        - Static Policies
-      summary: Create policy override (Enterprise)
+        - Testing
+      summary: Test a dynamic policy
       description: |
-        Create an override for a system policy. Overrides can disable the policy
-        or change its action to a more restrictive one.
-
-        **Enterprise only** - requires Enterprise license.
-      operationId: createPolicyOverride
+        Evaluate a dynamic policy against sample input without executing
+        actions. `query` is required.
+      operationId: testDynamicPolicy
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                enabled_override:
-                  type: boolean
-                  description: Set to false to disable the policy
-                action_override:
-                  type: string
-                  enum: [block, redact, warn, log]
-                  description: Override action (must be more restrictive)
-                override_reason:
-                  type: string
-                  description: Reason for override (required for audit)
-                  minLength: 10
-                  maxLength: 500
-                expires_at:
-                  type: string
-                  format: date-time
-                  description: Optional expiration date
-              required:
-                - override_reason
-            example:
-              enabled_override: false
-              override_reason: "Internal tooling - no customer data exposure"
-              expires_at: "2025-06-01T00:00:00Z"
-      responses:
-        '201':
-          description: Override created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PolicyOverride'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '403':
-          description: Requires Enterprise license
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-    delete:
-      tags:
-        - Static Policies
-      summary: Remove policy override (Enterprise)
-      description: Remove an override, restoring the policy to its default behavior
-      operationId: deletePolicyOverride
-      responses:
-        '204':
-          description: Override removed
-        '403':
-          description: Requires Enterprise license
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/v1/effective-policies:
-    get:
-      tags:
-        - Static Policies
-      summary: Get effective policies for tenant
-      description: |
-        Returns the merged policy set for the tenant, with hierarchy resolution applied:
-        1. System policies (base)
-        2. Organization policies (if Enterprise)
-        3. Tenant policies (overrides)
-
-        Disabled policies and overrides are reflected in the result.
-      operationId: getEffectivePolicies
-      parameters:
-        - $ref: '#/components/parameters/TenantID'
-        - name: category
-          in: query
-          description: Filter by category
-          schema:
-            type: string
-        - name: include_disabled
-          in: query
-          description: Include disabled policies in response
-          schema:
-            type: boolean
-            default: false
-        - name: include_overridden
-          in: query
-          description: Include policies that have been overridden
-          schema:
-            type: boolean
-            default: true
+              $ref: '#/components/schemas/TestPolicyRequest'
       responses:
         '200':
-          description: Effective policies
+          description: Test results
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  policies:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/StaticPolicy'
-                  summary:
-                    type: object
-                    properties:
-                      total:
-                        type: integer
-                      by_tier:
-                        type: object
-                        properties:
-                          system:
-                            type: integer
-                          organization:
-                            type: integer
-                          tenant:
-                            type: integer
-                      by_category:
-                        type: object
-                        additionalProperties:
-                          type: integer
+                $ref: '#/components/schemas/TestPolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/dynamic-policies/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Get dynamic policy version history
+      description: Retrieve the complete version history of a dynamic policy for audit purposes
+      operationId: getDynamicPolicyVersions
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersionResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/policies:
     get:
@@ -827,6 +794,242 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/policies/simulate:
+    post:
+      tags:
+        - Simulation
+      summary: Simulate policies (dry run)
+      description: |
+        Run all active policies against the provided input as a dry run —
+        no audit writes and no policy actions are applied.
+
+        **Evaluation tier and above** — requires an Evaluation or Enterprise
+        license. Daily simulation quotas apply per tier (unlimited on
+        Enterprise); exceeding the quota returns 429.
+      operationId: simulatePolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatePoliciesRequest'
+      responses:
+        '200':
+          description: Simulation results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatePoliciesResponse'
+        '400':
+          description: Invalid request body or missing query
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '401':
+          description: Missing tenant identification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '403':
+          description: Requires an Evaluation or Enterprise license
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '429':
+          description: Daily simulation limit reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+
+  /api/v1/policies/impact-report:
+    post:
+      tags:
+        - Simulation
+      summary: Generate a policy impact report
+      description: |
+        Test a single policy against multiple inputs and return aggregate
+        match/block statistics plus per-input results.
+
+        **Evaluation tier and above** — requires an Evaluation or Enterprise
+        license. The number of inputs per request is capped per tier.
+      operationId: generateImpactReport
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpactReportRequest'
+      responses:
+        '200':
+          description: Impact report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpactReportResponse'
+        '400':
+          description: Invalid request body, missing policy_id/inputs, or input limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '401':
+          description: Missing tenant identification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '403':
+          description: Requires an Evaluation or Enterprise license
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/conflicts:
+    post:
+      tags:
+        - Simulation
+      summary: Detect policy conflicts
+      description: |
+        Analyze the tenant's active policies for contradictions, shadows, and
+        redundancies. Optionally scope the analysis to a single policy by
+        passing `policy_id` in the request body (the body may be omitted
+        entirely to check all policies).
+
+        **Evaluation tier and above** — requires an Evaluation or Enterprise
+        license. Counts against the daily simulation quota.
+      operationId: detectPolicyConflicts
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyConflictRequest'
+      responses:
+        '200':
+          description: Conflict detection results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyConflictResponse'
+        '400':
+          description: Missing X-Tenant-ID header or invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '403':
+          description: Requires an Evaluation or Enterprise license
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '429':
+          description: Daily simulation limit reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/dynamic:
+    get:
+      tags:
+        - Policies
+      summary: List active dynamic policies (legacy)
+      deprecated: true
+      description: |
+        **Legacy endpoint.** Returns the raw array of dynamic policies
+        currently active in the orchestrator's policy engine (no pagination,
+        no tenant filtering parameters). Prefer `GET /api/v1/dynamic-policies`.
+      operationId: listActiveDynamicPoliciesLegacy
+      responses:
+        '200':
+          description: Array of active dynamic policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                  description: Engine-internal dynamic policy representation
+
+  /api/v1/policies/test:
+    post:
+      tags:
+        - Testing
+      summary: Test input against all active policies (legacy)
+      deprecated: true
+      description: |
+        **Legacy endpoint.** Evaluates the supplied input against all active
+        dynamic policies and returns the raw policy evaluation result. Prefer
+        `POST /api/v1/policies/simulate` (dry-run semantics, tier-aware) or
+        `POST /api/v1/dynamic-policies/{id}/test` (single-policy testing).
+      operationId: testPoliciesLegacy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: Sample query to test against
+                user:
+                  $ref: '#/components/schemas/SimulationUserContext'
+                request_type:
+                  type: string
+                  description: Type of request being simulated
+      responses:
+        '200':
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  allowed:
+                    type: boolean
+                  applied_policies:
+                    type: array
+                    items:
+                      type: string
+                  risk_score:
+                    type: number
+                    format: float
+                  severity:
+                    type: string
+                    description: "Highest severity of matched policies: critical, high, medium, low"
+                  required_actions:
+                    type: array
+                    items:
+                      type: string
+                  processing_time_ms:
+                    type: integer
+                    format: int64
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+
   /api/v1/templates:
     get:
       tags:
@@ -845,12 +1048,14 @@ paths:
           schema:
             type: string
             enum:
+              - general
               - security
               - compliance
-              - rate_limiting
               - content_safety
-              - data_protection
+              - rate_limiting
               - access_control
+              - data_protection
+              - custom
         - name: search
           in: query
           description: Search in name and description
@@ -861,6 +1066,11 @@ paths:
           description: Comma-separated tags to filter by
           schema:
             type: string
+        - name: active
+          in: query
+          description: Filter by active status
+          schema:
+            type: boolean
         - name: builtin
           in: query
           description: Filter by builtin status
@@ -986,12 +1196,14 @@ paths:
                     items:
                       type: string
                     example:
+                      - general
                       - security
                       - compliance
-                      - rate_limiting
                       - content_safety
-                      - data_protection
+                      - rate_limiting
                       - access_control
+                      - data_protection
+                      - custom
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -1034,7 +1246,11 @@ components:
       name: X-Tenant-ID
       in: header
       required: true
-      description: Tenant identifier for multi-tenancy isolation
+      description: |
+        Tenant identifier for multi-tenancy isolation. When calling through
+        the Agent (recommended), this header is stamped automatically from the
+        authenticated client — you do not set it yourself. Required only on
+        direct Orchestrator calls (internal deployments).
       schema:
         type: string
         example: tenant_abc123
@@ -1074,12 +1290,24 @@ components:
         - user
         - risk
         - cost
+        - context_aware
+        - media
+        - rate-limit
+        - budget
+        - time-access
+        - role-access
+        - mcp
+        - connector
       description: |
         Policy type determines evaluation context:
         - `content`: Evaluates request/response content
         - `user`: Evaluates user attributes
         - `risk`: Evaluates risk scores
         - `cost`: Evaluates cost estimates
+        - `context_aware`: Context-aware controls (tenant isolation, debug restriction, sensitive-data control)
+        - `media`: Media governance policies (multimodal image governance)
+        - `rate-limit`, `budget`, `time-access`: MCP rate/budget controls
+        - `role-access`, `mcp`, `connector`: MCP access controls
 
     ConditionOperator:
       type: string
@@ -1100,7 +1328,9 @@ components:
       type: string
       enum:
         - block
+        - require_approval
         - redact
+        - warn
         - alert
         - log
         - route
@@ -1108,7 +1338,9 @@ components:
       description: |
         Action to take when policy matches:
         - `block`: Block the request with message
+        - `require_approval`: Hold the request for human approval (HITL)
         - `redact`: Redact sensitive content from response
+        - `warn`: Allow the request but attach a warning
         - `alert`: Send alert to configured channel
         - `log`: Log to audit trail
         - `route`: Route to specific provider
@@ -1123,7 +1355,10 @@ components:
       properties:
         field:
           type: string
-          description: Field to evaluate
+          description: |
+            Field to evaluate. `media.*` fields apply to media governance
+            policies (multimodal image governance); `step.*` fields are
+            retry-aware workflow step fields for WCP policies.
           enum:
             - query
             - response
@@ -1135,6 +1370,25 @@ components:
             - request_type
             - connector
             - cost_estimate
+            - media.has_faces
+            - media.face_count
+            - media.has_biometric_data
+            - media.nsfw_score
+            - media.violence_score
+            - media.content_safe
+            - media.document_type
+            - media.is_sensitive_document
+            - media.has_pii
+            - media.pii_types
+            - media.has_extracted_text
+            - media.extracted_text_length
+            - step.gate_count
+            - step.completion_count
+            - step.prior_completion_status
+            - step.prior_output_available
+            - step.last_decision
+            - step.first_attempt_age_seconds
+            - step.idempotency_key
         operator:
           $ref: '#/components/schemas/ConditionOperator'
         value:
@@ -1182,6 +1436,14 @@ components:
           example: Prevent unauthorized access to personally identifiable information
         type:
           $ref: '#/components/schemas/PolicyType'
+        category:
+          type: string
+          description: Policy category (dynamic-risk, dynamic-compliance, media-safety, etc.)
+          example: dynamic-risk
+        tier:
+          type: string
+          enum: [system, organization, tenant]
+          description: Policy tier in the hierarchy (system policies are immutable)
         conditions:
           type: array
           items:
@@ -1211,6 +1473,14 @@ components:
         tenant_id:
           type: string
           description: Owning tenant ID
+        organization_id:
+          type: string
+          description: Organization ID (for organization-tier policies)
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for categorization
         created_at:
           type: string
           format: date-time
@@ -1225,6 +1495,10 @@ components:
         updated_by:
           type: string
           description: User who last updated the policy
+        deleted_at:
+          type: string
+          format: date-time
+          description: Soft-delete timestamp (present only on deleted policies)
 
     CreatePolicyRequest:
       type: object
@@ -1243,6 +1517,16 @@ components:
           maxLength: 500
         type:
           $ref: '#/components/schemas/PolicyType'
+        category:
+          type: string
+          description: |
+            Policy category (dynamic-risk, dynamic-compliance, media-safety, etc.).
+            Required on the /api/v1/dynamic-policies surface, where it must
+            start with `dynamic-` or `media-`.
+        tier:
+          type: string
+          enum: [organization, tenant]
+          description: Policy tier. Only organization or tenant is allowed via the API.
         conditions:
           type: array
           items:
@@ -1261,6 +1545,11 @@ components:
         enabled:
           type: boolean
           default: true
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for categorization
 
     UpdatePolicyRequest:
       type: object
@@ -1274,6 +1563,9 @@ components:
           maxLength: 500
         type:
           $ref: '#/components/schemas/PolicyType'
+        category:
+          type: string
+          description: Policy category. Only changeable on non-system policies.
         conditions:
           type: array
           items:
@@ -1288,6 +1580,11 @@ components:
           maximum: 1000
         enabled:
           type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for categorization
 
     TestPolicyRequest:
       type: object
@@ -1435,16 +1732,7 @@ components:
           items:
             $ref: '#/components/schemas/PolicyResource'
         pagination:
-          type: object
-          properties:
-            page:
-              type: integer
-            page_size:
-              type: integer
-            total_items:
-              type: integer
-            total_pages:
-              type: integer
+          $ref: '#/components/schemas/PaginationMeta'
 
     APIError:
       type: object
@@ -1488,7 +1776,7 @@ components:
             - boolean
             - array
           description: Variable data type
-        is_required:
+        required:
           type: boolean
           default: false
           description: Whether this variable must be provided when applying the template
@@ -1506,15 +1794,8 @@ components:
           description: Human-readable description
           example: Maximum requests allowed per window
         validation:
-          type: object
-          properties:
-            min:
-              type: number
-            max:
-              type: number
-            pattern:
-              type: string
-              description: Regex pattern for validation
+          type: string
+          description: Regex pattern for validating the variable value
 
     TemplateResource:
       type: object
@@ -1596,16 +1877,7 @@ components:
           items:
             $ref: '#/components/schemas/TemplateResource'
         pagination:
-          type: object
-          properties:
-            page:
-              type: integer
-            page_size:
-              type: integer
-            total_items:
-              type: integer
-            total_pages:
-              type: integer
+          $ref: '#/components/schemas/PaginationMeta'
 
     TemplateResponse:
       type: object
@@ -1674,209 +1946,262 @@ components:
                 type: string
                 format: date-time
 
-    # Unified Policy Schemas
-    UnifiedPolicy:
+    # Simulation Schemas (Evaluation tier and above)
+    SimulationUserContext:
       type: object
-      description: A policy from either Agent (static) or Orchestrator (dynamic)
+      description: User context for policy simulation and testing
+      properties:
+        id:
+          type: integer
+          description: Numeric user identifier
+        email:
+          type: string
+          example: analyst@company.com
+        role:
+          type: string
+          example: analyst
+        region:
+          type: string
+          description: User's region for geo-based routing policies
+        permissions:
+          type: array
+          items:
+            type: string
+        tenant_id:
+          type: string
+        org_id:
+          type: string
+          description: Organization for multi-tenant isolation
+
+    SimulationClientContext:
+      type: object
+      description: Client context for policy simulation
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        org_id:
+          type: string
+          description: Organization ID for usage tracking
+        tenant_id:
+          type: string
+
+    SimulatePoliciesRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: Input to evaluate against all active policies
+        request_type:
+          type: string
+          description: Type of request being simulated (defaults to "simulation")
+        user:
+          $ref: '#/components/schemas/SimulationUserContext'
+        client:
+          $ref: '#/components/schemas/SimulationClientContext'
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for evaluation
+
+    SimulatePoliciesResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the input would be allowed
+        applied_policies:
+          type: array
+          items:
+            type: string
+          description: Names of policies that matched
+        risk_score:
+          type: number
+          format: float
+        required_actions:
+          type: array
+          items:
+            type: string
+        processing_time_ms:
+          type: integer
+          format: int64
+        total_policies:
+          type: integer
+          description: Total number of active policies evaluated
+        dry_run:
+          type: boolean
+          description: Always true — no actions were applied
+        simulated_at:
+          type: string
+          format: date-time
+        tier:
+          type: string
+          description: License tier the simulation ran under
+        daily_usage:
+          $ref: '#/components/schemas/SimulationDailyUsage'
+
+    SimulationDailyUsage:
+      type: object
+      description: Simulation quota usage (omitted on unlimited tiers)
+      properties:
+        used:
+          type: integer
+        limit:
+          type: integer
+          description: Daily limit (-1 = unlimited)
+
+    ImpactReportRequest:
+      type: object
+      required:
+        - policy_id
+        - inputs
       properties:
         policy_id:
           type: string
-          description: Unique policy identifier (static-* for static, UUID for dynamic)
-          example: static-sql-injection-1
-        name:
-          type: string
-          description: Policy name
-          example: SQL Injection Detection
-        description:
-          type: string
-          description: Human-readable description
-        type:
-          type: string
-          description: Policy type (category for static, type for dynamic)
-          example: sql_injection
-        source:
-          type: string
-          enum: [agent, orchestrator]
-          description: Source service for this policy
-        priority:
-          type: integer
-          description: Evaluation priority (higher = evaluated first)
-          example: 1000
-        enabled:
-          type: boolean
-          description: Whether the policy is enabled
-        is_static:
-          type: boolean
-          description: Whether this is a static (read-only) policy
-        pattern:
-          type: string
-          description: Detection pattern (for static policies)
-        action:
-          type: string
-          description: Action type (block, redact, alert, log)
-        severity:
-          type: string
-          enum: [critical, high, medium, low]
-          description: Severity level
-        conditions:
+          description: Policy to test against the inputs
+        inputs:
           type: array
           items:
-            $ref: '#/components/schemas/PolicyCondition'
-          description: Conditions (for dynamic policies)
+            $ref: '#/components/schemas/ImpactReportInput'
+          minItems: 1
+          description: Test inputs (per-tier maximum applies)
+
+    ImpactReportInput:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+        request_type:
+          type: string
+        user:
+          type: object
+          additionalProperties: true
+          description: User context for testing
+        context:
+          type: object
+          additionalProperties: true
+
+    ImpactReportResponse:
+      type: object
+      properties:
+        policy_id:
+          type: string
+        policy_name:
+          type: string
+        total_inputs:
+          type: integer
+        matched:
+          type: integer
+          description: Number of inputs that matched the policy
+        blocked:
+          type: integer
+          description: Number of inputs that would be blocked
+        match_rate:
+          type: number
+          format: float
+        block_rate:
+          type: number
+          format: float
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImpactReportResult'
+        processing_time_ms:
+          type: integer
+          format: int64
+        generated_at:
+          type: string
+          format: date-time
+        tier:
+          type: string
+
+    ImpactReportResult:
+      type: object
+      properties:
+        input_index:
+          type: integer
+        matched:
+          type: boolean
+        blocked:
+          type: boolean
         actions:
           type: array
           items:
-            $ref: '#/components/schemas/PolicyAction'
-          description: Actions (for dynamic policies)
-        metadata:
-          type: object
-          additionalProperties: true
-          description: Additional policy metadata
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
+            type: string
+          description: Action types that would trigger for this input
 
-    UnifiedPolicySummary:
-      type: object
-      description: Summary counts for unified policy view
-      properties:
-        total_static:
-          type: integer
-          description: Count of static policies from Agent
-          example: 18
-        total_dynamic:
-          type: integer
-          description: Count of dynamic policies from Orchestrator
-          example: 5
-        total_enabled:
-          type: integer
-          description: Count of enabled policies
-          example: 20
-
-    UnifiedPolicyListResponse:
+    PolicyConflictRequest:
       type: object
       properties:
-        policies:
-          type: array
-          items:
-            $ref: '#/components/schemas/UnifiedPolicy'
-        pagination:
-          $ref: '#/components/schemas/PaginationMeta'
-        summary:
-          $ref: '#/components/schemas/UnifiedPolicySummary'
-
-    StaticPolicy:
-      type: object
-      description: A static policy from Agent service
-      properties:
-        id:
-          type: string
-          description: Internal UUID identifier
-          example: 550e8400-e29b-41d4-a716-446655440000
         policy_id:
           type: string
-          description: Human-readable policy identifier (e.g., sys_sqli_union_select)
-          example: sys_sqli_union_select
-        name:
+          description: "Optional: check a specific policy against all others"
+
+    PolicyConflictResponse:
+      type: object
+      properties:
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyConflict'
+        total_policies:
+          type: integer
+          description: Number of active policies analyzed
+        conflict_count:
+          type: integer
+        checked_at:
           type: string
-          description: Policy name
-          example: UNION SELECT Detection
-        description:
-          type: string
-          description: What the policy protects against
-        category:
-          type: string
-          enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, dynamic-risk, dynamic-compliance, dynamic-security, dynamic-cost, dynamic-access, custom]
-          description: Policy category
+          format: date-time
         tier:
           type: string
-          enum: [system, organization, tenant]
-          description: Policy tier (system policies are immutable)
-          example: system
-        pattern:
+
+    PolicyConflict:
+      type: object
+      description: A detected conflict between two policies
+      properties:
+        policy_a:
+          $ref: '#/components/schemas/PolicyConflictRef'
+        policy_b:
+          $ref: '#/components/schemas/PolicyConflictRef'
+        conflict_type:
           type: string
-          description: Detection pattern (regex)
-          example: "(?i)\\bUNION\\s+(ALL\\s+)?SELECT\\b"
-        action:
+          enum: [contradictory_action, shadow, redundant]
+        description:
           type: string
-          enum: [block, redact, warn, log]
-          description: Action to take when pattern matches
         severity:
           type: string
-          enum: [critical, high, medium, low]
-          description: Severity level
-        enabled:
-          type: boolean
-          description: Whether the policy is enabled
-        priority:
-          type: integer
-          description: Evaluation priority (higher = evaluated first)
-          example: 1000
-        has_override:
-          type: boolean
-          description: Whether this policy has an override (Enterprise only)
-        override:
-          $ref: '#/components/schemas/PolicyOverride'
-        organization_id:
+          enum: [high, medium, low]
+        overlapping_field:
           type: string
-          description: Organization ID (for org-tier policies)
-        tenant_id:
-          type: string
-          description: Tenant ID (for tenant-tier policies)
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        version:
-          type: integer
-          description: Policy version number
+          description: Condition field both policies evaluate
 
-    PolicyOverride:
+    PolicyConflictRef:
       type: object
-      description: Override configuration for system policies (Enterprise only)
+      description: Identifies a policy in a conflict pair
       properties:
         id:
           type: string
-          description: Override identifier
-        policy_id:
+        name:
           type: string
-          description: ID of the policy being overridden
-        enabled_override:
-          type: boolean
-          description: Override enabled status (null = no override)
-        action_override:
+        type:
           type: string
-          enum: [block, redact, warn, log]
-          description: Override action (must be more restrictive)
-        override_reason:
-          type: string
-          description: Reason for the override (required for audit)
-        expires_at:
-          type: string
-          format: date-time
-          description: When the override automatically expires
-        created_by:
-          type: string
-          description: User who created the override
-        created_at:
-          type: string
-          format: date-time
 
-    StaticPolicyListResponse:
+    SimulationError:
       type: object
+      description: Flat error shape returned by the simulation endpoints
       properties:
-        policies:
-          type: array
-          items:
-            $ref: '#/components/schemas/StaticPolicy'
-        total:
-          type: integer
-          description: Total count of static policies
+        error:
+          type: string
+          description: Error code (duplicated in code)
+        code:
+          type: string
+        message:
+          type: string
 
     PaginationMeta:
       type: object

@@ -62,10 +62,10 @@ CREATE TABLE audit_retention_config (
 	UNIQUE (org_id, data_type)
 );
 
-CREATE TABLE agent_audit_logs        (id SERIAL PRIMARY KEY,    org_id VARCHAR(255), timestamp  TIMESTAMP   DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE agent_audit_logs        (id SERIAL PRIMARY KEY,    org_id VARCHAR(255), timestamp  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE orchestrator_audit_logs (id BIGSERIAL PRIMARY KEY, org_id VARCHAR(255), timestamp  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE llm_call_audits         (id BIGSERIAL PRIMARY KEY, org_id VARCHAR(255), created_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE gateway_contexts        (id BIGSERIAL PRIMARY KEY,                      created_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE llm_call_audits         (id BIGSERIAL PRIMARY KEY, org_id VARCHAR(255), created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE gateway_contexts        (id BIGSERIAL PRIMARY KEY,                      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE decision_chain          (id BIGSERIAL PRIMARY KEY, org_id VARCHAR(255) NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());
 CREATE TABLE hitl_approval_history   (id BIGSERIAL PRIMARY KEY, org_id VARCHAR(255) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 `

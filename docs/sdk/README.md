@@ -2,7 +2,7 @@
 
 **Last Updated:** May 2026
 
-**SDK Versions:** v8.5.1 (Go / Python / TypeScript / Java) — v0.8.1 preview (Rust) | **Platform Version:** v9.7.0
+**SDK Versions:** v8.5.1 (Go / Python / TypeScript / Java) — v0.8.1 preview (Rust) | **Platform Version:** v9.8.0
 
 AxonFlow provides official SDKs in five languages for integrating LLM governance into your applications. The four established SDKs (Go / Python / TypeScript / Java) offer identical feature coverage; the Rust SDK is in preview with a Phase-0 baseline (auth + proxy + audit + basic MAP + basic MCP) — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix.
 
