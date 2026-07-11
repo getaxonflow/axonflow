@@ -762,7 +762,7 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		tier:            tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
 		client:          sessClient,
 		authKind:        sessAuthKind,
-		clientSessionID: strings.TrimSpace(r.Header.Get("X-Session-Id")), // #2753
+		clientSessionID: attributedSessionID(r), // #2753; trust-gated per #2896
 	}
 
 	mcpSessionsMu.Lock()
@@ -1192,15 +1192,25 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 	// that don't set these headers get a client-scoped pseudo-email — not a
 	// shared "0" — so overrides created by one legacy caller don't leak onto
 	// another legacy caller on the same client.
-	headerEmail := strings.TrimSpace(r.Header.Get("X-User-Email"))
-	headerUserID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	//
+	// #2896: the header reads are trust-gated. These values become the
+	// session's userEmail/userID, which (a) attribute every tools/call audit
+	// row, (b) scope the ADR-044 session-override apply (a deny→allow flip),
+	// and (c) are re-asserted upstream to the orchestrator by
+	// mcpProxyToOrchestrator — so an unconditionally-honored header let any
+	// governed caller forge all three. Under the default (gate off) both
+	// resolve to "" here and the client-scoped pseudo-identity below applies;
+	// per-developer attribution requires AXONFLOW_TRUST_IDENTITY_HEADERS=true
+	// (the JumpCloud-managed plugin fleet is exactly the trusted case).
+	headerEmail := trustedIdentityHeader(r, identityHeaderUserEmail, maxAttributedEmailLen)
+	headerUserID := trustedIdentityHeader(r, identityHeaderUserID, maxAttributedUserIDLen)
 
 	resolvedEmail := headerEmail
 	if resolvedEmail == "" {
 		resolvedEmail = headerUserID
 	}
 	if resolvedEmail == "" {
-		resolvedEmail = fmt.Sprintf("mcp-client:%s", auth.ClientID)
+		resolvedEmail = mcpClientPseudoIdentityPrefix + auth.ClientID
 	}
 
 	resolvedUserID := headerUserID
@@ -1334,7 +1344,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		tier:            tier,
 		client:          sessClient,
 		authKind:        sessAuthKind,
-		clientSessionID: strings.TrimSpace(r.Header.Get("X-Session-Id")), // #2753
+		clientSessionID: attributedSessionID(r), // #2753; trust-gated per #2896
 	}
 }
 
@@ -2098,6 +2108,14 @@ func mcpToolCreateOverride(session *mcpSession, args map[string]interface{}) (in
 	reason, _ := args["override_reason"].(string)
 	if policyID == "" || policyType == "" || reason == "" {
 		return nil, fmt.Errorf("policy_id, policy_type, and override_reason are required")
+	}
+	// #2896: refuse LOUDLY instead of creating an override keyed to the
+	// client-shared pseudo-identity — such a row either never applies (the
+	// check planes key on a different identity) or applies to every caller
+	// on the client. This happens when the caller sent no per-user identity,
+	// or the deployment has not opted in to trusting identity headers.
+	if isClientSharedPseudoIdentity(session.userEmail) {
+		return nil, fmt.Errorf("per-user session overrides require a trusted per-user identity; this session is attributed to the client-scoped id %q — supply X-User-Email and set AXONFLOW_TRUST_IDENTITY_HEADERS=true on the agent if your identity source is trusted", session.userEmail)
 	}
 
 	body := map[string]interface{}{

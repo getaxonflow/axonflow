@@ -33,7 +33,7 @@ import (
 // policy-block path passes, and (3) that a nil input writes NO row.
 // =============================================================================
 
-// expectOpenAICompatAuditRow registers the 19-column canonical audit_logs INSERT
+// expectOpenAICompatAuditRow registers the 20-column canonical audit_logs INSERT
 // expectation, pinning the load-bearing columns (org/tenant/client identity,
 // request_type=decision_llm, canonical blocked verdict, plane=openai_compat) and
 // AnyArg-ing the volatile ones (ids, timestamp, query/hash, details).
@@ -59,6 +59,7 @@ func expectOpenAICompatAuditRow(mock sqlmock.Sqlmock, clientID, tenantID, orgID 
 			nil,                 // obligations (none)
 			sqlmock.AnyArg(),    // correlation_id
 			nil,                 // redacted_fields (none)
+			nil,                 // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }

@@ -295,6 +295,17 @@ func validateCreateOverrideRequest(req *CreateOverrideRequest) error {
 // Writes a policy_overrides row, enforces ADR-044 rules server-side,
 // emits an override_created audit event.
 func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
+	// #2896 WS1b: the identity that KEYS the override (X-User-Email below) is
+	// only trustworthy when set by the Agent gateway, which trust-gates the
+	// per-user headers (#2897) and injects the HMAC proxy token. A direct
+	// caller could otherwise create an override as an arbitrary principal —
+	// the same deny→allow hijack class #2897 closed on the agent planes.
+	// Mirrors auditToolCallHandler; Community mode (no secret) is exempt.
+	if ok, msg := verifyAgentProxyAuth(r, "OverrideCreate"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
+
 	var req CreateOverrideRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)

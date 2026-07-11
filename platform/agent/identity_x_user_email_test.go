@@ -29,6 +29,7 @@ func TestAuthenticateMCPServerRequest_PrefersRealUserEmail(t *testing.T) {
 	// Community mode lets Authenticate succeed without a DB, matching the
 	// existing authenticateMCPServerRequest test corpus.
 	t.Setenv("AXONFLOW_MODE", "community")
+	t.Setenv("AXONFLOW_TRUST_IDENTITY_HEADERS", "true") // #2896: header identity requires the trust gate
 
 	req := httptest.NewRequest("POST", "/", nil)
 	req.Header.Set("X-User-Email", "alice@example.com")
@@ -74,6 +75,7 @@ func TestAuthenticateMCPServerRequest_SyntheticFallbackRetained(t *testing.T) {
 // ahead of the synthetic id.
 func TestAuthenticateMCPServerRequest_UserIDFallbackBeforeSynthetic(t *testing.T) {
 	t.Setenv("AXONFLOW_MODE", "community")
+	t.Setenv("AXONFLOW_TRUST_IDENTITY_HEADERS", "true") // #2896: header identity requires the trust gate
 
 	req := httptest.NewRequest("POST", "/", nil)
 	req.Header.Set("X-User-ID", "u-12345")

@@ -1651,6 +1651,7 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 func TestMCPServer_AuthenticateRequest_PerUserIdentity(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
+	t.Setenv("AXONFLOW_TRUST_IDENTITY_HEADERS", "true") // #2896: header identity requires the trust gate
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("X-User-Email", "alice@example.com")
@@ -1675,6 +1676,7 @@ func TestMCPServer_AuthenticateRequest_PerUserIdentity(t *testing.T) {
 func TestMCPServer_AuthenticateRequest_EmailOnly(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
+	t.Setenv("AXONFLOW_TRUST_IDENTITY_HEADERS", "true") // #2896: header identity requires the trust gate
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("X-User-Email", "bob@example.com")

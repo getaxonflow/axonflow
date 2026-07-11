@@ -17,10 +17,26 @@ import (
 	logutil "axonflow/platform/shared/logger"
 )
 
+// ProxyAuthCheck verifies that a request was routed through the AxonFlow
+// Agent gateway (X-Axonflow-Proxy-Auth) rather than reaching the
+// orchestrator directly. Returns (true, "") to proceed; (false, msg) where
+// msg is the client-facing 403 body. Wired by the orchestrator (#2896 WS1b)
+// so the step-gate — whose per-user identity keys the ADR-044 override
+// apply, a deny→allow flip — only accepts identity a trusted hop set. A nil
+// check = not enforced (tests, embedded use).
+type ProxyAuthCheck func(r *http.Request) (bool, string)
+
 // Handler handles HTTP requests for the Workflow Control Plane
 type Handler struct {
-	service *Service
-	logger  *log.Logger
+	service        *Service
+	logger         *log.Logger
+	proxyAuthCheck ProxyAuthCheck
+}
+
+// SetProxyAuthCheck installs the agent proxy-auth verification the StepGate
+// endpoint enforces before evaluating (see ProxyAuthCheck).
+func (h *Handler) SetProxyAuthCheck(check ProxyAuthCheck) {
+	h.proxyAuthCheck = check
 }
 
 // NewHandler creates a new workflow control handler
@@ -219,6 +235,18 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
 		return
+	}
+
+	// #2896 WS1b: the step-gate identity (X-User-ID / X-User-Email via
+	// getUserID below) keys the ADR-044 override apply inside
+	// EvaluateStepGate — a deny→allow flip. Only agent-routed requests
+	// (trust-gated identity + HMAC proxy token) may drive it; a direct
+	// caller with a forged identity is rejected before any evaluation.
+	if h.proxyAuthCheck != nil {
+		if ok, msg := h.proxyAuthCheck(r); !ok {
+			h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
+			return
+		}
 	}
 
 	vars := mux.Vars(r)
@@ -912,6 +940,18 @@ func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// #2896 WS1c: resuming a checkpoint re-evaluates its step and applies any
+	// ADR-044 override keyed on the checkpoint's stored actor identity — a
+	// deny→allow flip. Only agent-routed requests (trust-gated identity +
+	// HMAC proxy token) may drive it; a direct caller is rejected before any
+	// re-evaluation. Mirrors the StepGate guard.
+	if h.proxyAuthCheck != nil {
+		if ok, msg := h.proxyAuthCheck(r); !ok {
+			h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
+			return
+		}
+	}
+
 	vars := mux.Vars(r)
 	workflowID := vars["id"]
 	if workflowID == "" {
@@ -946,6 +986,17 @@ func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
 		return
+	}
+
+	// #2896 WS1c: resuming a specific checkpoint re-evaluates its step and
+	// applies any ADR-044 override keyed on the checkpoint's stored actor
+	// identity — a deny→allow flip. Require the Agent gateway's proxy token
+	// (mirrors StepGate / ResumeFromLastCheckpoint).
+	if h.proxyAuthCheck != nil {
+		if ok, msg := h.proxyAuthCheck(r); !ok {
+			h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
+			return
+		}
 	}
 
 	vars := mux.Vars(r)

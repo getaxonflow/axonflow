@@ -79,7 +79,12 @@ func buildRicherCheckInputBlock(
 	// qualify — the DB trigger guarantees this but we belt-and-suspenders
 	// here so the plugin doesn't render an "override" button for something
 	// that will 403 anyway.
-	if firstOverridablePolicyID == "" || userEmail == "" {
+	//
+	// #2896: a client-shared pseudo-identity gets NO override affordance —
+	// offering the CTA would let the plugin create an override that either
+	// never applies (identity mismatch across planes) or applies to every
+	// caller on the client. The block response stays a plain block.
+	if firstOverridablePolicyID == "" || userEmail == "" || isClientSharedPseudoIdentity(userEmail) {
 		return matches, topRisk, nil, ""
 	}
 
@@ -257,7 +262,11 @@ func applyOverrideToCheckInputBlock(
 	tenantID, userEmail string,
 	matches []RicherPolicyMatch,
 ) (string, *RicherPolicyMatch, bool) {
-	if db == nil || userEmail == "" || len(matches) == 0 {
+	// #2896: never flip a deny for a client-shared pseudo-identity — an
+	// override keyed to "mcp-client:<id>" would be one caller's override
+	// applied to EVERY caller on that client (ADR-044 scopes overrides to a
+	// user, not a client). Fail closed: the block stands.
+	if db == nil || userEmail == "" || isClientSharedPseudoIdentity(userEmail) || len(matches) == 0 {
 		return "", nil, false
 	}
 	for i := range matches {

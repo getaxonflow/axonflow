@@ -44,9 +44,9 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 	db := pg.DB
 
 	// audit_logs with the exact columns writeDecisionAuditLog's INSERT targets
-	// (the union of migrations 059 + 119 + 121 + this PR's redacted_fields). A
-	// minimal faithful shape keeps the test independent of the full chain while
-	// exercising the real INSERT verbatim.
+	// (the union of migrations 059 + 119 + 121 + 129 + redacted_fields +
+	// #2896's session_id). A minimal faithful shape keeps the test independent
+	// of the full chain while exercising the real INSERT verbatim.
 	if _, err := db.Exec(`
 		CREATE TABLE audit_logs (
 			id              VARCHAR(255) PRIMARY KEY,
@@ -67,7 +67,8 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 			plane           VARCHAR(50),
 			obligations     JSONB,
 			correlation_id  VARCHAR(255),
-			redacted_fields JSONB
+			redacted_fields JSONB,
+			session_id      VARCHAR(255)
 		)`); err != nil {
 		t.Fatalf("create audit_logs: %v", err)
 	}
