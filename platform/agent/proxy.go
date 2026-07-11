@@ -299,6 +299,48 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 //   - for logging/metrics as a deployment label.
 //
 // It is NOT the source of truth for per-request org identity.
+// gateProxyIdentityHeaders applies the #2896 identity trust gate to the
+// client-assertable per-user identity headers (X-User-Email / X-User-ID /
+// X-Session-Id) on EVERY route proxied to the orchestrator or portal.
+//
+// It is deliberately GLOBAL, not per-prefix (#2896 WS1c). The orchestrator
+// keys ADR-044 override behavior on these headers on more paths than the two
+// WS1b enumerated (/overrides + /workflows) — notably the MAP plan-resume and
+// checkpoint-resume planes (/api/v1/plan, workflow checkpoints), where a
+// forged X-User-ID is persisted into a resumable checkpoint's actor identity
+// and later drives ApplyOverrideToResult (a deny→allow flip). A per-prefix
+// allowlist has now missed a plane twice; gating every proxied route closes
+// the class and honors the invariant "gate off ⇒ these headers are ignored
+// everywhere" (identity_trust.go).
+//
+// Gate ON  ⇒ each present header is forwarded sanitized (the deployment has
+//            declared its identity source trusted; the orchestrator is
+//            additionally protected by proxy-auth on the override ingresses).
+// Gate OFF ⇒ each header is STRIPPED before forwarding, so no proxied route
+//            can launder a forged per-user identity to the orchestrator; a
+//            once-per-process detection warning fires via trustedIdentityHeader.
+//
+// The auth-derived headers X-Tenant-ID / X-Org-ID / X-Client-ID (set from the
+// validated credential just above the call site) and the HMAC proxy-auth
+// token (injected in the reverse-proxy Director, after this runs) are NOT
+// touched — only the three forgeable per-user identity headers are gated.
+func gateProxyIdentityHeaders(r *http.Request) {
+	for _, hdr := range []struct {
+		name   string
+		maxLen int
+	}{
+		{identityHeaderUserEmail, maxAttributedEmailLen},
+		{identityHeaderUserID, maxAttributedUserIDLen},
+		{identityHeaderSessionID, maxAttributedSessionIDLen},
+	} {
+		if v := trustedIdentityHeader(r, hdr.name, hdr.maxLen); v != "" {
+			r.Header.Set(hdr.name, v)
+		} else {
+			r.Header.Del(hdr.name)
+		}
+	}
+}
+
 func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Skip auth for CORS preflight
@@ -353,6 +395,17 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		r.Header.Set("X-Tenant-ID", auth.TenantID)
 		r.Header.Set("X-Org-ID", auth.OrgID)
 		r.Header.Set("X-Client-ID", auth.ClientID)
+
+		// #2896 WS1c: trust-gate the client-assertable per-user identity
+		// headers on EVERY proxied route (not a per-prefix allowlist — that
+		// missed the MAP plan-resume / checkpoint-resume override-apply plane
+		// twice). Gate on ⇒ forwarded sanitized (trusted deployment); gate
+		// off (default) ⇒ stripped, so no proxied route can launder a forged
+		// per-user identity to the orchestrator. Runs AFTER the auth-derived
+		// X-Tenant-ID/X-Org-ID/X-Client-ID are Set above and BEFORE the
+		// reverse-proxy Director injects the proxy-auth token, so neither is
+		// affected. See gateProxyIdentityHeaders.
+		gateProxyIdentityHeaders(r)
 
 		// V1.1: forward the per-tenant SaaS Plugin tier to the
 		// orchestrator. The agent has already resolved Free / Pro /

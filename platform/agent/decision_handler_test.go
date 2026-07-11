@@ -908,13 +908,15 @@ func (m redactedFieldsMatcher) Match(v driver.Value) bool {
 	return false
 }
 
-// decideAuditInsertArgs builds the positional WithArgs matcher for the 19-column
+// decideAuditInsertArgs builds the positional WithArgs matcher for the 20-column
 // audit_logs INSERT: every column is AnyArg except policy_decision (canonical,
-// pos 13), policy_details (optional matcher, pos 14) and plane (=decision, pos
-// 16). Callers override individual positions (e.g. tenant_id pos 8) to assert
-// the actual authenticated identity alongside the attempted one.
+// pos 13), policy_details (optional matcher, pos 14), plane (=decision, pos
+// 16) and session_id (pos 20, pinned NULL — #2896: none of these tests stamp a
+// client session id under the trust gate, so it must stay NULL). Callers
+// override individual positions (e.g. tenant_id pos 8) to assert the actual
+// authenticated identity alongside the attempted one.
 func decideAuditInsertArgs(policyDecision string, details driver.Value) []driver.Value {
-	args := make([]driver.Value, 19)
+	args := make([]driver.Value, 20)
 	for i := range args {
 		args[i] = sqlmock.AnyArg()
 	}
@@ -923,6 +925,7 @@ func decideAuditInsertArgs(policyDecision string, details driver.Value) []driver
 		args[13] = details // policy_details JSONB
 	}
 	args[15] = PlaneDecision // plane
+	args[19] = nil // session_id — NULL on untrusted paths (#2896)
 	return args
 }
 

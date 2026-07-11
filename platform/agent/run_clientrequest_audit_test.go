@@ -119,6 +119,7 @@ func TestClientRequestHandler_BudgetDeny_WritesCanonicalAgentAudit(t *testing.T)
 			sqlmock.AnyArg(),    // obligations
 			sqlmock.AnyArg(),    // correlation_id
 			sqlmock.AnyArg(),    // redacted_fields
+			nil,                 // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

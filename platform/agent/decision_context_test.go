@@ -362,6 +362,7 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 			nil,             // obligations (none)
 			"trace-corr-99", // correlation_id (#2598): the shared cross-stage key
 			nil,             // redacted_fields (#2643): unset on input → NULL
+			nil,             // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -456,6 +457,7 @@ func TestRecordDecideDecision_WithTracerAndAudit(t *testing.T) {
 			nil,           // obligations (none)
 			nil,           // correlation_id (#2598): unset on input → NULL
 			nil,           // redacted_fields (#2643): unset on input → NULL
+			nil,           // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -499,6 +501,7 @@ func TestWriteDecisionAuditLog_FallbackPlaceholders(t *testing.T) {
 			nil,              // obligations (none)
 			nil,              // correlation_id (#2598): unset on input → NULL
 			nil,              // redacted_fields (#2643): unset on input → NULL
+			nil,              // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -578,6 +581,7 @@ func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
 			nil,           // obligations (none)
 			nil,           // correlation_id (#2598): unset on input → NULL
 			nil,           // redacted_fields (#2643): unset on input → NULL
+			nil,           // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -652,6 +656,7 @@ func TestWriteDecisionAuditLog_PersistsPlaneAndObligations(t *testing.T) {
 			obligationsJSONMatcher{wantType: ObligationRedactPII}, // obligations JSONB
 			nil, // correlation_id (#2598): unset on input → NULL
 			nil, // redacted_fields (#2643): unset on input → NULL
+			nil, // session_id (#2896): context unstamped (untrusted) → NULL
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

@@ -123,6 +123,7 @@ func TestRecordGatewayPreCheckAudit_WritesCanonicalRow(t *testing.T) {
 					nil,                                // obligations (pre-check emits none)
 					"0af7651916cd43dd8448eb211c80319c", // correlation_id — threaded traceparent
 					nil,                                // redacted_fields — pre-check emits none → NULL (#2643)
+					nil,                                // session_id — context unstamped (untrusted) → NULL (#2896)
 				).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -218,6 +219,7 @@ func expectGatewayAuditRow(mock sqlmock.Sqlmock, wantDecision string) {
 			sqlmock.AnyArg(), // obligations
 			sqlmock.AnyArg(), // correlation_id
 			sqlmock.AnyArg(), // redacted_fields (#2643)
+			nil,              // session_id — context unstamped (untrusted) → NULL (#2896)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }

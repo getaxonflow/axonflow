@@ -88,7 +88,7 @@ services:
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.8.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.9.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -174,6 +174,13 @@ services:
       AXONFLOW_CAPABILITY_SCOPING_DISABLED: ${AXONFLOW_CAPABILITY_SCOPING_DISABLED:-}
       # Deprecated: use SQLI_ACTION instead
       # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
+
+      # Identity-header trust gate (#2896): set to the exact string "true" ONLY
+      # when every hop that can reach the agent re-sets X-User-Email /
+      # X-Session-Id from a validated source (desktop proxy, managed plugin
+      # fleet, gateway jwtAuth). Default off: headers are ignored and audit
+      # attribution uses the validated identity.
+      AXONFLOW_TRUST_IDENTITY_HEADERS: ${AXONFLOW_TRUST_IDENTITY_HEADERS:-}
 
       # Per-mode policy overrides (take precedence over global *_ACTION vars)
       # MCP mode
@@ -270,7 +277,7 @@ services:
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.8.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.9.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.

@@ -131,9 +131,9 @@ endpoints:
     port: 8081
     path: /api/v1/plan/test-plan-id/resume
     expected:
-      community:  {status: 403, reason: "run.go:4156 isCommunityMode → 'requires Enterprise' → StatusForbidden"}
-      evaluation: {status: 404, reason: "isCommunityMode=false bypasses gate; planService initialized → plan lookup returns 404"}
-      enterprise: {status: 404, reason: "same"}
+      community:  {status: 403, reason: "isCommunityMode → 'requires Enterprise' → StatusForbidden (licensing gate runs before proxy-auth)"}
+      evaluation: {status: 403, reason: "#2896 WS1c: direct-to-orchestrator resume is rejected by verifyAgentProxyAuth (no X-Axonflow-Proxy-Auth) — 'must be routed through AxonFlow Agent'. Resume persists a checkpoint actor identity that keys an override apply, so it must arrive through the agent."}
+      enterprise: {status: 403, reason: "same — #2896 WS1c agent-proxy requirement"}
 
   - id: orchestrator-plan-rollback
     method: POST

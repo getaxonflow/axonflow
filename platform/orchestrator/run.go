@@ -1587,6 +1587,13 @@ func initializeComponents() {
 		log.Println("Unified Execution Handler initialized ✅")
 
 		workflowControlHandler = workflow_control.NewHandler(workflowControlService)
+		// #2896 WS1b: the step-gate's per-user identity keys the ADR-044
+		// override apply — require the Agent gateway's proxy token so a
+		// direct caller cannot forge it (Community mode without the secret
+		// is exempt inside verifyAgentProxyAuth, mirroring audit-tool-call).
+		workflowControlHandler.SetProxyAuthCheck(func(r *http.Request) (bool, string) {
+			return verifyAgentProxyAuth(r, "WCP-StepGate")
+		})
 		log.Println("Workflow Control Plane Service initialized ✅")
 
 		// Initialize Webhook Notifications (MAP v1.0 Phase B)
@@ -3452,12 +3459,28 @@ type PlanRequest struct {
 // replay tracking ran under the header value. The agent's auth chain is the
 // only signed source of truth, so headers always win when present.
 //
-// Headers are applied only when non-empty; missing headers leave the body
-// values intact (which is the correct behavior for callers that come through
-// the agent — the agent always sets both).
+// Org/Tenant headers are applied only when non-empty; missing ones leave the
+// body values intact (the agent always sets both). The actor EMAIL is the
+// exception (#2896 WS1c): it is overwritten UNCONDITIONALLY from the
+// trust-gated X-User-Email header — empty when the header is absent — because
+// it becomes a resumable checkpoint's actor identity that keys an override
+// apply, and the request body is a forgeable channel the identity gate does
+// not cover.
 func applyAuthoritativeIdentity(r *http.Request, req *PlanRequest) {
 	orgID := r.Header.Get("X-Org-ID")
 	tenantID := r.Header.Get("X-Tenant-ID")
+
+	// #2896 WS1c: the actor EMAIL is authoritative from the trust-gated
+	// X-User-Email header, NEVER the request body. The MAP confirm-mode
+	// execute path (executePlanHandler → ExecuteWithConfirm) persists this
+	// email as a resumable checkpoint's actor identity, which a later
+	// checkpoint resume uses to apply an ADR-044 override (a deny→allow
+	// flip). The body is a channel the agent's identity gate does NOT cover,
+	// so a body-supplied req.User.Email would let a caller seed a victim's
+	// identity into the checkpoint. The agent trust-gates this header
+	// (stripped when untrusted → empty here → no override lookup); overwrite
+	// unconditionally so the forgeable body value can never become the actor.
+	req.User.Email = r.Header.Get("X-User-Email")
 
 	if orgID == "" && tenantID == "" {
 		return
@@ -3703,6 +3726,17 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
 	log.Println("[ExecutePlan] Received execute plan request")
+
+	// #2896 WS1c: confirm-mode execute persists a resumable checkpoint whose
+	// actor identity keys a later override apply (a deny→allow flip). Require
+	// the Agent gateway's proxy token so a direct caller cannot reach the
+	// checkpoint-write path — complementing applyAuthoritativeIdentity below,
+	// which sources the actor email from the trust-gated header, not the body.
+	// Mirrors the resume ingresses; Community mode (no secret) is exempt.
+	if ok, msg := verifyAgentProxyAuth(r, "ExecutePlan"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
 
 	// Check if workflow engine is available
 	if workflowEngine == nil {
@@ -4490,6 +4524,18 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Enterprise only
 	if isCommunityMode() {
 		sendErrorResponse(w, "Resume plan requires Enterprise license (confirm/step mode)", http.StatusForbidden)
+		return
+	}
+
+	// #2896 WS1c: this handler forwards the request's X-User-ID as the actor
+	// identity into ExecuteSingleStep + the WCP step-gate, which persists it
+	// into a resumable checkpoint (checkpoint.UserID). A later checkpoint
+	// resume re-evaluates that step and applies any ADR-044 override keyed on
+	// that identity (a deny→allow flip). Require the Agent gateway's proxy
+	// token so a direct caller cannot seed a forged actor identity into the
+	// checkpoint. Enterprise-only handler, so Community exemption is moot.
+	if ok, msg := verifyAgentProxyAuth(r, "ResumePlan"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
 		return
 	}
 

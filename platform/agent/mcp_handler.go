@@ -2519,6 +2519,14 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	// Sibling of #2319.
 	r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
 
+	// #2896: client-asserted AI-tool session id (X-Session-Id) → request
+	// context → audit_logs.session_id, ONLY under the identity trust gate
+	// (attributedSessionID resolves to "" otherwise → no-op stamp). Same
+	// mechanism requireMCPAuth uses on the MCP-server plane (#2753).
+	if sid := attributedSessionID(r); sid != "" {
+		r = r.WithContext(withClientSessionID(r.Context(), sid))
+	}
+
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
@@ -2581,6 +2589,18 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Per-caller identity for audit attribution AND Plugin Batch 1 (ADR-044)
+	// override scoping. #2896: the client-asserted X-User-Email is honored
+	// ONLY under the AXONFLOW_TRUST_IDENTITY_HEADERS opt-in — it was
+	// previously read unconditionally here, which let any governed caller (a)
+	// forge another principal's audit identity and (b) hijack another user's
+	// active session override via applyOverrideToCheckInputBlock below (a
+	// deny→allow flip keyed on this variable). With the gate off (default)
+	// both attribution and override scope fall back to the validated
+	// identity. Resolved before the missing-tenant early deny so that row
+	// attributes consistently with the decide plane's early denies.
+	userEmail := attributedUserEmail(r, user.Email)
+
 	// Validate tenant_id after auth (Basic auth derives it from client)
 	if tenantID == "" {
 		// #2641 (MCPIN-PREPOLICY-EARLYRETURNS, tenant arm): authenticated but no
@@ -2588,7 +2608,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		// record the deny (tenant_id falls back to the writer's "unknown" sentinel).
 		writeMCPDecisionAudit(r.Context(), usageDB,
 			uuid.New().String(), "",
-			"", orgID, auth.ClientID, user.Email,
+			"", orgID, auth.ClientID, userEmail,
 			userID, userRole,
 			"mcp_check_input", "mcp check-input: missing tenant scope", "",
 			mcpVerdictBlocked,
@@ -2598,14 +2618,6 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			traceIDFromHeader(r.Header.Get("traceparent")))
 		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
 		return
-	}
-
-	// Per-caller identity for Plugin Batch 1 override scoping. Falls back
-	// to the authenticated user's email when the client hasn't supplied
-	// X-User-Email (e.g. a legacy SDK caller).
-	userEmail := r.Header.Get("X-User-Email")
-	if userEmail == "" {
-		userEmail = user.Email
 	}
 
 	// Wrap the remainder of the handler in the idempotency dedup helper.
@@ -3011,6 +3023,15 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	// Sibling of #2319.
 	r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
 
+	// #2896: client-asserted AI-tool session id (X-Session-Id) → request
+	// context → audit_logs.session_id, ONLY under the identity trust gate
+	// (attributedSessionID resolves to "" otherwise → no-op stamp). The
+	// desktop proxy sends it on every check-output call; it was previously
+	// dropped on this plane. Same mechanism requireMCPAuth uses (#2753).
+	if sid := attributedSessionID(r); sid != "" {
+		r = r.WithContext(withClientSessionID(r.Context(), sid))
+	}
+
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
@@ -3075,12 +3096,19 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #2896: audit-attribution identity for the response plane. check-output
+	// previously ignored X-User-Email entirely, so the desktop proxy's
+	// per-leader identity attributed to the fleet service user. Honored ONLY
+	// under AXONFLOW_TRUST_IDENTITY_HEADERS; falls back to the validated
+	// user.Email. Attribution only — the policy evaluation below never sees it.
+	userEmail := attributedUserEmail(r, user.Email)
+
 	// Validate tenant_id after auth (Basic auth derives it from client)
 	if tenantID == "" {
 		// #2641 (MCPIN-PREPOLICY-EARLYRETURNS, response plane): mirror check-input.
 		writeMCPDecisionAudit(r.Context(), usageDB,
 			uuid.New().String(), "",
-			"", orgID, auth.ClientID, user.Email,
+			"", orgID, auth.ClientID, userEmail,
 			userID, user.Role,
 			"mcp_check_output", "mcp check-output: missing tenant scope", "",
 			mcpVerdictBlocked,
@@ -3159,7 +3187,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		// non-PII descriptor — raw response_data MUST NOT land in audit_logs.query.
 		writeMCPDecisionAudit(ctx, usageDB,
 			decisionID, auditEntry.AuditID,
-			tenantID, orgID, auth.Client.ID, user.Email,
+			tenantID, orgID, auth.Client.ID, userEmail,
 			fmt.Sprintf("%d", user.ID), user.Role,
 			"mcp_check_output", fmt.Sprintf("mcp check-output: %s", req.ConnectorType), "",
 			mcpVerdictRedacted, outPolicyIDs, outReasons, outcome.RedactedFieldNames(),
@@ -3170,7 +3198,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			"", nil, false, &decisionAuditInput{
 				clientID:  auth.Client.ID,
 				requestID: auditEntry.AuditID,
-				userEmail: user.Email,
+				userEmail: userEmail, // #2896: trust-gated attribution (validated fallback)
 				userRole:  user.Role,
 				userID:    user.ID,
 				query:     fmt.Sprintf("mcp check-output: %s", req.ConnectorType),

@@ -497,6 +497,20 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	ctx := r.Context()
 
+	// #2896: trust-gated attribution identity. The desktop proxy (and any PEP
+	// fronting multiple principals behind one org:license credential) asserts
+	// the end-user via X-User-Email / X-Session-Id. Honored for audit
+	// ATTRIBUTION ONLY, and only when the deployment opted in via
+	// AXONFLOW_TRUST_IDENTITY_HEADERS — a forgeable header must never be
+	// trusted by default. Both resolve to "" when absent or untrusted; the
+	// session id rides the context so writeDecisionAuditLog persists it into
+	// audit_logs.session_id (same mechanism as the MCP writers, #2753).
+	attributedEmail := trustedIdentityHeader(r, identityHeaderUserEmail, maxAttributedEmailLen)
+	if sid := attributedSessionID(r); sid != "" {
+		ctx = withClientSessionID(ctx, sid)
+		r = r.WithContext(ctx)
+	}
+
 	// #2643: mint the correlation ids + capture the auth-derived identity
 	// UP-FRONT, before body decode, so EVERY early-return deny below — a decode
 	// failure, an invalid stage, a cross-tenant/org impersonation attempt — writes
@@ -563,6 +577,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		plane:         PlaneDecision, // every /api/v1/decide row records plane=decision
 		correlationID: traceID,
 		origin:        origin, // WS-5 caller bucket, mirrored onto the decision span
+		// #2896: pre-seed the trusted attribution email (empty when absent or
+		// untrusted) so even the early-return denies below — decode failure,
+		// impersonation attempt, rejected token — attribute to the asserted
+		// principal when the deployment trusts its identity source. Refined
+		// against the validated identity once ResolveUser runs.
+		userEmail: attributedEmail,
 	}
 
 	// auditEarlyDeny persists the canonical plane=decision audit row for an
@@ -718,8 +738,16 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 
 	// User identity is now resolved — complete the audit row so the terminal
 	// allow/deny path (and the policy-driven early returns below) carry the
-	// validated/synthesized user.
+	// validated/synthesized user. #2896: when the deployment trusts identity
+	// headers and the caller asserted one, the asserted principal wins the
+	// user_email ATTRIBUTION slot (the desktop proxy's per-leader identity —
+	// its Basic org:license credential resolves to a fleet-wide service user);
+	// role and numeric id stay validated — the header carries identity, never
+	// authorization.
 	decisionAudit.userEmail = user.Email
+	if attributedEmail != "" {
+		decisionAudit.userEmail = attributedEmail
+	}
 	decisionAudit.userRole = user.Role
 	decisionAudit.userID = user.ID
 
@@ -1753,13 +1781,24 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		}
 	}
 
+	// #2896: per-session identity → audit_logs.session_id (NULL when the caller
+	// didn't assert one or the trust gate is off). Read from the request context
+	// — handleDecide (and the check-input/check-output handlers that route
+	// through this writer) stamp it via withClientSessionID ONLY under the
+	// trust gate, so an unstamped context is the untrusted default. Same
+	// mechanism as the sibling MCP writers (#2753).
+	var sessionIDArg interface{}
+	if sid := clientSessionIDFromContext(ctx); sid != "" {
+		sessionIDArg = sid
+	}
+
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, decision_id, plane, obligations,
-			correlation_id, redacted_fields
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			correlation_id, redacted_fields, session_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 	`,
 		"decide_"+decisionID, // id (PK; one row per decision)
 		requestID,            // request_id
@@ -1780,6 +1819,7 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		obligationsJSON,      // obligations (JSONB or NULL; #2592)
 		correlationIDArg,     // correlation_id (first-class column or NULL; #2598)
 		redactedFieldsArg,    // redacted_fields (JSONB array or NULL; #2643)
+		sessionIDArg,         // session_id (first-class column or NULL; #2896)
 	)
 	if err != nil {
 		decideAuditWriteFailures.WithLabelValues("insert").Inc()

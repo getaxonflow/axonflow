@@ -767,6 +767,15 @@ func TestResumePlanHandler(t *testing.T) {
 			}
 			req = mux.SetURLVars(req, map[string]string{"id": tt.planID})
 
+			// #2896 WS1c: enterprise resume now requires the Agent proxy token.
+			// These cases assert DOWNSTREAM branching (400/503), so route them
+			// through a valid proxy token to reach that logic. (Community cases
+			// 403 on the licensing gate before proxy-auth is consulted.)
+			if tt.deploymentMode == "enterprise" {
+				installProxyTokenValidator(t, proxyGuardTestSecret)
+				req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
+			}
+
 			w := httptest.NewRecorder()
 			resumePlanHandler(w, req)
 
@@ -931,6 +940,9 @@ func TestResumePlanHandler_PlanNotExecuting(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_not_executing/resume", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_not_executing"})
+	// #2896 WS1c: enterprise resume requires the Agent proxy token.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	resumePlanHandler(w, req)
@@ -952,6 +964,9 @@ func TestResumePlanHandler_ApproveStep(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", "test-user")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_approve_step"})
+	// #2896 WS1c: enterprise resume requires the Agent proxy token.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	resumePlanHandler(w, req)
@@ -994,6 +1009,9 @@ func TestResumePlanHandler_RejectStep(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_reject_step/resume", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_reject_step"})
+	// #2896 WS1c: enterprise resume requires the Agent proxy token.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	resumePlanHandler(w, req)
@@ -1028,6 +1046,9 @@ func TestResumePlanHandler_DefaultApproved(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_default_approved/resume", nil)
 	req.Header.Set("X-User-ID", "test-user")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_default_approved"})
+	// #2896 WS1c: enterprise resume requires the Agent proxy token.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	resumePlanHandler(w, req)
@@ -1292,6 +1313,9 @@ func TestResumePlanHandler_NoWorkflow(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_no_workflow/resume", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_no_workflow"})
+	// #2896 WS1c: enterprise resume requires the Agent proxy token.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	resumePlanHandler(w, req)
