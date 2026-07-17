@@ -2881,12 +2881,20 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 
 // TestConvertSharedResultToStatic tests the conversion from shared policy engine
 // results to StaticPolicyResult for backward compatibility.
+//
+// #2965: the mapping is now ACTION-AWARE. A non-blocking PII match produces a
+// redaction obligation ONLY when its resolved action is redact; warn/log
+// produce an advisory reason and NO redaction. The cases below were rewritten
+// from the pre-#2965 shape, where ANY non-blocking PII match (even warn) set
+// RequiresRedaction — that was the sibling bug (warn/log postures silently
+// redacted). expectAdvisory pins the new warn/log signal.
 func TestConvertSharedResultToStatic(t *testing.T) {
 	tests := []struct {
 		name              string
 		input             *sharedpolicy.RequestResult
 		expectBlocked     bool
 		expectRedaction   bool
+		expectAdvisory    bool
 		expectPolicyCount int
 	}{
 		{
@@ -2919,7 +2927,8 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 			expectPolicyCount: 1,
 		},
 		{
-			name: "PII detection with warn action sets RequiresRedaction",
+			// #2965: warn action no longer redacts — it yields an advisory reason.
+			name: "PII detection with warn action yields advisory reason, not redaction",
 			input: &sharedpolicy.RequestResult{
 				Blocked: false, // Not blocked because action is warn
 				MatchedPolicies: []sharedpolicy.PolicyMatch{
@@ -2932,18 +2941,36 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 				ProcessingTimeMs: 3,
 			},
 			expectBlocked:     false,
+			expectRedaction:   false,
+			expectAdvisory:    true,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "PII US redact action sets RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_ssn",
+						Category: sharedpolicy.CategoryPIIUS,
+						Action:   sharedpolicy.ActionRedact,
+					},
+				},
+				ProcessingTimeMs: 3,
+			},
+			expectBlocked:     false,
 			expectRedaction:   true,
 			expectPolicyCount: 1,
 		},
 		{
-			name: "PII India category sets RequiresRedaction",
+			name: "PII India redact action sets RequiresRedaction",
 			input: &sharedpolicy.RequestResult{
 				Blocked: false,
 				MatchedPolicies: []sharedpolicy.PolicyMatch{
 					{
 						PolicyID: "sys_pii_aadhaar",
 						Category: sharedpolicy.CategoryPIIIndia,
-						Action:   sharedpolicy.ActionWarn,
+						Action:   sharedpolicy.ActionRedact,
 					},
 				},
 				ProcessingTimeMs: 2,
@@ -2953,14 +2980,14 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 			expectPolicyCount: 1,
 		},
 		{
-			name: "PII EU category sets RequiresRedaction",
+			name: "PII EU redact action sets RequiresRedaction",
 			input: &sharedpolicy.RequestResult{
 				Blocked: false,
 				MatchedPolicies: []sharedpolicy.PolicyMatch{
 					{
 						PolicyID: "sys_pii_eu_vat",
 						Category: sharedpolicy.CategoryPIIEU,
-						Action:   sharedpolicy.ActionWarn,
+						Action:   sharedpolicy.ActionRedact,
 					},
 				},
 				ProcessingTimeMs: 2,
@@ -2970,14 +2997,34 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 			expectPolicyCount: 1,
 		},
 		{
-			name: "PII Global category sets RequiresRedaction",
+			name: "PII Global redact action sets RequiresRedaction",
 			input: &sharedpolicy.RequestResult{
 				Blocked: false,
 				MatchedPolicies: []sharedpolicy.PolicyMatch{
 					{
 						PolicyID: "sys_pii_email",
 						Category: sharedpolicy.CategoryPIIGlobal,
-						Action:   sharedpolicy.ActionWarn,
+						Action:   sharedpolicy.ActionRedact,
+					},
+				},
+				ProcessingTimeMs: 2,
+			},
+			expectBlocked:     false,
+			expectRedaction:   true,
+			expectPolicyCount: 1,
+		},
+		{
+			// #2965 direct regression at the convert layer: pii-indonesia under
+			// the default redact posture MUST set RequiresRedaction (it silently
+			// did not before the fix — the omitted-category bug).
+			name: "PII Indonesia redact action sets RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_indonesia_ktp",
+						Category: sharedpolicy.CategoryPIIIndonesia,
+						Action:   sharedpolicy.ActionRedact,
 					},
 				},
 				ProcessingTimeMs: 2,
@@ -3024,7 +3071,10 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 			expectPolicyCount: 1,
 		},
 		{
-			name: "multiple policies including PII",
+			// admin-access (non-PII, log) contributes no PII signal; the PII
+			// match resolves to redact, so RequiresRedaction is set. Both are
+			// still counted in TriggeredPolicies.
+			name: "multiple policies including a redacting PII match",
 			input: &sharedpolicy.RequestResult{
 				Blocked: false,
 				MatchedPolicies: []sharedpolicy.PolicyMatch{
@@ -3036,12 +3086,37 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 					{
 						PolicyID: "sys_pii_ssn",
 						Category: sharedpolicy.CategoryPIIUS,
-						Action:   sharedpolicy.ActionWarn,
+						Action:   sharedpolicy.ActionRedact,
 					},
 				},
 			},
 			expectBlocked:     false,
 			expectRedaction:   true,
+			expectPolicyCount: 2,
+		},
+		{
+			// #2965 sibling-bug regression: a PII match resolved to log yields an
+			// advisory reason and NO redaction. A non-PII log match (admin) is
+			// counted but contributes no PII signal.
+			name: "PII log action yields advisory reason, non-PII log ignored",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "admin_access",
+						Category: sharedpolicy.CategoryAdminAccess,
+						Action:   sharedpolicy.ActionLog,
+					},
+					{
+						PolicyID: "sys_pii_ssn",
+						Category: sharedpolicy.CategoryPIIUS,
+						Action:   sharedpolicy.ActionLog,
+					},
+				},
+			},
+			expectBlocked:     false,
+			expectRedaction:   false,
+			expectAdvisory:    true,
 			expectPolicyCount: 2,
 		},
 	}
@@ -3058,6 +3133,10 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 				t.Errorf("RequiresRedaction = %v, want %v", result.RequiresRedaction, tt.expectRedaction)
 			}
 
+			if gotAdvisory := len(result.AdvisoryReasons) > 0; gotAdvisory != tt.expectAdvisory {
+				t.Errorf("advisory reasons present = %v (%v), want %v", gotAdvisory, result.AdvisoryReasons, tt.expectAdvisory)
+			}
+
 			if len(result.TriggeredPolicies) != tt.expectPolicyCount {
 				t.Errorf("TriggeredPolicies count = %d, want %d", len(result.TriggeredPolicies), tt.expectPolicyCount)
 			}
@@ -3065,8 +3144,14 @@ func TestConvertSharedResultToStatic(t *testing.T) {
 	}
 }
 
-// TestIsPIICategory tests the isPIICategory helper function.
-func TestIsPIICategory(t *testing.T) {
+// TestAgentPIICategoryConvergence pins that the agent's /decide obligation
+// bridge classifies PII by the SHARED prefix predicate sharedpolicy.
+// IsPIIPolicyCategory — including pii-indonesia, whose omission from the old
+// agent-local switch was the #2965 bug — and NOT a duplicate enumerated switch.
+// The predicate's own behavior is exhaustively pinned in
+// shared/policy TestIsPIIPolicyCategory_Convention; this test guards the
+// convergence: every pii-* category (Indonesia included) is PII to the agent.
+func TestAgentPIICategoryConvergence(t *testing.T) {
 	tests := []struct {
 		category sharedpolicy.PolicyCategory
 		expected bool
@@ -3075,6 +3160,8 @@ func TestIsPIICategory(t *testing.T) {
 		{sharedpolicy.CategoryPIIUS, true},
 		{sharedpolicy.CategoryPIIIndia, true},
 		{sharedpolicy.CategoryPIIEU, true},
+		{sharedpolicy.CategoryPIISingapore, true},
+		{sharedpolicy.CategoryPIIIndonesia, true}, // #2965: previously omitted → silent allow
 		{sharedpolicy.CategorySecuritySQLi, false},
 		{sharedpolicy.CategorySecurityDangerous, false},
 		{sharedpolicy.CategoryAdminAccess, false},
@@ -3083,13 +3170,14 @@ func TestIsPIICategory(t *testing.T) {
 		{sharedpolicy.CategoryComplianceHIPAA, false},
 		{sharedpolicy.CategoryComplianceRBI, false},
 		{sharedpolicy.CategoryComplianceSEBI, false},
+		{sharedpolicy.CategoryMediaPII, false}, // OCR subsystem, not the text engine
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.category), func(t *testing.T) {
-			result := isPIICategory(tt.category)
+			result := sharedpolicy.IsPIIPolicyCategory(tt.category)
 			if result != tt.expected {
-				t.Errorf("isPIICategory(%s) = %v, want %v", tt.category, result, tt.expected)
+				t.Errorf("IsPIIPolicyCategory(%s) = %v, want %v", tt.category, result, tt.expected)
 			}
 		})
 	}

@@ -687,7 +687,18 @@ func (l *AuditLogger) LogPlanOperation(ctx context.Context, entry *PlanAuditEntr
 // ToolCallAuditEntry represents an audit entry for non-LLM tool calls
 // (API calls, webhooks, MCP tool executions by external orchestrators)
 type ToolCallAuditEntry struct {
-	ToolName        string                 `json:"tool_name"`
+	ToolName string `json:"tool_name"`
+	// CallerName identifies which client/integration made the call (#2912) —
+	// e.g. claude_code, codex, cursor, openclaw. Preferred over the legacy
+	// ToolType field below.
+	CallerName string `json:"caller_name,omitempty"`
+	// ToolType is DEPRECATED (#2912) — it was misnamed for what every real
+	// caller actually used it for (client identity, not a tool-kind concept).
+	// Kept as a legacy input fallback: a caller that hasn't upgraded to
+	// CallerName yet still works. auditToolCallHandler/LogToolCallAudit
+	// resolve the fallback chain (CallerName -> ToolType -> "unknown" default,
+	// #2903) and stop writing policy_details.tool_type for new rows — only
+	// policy_details.caller_name is written going forward.
 	ToolType        string                 `json:"tool_type,omitempty"`
 	Input           map[string]interface{} `json:"input,omitempty"`
 	Output          map[string]interface{} `json:"output,omitempty"`
@@ -723,9 +734,19 @@ func (l *AuditLogger) LogToolCallAudit(ctx context.Context, entry *ToolCallAudit
 	policyDetails := map[string]interface{}{
 		"tool_name": entry.ToolName,
 	}
-	if entry.ToolType != "" {
-		policyDetails["tool_type"] = entry.ToolType
+	// #2912: caller_name replaces tool_type going forward. Fallback chain:
+	// CallerName if supplied -> legacy ToolType if supplied -> "unknown"
+	// default (#2903 — an unidentified caller must not be silently attributed
+	// to the specific client "claude_code"). policy_details.tool_type is no
+	// longer written for new rows — only policy_details.caller_name.
+	callerName := entry.CallerName
+	if callerName == "" {
+		callerName = entry.ToolType
 	}
+	if callerName == "" {
+		callerName = "unknown"
+	}
+	policyDetails["caller_name"] = callerName
 	if entry.Input != nil {
 		policyDetails["input"] = entry.Input
 	}

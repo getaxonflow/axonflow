@@ -72,6 +72,7 @@ func getCapabilities() []PlatformCapability {
 		{Name: "decision_obligations", Since: "8.6.0", Description: "Decision Mode /api/v1/decide emits self-describing, engine-fulfillable redact_pii obligations carrying a fulfillment block (endpoint, method, phase, content_types) so a PEP discharges them via the engine instead of hand-rolling redaction (ADR-056/057)"},
 		{Name: "two_touch_redaction", Since: "8.6.0", Description: "Request-phase (POST /api/v1/mcp/check-input → redacted_statement + redaction_evaluated) and response-phase (POST /api/v1/mcp/check-output → redacted_data) PII redaction both return engine-masked content, so PEPs never hand-roll redaction on either leg"},
 		{Name: "client_version_telemetry", Since: "9.7.0", Description: "Per-client version-distribution telemetry: validated X-Axonflow-Client client id + version pairs are recorded into the axonflow_client_version_requests_total counter on the decide and MCP check-output planes (Enterprise builds; Community builds no-op and register no series). Telemetry-only — never consulted for auth or a verdict"},
+		{Name: "seam_capability_decisioning", Since: "9.11.0", Description: "Seam-capability-aware obligations: a PEP advertises what its seam can discharge via DecideRequest.fulfillment_capabilities (vocabulary: request_body_redaction, request_header_mutation) and POST /api/v1/decide emits only obligations that caller can fulfill. A request-body redaction suppressed on a non-capable seam (e.g. Envoy ext_authz, which is headers-only) applies the org's obligation-fallback posture — log (default: allow, no obligation, canonical audit row records the suppressed redaction + detected categories) or block (deny) — configurable per org on the obligation_fallback detection-posture category. The posture is resolved server-side from the org, never from the request; absent/empty capabilities means a legacy caller and reproduces pre-9.11.0 behavior exactly (all SDKs unaffected). Replaces the adapter-local allow→403 conversion so every outcome is an engine round-trip (ADR-056)"},
 		{Name: "identity_header_attribution", Since: "9.9.0", Description: "Trust-gated per-user audit attribution: X-User-Email / X-Session-Id (and X-User-ID on the MCP-server plane) attribute audit_logs rows on all four governance planes (decide, MCP check-input, MCP check-output, MCP-server tools/call) when the deployment opts in via AXONFLOW_TRUST_IDENTITY_HEADERS=true (default off — untrusted headers are ignored and a detection warning is logged). Attribution-only — a forged header can never influence a verdict, authz decision, or tenant/org resolution; per-user features (ADR-044 session overrides, user-scoped dynamic policies) key on the trusted identity only under the gate"},
 	}
 }
@@ -116,10 +117,10 @@ func getSDKCompatibility() SDKCompatInfo {
 		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
 		// examples baseline).
 		RecommendedSDKVersion: map[string]string{
-			"python":     "8.5.1",
-			"typescript": "8.5.1",
-			"go":         "8.5.1",
-			"java":       "8.5.1",
+			"python":     "9.0.0",
+			"typescript": "9.0.0",
+			"go":         "9.0.0",
+			"java":       "9.0.0",
 			"rust":       "0.8.1",
 		},
 	}
@@ -207,10 +208,10 @@ func getPluginCompatibility() PluginCompatInfo {
 		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0
 		// (claude-desktop's floor is 0.2.0, see above).
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":       "2.7.0",
-			"claude-code":    "1.10.0",
-			"cursor":         "1.6.0",
-			"codex":          "1.6.0",
+			"openclaw":       "2.8.0",
+			"claude-code":    "1.11.0",
+			"cursor":         "1.7.0",
+			"codex":          "1.7.0",
 			"claude-desktop": "0.3.1",
 		},
 	}

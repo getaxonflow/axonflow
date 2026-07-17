@@ -291,7 +291,11 @@ func getMCPTools() []mcpTool {
 				"properties": map[string]interface{}{
 					"connector_type": map[string]interface{}{
 						"type":        "string",
-						"description": "Tool identifier that produced this output",
+						"description": "Server/connector identifier that produced this output (e.g., claude_code)",
+					},
+					"tool": map[string]interface{}{
+						"type":        "string",
+						"description": "Tool identifier that produced this output (e.g., Bash, query) — distinct from connector_type/server (#2955)",
 					},
 					"response_data": map[string]interface{}{
 						"type":  "array",
@@ -314,9 +318,18 @@ func getMCPTools() []mcpTool {
 					"tool_name": map[string]interface{}{
 						"type": "string",
 					},
+					"caller_name": map[string]interface{}{
+						"type":        "string",
+						"description": "Which client/integration made this call (e.g. claude_code, codex, cursor, openclaw). Replaces tool_type (#2912), which was misnamed for this purpose.",
+					},
+					// tool_type is DEPRECATED (#2912) — kept as a legacy input
+					// fallback for callers that haven't upgraded to caller_name
+					// yet. No declared default here; the orchestrator resolves
+					// the caller_name/tool_type/"unknown" (#2903) fallback chain
+					// centrally (see auditToolCallHandler).
 					"tool_type": map[string]interface{}{
-						"type":    "string",
-						"default": "claude_code",
+						"type":        "string",
+						"description": "Deprecated — use caller_name instead.",
 					},
 					"input": map[string]interface{}{
 						"type": "object",
@@ -1650,6 +1663,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 // check_output: uses Agent-internal evaluateOutputPolicies() directly.
 func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
 	connectorType, _ := args["connector_type"].(string)
+	tool, _ := args["tool"].(string) // #2955: caller-sent tool identity, distinct from connector_type/server
 	if connectorType == "" {
 		return nil, fmt.Errorf("connector_type is required")
 	}
@@ -1673,7 +1687,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		session.tenantID,
 		session.userID,
 		connectorType,
-		connectorType, // toolIdentity: advisory plane, caller-sent tool identity (#2801)
+		tool, // toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904, #2955) — distinct from connector_type/server; empty ⇒ full (fail-closed) evaluation, no fallback
 		rows,
 		message,
 		nil, // messageMetadata
@@ -1730,7 +1744,8 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			session.userID, session.userRole,
 			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
 			mcpVerdictRedacted, redactPolicyIDs, redactReasons, outcome.RedactedFieldNames(),
-			"") // MCP-server session has no inbound traceparent → singleton
+			"",                  // MCP-server session has no inbound traceparent → singleton
+			connectorType, tool) // #2955: tool_server, tool_name
 	}
 
 	// Allowed — no richer context or override flow needed.
@@ -1756,7 +1771,8 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			[]string{"sqli_response_scan"},
 			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)},
 			nil,
-			"") // MCP-server session has no inbound traceparent → singleton
+			"",                  // MCP-server session has no inbound traceparent → singleton
+			connectorType, tool) // #2955: tool_server, tool_name
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
 	}
@@ -1804,7 +1820,8 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			session.userID, session.userRole,
 			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), computeStatementHash(hashed),
 			outcome.StaticResult.BlockReason, topRisk, matches,
-			"") // #2598: MCP-server session has no inbound traceparent → singleton
+			"",                  // #2598: MCP-server session has no inbound traceparent → singleton
+			connectorType, tool) // #2955: tool_server, tool_name
 	}
 
 	if topRisk != "" {
@@ -1830,19 +1847,28 @@ func mcpToolAuditCall(session *mcpSession, args map[string]interface{}) (interfa
 		return nil, fmt.Errorf("tool_name is required")
 	}
 
+	// #2912: caller_name (which client made the call) replaces the misnamed
+	// tool_type. Both are forwarded as-provided, raw — the orchestrator's
+	// ToolCallAuditEntry resolves the caller_name/tool_type/default fallback
+	// chain centrally, so every caller of POST /api/v1/audit/tool-call (this
+	// MCP tool AND any direct REST caller, e.g. the openclaw plugin) gets
+	// identical resolution instead of the agent pre-baking a default here.
+	callerName, _ := args["caller_name"].(string)
 	toolType, _ := args["tool_type"].(string)
-	if toolType == "" {
-		toolType = "claude_code"
-	}
 
 	body := map[string]interface{}{
 		"tool_name":     toolName,
-		"tool_type":     toolType,
 		"input":         args["input"],
 		"output":        args["output"],
 		"success":       args["success"],
 		"error_message": args["error_message"],
 		"duration_ms":   args["duration_ms"],
+	}
+	if callerName != "" {
+		body["caller_name"] = callerName
+	}
+	if toolType != "" {
+		body["tool_type"] = toolType
 	}
 
 	resp, err := mcpProxyToOrchestrator(session, "POST", "/api/v1/audit/tool-call", body)

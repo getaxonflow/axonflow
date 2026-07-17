@@ -399,7 +399,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 }
 
 // EnabledPIICategories returns the distinct PII categories (by the pii-*/media-pii
-// convention, see isPIIPolicyCategory) that have at least one ENABLED policy for
+// convention, see IsPIIPolicyCategory) that have at least one ENABLED policy for
 // the tenant in the given phase. It is the source for policy-derived PII scoping:
 // coverage = (enabled policies ∩ the PII convention), so a newly-seeded pii-*
 // category is auto-included with no hardcoded category list to maintain.
@@ -420,7 +420,7 @@ func (e *UnifiedPolicyEngine) EnabledPIICategories(ctx context.Context, tenantID
 			continue
 		}
 		c := policies[i].Category
-		if isPIIPolicyCategory(c) && !seen[c] {
+		if IsPIIPolicyCategory(c) && !seen[c] {
 			seen[c] = true
 			cats = append(cats, c)
 		}

@@ -1122,9 +1122,17 @@ func TestMapCategoryToPIIType(t *testing.T) {
 			expected: PIITypeIBAN,
 		},
 		{
-			name:     "Singapore PII falls through to default Email",
+			// #2965: NRIC is a national-identity number, not Email — mapped to
+			// the SSN analog (matching how US national-ID PII maps).
+			name:     "Singapore PII maps to SSN (national-ID analog)",
 			category: sharedpolicy.CategoryPIISingapore,
-			expected: PIITypeEmail,
+			expected: PIITypeSSN,
+		},
+		{
+			// #2965: NIK is a national-identity number, not Email.
+			name:     "Indonesia PII maps to SSN (national-ID analog)",
+			category: sharedpolicy.CategoryPIIIndonesia,
+			expected: PIITypeSSN,
 		},
 		{
 			name:     "Security category falls through to default Email",

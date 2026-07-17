@@ -50,6 +50,21 @@ var (
 	outreachLogInterval    = time.Hour
 )
 
+// gatewayPreCheckPolicyCategories is the category whitelist evaluated by
+// handlePolicyPreCheck. #2965: the PII portion is sourced from the single
+// canonical sharedpolicy.AllTextPIICategories() so no pii-* jurisdiction can be
+// dropped from this plane (the class of bug that left pii-indonesia ungoverned
+// elsewhere). Covered by TestPlaneWhitelistsCoverAllPII.
+var gatewayPreCheckPolicyCategories = append([]sharedpolicy.PolicyCategory{
+	sharedpolicy.CategorySecuritySQLi,
+	sharedpolicy.CategorySecurityDangerous,
+	sharedpolicy.CategorySensitiveData, // For dynamically created HITL policies (#1081)
+	sharedpolicy.CategoryComplianceRBI,
+	sharedpolicy.CategoryComplianceSEBI,
+	sharedpolicy.CategoryComplianceEUAIAct,
+	sharedpolicy.CategoryComplianceMASFEAT,
+}, sharedpolicy.AllTextPIICategories()...)
+
 // shouldLogEnforcementOutreach returns true if enough time has passed since last enforcement log
 func shouldLogEnforcementOutreach() bool {
 	outreachLogMu.Lock()
@@ -675,28 +690,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			OrgID:         user.OrgID,
-			ConnectorName: "gateway",
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				// Security categories
-				sharedpolicy.CategorySecuritySQLi,
-				sharedpolicy.CategorySecurityDangerous,
-				// PII categories by jurisdiction
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-				sharedpolicy.CategoryPIIIndonesia,
-				// HITL/Compliance categories (Issue #1081)
-				sharedpolicy.CategorySensitiveData, // For dynamically created HITL policies
-				sharedpolicy.CategoryComplianceRBI,
-				sharedpolicy.CategoryComplianceSEBI,
-				sharedpolicy.CategoryComplianceEUAIAct,
-				sharedpolicy.CategoryComplianceMASFEAT,
-			},
+			TenantID:        user.TenantID,
+			OrgID:           user.OrgID,
+			ConnectorName:   "gateway",
+			UserID:          fmt.Sprintf("%d", user.ID),
+			Categories:      gatewayPreCheckPolicyCategories,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
 		})
@@ -1504,7 +1502,9 @@ func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost fl
 	return nil // No storage available, but don't fail the request
 }
 
-// convertSharedResultToStatic and isPIICategory moved to policy_result_convert.go
+// convertSharedResultToStatic moved to policy_result_convert.go. The old
+// agent-local isPIICategory switch was deleted in #2965 — PII classification now
+// converges on the shared sharedpolicy.IsPIIPolicyCategory prefix predicate.
 
 // NOTE: checkHITLRequiredFromContext was REMOVED in Issue #1081 code review.
 // HITL enforcement is an ENTERPRISE-ONLY feature.

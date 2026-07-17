@@ -53,6 +53,7 @@ import (
 	"axonflow/platform/agent/telemetry"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
+	"axonflow/platform/shared/pep"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -319,6 +320,32 @@ type DecideRequest struct {
 	Query          string                 `json:"query"`
 	UserToken      string                 `json:"user_token,omitempty"`
 	Context        map[string]interface{} `json:"context,omitempty"`
+	// FulfillmentCapabilities is the caller's advertised seam capability set
+	// (#2958) — see pep.CapabilityRequestBodyRedaction for the wire contract.
+	// Absent/empty means a legacy (pre-9.11.0) PEP and reproduces the previous
+	// behavior exactly: obligations are emitted regardless of the seam.
+	//
+	// THREAT MODEL — this is client-supplied input that STEERS a policy outcome
+	// (advertising a set WITHOUT request_body_redaction downgrades a request-body
+	// redaction to the org's obligation-fallback posture), so it deserves the
+	// explicit reasoning:
+	//
+	//   - It crosses NO new trust boundary. The obligation model ALREADY trusts
+	//     the authenticated PEP to actually perform the redaction it is told to
+	//     perform — the PDP cannot verify fulfillment. A caller dishonest enough
+	//     to under-advertise could simply ignore the obligation instead, which
+	//     is strictly worse for it (it forwards content the org wanted masked
+	//     with no audit record); under-advertising at least produces the audit
+	//     row this change adds.
+	//   - It can never WIDEN authority: the outcome of a suppressed obligation is
+	//     resolved SERVER-SIDE from the org's posture (ResolveObligationFallbackAction),
+	//     never from the request. An org that refuses detect-and-log sets the
+	//     posture to block and a dishonest advertisement then yields a DENY.
+	//   - It cannot reach any other decision input: the field is read at exactly
+	//     ONE site (applySeamCapabilityObligations). That is pinned by
+	//     TestFulfillmentCapabilityReadCensus (decision_obligation_capability_test.go),
+	//     so a second read site fails CI.
+	FulfillmentCapabilities []string `json:"fulfillment_capabilities,omitempty"`
 }
 
 // DecisionCallerIdentity is the gateway-asserted identity for the request.
@@ -439,6 +466,20 @@ var (
 		},
 		[]string{"obligation", "stage", "origin"},
 	)
+	// decideObligationFallbacks counts obligations the PDP WITHHELD because the
+	// caller advertised a seam that cannot fulfill them (#2958), labelled by the
+	// posture applied (log → allowed with an audit record; block → denied). This
+	// is the signal that a seam is receiving content it cannot govern — e.g. a
+	// headers-only ext_authz leg fronting an LLM that is being sent PII. All
+	// labels are bounded: obligation type (fixed enum), action (log|block),
+	// stage (llm|tool|agent), origin (the WS-5 caller bucket).
+	decideObligationFallbacks = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_decision_obligation_fallbacks_total",
+			Help: "Obligations suppressed because the caller's seam cannot fulfill them, by obligation type, org fallback posture (log|block), stage and caller origin",
+		},
+		[]string{"obligation", "action", "stage", "origin"},
+	)
 	// decideBlocks counts deny verdicts keyed by the single blocking policy so a
 	// dashboard can rank "top blocked policies". The `policy` label is BOUNDED to
 	// a low-cardinality set by boundedBlockPolicy: a SYSTEM/ENTERPRISE-tier policy
@@ -479,6 +520,7 @@ func init() {
 	_ = prometheus.Register(decideRequests)
 	_ = prometheus.Register(decideDuration)
 	_ = prometheus.Register(decideObligations)
+	_ = prometheus.Register(decideObligationFallbacks)
 	_ = prometheus.Register(decideBlocks)
 	_ = prometheus.Register(decideAuditWriteFailures)
 }
@@ -989,6 +1031,18 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #2958: the seam-capability gate. Placed AFTER both obligation-attachment
+	// sites (so it sees the final slice) and AFTER the circuit-breaker recording
+	// above, which is deliberate: a fallback DENY is a seam-capability outcome,
+	// not a policy violation by the caller — the identical content on a
+	// body-capable seam would have been allowed with a redaction. Recording it
+	// against the breaker would let one headers-only seam trip a tenant-wide
+	// breaker and deny traffic that policy never blocked. It still counts as a
+	// deny everywhere a deny is counted (decideRequests / decideBlocks / the
+	// canonical audit row).
+	verdict, reasons, obligations, seamFallback := applySeamCapabilityObligations(
+		ctx, orgID, req.FulfillmentCapabilities, verdict, reasons, obligations)
+
 	// Hoist the blocking policy to evaluated_policies[0] so the OpenAPI
 	// contract claim ("On deny, the first entry is the blocking policy")
 	// holds. Non-blocking matches (PII redact rules that fired but didn't
@@ -1007,6 +1061,16 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// allow/deny path carries obligations; the early-return deny paths above
 	// (circuit-breaker / kill-switch / PII) have none, so they leave this nil.
 	decisionAudit.obligations = obligations
+	// #2958: a suppressed obligation must never be an invisible allow. Under the
+	// log fallback the PEP is told to do nothing, so THIS row is the only record
+	// that PII was detected and that a redaction was withheld — suppressing the
+	// obligation AND the audit trail would be a worse compliance regression than
+	// the 403 this change removes. evaluated_policies (recorded below) carries
+	// the detected categories; these fields carry what was withheld and why.
+	if seamFallback != nil {
+		decisionAudit.suppressedObligations = seamFallback.suppressed
+		decisionAudit.obligationFallback = string(seamFallback.action)
+	}
 
 	traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, verdict, evaluatedPolicies, time.Since(startTime).Milliseconds(), reasons, traceID, reqContext, contextTruncated, decisionAudit)
 
@@ -1021,7 +1085,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
 	})
 	recordDecideMetrics(verdict, stage, origin, startTime)
-	recordDecideOutcomeMetrics(verdict, stage, origin, obligations, blockingPolicyID, blockingPolicyTier, evaluatedPolicies)
+	recordDecideOutcomeMetrics(verdict, stage, origin, obligations, blockingPolicyID, blockingPolicyTier, evaluatedPolicies, seamFallback)
 }
 
 // mapPolicyResultToVerdict translates a shared-policy StaticPolicyResult into
@@ -1056,7 +1120,171 @@ func mapPolicyResultToVerdict(result *StaticPolicyResult, communityMode bool) (s
 	if result.RequiresRedaction {
 		obligations = append(obligations, newRedactPIIObligation(result.Reason))
 	}
+	// #2965: a PII policy that MATCHED but resolved to warn/log emits no
+	// obligation, yet must still produce a governance signal so a matched
+	// policy is never a silent bare allow. These reasons ride the allow verdict
+	// (and are persisted on the canonical decision audit row via reasons).
+	reasons = append(reasons, result.AdvisoryReasons...)
 	return VerdictAllow, reasons, obligations
+}
+
+// --- Seam-capability-aware obligations (#2958) ---
+
+// Bounds on the untrusted FulfillmentCapabilities slice. A capability is a
+// short enum token, so anything longer/larger than these is not a value we
+// could match anyway. Surplus entries are DROPPED rather than rejected, which
+// is the fail-safe direction: dropping a capability can only ever make the
+// caller look LESS capable, which routes the obligation to the org's fallback
+// posture (or leaves it emitted) — never to a silent forward of raw content.
+const (
+	maxFulfillmentCapabilities   = 16
+	maxFulfillmentCapabilityLen  = 64
+	obligationFallbackLogReason  = "request-body redaction suppressed: the caller's seam cannot fulfill it; detected content recorded for audit per the organization's obligation-fallback posture (log)"
+	obligationFallbackDenyReason = "request requires body redaction that the caller's seam cannot fulfill; denied per the organization's obligation-fallback posture (block)"
+)
+
+// obligationFallback records what the seam-capability gate withheld and the
+// posture it applied, so the audit row and the fallback metric can report a
+// suppressed redaction instead of it vanishing silently.
+type obligationFallback struct {
+	action     DetectionAction      // DetectionActionBlock or DetectionActionLog
+	suppressed []DecisionObligation // the obligations withheld from the PEP
+}
+
+// applySeamCapabilityObligations is the SINGLE choke point where an obligation
+// may be withheld from a caller (#2958). It runs over the FINAL obligation
+// slice, AFTER every attachment site (mapPolicyResultToVerdict and the
+// validator-backed India/Indonesia merge), so a future third attachment site is
+// gated automatically rather than needing to remember this rule — the #2625
+// audit-hole class came from per-site copies of a shared rule. The
+// newRedactPIIObligation call-site census in
+// decision_obligation_capability_test.go pins that property.
+//
+// Contract:
+//   - Legacy caller (no advertised capabilities) → returns everything
+//     UNCHANGED. This is the bit-identical pre-9.11.0 path that every SDK, the
+//     desktop proxy and the plugins take.
+//   - Capability-aware caller → any obligation the seam cannot discharge is
+//     removed, and the org's server-side obligation-fallback posture decides
+//     the outcome: block → deny; log (the default) → allow, minus the
+//     obligation, plus an audit trail of what was suppressed.
+//
+// The fallback posture is resolved from the ORG, never from the request — a
+// caller can influence WHICH obligations it is offered, never what happens when
+// one is suppressed. See the threat model on DecideRequest.FulfillmentCapabilities.
+//
+// Returns the (possibly rewritten) verdict/reasons/obligations plus a non-nil
+// obligationFallback when — and only when — something was suppressed.
+func applySeamCapabilityObligations(
+	ctx context.Context,
+	orgID string,
+	rawCapabilities []string,
+	verdict string,
+	reasons []string,
+	obligations []DecisionObligation,
+) (string, []string, []DecisionObligation, *obligationFallback) {
+	// Obligations only ride an allow verdict; deny/needs_approval already carry
+	// none. Guarding here keeps the gate a no-op on those paths by construction.
+	if verdict != VerdictAllow || len(obligations) == 0 {
+		return verdict, reasons, obligations, nil
+	}
+
+	capabilities, advertised := canonicalizeFulfillmentCapabilities(rawCapabilities)
+	if !advertised {
+		// Legacy caller: emit obligations exactly as before. An empty set is
+		// deliberately indistinguishable from absent (the wire field is
+		// omitempty) and resolves to the STRICTER outcome — the obligation is
+		// emitted, and a PEP that cannot fulfill it fails closed rather than
+		// forwarding unredacted content.
+		return verdict, reasons, obligations, nil
+	}
+
+	kept := make([]DecisionObligation, 0, len(obligations))
+	var suppressed []DecisionObligation
+	for _, o := range obligations {
+		if requiresRequestBodyRedaction(o) && !capabilities[pep.CapabilityRequestBodyRedaction] {
+			suppressed = append(suppressed, o)
+			continue
+		}
+		kept = append(kept, o)
+	}
+	if len(suppressed) == 0 {
+		// The seam can discharge everything it was offered — untouched.
+		return verdict, reasons, obligations, nil
+	}
+
+	fallback := &obligationFallback{
+		action:     ResolveObligationFallbackAction(ctx, orgID),
+		suppressed: suppressed,
+	}
+	if fallback.action == DetectionActionBlock {
+		// The org refuses detect-and-log for content it wanted masked. Deny —
+		// and carry no obligations, like every other deny path.
+		return VerdictDeny, append(reasons, obligationFallbackDenyReason), []DecisionObligation{}, fallback
+	}
+	return VerdictAllow, append(reasons, obligationFallbackLogReason), kept, fallback
+}
+
+// requiresRequestBodyRedaction reports whether o needs the seam to rewrite the
+// request payload. It is the single-obligation mirror of pep.HasRequestRedaction,
+// and the two MUST agree: that function is what a PEP branches on to decide
+// "does this verdict carry work for me?", so any obligation it would report
+// must be one this gate considered. An obligation with no request-phase
+// fulfillment block is not reported by either (a PEP would never try to
+// discharge it), so it needs no capability and passes through.
+func requiresRequestBodyRedaction(o DecisionObligation) bool {
+	return o.Type == ObligationRedactPII &&
+		o.Fulfillment != nil &&
+		o.Fulfillment.Phase == ObligationPhaseRequest
+}
+
+// canonicalizeFulfillmentCapabilities turns the untrusted wire slice into a
+// bounded lookup set, and reports whether the caller ADVERTISED at all.
+//
+// The two results are deliberately independent. `advertised` answers "is this a
+// capability-aware PEP?" — true as soon as one non-blank entry is present, even
+// if every entry is garbage. It must NOT depend on whether the values are
+// usable, otherwise identical-in-spirit inputs get opposite treatment: an
+// unknown token would route to the org's fallback posture while an over-LONG
+// unknown token (dropped from the set) would look like a legacy caller and get
+// the obligation emitted. Same intent, different outcome, decided by a length
+// cap — so `advertised` is tracked separately from the set's contents.
+//
+// Bounding is on the INPUT INDEX, not the map size: a hostile caller sending a
+// million DUPLICATE entries collapses to a one-entry map, so a size-based cap
+// would never trip and the loop would run the whole slice on the decide hot
+// path. Capping the index bounds the work as well as the memory. Entries past
+// the cap are dropped, which is fail-safe — dropping a capability can only make
+// the caller look LESS capable (→ the org fallback posture), never more.
+//
+// UNKNOWN values are kept but simply never match a Capability* constant, so a
+// garbage or forged token reads as "not capable for that obligation". It can
+// never raise an error, block the request, or be mistaken for a capability —
+// that is what lets an older PDP meet a newer PEP's vocabulary and degrade
+// instead of failing.
+func canonicalizeFulfillmentCapabilities(raw []string) (set map[string]bool, advertised bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	out := make(map[string]bool, min(len(raw), maxFulfillmentCapabilities))
+	for i, c := range raw {
+		if i >= maxFulfillmentCapabilities {
+			break
+		}
+		c = strings.ToLower(strings.TrimSpace(c))
+		if c == "" {
+			continue // blank padding is not an advertisement
+		}
+		advertised = true
+		if len(c) > maxFulfillmentCapabilityLen {
+			// Cannot match any known capability; don't store it (an unbounded
+			// key would let a caller size the map), but it still counts as an
+			// advertisement above.
+			continue
+		}
+		out[c] = true
+	}
+	return out, advertised
 }
 
 // isValidStage gates the stage field to the three layers in ADR-056.
@@ -1223,7 +1451,21 @@ func recordDecideMetrics(verdict, stage, origin string, startTime time.Time) {
 // and their blocking-policy attribution is already recorded via the
 // evaluated_policies they pass — only the shared-engine terminal path threads
 // blockingPolicyID.
-func recordDecideOutcomeMetrics(verdict, stage, origin string, obligations []DecisionObligation, blockingPolicyID, blockingPolicyTier string, evaluatedPolicies []string) {
+func recordDecideOutcomeMetrics(verdict, stage, origin string, obligations []DecisionObligation, blockingPolicyID, blockingPolicyTier string, evaluatedPolicies []string, fallback *obligationFallback) {
+	// #2958: an obligation withheld because the caller's seam cannot fulfill it
+	// is recorded on its own series, BEFORE the verdict switch — a fallback can
+	// end in either allow (log posture) or deny (block posture), and both are
+	// the same operational event: "this seam is receiving content it cannot
+	// govern". Alerting on it is how a deployment notices a headers-only seam
+	// silently degrading to detect-and-log.
+	if fallback != nil {
+		for _, o := range fallback.suppressed {
+			if o.Type == "" {
+				continue
+			}
+			decideObligationFallbacks.WithLabelValues(o.Type, string(fallback.action), stage, origin).Inc()
+		}
+	}
 	switch verdict {
 	case VerdictAllow:
 		for _, o := range obligations {
@@ -1497,6 +1739,19 @@ type decisionAuditInput struct {
 	// JSONB so obligations are queryable structure, not flattened into the
 	// free-text policy_details->>'reason'. Empty/nil → NULL column.
 	obligations []DecisionObligation
+	// suppressedObligations / obligationFallback record an obligation the PDP
+	// WITHHELD because the caller's seam advertised it cannot fulfill it, plus
+	// the org posture applied (#2958). They land at
+	// policy_details->>'suppressed_obligations' / ->>'obligation_fallback'.
+	//
+	// They are deliberately NOT written to the audit_logs.obligations COLUMN:
+	// that column is the record of what the PEP was actually TOLD to do, and a
+	// withheld obligation was not. Keeping them apart means a compliance reader
+	// can tell "we asked for redaction" from "we detected PII, could not ask for
+	// redaction here, and allowed it under the log posture" — which is the whole
+	// point of recording them. Empty on every other path.
+	suppressedObligations []DecisionObligation
+	obligationFallback    string
 	// securityEvent, when set, classifies this row as a security-relevant denial
 	// (#2643): "tenant_impersonation" / "org_impersonation" (a body
 	// caller_identity that disagrees with the authenticated credentials),
@@ -1670,6 +1925,23 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		reasons = []string{}
 	}
 
+	details := buildDecisionAuditDetails(decisionID, stage, policyIDs, reasons, reqContext, contextTruncated, audit)
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		decideAuditWriteFailures.WithLabelValues("marshal").Inc()
+		log.Printf("⚠️ [Decide] audit log marshal failed (non-fatal): %v", err)
+		return
+	}
+
+	writeDecisionAuditRow(ctx, db, detailsJSON, decisionID, orgID, tenantID, stage, verdict, audit)
+}
+
+// buildDecisionAuditDetails assembles the policy_details JSONB payload for one
+// decision row. Pulled out as a PURE function so the content contract every
+// audit/compliance reader depends on — decision_id, the detected policy_ids, and
+// (#2958) the suppressed-obligation record — is unit-testable without standing
+// up a database or matching a 20-column INSERT positionally.
+func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []string, reqContext map[string]string, contextTruncated bool, audit decisionAuditInput) map[string]interface{} {
 	details := map[string]interface{}{
 		"decision_id": decisionID,
 		"source":      "decision_mode",
@@ -1718,13 +1990,25 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	if audit.toolName != "" {
 		details["tool_name"] = audit.toolName
 	}
-	detailsJSON, err := json.Marshal(details)
-	if err != nil {
-		decideAuditWriteFailures.WithLabelValues("marshal").Inc()
-		log.Printf("⚠️ [Decide] audit log marshal failed (non-fatal): %v", err)
-		return
+	// #2958: what the seam-capability gate withheld, and the posture applied.
+	// Under the log posture this is the ONLY record that a redaction was due —
+	// the verdict is a plain allow and the obligations column is empty — so a
+	// compliance query can still find "PII was detected here and not masked".
+	// The detected categories ride policy_ids/reasons above.
+	if len(audit.suppressedObligations) > 0 {
+		suppressed := make([]map[string]string, 0, len(audit.suppressedObligations))
+		for _, o := range audit.suppressedObligations {
+			suppressed = append(suppressed, map[string]string{"type": o.Type, "detail": o.Detail})
+		}
+		details["suppressed_obligations"] = suppressed
+		details["obligation_fallback"] = audit.obligationFallback
 	}
+	return details
+}
 
+// writeDecisionAuditRow performs the canonical audit_logs INSERT for one
+// decision, given the already-marshalled policy_details payload.
+func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, decisionID, orgID, tenantID, stage, verdict string, audit decisionAuditInput) {
 	// audit_logs NOT-NULL columns: fall back to placeholders rather than
 	// fail the insert (mirrors writeExplainableAuditLog).
 	userEmail := audit.userEmail
@@ -1825,7 +2109,7 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		sessionIDArg = sid
 	}
 
-	_, err = db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,

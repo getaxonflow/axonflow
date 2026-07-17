@@ -238,6 +238,14 @@ func TestMapPolicyResultToVerdict_AllPaths(t *testing.T) {
 			wantVerdict: VerdictDeny,
 			wantReason:  "blocked",
 		},
+		{
+			// #2965: a warn/log PII match carries no obligation but must surface
+			// an advisory reason, so a matched policy is never a silent allow.
+			name:        "advisory match is allow + reason, no obligation",
+			in:          &StaticPolicyResult{AdvisoryReasons: []string{"pii-indonesia detected by policy sys_pii_indonesia_ktp (action=log); no redaction applied"}},
+			wantVerdict: VerdictAllow,
+			wantReason:  "pii-indonesia detected by policy sys_pii_indonesia_ktp (action=log); no redaction applied",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -321,6 +329,115 @@ func TestMapPolicyResultToVerdict_ObligationIsFulfillable(t *testing.T) {
 	}
 	if ob.Fulfillment.Endpoint != requestRedactionEndpoint || ob.Fulfillment.Phase != ObligationPhaseRequest {
 		t.Fatalf("fulfillment wrong: %+v", ob.Fulfillment)
+	}
+}
+
+// TestDecide_MatchedPIIPolicy_NeverBareAllow is the #2965 CLASS GUARD — the
+// item that kills the bug family, not just the pii-indonesia instance. For
+// EVERY pii-* category, under every resolved action a PII match can carry, a
+// MATCHED policy run through the real convert→verdict pipeline must NEVER return
+// verdict=allow with BOTH empty obligations AND empty reasons. A matched policy
+// always produces a governance signal (obligation, deny reason, needs_approval,
+// or advisory reason). The postures are the RESOLVED match action the engine
+// hands convert (block ⇒ Blocked=true; everything else ⇒ non-blocking match).
+// require_approval is included specifically because the community-mode branch
+// drops HITL — the case R3 round 2 caught the action-aware switch reintroducing
+// as a bare allow.
+func TestDecide_MatchedPIIPolicy_NeverBareAllow(t *testing.T) {
+	// The pii-* category surface. Kept as an explicit list (mirroring
+	// shared/policy TestIsPIIPolicyCategory_Convention) with a forward-compat
+	// synthetic entry so a future pii-* jurisdiction is auto-covered by the
+	// same guard — the convergence onto the shared prefix predicate means a new
+	// pii-* category needs no code change here to be governed.
+	piiCategories := []sharedpolicy.PolicyCategory{
+		sharedpolicy.CategoryPIIGlobal,
+		sharedpolicy.CategoryPIIUS,
+		sharedpolicy.CategoryPIIIndia,
+		sharedpolicy.CategoryPIIEU,
+		sharedpolicy.CategoryPIISingapore,
+		sharedpolicy.CategoryPIIIndonesia,     // #2965 — the reported instance
+		sharedpolicy.PolicyCategory("pii-zz"), // forward-compat: any pii-* is covered
+	}
+	// The four PII_ACTION postures, expressed as the resolved action the engine
+	// stamps onto match.Action (BuildActionOverrides maps PII_ACTION onto every
+	// pii-* category identically).
+	postures := []struct {
+		name    string
+		action  sharedpolicy.Action
+		blocked bool
+	}{
+		{"block", sharedpolicy.ActionBlock, true},
+		{"redact", sharedpolicy.ActionRedact, false},
+		{"warn", sharedpolicy.ActionWarn, false},
+		{"log", sharedpolicy.ActionLog, false},
+		// Not a PII_ACTION posture (BuildActionOverrides never yields it), but a
+		// tenant/dynamic pii-* policy can carry require_approval as its stored
+		// action — must still signal, incl. in community mode where HITL is dropped.
+		{"require_approval", sharedpolicy.ActionRequireApproval, false},
+	}
+
+	for _, cat := range piiCategories {
+		for _, p := range postures {
+			t.Run(string(cat)+"/"+p.name, func(t *testing.T) {
+				rr := &sharedpolicy.RequestResult{
+					Blocked: p.blocked,
+					MatchedPolicies: []sharedpolicy.PolicyMatch{{
+						PolicyID: "sys_" + string(cat),
+						Action:   p.action,
+						Category: cat,
+						Severity: sharedpolicy.SeverityCritical,
+					}},
+				}
+				if p.blocked {
+					rr.BlockReason = "blocked by " + string(cat)
+				}
+				// Run the FULL bridge: convert (shared → static) then the
+				// verdict mapping — the exact path /decide uses. Tested in both
+				// editions because community drops HITL, which is the axis the
+				// require_approval bare-allow regression hid on.
+				for _, community := range []bool{false, true} {
+					result := convertSharedResultToStatic(rr)
+					verdict, reasons, obligations := mapPolicyResultToVerdict(result, community)
+
+					// The property: a matched policy is never a silent allow.
+					if verdict == VerdictAllow && len(obligations) == 0 && len(reasons) == 0 {
+						t.Fatalf("BARE ALLOW for matched %s under posture %s (community=%v): "+
+							"verdict=allow, no obligations, no reasons — a matched policy produced zero governance signal",
+							cat, p.name, community)
+					}
+
+					// Stronger, posture-specific expectations so the guard can't
+					// be satisfied by the wrong signal.
+					switch p.name {
+					case "block":
+						if verdict != VerdictDeny {
+							t.Errorf("%s/block community=%v: verdict=%q want deny", cat, community, verdict)
+						}
+					case "redact":
+						if verdict != VerdictAllow || len(obligations) == 0 {
+							t.Errorf("%s/redact community=%v: want allow+obligation, got verdict=%q obligations=%d", cat, community, verdict, len(obligations))
+						}
+					case "warn", "log":
+						if verdict != VerdictAllow || len(reasons) == 0 || len(obligations) != 0 {
+							t.Errorf("%s/%s community=%v: want allow+reason+no-obligation, got verdict=%q reasons=%d obligations=%d",
+								cat, p.name, community, verdict, len(reasons), len(obligations))
+						}
+					case "require_approval":
+						if community {
+							// HITL is enterprise-only → community falls through to
+							// allow, so the advisory reason is the ONLY signal.
+							if verdict != VerdictAllow || len(reasons) == 0 {
+								t.Errorf("%s/require_approval community: want allow+advisory-reason, got verdict=%q reasons=%d", cat, verdict, len(reasons))
+							}
+						} else {
+							if verdict != VerdictNeedsApproval {
+								t.Errorf("%s/require_approval enterprise: want needs_approval, got verdict=%q", cat, verdict)
+							}
+						}
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -556,9 +673,9 @@ func TestHandleDecide_TraceIDFallback_OnMalformedTraceparent(t *testing.T) {
 	installCircuitBreaker(t)
 
 	cases := []string{
-		"",                                                    // empty
-		"garbage",                                             // not W3C
-		"00-tooshort-b7ad6b7169203331-01",                     // wrong trace-id length
+		"",                                // empty
+		"garbage",                         // not W3C
+		"00-tooshort-b7ad6b7169203331-01", // wrong trace-id length
 		"00-00000000000000000000000000000000-b7ad6b7169203331-01", // all-zero trace-id
 		"00-NOT_HEX_XXXXXXXXXXXXXXXXXXXXXXXX-b7ad6b7169203331-01", // non-hex
 	}
@@ -925,7 +1042,7 @@ func decideAuditInsertArgs(policyDecision string, details driver.Value) []driver
 		args[13] = details // policy_details JSONB
 	}
 	args[15] = PlaneDecision // plane
-	args[19] = nil // session_id — NULL on untrusted paths (#2896)
+	args[19] = nil           // session_id — NULL on untrusted paths (#2896)
 	return args
 }
 

@@ -156,6 +156,21 @@ var providerEndpoints = map[string]string{
 	"chatgpt-": "https://api.openai.com",
 }
 
+// openaiCompatPolicyCategories is the category whitelist evaluated for
+// /openai/v1/* requests. #2965: the PII portion is sourced from the single
+// canonical sharedpolicy.AllTextPIICategories() so pii-indonesia (KTP/NIK) is
+// evaluated on this plane — the previous hand-listed set omitted it, filtering
+// the KTP policy out before evaluation and leaving Indonesian PII ungoverned.
+var openaiCompatPolicyCategories = append([]sharedpolicy.PolicyCategory{
+	sharedpolicy.CategorySecuritySQLi,
+	sharedpolicy.CategorySecurityDangerous,
+	sharedpolicy.CategorySensitiveData,
+	sharedpolicy.CategoryComplianceRBI,
+	sharedpolicy.CategoryComplianceSEBI,
+	sharedpolicy.CategoryComplianceEUAIAct,
+	sharedpolicy.CategoryComplianceMASFEAT,
+}, sharedpolicy.AllTextPIICategories()...)
+
 // resolveProviderBaseURL determines the upstream provider from the model name.
 func resolveProviderBaseURL(model string) (baseURL string, provider string, ok bool) {
 	lower := strings.ToLower(model)
@@ -324,24 +339,11 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, queryText, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			OrgID:         user.OrgID,
-			ConnectorName: "openai_compat",
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				sharedpolicy.CategorySecuritySQLi,
-				sharedpolicy.CategorySecurityDangerous,
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-				sharedpolicy.CategorySensitiveData,
-				sharedpolicy.CategoryComplianceRBI,
-				sharedpolicy.CategoryComplianceSEBI,
-				sharedpolicy.CategoryComplianceEUAIAct,
-				sharedpolicy.CategoryComplianceMASFEAT,
-			},
+			TenantID:        user.TenantID,
+			OrgID:           user.OrgID,
+			ConnectorName:   "openai_compat",
+			UserID:          fmt.Sprintf("%d", user.ID),
+			Categories:      openaiCompatPolicyCategories,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
 		})

@@ -117,7 +117,7 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 		obBefore := testutil.ToFloat64(decideObligations.WithLabelValues(ObligationRedactPII, "llm", origin))
 		blBefore := testutil.CollectAndCount(decideBlocks)
 		recordDecideOutcomeMetrics(VerdictAllow, "llm", origin,
-			[]DecisionObligation{newRedactPIIObligation("PII detected")}, "", "", nil)
+			[]DecisionObligation{newRedactPIIObligation("PII detected")}, "", "", nil, nil)
 		if got := testutil.ToFloat64(decideObligations.WithLabelValues(ObligationRedactPII, "llm", origin)); got != obBefore+1 {
 			t.Errorf("decideObligations{redact_pii} = %v, want %v", got, obBefore+1)
 		}
@@ -128,7 +128,7 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 
 	t.Run("allow with no obligation records nothing", func(t *testing.T) {
 		obBefore := testutil.CollectAndCount(decideObligations)
-		recordDecideOutcomeMetrics(VerdictAllow, "tool", origin, nil, "", "", nil)
+		recordDecideOutcomeMetrics(VerdictAllow, "tool", origin, nil, "", "", nil, nil)
 		if got := testutil.CollectAndCount(decideObligations); got != obBefore {
 			t.Errorf("decideObligations series count changed on an obligation-free allow (%d -> %d)", obBefore, got)
 		}
@@ -136,7 +136,7 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 
 	t.Run("deny increments blocks keyed by blocking policy", func(t *testing.T) {
 		before := testutil.ToFloat64(decideBlocks.WithLabelValues("sys_pii_ssn", origin))
-		recordDecideOutcomeMetrics(VerdictDeny, "llm", origin, nil, "sys_pii_ssn", "system", []string{"sys_pii_ssn", "other"})
+		recordDecideOutcomeMetrics(VerdictDeny, "llm", origin, nil, "sys_pii_ssn", "system", []string{"sys_pii_ssn", "other"}, nil)
 		if got := testutil.ToFloat64(decideBlocks.WithLabelValues("sys_pii_ssn", origin)); got != before+1 {
 			t.Errorf("decideBlocks{sys_pii_ssn} = %v, want %v", got, before+1)
 		}
@@ -144,7 +144,7 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 
 	t.Run("deny falls back to evaluated_policies[0] when blockingPolicyID empty", func(t *testing.T) {
 		before := testutil.ToFloat64(decideBlocks.WithLabelValues("rbi_pii_protection", origin))
-		recordDecideOutcomeMetrics(VerdictDeny, "tool", origin, nil, "", "", []string{"rbi_pii_protection"})
+		recordDecideOutcomeMetrics(VerdictDeny, "tool", origin, nil, "", "", []string{"rbi_pii_protection"}, nil)
 		if got := testutil.ToFloat64(decideBlocks.WithLabelValues("rbi_pii_protection", origin)); got != before+1 {
 			t.Errorf("decideBlocks fallback = %v, want %v", got, before+1)
 		}
@@ -153,8 +153,8 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 	t.Run("deny by per-tenant custom policy collapses to tenant_custom (no cardinality bomb)", func(t *testing.T) {
 		before := testutil.ToFloat64(decideBlocks.WithLabelValues("tenant_custom", origin))
 		// A tenant custom policy: unbounded "custom_<hex>" id, tier=tenant.
-		recordDecideOutcomeMetrics(VerdictDeny, "llm", origin, nil, "custom_9f3a2b1c4d5e", "tenant", nil)
-		recordDecideOutcomeMetrics(VerdictDeny, "llm", origin, nil, "custom_00112233aabb", "organization", nil)
+		recordDecideOutcomeMetrics(VerdictDeny, "llm", origin, nil, "custom_9f3a2b1c4d5e", "tenant", nil, nil)
+		recordDecideOutcomeMetrics(VerdictDeny, "llm", origin, nil, "custom_00112233aabb", "organization", nil, nil)
 		if got := testutil.ToFloat64(decideBlocks.WithLabelValues("tenant_custom", origin)); got != before+2 {
 			t.Errorf("decideBlocks{tenant_custom} = %v, want %v", got, before+2)
 		}
@@ -166,7 +166,7 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 
 	t.Run("deny with no policy info records unknown (never silently uncounted)", func(t *testing.T) {
 		before := testutil.ToFloat64(decideBlocks.WithLabelValues("unknown", origin))
-		recordDecideOutcomeMetrics(VerdictDeny, "agent", origin, nil, "", "", nil)
+		recordDecideOutcomeMetrics(VerdictDeny, "agent", origin, nil, "", "", nil, nil)
 		if got := testutil.ToFloat64(decideBlocks.WithLabelValues("unknown", origin)); got != before+1 {
 			t.Errorf("decideBlocks{unknown} = %v, want %v", got, before+1)
 		}
@@ -175,7 +175,7 @@ func TestRecordDecideOutcomeMetrics(t *testing.T) {
 	t.Run("needs_approval records neither obligations nor blocks", func(t *testing.T) {
 		obBefore := testutil.CollectAndCount(decideObligations)
 		blBefore := testutil.CollectAndCount(decideBlocks)
-		recordDecideOutcomeMetrics(VerdictNeedsApproval, "llm", origin, nil, "", "", nil)
+		recordDecideOutcomeMetrics(VerdictNeedsApproval, "llm", origin, nil, "", "", nil, nil)
 		if got := testutil.CollectAndCount(decideObligations); got != obBefore {
 			t.Errorf("decideObligations changed on needs_approval (%d -> %d)", obBefore, got)
 		}

@@ -846,14 +846,30 @@ func GetRedactionStrategy(category PolicyCategory, severity Severity) RedactionS
 
 	// Default strategies by category
 	switch category {
-	case CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore:
+	case CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore,
+		// #2965: pii-indonesia (NIK/KTP/NPWP) is a national-ID class exactly like
+		// NRIC (pii-singapore), SSN (pii-us) and Aadhaar (pii-india), so it masks
+		// the same way — first + last char kept, middle asterisked. It was
+		// omitted here and fell through to the generic StrategyRemove default,
+		// masked only INCIDENTALLY via the critical-severity branch above; this
+		// makes the non-critical path consistent instead of relying on severity.
+		CategoryPIIIndonesia:
 		return StrategyMask
 	case CategoryPIIGlobal:
 		if severity == SeverityHigh {
 			return StrategyMask
 		}
 		return StrategyPartial
-	default:
-		return StrategyRemove
 	}
+
+	// #2965: any other pii-* jurisdiction not explicitly cased above masks by
+	// default (national-ID safe) rather than falling through to the generic
+	// StrategyRemove — so a newly-seeded pii-* category can never resolve to a
+	// non-PII strategy. This is the convergence onto the pii-* convention that
+	// removes the "list to forget" for redaction strategy, mirroring the
+	// IsPIIPolicyCategory bridge fix.
+	if IsPIIPolicyCategory(category) {
+		return StrategyMask
+	}
+	return StrategyRemove
 }

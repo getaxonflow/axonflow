@@ -97,6 +97,7 @@ func TestIsPIIPolicyCategory(t *testing.T) {
 		{"PII India", CategoryPIIIndia, true},
 		{"PII EU", CategoryPIIEU, true},
 		{"PII Singapore", CategoryPIISingapore, true},
+		{"PII Indonesia", CategoryPIIIndonesia, true},
 
 		// Non-PII categories - should return false
 		{"Security SQLi", CategorySecuritySQLi, false},
@@ -106,11 +107,42 @@ func TestIsPIIPolicyCategory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isPIIPolicyCategory(tt.category)
+			got := IsPIIPolicyCategory(tt.category)
 			if got != tt.want {
-				t.Errorf("isPIIPolicyCategory(%q) = %v, want %v", tt.category, got, tt.want)
+				t.Errorf("IsPIIPolicyCategory(%q) = %v, want %v", tt.category, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestAllTextPIICategories_MatchesConvention keeps the canonical PII list
+// (spread into the proxy + openai-compat category whitelists) in lockstep with
+// the pii-* convention: every entry must satisfy IsPIIPolicyCategory, the set
+// must be distinct, and it must include the jurisdictions that must never drop
+// off a whitelist (Singapore + Indonesia — the #2965 omission). If a new pii-*
+// category is added to IsPIIPolicyCategory's world but not here, the plane
+// whitelists silently stop evaluating it; this test is the drift guard.
+func TestAllTextPIICategories_MatchesConvention(t *testing.T) {
+	got := AllTextPIICategories()
+	seen := make(map[PolicyCategory]bool)
+	for _, c := range got {
+		if !IsPIIPolicyCategory(c) {
+			t.Errorf("AllTextPIICategories contains %q which is not a pii-* category", c)
+		}
+		if seen[c] {
+			t.Errorf("AllTextPIICategories contains duplicate %q", c)
+		}
+		seen[c] = true
+	}
+	// The must-be-present set — categories whose omission from a plane whitelist
+	// is a silent-allow bug (#2965 was pii-indonesia).
+	for _, must := range []PolicyCategory{
+		CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia,
+		CategoryPIIEU, CategoryPIISingapore, CategoryPIIIndonesia,
+	} {
+		if !seen[must] {
+			t.Errorf("AllTextPIICategories is missing %q", must)
+		}
 	}
 }
 

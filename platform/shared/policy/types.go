@@ -233,7 +233,7 @@ func (p *CompiledPolicy) GetActionForPhase(phase Phase) Action {
 	}
 	// Fallback: derive from category and severity for backward compatibility
 	// PII policies default to redact (Issue #891: non-blocking PII detection)
-	if isPIIPolicyCategory(p.Category) {
+	if IsPIIPolicyCategory(p.Category) {
 		return ActionRedact
 	}
 	// Security policies (SQLi, dangerous queries) default to block
@@ -248,19 +248,41 @@ func (p *CompiledPolicy) GetActionForPhase(phase Phase) Action {
 	return ActionLog
 }
 
-// isPIIPolicyCategory returns true if the category is a PII-related category.
-// isPIIPolicyCategory reports whether a category is a TEXT PII category, by
+// IsPIIPolicyCategory reports whether a category is a TEXT PII category, by
 // CONVENTION rather than an enumerated list: any "pii-*" category
 // (pii-global/us/india/eu/singapore/indonesia). This is the single source of
-// truth for "policy-derived" PII coverage in the agent's text engine — so a
-// newly-seeded pii-* category (e.g. pii-indonesia) is auto-included with no
-// list to forget (the exact bug that left pii-indonesia out of the response
-// phase). NOTE: "media-pii" is intentionally EXCLUDED — its detector is the
-// orchestrator's media/OCR subsystem (Rekognition/Vision), not this text
-// engine; including it here would no-op on text and falsely imply agent-side
-// media coverage.
-func isPIIPolicyCategory(cat PolicyCategory) bool {
+// truth for "policy-derived" PII coverage across the agent's text engine AND
+// the /decide obligation bridge (platform/agent/policy_result_convert.go) — so
+// a newly-seeded pii-* category (e.g. pii-indonesia) is auto-included with no
+// list to forget. It is EXPORTED so the agent package converges on it instead
+// of maintaining a duplicate enumerated switch, which is exactly the drift that
+// left pii-indonesia out of the /decide obligation path (#2965) and out of the
+// response phase before it. NOTE: "media-pii" is intentionally EXCLUDED — its
+// detector is the orchestrator's media/OCR subsystem (Rekognition/Vision), not
+// this text engine; including it here would no-op on text and falsely imply
+// agent-side media coverage.
+func IsPIIPolicyCategory(cat PolicyCategory) bool {
 	return strings.HasPrefix(string(cat), "pii-")
+}
+
+// AllTextPIICategories returns every TEXT PII category (the pii-* set) as an
+// explicit slice. It is the SINGLE source for "all PII" wherever a caller must
+// pass an explicit EvalOptions.Categories whitelist — the proxy and
+// openai-compat planes cannot use the prefix-derived EnabledPIICategories (they
+// evaluate a fixed category set, not a per-tenant policy scan), so they spread
+// this in. Adding a new pii-* jurisdiction is a one-line change HERE, not a hunt
+// across call sites (the omission that left pii-indonesia ungoverned on those
+// planes — #2965). Kept in lockstep with IsPIIPolicyCategory by
+// TestAllTextPIICategories_MatchesConvention.
+func AllTextPIICategories() []PolicyCategory {
+	return []PolicyCategory{
+		CategoryPIIGlobal,
+		CategoryPIIUS,
+		CategoryPIIIndia,
+		CategoryPIIEU,
+		CategoryPIISingapore,
+		CategoryPIIIndonesia,
+	}
 }
 
 // isSecurityPolicyCategory returns true if the category is a security category.

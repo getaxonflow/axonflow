@@ -46,6 +46,24 @@ const (
 	DetectionCategorySQLI             = "sqli"
 	DetectionCategoryDangerousQuery   = "dangerous_query"
 	DetectionCategoryDangerousCommand = "dangerous_command"
+
+	// DetectionCategoryObligationFallback (#2958, mig 144) is NOT a detector —
+	// it is the org's answer to "what should happen when a policy decided to
+	// redact, but the PEP's seam cannot carry that out?" (e.g. an Envoy
+	// ext_authz leg, which is headers-only and cannot rewrite a body).
+	//
+	// It lives in this table because it is the same shape — a per-org posture
+	// lever consulted on the hot path through the same short-TTL cache — and it
+	// could NOT ride the existing `pii` category: `pii=block` makes every PII
+	// match block outright (BuildActionOverrides fans it onto every PII
+	// category, and convertSharedResultToStatic only sets RequiresRedaction when
+	// the result is NOT blocked), so no redact obligation can ever coexist with
+	// it. Reusing `pii` would have produced a lever whose block branch is
+	// unreachable by construction.
+	//
+	// Only `block` and `log` are meaningful (see ResolveObligationFallbackAction);
+	// the portal write path rejects the other two for this category.
+	DetectionCategoryObligationFallback = "obligation_fallback"
 )
 
 // EnvDetectionOverrideTTLSeconds tunes how long a per-org override set is cached
@@ -351,4 +369,98 @@ func ResolveResponseInjectionAction(ctx context.Context, orgID string) Detection
 		}
 	}
 	return DetectionActionRedact
+}
+
+// ResolveObligationFallbackAction returns what to do when a policy decided a
+// request body must be redacted but the calling PEP's seam cannot carry that
+// out (#2958) — the org's obligation-fallback posture.
+//
+// DEFAULT is LOG: allow the request, emit NO obligation, and record the
+// suppressed redaction + detected categories on the canonical audit row. That
+// is the faithful degradation of what the org already asked for: an org on
+// PII_ACTION=redact has said "mask it, don't block it" — i.e. it values
+// continuity — so a seam that cannot mask degrades to detect-and-audit rather
+// than to an outage. It is also what the alternative was: before this posture
+// existed the adapter turned the PDP's allow into a local 403 and the org got
+// neither the content nor an audit record.
+//
+// CONFIGURABLE to BLOCK for an org that refuses detect-and-log on content it
+// wanted masked ("redact where you can, block where you can't" — a real
+// preference that no existing lever could express). Set via the per-(org,
+// category) override on the `obligation_fallback` category (mig 144), the same
+// table + short-TTL cache as every other posture lever.
+//
+// Anything OTHER than block/log stored for this category (only reachable by
+// hand-editing the DB — the portal write path rejects them) falls back to the
+// documented default with a rate-limited WARN. Failing toward `log` on a config
+// typo is deliberate: the alternative is denying live traffic because someone
+// typo'd a posture, and this lever's job is to make a non-capable seam
+// governable, not to become a new outage source.
+//
+// Never returns an error: resolution is on the decide hot path, and the cache
+// already fails SAFE to "no overrides" on a DB problem.
+func ResolveObligationFallbackAction(ctx context.Context, orgID string) DetectionAction {
+	if orgID == "" {
+		return DetectionActionLog
+	}
+	cache := getDetectionOverrideCache()
+	if cache == nil {
+		return DetectionActionLog // no DB / cache not wired → documented default
+	}
+	action, ok := cache.get(ctx, orgID)[DetectionCategoryObligationFallback]
+	if !ok {
+		return DetectionActionLog // org set no posture → documented default
+	}
+	switch action {
+	case DetectionActionBlock, DetectionActionLog:
+		return action
+	default:
+		// redact / warn are meaningless here: "redact" is precisely what the
+		// seam cannot do (it is why we are in this function at all), and "warn"
+		// has no distinct enforcement from "log" on this axis.
+		warnUnusableObligationFallback(orgID, action)
+		return DetectionActionLog
+	}
+}
+
+// obligationFallbackWarn rate-limits the unusable-posture WARN to at most one
+// line per org per window, so a misconfigured org cannot flood the log from the
+// decide hot path.
+var obligationFallbackWarn = struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}{last: map[string]time.Time{}}
+
+// obligationFallbackWarnInterval is the per-org quiet period between WARNs.
+const obligationFallbackWarnInterval = time.Minute
+
+// warnUnusableObligationFallback logs (at most once per org per interval) that
+// an org has a nonsense obligation_fallback action stored, naming the value and
+// the default being applied instead.
+//
+// The map is keyed by org and bounded in practice by the org count of one
+// deployment; entries are only created for orgs that actually hold an invalid
+// posture, which the portal write path prevents — so this is a hand-edited-DB
+// diagnostic, not a per-request allocation.
+func warnUnusableObligationFallback(orgID string, action DetectionAction) {
+	now := time.Now()
+	obligationFallbackWarn.mu.Lock()
+	last, seen := obligationFallbackWarn.last[orgID]
+	quiet := seen && now.Sub(last) < obligationFallbackWarnInterval
+	if !quiet {
+		obligationFallbackWarn.last[orgID] = now
+	}
+	obligationFallbackWarn.mu.Unlock()
+	if quiet {
+		return
+	}
+	log.Printf("[Detection] WARNING: org %q has obligation_fallback=%q, which is not enforceable (only block|log are) — applying the default %q. Fix it via the detection-posture API.",
+		orgID, action, DetectionActionLog)
+}
+
+// ResetObligationFallbackWarnForTest clears the WARN rate-limiter. Test-only.
+func ResetObligationFallbackWarnForTest() {
+	obligationFallbackWarn.mu.Lock()
+	obligationFallbackWarn.last = map[string]time.Time{}
+	obligationFallbackWarn.mu.Unlock()
 }

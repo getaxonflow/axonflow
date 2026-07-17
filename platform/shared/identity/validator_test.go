@@ -106,3 +106,37 @@ func TestRegistry_OrderDuplicatesAndLookup(t *testing.T) {
 		t.Fatal("LookupValidator(unknown) must be nil")
 	}
 }
+
+// #2963: IsFleetRole / FleetRoleNames expose the resolver's closed vocabulary
+// so a configuration surface can reject an unrecognized role name up front.
+func TestIsFleetRole(t *testing.T) {
+	for _, r := range []string{"admin", "owner", "policy_admin", "developer", "member", "viewer"} {
+		if !IsFleetRole(r) {
+			t.Errorf("IsFleetRole(%q) = false, want true", r)
+		}
+	}
+	for _, r := range []string{"", "Admin", "ADMIN", "billing_ops", "superuser", "root", "*"} {
+		if IsFleetRole(r) {
+			t.Errorf("IsFleetRole(%q) = true, want false", r)
+		}
+	}
+}
+
+// The exposed vocabulary MUST be self-consistent with NormalizeRole — one
+// source of truth. (The cross-check against the resolver's rolePrecedence lives
+// in the enterprise-tagged scim_role_resolver_vocab_test.go, since
+// rolePrecedence is defined only in the enterprise build.)
+func TestFleetRoleNames_MatchesNormalize(t *testing.T) {
+	names := FleetRoleNames()
+	if len(names) != 6 {
+		t.Fatalf("FleetRoleNames() has %d entries, want 6: %v", len(names), names)
+	}
+	for _, n := range names {
+		if NormalizeRole(n) != n {
+			t.Errorf("FleetRoleNames contains %q but NormalizeRole rejects it", n)
+		}
+		if !IsFleetRole(n) {
+			t.Errorf("FleetRoleNames contains %q but IsFleetRole is false", n)
+		}
+	}
+}

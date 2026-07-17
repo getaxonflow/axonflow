@@ -195,6 +195,28 @@ func NormalizeRole(role string) string {
 	return ""
 }
 
+// IsFleetRole reports whether role is one of the fleet plane's recognized authz
+// roles. It is the SAME closed vocabulary NormalizeRole enforces, exposed so
+// upstream surfaces can REJECT an unrecognized role at the point of
+// configuration rather than let it silently normalize to least-privilege
+// later. #2963: the SCIM group->role mapping gate uses this — mapping a group
+// to a role the resolver does not recognize would otherwise drop every member
+// of that group to own-rows with no error, which reads exactly like "my IdP
+// roles are being ignored".
+func IsFleetRole(role string) bool {
+	return knownRoles[role]
+}
+
+// FleetRoleNames returns the recognized authz role names (unordered). For
+// building actionable error messages at the configuration surface.
+func FleetRoleNames() []string {
+	names := make([]string, 0, len(knownRoles))
+	for r := range knownRoles {
+		names = append(names, r)
+	}
+	return names
+}
+
 // CheckOIDCEndpointSSRF rejects an OIDC issuer / JWKS URL that targets an
 // internal or cloud-metadata endpoint (#2930 R3). A tenant admin with
 // sso:configure sets these URLs and the platform then fetches them

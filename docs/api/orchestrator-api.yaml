@@ -2775,7 +2775,7 @@ paths:
               $ref: '#/components/schemas/AuditToolCallRequest'
             example:
               tool_name: "getUserInfo"
-              tool_type: "mcp"
+              caller_name: "claude_code"
               input: {}
               output: {}
               workflow_id: "wf_abc123"
@@ -9407,9 +9407,19 @@ components:
         tool_name:
           type: string
           description: Name of the tool that was called
+        caller_name:
+          type: string
+          description: >-
+            Which client/integration made this call (e.g. claude_code, codex,
+            cursor, openclaw). Replaces tool_type (#2912), which was misnamed
+            for this purpose — every real caller used it to identify itself,
+            not to describe a property of the tool.
         tool_type:
           type: string
-          description: Type of tool (e.g., mcp, api, webhook)
+          deprecated: true
+          description: >-
+            Deprecated — use caller_name instead. Accepted as a legacy input
+            fallback when caller_name is not supplied.
         input:
           type: object
           description: Input data sent to the tool
