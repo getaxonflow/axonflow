@@ -212,9 +212,24 @@ func (s *Service) FailExecution(ctx context.Context, requestID string, errorMess
 	return nil
 }
 
+// Every by-id read below takes the caller's AccessScope (#2934) and anchors
+// on an org/tenant-scoped summary fetch: execution_snapshots has no org
+// column, so the scoped summary row IS the SQL-enforced authorization for the
+// execution's steps. A request id outside the caller's scope is ErrNotFound —
+// indistinguishable from a nonexistent execution, so the routes don't oracle
+// other tenants' request ids.
+
 // GetExecution retrieves a full execution with summary and all steps
-func (s *Service) GetExecution(ctx context.Context, requestID string) (*Execution, error) {
-	return s.repo.GetExecution(ctx, requestID)
+func (s *Service) GetExecution(ctx context.Context, requestID string, scope AccessScope) (*Execution, error) {
+	summary, err := s.repo.GetSummaryScoped(ctx, requestID, scope)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := s.repo.GetSnapshots(ctx, requestID)
+	if err != nil {
+		return nil, err
+	}
+	return &Execution{Summary: summary, Steps: steps}, nil
 }
 
 // ListExecutions lists execution summaries with filtering and pagination
@@ -223,27 +238,33 @@ func (s *Service) ListExecutions(ctx context.Context, opts ListOptions) ([]Execu
 }
 
 // GetStep retrieves a specific step snapshot
-func (s *Service) GetStep(ctx context.Context, requestID string, stepIndex int) (*ExecutionSnapshot, error) {
+func (s *Service) GetStep(ctx context.Context, requestID string, stepIndex int, scope AccessScope) (*ExecutionSnapshot, error) {
+	if _, err := s.repo.GetSummaryScoped(ctx, requestID, scope); err != nil {
+		return nil, err
+	}
 	return s.repo.GetSnapshot(ctx, requestID, stepIndex)
 }
 
 // GetSteps retrieves all steps for an execution
-func (s *Service) GetSteps(ctx context.Context, requestID string) ([]ExecutionSnapshot, error) {
+func (s *Service) GetSteps(ctx context.Context, requestID string, scope AccessScope) ([]ExecutionSnapshot, error) {
+	if _, err := s.repo.GetSummaryScoped(ctx, requestID, scope); err != nil {
+		return nil, err
+	}
 	return s.repo.GetSnapshots(ctx, requestID)
 }
 
 // ExportExecution exports a full execution record for compliance
-func (s *Service) ExportExecution(ctx context.Context, requestID string, opts ExportOptions) (json.RawMessage, error) {
-	exec, err := s.repo.GetExecution(ctx, requestID)
+func (s *Service) ExportExecution(ctx context.Context, requestID string, opts ExportOptions, scope AccessScope) (json.RawMessage, error) {
+	exec, err := s.GetExecution(ctx, requestID, scope)
 	if err != nil {
 		return nil, err
 	}
 
 	// Build export based on options
 	export := struct {
-		ExportedAt time.Time           `json:"exported_at"`
-		Format     ExportFormat        `json:"format"`
-		Execution  *Execution          `json:"execution"`
+		ExportedAt time.Time    `json:"exported_at"`
+		Format     ExportFormat `json:"format"`
+		Execution  *Execution   `json:"execution"`
 	}{
 		ExportedAt: time.Now().UTC(),
 		Format:     opts.Format,
@@ -280,8 +301,8 @@ func (s *Service) ExportExecution(ctx context.Context, requestID string, opts Ex
 }
 
 // GetTimeline retrieves a timeline view of execution steps
-func (s *Service) GetTimeline(ctx context.Context, requestID string) ([]TimelineEntry, error) {
-	steps, err := s.repo.GetSnapshots(ctx, requestID)
+func (s *Service) GetTimeline(ctx context.Context, requestID string, scope AccessScope) ([]TimelineEntry, error) {
+	steps, err := s.GetSteps(ctx, requestID, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -303,13 +324,20 @@ func (s *Service) GetTimeline(ctx context.Context, requestID string) ([]Timeline
 	return timeline, nil
 }
 
-// DeleteExecution removes an execution and all its data
-func (s *Service) DeleteExecution(ctx context.Context, requestID string) error {
+// DeleteExecution removes an execution and all its data. The delete is
+// org/tenant-scoped in SQL: a cross-org request id is ErrNotFound and nothing
+// is removed (#2934 — a shared-credential caller must not be able to destroy
+// another org's execution trail).
+func (s *Service) DeleteExecution(ctx context.Context, requestID string, scope AccessScope) error {
+	if err := s.repo.DeleteExecutionScoped(ctx, requestID, scope); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	delete(s.executions, requestID)
 	s.mu.Unlock()
 
-	return s.repo.DeleteExecution(ctx, requestID)
+	return nil
 }
 
 // IsHealthy checks if the service is healthy

@@ -20,6 +20,7 @@ import (
 
 	"axonflow/platform/common/usage"
 	sharedaudit "axonflow/platform/shared/audit"
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 
 	"axonflow/platform/shared/serviceauth"
@@ -260,7 +261,11 @@ func getMCPTools() []mcpTool {
 				"properties": map[string]interface{}{
 					"connector_type": map[string]interface{}{
 						"type":        "string",
-						"description": "Tool identifier (e.g., claude_code.Bash, claude_code.Write)",
+						"description": "Server/connector identifier (e.g., claude_code)",
+					},
+					"tool": map[string]interface{}{
+						"type":        "string",
+						"description": "Tool identifier being invoked (e.g., Bash, Write) — distinct from connector_type/server (#2904)",
 					},
 					"statement": map[string]interface{}{
 						"type":        "string",
@@ -390,6 +395,10 @@ func getMCPTools() []mcpTool {
 						"type":        "number",
 						"description": "Max events to return (default: 20, max: 100)",
 						"default":     20,
+					},
+					"user_email": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by user email (admin/owner only). Non-admin callers are always scoped to their own events; this filter is ignored for them (#2922).",
 					},
 				},
 			},
@@ -1188,10 +1197,61 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
-	// Extract per-user identity from request headers (Plugin Batch 1). Plugins
-	// that don't set these headers get a client-scoped pseudo-email — not a
-	// shared "0" — so overrides created by one legacy caller don't leak onto
-	// another legacy caller on the same client.
+	// V1 Plugin Pro tier capture (umbrella #1958). For community-saas auth
+	// the validateCommunitySaasAuth flow has already resolved the tier from
+	// X-License-Token + plugin_user_licenses lookup. For non-SaaS auth
+	// (enterprise self-hosted, internal-service) auth.Client may be nil and
+	// tier stays empty — that's fine, downstream tier-gating treats empty
+	// tier as "ungated" so self-hosted enterprise sees every tool.
+	resolvedTier := ""
+	if auth.Client != nil {
+		resolvedTier = auth.Client.EffectiveTier
+	}
+
+	// Per-user identity resolution (epic #2919, issues #2920 + #2924). The
+	// fleet plane authenticates the TENANT with a shared Basic credential; a
+	// per-user token (X-User-Token / Bearer) yields a VALIDATED, non-forgeable
+	// {identity, role} via the shared validator suite (HS256 Path A + OIDC
+	// Path B), replacing the old forgeable-header + hardcoded "unknown" role.
+	// Token resolution runs ONLY in enterprise mode; community /
+	// community-saas / internal-service keep their existing bypass (no
+	// per-user token, least-privilege attribution) unchanged. auth.OrgID (the
+	// authenticated credential org) is the resolution scope — never a
+	// client-asserted header — so a token minted/configured for another org
+	// cannot validate.
+	if auth.Kind == AuthKindEnterprise {
+		ensureFleetValidatorsRegistered()
+		perUserToken := extractPerUserToken(r)
+		// #2932: a token presented with no validator registered is a misconfig
+		// (fail-safe: the token is ignored → least-privilege). Surface it.
+		warnIfTokenWithoutValidator(perUserToken)
+		vid, resolveErr := sharedidentity.ResolveToken(r.Context(), auth.OrgID, perUserToken)
+		if resolveErr != nil {
+			// A per-user token WAS presented but no registered validator
+			// accepted it (tampered / expired / revoked / wrong org /
+			// unrecognized). Fail closed: reject rather than silently
+			// downgrade to least-privilege — presenting a bad token is an
+			// access attempt, not a legacy caller. Mirrors /decide's
+			// user_token_rejected posture (decision_handler.go).
+			return "", "", "", "", "", "", "", nil, fmt.Errorf("invalid user token: %v", resolveErr)
+		}
+		if vid != nil {
+			// Validated per-user identity. vid.Email is already the canonical
+			// key (CanonicalEmail) the audit write path stamps, and vid.Role
+			// is the normalized effective role (Path A: admin-gated mint
+			// claim; Path B: SCIM directory) — "" means least-privilege.
+			// ValidatedIdentity carries no separate user id, so userID mirrors
+			// the canonical email for stable per-user attribution.
+			return auth.TenantID, auth.OrgID, vid.Email, vid.Email, vid.Role, auth.ClientID, resolvedTier, auth, nil
+		}
+	}
+
+	// No validated per-user token: least-privilege attribution-only path (the
+	// legacy shared-credential fleet, and every non-enterprise mode). Identity
+	// comes from the trust-gated X-User-Email/X-User-ID header (Plugin Batch 1)
+	// or a client-scoped pseudo-identity; the authz role is ALWAYS
+	// least-privilege (own-rows) — a shared credential or forgeable header
+	// must NEVER yield an elevated role (#2919 broken-access-control fix).
 	//
 	// #2896: the header reads are trust-gated. These values become the
 	// session's userEmail/userID, which (a) attribute every tools/call audit
@@ -1213,30 +1273,18 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 		resolvedEmail = mcpClientPseudoIdentityPrefix + auth.ClientID
 	}
 
+	// Canonicalize the attribution identity (lowercase+trim) so the value
+	// stamped into audit_logs.user_email is byte-identical to the canonical
+	// key a token-authenticated read scopes on for the same user (#2920
+	// silent-failure trap). The userID falls back to the same canonical email
+	// when no X-User-ID is present. An empty role ("") is the least-privilege
+	// authz signal — never elevated on this path.
+	resolvedEmail = sharedidentity.CanonicalEmail(resolvedEmail)
 	resolvedUserID := headerUserID
 	if resolvedUserID == "" {
 		resolvedUserID = resolvedEmail
 	}
-
-	// V1 Plugin Pro tier capture (umbrella #1958). For community-saas auth
-	// the validateCommunitySaasAuth flow has already resolved the tier from
-	// X-License-Token + plugin_user_licenses lookup. For non-SaaS auth
-	// (enterprise self-hosted, internal-service) auth.Client may be nil and
-	// tier stays empty — that's fine, downstream tier-gating treats empty
-	// tier as "ungated" so self-hosted enterprise sees every tool.
-	resolvedTier := ""
-	if auth.Client != nil {
-		resolvedTier = auth.Client.EffectiveTier
-	}
-
-	// MCP server protocol has no real per-user role lookup — the caller's
-	// X-User-Email/X-User-ID identifies the principal but not their authz
-	// role. Fabricating "admin" on every audit row corrupts the trail (a
-	// reader can't distinguish a real privileged action from an MCP-path
-	// default). Stamp "unknown" so the audit record is honest about not
-	// having resolved a role; downstream auditors should treat "unknown"
-	// distinct from "admin" / "viewer" / "operator".
-	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "unknown", auth.ClientID, resolvedTier, auth, nil
+	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "", auth.ClientID, resolvedTier, auth, nil
 }
 
 // clientSessionIDCtxKey carries the AI-tool session id (X-Session-Id) down the
@@ -1366,6 +1414,7 @@ func getSessionByID(id string) *mcpSession {
 // back as a terse 'blocked' string.
 func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
 	connectorType, _ := args["connector_type"].(string)
+	tool, _ := args["tool"].(string) // #2904: caller-sent tool identity, distinct from connector_type/server
 	statement, _ := args["statement"].(string)
 	operation, _ := args["operation"].(string)
 	if operation == "" {
@@ -1397,7 +1446,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	// read-only boundary that is intentionally NOT overridable (ADR-044).
 	// Read-path calls fall through to normal governance. See
 	// mcp_readonly_posture.go for the classification rule.
-	if readOnlyPostureEnabled() && classifyMCPCall(connectorType, operation) == mcpAccessWrite {
+	if readOnlyPostureEnabled() && classifyMCPCall(connectorType, tool, operation) == mcpAccessWrite {
 		decisionID := uuid.New().String()
 		reason := fmt.Sprintf("read-only posture active: write-path tool call %q is blocked; only read-path operations are permitted", connectorType)
 		// Canonical "blocked" audit row so the deny is visible in the portal
@@ -1412,7 +1461,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			[]string{readOnlyPosturePolicyID},
 			[]string{reason},
 			nil,
-			"") // MCP-server session has no inbound traceparent → singleton
+			"",                  // MCP-server session has no inbound traceparent → singleton
+			connectorType, tool) // #2904: tool_server, tool_name
 		return map[string]interface{}{
 			"allowed":           false,
 			"decision_id":       decisionID,
@@ -1438,7 +1488,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		session.userID,
 		session.userRole,
 		connectorType,
-		connectorType, // toolIdentity: advisory plane, caller-sent tool identity (#2801)
+		tool, // toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904)
 		operation,
 		statement,
 		params,
@@ -1494,7 +1544,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 				pids,
 				[]string{"request PII redacted"},
 				[]string{"statement"},
-				"") // MCP-server session has no inbound traceparent → singleton
+				"",                  // MCP-server session has no inbound traceparent → singleton
+				connectorType, tool) // #2904: tool_server, tool_name
 		}
 		return resp, nil
 	}
@@ -1520,7 +1571,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			extractDynamicPolicyIDs(outcome.DynamicInfo),
 			[]string{outcome.DynamicBlockReason},
 			nil,
-			"") // MCP-server session has no inbound traceparent → singleton
+			"",                  // MCP-server session has no inbound traceparent → singleton
+			connectorType, tool) // #2904: tool_server, tool_name
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
 		var blockedByID string
@@ -1575,7 +1627,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			session.userID, session.userRole,
 			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), computeStatementHash(statement),
 			outcome.StaticResult.BlockReason, topRisk, matches,
-			"") // #2598: MCP-server session has no inbound traceparent → singleton
+			"",                  // #2598: MCP-server session has no inbound traceparent → singleton
+			connectorType, tool) // #2904: tool_server, tool_name
 	}
 
 	if topRisk != "" {
@@ -1958,6 +2011,24 @@ func mcpToolSearchAuditEvents(session *mcpSession, args map[string]interface{}) 
 		body["request_type"] = rt
 	}
 
+	// #2922 role-scoped reads. The AUTHORITATIVE enforcement is server-side:
+	// the orchestrator resolves the caller's scope from the validated role +
+	// identity this session forwards over the proxy-auth channel (see
+	// mcpProxyToOrchestrator) and applies an exact-match SQL predicate. The
+	// injection below is the agent-plane belt on top of that: a non-admin's
+	// request body always carries their OWN identity as the user_email
+	// filter — a caller-supplied user_email argument is honored only for
+	// admin/owner (widening-by-argument is structurally impossible for
+	// everyone else). session.userEmail is never empty (canonical pseudo-
+	// identity fallback), so the filter always narrows.
+	if sessionCanReadTenant(session) {
+		if ue, ok := args["user_email"].(string); ok && ue != "" {
+			body["user_email"] = ue
+		}
+	} else {
+		body["user_email"] = session.userEmail
+	}
+
 	resp, err := mcpProxyToOrchestrator(session, "POST", "/api/v1/audit/search", body)
 	if err != nil {
 		return nil, fmt.Errorf("audit search failed: %w", err)
@@ -2218,6 +2289,12 @@ func mcpToolListRecentDecisions(session *mcpSession, args map[string]interface{}
 	if session.tier != "" {
 		req.Header.Set("X-Axonflow-Effective-Tier", session.tier)
 	}
+	// #2922: validated per-user role over the trusted channel (see
+	// mcpProxyToOrchestrator for the trust rationale) so listDecisionsHandler
+	// resolves tenant-wide vs own-rows scope.
+	if session.userRole != "" {
+		req.Header.Set(sharedidentity.HeaderUserRole, session.userRole)
+	}
 	// ADR-052 §5: BasicAuth username is the credential identity (clientID),
 	// not the tenant scope. Matches sibling forwarder mcpProxyToAgent at
 	// line 1497 so all three orchestrator forwarders agree.
@@ -2334,6 +2411,15 @@ func mcpProxyToOrchestrator(session *mcpSession, method, path string, body inter
 	// X-User-Email). Omitted when the caller didn't send X-Session-Id.
 	if session.clientSessionID != "" {
 		req.Header.Set("X-Session-Id", session.clientSessionID)
+	}
+	// #2922: forward the VALIDATED per-user role over the trusted proxy-auth
+	// channel so the orchestrator's read handlers can resolve tenant-wide vs
+	// own-rows scope. session.userRole is only ever non-empty when a per-user
+	// token validated (authenticateMCPServerRequest) — never from a client
+	// header — and this function builds a fresh request, so an inbound forged
+	// role header can never ride along.
+	if session.userRole != "" {
+		req.Header.Set(sharedidentity.HeaderUserRole, session.userRole)
 	}
 	// Basic auth required by Orchestrator audit endpoints. ADR-052 §5: the
 	// BasicAuth username is the credential identity (clientID), not the

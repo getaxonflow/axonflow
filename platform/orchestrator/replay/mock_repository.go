@@ -149,6 +149,47 @@ func (r *MockRepository) GetSummary(ctx context.Context, requestID string) (*Exe
 	return nil, ErrNotFound
 }
 
+// summaryInScope mirrors summaryOrgScopeSQL: empty caller value leaves the
+// dimension unfiltered; NULL/empty stamps are pre-attribution rows.
+func summaryInScope(s *ExecutionSummary, scope AccessScope) bool {
+	if scope.OrgID != "" && s.OrgID != "" && s.OrgID != scope.OrgID {
+		return false
+	}
+	if scope.TenantID != "" && s.TenantID != "" && s.TenantID != scope.TenantID {
+		return false
+	}
+	return true
+}
+
+func (r *MockRepository) GetSummaryScoped(ctx context.Context, requestID string, scope AccessScope) (*ExecutionSummary, error) {
+	if r.GetSummaryErr != nil {
+		return nil, r.GetSummaryErr
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if summary, ok := r.summaries[requestID]; ok && summaryInScope(summary, scope) {
+		return summary, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (r *MockRepository) DeleteExecutionScoped(ctx context.Context, requestID string, scope AccessScope) error {
+	if r.DeleteErr != nil {
+		return r.DeleteErr
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	summary, ok := r.summaries[requestID]
+	if !ok || !summaryInScope(summary, scope) {
+		return ErrNotFound
+	}
+	delete(r.snapshots, requestID)
+	delete(r.summaries, requestID)
+	return nil
+}
+
 func (r *MockRepository) ListSummaries(ctx context.Context, opts ListOptions) ([]ExecutionSummary, int, error) {
 	if r.ListSummariesErr != nil {
 		return nil, 0, r.ListSummariesErr

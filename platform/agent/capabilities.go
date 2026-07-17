@@ -191,7 +191,15 @@ func getPluginCompatibility() PluginCompatInfo {
 		// check-output so the per-client version telemetry can see the
 		// proxy fleet (desktop#23; the tag ships with this train).
 		// cursor stays 1.5.3, codex
-		// stays 1.5.2, openclaw stays 2.6.6. The other
+		// stays 1.5.2, openclaw stays 2.6.6.
+		// 9.10.0 release-train (#2919 fleet RBAC per-user identity): all four
+		// bumped — claude-code 1.9.1 -> 1.10.0, cursor 1.5.3 -> 1.6.0, codex
+		// 1.5.2 -> 1.6.0, openclaw 2.6.6 -> 2.7.0 — each now sends the per-user
+		// token header on every governed surface so fleet developers
+		// get per-user read-scoping; a plugin below the recommended version
+		// keeps working (floor unchanged) but reads the shared-identity
+		// zero-rows fallback until upgraded. claude-desktop unchanged.
+		// The other
 		// plugin tags are live on their registries (openclaw 2.6.6 on
 		// npm/ClawHub, cursor 1.5.3 + codex 1.5.2; claude-code/cursor on the
 		// GitHub marketplace, codex on ClawHub). Plugins below the recommended
@@ -199,10 +207,10 @@ func getPluginCompatibility() PluginCompatInfo {
 		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0
 		// (claude-desktop's floor is 0.2.0, see above).
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":       "2.6.6",
-			"claude-code":    "1.9.1",
-			"cursor":         "1.5.3",
-			"codex":          "1.5.2",
+			"openclaw":       "2.7.0",
+			"claude-code":    "1.10.0",
+			"cursor":         "1.6.0",
+			"codex":          "1.6.0",
 			"claude-desktop": "0.3.1",
 		},
 	}

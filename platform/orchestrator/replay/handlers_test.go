@@ -332,7 +332,8 @@ func TestHandler_GetSteps(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Add test data
+	// Add test data (summary anchors the #2934 scoped read)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -366,6 +367,7 @@ func TestHandler_GetSteps_Error(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotsErr = ErrInvalidInput
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps", nil)
@@ -381,7 +383,8 @@ func TestHandler_GetStep(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Add test data
+	// Add test data (summary anchors the #2934 scoped read)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -441,7 +444,9 @@ func TestHandler_GetTimeline(t *testing.T) {
 	completedAt := now.Add(100 * time.Millisecond)
 	duration := 100
 
-	// Add test data
+	// Add test data — the scoped reads (#2934) anchor on the summary row,
+	// mirroring the write path (StartExecution writes the summary first)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: now})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID:   "req-123",
 		StepIndex:   0,
@@ -748,7 +753,8 @@ func TestHandler_GetTimeline_InternalError(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Set up internal error
+	// Set up internal error (summary present so the #2934 scope anchor passes)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotsErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/timeline", nil)
@@ -782,8 +788,8 @@ func TestHandler_GetExecution_InternalError(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Set up internal error
-	repo.GetExecutionErr = ErrInternal
+	// Set up internal error — the scoped read path anchors on the summary
+	repo.GetSummaryErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123", nil)
 	w := httptest.NewRecorder()
@@ -799,7 +805,8 @@ func TestHandler_GetSteps_InternalError(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Set up internal error
+	// Set up internal error (summary present so the #2934 scope anchor passes)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotsErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps", nil)
@@ -816,7 +823,8 @@ func TestHandler_GetStep_InternalError(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Set up internal error
+	// Set up internal error (summary present so the #2934 scope anchor passes)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps/0", nil)
@@ -833,8 +841,8 @@ func TestHandler_ExportExecution_InternalError(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	// Set up internal error
-	repo.GetExecutionErr = ErrInternal
+	// Set up internal error — the scoped read path anchors on the summary
+	repo.GetSummaryErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export", nil)
 	w := httptest.NewRecorder()

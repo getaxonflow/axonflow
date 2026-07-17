@@ -439,7 +439,7 @@ func TestReportByAction_SeedsFullVerdictSetAndFolds(t *testing.T) {
 
 	start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	rep, err := al.ReportByAction("acme", "", "", start, end)
+	rep, err := al.ReportByAction("acme", "", "", "", start, end)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestReportByAction_SeedsFullVerdictSetAndFolds(t *testing.T) {
 
 func TestReportByAction_NilDB_ReturnsSeededEmpty(t *testing.T) {
 	al := &AuditLogger{db: nil}
-	rep, err := al.ReportByAction("acme", "", "", time.Now().Add(-time.Hour), time.Now())
+	rep, err := al.ReportByAction("acme", "", "", "", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -655,7 +655,7 @@ func TestReportByAction_WithUserAndActionFilters(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
 	start := time.Now().Add(-24 * time.Hour)
 	end := time.Now()
-	rep, err := al.ReportByAction("acme", "dev@acme.com", "blocked", start, end)
+	rep, err := al.ReportByAction("acme", "", "dev@acme.com", "blocked", start, end)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -844,7 +844,7 @@ func TestReportByAction_ExcludesOverrideLifecycle(t *testing.T) {
 			AddRow("override_lifecycle", 5, int64(0))) // non-verdict: must be skipped
 	mock.ExpectQuery("GROUP BY policy_details").
 		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
-	rep, err := al.ReportByAction("acme", "", "", time.Now().Add(-time.Hour), time.Now())
+	rep, err := al.ReportByAction("acme", "", "", "", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

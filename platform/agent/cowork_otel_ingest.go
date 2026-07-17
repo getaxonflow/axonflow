@@ -59,6 +59,7 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
 	sharedaudit "axonflow/platform/shared/audit"
+	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -233,10 +234,13 @@ func processCoworkRecord(ctx context.Context, orgID, tenantID, clientID, plane, 
 		truncateOTELString(getStr(attrs, "session.id"), maxCoworkSessionIDLen),
 		truncateOTELString(getStr(attrs, "session_id"), maxCoworkSessionIDLen),
 		truncateOTELString(resSessionID, maxCoworkSessionIDLen))
-	userEmail := firstNonEmpty(
+	// #2922: canonicalized (lower+trim) so OTLP-ingested rows carry the same
+	// identity key the role-scoped read path filters on (parity with the MCP
+	// and /decide write planes).
+	userEmail := sharedidentity.CanonicalEmail(firstNonEmpty(
 		truncateOTELString(getStr(attrs, "user.email"), maxCoworkUserEmailLen),
 		truncateOTELString(getStr(attrs, "user_email"), maxCoworkUserEmailLen),
-		truncateOTELString(resUserEmail, maxCoworkUserEmailLen))
+		truncateOTELString(resUserEmail, maxCoworkUserEmailLen)))
 	// Anthropic account identifiers (record-level, #2838): the documented join
 	// keys to Anthropic's Compliance API. Attribution only, stored in
 	// policy_details — length-capped so multi-MB junk under these keys can

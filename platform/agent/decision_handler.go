@@ -52,6 +52,7 @@ import (
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/telemetry"
 	sharedaudit "axonflow/platform/shared/audit"
+	sharedidentity "axonflow/platform/shared/identity"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -335,6 +336,7 @@ type DecisionTarget struct {
 	Type     string `json:"type,omitempty"`     // "llm" | "tool" | "agent"
 	Model    string `json:"model,omitempty"`    // when type=llm
 	Provider string `json:"provider,omitempty"` // when type=llm
+	Server   string `json:"server,omitempty"`   // when type=tool (#2904)
 	Tool     string `json:"tool,omitempty"`     // when type=tool
 }
 
@@ -505,7 +507,13 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// trusted by default. Both resolve to "" when absent or untrusted; the
 	// session id rides the context so writeDecisionAuditLog persists it into
 	// audit_logs.session_id (same mechanism as the MCP writers, #2753).
-	attributedEmail := trustedIdentityHeader(r, identityHeaderUserEmail, maxAttributedEmailLen)
+	// #2922: canonicalize (lower+trim) so the /decide plane stamps the SAME
+	// identity key into audit_logs.user_email that the MCP-server plane stamps
+	// and the role-scoped read path filters on — a mixed-case header here
+	// previously wrote rows the same user's scoped read could not match
+	// (the #2920 gap-2 silent-failure trap, closed on the MCP plane only).
+	attributedEmail := sharedidentity.CanonicalEmail(
+		trustedIdentityHeader(r, identityHeaderUserEmail, maxAttributedEmailLen))
 	if sid := attributedSessionID(r); sid != "" {
 		ctx = withClientSessionID(ctx, sid)
 		r = r.WithContext(ctx)
@@ -613,6 +621,21 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// even the validation / impersonation denies record what was attempted.
 	decisionAudit.gatewayID = sanitizeGatewayID(req.CallerIdentity.GatewayID)
 	decisionAudit.query = req.Query
+
+	// #2801/#2904: when the PEP declares a tool target, its server/tool name
+	// feeds capability-scoped evaluation further down AND is captured onto the
+	// audit identity here (not just at the terminal evaluateInputPolicies call)
+	// so EARLY-DENY paths — impersonation, tenant mismatch, circuit-breaker,
+	// kill-switch, PII — also carry tool_server/tool_name in their audit_logs
+	// row, not only the terminal allow/block decision.
+	toolServer := ""
+	toolIdentity := ""
+	if strings.EqualFold(req.Target.Type, "tool") {
+		toolServer = req.Target.Server
+		toolIdentity = req.Target.Tool
+	}
+	decisionAudit.toolServer = toolServer
+	decisionAudit.toolName = toolIdentity
 
 	// Refresh the origin bucket now that gateway_id is known (the authoritative
 	// Claude Desktop signal). Updates both the closure-captured `origin` used by
@@ -890,11 +913,9 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	//
 	// #2801: when the PEP declares a tool target, its tool name feeds
 	// capability-scoped evaluation (text-document tools skip execution-class
-	// detectors; unknown tools get full evaluation).
-	toolIdentity := ""
-	if strings.EqualFold(req.Target.Type, "tool") {
-		toolIdentity = req.Target.Tool
-	}
+	// detectors; unknown tools get full evaluation). toolServer/toolIdentity
+	// were already computed + stamped onto decisionAudit right after decode
+	// (#2904) so early-deny paths carry them too; reused here unchanged.
 	outcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		"decision", toolIdentity, "decide", req.Query, nil,
@@ -1500,6 +1521,12 @@ type decisionAuditInput struct {
 	// path can populate it and keep agent redactions queryable alongside the
 	// orchestrator's.
 	redactedFields []string
+	// toolServer / toolName carry the caller-sent tool identity (#2904) — the
+	// server/connector a tool lives on and the tool being invoked — onto
+	// policy_details.tool_server / policy_details.tool_name. Only populated
+	// when Target.Type == "tool"; empty otherwise (e.g. llm/agent decisions).
+	toolServer string
+	toolName   string
 }
 
 // maxGatewayIDLen bounds a recorded gateway_id. Gateway ids are short origin
@@ -1684,6 +1711,12 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	}
 	if audit.attemptedOrgID != "" {
 		details["attempted_org_id"] = audit.attemptedOrgID
+	}
+	if audit.toolServer != "" {
+		details["tool_server"] = audit.toolServer
+	}
+	if audit.toolName != "" {
+		details["tool_name"] = audit.toolName
 	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {

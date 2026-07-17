@@ -141,7 +141,12 @@ var writeVerbs = map[string]struct{}{
 //     '.', '/' or ':' (e.g. "claude_code.Write" -> "Write", "tools/execute" ->
 //     "execute"). Connector/prefix tokens are deliberately ignored so a
 //     connector NAMED with a read verb (e.g. "search.index_record") cannot mask
-//     a write method.
+//     a write method. tool (#2904) is tokenised the SAME way and its tokens are
+//     unioned in — once a caller sends the split (server, tool) shape instead of
+//     the legacy composite connectorType, the method name (e.g. "Bash") only
+//     exists in tool, and dropping it here would silently defeat the write-wins
+//     fail-safe below for any migrated caller (e.g. a PEP self-declaring
+//     operation="query" against tool="Bash" would otherwise read-classify).
 //  2. Tokenise the method into lowercase words, splitting on separators
 //     (_ - space) AND camelCase boundaries (getUser -> [get, user]).
 //  3. If ANY token is a write verb -> write. (Write wins over read: a method
@@ -152,8 +157,11 @@ var writeVerbs = map[string]struct{}{
 //     else ("execute", "", or an unrecognised value) -> write. Unknown calls
 //     default to WRITE (default-deny) so a write can never slip through an
 //     unclassified name.
-func classifyMCPCall(connectorType, operation string) mcpAccessClass {
+func classifyMCPCall(connectorType, tool, operation string) mcpAccessClass {
 	tokens := tokenizeMethod(connectorType)
+	if tool != "" {
+		tokens = append(tokens, tokenizeMethod(tool)...)
+	}
 
 	hasWrite := false
 	hasRead := false

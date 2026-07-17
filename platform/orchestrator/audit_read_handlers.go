@@ -49,6 +49,7 @@ import (
 	"github.com/lib/pq"
 
 	sharedaudit "axonflow/platform/shared/audit"
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 )
 
@@ -163,6 +164,19 @@ func auditGetByIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #2922 role-scoped reads: a non-tenant-wide caller may fetch only their
+	// own rows. Same 404 as "no such id" — NOT 403 — so the endpoint is not a
+	// cross-user existence oracle (mirrors the cross-tenant posture above).
+	// Rows written without per-user attribution (blank user_email) are hidden
+	// from non-admins by the same comparison (fail-closed).
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" ||
+			sharedidentity.CanonicalEmail(entry.UserEmail) != scope.UserEmail {
+			sendErrorResponse(w, "audit record not found", http.StatusNotFound)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(entry); err != nil {
 		log.Printf("[audit/detail] error encoding response: %v", err)
@@ -203,6 +217,15 @@ func (l *AuditLogger) ExportAuditLogs(crit auditSearchCriteria) ([]*AuditEntry, 
 	args := []interface{}{crit.TenantID}
 	argIndex := 2
 
+	// #2922 enforced read scope — exact canonical-email predicate, first, so a
+	// caller filter can only narrow it (see SearchAuditLogs for the full
+	// rationale; the two must stay in lockstep so an export always reconciles
+	// with the on-screen search under the same scope).
+	if crit.ScopeUserEmail != "" {
+		query += fmt.Sprintf(" AND LOWER(user_email) = $%d", argIndex)
+		args = append(args, strings.ToLower(crit.ScopeUserEmail))
+		argIndex++
+	}
 	if crit.UserEmail != "" {
 		query += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", argIndex)
 		args = append(args, crit.UserEmail)
@@ -391,6 +414,23 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 		Limit:      auditExportMaxRows,
 	}
 
+	// #2922 role-scoped reads: an export must honor the same scope as search —
+	// a non-tenant-wide caller exports only their own rows; the body's
+	// user_email ILIKE filter can only narrow further. Empty identity ⇒ empty
+	// export (fail-closed).
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			ts := time.Now().UTC().Format("20060102-150405")
+			if format == "csv" {
+				writeAuditExportCSV(w, []*AuditEntry{}, ts)
+				return
+			}
+			writeAuditExportJSON(w, []*AuditEntry{}, false, ts)
+			return
+		}
+		crit.ScopeUserEmail = scope.UserEmail
+	}
+
 	// Apply the same tier-based retention floor as search so an export can't
 	// reach past the tenant's allowed window.
 	if auditCleanupService != nil {
@@ -540,7 +580,12 @@ func foldDecisionCount(byAction map[string]int, decision string, cnt int) int {
 // user_email and a single canonical action. Counts reconcile with
 // SearchAuditLogs for the same filters (same tenant filter, same ILIKE user
 // match, same canonical action expansion).
-func (l *AuditLogger) ReportByAction(tenantID, userEmail, action string, start, end time.Time) (*ActionReport, error) {
+//
+// scopeUserEmail is the #2922 enforced own-rows read scope (exact canonical
+// match, AND'ed before the optional userEmail ILIKE filter so the filter can
+// only narrow it). Empty means tenant-wide (the handler resolves the scope and
+// passes "" only for tenant-wide callers).
+func (l *AuditLogger) ReportByAction(tenantID, scopeUserEmail, userEmail, action string, start, end time.Time) (*ActionReport, error) {
 	report := &ActionReport{
 		TenantID:    tenantID,
 		UserEmail:   userEmail,
@@ -561,6 +606,13 @@ func (l *AuditLogger) ReportByAction(tenantID, userEmail, action string, start, 
 	where := " WHERE tenant_id = $1 AND timestamp >= $2 AND timestamp <= $3"
 	args := []interface{}{tenantID, start, end}
 	argIndex := 4
+	// #2922 enforced read scope — exact canonical-email predicate, first, so
+	// the optional userEmail ILIKE filter below can only narrow it.
+	if scopeUserEmail != "" {
+		where += fmt.Sprintf(" AND LOWER(user_email) = $%d", argIndex)
+		args = append(args, strings.ToLower(scopeUserEmail))
+		argIndex++
+	}
 	if userEmail != "" {
 		where += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", argIndex)
 		args = append(args, userEmail)
@@ -688,7 +740,34 @@ func auditReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report, err := auditLogger.ReportByAction(tenantID, req.UserEmail, req.Action, start, end)
+	// #2922 role-scoped reads: a non-tenant-wide caller's report aggregates
+	// only their own rows (their governance activity), never the whole
+	// tenant's. Empty identity ⇒ the seeded all-zeroes report (fail-closed;
+	// same shape as "no rows in window" so clients render normally).
+	scopeUserEmail := ""
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			empty := &ActionReport{
+				TenantID:    tenantID,
+				UserEmail:   req.UserEmail,
+				StartTime:   start,
+				EndTime:     end,
+				ByAction:    map[string]int{},
+				TopPolicies: []PolicyHitSummary{},
+			}
+			for _, v := range sharedaudit.All() {
+				empty.ByAction[v] = 0
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(empty); err != nil {
+				log.Printf("[audit/report] error encoding response: %v", err)
+			}
+			return
+		}
+		scopeUserEmail = scope.UserEmail
+	}
+
+	report, err := auditLogger.ReportByAction(tenantID, scopeUserEmail, req.UserEmail, req.Action, start, end)
 	if err != nil {
 		log.Printf("[audit/report] query failed for tenant=%s: %v", logutil.Sanitize(tenantID), err)
 		sendErrorResponse(w, "audit report failed", http.StatusInternalServerError)

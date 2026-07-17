@@ -2365,10 +2365,10 @@ func TestValidateGatewayContext_DBError(t *testing.T) {
 
 // testMockConnector implements base.Connector for testing fetchApprovedData
 type testMockConnector struct {
-	name       string
-	connType   string
-	queryErr   error
-	queryRows  []map[string]interface{}
+	name      string
+	connType  string
+	queryErr  error
+	queryRows []map[string]interface{}
 }
 
 func (m *testMockConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
@@ -2404,9 +2404,9 @@ func (m *testMockConnector) Execute(ctx context.Context, cmd *base.Command) (*ba
 	return &base.CommandResult{Success: true}, nil
 }
 
-func (m *testMockConnector) Name() string         { return m.name }
-func (m *testMockConnector) Type() string         { return m.connType }
-func (m *testMockConnector) Version() string      { return "1.0.0-test" }
+func (m *testMockConnector) Name() string           { return m.name }
+func (m *testMockConnector) Type() string           { return m.connType }
+func (m *testMockConnector) Version() string        { return "1.0.0-test" }
 func (m *testMockConnector) Capabilities() []string { return []string{"query"} }
 
 // TestFetchApprovedData_WithMockConnector tests fetchApprovedData with a real connector
@@ -2809,34 +2809,34 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 	// Policy evaluation uses unified shared engine (legacy engine removed)
 
 	tests := []struct {
-		name              string
-		query             string
-		expectApproved    bool // With PII_ACTION=redact (default), all approved but PII flagged
-		expectRedaction   bool // Whether redaction is required
+		name            string
+		query           string
+		expectApproved  bool // With PII_ACTION=redact (default), all approved but PII flagged
+		expectRedaction bool // Whether redaction is required
 	}{
 		{
-			name:              "Normal query without India PII",
-			query:             "What is the GDP of India?",
-			expectApproved:    true,
-			expectRedaction:   false,
+			name:            "Normal query without India PII",
+			query:           "What is the GDP of India?",
+			expectApproved:  true,
+			expectRedaction: false,
 		},
 		{
-			name:              "Query with Aadhaar number (approved with redaction)",
-			query:             "My Aadhaar is 2234 5678 9012",
-			expectApproved:    true, // Default PII_ACTION=redact approves with flag
-			expectRedaction:   true,
+			name:            "Query with Aadhaar number (approved with redaction)",
+			query:           "My Aadhaar is 2234 5678 9012",
+			expectApproved:  true, // Default PII_ACTION=redact approves with flag
+			expectRedaction: true,
 		},
 		{
-			name:              "Query with PAN number (approved with redaction)",
-			query:             "My PAN number is ABCDE1234F",
-			expectApproved:    true, // Default PII_ACTION=redact approves with flag
-			expectRedaction:   true,
+			name:            "Query with PAN number (approved with redaction)",
+			query:           "My PAN number is ABCDE1234F",
+			expectApproved:  true, // Default PII_ACTION=redact approves with flag
+			expectRedaction: true,
 		},
 		{
-			name:              "Query with UPI ID (approved with redaction)",
-			query:             "Send money to user@ybl",
-			expectApproved:    true, // Default PII_ACTION=redact approves with flag
-			expectRedaction:   true,
+			name:            "Query with UPI ID (approved with redaction)",
+			query:           "Send money to user@ybl",
+			expectApproved:  true, // Default PII_ACTION=redact approves with flag
+			expectRedaction: true,
 		},
 	}
 
@@ -3116,16 +3116,16 @@ func TestPreCheckHandler_BudgetEnforcement(t *testing.T) {
 	mockRepo := &mockCostRepository{
 		budgets: map[string]*cost.Budget{
 			"test-budget-1": {
-				ID:        "test-budget-1",
-				Name:      "Test Budget",
-				Scope:     cost.ScopeOrganization,
-				ScopeID:   testOrgID,
-				LimitUSD:  100.0,
-				Period:    cost.PeriodMonthly,
-				OnExceed:  cost.OnExceedBlock,
-				OrgID:     testOrgID,
-				TenantID:  "test-client",
-				Enabled:   true,
+				ID:       "test-budget-1",
+				Name:     "Test Budget",
+				Scope:    cost.ScopeOrganization,
+				ScopeID:  testOrgID,
+				LimitUSD: 100.0,
+				Period:   cost.PeriodMonthly,
+				OnExceed: cost.OnExceedBlock,
+				OrgID:    testOrgID,
+				TenantID: "test-client",
+				Enabled:  true,
 			},
 		},
 		usageSum: map[string]float64{
@@ -3250,11 +3250,22 @@ func (m *mockCostRepository) GetBudget(ctx context.Context, id string) (*cost.Bu
 	return nil, errors.New("budget not found")
 }
 
+// GetBudgetScoped / DeleteBudgetScoped satisfy the org/tenant-scoped read path
+// added in #2934; the agent-side mock does not exercise scoping, so they defer
+// to the unscoped variants.
+func (m *mockCostRepository) GetBudgetScoped(ctx context.Context, id, orgID, tenantID string) (*cost.Budget, error) {
+	return m.GetBudget(ctx, id)
+}
+
 func (m *mockCostRepository) UpdateBudget(ctx context.Context, budget *cost.Budget) error {
 	return nil
 }
 
 func (m *mockCostRepository) DeleteBudget(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *mockCostRepository) DeleteBudgetScoped(ctx context.Context, id, orgID, tenantID string) error {
 	return nil
 }
 
@@ -3545,8 +3556,8 @@ func TestConvertSharedResultToStatic_NilInput(t *testing.T) {
 // TestConvertSharedResultToStatic_RequireApproval tests HITL action conversion
 func TestConvertSharedResultToStatic_RequireApproval(t *testing.T) {
 	sharedResult := &sharedpolicy.RequestResult{
-		Blocked:          false,
-		BlockReason:      "",
+		Blocked:           false,
+		BlockReason:       "",
 		PoliciesEvaluated: 1,
 		MatchedPolicies: []sharedpolicy.PolicyMatch{
 			{

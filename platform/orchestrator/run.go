@@ -53,9 +53,10 @@ import (
 	"axonflow/platform/orchestrator/sebi"     // SEBI AI/ML module - Community stub or EE impl
 	"axonflow/platform/orchestrator/ui"       // Embedded execution viewer UI
 	"axonflow/platform/orchestrator/webhooks"
-	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
-	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
-	"axonflow/platform/shared/idempotency"            // HTTP Idempotency-Key dedup (#2420)
+	"axonflow/platform/orchestrator/workflow_control"  // Workflow Control Plane V1 (#834)
+	"axonflow/platform/shared/execution"               // Unified execution tracking (#1075)
+	"axonflow/platform/shared/idempotency"             // HTTP Idempotency-Key dedup (#2420)
+	sharedidentity "axonflow/platform/shared/identity" // Canonical identity key + role model (#2922)
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/secretenv"
@@ -539,6 +540,25 @@ func Run() {
 
 	// Setup router
 	r := mux.NewRouter()
+
+	// #2922/#2923 (R3): gate the whole-tenant audit-EXPORT endpoints
+	// (evidence / media-governance / euaiact / sebi / ojk) on tenant-wide read
+	// authority. These read audit_logs cross-user for the whole tenant — the
+	// same data class the per-user read tools scope — so a non-admin holder of
+	// the shared tenant credential must be DENIED, not served. Registered as a
+	// router middleware so it covers both the in-package handlers and the
+	// compliance sub-module routes uniformly; a no-op for every non-export path.
+	r.Use(enforceTenantWideAuditExport)
+
+	// #2934: gate the cost/usage and execution read+mutation surfaces
+	// (usage summary/breakdown/records, budget CRUD/status/alerts, replay
+	// executions, unified executions) on tenant-wide read authority. Neither
+	// domain stamps a per-user identity, so a non-admin holder of the shared
+	// tenant credential is DENIED rather than scoped down — the same posture
+	// as the audit exports above. /api/v1/pricing stays open (static data);
+	// POST /api/v1/budgets/check stays open with spend figures redacted for
+	// non-admin callers (it is the budget-enforcement decision plane).
+	r.Use(enforceDomainReadAuthority)
 
 	// CORS middleware
 	c := cors.New(cors.Options{
@@ -2581,18 +2601,19 @@ func simpleMetricsHandler(w http.ResponseWriter, r *http.Request) {
 
 func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 	var searchReq struct {
-		UserEmail  string    `json:"user_email,omitempty"`
-		ClientID   string    `json:"client_id,omitempty"`
-		TenantID   string    `json:"-"` // force-set from X-Tenant-ID; never client-controlled
-		StartTime  time.Time `json:"start_time"`
-		EndTime    time.Time `json:"end_time"`
-		DecisionID string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
-		PolicyName string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
-		OverrideID string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
-		Action     string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")
-		SessionID  string    `json:"session_id,omitempty"`  // #2759: session-summary bucket drill-down against the first-class column
-		Limit      int       `json:"limit,omitempty"`
-		Offset     int       `json:"offset,omitempty"`
+		UserEmail      string    `json:"user_email,omitempty"`
+		ClientID       string    `json:"client_id,omitempty"`
+		TenantID       string    `json:"-"` // force-set from X-Tenant-ID; never client-controlled
+		ScopeUserEmail string    `json:"-"` // #2922: force-set from resolveCallerReadScope; never client-controlled
+		StartTime      time.Time `json:"start_time"`
+		EndTime        time.Time `json:"end_time"`
+		DecisionID     string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
+		PolicyName     string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
+		OverrideID     string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
+		Action         string    `json:"action,omitempty"`      // filter by policy_decision (e.g. "blocked", "approved")
+		SessionID      string    `json:"session_id,omitempty"`  // #2759: session-summary bucket drill-down against the first-class column
+		Limit          int       `json:"limit,omitempty"`
+		Offset         int       `json:"offset,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&searchReq); err != nil {
@@ -2612,8 +2633,23 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #2922 role-scoped reads: a non-tenant-wide caller reads only their own
+	// user_email rows. The scope is enforced in the SQL WHERE (exact canonical
+	// match), and the caller's optional user_email ILIKE filter is AND'ed with
+	// it — so a body filter can narrow a non-admin's view but never widen it.
+	// A caller with no per-user identity gets an empty result set (fail-closed;
+	// see callerReadScope.UserEmail for why matching the empty string instead
+	// would re-open the leak).
 	if searchReq.Limit == 0 {
 		searchReq.Limit = 100
+	}
+
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			writeEmptyAuditSearchResponse(w, searchReq.Limit, searchReq.Offset)
+			return
+		}
+		searchReq.ScopeUserEmail = scope.UserEmail
 	}
 
 	// Enforce tier-based retention window on search start time
@@ -2651,6 +2687,28 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		Offset:  searchReq.Offset,
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
+}
+
+// writeEmptyAuditSearchResponse emits the standard audit-search response shape
+// with zero entries. Used for the #2922 fail-closed path: a non-tenant-wide
+// caller with no per-user identity gets an empty page (HTTP 200, `entries: []`)
+// rather than an unscoped query or an error — identical to "you have no rows."
+func writeEmptyAuditSearchResponse(w http.ResponseWriter, limit, offset int) {
+	response := struct {
+		Entries []*AuditEntry `json:"entries"`
+		Total   int           `json:"total"`
+		Limit   int           `json:"limit"`
+		Offset  int           `json:"offset"`
+	}{
+		Entries: []*AuditEntry{},
+		Total:   0,
+		Limit:   limit,
+		Offset:  offset,
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
@@ -2724,13 +2782,25 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	searchReq := struct {
-		TenantID  string    `json:"tenant_id"`
-		Limit     int       `json:"limit"`
-		StartTime time.Time `json:"start_time"`
+		TenantID       string    `json:"tenant_id"`
+		ScopeUserEmail string    `json:"-"`
+		Limit          int       `json:"limit"`
+		StartTime      time.Time `json:"start_time"`
 	}{
 		TenantID:  tenantID,
 		Limit:     limit,
 		StartTime: startTime,
+	}
+
+	// #2922 role-scoped reads — same enforcement as auditSearchHandler: this
+	// GET endpoint returns raw tenant rows, so a non-tenant-wide caller is
+	// scoped to their own user_email (empty identity ⇒ empty page).
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			writeEmptyAuditSearchResponse(w, limit, 0)
+			return
+		}
+		searchReq.ScopeUserEmail = scope.UserEmail
 	}
 
 	results, _, err := auditLogger.SearchAuditLogs(searchReq)
@@ -2855,7 +2925,9 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 	// Empty when no identity is configured; LogToolCallAudit degrades to an
 	// empty user_email (portal shows the tenant on the secondary line) rather
 	// than the previous copy-paste NULL.
-	req.UserEmail = strings.TrimSpace(r.Header.Get("X-User-Email"))
+	// #2922: canonicalized (lower+trim) so the tool-call audit row carries the
+	// same identity key the role-scoped read path filters on.
+	req.UserEmail = sharedidentity.CanonicalEmail(r.Header.Get("X-User-Email"))
 	// #2753: per-session identity forwarded by the Agent proxy → audit_logs.session_id.
 	// Header-sourced only (never from the body); empty → NULL column.
 	req.SessionID = strings.TrimSpace(r.Header.Get("X-Session-Id"))
@@ -2934,11 +3006,48 @@ func tenantWorkflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #2934: the path tenant_id is client-controlled. Even a caller that
+	// cleared the tenant-wide read gate (admin) must not read another
+	// tenant's execution Input/Output by naming it in the URL — bind the
+	// query to the authenticated tenant identity the agent's auth chain
+	// stamped (X-Tenant-ID / X-Org-ID from the validated license).
+	//
+	// GetExecutionsByTenant filters on the tenant_id argument ALONE, so the
+	// binding must be fail-closed on the tenant dimension: an org-only
+	// credential (X-Org-ID set, X-Tenant-ID empty) cannot scope a
+	// tenant-keyed read and is DENIED rather than served the URL tenant's
+	// rows (the R3-found fail-open). A mismatch is 404, not 403, so the route
+	// does not oracle which tenant ids exist. As defense in depth the results
+	// are additionally filtered to the caller's org when present.
+	callerTenant := r.Header.Get("X-Tenant-ID")
+	callerOrg := r.Header.Get("X-Org-ID")
+	if callerTenant == "" && callerOrg == "" {
+		sendErrorResponse(w, "Missing tenant identity", http.StatusUnauthorized)
+		return
+	}
+	if callerTenant == "" || tenantID != callerTenant {
+		sendErrorResponse(w, "Execution not found", http.StatusNotFound)
+		return
+	}
+
 	// Get workflow executions for specific tenant
 	executions, err := workflowEngine.GetExecutionsByTenant(tenantID)
 	if err != nil {
 		sendErrorResponse(w, "Failed to fetch tenant workflow executions: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Defense in depth: drop any row whose org disagrees with the caller's
+	// authenticated org (tenant and org should agree, but never return a row
+	// the caller's org does not own).
+	if callerOrg != "" {
+		filtered := executions[:0]
+		for _, ex := range executions {
+			if ex.UserContext.OrgID == "" || ex.UserContext.OrgID == callerOrg {
+				filtered = append(filtered, ex)
+			}
+		}
+		executions = filtered
 	}
 
 	response := map[string]interface{}{
@@ -3400,6 +3509,24 @@ func getWorkflowExecutionHandler(w http.ResponseWriter, r *http.Request) {
 
 	execution, err := workflowEngine.GetExecution(executionID)
 	if err != nil {
+		sendErrorResponse(w, "Execution not found", http.StatusNotFound)
+		return
+	}
+
+	// #2934: by-id fetch is the IDOR variant — bind the returned execution to
+	// the authenticated tenant so a caller (even one past the tenant-wide read
+	// gate) cannot read another tenant's Input/Output by guessing the id. An
+	// execution with no tenant stamp is treated as owned-by-no-one (404),
+	// mirroring the unified handler's checkTenantOwnership.
+	callerTenant := r.Header.Get("X-Tenant-ID")
+	callerOrg := r.Header.Get("X-Org-ID")
+	if callerTenant == "" && callerOrg == "" {
+		sendErrorResponse(w, "Missing tenant identity", http.StatusUnauthorized)
+		return
+	}
+	if (callerTenant != "" && execution.UserContext.TenantID != callerTenant) ||
+		(callerOrg != "" && execution.UserContext.OrgID != callerOrg) ||
+		(execution.UserContext.TenantID == "" && execution.UserContext.OrgID == "") {
 		sendErrorResponse(w, "Execution not found", http.StatusNotFound)
 		return
 	}

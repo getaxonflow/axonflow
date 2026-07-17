@@ -14,8 +14,10 @@ package orchestrator
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -129,7 +131,28 @@ func (h *AuditSummaryHandler) HandleSummary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	summary, err := h.queryAuditSummary(tenantID, startTime, endTime)
+	// #2922 role-scoped reads: a non-tenant-wide caller's summary aggregates
+	// only their own rows. Empty identity ⇒ the zero-events summary
+	// (fail-closed; same shape as an empty window).
+	scopeUserEmail := ""
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			empty := &ComplianceSummary{
+				BySeverity:      map[string]int{},
+				ByAction:        map[string]int{},
+				TopPolicies:     []PolicyHitSummary{},
+				ComplianceScore: 100, // No visible events = fully compliant
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(empty); err != nil {
+				log.Printf("[AuditSummary] error encoding response: %v", err)
+			}
+			return
+		}
+		scopeUserEmail = scope.UserEmail
+	}
+
+	summary, err := h.queryAuditSummary(tenantID, scopeUserEmail, startTime, endTime)
 	if err != nil {
 		log.Printf("[AuditSummary] query failed for tenant %s: %v", logutil.Sanitize(tenantID), err)
 		sendErrorResponse(w, "Failed to generate audit summary", http.StatusInternalServerError)
@@ -142,8 +165,13 @@ func (h *AuditSummaryHandler) HandleSummary(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// queryAuditSummary runs aggregation queries against audit_logs
-func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endTime time.Time) (*ComplianceSummary, error) {
+// queryAuditSummary runs aggregation queries against audit_logs.
+//
+// scopeUserEmail is the #2922 enforced own-rows read scope (exact canonical
+// match on LOWER(user_email)); empty means tenant-wide. A non-admin's
+// "policy stats" are the stats of THEIR OWN governed traffic — the tenant-wide
+// aggregate reveals other users' activity volumes and block patterns.
+func (h *AuditSummaryHandler) queryAuditSummary(tenantID, scopeUserEmail string, startTime, endTime time.Time) (*ComplianceSummary, error) {
 	if h.db == nil {
 		return &ComplianceSummary{
 			BySeverity:      map[string]int{},
@@ -159,6 +187,17 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		TopPolicies: []PolicyHitSummary{},
 	}
 
+	// #2922 read-scope fragment shared by all three queries below. Appended
+	// after the fixed predicates with an explicit positional arg so the three
+	// query literals stay readable; scopeArgs mirrors the base args plus the
+	// canonical email when scoped.
+	scopeFragment := ""
+	baseArgs := []interface{}{tenantID, startTime, endTime}
+	if scopeUserEmail != "" {
+		scopeFragment = " AND LOWER(user_email) = $4"
+		baseArgs = append(baseArgs, strings.ToLower(scopeUserEmail))
+	}
+
 	// Query 1: Total events + by action (request_type) + blocked count
 	actionQuery := `
 		SELECT request_type, policy_decision, COUNT(*) as cnt
@@ -166,10 +205,11 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
 		  AND timestamp <= $3
+	` + scopeFragment + `
 		GROUP BY request_type, policy_decision
 	`
 
-	rows, err := h.db.Query(actionQuery, tenantID, startTime, endTime)
+	rows, err := h.db.Query(actionQuery, baseArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +303,9 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		  AND timestamp <= $3
 		  AND response_time_ms IS NOT NULL
 		  AND response_time_ms > 0
-	`
+	` + scopeFragment
 	var avgLatency sql.NullFloat64
-	if err := h.db.QueryRow(latencyQuery, tenantID, startTime, endTime).Scan(&avgLatency); err != nil {
+	if err := h.db.QueryRow(latencyQuery, baseArgs...).Scan(&avgLatency); err != nil {
 		// Non-fatal: leave avg_latency_ms at zero and log.
 		log.Printf("[AuditSummary] latency query failed: %v", err)
 	} else if avgLatency.Valid {
@@ -276,23 +316,29 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 	// block_count counts the blocking verdicts via audit.Spellings(DecisionBlocked)
 	// — every DB spelling that normalizes to "blocked" (blocked/block/deny/denied)
 	// — rather than a hardcoded IN list that can drift from the shared vocabulary.
+	// The blocked-spellings array lands after the (possibly scoped) base args,
+	// so its placeholder is positional on len(baseArgs)+1 — $4 tenant-wide,
+	// $5 under the #2922 scope.
+	spellingsPos := fmt.Sprintf("$%d", len(baseArgs)+1)
 	policyQuery := `
 		SELECT
 			COALESCE(policy_details->>'policy_name', 'unknown') as policy_name,
 			COUNT(*) as trigger_count,
-			COUNT(*) FILTER (WHERE policy_decision = ANY($4)) as block_count
+			COUNT(*) FILTER (WHERE policy_decision = ANY(` + spellingsPos + `)) as block_count
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
 		  AND timestamp <= $3
 		  AND policy_details IS NOT NULL
 		  AND policy_details->>'policy_name' IS NOT NULL
+	` + scopeFragment + `
 		GROUP BY policy_details->>'policy_name'
 		ORDER BY trigger_count DESC
 		LIMIT 10
 	`
 
-	policyRows, err := h.db.Query(policyQuery, tenantID, startTime, endTime, pq.Array(audit.Spellings(audit.DecisionBlocked)))
+	policyArgs := append(append([]interface{}{}, baseArgs...), pq.Array(audit.Spellings(audit.DecisionBlocked)))
+	policyRows, err := h.db.Query(policyQuery, policyArgs...)
 	if err != nil {
 		// Non-fatal: log and return partial results
 		log.Printf("[AuditSummary] policy query failed: %v", err)

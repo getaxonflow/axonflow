@@ -197,9 +197,19 @@ func findKnownIntegration(integrationID string) *KnownIntegration {
 
 // matchIntegrationByConnector finds which integration a connector type belongs to.
 // Returns nil if no known integration matches.
+//
+// Matches either the legacy composite form (connectorType has the registered
+// "prefix." — e.g. "claude_code.Bash") OR an exact bare-server match against
+// the prefix with its trailing dot trimmed (e.g. connectorType == "claude_code").
+// The latter covers #2904's split (server, tool) schema: once a caller sends
+// connector_type="claude_code" alone (tool carried separately), the method
+// name that used to follow the dot is gone, but the server name alone is
+// still a complete, unambiguous signal — dropping it here would silently stop
+// activating a tenant's int_claude_* policies for any migrated caller.
 func matchIntegrationByConnector(connectorType string) *KnownIntegration {
 	for i := range knownIntegrations {
-		if strings.HasPrefix(connectorType, knownIntegrations[i].ConnectorPrefix) {
+		prefix := knownIntegrations[i].ConnectorPrefix
+		if strings.HasPrefix(connectorType, prefix) || connectorType == strings.TrimSuffix(prefix, ".") {
 			return &knownIntegrations[i]
 		}
 	}

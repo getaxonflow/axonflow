@@ -368,6 +368,79 @@ func (r *PostgresRepository) GetSummary(ctx context.Context, requestID string) (
 	return summary, nil
 }
 
+// summaryOrgScopeSQL admits a summary row when it belongs to the caller's
+// org/tenant or carries no org/tenant stamp (pre-attribution rows). An empty
+// caller value leaves that dimension unfiltered — mirrors ListSummaries'
+// filter semantics. Placeholders are the org and tenant arg positions.
+const summaryOrgScopeSQL = `
+	  AND ($2 = '' OR org_id IS NULL OR org_id = '' OR org_id = $2)
+	  AND ($3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = $3)`
+
+// GetSummaryScoped retrieves an execution summary by request ID, isolated to
+// the caller's org/tenant in the SQL WHERE clause (#2934 — never post-fetch).
+func (r *PostgresRepository) GetSummaryScoped(ctx context.Context, requestID string, scope AccessScope) (*ExecutionSummary, error) {
+	query := `
+		SELECT request_id, workflow_name, status, total_steps, completed_steps,
+			started_at, completed_at, duration_ms,
+			total_tokens, total_cost_usd,
+			org_id, tenant_id, user_id, agent_id,
+			input_summary, output_summary, error_message,
+			created_at, updated_at
+		FROM execution_summaries
+		WHERE request_id = $1` + summaryOrgScopeSQL
+
+	summary := &ExecutionSummary{}
+	var status string
+	var completedAt sql.NullTime
+	var durationMs sql.NullInt32
+	var workflowName, orgID, tenantID, userID, agentID, errorMessage sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, requestID, scope.OrgID, scope.TenantID).Scan(
+		&summary.RequestID, &workflowName, &status, &summary.TotalSteps, &summary.CompletedSteps,
+		&summary.StartedAt, &completedAt, &durationMs,
+		&summary.TotalTokens, &summary.TotalCostUSD,
+		&orgID, &tenantID, &userID, &agentID,
+		&summary.InputSummary, &summary.OutputSummary, &errorMessage,
+		&summary.CreatedAt, &summary.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get summary: %w", err)
+	}
+
+	summary.Status = ExecutionStatus(status)
+	if completedAt.Valid {
+		summary.CompletedAt = &completedAt.Time
+	}
+	if durationMs.Valid {
+		d := int(durationMs.Int32)
+		summary.DurationMs = &d
+	}
+	if workflowName.Valid {
+		summary.WorkflowName = workflowName.String
+	}
+	if orgID.Valid {
+		summary.OrgID = orgID.String
+	}
+	if tenantID.Valid {
+		summary.TenantID = tenantID.String
+	}
+	if userID.Valid {
+		summary.UserID = userID.String
+	}
+	if agentID.Valid {
+		summary.AgentID = agentID.String
+	}
+	if errorMessage.Valid {
+		summary.ErrorMessage = errorMessage.String
+	}
+
+	return summary, nil
+}
+
 // ListSummaries retrieves execution summaries with filtering and pagination
 func (r *PostgresRepository) ListSummaries(ctx context.Context, opts ListOptions) ([]ExecutionSummary, int, error) {
 	// Build dynamic query based on options
@@ -548,6 +621,43 @@ func (r *PostgresRepository) DeleteExecution(ctx context.Context, requestID stri
 	// Delete summary
 	if _, err := tx.ExecContext(ctx, "DELETE FROM execution_summaries WHERE request_id = $1", requestID); err != nil {
 		return fmt.Errorf("failed to delete summary: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteExecutionScoped removes an execution and its snapshots only when the
+// summary row is inside the caller's org/tenant scope (#2934). The scope check
+// is the DELETE's own WHERE clause on execution_summaries; snapshots (which
+// carry no org column) are only deleted when that scoped DELETE hit a row, all
+// inside one transaction.
+func (r *PostgresRepository) DeleteExecutionScoped(ctx context.Context, requestID string, scope AccessScope) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM execution_summaries WHERE request_id = $1`+summaryOrgScopeSQL,
+		requestID, scope.OrgID, scope.TenantID)
+	if err != nil {
+		return fmt.Errorf("failed to delete summary: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check affected rows: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM execution_snapshots WHERE request_id = $1", requestID); err != nil {
+		return fmt.Errorf("failed to delete snapshots: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

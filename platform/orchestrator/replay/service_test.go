@@ -375,7 +375,7 @@ func TestService_GetExecution(t *testing.T) {
 		Status:    StepStatusCompleted,
 	})
 
-	exec, err := service.GetExecution(ctx, "req-123")
+	exec, err := service.GetExecution(ctx, "req-123", AccessScope{})
 	if err != nil {
 		t.Fatalf("GetExecution failed: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestService_GetExecution_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.GetExecution(ctx, "nonexistent")
+	_, err := service.GetExecution(ctx, "nonexistent", AccessScope{})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -493,7 +493,8 @@ func TestService_GetStep(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	// Add test data
+	// Add test data (summary anchors the #2934 scoped read)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -501,7 +502,7 @@ func TestService_GetStep(t *testing.T) {
 		Status:    StepStatusCompleted,
 	})
 
-	step, err := service.GetStep(ctx, "req-123", 0)
+	step, err := service.GetStep(ctx, "req-123", 0, AccessScope{})
 	if err != nil {
 		t.Fatalf("GetStep failed: %v", err)
 	}
@@ -515,7 +516,7 @@ func TestService_GetStep_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.GetStep(ctx, "req-123", 0)
+	_, err := service.GetStep(ctx, "req-123", 0, AccessScope{})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -526,7 +527,8 @@ func TestService_GetSteps(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	// Add test data
+	// Add test data (summary anchors the #2934 scoped read)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -538,7 +540,7 @@ func TestService_GetSteps(t *testing.T) {
 		StepName:  "step-2",
 	})
 
-	steps, err := service.GetSteps(ctx, "req-123")
+	steps, err := service.GetSteps(ctx, "req-123", AccessScope{})
 	if err != nil {
 		t.Fatalf("GetSteps failed: %v", err)
 	}
@@ -563,14 +565,14 @@ func TestService_ExportExecution(t *testing.T) {
 		OutputSummary: json.RawMessage(`{"response": "result"}`),
 	})
 	repo.AddSnapshot(&ExecutionSnapshot{
-		RequestID:        "req-123",
-		StepIndex:        0,
-		StepName:         "step-1",
-		Status:           StepStatusCompleted,
-		StartedAt:        now,
-		Input:            json.RawMessage(`{"data": "input"}`),
-		Output:           json.RawMessage(`{"data": "output"}`),
-		PoliciesChecked:  []string{"policy-1"},
+		RequestID:         "req-123",
+		StepIndex:         0,
+		StepName:          "step-1",
+		Status:            StepStatusCompleted,
+		StartedAt:         now,
+		Input:             json.RawMessage(`{"data": "input"}`),
+		Output:            json.RawMessage(`{"data": "output"}`),
+		PoliciesChecked:   []string{"policy-1"},
 		PoliciesTriggered: []PolicyEvent{{PolicyID: "p1", Action: "warn"}},
 	})
 
@@ -580,7 +582,7 @@ func TestService_ExportExecution(t *testing.T) {
 		IncludeInput:    true,
 		IncludeOutput:   true,
 		IncludePolicies: true,
-	})
+	}, AccessScope{})
 	if err != nil {
 		t.Fatalf("ExportExecution failed: %v", err)
 	}
@@ -623,14 +625,14 @@ func TestService_ExportExecution_Redacted(t *testing.T) {
 		OutputSummary: json.RawMessage(`{"response": "result"}`),
 	})
 	repo.AddSnapshot(&ExecutionSnapshot{
-		RequestID:        "req-123",
-		StepIndex:        0,
-		StepName:         "step-1",
-		Status:           StepStatusCompleted,
-		StartedAt:        time.Now(),
-		Input:            json.RawMessage(`{"data": "input"}`),
-		Output:           json.RawMessage(`{"data": "output"}`),
-		PoliciesChecked:  []string{"policy-1"},
+		RequestID:         "req-123",
+		StepIndex:         0,
+		StepName:          "step-1",
+		Status:            StepStatusCompleted,
+		StartedAt:         time.Now(),
+		Input:             json.RawMessage(`{"data": "input"}`),
+		Output:            json.RawMessage(`{"data": "output"}`),
+		PoliciesChecked:   []string{"policy-1"},
 		PoliciesTriggered: []PolicyEvent{{PolicyID: "p1"}},
 	})
 
@@ -640,7 +642,7 @@ func TestService_ExportExecution_Redacted(t *testing.T) {
 		IncludeInput:    false,
 		IncludeOutput:   false,
 		IncludePolicies: false,
-	})
+	}, AccessScope{})
 	if err != nil {
 		t.Fatalf("ExportExecution failed: %v", err)
 	}
@@ -678,7 +680,7 @@ func TestService_ExportExecution_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.ExportExecution(ctx, "nonexistent", ExportOptions{})
+	_, err := service.ExportExecution(ctx, "nonexistent", ExportOptions{}, AccessScope{})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -693,7 +695,8 @@ func TestService_GetTimeline(t *testing.T) {
 	completedAt := now.Add(100 * time.Millisecond)
 	duration := 100
 
-	// Add test data
+	// Add test data (summary anchors the #2934 scoped read)
+	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: now})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID:   "req-123",
 		StepIndex:   0,
@@ -719,7 +722,7 @@ func TestService_GetTimeline(t *testing.T) {
 		StartedAt: completedAt,
 	})
 
-	timeline, err := service.GetTimeline(ctx, "req-123")
+	timeline, err := service.GetTimeline(ctx, "req-123", AccessScope{})
 	if err != nil {
 		t.Fatalf("GetTimeline failed: %v", err)
 	}
@@ -755,7 +758,7 @@ func TestService_GetTimeline_NotFound(t *testing.T) {
 	repo.GetSnapshotsErr = ErrNotFound
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.GetTimeline(ctx, "req-123")
+	_, err := service.GetTimeline(ctx, "req-123", AccessScope{})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -778,7 +781,7 @@ func TestService_DeleteExecution(t *testing.T) {
 	}
 
 	// Delete execution
-	err := service.DeleteExecution(ctx, "req-123")
+	err := service.DeleteExecution(ctx, "req-123", AccessScope{})
 	if err != nil {
 		t.Fatalf("DeleteExecution failed: %v", err)
 	}

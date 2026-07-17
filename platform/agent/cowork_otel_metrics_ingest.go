@@ -58,6 +58,7 @@ import (
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 
 	"axonflow/platform/common/usage"
+	sharedidentity "axonflow/platform/shared/identity"
 )
 
 // coworkOTELMetricsPath is the standard OTLP/HTTP metrics path. Claude Code
@@ -345,9 +346,11 @@ func extractClaudeCodeMetricEvents(orgID, clientID string, req *collectormetrics
 						SessionID: firstNonEmpty(
 							truncateOTELString(merged["session.id"], maxOTELSessionIDLen),
 							truncateOTELString(merged["session_id"], maxOTELSessionIDLen)),
-						UserEmail: firstNonEmpty(
+						// #2922: canonicalized for read-scope key parity (see
+						// cowork_otel_ingest.go).
+						UserEmail: sharedidentity.CanonicalEmail(firstNonEmpty(
 							truncateOTELString(merged["user.email"], maxOTELUserEmailLen),
-							truncateOTELString(merged["user_email"], maxOTELUserEmailLen)),
+							truncateOTELString(merged["user_email"], maxOTELUserEmailLen))),
 						MetricName:  m.GetName(),
 						Value:       value,
 						Temporality: temporality,

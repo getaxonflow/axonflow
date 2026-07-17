@@ -18,15 +18,15 @@ type Alerter interface {
 
 // AlertEvent represents a budget alert event
 type AlertEvent struct {
-	BudgetID    string    `json:"budget_id"`
-	BudgetName  string    `json:"budget_name"`
-	Threshold   int       `json:"threshold"`
-	Current     float64   `json:"current_percentage"`
-	UsedUSD     float64   `json:"used_usd"`
-	LimitUSD    float64   `json:"limit_usd"`
-	Message     string    `json:"message"`
-	AlertType   string    `json:"alert_type"`
-	Timestamp   time.Time `json:"timestamp"`
+	BudgetID   string    `json:"budget_id"`
+	BudgetName string    `json:"budget_name"`
+	Threshold  int       `json:"threshold"`
+	Current    float64   `json:"current_percentage"`
+	UsedUSD    float64   `json:"used_usd"`
+	LimitUSD   float64   `json:"limit_usd"`
+	Message    string    `json:"message"`
+	AlertType  string    `json:"alert_type"`
+	Timestamp  time.Time `json:"timestamp"`
 }
 
 // LogAlerter is a simple alerter that logs to stdout (Phase 1)
@@ -51,11 +51,11 @@ func (a *LogAlerter) Alert(ctx context.Context, event AlertEvent) error {
 
 // Service provides cost tracking and budget management
 type Service struct {
-	repo           Repository
-	pricing        *PricingConfig
-	alerter        Alerter
-	logger         *log.Logger
-	mu             sync.RWMutex
+	repo    Repository
+	pricing *PricingConfig
+	alerter Alerter
+	logger  *log.Logger
+	mu      sync.RWMutex
 
 	// Track which thresholds have been alerted to avoid duplicates
 	alertedThresholds map[string]map[int]bool
@@ -369,6 +369,14 @@ func (s *Service) GetBudget(ctx context.Context, id string) (*Budget, error) {
 	return s.repo.GetBudget(ctx, id)
 }
 
+// GetBudgetScoped retrieves a budget by ID isolated to the caller's
+// org/tenant (#2934). The HTTP handlers use this variant; the internal
+// budget-enforcement engine keeps the unscoped GetBudget (it iterates
+// budgets it already selected by org).
+func (s *Service) GetBudgetScoped(ctx context.Context, id, orgID, tenantID string) (*Budget, error) {
+	return s.repo.GetBudgetScoped(ctx, id, orgID, tenantID)
+}
+
 // UpdateBudget updates an existing budget
 func (s *Service) UpdateBudget(ctx context.Context, budget *Budget) error {
 	if err := budget.Validate(); err != nil {
@@ -389,6 +397,20 @@ func (s *Service) DeleteBudget(ctx context.Context, id string) error {
 	return s.repo.DeleteBudget(ctx, id)
 }
 
+// DeleteBudgetScoped deletes a budget only when it belongs to the caller's
+// org/tenant (#2934); a cross-org id returns ErrBudgetNotFound.
+func (s *Service) DeleteBudgetScoped(ctx context.Context, id, orgID, tenantID string) error {
+	if err := s.repo.DeleteBudgetScoped(ctx, id, orgID, tenantID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	delete(s.alertedThresholds, id)
+	s.mu.Unlock()
+
+	return nil
+}
+
 // ListBudgets lists budgets with filtering
 func (s *Service) ListBudgets(ctx context.Context, opts ListBudgetsOptions) ([]Budget, int, error) {
 	return s.repo.ListBudgets(ctx, opts)
@@ -400,7 +422,22 @@ func (s *Service) GetBudgetStatus(ctx context.Context, budgetID string) (*Budget
 	if err != nil {
 		return nil, err
 	}
+	return s.statusForBudget(ctx, budget)
+}
 
+// GetBudgetStatusScoped is GetBudgetStatus with the budget fetch isolated to
+// the caller's org/tenant (#2934) — a cross-org id is ErrBudgetNotFound.
+func (s *Service) GetBudgetStatusScoped(ctx context.Context, budgetID, orgID, tenantID string) (*BudgetStatus, error) {
+	budget, err := s.repo.GetBudgetScoped(ctx, budgetID, orgID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return s.statusForBudget(ctx, budget)
+}
+
+// statusForBudget computes the period spend status for an already-fetched
+// budget.
+func (s *Service) statusForBudget(ctx context.Context, budget *Budget) (*BudgetStatus, error) {
 	periodStart := s.getPeriodStart(budget.Period)
 	periodEnd := s.getPeriodEnd(budget.Period, periodStart)
 
@@ -524,6 +561,18 @@ func (s *Service) GetPricing() *PricingConfig {
 // CalculateCost calculates cost for tokens
 func (s *Service) CalculateCost(provider, model string, tokensIn, tokensOut int) float64 {
 	return s.pricing.CalculateCost(provider, model, tokensIn, tokensOut)
+}
+
+// GetRecentAlertsScoped returns recent alerts for a budget, anchored on an
+// org/tenant-scoped budget fetch (#2934): a caller outside the budget's
+// org/tenant gets ErrBudgetNotFound, never another org's alert stream. The
+// alert rows themselves are keyed by budget_id, so the scoped anchor is the
+// SQL-enforced authorization.
+func (s *Service) GetRecentAlertsScoped(ctx context.Context, budgetID, orgID, tenantID string, limit int) ([]BudgetAlert, error) {
+	if _, err := s.repo.GetBudgetScoped(ctx, budgetID, orgID, tenantID); err != nil {
+		return nil, err
+	}
+	return s.repo.GetRecentAlerts(ctx, budgetID, limit)
 }
 
 // GetRecentAlerts gets recent alerts for a budget

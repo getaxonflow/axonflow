@@ -100,8 +100,8 @@ func TestListOverridesHandler_PolicyAndRevokedFilters(t *testing.T) {
 			"id", "policy_id", "policy_type", "tenant_id",
 			"override_reason", "expires_at", "revoked_at", "created_at",
 		})
-		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE policy_id").
-			WithArgs("pol-1", "tenant-x").
+		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE tenant_id = .+ AND policy_id::text = .+").
+			WithArgs("tenant-x", "pol-1").
 			WillReturnRows(rows)
 
 		req := httptest.NewRequest("GET",
@@ -273,7 +273,7 @@ func TestCreateOverrideHandler_PolicyNotFound(t *testing.T) {
 
 func TestRevokeOverrideHandler_NotFound(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectQuery("SELECT policy_id FROM policy_overrides").
+		mock.ExpectQuery("SELECT policy_id, created_by FROM policy_overrides").
 			WithArgs("ov-missing", "tenant-x").
 			WillReturnError(sql.ErrNoRows)
 
@@ -748,9 +748,9 @@ func TestCreateOverrideHandler_TTLClamped(t *testing.T) {
 // TestRevokeOverrideHandler_HappyPath exercises the full 200 OK path.
 func TestRevokeOverrideHandler_HappyPath(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectQuery("SELECT policy_id FROM policy_overrides").
+		mock.ExpectQuery("SELECT policy_id, created_by FROM policy_overrides").
 			WithArgs("ov-live", "tenant-x").
-			WillReturnRows(sqlmock.NewRows([]string{"policy_id"}).AddRow("pol-1"))
+			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "created_by"}).AddRow("pol-1", "dev@example.com"))
 		// v9 Phase 8 PR-C2 (#2384): UPDATE wrapped in rls.WithOrgScope.
 		mock.ExpectBegin()
 		mock.ExpectExec("set_config").WithArgs("tenant-x").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -839,8 +839,8 @@ func TestListOverridesHandler_PolicyAndTenantScope(t *testing.T) {
 		}).AddRow("ov-1", "00000000-0000-0000-0000-000000000001", "static", "tenant-x",
 			"debug", expiresAt, nil, time.Now())
 
-		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE policy_id::text = .+ AND tenant_id = .+ AND revoked_at IS NULL").
-			WithArgs("00000000-0000-0000-0000-000000000001", "tenant-x").
+		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE tenant_id = .+ AND policy_id::text = .+ AND revoked_at IS NULL").
+			WithArgs("tenant-x", "00000000-0000-0000-0000-000000000001").
 			WillReturnRows(rows)
 
 		req := httptest.NewRequest("GET", "/api/v1/overrides?policy_id=pol-1", nil)
@@ -871,8 +871,8 @@ func TestListOverridesHandler_PolicyAndTenantScope_IncludeRevoked(t *testing.T) 
 		}).AddRow("ov-1", "00000000-0000-0000-0000-000000000001", "static", "tenant-x",
 			"debug", nil, revokedAt, time.Now().Add(-time.Hour))
 
-		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE policy_id::text = .+ AND tenant_id = .+ ORDER BY created_at").
-			WithArgs("00000000-0000-0000-0000-000000000001", "tenant-x").
+		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE tenant_id = .+ AND policy_id::text = .+ ORDER BY created_at").
+			WithArgs("tenant-x", "00000000-0000-0000-0000-000000000001").
 			WillReturnRows(rows)
 
 		req := httptest.NewRequest("GET", "/api/v1/overrides?policy_id=pol-1&include_revoked=true", nil)

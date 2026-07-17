@@ -1381,7 +1381,9 @@ func TestGetWorkflowExecutionHandler(t *testing.T) {
 					Steps:        []StepExecution{},
 					StartTime:    time.Now(),
 					EndTime:      &endTime,
-					UserContext:  UserContext{ID: 1, Email: "test@example.com"},
+					// #2934: stamp the owning tenant/org so the scoped read
+					// admits the caller below.
+					UserContext: UserContext{ID: 1, Email: "test@example.com", TenantID: "tenant-1", OrgID: "org-1"},
 				}
 				// Save to storage
 				if err := workflowEngine.storage.SaveExecution(execution); err != nil {
@@ -1390,6 +1392,10 @@ func TestGetWorkflowExecutionHandler(t *testing.T) {
 			}
 
 			req := httptest.NewRequest("GET", "/workflows/executions/"+tt.executionID, nil)
+			// #2934: the handler now binds the read to the authenticated
+			// tenant identity the agent stamps.
+			req.Header.Set("X-Tenant-ID", "tenant-1")
+			req.Header.Set("X-Org-ID", "org-1")
 			req = mux.SetURLVars(req, map[string]string{"id": tt.executionID})
 			w := httptest.NewRecorder()
 
@@ -1413,6 +1419,100 @@ func TestGetWorkflowExecutionHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWorkflowExecutionTenantIsolation covers the #2934 handler-level tenant
+// scoping: even a caller past the tenant-wide read gate must not read another
+// tenant's execution Input/Output by id or by naming the tenant in the URL.
+func TestWorkflowExecutionTenantIsolation(t *testing.T) {
+	oldEngine := workflowEngine
+	defer func() { workflowEngine = oldEngine }()
+	workflowEngine = NewWorkflowEngine()
+
+	end := time.Now()
+	exec := &WorkflowExecution{
+		ID: "wf-owned", WorkflowName: "wf", Status: "completed",
+		Input: map[string]interface{}{"q": "secret-in"}, Output: map[string]interface{}{"a": "secret-out"},
+		StartTime: time.Now(), EndTime: &end,
+		UserContext: UserContext{ID: 1, Email: "a@acme.com", TenantID: "tenant-a", OrgID: "org-a"},
+	}
+	if err := workflowEngine.storage.SaveExecution(exec); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// by-id: cross-tenant caller gets 404, not the Input/Output.
+	req := httptest.NewRequest("GET", "/workflows/executions/wf-owned", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "org-b")
+	req = mux.SetURLVars(req, map[string]string{"id": "wf-owned"})
+	w := httptest.NewRecorder()
+	getWorkflowExecutionHandler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("cross-tenant by-id must be 404, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// by-id: missing identity → 401.
+	req = httptest.NewRequest("GET", "/workflows/executions/wf-owned", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "wf-owned"})
+	w = httptest.NewRecorder()
+	getWorkflowExecutionHandler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("identity-less by-id must be 401, got %d", w.Code)
+	}
+
+	// by-id: owning tenant reads it (non-vacuous control).
+	req = httptest.NewRequest("GET", "/workflows/executions/wf-owned", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("X-Org-ID", "org-a")
+	req = mux.SetURLVars(req, map[string]string{"id": "wf-owned"})
+	w = httptest.NewRecorder()
+	getWorkflowExecutionHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owning-tenant by-id must be 200, got %d", w.Code)
+	}
+
+	// by-tenant: URL tenant_id that disagrees with the authenticated tenant → 404.
+	req = httptest.NewRequest("GET", "/workflows/executions/tenant/tenant-a", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "org-b")
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": "tenant-a"})
+	w = httptest.NewRecorder()
+	tenantWorkflowExecutionsHandler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("URL tenant_id != authenticated tenant must be 404, got %d", w.Code)
+	}
+
+	// by-tenant: matching authenticated tenant → 200 (control).
+	req = httptest.NewRequest("GET", "/workflows/executions/tenant/tenant-a", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("X-Org-ID", "org-a")
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": "tenant-a"})
+	w = httptest.NewRecorder()
+	tenantWorkflowExecutionsHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("matching tenant must be 200, got %d", w.Code)
+	}
+
+	// by-tenant: missing identity → 401.
+	req = httptest.NewRequest("GET", "/workflows/executions/tenant/tenant-a", nil)
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": "tenant-a"})
+	w = httptest.NewRecorder()
+	tenantWorkflowExecutionsHandler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("identity-less by-tenant must be 401, got %d", w.Code)
+	}
+
+	// by-tenant: org-only credential (X-Tenant-ID empty, X-Org-ID set) cannot
+	// scope a tenant-keyed read and must be DENIED, not served the URL
+	// tenant's rows (the R3 fail-open). 404, not a cross-tenant read.
+	req = httptest.NewRequest("GET", "/workflows/executions/tenant/tenant-a", nil)
+	req.Header.Set("X-Org-ID", "org-b")
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": "tenant-a"})
+	w = httptest.NewRecorder()
+	tenantWorkflowExecutionsHandler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("org-only credential naming another tenant must be 404, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -2409,8 +2509,11 @@ func TestTenantWorkflowExecutionsHandler_WithEngine(t *testing.T) {
 	defer func() { workflowEngine = oldEngine }()
 	workflowEngine = NewWorkflowEngine()
 
-	// Test with valid tenant ID - should return 200 with empty list
+	// Test with valid tenant ID - should return 200 with empty list.
+	// #2934: the URL tenant_id must match the authenticated tenant identity.
 	req := httptest.NewRequest("GET", "/workflows/tenant/test-tenant/executions", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-org")
 	req = mux.SetURLVars(req, map[string]string{"tenant_id": "test-tenant"})
 	w := httptest.NewRecorder()
 

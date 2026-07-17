@@ -42,6 +42,7 @@ func TestListDecisions_AcceptsNeedsApprovalCanonical(t *testing.T) {
 			sqlmock.AnyArg(),
 			pq.Array(audit.Spellings(audit.DecisionNeedsApproval)),
 			"", "",
+			"", // #2922 scope user_email (empty = tenant-wide)
 			5,
 		).
 		WillReturnRows(sqlmock.NewRows(

@@ -103,6 +103,7 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 
 	type rowFields struct {
 		decision, plane, securityEvent, attemptedTenant, attemptedOrg, tenantCol string
+		toolServer, toolName                                                     string
 	}
 	readRow := func(decisionID string) (rowFields, bool) {
 		var f rowFields
@@ -111,9 +112,12 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 			       COALESCE(policy_details->>'security_event',''),
 			       COALESCE(policy_details->>'attempted_tenant_id',''),
 			       COALESCE(policy_details->>'attempted_org_id',''),
-			       COALESCE(tenant_id,'')
+			       COALESCE(tenant_id,''),
+			       COALESCE(policy_details->>'tool_server',''),
+			       COALESCE(policy_details->>'tool_name','')
 			  FROM audit_logs WHERE decision_id = $1`, decisionID).
-			Scan(&f.decision, &f.plane, &f.securityEvent, &f.attemptedTenant, &f.attemptedOrg, &f.tenantCol)
+			Scan(&f.decision, &f.plane, &f.securityEvent, &f.attemptedTenant, &f.attemptedOrg, &f.tenantCol,
+				&f.toolServer, &f.toolName)
 		if err != nil {
 			return f, false
 		}
@@ -174,14 +178,37 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 		t.Errorf("org-impersonation row: decision=%s event=%q attempted_org=%q", f.decision, f.securityEvent, f.attemptedOrg)
 	}
 
+	// --- tool-target impersonation deny → tool_server/tool_name STILL present
+	// on an early-deny row (#2904 MEDIUM fix: previously toolServer/toolName
+	// were only stamped onto decisionAudit right before the terminal
+	// evaluateInputPolicies call, so every early-return deny above it — this
+	// one included — wrote NO tool identity even when Target.Server/Tool were
+	// present in the request from the start. Extraction now happens right
+	// after decode, alongside gatewayID/query, so this impersonation deny
+	// (which never reaches evaluateInputPolicies) still carries them.
+	code, toolImpID := call(`{"stage":"tool","caller_identity":{"tenant_id":"victim-tenant"},"target":{"type":"tool","tool":"query","server":"postgres"},"query":"SELECT 1"}`, authTenant, authOrg)
+	if code != http.StatusForbidden || toolImpID == "" {
+		t.Fatalf("tool-target tenant impersonation: got HTTP %d id=%q want 403 + decision_id", code, toolImpID)
+	}
+	if f, ok := readRow(toolImpID); !ok {
+		t.Errorf("tool-target impersonation deny wrote NO audit_logs row (decision_id=%s)", toolImpID)
+	} else {
+		if f.decision != AuditVerdictBlocked || f.securityEvent != "tenant_impersonation" {
+			t.Errorf("tool-target impersonation row: decision=%s event=%q want %s/tenant_impersonation", f.decision, f.securityEvent, AuditVerdictBlocked)
+		}
+		if f.toolServer != "postgres" || f.toolName != "query" {
+			t.Errorf("tool-target impersonation row tool identity: tool_server=%q tool_name=%q want postgres/query (early-deny row must still carry Target.Server/Tool)", f.toolServer, f.toolName)
+		}
+	}
+
 	// --- the decisions-feed predicate finds every early-deny row ------------
 	// (decision_id IS NOT NULL — the WHERE the orchestrator decisions list uses).
 	var feedCount int
 	if err := db.QueryRow(`SELECT count(*) FROM audit_logs WHERE plane='decision' AND decision_id IS NOT NULL`).Scan(&feedCount); err != nil {
 		t.Fatalf("count feed rows: %v", err)
 	}
-	if feedCount != 4 {
-		t.Errorf("decisions-feed-visible early-deny rows: got %d want 4", feedCount)
+	if feedCount != 5 {
+		t.Errorf("decisions-feed-visible early-deny rows: got %d want 5", feedCount)
 	}
 
 	// --- no legacy allow/deny ever persisted on the decision plane ----------

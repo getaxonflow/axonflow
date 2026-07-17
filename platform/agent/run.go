@@ -1050,6 +1050,22 @@ func Run() {
 		usageDB = authDB
 		log.Println("✅ Usage metering database connected")
 
+		// #2924 R3: back the decide-plane per-user-token revocation lookup with
+		// the mig-135 deny-list over the same app-role pool. Enterprise-only
+		// (community NewDBRevocationStore returns ErrEnterpriseOnly → no-op).
+		wireUserTokenRevocation(usageDB)
+
+		// #2932: register the fleet/MCP-server per-user token validators NOW —
+		// deterministically at startup, with usageDB set above and jwtSecret
+		// already initialized from the environment — instead of lazily on the
+		// first enterprise MCP request. This closes the silent-disable window
+		// where a first request could trip the sync.Once before the wiring was
+		// ready, register nothing, and permanently ignore per-user tokens. The
+		// per-request ensureFleetValidatorsRegistered() calls remain as
+		// idempotent no-ops. Community builds register nothing (constructors
+		// return ErrEnterpriseOnly) — a harmless no-op there.
+		ensureFleetValidatorsRegistered()
+
 		// Audit manager with DB — writes to Postgres
 		initAuditManager(usageDB)
 		if auditManager != nil {
@@ -2567,6 +2583,15 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 	orgID := getClaimString(claims, "org_id")
 	if orgID == "" {
 		orgID = tenantID
+	}
+
+	// #2924 R3: revocation takes effect on this plane too. A per-user token
+	// minted by the provisioning API carries a jti; if it (or the user's
+	// tokens en masse) has been revoked, reject here — not only exp closes it.
+	// No-op for jti-less legacy tokens and community builds; fails closed on a
+	// revocation-store error (checkUserTokenRevoked).
+	if err := checkUserTokenRevoked(claims, orgID); err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
 	// Extract user_id - handle both string and numeric types
