@@ -124,7 +124,7 @@ func (h *Handler) GetExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exec, err := h.service.GetExecution(r.Context(), requestID)
+	exec, err := h.service.GetExecution(r.Context(), requestID, h.callerScope(r))
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -151,8 +151,12 @@ func (h *Handler) GetSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	steps, err := h.service.GetSteps(r.Context(), requestID)
+	steps, err := h.service.GetSteps(r.Context(), requestID, h.callerScope(r))
 	if err != nil {
+		if err == ErrNotFound {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
+			return
+		}
 		h.logger.Printf("[Replay] GetSteps error for %s: %v", requestID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get execution steps")
 		return
@@ -183,7 +187,7 @@ func (h *Handler) GetStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	step, err := h.service.GetStep(r.Context(), requestID, stepIndex)
+	step, err := h.service.GetStep(r.Context(), requestID, stepIndex, h.callerScope(r))
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
@@ -210,7 +214,7 @@ func (h *Handler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timeline, err := h.service.GetTimeline(r.Context(), requestID)
+	timeline, err := h.service.GetTimeline(r.Context(), requestID, h.callerScope(r))
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -258,7 +262,7 @@ func (h *Handler) ExportExecution(w http.ResponseWriter, r *http.Request) {
 		opts.IncludePolicies = false
 	}
 
-	data, err := h.service.ExportExecution(r.Context(), requestID, opts)
+	data, err := h.service.ExportExecution(r.Context(), requestID, opts, h.callerScope(r))
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -291,7 +295,7 @@ func (h *Handler) DeleteExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.service.DeleteExecution(r.Context(), requestID)
+	err := h.service.DeleteExecution(r.Context(), requestID, h.callerScope(r))
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -333,6 +337,19 @@ func (h *Handler) getTenantID(r *http.Request) string {
 		return tenantID
 	}
 	return ""
+}
+
+// callerScope builds the caller's org/tenant read scope for the by-id
+// routes (#2934). Behind the agent gateway X-Org-ID / X-Tenant-ID are Set
+// (not Add) from the cryptographically validated license, so a governed
+// caller cannot pick another org; empty values (single-tenant Community,
+// in-VPC direct callers) leave that dimension unfiltered, matching
+// ListExecutions' existing filter semantics.
+func (h *Handler) callerScope(r *http.Request) AccessScope {
+	return AccessScope{
+		OrgID:    h.getOrgID(r),
+		TenantID: h.getTenantID(r),
+	}
 }
 
 // getOrgID extracts org ID from request

@@ -343,6 +343,40 @@ func TestShouldActivateForClient_Codex(t *testing.T) {
 	}
 }
 
+// TestMatchIntegrationByConnector_BareServerSplitSchema covers #2904: once a
+// caller sends connector_type="claude_code" alone (the split server/tool
+// schema, tool carried separately) instead of the legacy composite
+// "claude_code.Bash", auto-detection must still recognise it — dropping the
+// method-name suffix must not silently stop int_claude_* policy activation.
+func TestMatchIntegrationByConnector_BareServerSplitSchema(t *testing.T) {
+	tests := []struct {
+		name          string
+		connectorType string
+		wantID        string // "" means no match
+	}{
+		{"legacy composite still matches", "claude_code.Bash", "claude-code"},
+		{"bare server (split schema) matches", "claude_code", "claude-code"},
+		{"bare openclaw matches", "openclaw", "openclaw"},
+		{"bare cursor matches", "cursor", "cursor"},
+		{"unrelated prefix does not falsely match bare form", "claude_code_extra", ""},
+		{"unknown connector does not match", "unknown_system", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matchIntegrationByConnector(tc.connectorType)
+			if tc.wantID == "" {
+				if got != nil {
+					t.Errorf("matchIntegrationByConnector(%q) = %v, want nil", tc.connectorType, got.ID)
+				}
+				return
+			}
+			if got == nil || got.ID != tc.wantID {
+				t.Errorf("matchIntegrationByConnector(%q) = %v, want %q", tc.connectorType, got, tc.wantID)
+			}
+		})
+	}
+}
+
 func TestKnownIntegrations_CursorCodexPrefixes(t *testing.T) {
 	cursor := findKnownIntegration("cursor")
 	if cursor == nil {

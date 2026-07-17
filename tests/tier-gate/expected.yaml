@@ -228,9 +228,9 @@ endpoints:
     # Probe an empty body to avoid consuming the daily evidence-export quota.
     body: '{}'
     expected:
-      community:  {status: 404, reason: "evidenceExportHandler is nil in community (tierChecker.IsEvidenceExportEnabled=false) → routes not registered → 404"}
-      evaluation: {status: 400, reason: "handler registered; IsEvidenceExportEnabled=true → falls to start_date validation → 400"}
-      enterprise: {status: 400, reason: "same"}
+      community:  {status: 404, reason: "evidenceExportHandler is nil in community (tierChecker.IsEvidenceExportEnabled=false) → routes not registered → 404. #2922 enforceTenantWideAuditExport passes community through (tenant-wide) BEFORE routing, so absence still yields 404"}
+      evaluation: {status: 403, reason: "#2922 enforceTenantWideAuditExport (read_scope.go): whole-tenant audit export requires tenant-wide read authority; the runner sends X-User-Email but no validated admin role over proxy-auth → least-privilege → 403 before the handler's start_date validation"}
+      enterprise: {status: 403, reason: "same — non-admin caller denied the whole-tenant evidence export (#2922)"}
 
   - id: orchestrator-evidence-summary
     method: GET
@@ -238,8 +238,8 @@ endpoints:
     path: /api/v1/evidence/summary?start_date=2026-04-01&end_date=2026-04-29
     expected:
       community:  {status: 404, reason: "evidenceExportHandler nil in community → routes not registered"}
-      evaluation: {status: 200, reason: "summary returned"}
-      enterprise: {status: 200, reason: "same"}
+      evaluation: {status: 403, reason: "#2922 enforceTenantWideAuditExport: whole-tenant summary requires tenant-wide read authority; runner is a non-admin → 403"}
+      enterprise: {status: 403, reason: "same (#2922)"}
 
   # ---------------------------------------------------------------------------
   # Static / dynamic policies — core feature, no tier gate
@@ -334,16 +334,20 @@ endpoints:
   # (CI lacks them by design). Not a clean tier-gate signal.
   #
   # ---------------------------------------------------------------------------
-  # Workflow control plane — registered always, no tier gate on listing
+  # Workflow control plane — registered always. #2934 gates the execution-read
+  # routes (they expose per-execution Input/Output) on tenant-wide read
+  # authority via enforceDomainReadAuthority, same posture as the #2922 audit
+  # exports above: community passes through (single-operator, tenant-wide), a
+  # non-admin caller in eval/enterprise is denied (403).
   # ---------------------------------------------------------------------------
   - id: orchestrator-workflows-executions-list
     method: GET
     port: 8081
     path: /api/v1/workflows/executions
     expected:
-      community:  {status: 200, reason: "list ungated"}
-      evaluation: {status: 200, reason: "same"}
-      enterprise: {status: 200, reason: "same"}
+      community:  {status: 200, reason: "#2934 enforceDomainReadAuthority passes community through (tenant-wide); list handler returns an empty list (200)"}
+      evaluation: {status: 403, reason: "#2934: execution reads require tenant-wide read authority; the runner is a non-admin (no validated admin role over proxy-auth) → 403"}
+      enterprise: {status: 403, reason: "same — non-admin denied the tenant-wide execution list (#2934)"}
 
   - id: orchestrator-workflows-execute
     method: POST

@@ -56,6 +56,39 @@ func (m *MockRepository) GetBudget(ctx context.Context, id string) (*Budget, err
 	return nil, ErrBudgetNotFound
 }
 
+// budgetVisibleToScope mirrors budgetOrgScopeSQL: empty caller value leaves
+// the dimension unfiltered; NULL/empty stamps are deployment-global.
+func budgetVisibleToScope(b *Budget, orgID, tenantID string) bool {
+	if orgID != "" && b.OrgID != "" && b.OrgID != orgID {
+		return false
+	}
+	if tenantID != "" && b.TenantID != "" && b.TenantID != tenantID {
+		return false
+	}
+	return true
+}
+
+func (m *MockRepository) GetBudgetScoped(ctx context.Context, id, orgID, tenantID string) (*Budget, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if budget, ok := m.budgets[id]; ok && budgetVisibleToScope(budget, orgID, tenantID) {
+		return budget, nil
+	}
+	return nil, ErrBudgetNotFound
+}
+
+func (m *MockRepository) DeleteBudgetScoped(ctx context.Context, id, orgID, tenantID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if budget, ok := m.budgets[id]; ok && budgetVisibleToScope(budget, orgID, tenantID) {
+		delete(m.budgets, id)
+		return nil
+	}
+	return ErrBudgetNotFound
+}
+
 func (m *MockRepository) UpdateBudget(ctx context.Context, budget *Budget) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -883,10 +916,10 @@ func TestGetPeriodEnd_AllPeriods(t *testing.T) {
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name       string
-		period     BudgetPeriod
-		start      time.Time
-		wantAfter  time.Time
+		name      string
+		period    BudgetPeriod
+		start     time.Time
+		wantAfter time.Time
 	}{
 		{"daily", PeriodDaily, start, start.AddDate(0, 0, 1).Add(-time.Second)},
 		{"weekly", PeriodWeekly, start, start.AddDate(0, 0, 7).Add(-time.Second)},

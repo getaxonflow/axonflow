@@ -400,7 +400,7 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 			sqlmock.AnyArg(),         // timestamp
 			42,                       // user_id parsed from numeric string
 			"unknown@axonflow.local", // user_email fallback
-			"user",                   // user_role fallback
+			"unknown",                // user_role fallback — honest label for an unresolved role (RBAC-1 #2920)
 			"unknown",                // client_id fallback
 			"unknown",                // tenant_id fallback
 			"",                       // org_id (no fallback)

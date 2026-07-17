@@ -48,103 +48,116 @@ func TestClassifyMCPCall(t *testing.T) {
 	tests := []struct {
 		name          string
 		connectorType string
+		tool          string
 		operation     string
 		want          mcpAccessClass
 	}{
 		// --- Read-path tools are allowed (classified read) ---
-		{"claude_code.Read", "claude_code.Read", "execute", mcpAccessRead},
-		{"claude_code.Grep", "claude_code.Grep", "execute", mcpAccessRead},
-		{"claude_code.Glob", "claude_code.Glob", "execute", mcpAccessRead},
-		{"db.Query", "db.Query", "query", mcpAccessRead},
-		{"get_user snake", "user_service.get_user", "execute", mcpAccessRead},
-		{"list_items", "list_items", "execute", mcpAccessRead},
-		{"search_flights", "travel.search_flights", "execute", mcpAccessRead},
-		{"describe_table", "postgres.describe_table", "execute", mcpAccessRead},
-		{"select prefix snake", "postgres.select_users", "execute", mcpAccessRead},
-		{"camelCase getUserList", "svc.getUserList", "execute", mcpAccessRead},
+		{"claude_code.Read", "claude_code.Read", "", "execute", mcpAccessRead},
+		{"claude_code.Grep", "claude_code.Grep", "", "execute", mcpAccessRead},
+		{"claude_code.Glob", "claude_code.Glob", "", "execute", mcpAccessRead},
+		{"db.Query", "db.Query", "", "query", mcpAccessRead},
+		{"get_user snake", "user_service.get_user", "", "execute", mcpAccessRead},
+		{"list_items", "list_items", "", "execute", mcpAccessRead},
+		{"search_flights", "travel.search_flights", "", "execute", mcpAccessRead},
+		{"describe_table", "postgres.describe_table", "", "execute", mcpAccessRead},
+		{"select prefix snake", "postgres.select_users", "", "execute", mcpAccessRead},
+		{"camelCase getUserList", "svc.getUserList", "", "execute", mcpAccessRead},
 
 		// --- Write-path tools are blocked (classified write) ---
-		{"claude_code.Write", "claude_code.Write", "execute", mcpAccessWrite},
-		{"claude_code.Edit", "claude_code.Edit", "execute", mcpAccessWrite},
-		{"claude_code.Bash", "claude_code.Bash", "execute", mcpAccessWrite},
-		{"db.Execute", "db.Execute", "execute", mcpAccessWrite},
-		{"create_record", "svc.create_record", "execute", mcpAccessWrite},
-		{"delete_row", "db.delete_row", "execute", mcpAccessWrite},
-		{"update_config", "svc.update_config", "execute", mcpAccessWrite},
-		{"camelCase deleteUser", "svc.deleteUser", "execute", mcpAccessWrite},
-		{"PascalCase RunCommand", "shell.RunCommand", "execute", mcpAccessWrite},
+		{"claude_code.Write", "claude_code.Write", "", "execute", mcpAccessWrite},
+		{"claude_code.Edit", "claude_code.Edit", "", "execute", mcpAccessWrite},
+		{"claude_code.Bash", "claude_code.Bash", "", "execute", mcpAccessWrite},
+		{"db.Execute", "db.Execute", "", "execute", mcpAccessWrite},
+		{"create_record", "svc.create_record", "", "execute", mcpAccessWrite},
+		{"delete_row", "db.delete_row", "", "execute", mcpAccessWrite},
+		{"update_config", "svc.update_config", "", "execute", mcpAccessWrite},
+		{"camelCase deleteUser", "svc.deleteUser", "", "execute", mcpAccessWrite},
+		{"PascalCase RunCommand", "shell.RunCommand", "", "execute", mcpAccessWrite},
 
 		// --- Write wins over read when both verbs present (fail-safe) ---
-		{"read_or_write -> write", "svc.read_or_write", "query", mcpAccessWrite},
-		{"get_and_delete -> write", "svc.get_and_delete", "query", mcpAccessWrite},
+		{"read_or_write -> write", "svc.read_or_write", "", "query", mcpAccessWrite},
+		{"get_and_delete -> write", "svc.get_and_delete", "", "query", mcpAccessWrite},
 
 		// --- Mutating verbs that MUST block even with operation=query (R3 round 1
 		//     hardening: these were not caught by the first cut's verb list, so a
 		//     caller asserting operation=query could have slipped a write through). ---
-		{"upload + query -> write", "files.upload", "query", mcpAccessWrite},
-		{"add_user + query -> write", "svc.add_user", "query", mcpAccessWrite},
-		{"merge_rows + query -> write", "db.merge_rows", "query", mcpAccessWrite},
-		{"transfer_funds + query -> write", "bank.transfer_funds", "query", mcpAccessWrite},
-		{"grant_role + query -> write", "iam.grant_role", "query", mcpAccessWrite},
-		{"revoke_token + query -> write", "iam.revoke_token", "query", mcpAccessWrite},
-		{"reset_password + query -> write", "svc.reset_password", "query", mcpAccessWrite},
-		{"mkdir + query -> write", "fs.mkdir", "query", mcpAccessWrite},
-		{"symlink + query -> write", "fs.symlink", "query", mcpAccessWrite},
-		{"enqueue + query -> write", "queue.enqueue", "query", mcpAccessWrite},
-		{"register + query -> write", "svc.register", "query", mcpAccessWrite},
-		{"disable_user + query -> write", "svc.disable_user", "query", mcpAccessWrite},
-		{"replace_doc + query -> write", "db.replace_doc", "query", mcpAccessWrite},
+		{"upload + query -> write", "files.upload", "", "query", mcpAccessWrite},
+		{"add_user + query -> write", "svc.add_user", "", "query", mcpAccessWrite},
+		{"merge_rows + query -> write", "db.merge_rows", "", "query", mcpAccessWrite},
+		{"transfer_funds + query -> write", "bank.transfer_funds", "", "query", mcpAccessWrite},
+		{"grant_role + query -> write", "iam.grant_role", "", "query", mcpAccessWrite},
+		{"revoke_token + query -> write", "iam.revoke_token", "", "query", mcpAccessWrite},
+		{"reset_password + query -> write", "svc.reset_password", "", "query", mcpAccessWrite},
+		{"mkdir + query -> write", "fs.mkdir", "", "query", mcpAccessWrite},
+		{"symlink + query -> write", "fs.symlink", "", "query", mcpAccessWrite},
+		{"enqueue + query -> write", "queue.enqueue", "", "query", mcpAccessWrite},
+		{"register + query -> write", "svc.register", "", "query", mcpAccessWrite},
+		{"disable_user + query -> write", "svc.disable_user", "", "query", mcpAccessWrite},
+		{"replace_doc + query -> write", "db.replace_doc", "", "query", mcpAccessWrite},
 
 		// --- Newly-added read verbs still classify as read ---
-		{"download -> read", "files.download", "execute", mcpAccessRead},
-		{"get_status -> read", "svc.get_status", "execute", mcpAccessRead},
+		{"download -> read", "files.download", "", "execute", mcpAccessRead},
+		{"get_status -> read", "svc.get_status", "", "execute", mcpAccessRead},
 
 		// --- write-wins still fires when a mutating verb pairs with a new read
 		//     verb (R3 round 2: change/toggle are write, so these block). ---
-		{"change_status + query -> write", "svc.change_status", "query", mcpAccessWrite},
-		{"toggle_status + query -> write", "svc.toggle_status", "query", mcpAccessWrite},
-		{"explain_change -> write", "svc.explain_change", "execute", mcpAccessWrite},
-		{"activate + query -> write", "svc.activate", "query", mcpAccessWrite},
-		{"submit_order + query -> write", "svc.submit_order", "query", mcpAccessWrite},
+		{"change_status + query -> write", "svc.change_status", "", "query", mcpAccessWrite},
+		{"toggle_status + query -> write", "svc.toggle_status", "", "query", mcpAccessWrite},
+		{"explain_change -> write", "svc.explain_change", "", "execute", mcpAccessWrite},
+		{"activate + query -> write", "svc.activate", "", "query", mcpAccessWrite},
+		{"submit_order + query -> write", "svc.submit_order", "", "query", mcpAccessWrite},
 
 		// --- Tokens that merely CONTAIN a verb substring must NOT misclassify
 		//     (word-boundary tokenisation, not substring match). ---
-		{"get_settings -> read (not 'set')", "svc.get_settings", "execute", mcpAccessRead},
-		{"list_commits -> read (not 'commit')", "git.list_commits", "execute", mcpAccessRead},
-		{"describe_deployment -> read (not 'deploy')", "svc.describe_deployment", "execute", mcpAccessRead},
+		{"get_settings -> read (not 'set')", "svc.get_settings", "", "execute", mcpAccessRead},
+		{"list_commits -> read (not 'commit')", "git.list_commits", "", "execute", mcpAccessRead},
+		{"describe_deployment -> read (not 'deploy')", "svc.describe_deployment", "", "execute", mcpAccessRead},
 
 		// --- Connector prefix verb must NOT mask the method ---
-		{"search connector, index method (unknown verb) honors op", "search.index_document", "query", mcpAccessRead},
-		{"search connector, write method", "search.write_document", "query", mcpAccessWrite},
+		{"search connector, index method (unknown verb) honors op", "search.index_document", "", "query", mcpAccessRead},
+		{"search connector, write method", "search.write_document", "", "query", mcpAccessWrite},
 
 		// --- Inconclusive method name defers to operation ---
-		{"unknown verb + op=query -> read", "svc.frobnicate", "query", mcpAccessRead},
-		{"unknown verb + op=execute -> write", "svc.frobnicate", "execute", mcpAccessWrite},
-		{"unknown verb + op empty -> write (default-deny)", "svc.frobnicate", "", mcpAccessWrite},
-		{"unknown verb + op garbage -> write (default-deny)", "svc.frobnicate", "wat", mcpAccessWrite},
+		{"unknown verb + op=query -> read", "svc.frobnicate", "", "query", mcpAccessRead},
+		{"unknown verb + op=execute -> write", "svc.frobnicate", "", "execute", mcpAccessWrite},
+		{"unknown verb + op empty -> write (default-deny)", "svc.frobnicate", "", "", mcpAccessWrite},
+		{"unknown verb + op garbage -> write (default-deny)", "svc.frobnicate", "", "wat", mcpAccessWrite},
 
 		// --- Operation case-insensitive ---
-		{"op QUERY uppercase -> read", "svc.frobnicate", "QUERY", mcpAccessRead},
-		{"op  query  whitespace -> read", "svc.frobnicate", "  query  ", mcpAccessRead},
+		{"op QUERY uppercase -> read", "svc.frobnicate", "", "QUERY", mcpAccessRead},
+		{"op  query  whitespace -> read", "svc.frobnicate", "", "  query  ", mcpAccessRead},
 
 		// --- Separators: slash and colon method extraction ---
-		{"tools/execute slash", "tools/execute", "", mcpAccessWrite},
-		{"tools/list slash", "tools/list", "", mcpAccessRead},
-		{"colon namespace write", "ns:create", "", mcpAccessWrite},
+		{"tools/execute slash", "tools/execute", "", "", mcpAccessWrite},
+		{"tools/list slash", "tools/list", "", "", mcpAccessRead},
+		{"colon namespace write", "ns:create", "", "", mcpAccessWrite},
 
 		// --- Bare names without a connector prefix ---
-		{"bare Read", "Read", "execute", mcpAccessRead},
-		{"bare Write", "Write", "execute", mcpAccessWrite},
+		{"bare Read", "Read", "", "execute", mcpAccessRead},
+		{"bare Write", "Write", "", "execute", mcpAccessWrite},
 
 		// --- Empty connector type defers to operation ---
-		{"empty connector + query -> read", "", "query", mcpAccessRead},
-		{"empty connector + execute -> write", "", "execute", mcpAccessWrite},
-		{"empty connector + empty op -> write (default-deny)", "", "", mcpAccessWrite},
+		{"empty connector + query -> read", "", "", "query", mcpAccessRead},
+		{"empty connector + execute -> write", "", "", "execute", mcpAccessWrite},
+		{"empty connector + empty op -> write (default-deny)", "", "", "", mcpAccessWrite},
+
+		// --- #2904: split (server, tool) schema — the write-verb signal now
+		// commonly lives in `tool` alone once a caller stops sending the legacy
+		// composite connectorType. Without tokenising tool too, a caller sending
+		// tool="Bash" + operation="query" would misclassify as read, defeating
+		// the "Bash is always write, fail-safe" invariant tested above via the
+		// legacy composite form. ---
+		{"split schema: server + tool=Bash, op=query -> still write", "claude_code", "Bash", "query", mcpAccessWrite},
+		{"split schema: server + tool=Bash, op=execute -> write", "claude_code", "Bash", "execute", mcpAccessWrite},
+		{"split schema: server + tool=Read, op=execute -> read", "claude_code", "Read", "execute", mcpAccessRead},
+		{"split schema: bare server (no method anywhere) + empty tool defers to op", "claude_code", "", "query", mcpAccessRead},
+		{"split schema: write verb in tool wins even if server also has a token", "search_service", "delete_index", "query", mcpAccessWrite},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyMCPCall(tc.connectorType, tc.operation); got != tc.want {
-				t.Errorf("classifyMCPCall(%q, %q) = %q, want %q", tc.connectorType, tc.operation, got, tc.want)
+			if got := classifyMCPCall(tc.connectorType, tc.tool, tc.operation); got != tc.want {
+				t.Errorf("classifyMCPCall(%q, %q, %q) = %q, want %q", tc.connectorType, tc.tool, tc.operation, got, tc.want)
 			}
 		})
 	}

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
@@ -314,11 +315,14 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 // everywhere" (identity_trust.go).
 //
 // Gate ON  ⇒ each present header is forwarded sanitized (the deployment has
-//            declared its identity source trusted; the orchestrator is
-//            additionally protected by proxy-auth on the override ingresses).
+//
+//	declared its identity source trusted; the orchestrator is
+//	additionally protected by proxy-auth on the override ingresses).
+//
 // Gate OFF ⇒ each header is STRIPPED before forwarding, so no proxied route
-//            can launder a forged per-user identity to the orchestrator; a
-//            once-per-process detection warning fires via trustedIdentityHeader.
+//
+//	can launder a forged per-user identity to the orchestrator; a
+//	once-per-process detection warning fires via trustedIdentityHeader.
 //
 // The auth-derived headers X-Tenant-ID / X-Org-ID / X-Client-ID (set from the
 // validated credential just above the call site) and the HMAC proxy-auth
@@ -406,6 +410,54 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// reverse-proxy Director injects the proxy-auth token, so neither is
 		// affected. See gateProxyIdentityHeaders.
 		gateProxyIdentityHeaders(r)
+
+		// #2922: the role/scope trust headers are NEVER client-assertable, on
+		// any proxied route — the orchestrator honors them on proxy-auth'd
+		// requests (which the Director adds to everything we forward), so
+		// forwarding an inbound value would let any governed caller mint
+		// tenant-wide read authority. Strip unconditionally (global choke
+		// point, per the #2896 census lesson), then re-assert the role below
+		// only from a VALIDATED per-user token.
+		r.Header.Del(sharedidentity.HeaderUserRole)
+		r.Header.Del(sharedidentity.HeaderReadScope)
+
+		// #2922: resolve a presented per-user token on the proxied-API plane so
+		// a developer or admin token works identically against the proxied REST
+		// reads (/api/v1/audit/*, /api/v1/decisions, /api/v1/overrides) as
+		// against the MCP tools. The token is read from X-User-Token ONLY here
+		// — NOT Authorization — because on the proxied REST plane Authorization
+		// carries the TENANT credential (enterprise JWT / Basic), which
+		// Authenticate() already consumed above; re-interpreting a tenant Bearer
+		// as a per-user token would 401 every legacy Bearer-authenticated
+		// enterprise caller (the MCP plane can read Bearer because there the
+		// tenant authenticates via Basic, leaving Authorization free for the
+		// per-user token). Enterprise-only (validators are enterprise-gated). A
+		// present-but-invalid X-User-Token is REJECTED (fail-closed — the header
+		// is unambiguously a per-user token); an absent one leaves the caller at
+		// the trust-gated header identity (least-privilege). A validated identity
+		// OVERRIDES the header identity so attribution + scoping key on the
+		// non-forgeable value.
+		if auth.Kind == AuthKindEnterprise {
+			if perUserToken := strings.TrimSpace(r.Header.Get("X-User-Token")); perUserToken != "" {
+				ensureFleetValidatorsRegistered()
+				// #2932: surface a presented-token-but-no-validator misconfig
+				// (fail-safe — the token is ignored → least-privilege).
+				warnIfTokenWithoutValidator(perUserToken)
+				if vid, resolveErr := sharedidentity.ResolveToken(r.Context(), auth.OrgID, perUserToken); resolveErr != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					errBody, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("invalid user token: %v", resolveErr)})
+					_, _ = w.Write(errBody)
+					return
+				} else if vid != nil {
+					r.Header.Set(identityHeaderUserEmail, vid.Email)
+					r.Header.Set(identityHeaderUserID, vid.Email)
+					if vid.Role != "" {
+						r.Header.Set(sharedidentity.HeaderUserRole, vid.Role)
+					}
+				}
+			}
+		}
 
 		// V1.1: forward the per-tenant SaaS Plugin tier to the
 		// orchestrator. The agent has already resolved Free / Pro /

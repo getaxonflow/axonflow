@@ -2480,6 +2480,16 @@ paths:
         without the header are rejected with 401. `user_email` and `client_id`
         are case-insensitive partial (ILIKE substring) matches. The search
         start time is clamped to the tenant's tier-based retention window.
+
+        **Role-scoped reads (#2922):** the caller's read scope is resolved
+        server-side. `admin`/`owner` read the full tenant trail; every other
+        role — and any caller without a validated per-user identity — reads
+        **only their own** `user_email` rows (fail-closed). A non-admin's
+        `user_email` filter can only narrow the result to their own identity,
+        never widen it to another user's rows. Callers without any resolvable
+        identity receive an empty `entries` array. The role/scope is trusted
+        only over the internal agent→orchestrator proxy-auth channel, never a
+        client-forwarded header.
       operationId: searchAuditLogs
       parameters:
         - $ref: '#/components/parameters/TenantIDHeader'
@@ -3272,6 +3282,11 @@ paths:
       description: |
         Lists the tenant's policy overrides, newest first, capped at 100
         rows. Revoked overrides are excluded unless `include_revoked=true`.
+
+        **Role-scoped reads (#2922):** `admin`/`owner` list every override in
+        the tenant; every other role lists only the overrides they created
+        (`created_by`). Revoking an override is scoped the same way. The
+        role/scope is trusted only over the internal proxy-auth channel.
       operationId: listPolicyOverrides
       parameters:
         - $ref: '#/components/parameters/TenantIDHeader'
@@ -3435,6 +3450,12 @@ paths:
         `X-Axonflow-Tier-Limit` and `X-Axonflow-Upgrade-URL` headers. A
         `since` earlier than the tier window is silently clamped to the
         window.
+
+        **Role-scoped reads (#2922):** `admin`/`owner` list every user's
+        decisions; every other role lists only their own (rows attributed to
+        their identity). A caller with no resolvable per-user identity gets an
+        empty list. The role/scope is trusted only over the internal
+        proxy-auth channel.
       operationId: listDecisions
       parameters:
         - $ref: '#/components/parameters/TenantIDHeader'

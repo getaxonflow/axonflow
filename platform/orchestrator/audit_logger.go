@@ -49,8 +49,18 @@ type auditSearchCriteria struct {
 	// first-class audit_logs.session_id column. Lets a session-summary bucket
 	// (#2759) drill down into its raw events via ?session_id=X.
 	SessionID string
-	Limit     int
-	Offset    int
+	// ScopeUserEmail is the ENFORCED own-rows read scope (#2922) — the
+	// canonical email of a non-tenant-wide caller, applied as an exact
+	// case-insensitive predicate (LOWER(user_email) = $n) that a caller-
+	// supplied UserEmail filter can only narrow, never widen. It is derived
+	// server-side from resolveCallerReadScope and MUST NEVER be populated
+	// from a request body or query string. Distinct from UserEmail (the
+	// ILIKE substring FILTER) because a substring match is not a security
+	// boundary: an injected substring over-matches sibling identities
+	// ("dev@x.com" ⊂ "otherdev@x.com").
+	ScopeUserEmail string
+	Limit          int
+	Offset         int
 }
 
 // asAuditSearchCriteria is a best-effort adapter from the various anonymous
@@ -108,6 +118,10 @@ func asAuditSearchCriteria(criteria interface{}) (auditSearchCriteria, bool) {
 		case "SessionID":
 			if fv.Kind() == reflect.String {
 				out.SessionID = fv.String()
+			}
+		case "ScopeUserEmail":
+			if fv.Kind() == reflect.String {
+				out.ScopeUserEmail = fv.String()
 			}
 		case "Action":
 			if fv.Kind() == reflect.String {
@@ -807,6 +821,19 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 		}
 	} else if searchReq, ok := asAuditSearchCriteria(criteria); ok {
 		// Handle general search (from auditSearchHandler or via named-type callers).
+		//
+		// #2922 enforced read scope — FIRST, so it can never be displaced by a
+		// caller filter. Exact case-insensitive match on the canonical email
+		// (write paths canonicalize via sharedidentity.CanonicalEmail; LOWER()
+		// on the column keeps pre-canonicalization historical rows readable by
+		// their owner). Deliberately NOT the ILIKE substring filter below —
+		// substring matching over-matches sibling identities and is not a
+		// security boundary.
+		if searchReq.ScopeUserEmail != "" {
+			query += fmt.Sprintf(" AND LOWER(user_email) = $%d", argIndex)
+			args = append(args, strings.ToLower(searchReq.ScopeUserEmail))
+			argIndex++
+		}
 		if searchReq.UserEmail != "" {
 			query += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", argIndex)
 			args = append(args, searchReq.UserEmail)

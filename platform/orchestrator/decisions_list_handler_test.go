@@ -76,6 +76,7 @@ func TestListDecisions_TenantFilterIsInWhereClause(t *testing.T) {
 			pq.Array([]string{}), // decision filter (empty array = wildcard)
 			"",                   // policy_id filter (empty = wildcard)
 			"",                   // tool_signature filter (empty = wildcard)
+			"",                   // #2922 scope user_email (empty = tenant-wide in community test mode)
 			5,                    // tier-default limit (Community)
 		).
 		WillReturnRows(sqlmock.NewRows(
@@ -129,7 +130,7 @@ func TestListDecisions_ReadsDecisionIdColumnWithJSONBFallback(t *testing.T) {
 	// admit the column arm (decision_id IS NOT NULL) — both required so a
 	// column-only row (no JSONB decision_id) still surfaces post-backfill.
 	mock.ExpectQuery(`COALESCE\(decision_id, policy_details->>'decision_id'\)[\s\S]*?FROM audit_logs[\s\S]*?WHERE tenant_id = \$1[\s\S]*?\(decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL\)`).
-		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", 5).
+		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", "", 5).
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context", "transfer_basis", "data_residency"},
 		).AddRow("dec-from-column", time.Now().UTC(), "deny", "pol-mcp", "", nil, "", ""))
@@ -307,7 +308,8 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 			sqlmock.AnyArg(), // no decision filter → pq.Array([]string{}) (empty, non-nil)
 			"",
 			"",
-			5, // Community max page
+			"", // #2922 scope user_email (empty = tenant-wide)
+			5,  // Community max page
 		).
 		WillReturnRows(rows)
 
@@ -413,6 +415,7 @@ func TestListDecisions_FiltersForwardedToSQL(t *testing.T) {
 			pq.Array(audit.Spellings(audit.DecisionBlocked)), // decision filter, expanded
 			"pol-sqli",       // policy_id filter
 			"postgres.query", // tool_signature filter
+			"",               // #2922 scope user_email (empty = tenant-wide)
 			3,
 		).
 		WillReturnRows(sqlmock.NewRows(
@@ -456,7 +459,7 @@ func TestListDecisions_ContextTruncatedToFiveKeys(t *testing.T) {
 	}).AddRow("dec-ctx", time.Now().UTC(), "allow", "pol-default", "", ctxJSON, "", "")
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
-		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", 5).
+		WithArgs("tenant-a", sqlmock.AnyArg(), pq.Array([]string{}), "", "", "", 5).
 		WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
@@ -553,6 +556,7 @@ func TestListDecisions_SinceClampedToTierWindow(t *testing.T) {
 			"tenant-a",
 			recentTimestamp{maxAge: 25 * time.Hour},
 			pq.Array([]string{}), "", "",
+			"", // #2922 scope user_email (empty = tenant-wide)
 			5,
 		).
 		WillReturnRows(sqlmock.NewRows(

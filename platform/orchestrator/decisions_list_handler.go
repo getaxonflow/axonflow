@@ -227,7 +227,22 @@ func listDecisionsHandler(w http.ResponseWriter, r *http.Request) {
 	policyIDFilter := strings.TrimSpace(q.Get("policy_id"))
 	toolSigFilter := strings.TrimSpace(q.Get("tool_signature"))
 
-	rows, err := queryDecisionList(callerTenant, since, decisionVals, policyIDFilter, toolSigFilter, requestedLimit)
+	// #2922 role-scoped reads: a non-tenant-wide caller lists only their own
+	// decisions (rows stamped with their canonical user_email by the write
+	// path). There is deliberately NO user_email query parameter on this
+	// endpoint, so there is nothing a caller could widen; the scope is purely
+	// server-derived. Empty identity ⇒ empty list (fail-closed).
+	scopeUserEmail := ""
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(DecisionListResponse{Decisions: []DecisionListItem{}})
+			return
+		}
+		scopeUserEmail = scope.UserEmail
+	}
+
+	rows, err := queryDecisionList(callerTenant, scopeUserEmail, since, decisionVals, policyIDFilter, toolSigFilter, requestedLimit)
 	if err != nil {
 		log.Printf("list decisions: query failed: tenant=%q err=%v", callerTenant, err)
 		sendErrorResponse(w, "Internal error", http.StatusInternalServerError)
@@ -268,7 +283,9 @@ func resolveDecisionListTier(r *http.Request) (license.Tier, license.TierLimits)
 // same defense as explainDecisionHandler (#1623 retro). Filters are passed
 // as positional args; absent filters short-circuit with TRUE so the index
 // usage stays predictable.
-func queryDecisionList(tenantID string, since time.Time, decisionVals []string, policyID, toolSig string, limit int) ([]DecisionListItem, error) {
+// scopeUserEmail is the #2922 enforced own-rows read scope (exact canonical
+// match on LOWER(user_email)); empty means tenant-wide.
+func queryDecisionList(tenantID, scopeUserEmail string, since time.Time, decisionVals []string, policyID, toolSig string, limit int) ([]DecisionListItem, error) {
 	if usageDB == nil {
 		return []DecisionListItem{}, nil
 	}
@@ -310,8 +327,9 @@ func queryDecisionList(tenantID string, since time.Time, decisionVals []string, 
 		        OR policy_details->'policy_ids' @> to_jsonb($4::text)
 		      ))
 		  AND ($5::text = '' OR policy_details->>'tool_signature' = $5)
+		  AND ($6::text = '' OR LOWER(user_email) = $6)
 		ORDER BY timestamp DESC
-		LIMIT $6
+		LIMIT $7
 	`
 
 	// Enterprise's -1 sentinel is treated as "no LIMIT" by capping at a
@@ -324,7 +342,7 @@ func queryDecisionList(tenantID string, since time.Time, decisionVals []string, 
 		effectiveLimit = 100000
 	}
 
-	rows, err := usageDB.Query(q, tenantID, since, pq.Array(decisionVals), policyID, toolSig, effectiveLimit)
+	rows, err := usageDB.Query(q, tenantID, since, pq.Array(decisionVals), policyID, toolSig, strings.ToLower(scopeUserEmail), effectiveLimit)
 	if err != nil {
 		return nil, err
 	}

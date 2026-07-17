@@ -137,19 +137,19 @@ func TestMCPProxyToAgent_BasicAuth_UsesClientID(t *testing.T) {
 // --- Fix 5: authenticateMCPServerRequest must NOT fabricate userRole="admin" ---
 
 // TestAuthenticateMCPServerRequest_UserRoleNotFabricated asserts that
-// authenticateMCPServerRequest returns a non-"admin" userRole when no
-// real role-lookup path exists. The hardcoded literal corrupted every
-// MCP-path audit row. Fix stamps "unknown" instead.
+// authenticateMCPServerRequest never fabricates an elevated userRole when no
+// validated per-user token is present. The original v9 Fix 5 stamped
+// "unknown"; RBAC-1 (#2920) replaces that sentinel with least-privilege
+// RoleNone ("") — the fail-closed authz default that read-scoping (RBAC-3)
+// gates on. The anti-fabrication invariant is preserved: a shared-credential /
+// header-only caller must NEVER resolve to "admin".
 //
-// Mutation test: change the literal back to "admin" — this test fails.
-// Tautology guard: the test asserts the literal "unknown" AND asserts
-// that "admin" is rejected. If somebody bumps the literal to a third
-// value (say "viewer") both clauses still fail, so the test is
-// expressing the invariant "must be 'unknown' on MCP path" precisely.
+// Mutation test: change the least-privilege return to "admin" — this test
+// fails. It also rejects the old "unknown" sentinel so a partial revert is
+// caught.
 func TestAuthenticateMCPServerRequest_UserRoleNotFabricated(t *testing.T) {
-	// Force enterprise mode + valid community-style credentials so
-	// Authenticate succeeds without DB. Use bypass header pattern from
-	// the existing test corpus: AXONFLOW_MODE=community.
+	// Community mode: Authenticate succeeds without DB and no per-user token
+	// is presented, so the caller takes the least-privilege path.
 	t.Setenv("AXONFLOW_MODE", "community")
 
 	req := httptest.NewRequest("POST", "/", nil)
@@ -160,10 +160,10 @@ func TestAuthenticateMCPServerRequest_UserRoleNotFabricated(t *testing.T) {
 		t.Fatalf("authenticateMCPServerRequest: %v", err)
 	}
 	if userRole == "admin" {
-		t.Errorf("userRole is fabricated 'admin' — Fix 5 was reverted")
+		t.Errorf("userRole is fabricated 'admin' — the RBAC-1 least-privilege default was reverted")
 	}
-	if userRole != "unknown" {
-		t.Errorf("userRole: got %q, want \"unknown\" (audit-trust integrity per Fix 5)", userRole)
+	if userRole != "" {
+		t.Errorf("userRole: got %q, want least-privilege \"\" (RBAC-1 #2920)", userRole)
 	}
 }
 

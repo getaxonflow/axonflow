@@ -95,6 +95,56 @@ func (r *PostgresRepository) GetBudget(ctx context.Context, id string) (*Budget,
 	return &budget, nil
 }
 
+// budgetOrgScopeSQL admits a budget row when it belongs to the caller's
+// org/tenant or carries no org/tenant stamp (deployment-global budget, and
+// the pre-#2934 rows written without headers). An empty caller value leaves
+// that dimension unfiltered — mirrors GetBudgetsForScope's semantics.
+// Placeholders are the org and tenant arg positions.
+const budgetOrgScopeSQL = `
+	  AND ($2 = '' OR org_id IS NULL OR org_id = '' OR org_id = $2)
+	  AND ($3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = $3)`
+
+// GetBudgetScoped retrieves a budget by ID, isolated to the caller's
+// org/tenant in the SQL WHERE clause (#2934 — never post-fetch).
+func (r *PostgresRepository) GetBudgetScoped(ctx context.Context, id, orgID, tenantID string) (*Budget, error) {
+	query := `
+		SELECT id, name, description, scope, scope_id, limit_usd, period,
+			   on_exceed, alert_thresholds, enabled, org_id, tenant_id,
+			   created_by, updated_by, created_at, updated_at
+		FROM budgets
+		WHERE id = $1` + budgetOrgScopeSQL
+
+	var budget Budget
+	var thresholds []byte
+	var description, scopeID, budgetOrgID, budgetTenantID, createdBy, updatedBy sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, id, orgID, tenantID).Scan(
+		&budget.ID, &budget.Name, &description, &budget.Scope, &scopeID,
+		&budget.LimitUSD, &budget.Period, &budget.OnExceed, &thresholds,
+		&budget.Enabled, &budgetOrgID, &budgetTenantID, &createdBy, &updatedBy,
+		&budget.CreatedAt, &budget.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrBudgetNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get budget: %w", err)
+	}
+
+	budget.Description = description.String
+	budget.ScopeID = scopeID.String
+	budget.OrgID = budgetOrgID.String
+	budget.TenantID = budgetTenantID.String
+	budget.CreatedBy = createdBy.String
+	budget.UpdatedBy = updatedBy.String
+
+	if err := json.Unmarshal(thresholds, &budget.AlertThresholds); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal alert thresholds: %w", err)
+	}
+
+	return &budget, nil
+}
+
 // UpdateBudget updates an existing budget
 func (r *PostgresRepository) UpdateBudget(ctx context.Context, budget *Budget) error {
 	thresholds, err := json.Marshal(budget.AlertThresholds)
@@ -135,6 +185,28 @@ func (r *PostgresRepository) DeleteBudget(ctx context.Context, id string) error 
 	query := `DELETE FROM budgets WHERE id = $1`
 
 	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete budget: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check affected rows: %w", err)
+	}
+	if rows == 0 {
+		return ErrBudgetNotFound
+	}
+
+	return nil
+}
+
+// DeleteBudgetScoped deletes a budget only when it is visible to the
+// caller's org/tenant (same WHERE contract as GetBudgetScoped). A cross-org
+// id affects zero rows and surfaces as ErrBudgetNotFound.
+func (r *PostgresRepository) DeleteBudgetScoped(ctx context.Context, id, orgID, tenantID string) error {
+	query := `DELETE FROM budgets WHERE id = $1` + budgetOrgScopeSQL
+
+	result, err := r.db.ExecContext(ctx, query, id, orgID, tenantID)
 	if err != nil {
 		return fmt.Errorf("failed to delete budget: %w", err)
 	}

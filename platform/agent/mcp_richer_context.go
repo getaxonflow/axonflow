@@ -434,6 +434,11 @@ const mcpUnauthenticatedTenant = "unauthenticated"
 // Best-effort: a DB error logs and returns. The verdict the PEP already holds is
 // authoritative — an audit write never changes the decision (mirrors
 // writeExplainableAuditLog / writeDecisionAuditLog).
+// toolIdentity is variadic — [0]=server, [1]=tool (mirrors the server/tool
+// hierarchy) — so the many existing call sites on managed-connector /
+// non-tool paths (which structurally have no tool identity to report,
+// #2904/#2905) don't need updating; only the 3 advisory PLANES (check-input,
+// check_policy, /decide) have a caller-sent tool identity in scope to pass.
 func writeMCPDecisionAudit(
 	ctx context.Context,
 	db *sql.DB,
@@ -443,6 +448,7 @@ func writeMCPDecisionAudit(
 	requestType, query, queryHash, policyDecision string,
 	policyIDs, reasons, redactedFields []string,
 	correlationID string,
+	toolIdentity ...string,
 ) {
 	if db == nil || decisionID == "" {
 		return
@@ -486,6 +492,14 @@ func writeMCPDecisionAudit(
 	if correlationID != "" {
 		details["correlation_id"] = correlationID
 	}
+	// #2904: tool_server/tool_name — same keys the audit_tool_call path already
+	// writes, now populated uniformly across every self-auditing policy plane.
+	if len(toolIdentity) > 0 && toolIdentity[0] != "" {
+		details["tool_server"] = toolIdentity[0]
+	}
+	if len(toolIdentity) > 1 && toolIdentity[1] != "" {
+		details["tool_name"] = toolIdentity[1]
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		log.Printf("mcp decision audit: marshal failed: %v", err)
@@ -497,8 +511,14 @@ func writeMCPDecisionAudit(
 	if userEmail == "" {
 		userEmail = "unknown@axonflow.local"
 	}
+	// RBAC-1 (#2920): a least-privilege MCP caller resolves to the authz role
+	// RoleNone (""). Stamp the honest "unknown" audit label — NOT a fabricated
+	// "service"/"user" — so the trail distinguishes an unresolved-role MCP
+	// caller from the real internal-service principal (whose role IS "service")
+	// and from a genuine "user"/"admin". Preserves the v9 Fix 5 audit-honesty
+	// contract while the returned authz role stays "" for read-scoping (RBAC-3).
 	if userRole == "" {
-		userRole = "service"
+		userRole = "unknown"
 	}
 	if clientID == "" {
 		clientID = "unknown"
@@ -592,6 +612,8 @@ func writeMCPDecisionAudit(
 // Best-effort: any failure logs and returns — the block itself is already
 // authoritative, the caller already got the richer response body, and the
 // legacy mcp_query_audits entry is written separately and unaffected.
+// toolIdentity is variadic — [0]=server, [1]=tool (#2904) — matching
+// writeMCPDecisionAudit's convention so unrelated callers don't need updating.
 func writeExplainableAuditLog(
 	ctx context.Context,
 	db *sql.DB,
@@ -601,6 +623,7 @@ func writeExplainableAuditLog(
 	requestType, statement, statementHash, blockReason, topRisk string,
 	matches []RicherPolicyMatch,
 	correlationID string,
+	toolIdentity ...string,
 ) {
 	if db == nil || decisionID == "" {
 		return
@@ -644,6 +667,14 @@ func writeExplainableAuditLog(
 	if correlationID != "" {
 		details["correlation_id"] = correlationID
 	}
+	// #2904: tool_server/tool_name — same keys the audit_tool_call path already
+	// writes, now populated uniformly across every self-auditing policy plane.
+	if len(toolIdentity) > 0 && toolIdentity[0] != "" {
+		details["tool_server"] = toolIdentity[0]
+	}
+	if len(toolIdentity) > 1 && toolIdentity[1] != "" {
+		details["tool_name"] = toolIdentity[1]
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		log.Printf("explainable audit log: marshal failed: %v", err)
@@ -656,8 +687,11 @@ func writeExplainableAuditLog(
 	if userEmail == "" {
 		userEmail = "unknown@axonflow.local"
 	}
+	// RBAC-1 (#2920): honest "unknown" label for a least-privilege MCP caller
+	// (RoleNone / ""), consistent with writeMCPDecisionAudit — not a fabricated
+	// "user" that collides with a real assigned role.
 	if userRole == "" {
-		userRole = "user"
+		userRole = "unknown"
 	}
 	if clientID == "" {
 		clientID = "unknown"

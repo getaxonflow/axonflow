@@ -13,8 +13,18 @@ type Repository interface {
 	// Budget operations
 	CreateBudget(ctx context.Context, budget *Budget) error
 	GetBudget(ctx context.Context, id string) (*Budget, error)
+	// GetBudgetScoped is the org/tenant-isolated variant used by the HTTP
+	// read path (#2934): the WHERE clause admits the budget only when it
+	// belongs to the caller's org/tenant (or is a deployment-global budget
+	// with no org/tenant stamp). An empty orgID/tenantID leaves that
+	// dimension unfiltered, preserving single-tenant Community behavior.
+	GetBudgetScoped(ctx context.Context, id, orgID, tenantID string) (*Budget, error)
 	UpdateBudget(ctx context.Context, budget *Budget) error
 	DeleteBudget(ctx context.Context, id string) error
+	// DeleteBudgetScoped deletes only when the budget is visible to the
+	// caller's org/tenant (same WHERE contract as GetBudgetScoped); a
+	// cross-org id returns ErrBudgetNotFound instead of deleting.
+	DeleteBudgetScoped(ctx context.Context, id, orgID, tenantID string) error
 	ListBudgets(ctx context.Context, opts ListBudgetsOptions) ([]Budget, int, error)
 	GetBudgetsForScope(ctx context.Context, scope BudgetScope, scopeID string, orgID, tenantID string) ([]Budget, error)
 

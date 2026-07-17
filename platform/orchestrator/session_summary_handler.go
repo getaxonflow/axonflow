@@ -44,6 +44,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -194,7 +195,10 @@ type SessionSummaryResponse struct {
 // true when the window held more buckets than the cap. A fourth, separate
 // query then enriches the surviving buckets with usage_events metrics
 // (#2852) — see enrichSessionSummaryUsage for its isolation contract.
-func (l *AuditLogger) QuerySessionSummary(ctx context.Context, tenantID, userEmail string, start, end time.Time, limit int) ([]*SessionSummaryBucket, bool, error) {
+// scopeUserEmail is the #2922 enforced own-rows read scope (exact canonical
+// match); userEmail remains the optional ILIKE substring FILTER — the two are
+// AND'ed so the filter can only narrow the scope, never widen it.
+func (l *AuditLogger) QuerySessionSummary(ctx context.Context, tenantID, scopeUserEmail, userEmail string, start, end time.Time, limit int) ([]*SessionSummaryBucket, bool, error) {
 	if l.db == nil {
 		return []*SessionSummaryBucket{}, false, nil
 	}
@@ -218,8 +222,14 @@ func (l *AuditLogger) QuerySessionSummary(ctx context.Context, tenantID, userEma
 	// the five canonical verdicts + this one marker, all lowercase.
 	where := " WHERE tenant_id = $1 AND timestamp >= $2 AND timestamp < $3 AND policy_decision <> $4"
 	args := []interface{}{tenantID, start, end, sharedaudit.DecisionOverrideLifecycle}
+	// #2922 enforced read scope — exact canonical-email predicate, before the
+	// ILIKE filter, so the filter can only narrow it (see SearchAuditLogs).
+	if scopeUserEmail != "" {
+		where += fmt.Sprintf(" AND LOWER(user_email) = $%d", len(args)+1)
+		args = append(args, strings.ToLower(scopeUserEmail))
+	}
 	if userEmail != "" {
-		where += " AND user_email ILIKE '%' || $5 || '%'"
+		where += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", len(args)+1)
 		args = append(args, userEmail)
 	}
 
@@ -525,6 +535,20 @@ func sessionSummaryHandler(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	userEmail := q.Get("user_email")
+	// #2922 role-scoped reads: a non-tenant-wide caller sees only their own
+	// session buckets. The caller-supplied ?user_email is DROPPED and replaced
+	// by the exact-match scope predicate on the caller's own identity (a
+	// self-scoped ILIKE would be meaningless and could only narrow anyway); a
+	// caller with no per-user identity gets an empty bucket list (fail-closed).
+	scopeUserEmail := ""
+	scopedEmpty := false
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			scopedEmpty = true
+		}
+		scopeUserEmail = scope.UserEmail
+		userEmail = "" // drop the caller filter — the scope predicate is authoritative
+	}
 	startDateStr := q.Get("start_date")
 	endDateStr := q.Get("end_date")
 	if startDateStr == "" || endDateStr == "" {
@@ -586,11 +610,22 @@ func sessionSummaryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	buckets, truncated, err := auditLogger.QuerySessionSummary(r.Context(), tenantID, userEmail, startDate, endExclusive, limit)
-	if err != nil {
-		log.Printf("[audit/session-summary] query failed for tenant=%s: %v", logutil.Sanitize(tenantID), err)
-		sendErrorResponse(w, "session summary query failed", http.StatusInternalServerError)
-		return
+	var (
+		buckets   []*SessionSummaryBucket
+		truncated bool
+	)
+	if scopedEmpty {
+		// Fail-closed #2922 path: no per-user identity ⇒ zero buckets, same
+		// response shape as "no sessions in window."
+		buckets = []*SessionSummaryBucket{}
+	} else {
+		var qErr error
+		buckets, truncated, qErr = auditLogger.QuerySessionSummary(r.Context(), tenantID, scopeUserEmail, userEmail, startDate, endExclusive, limit)
+		if qErr != nil {
+			log.Printf("[audit/session-summary] query failed for tenant=%s: %v", logutil.Sanitize(tenantID), qErr)
+			sendErrorResponse(w, "session summary query failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	resp := SessionSummaryResponse{

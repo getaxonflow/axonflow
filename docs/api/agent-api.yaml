@@ -4754,10 +4754,14 @@ components:
           type: string
           description: Provider identifier when type is llm.
           example: "openai"
+        server:
+          type: string
+          description: Server/connector identifier when type is tool (#2904).
+          example: "postgres"
         tool:
           type: string
-          description: Tool/connector identifier when type is tool.
-          example: "postgres.query"
+          description: Tool identifier when type is tool.
+          example: "query"
 
     DecideResponse:
       type: object
@@ -5565,7 +5569,12 @@ components:
           description: Optional user role for role-based access policies (e.g., "admin", "analyst")
         connector_type:
           type: string
-          description: MCP connector type (e.g., "postgres", "snowflake", "salesforce")
+          description: MCP connector/server type (e.g., "postgres", "snowflake", "salesforce")
+        tool:
+          type: string
+          description: >-
+            Optional tool identifier being invoked, distinct from connector_type/server
+            (#2904). Feeds capability-scoped policy evaluation when set.
         statement:
           type: string
           description: The SQL query or command to validate against policies

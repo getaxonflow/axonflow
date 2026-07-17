@@ -12,6 +12,23 @@
 // influence a verdict, an authz decision, policy selection, or tenant/org
 // resolution. The gate defaults to OFF — a deployment that has not declared
 // its identity source trusted must not trust a forgeable header.
+//
+// PER-USER TOKEN ENVELOPES + COLLISION RULE (#2941, decided 2026-07-17): the
+// per-user token (#2924/#2930) rides exactly TWO ingest envelopes, one per
+// plane, by design — the POST /api/v1/decide request-body user_token (the
+// caller is a PEP deciding on behalf of an end user) and the X-User-Token
+// header on the MCP-server + agent-proxied REST planes (the caller IS the
+// user's client). Both feed the same ResolveToken: same claims, validation,
+// fail-closed posture, and CanonicalEmail attribution. The allowed ingest
+// points are pinned by a census test (platform/agent
+// TestUserTokenIngestCensus) — adding a read site or schema field is a
+// conscious, reviewed act, never a silent second identity channel. If any
+// single endpoint ever needs BOTH envelopes: both-present-and-different ⇒
+// REJECT the request (fail-closed). Never resolve the ambiguity with silent
+// precedence — per-endpoint precedence rules are how two identity channels
+// drift apart. (The legacy MCP-connector and examples tenant-JWT
+// json:"user_token" fields are a DIFFERENT credential class, annotated as
+// such in the census — do not conflate them with the per-user token.)
 package identity
 
 import (

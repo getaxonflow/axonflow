@@ -18,6 +18,7 @@ import (
 	"github.com/lib/pq"
 
 	"axonflow/platform/agent"
+	sharedidentity "axonflow/platform/shared/identity"
 )
 
 // pqArray wraps a Go string slice as a PostgreSQL text[] for parameterised
@@ -30,8 +31,8 @@ func pqArray(v []string) interface{} { return pq.Array(v) }
 const (
 	OverrideDefaultTTL  = 60 * time.Minute
 	OverrideHardCapTTL  = 24 * time.Hour
-	OverrideMinTTL      = 1 * time.Minute  // prevent zero/negative TTLs
-	OverrideReasonMaxLn = 500              // cap free-text to prevent abuse
+	OverrideMinTTL      = 1 * time.Minute // prevent zero/negative TTLs
+	OverrideReasonMaxLn = 500             // cap free-text to prevent abuse
 )
 
 // CreateOverrideRequest is the request body for POST /api/v1/overrides.
@@ -327,6 +328,14 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	if userEmail == "" {
 		userEmail = r.Header.Get("X-User-ID")
 	}
+	// #2922 (R3 Finding 4): canonicalize created_by on write so it matches the
+	// same canonical key the role-scoped override reads compare against — parity
+	// with every other #2922 write path. The reads already canonicalize
+	// created_by on comparison (LOWER() + CanonicalEmail), so this is belt-and-
+	// braces consistency, but it keeps the stored value TRIM+lowercased so a
+	// header with surrounding whitespace can never drop a developer's own
+	// override out of their own scoped list.
+	userEmail = sharedidentity.CanonicalEmail(userEmail)
 	if userEmail == "" {
 		sendErrorResponse(w, "Authenticated user identity required (X-User-Email header)", http.StatusUnauthorized)
 		return
@@ -468,11 +477,11 @@ func revokeOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	// SECURITY: Scope the lookup to the caller's tenant so tenant A cannot
 	// revoke tenant B's overrides even if A knows the UUID. Also confirms
 	// the override belongs to the caller's tenant before any write.
-	var policyID string
+	var policyID, createdBy string
 	err := usageDB.QueryRow(
-		"SELECT policy_id FROM policy_overrides WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
+		"SELECT policy_id, created_by FROM policy_overrides WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
 		overrideID, tenantID,
-	).Scan(&policyID)
+	).Scan(&policyID, &createdBy)
 	if err == sql.ErrNoRows {
 		sendErrorResponse(w, "Override not found or already revoked", http.StatusNotFound)
 		return
@@ -481,6 +490,20 @@ func revokeOverrideHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("override revoke: lookup failed: %v", err)
 		sendErrorResponse(w, "Internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// #2922 (found by the #2923 census): revoke is per-user like the read —
+	// a non-tenant-wide caller may revoke only overrides THEY created.
+	// Previously any holder of the shared tenant credential could revoke any
+	// user's override (a denial-of-service on a colleague's granted
+	// exception). Same 404 as "no such id" (non-oracle). admin/owner may
+	// revoke any override in the tenant.
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" ||
+			sharedidentity.CanonicalEmail(createdBy) != scope.UserEmail {
+			sendErrorResponse(w, "Override not found or already revoked", http.StatusNotFound)
+			return
+		}
 	}
 
 	now := time.Now().UTC()
@@ -578,6 +601,17 @@ func getOverrideHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #2922 role-scoped reads: a non-tenant-wide caller may fetch only
+	// overrides they created. Same 404 as "no such id" — not 403 — so the
+	// endpoint is not a cross-user existence oracle.
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" ||
+			sharedidentity.CanonicalEmail(row.CreatedBy) != scope.UserEmail {
+			sendErrorResponse(w, "Override not found", http.StatusNotFound)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(row)
 }
@@ -607,39 +641,49 @@ func listOverridesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var rows *sql.Rows
-	var err error
-	switch {
-	case policyUUID != "" && tenantID != "":
-		if includeRevoked {
-			rows, err = usageDB.Query(`
-				SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
-				FROM policy_overrides WHERE policy_id::text = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 100
-			`, policyUUID, tenantID)
-		} else {
-			rows, err = usageDB.Query(`
-				SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
-				FROM policy_overrides WHERE policy_id::text = $1 AND tenant_id = $2 AND revoked_at IS NULL
-				ORDER BY created_at DESC LIMIT 100
-			`, policyUUID, tenantID)
-		}
-	case tenantID != "":
-		if includeRevoked {
-			rows, err = usageDB.Query(`
-				SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
-				FROM policy_overrides WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100
-			`, tenantID)
-		} else {
-			rows, err = usageDB.Query(`
-				SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
-				FROM policy_overrides WHERE tenant_id = $1 AND revoked_at IS NULL
-				ORDER BY created_at DESC LIMIT 100
-			`, tenantID)
-		}
-	default:
+	if tenantID == "" {
 		sendErrorResponse(w, "X-Tenant-ID header required", http.StatusBadRequest)
 		return
 	}
+
+	// #2922 role-scoped reads: session overrides are per-user grants keyed to
+	// created_by (ADR-044) — a non-tenant-wide caller lists only the overrides
+	// THEY created; admin/owner list the tenant's. Empty identity ⇒ empty list
+	// (fail-closed). Exact canonical match; the write path stores the same
+	// identity this scope compares against (see createOverrideHandler).
+	scopeUserEmail := ""
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope.UserEmail == "" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"overrides": []struct{}{},
+				"count":     0,
+			})
+			return
+		}
+		scopeUserEmail = scope.UserEmail
+	}
+
+	// Dynamic predicate builder (replaces the former 4-branch switch, which
+	// would have needed 8 branches with the scope predicate).
+	query := `
+		SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
+		FROM policy_overrides WHERE tenant_id = $1`
+	args := []interface{}{tenantID}
+	if policyUUID != "" {
+		args = append(args, policyUUID)
+		query += fmt.Sprintf(" AND policy_id::text = $%d", len(args))
+	}
+	if scopeUserEmail != "" {
+		args = append(args, strings.ToLower(scopeUserEmail))
+		query += fmt.Sprintf(" AND LOWER(created_by) = $%d", len(args))
+	}
+	if !includeRevoked {
+		query += " AND revoked_at IS NULL"
+	}
+	query += " ORDER BY created_at DESC LIMIT 100"
+
+	rows, err := usageDB.Query(query, args...)
 	if err != nil {
 		log.Printf("override list: query failed: %v", err)
 		sendErrorResponse(w, "Internal error", http.StatusInternalServerError)

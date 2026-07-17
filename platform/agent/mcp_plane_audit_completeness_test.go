@@ -126,7 +126,7 @@ func TestWriteMCPDecisionAudit_NoRedactionNullColumn(t *testing.T) {
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), 0,
 			"unknown@axonflow.local", // user_email fallback
-			"service",                // user_role fallback
+			"unknown",                // user_role fallback — honest label for an unresolved role (RBAC-1 #2920)
 			"unknown",                // client_id fallback
 			"unknown",                // tenant_id fallback
 			"",                       // org_id (passed empty → stays empty/NULL-able)

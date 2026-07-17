@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+
+	sharedidentity "axonflow/platform/shared/identity"
 )
 
 // DecisionExplanation is the canonical payload returned by
@@ -163,12 +165,24 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Not authorized to explain this decision", http.StatusForbidden)
 		return
 	}
-	if entryUserEmail.Valid && entryUserEmail.String != callerEmail {
-		// Different user inside the same tenant — for now treat as allowed
-		// (peer visibility within a tenant is the existing contract).
-		// Hook for stricter future enforcement: enforce here when the policy
-		// adapter is wired.
-		_ = entryUserEmail.String
+	// #2922 role-scoped reads: the former "peer visibility within a tenant"
+	// contract let any holder of the shared tenant credential explain any
+	// user's decision (including its request context). A non-tenant-wide
+	// caller may now explain only their OWN decisions, keyed on the same
+	// canonical email the write path stamps. 404 (not 403) so the endpoint
+	// stays a non-oracle: "another user's decision" is indistinguishable from
+	// "no such decision" — the same posture as the cross-tenant branch above.
+	// Rows without per-user attribution (NULL/blank user_email) are hidden
+	// from non-admins (fail-closed).
+	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		rowEmail := ""
+		if entryUserEmail.Valid {
+			rowEmail = sharedidentity.CanonicalEmail(entryUserEmail.String)
+		}
+		if scope.UserEmail == "" || rowEmail == "" || rowEmail != scope.UserEmail {
+			sendErrorResponse(w, "Decision not found or past retention window", http.StatusNotFound)
+			return
+		}
 	}
 
 	// Parse policy_details JSON.

@@ -42,7 +42,7 @@ func emptyUsageRows() *sqlmock.Rows { return sqlmock.NewRows(usageEnrichmentColu
 
 func TestQuerySessionSummary_NilDB_ReturnsEmpty(t *testing.T) {
 	al := &AuditLogger{db: nil}
-	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", time.Now().Add(-time.Hour), time.Now(), 200)
+	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", "", time.Now().Add(-time.Hour), time.Now(), 200)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestQuerySessionSummary_SessionAndDayFallbackBuckets(t *testing.T) {
 	// stay nil (unit-level graceful degradation).
 	expectUsageEnrichment(mock, "acme", emptyUsageRows())
 
-	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", t1.Add(-time.Hour), t2.Add(time.Hour), 200)
+	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", "", t1.Add(-time.Hour), t2.Add(time.Hour), 200)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestQuerySessionSummary_ExcludesOverrideLifecycle_AllThreeQueries(t *testin
 	// Zero buckets → the enrichment pass must not touch the DB at all, so no
 	// further expectations are queued.
 
-	if _, _, err := al.QuerySessionSummary(context.Background(), "acme", "", start, end, 200); err != nil {
+	if _, _, err := al.QuerySessionSummary(context.Background(), "acme", "", "", start, end, 200); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -205,7 +205,7 @@ func TestQuerySessionSummary_ExclusionAndEmailFilter_ArgOrder(t *testing.T) {
 			[]string{"bucket_key", "user_email", "request_type", "count", "tokens", "cost", "avg_latency"},
 		))
 
-	if _, _, err := al.QuerySessionSummary(context.Background(), "acme", "dev@acme.com", start, end, 200); err != nil {
+	if _, _, err := al.QuerySessionSummary(context.Background(), "acme", "", "dev@acme.com", start, end, 200); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -230,7 +230,7 @@ func TestQuerySessionSummary_OutcomeRowForUnknownBucket_SkippedSafely(t *testing
 		sqlmock.NewRows([]string{"bucket_key", "user_email", "request_type", "count", "tokens", "cost", "avg_latency"}),
 	)
 
-	buckets, _, err := al.QuerySessionSummary(context.Background(), "acme", "", time.Now().Add(-time.Hour), time.Now(), 200)
+	buckets, _, err := al.QuerySessionSummary(context.Background(), "acme", "", "", time.Now().Add(-time.Hour), time.Now(), 200)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestQuerySessionSummary_UsageEnrichment_FoldsMetrics(t *testing.T) {
 		AddRow("session:ghost", "nobody@acme.com", "claude_code.token.usage", "input", "", 999.0) // no audit bucket → ignored
 	expectUsageEnrichment(mock, "acme", usage)
 
-	buckets, _, err := al.QuerySessionSummary(context.Background(), "acme", "", t1.Add(-time.Hour), t1.Add(time.Hour), 200)
+	buckets, _, err := al.QuerySessionSummary(context.Background(), "acme", "", "", t1.Add(-time.Hour), t1.Add(time.Hour), 200)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestQuerySessionSummary_UsageEnrichment_AmbiguousSessionFallback_Dropped(t 
 	expectUsageEnrichment(mock, "acme", sqlmock.NewRows(usageEnrichmentColumns).
 		AddRow("session:sess-1", "c@acme.com", "claude_code.session.count", "", "", 1.0))
 
-	buckets, _, err := al.QuerySessionSummary(context.Background(), "acme", "", t1.Add(-time.Hour), t1.Add(time.Hour), 200)
+	buckets, _, err := al.QuerySessionSummary(context.Background(), "acme", "", "", t1.Add(-time.Hour), t1.Add(time.Hour), 200)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestQuerySessionSummary_EnrichmentFailure_DegradesToBaseView(t *testing.T) 
 		sqlmock.NewRows([]string{"bucket_key", "user_email", "request_type", "count", "tokens", "cost", "avg_latency"}))
 	mock.ExpectBegin().WillReturnError(errors.New("usage_events plane down"))
 
-	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", t1.Add(-time.Hour), t1.Add(time.Hour), 200)
+	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", "", t1.Add(-time.Hour), t1.Add(time.Hour), 200)
 	if err != nil {
 		t.Fatalf("enrichment failure must not fail the base view: %v", err)
 	}
@@ -430,7 +430,7 @@ func TestQuerySessionSummary_BucketLimit_Truncates(t *testing.T) {
 		sqlmock.NewRows([]string{"bucket_key", "user_email", "request_type", "count", "tokens", "cost", "avg_latency"}))
 	expectUsageEnrichment(mock, "acme", emptyUsageRows())
 
-	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", t1.Add(-time.Hour), t1.Add(time.Hour), 1)
+	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", "", t1.Add(-time.Hour), t1.Add(time.Hour), 1)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}

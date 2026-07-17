@@ -107,7 +107,7 @@ func TestQuerySessionSummary_RealPostgres(t *testing.T) {
 	seedUsageMetricRow(t, al, "other", "sess-1", "dev@acme.com", "claude_code.token.usage", `{"type":"input"}`, 99999, base)
 	seedUsageMetricRow(t, al, "acme", "sess-metrics-only", "ghost@acme.com", "claude_code.token.usage", `{"type":"input"}`, 77, base)
 
-	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", base.Add(-time.Hour), base.Add(time.Hour), 200)
+	buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", "", base.Add(-time.Hour), base.Add(time.Hour), 200)
 	if err != nil {
 		t.Fatalf("QuerySessionSummary err: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestQuerySessionSummary_BucketCap_DeterministicTiebreak_RealPostgres(t *tes
 	seedSessionRow(t, al, "tb3", "acme", "sess-b", "amy@acme.com", "allowed", "llm_call", 10, 1, 0.001, ts)
 
 	for run := 0; run < 5; run++ {
-		buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", ts.Add(-time.Hour), ts.Add(time.Hour), 1)
+		buckets, truncated, err := al.QuerySessionSummary(context.Background(), "acme", "", "", ts.Add(-time.Hour), ts.Add(time.Hour), 1)
 		if err != nil {
 			t.Fatalf("run %d: QuerySessionSummary err: %v", run, err)
 		}
@@ -279,7 +279,7 @@ func TestQuerySessionSummary_BucketCap_DeterministicTiebreak_RealPostgres(t *tes
 				run, buckets[0].SessionID, buckets[0].UserEmail)
 		}
 
-		two, truncated2, err := al.QuerySessionSummary(context.Background(), "acme", "", ts.Add(-time.Hour), ts.Add(time.Hour), 2)
+		two, truncated2, err := al.QuerySessionSummary(context.Background(), "acme", "", "", ts.Add(-time.Hour), ts.Add(time.Hour), 2)
 		if err != nil {
 			t.Fatalf("run %d: limit=2 err: %v", run, err)
 		}

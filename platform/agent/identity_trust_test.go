@@ -256,3 +256,56 @@ func TestIdentityTrustGate_EnvVarNameIsTheSharedContract(t *testing.T) {
 		t.Error("gateway_adapters/config.go no longer reads the shared identity trust gate — parse semantics may drift (#2896)")
 	}
 }
+
+// TestIsClientSharedPseudoIdentity_DelegatesToSharedCensus pins the #2938
+// anti-drift property: the agent trust plane keys on the ONE shared census
+// (sharedidentity.IsSharedSyntheticIdentity) rather than a local copy. The
+// sixth string is a spelling the original five-entry enumeration never
+// listed — it is flagged purely by the shared census rules, so its refusal
+// here proves a census addition propagates to this plane with no agent-side
+// edit. The orchestrator-side twin is
+// TestResolveCallerReadScope_SharedSyntheticCensusFailsClosed.
+func TestIsClientSharedPseudoIdentity_DelegatesToSharedCensus(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	shared := []string{
+		"mcp-client:acme-org",                   // token-less MCP pseudo
+		"acme-org@axonflow.local",               // enterprise no-token fallback
+		"unknown@axonflow.local",                // audit-writer fallback
+		"orchestrator@axonflow.internal",        // internal-service ResolveUser
+		"system@axonflow.internal",              // HITL auto-approve reviewer (#2938 R3)
+		"evaluator@try.getaxonflow.com",         // community-saas ResolveUser
+		"local-dev@axonflow.local",              // community synthetic outside community = spoof
+		"sixth-new-census-entry@axonflow.local", // census rules, not a copied list
+		"future-service@axonflow.internal",      // new internal synthetic, covered by suffix
+		"MCP-CLIENT:ACME-ORG",                   // case evasion — canonicalized first
+	}
+	for _, s := range shared {
+		if !sharedidentity.IsSharedSyntheticIdentity(s, false) {
+			t.Errorf("shared census must flag %q", s)
+		}
+		if !isClientSharedPseudoIdentity(s) {
+			t.Errorf("agent predicate must refuse %q — delegation to the shared census is broken", s)
+		}
+	}
+	// A real person is never census-flagged on this plane either.
+	for _, legit := range []string{"dev@acme.com", "ops@corp.local", "x@notaxonflow.local"} {
+		if isClientSharedPseudoIdentity(legit) {
+			t.Errorf("agent predicate must not flag the legitimate identity %q", legit)
+		}
+	}
+}
+
+// TestIsClientSharedPseudoIdentity_CommunityLocalDevExempt pins the one
+// mode-dependent census arm: in community mode local-dev@axonflow.local IS
+// the (single) local developer and may hold per-user state; in any other
+// mode the same spelling is a spoof of the community synthetic.
+func TestIsClientSharedPseudoIdentity_CommunityLocalDevExempt(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	if isClientSharedPseudoIdentity("local-dev@axonflow.local") {
+		t.Error("community mode: local-dev is a real single user, must not be census-flagged")
+	}
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	if !isClientSharedPseudoIdentity("local-dev@axonflow.local") {
+		t.Error("enterprise mode: an asserted local-dev is a spoofed community synthetic, must be census-flagged")
+	}
+}

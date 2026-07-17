@@ -156,7 +156,7 @@ func TestAuditReadSurface_RealPostgres(t *testing.T) {
 	})
 
 	t.Run("report counts reconcile + tenant-scoped + avg latency", func(t *testing.T) {
-		rep, err := al.ReportByAction("acme", "", "", base.Add(-time.Hour), base.Add(time.Hour))
+		rep, err := al.ReportByAction("acme", "", "", "", base.Add(-time.Hour), base.Add(time.Hour))
 		if err != nil {
 			t.Fatalf("report err: %v", err)
 		}
@@ -182,7 +182,7 @@ func TestAuditReadSurface_RealPostgres(t *testing.T) {
 	})
 
 	t.Run("report with user_email + action filter", func(t *testing.T) {
-		rep, err := al.ReportByAction("acme", "dev@acme.com", "blocked", base.Add(-time.Hour), base.Add(time.Hour))
+		rep, err := al.ReportByAction("acme", "", "dev@acme.com", "blocked", base.Add(-time.Hour), base.Add(time.Hour))
 		if err != nil {
 			t.Fatalf("report err: %v", err)
 		}

@@ -184,7 +184,7 @@ func (h *Handler) GetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	budget, err := h.service.GetBudget(r.Context(), budgetID)
+	budget, err := h.service.GetBudgetScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r))
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -214,8 +214,9 @@ func (h *Handler) UpdateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// First, fetch the existing budget
-	existing, err := h.service.GetBudget(r.Context(), budgetID)
+	// First, fetch the existing budget — org/tenant-scoped, so a cross-org
+	// id is a 404 before any mutation (#2934)
+	existing, err := h.service.GetBudgetScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r))
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -275,7 +276,7 @@ func (h *Handler) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.DeleteBudget(r.Context(), budgetID); err != nil {
+	if err := h.service.DeleteBudgetScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r)); err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
 			return
@@ -302,7 +303,7 @@ func (h *Handler) GetBudgetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := h.service.GetBudgetStatus(r.Context(), budgetID)
+	status, err := h.service.GetBudgetStatusScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r))
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -336,8 +337,12 @@ func (h *Handler) GetBudgetAlerts(w http.ResponseWriter, r *http.Request) {
 		limit, _ = strconv.Atoi(l)
 	}
 
-	alerts, err := h.service.GetRecentAlerts(r.Context(), budgetID, limit)
+	alerts, err := h.service.GetRecentAlertsScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r), limit)
 	if err != nil {
+		if err == ErrBudgetNotFound {
+			h.writeError(w, "Budget not found", http.StatusNotFound)
+			return
+		}
 		h.writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -599,10 +604,34 @@ func (h *Handler) CheckBudget(w http.ResponseWriter, r *http.Request) {
 		req.TenantID = r.Header.Get("X-Tenant-ID")
 	}
 
+	// #2934: a non-tenant-wide caller reaches this endpoint (it is the
+	// deliberate enforcement-plane exemption), so the body org_id/tenant_id
+	// are a forgeable channel — a fleet developer could POST another org's id
+	// and, even with spend figures redacted, learn its budget name +
+	// exceeded status. For a redacted (non-tenant-wide) caller, pin the check
+	// to the authenticated identity the agent stamped, ignoring any body
+	// override. Tenant-wide (admin) callers keep the body-driven cross-scope
+	// check they use for oversight.
+	if SpendRedactionRequested(r.Context()) {
+		if hdrOrg := r.Header.Get("X-Org-ID"); hdrOrg != "" {
+			req.OrgID = hdrOrg
+		}
+		if hdrTenant := r.Header.Get("X-Tenant-ID"); hdrTenant != "" {
+			req.TenantID = hdrTenant
+		}
+	}
+
 	decision, err := h.service.CheckBudget(r.Context(), req.OrgID, req.TeamID, req.AgentID, req.UserID, req.TenantID)
 	if err != nil {
 		h.writeError(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// #2934: budget-check stays reachable to non-admin callers (it is the
+	// enforcement plane), but they only get the verdict — the tenant's
+	// absolute spend figures are stripped.
+	if SpendRedactionRequested(r.Context()) {
+		decision.redactSpend()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -610,6 +639,19 @@ func (h *Handler) CheckBudget(w http.ResponseWriter, r *http.Request) {
 }
 
 // Helper functions
+
+// callerOrgID / callerTenantID resolve the caller's org/tenant scope for the
+// by-id budget routes (#2934). Behind the agent gateway the headers are Set
+// (not Add) from the cryptographically validated license, so a governed
+// caller cannot pick another org; the query-param fallback matches
+// ListBudgets' existing semantics for direct in-VPC callers.
+func (h *Handler) callerOrgID(r *http.Request) string {
+	return firstOrDefault(r.Header.Get("X-Org-ID"), r.URL.Query().Get("org_id"))
+}
+
+func (h *Handler) callerTenantID(r *http.Request) string {
+	return firstOrDefault(r.Header.Get("X-Tenant-ID"), r.URL.Query().Get("tenant_id"))
+}
 
 // setCORSHeaders sets CORS headers on all responses (not just OPTIONS)
 func (h *Handler) setCORSHeaders(w http.ResponseWriter) {

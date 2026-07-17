@@ -134,22 +134,9 @@ func attributedSessionID(r *http.Request) string {
 // fallback identity ("mcp-client:<client-id>") minted by
 // authenticateMCPServerRequest when no trusted per-user identity is
 // available (legacy callers, or identity headers dropped by the gate).
-const mcpClientPseudoIdentityPrefix = "mcp-client:"
-
-// sharedServiceIdentitySuffix is the reserved domain of the platform's
-// synthesized service identities: the enterprise no-user-token fallback
-// "<client-id>@axonflow.local" (mcp_handler.go, decision_handler.go,
-// openai_compat_handler.go) and the audit-writer fallback
-// "unknown@axonflow.local". Nothing legitimate mints a personal identity
-// under this domain.
-const sharedServiceIdentitySuffix = "@axonflow.local"
-
-// communityLocalDevIdentity is the community-mode ResolveUser identity
-// (authenticator.go). Community is a no-auth, single-trust-domain deployment
-// where every caller IS the local developer, so it is the one
-// reserved-domain identity allowed to hold session overrides — and only
-// while actually running in community mode.
-const communityLocalDevIdentity = "local-dev@axonflow.local"
+// Aliased to the shared census constant so the mint site and the census
+// predicate can never drift.
+const mcpClientPseudoIdentityPrefix = sharedidentity.ClientPseudoIdentityPrefix
 
 // isClientSharedPseudoIdentity reports whether email is a
 // platform-synthesized identity SHARED by more than one caller — not a
@@ -160,30 +147,11 @@ const communityLocalDevIdentity = "local-dev@axonflow.local"
 // identities — they are honest about not knowing the person; only the
 // override scope is refused.
 //
-// Census of every synthesized identity the platform can resolve a governed
-// caller to (#2896 WS1b — keep in sync with ResolveUser in authenticator.go
-// and the per-plane no-user-token fallbacks):
-//
-//	"mcp-client:<client-id>"           MCP-server pseudo-identity   → shared
-//	"<client-id>@axonflow.local"       enterprise no-token fallback → shared
-//	"unknown@axonflow.local"           audit-writer fallback        → shared
-//	"orchestrator@axonflow.internal"   internal-service ResolveUser → shared
-//	"evaluator@try.getaxonflow.com"    community-saas ResolveUser   → shared
-//	"local-dev@axonflow.local"         community ResolveUser        → single
-//	                                   user by construction (no-auth local
-//	                                   deployment); treated as shared in any
-//	                                   OTHER mode, where a caller asserting
-//	                                   it is spoofing the community synthetic
+// The census itself (#2896 WS1b) lives in platform/shared/identity
+// (IsSharedSyntheticIdentity) so this trust plane and the orchestrator read
+// plane (#2938 resolveCallerReadScope) consume ONE list — add any new
+// synthesized identity THERE, never here. Community mode exempts only the
+// local-dev community synthetic (a real single user by construction).
 func isClientSharedPseudoIdentity(email string) bool {
-	if strings.HasPrefix(email, mcpClientPseudoIdentityPrefix) {
-		return true
-	}
-	switch email {
-	case "orchestrator@axonflow.internal", "evaluator@try.getaxonflow.com":
-		return true
-	case communityLocalDevIdentity:
-		return !isCommunityMode()
-	}
-	// Covers "<client-id>@axonflow.local" and "unknown@axonflow.local".
-	return strings.HasSuffix(email, sharedServiceIdentitySuffix)
+	return sharedidentity.IsSharedSyntheticIdentity(email, isCommunityMode())
 }

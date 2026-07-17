@@ -1629,13 +1629,16 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 	if userID != wantPseudoEmail {
 		t.Errorf("Expected userID %q (fallback to email), got %q", wantPseudoEmail, userID)
 	}
-	// v9 Follow-up A (Epic #2230): MCP path no longer fabricates "admin"
-	// for every audit row. With no real per-user role lookup available,
-	// the handler stamps "unknown" so the audit trail is honest about
-	// not having resolved the caller's authz role. See
-	// authenticateMCPServerRequest comment.
-	if userRole != "unknown" {
-		t.Errorf("Expected userRole 'unknown' (Epic #2230 Follow-up A), got '%s'", userRole)
+	// RBAC-1 (#2920): the MCP path resolves a VALIDATED role for a
+	// per-user-token caller, else least-privilege "". It never fabricates
+	// "admin" (the v9 Follow-up A / Epic #2230 invariant), and it no longer
+	// stamps the old "unknown" sentinel — a caller with no validated token
+	// (here: community mode, no token) is least-privilege own-rows ("").
+	if userRole == "admin" {
+		t.Errorf("userRole is fabricated 'admin' — the anti-fabrication invariant was reverted")
+	}
+	if userRole != "" {
+		t.Errorf("Expected least-privilege userRole \"\" for a no-token caller (RBAC-1), got %q", userRole)
 	}
 	if clientID != "community" {
 		t.Errorf("Expected clientID 'community', got '%s'", clientID)
