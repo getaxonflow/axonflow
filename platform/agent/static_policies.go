@@ -28,13 +28,18 @@ type PolicyPattern struct {
 // Used by both the unified shared engine (via convertSharedResultToStatic)
 // and handler response types.
 type StaticPolicyResult struct {
-	Blocked            bool
-	Reason             string
-	TriggeredPolicies  []string
-	ChecksPerformed    []string
-	ProcessingTimeMs   int64
-	Severity           string
-	RequiresRedaction  bool // True if PII detected and should be redacted (Issue #891)
-	RequiresApproval   bool // True if HITL approval is required (Issue #1081 - EU AI Act Article 14)
-	EvaluationError    bool // True when Blocked is a fail-closed availability failure (could-not-scan), not a policy verdict (#2862)
+	Blocked           bool
+	Reason            string
+	TriggeredPolicies []string
+	ChecksPerformed   []string
+	ProcessingTimeMs  int64
+	Severity          string
+	RequiresRedaction bool // True if PII detected and should be redacted (Issue #891)
+	RequiresApproval  bool // True if HITL approval is required (Issue #1081 - EU AI Act Article 14)
+	EvaluationError   bool // True when Blocked is a fail-closed availability failure (could-not-scan), not a policy verdict (#2862)
+	// AdvisoryReasons carries governance reasons for PII policies that MATCHED
+	// but resolved to a non-blocking, non-redacting action (warn/log). They emit
+	// no obligation, but a matched policy must never be a silent bare allow
+	// (#2965) — these surface as verdict reasons so the match is self-documenting.
+	AdvisoryReasons []string
 }

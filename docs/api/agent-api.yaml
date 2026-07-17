@@ -1286,6 +1286,7 @@ paths:
                   user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                   tenant_id: "tenant-123"
                   connector_type: "postgres"
+                  tool: "query"
                   response_data:
                     - id: 1
                       name: "Alice Johnson"
@@ -5701,7 +5702,15 @@ components:
           description: Optional user identifier
         connector_type:
           type: string
-          description: MCP connector type (e.g., "postgres", "snowflake", "salesforce")
+          description: MCP connector/server type (e.g., "postgres", "snowflake", "salesforce")
+        tool:
+          type: string
+          description: >-
+            Optional tool identifier whose output is being validated, distinct from
+            connector_type/server (#2904/#2955). Feeds capability-scoped response
+            evaluation when set (a text-document tool's output skips execution-class
+            detectors); omitted → full (fail-closed) evaluation, no fallback from
+            connector_type.
         response_data:
           type: array
           items:

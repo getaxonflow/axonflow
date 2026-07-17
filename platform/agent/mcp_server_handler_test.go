@@ -885,14 +885,18 @@ func TestMCPServer_AuditToolCall_ValidArgs(t *testing.T) {
 	}
 }
 
-func TestMCPServer_AuditToolCall_DefaultToolType(t *testing.T) {
+func TestMCPServer_AuditToolCall_NoCallerNameOrToolType_Succeeds(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	router := setupMCPServerRouter()
 	sessionID := initMCPSession(t, router)
 
-	// Omit tool_type — should default to "claude_code"
+	// Omit both caller_name and tool_type (#2912) — the agent no longer
+	// pre-bakes a default itself; it forwards whatever was supplied (nothing,
+	// here) and the orchestrator's LogToolCallAudit resolves the fallback
+	// chain centrally (see TestLogToolCallAudit_DefaultCallerNameWhenNeitherSupplied
+	// in platform/orchestrator).
 	w := mcpServerPost(t, router, "tools/call", "audit-default", map[string]interface{}{
 		"name": "audit_tool_call",
 		"arguments": map[string]interface{}{
@@ -905,6 +909,81 @@ func TestMCPServer_AuditToolCall_DefaultToolType(t *testing.T) {
 	resp := parseJSONRPCResponse(t, w)
 	if resp.Error != nil {
 		t.Fatalf("Unexpected error: %v", resp.Error)
+	}
+}
+
+// TestMCPToolAuditCall_ForwardsCallerNameAndToolType (#2912): both the new
+// caller_name and the legacy tool_type are forwarded to the orchestrator
+// as-provided, raw — the agent no longer pre-resolves a default itself
+// (that moved to the orchestrator's LogToolCallAudit).
+func TestMCPToolAuditCall_ForwardsCallerNameAndToolType(t *testing.T) {
+	var capturedBody map[string]interface{}
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/audit/tool-call" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audit_id":"audit_test","status":"recorded"}`))
+	}))
+	defer stub.Close()
+
+	original := orchestratorURL
+	orchestratorURL = stub.URL
+	defer func() { orchestratorURL = original }()
+
+	session := &mcpSession{tenantID: "tenant-a", clientID: "test"}
+	_, err := mcpToolAuditCall(session, map[string]interface{}{
+		"tool_name":   "Bash",
+		"caller_name": "claude_code",
+		"tool_type":   "legacy_value",
+		"input":       map[string]interface{}{"command": "echo test"},
+		"success":     true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedBody["caller_name"] != "claude_code" {
+		t.Errorf("expected caller_name forwarded as 'claude_code', got %v", capturedBody["caller_name"])
+	}
+	if capturedBody["tool_type"] != "legacy_value" {
+		t.Errorf("expected legacy tool_type still forwarded raw, got %v", capturedBody["tool_type"])
+	}
+}
+
+// TestMCPToolAuditCall_OmitsUnsuppliedCallerNameAndToolType (#2912): when
+// neither is provided, the agent must NOT invent a default (e.g. the old
+// hardcoded "claude_code") — omission is now meaningful signal the
+// orchestrator's fallback chain resolves centrally.
+func TestMCPToolAuditCall_OmitsUnsuppliedCallerNameAndToolType(t *testing.T) {
+	var capturedBody map[string]interface{}
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"audit_id":"audit_test","status":"recorded"}`))
+	}))
+	defer stub.Close()
+
+	original := orchestratorURL
+	orchestratorURL = stub.URL
+	defer func() { orchestratorURL = original }()
+
+	session := &mcpSession{tenantID: "tenant-a", clientID: "test"}
+	_, err := mcpToolAuditCall(session, map[string]interface{}{
+		"tool_name": "Write",
+		"input":     map[string]interface{}{"path": "/tmp/test.txt"},
+		"success":   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, present := capturedBody["caller_name"]; present {
+		t.Errorf("expected caller_name omitted from wire body when not supplied, got %v", capturedBody["caller_name"])
+	}
+	if _, present := capturedBody["tool_type"]; present {
+		t.Errorf("expected tool_type omitted from wire body when not supplied, got %v", capturedBody["tool_type"])
 	}
 }
 
@@ -1895,9 +1974,9 @@ func TestMCPSearchAuditEvents_ResponseTrimming(t *testing.T) {
 				"tenant_id":     "community",
 			},
 			map[string]interface{}{
-				"id":         "audit-2",
-				"query":      "short query",
-				"tenant_id":  "community",
+				"id":          "audit-2",
+				"query":       "short query",
+				"tenant_id":   "community",
 				"raw_request": "should be removed",
 			},
 		},

@@ -2385,15 +2385,23 @@ type RicherPolicyMatch struct {
 // MCPCheckOutputRequest is the request body for POST /api/v1/mcp/check-output.
 // External orchestrators submit the raw connector response for policy scanning.
 type MCPCheckOutputRequest struct {
-	ClientID      string                   `json:"client_id"`
-	UserToken     string                   `json:"user_token"`
-	TenantID      string                   `json:"tenant_id"`
-	UserID        string                   `json:"user_id,omitempty"`
-	ConnectorType string                   `json:"connector_type"`
-	ResponseData  []map[string]interface{} `json:"response_data,omitempty"` // query-style row results
-	Message       string                   `json:"message,omitempty"`       // execute-style response message
-	Metadata      map[string]interface{}   `json:"metadata,omitempty"`      // connector metadata (used by SQLi scanning)
-	RowCount      int                      `json:"row_count,omitempty"`
+	ClientID      string `json:"client_id"`
+	UserToken     string `json:"user_token"`
+	TenantID      string `json:"tenant_id"`
+	UserID        string `json:"user_id,omitempty"`
+	ConnectorType string `json:"connector_type"`
+	// Tool is the caller-sent tool identity (#2904/#2955), distinct from
+	// ConnectorType/server. Passed through as evaluateOutputPolicies'
+	// toolIdentity param instead of duplicating ConnectorType into both, so
+	// response-plane capability scoping keys off server.tool rather than the
+	// bare server (the langgraph de-concat SDKs already send it here). Omitted →
+	// empty toolIdentity → full (fail-closed) evaluation; no fallback from
+	// ConnectorType, mirroring the check-input plane.
+	Tool         string                   `json:"tool,omitempty"`
+	ResponseData []map[string]interface{} `json:"response_data,omitempty"` // query-style row results
+	Message      string                   `json:"message,omitempty"`       // execute-style response message
+	Metadata     map[string]interface{}   `json:"metadata,omitempty"`      // connector metadata (used by SQLi scanning)
+	RowCount     int                      `json:"row_count,omitempty"`
 }
 
 // MCPCheckOutputResponse is the response body for POST /api/v1/mcp/check-output.
@@ -3025,7 +3033,8 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"unauthenticated"},
 			[]string{"authentication failed: " + authErr.Message},
 			nil,
-			traceIDFromHeader(r.Header.Get("traceparent")))
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
 	}
@@ -3096,7 +3105,8 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"tenant_mismatch"},
 			[]string{"resolved user tenant does not match authenticated client tenant"},
 			nil,
-			traceIDFromHeader(r.Header.Get("traceparent")))
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 		return
 	}
@@ -3129,7 +3139,8 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"tenant_id_missing"},
 			[]string{"tenant_id is required"},
 			nil,
-			traceIDFromHeader(r.Header.Get("traceparent")))
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
 		return
 	}
@@ -3159,7 +3170,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 
 	outcome := evaluateOutputPolicies(ctx,
 		tenantID, userID, req.ConnectorType,
-		req.ConnectorType, /* toolIdentity: advisory plane, caller-sent tool identity (#2801) */
+		req.Tool, /* toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904, #2955) — distinct from ConnectorType/server; empty ⇒ full (fail-closed) evaluation, no fallback */
 		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration, true /* isGateway: check-output is a PEP/gateway caller */)
 
 	auditEntry.ExfilRowsReturned = req.RowCount
@@ -3205,7 +3216,8 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("%d", user.ID), user.Role,
 			"mcp_check_output", fmt.Sprintf("mcp check-output: %s", req.ConnectorType), "",
 			mcpVerdictRedacted, outPolicyIDs, outReasons, outcome.RedactedFieldNames(),
-			traceIDFromHeader(r.Header.Get("traceparent")))
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 	} else {
 		recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageTool,
 			outVerdict, outPolicyIDs, time.Since(startTime).Milliseconds(), outReasons,
@@ -3222,6 +3234,8 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 				// the proxy/gateway propagates a W3C traceparent across the hops. Absent
 				// header → "" → singleton, preserving the chronological-only behavior.
 				correlationID: traceIDFromHeader(r.Header.Get("traceparent")),
+				toolServer:    req.ConnectorType, // #2955: tool_server (server axis)
+				toolName:      req.Tool,          // #2955: tool_name (sub-tool axis)
 			})
 	}
 

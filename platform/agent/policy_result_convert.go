@@ -12,6 +12,8 @@
 package agent
 
 import (
+	"fmt"
+
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -44,12 +46,42 @@ func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPoli
 		}
 	}
 
-	// Set RequiresRedaction based on matched PII policies that aren't blocking
-	// (e.g., when action is "redact" instead of "block")
+	// Translate each non-blocking PII policy match into the governance signal
+	// its RESOLVED action implies. The action carried on the match already has
+	// the per-category PII_ACTION override applied (engine.go sets
+	// match.Action = override), so keying on it here is edition- and
+	// posture-accurate:
+	//
+	//   redact          → a redaction obligation (RequiresRedaction)
+	//   anything else   → a truthful advisory reason, no obligation
+	//   block           → cannot occur here (result.Blocked short-circuits above)
+	//
+	// The default arm is deliberately the CATCH-ALL, not just warn/log: a matched
+	// PII policy must NEVER be a silent bare allow, so any non-blocking,
+	// non-redacting resolved action (warn/log, and also require_approval or a
+	// future action) emits an advisory reason. This closes the require_approval
+	// fall-through — require_approval ALSO sets RequiresApproval below, which
+	// becomes needs_approval in enterprise (the advisory then rides the early
+	// return unused), but in community mode HITL is dropped, so without the
+	// advisory a require_approval PII match would be a bare allow (#2965 R3).
+	//
+	// #2965: category membership is decided by the SHARED, prefix-based
+	// sharedpolicy.IsPIIPolicyCategory — NOT a duplicate agent-local switch.
+	// The old switch omitted pii-indonesia, so a matched-but-redacting KTP
+	// policy set no obligation and fell through to a bare allow while the
+	// policy still appeared in evaluated_policies. Deriving the redaction
+	// obligation from resolved ACTION (not merely "is this PII?") also fixes
+	// the sibling bug where warn/log postures silently emitted redact_pii
+	// because the previous loop ignored match.Action entirely.
 	for _, match := range result.MatchedPolicies {
-		if !result.Blocked && isPIICategory(match.Category) {
+		if result.Blocked || !sharedpolicy.IsPIIPolicyCategory(match.Category) {
+			continue
+		}
+		switch match.Action {
+		case sharedpolicy.ActionRedact:
 			staticResult.RequiresRedaction = true
-			break
+		default:
+			staticResult.AdvisoryReasons = append(staticResult.AdvisoryReasons, advisoryPIIReason(match))
 		}
 	}
 
@@ -65,16 +97,11 @@ func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPoli
 	return staticResult
 }
 
-// isPIICategory returns true if the category is a PII-related category.
-func isPIICategory(category sharedpolicy.PolicyCategory) bool {
-	switch category {
-	case sharedpolicy.CategoryPIIGlobal,
-		sharedpolicy.CategoryPIIUS,
-		sharedpolicy.CategoryPIIIndia,
-		sharedpolicy.CategoryPIIEU,
-		sharedpolicy.CategoryPIISingapore:
-		return true
-	default:
-		return false
-	}
+// advisoryPIIReason builds the governance reason surfaced when a PII policy
+// MATCHED but its resolved action (warn/log) carries no redaction obligation.
+// It exists so a matched policy is never a silent bare allow (#2965): the reason
+// records which policy fired, its category, and that no redaction was applied.
+func advisoryPIIReason(match sharedpolicy.PolicyMatch) string {
+	return fmt.Sprintf("%s detected by policy %s (action=%s); no redaction applied",
+		match.Category, match.PolicyID, match.Action)
 }

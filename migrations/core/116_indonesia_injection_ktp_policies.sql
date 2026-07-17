@@ -11,7 +11,14 @@
 -- runtime KTP BLOCK decision is made by the Enterprise Indonesia PII detector
 -- (ee/platform/agent/indonesia), which additionally validates the digit-
 -- normalized core as a real NIK; this row provides the menu/spec parity and
--- the Community-edition shared-engine regex fallback.
+-- the shared-engine regex fallback that fires for separator-formatted /
+-- keyword-anchored KTP the contiguous-16-digit NIK validator does not catch.
+-- On /decide that shared-engine match now carries a governance signal end to
+-- end — a redaction obligation under PII_ACTION=redact, a deny under =block,
+-- an advisory reason under =warn/log — via the shared pii-* convention in
+-- platform/agent/policy_result_convert.go. Before #2965 the row matched but
+-- produced no obligation and no reason (a silent allow), because the /decide
+-- obligation bridge used a duplicate category switch that omitted pii-indonesia.
 --
 -- Cross-edition: indirect prompt-injection (R&C §5.1, risk R03, OWASP LLM01)
 -- applies to all editions, so these live in migrations/core/ alongside the

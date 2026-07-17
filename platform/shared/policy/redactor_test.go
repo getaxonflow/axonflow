@@ -264,6 +264,13 @@ func TestGetRedactionStrategy(t *testing.T) {
 		{CategoryPIIGlobal, SeverityHigh, StrategyMask},
 		{CategoryPIIGlobal, SeverityMedium, StrategyPartial},
 		{CategorySecuritySQLi, SeverityCritical, StrategyMask},
+		// #2965: pii-indonesia is masked like every other national-ID PII
+		// category. Pinned at a NON-critical severity so the assertion exercises
+		// the explicit category branch, not the critical-severity short-circuit
+		// that was previously masking the omission.
+		{CategoryPIIIndonesia, SeverityMedium, StrategyMask},
+		{CategoryPIIIndonesia, SeverityHigh, StrategyMask},
+		{CategoryPIISingapore, SeverityMedium, StrategyMask},
 	}
 
 	for _, tt := range tests {
@@ -272,6 +279,48 @@ func TestGetRedactionStrategy(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("GetRedactionStrategy(%v, %v) = %v, want %v",
 					tt.category, tt.severity, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGetRedactionStrategy_EveryPIICategoryExplicit is the #2965 census guard:
+// every registered pii-* category MUST resolve to an explicit PII strategy
+// (mask or partial), never the generic StrategyRemove default. It evaluates at
+// SeverityMedium so the critical-severity short-circuit (which returns
+// StrategyMask for ANYTHING) cannot hide a category that would otherwise fall
+// through — the exact way pii-indonesia's missing branch went unnoticed. A
+// newly-seeded pii-* category with no explicit entry fails here.
+func TestGetRedactionStrategy_EveryPIICategoryExplicit(t *testing.T) {
+	piiCategories := []PolicyCategory{
+		CategoryPIIGlobal,
+		CategoryPIIUS,
+		CategoryPIIIndia,
+		CategoryPIIEU,
+		CategoryPIISingapore,
+		CategoryPIIIndonesia,
+		// Forward-compat: a pii-* jurisdiction NOT explicitly cased in
+		// GetRedactionStrategy must still mask (via the pii-* fallback), never
+		// fall through to the generic StrategyRemove. This synthetic probe is
+		// what makes the census actually forward-safe (#2965 R3): before the
+		// fallback existed, an un-cased pii-* returned StrategyRemove and this
+		// row would fail.
+		PolicyCategory("pii-future-locale"),
+	}
+	for _, cat := range piiCategories {
+		t.Run(string(cat), func(t *testing.T) {
+			// Guard against forgetting to update this census: the list must
+			// cover every pii-* constant the convention recognizes.
+			if !IsPIIPolicyCategory(cat) {
+				t.Fatalf("%q is not a pii-* category — fix the test list", cat)
+			}
+			got := GetRedactionStrategy(cat, SeverityMedium)
+			if got == StrategyRemove {
+				t.Errorf("GetRedactionStrategy(%s, medium) fell through to the generic default %q; "+
+					"PII categories need an explicit mask/partial strategy", cat, got)
+			}
+			if got != StrategyMask && got != StrategyPartial {
+				t.Errorf("GetRedactionStrategy(%s, medium) = %q; want an explicit PII strategy (mask/partial)", cat, got)
 			}
 		})
 	}

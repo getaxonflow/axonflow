@@ -735,11 +735,72 @@ func TestLogToolCallAudit(t *testing.T) {
 	if result.PolicyDetails["tool_name"] != "getUserInfo" {
 		t.Errorf("Expected tool_name in policy details, got %v", result.PolicyDetails["tool_name"])
 	}
-	if result.PolicyDetails["tool_type"] != "mcp" {
-		t.Errorf("Expected tool_type in policy details, got %v", result.PolicyDetails["tool_type"])
+	// #2912: no CallerName supplied, so the legacy ToolType ("mcp") is the
+	// fallback source for caller_name. policy_details.tool_type is no longer
+	// written at all — only policy_details.caller_name.
+	if result.PolicyDetails["caller_name"] != "mcp" {
+		t.Errorf("Expected caller_name (falling back to legacy ToolType) in policy details, got %v", result.PolicyDetails["caller_name"])
+	}
+	if _, present := result.PolicyDetails["tool_type"]; present {
+		t.Errorf("policy_details.tool_type must not be written for new rows (#2912), got %v", result.PolicyDetails["tool_type"])
 	}
 	if result.PolicyDetails["duration_ms"] != int64(45) {
 		t.Errorf("Expected duration_ms 45 in policy details, got %v", result.PolicyDetails["duration_ms"])
+	}
+}
+
+// TestLogToolCallAudit_CallerNamePreferredOverToolType (#2912): when a caller
+// sends BOTH the new CallerName and the legacy ToolType, CallerName wins.
+func TestLogToolCallAudit_CallerNamePreferredOverToolType(t *testing.T) {
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+
+	successVal := true
+	entry := &ToolCallAuditEntry{
+		ToolName:   "getUserInfo",
+		CallerName: "claude_code",
+		ToolType:   "mcp", // legacy value; must be ignored when CallerName is set
+		Success:    &successVal,
+	}
+
+	result := logger.LogToolCallAudit(context.Background(), entry)
+
+	if result == nil {
+		t.Fatal("Expected non-nil audit entry")
+	}
+	if result.PolicyDetails["caller_name"] != "claude_code" {
+		t.Errorf("Expected caller_name 'claude_code' (preferred over legacy tool_type), got %v", result.PolicyDetails["caller_name"])
+	}
+	if _, present := result.PolicyDetails["tool_type"]; present {
+		t.Errorf("policy_details.tool_type must not be written for new rows (#2912), got %v", result.PolicyDetails["tool_type"])
+	}
+}
+
+// TestLogToolCallAudit_DefaultCallerNameWhenNeitherSupplied (#2912/#2903): when
+// neither CallerName nor ToolType is supplied the fallback default is "unknown"
+// — an unidentified caller must NOT be silently attributed to the specific
+// client "claude_code" (#2903).
+func TestLogToolCallAudit_DefaultCallerNameWhenNeitherSupplied(t *testing.T) {
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+
+	successVal := true
+	entry := &ToolCallAuditEntry{
+		ToolName: "getUserInfo",
+		Success:  &successVal,
+	}
+
+	result := logger.LogToolCallAudit(context.Background(), entry)
+
+	if result == nil {
+		t.Fatal("Expected non-nil audit entry")
+	}
+	if result.PolicyDetails["caller_name"] != "unknown" {
+		t.Errorf("Expected default caller_name 'unknown' (#2903), got %v", result.PolicyDetails["caller_name"])
 	}
 }
 

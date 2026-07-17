@@ -56,6 +56,57 @@ const (
 	PhaseRequest  = "request"
 	PhaseResponse = "response"
 
+	// --- Fulfillment capabilities (#2958) ---
+	//
+	// A PEP advertises what its SEAM can actually do on
+	// DecideRequest.FulfillmentCapabilities, so the PDP emits only obligations
+	// that caller can discharge. Before this existed, /decide emitted a
+	// request-phase redact_pii obligation blind to the seam: a headers-only
+	// seam (Envoy ext_authz cannot rewrite bodies) could not fulfill it and had
+	// to turn the PDP's `allow` into a local 403 — a policy decision made in the
+	// PEP, which is exactly what ADR-056 forbids.
+	//
+	// WIRE CONTRACT — read this before adding a capability:
+	//
+	//   - Field ABSENT or EMPTY  => legacy caller. The PDP emits obligations
+	//     exactly as it did pre-9.11.0. Every SDK and every pre-9.11.0 PEP is in
+	//     this bucket and is bit-identically unaffected.
+	//   - Field NON-EMPTY        => capability-aware caller. The PDP emits only
+	//     the obligations these capabilities can discharge and applies the org's
+	//     obligation-fallback posture to any it suppresses.
+	//   - UNKNOWN values are IGNORED (never an error, never a block): an older
+	//     PDP meeting a newer PEP's vocabulary must degrade, not fail.
+	//
+	// A capability-aware PEP MUST therefore advertise at least ONE capability.
+	// An empty slice is indistinguishable from absent on the wire (the field is
+	// `omitempty`), so it reads as "legacy" — which is the FAIL-SAFE direction:
+	// the obligation is emitted and a PEP that cannot fulfill it fails closed
+	// rather than forwarding unredacted content. This is why a headers-only seam
+	// advertises CapabilityRequestHeaderMutation rather than nothing.
+	//
+	// UNDER-advertising is always safe (you lose an obligation you could have
+	// fulfilled, and the org fallback posture decides the outcome).
+	// OVER-advertising is the dangerous direction — never advertise a capability
+	// the seam cannot actually perform.
+
+	// CapabilityRequestBodyRedaction means the seam can replace the request
+	// payload it is about to forward with engine-redacted content — i.e. it can
+	// discharge a request-phase redact_pii obligation via FulfillRequest. True
+	// for body-capable seams (Envoy ext_proc, the agentgateway ExtMcp hook, an
+	// in-process SDK interceptor). NOT true for Envoy ext_authz.
+	CapabilityRequestBodyRedaction = "request_body_redaction"
+
+	// CapabilityRequestHeaderMutation means the seam can add or overwrite
+	// request headers before forwarding. True for ext_authz (its OkHttpResponse
+	// carries header mutations) and ext_proc.
+	//
+	// No obligation type requires this capability today; it is part of the
+	// vocabulary so a headers-only seam has a TRUTHFUL, non-empty capability set
+	// to advertise (see the wire contract above), and so a future
+	// header-injection obligation can be gated through the same mechanism
+	// instead of growing a second one.
+	CapabilityRequestHeaderMutation = "request_header_mutation"
+
 	// ContentTypeText is the only redaction modality this client submits. The
 	// contract is content-type-agnostic (an obligation advertises which mimes
 	// its endpoint can redact); a PEP holding content of an unadvertised type
@@ -178,6 +229,12 @@ type DecideRequest struct {
 	Query          string                 `json:"query"`
 	UserToken      string                 `json:"user_token,omitempty"`
 	Context        map[string]interface{} `json:"context,omitempty"`
+	// FulfillmentCapabilities advertises what this PEP's seam can discharge, so
+	// the PDP never emits an obligation the caller cannot fulfill (#2958). Use
+	// the Capability* constants. Absent/empty = legacy caller = pre-9.11.0
+	// behavior; see the wire contract on CapabilityRequestBodyRedaction before
+	// setting this.
+	FulfillmentCapabilities []string `json:"fulfillment_capabilities,omitempty"`
 }
 
 // CallerIdentity is the gateway-asserted identity.

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// isPIIPolicyCategory is convention-driven (pii-* prefix, TEXT only). This pins
+// IsPIIPolicyCategory is convention-driven (pii-* prefix, TEXT only). This pins
 // the contract: every pii-* category is PII (so a future pii-* is auto-covered),
 // media-pii is NOT (its detector is the orchestrator OCR subsystem, not the text
 // engine), and non-PII categories are excluded.
@@ -19,7 +19,7 @@ func TestIsPIIPolicyCategory_Convention(t *testing.T) {
 		PolicyCategory("pii-future-locale"), // forward-compat: any pii-* is covered
 	}
 	for _, c := range pii {
-		if !isPIIPolicyCategory(c) {
+		if !IsPIIPolicyCategory(c) {
 			t.Errorf("expected %q to be a PII category", c)
 		}
 	}
@@ -29,7 +29,7 @@ func TestIsPIIPolicyCategory_Convention(t *testing.T) {
 		CategoryComplianceRBI, PolicyCategory("sensitive-data"), PolicyCategory(""),
 	}
 	for _, c := range notPII {
-		if isPIIPolicyCategory(c) {
+		if IsPIIPolicyCategory(c) {
 			t.Errorf("expected %q NOT to be a PII category", c)
 		}
 	}

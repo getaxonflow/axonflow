@@ -324,9 +324,60 @@ jobs:
             docker compose -f docker-compose.yml -f docker-compose.enterprise.yml logs
             exit 1
           }
-          echo "Phase 1c: wait for agent /health (migrations applied) — up to 240s"
-          healthy=0
+          echo "Phase 1c: wait for MIGRATIONS TO COMPLETE — up to 240s"
+          # NOT /health: the agent serves /health BEFORE it runs migrations
+          # ("Health endpoint ready" is logged first, by design, so a slow
+          # migration set cannot fail the container's health gate). Polling
+          # /health here therefore returned as soon as the process was up, while
+          # migrations were still in flight — and Phase 3 then RECREATED the
+          # container mid-run. A migration interrupted between its DDL and its
+          # schema_migrations row re-runs on the next boot, which a
+          # non-idempotent one cannot survive (that is how #2958's CI hit
+          # `policy "scim_users_tenant_isolation" already exists` in Phase 3 —
+          # the migration is now guarded, and this wait removes the race that
+          # exposed it). Wait for the runner's own completion line.
+          migrated=0
           for i in $(seq 1 120); do
+            logs="$(docker logs axonflow-agent 2>&1 || true)"
+            if echo "$logs" | grep -q "Database migrations completed"; then
+              echo "migrations completed on attempt $i"
+              migrated=1
+              break
+            fi
+            # Fail FAST and truthfully. Every migration-fatal path exits the
+            # process, so rather than enumerate their log lines (and miss one —
+            # dependency validation, collect errors and per-migration failures
+            # all Fatalf with different text), detect that the process DIED.
+            # Without this, any of them burns the full 240s and then reports
+            # "did not complete", pointing the next reader at a timeout that
+            # never happened.
+            #
+            # RestartCount, not State.Status: the service is `restart:
+            # unless-stopped`, so a fatal exit becomes a crash LOOP — polling for
+            # "exited" would race the restart and usually miss it, while a
+            # non-zero restart count before migrations have completed is
+            # unambiguous (the agent has no other reason to restart here).
+            restarts="$(docker inspect -f '{{.RestartCount}}' axonflow-agent 2>/dev/null || echo missing)"
+            if [ "$restarts" = "missing" ]; then
+              echo "::error::agent container is gone during migrations"
+              exit 1
+            fi
+            if [ "$restarts" -gt 0 ] 2>/dev/null; then
+              echo "::error::agent restarted $restarts time(s) before completing migrations — it is crash-looping, see the logs below for the failing migration"
+              docker logs --tail=300 axonflow-agent 2>&1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$migrated" -ne 1 ]; then
+            echo "::error::migrations did not complete within 240s"
+            docker compose -f docker-compose.yml -f docker-compose.enterprise.yml ps
+            docker logs --tail=300 axonflow-agent 2>&1 || true
+            exit 1
+          fi
+          # Migrations are done; now confirm the HTTP surface is actually up.
+          healthy=0
+          for i in $(seq 1 60); do
             if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
               echo "agent /health OK on attempt $i"
               healthy=1
@@ -335,7 +386,7 @@ jobs:
             sleep 2
           done
           if [ "$healthy" -ne 1 ]; then
-            echo "::error::agent never became healthy after 240s"
+            echo "::error::agent never became healthy after 120s"
             docker compose -f docker-compose.yml -f docker-compose.enterprise.yml ps
             docker logs --tail=300 axonflow-agent 2>&1 || true
             exit 1

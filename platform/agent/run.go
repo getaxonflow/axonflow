@@ -325,21 +325,21 @@ var (
 
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
 // Used by both clientRequestHandler and policyTestHandler to avoid divergence.
-var proxyPolicyCategories = []sharedpolicy.PolicyCategory{
+//
+// #2965: the PII portion is sourced from sharedpolicy.AllTextPIICategories() (the
+// single canonical pii-* list) rather than hand-listed here — the old hand list
+// omitted pii-indonesia, so the KTP/NIK policy was filtered out BEFORE evaluation
+// on this plane and a matching query was silently ungoverned under every posture.
+var proxyPolicyCategories = append([]sharedpolicy.PolicyCategory{
 	sharedpolicy.CategorySecuritySQLi,
 	sharedpolicy.CategorySecurityDangerous,
 	sharedpolicy.CategoryAdminAccess,
-	sharedpolicy.CategoryPIIGlobal,
-	sharedpolicy.CategoryPIIUS,
-	sharedpolicy.CategoryPIIIndia,
-	sharedpolicy.CategoryPIIEU,
-	sharedpolicy.CategoryPIISingapore,
 	sharedpolicy.CategorySensitiveData,
 	sharedpolicy.CategoryComplianceRBI,
 	sharedpolicy.CategoryComplianceSEBI,
 	sharedpolicy.CategoryComplianceEUAIAct,
 	sharedpolicy.CategoryComplianceMASFEAT,
-}
+}, sharedpolicy.AllTextPIICategories()...)
 
 // Prometheus metrics
 var (

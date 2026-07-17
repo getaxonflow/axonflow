@@ -135,14 +135,63 @@ rotate endpoint above.
 
 ## Path B — IdP-issued OIDC tokens (JumpCloud example)
 
-Your IdP issues each developer a standard OIDC access token; AxonFlow
-validates it against the IdP's **JWKS** (issuer, audience, expiry, RS256
-signature) and resolves the developer's role from the **SCIM-synced
-directory** — deliberately *not* from any role claim inside the token, so
-role assignment stays on AxonFlow's audited SCIM/admin surface and an IdP
-misconfiguration cannot mint an admin.
+Your IdP issues each developer a standard OIDC token; AxonFlow validates it
+against the IdP's **JWKS** (issuer, audience, expiry, RS256 signature) and
+resolves the developer's role from the **SCIM-synced directory** —
+deliberately *not* from any role claim inside the token, so role assignment
+stays on AxonFlow's audited SCIM/admin surface and an IdP misconfiguration
+cannot mint an admin.
 
-### 1. Create the OIDC application in JumpCloud
+### Prerequisites
+
+- **Migrations** `core/143` (the OIDC verifier columns), `core/145` (org-key
+  decoupling — **required for in-vpc**, see the in-vpc note below), and
+  `core/146` (seeds the fleet-mappable system roles) applied.
+- **Enterprise deployment.** Per-user token resolution runs only for
+  enterprise-authenticated fleet callers. Community / community-saas /
+  internal-service callers keep their existing bypass and never resolve a
+  per-user identity, so a token presented there is ignored.
+- **The agent has a database connection.** The OIDC validator and the SCIM
+  role resolver auto-register at startup *only* if one is available. Without
+  it, no validator registers and a presented token is ignored (least-privilege
+  attribution) rather than honoured — the agent logs a rate-limited warning
+  saying exactly this.
+- **`sso:configure`** permission for the operator doing the setup (steps 3–4).
+
+> **In-VPC note.** Before the fix for
+> [#2960](https://github.com/getaxonflow/axonflow-enterprise/issues/2960),
+> in-vpc deployments wrote the SSO config under a platform-wide sentinel org,
+> while the fleet verifier looked it up under the real (licensed) org — so
+> every OIDC token was rejected fail-closed and Path B could not work at all.
+> **Path A is unaffected** by this.
+>
+> `core/145` repairs an already-affected row, but **only if it can identify the
+> deployment org**: it reads `ORG_ID` (as `app.deployment_org_id`) and refuses
+> to stamp an org it cannot verify, logging a `WARNING` and leaving the row
+> alone — in which case Path B stays broken exactly as before. So: make sure
+> `ORG_ID` is set to the licensed org before upgrading, and check the agent's
+> migration logs for a `Migration 145` warning. Confirm the result with
+> `SELECT tenant_id, org_id FROM sso_configurations;` — on in-vpc you want
+> `tenant_id = '__platform__'` and `org_id = <your org>`.
+
+### 1. Configure SCIM provisioning FIRST
+
+Path B resolves roles from the SCIM-synced directory, so **the directory must
+be populated before any token will resolve to more than least privilege.**
+Group→role mappings only take effect for users SCIM has actually provisioned
+(mapping a group syncs its current members' roles). Do this first, or every
+developer authenticates successfully and then reads nothing.
+
+1. Create a SCIM bearer token in the portal (**Settings → SCIM → Create
+   Token**; the page is titled *Platform SCIM Provisioning* on in-vpc) — copy
+   it once; it is not shown again.
+2. Point JumpCloud's SCIM/directory-sync at `$PORTAL_URL/scim/v2` using that
+   token, and assign your developer group(s) so users and groups sync.
+
+Full walkthrough: [SCIM setup](../../ee/docs/scim/setup.md) ·
+[group→role mapping](../../ee/docs/scim/group-role-mapping.md).
+
+### 2. Create the OIDC application in JumpCloud
 
 1. JumpCloud Admin Console → **SSO Applications → Add New Application →
    Custom OIDC App**.
@@ -155,7 +204,13 @@ misconfiguration cannot mint an admin.
 4. Ensure the `email` claim is included (standard scopes: `openid email`).
 5. Assign the app to your developer group(s).
 
-### 2. Configure AxonFlow (per tenant, requires `sso:configure`)
+> **Verify these against your own tenant's OIDC discovery document** —
+> `https://oauth.id.jumpcloud.com/.well-known/openid-configuration` — rather
+> than copying them. IdPs vary the issuer (trailing slash included), the JWKS
+> URI, and the scopes needed to emit `email`; a mismatched `iss` or `aud` is
+> rejected fail-closed, which looks identical to "tokens don't work".
+
+### 3. Configure AxonFlow (per tenant, requires `sso:configure`)
 
 ```bash
 curl -X POST "$PORTAL_URL/api/v1/sso/config" \
@@ -170,6 +225,11 @@ curl -X POST "$PORTAL_URL/api/v1/sso/config" \
     "oidc_claim_mapping": {"email": "email"}
   }'
 ```
+
+- **`POST` creates; it returns `409` if a config already exists.** To change an
+  existing one — including switching a tenant from SAML to OIDC — use
+  `PUT /api/v1/sso/config` with the same body. (`PATCH` toggles `enabled`;
+  `DELETE` removes the config.)
 
 - Issuer and JWKS URI must be **https** (plaintext HTTP is refused except
   loopback, because a swapped JWKS would turn validation into a forgery
@@ -187,14 +247,84 @@ curl -X POST "$PORTAL_URL/api/v1/sso/config" \
 - As of #2924 the SSO-config mutation endpoints require the `sso:configure`
   permission (previously declared but unenforced).
 
-### 3. Map SCIM groups to roles
+### 4. Map SCIM groups to roles
 
-Path B roles come from the SCIM directory: map each JumpCloud group to an
-AxonFlow role via `PUT /api/v1/scim/groups/{id}/role-mapping` (also gated on
-`sso:configure`). A developer with no mapped role resolves to **least
-privilege** (own-rows read scope), never admin.
+Path B roles come from the SCIM directory (step 1), never from the token. Map
+each synced JumpCloud group to an AxonFlow role. Both calls are session-
+authenticated and gated on `sso:configure` — deliberately *not* reachable with
+a SCIM directory-sync token, so a sync token cannot grant its own group roles.
 
-### 4. Verification hygiene (what AxonFlow enforces)
+First discover the role UUIDs:
+
+```bash
+curl "$PORTAL_URL/api/v1/scim/roles" -H "Cookie: <portal session>"
+# => {"roles":[{"id":"3f2b…","name":"developer","display_name":"Developer",…}, …],
+#     "count":6}
+```
+
+Every org has the six fleet-mappable system roles seeded automatically
+(`core/146`): `admin`, `owner`, `policy_admin`, `developer`, `member`,
+`viewer`. New orgs get them on creation; existing orgs were backfilled. These
+are the only role names a SCIM group may map to — the fleet resolver keys on the
+role **name**, so mapping a group to a differently-named custom role is
+**rejected** (`400`) at the next step rather than silently resolving every
+member to least privilege. Map each group to whichever of the six fits: `admin`
+or `owner` for a group that should read the whole tenant, `developer` / `member`
+/ `viewer` for own-rows access.
+
+Then map a group. The `<group-id>` is the SCIM group id — list them from the
+SCIM router with the **SCIM bearer token** (a different router and credential
+to the session-authenticated calls here):
+`curl "$PORTAL_URL/scim/v2/Groups" -H "Authorization: Bearer $SCIM_TOKEN"`.
+
+```bash
+curl -X PUT "$PORTAL_URL/api/v1/scim/groups/<group-id>/role-mapping" \
+  -H "Cookie: <portal session>" \
+  -H "Content-Type: application/json" \
+  -d '{"role_id": "3f2b…"}'
+# => {"group_id":"…","role_id":"3f2b…","role_name":"Developer","users_updated":12}
+```
+
+`users_updated` counts the group members whose role assignments were
+re-synced. A `0` means the mapping applied to nobody — an empty group, members
+SCIM has not provisioned yet (revisit step 1), or members that failed to
+resolve. It is not by itself an error, but on a group you expect to have
+developers in it, treat it as one. Send `{"role_id": null}` to clear a mapping.
+
+Review current mappings with `GET /api/v1/scim/groups/role-mappings`.
+
+A developer in no mapped group resolves to **least privilege** (own-rows read
+scope), never admin.
+
+### 5. Deliver the token to the fleet
+
+The IdP token travels on the fleet request as **`X-User-Token`**:
+
+```
+X-User-Token: <the developer's OIDC token>
+```
+
+**Use `X-User-Token` everywhere.** `Authorization: Bearer <token>` is accepted
+*only* on the MCP-server plane, as a concession to deployments that
+authenticate the tenant out-of-band. On the agent-proxied REST plane (the
+audit / decision / override read surfaces) `Authorization` is **only** ever the
+tenant credential — a Bearer per-user token there is parsed as a tenant
+credential and rejected. `X-User-Token` is the one header both planes read, so
+it is the only correct answer for a fleet.
+
+The plugins send this header for you when `AXONFLOW_USER_TOKEN` is set; see
+Path A's fleet-scale delivery note above, which applies unchanged to Path B
+tokens.
+
+> **Send an ID token, not (necessarily) an access token.** AxonFlow requires
+> both an `email` claim and an `aud` matching the configured audience. Those are
+> reliably present on **ID tokens**; many IdPs issue access tokens that are
+> opaque, carry a resource-server `aud`, or omit `email` entirely — any of which
+> is rejected fail-closed. Configure your token-delivery tooling to hand
+> AxonFlow a token type that carries both, and confirm against a decoded sample
+> before rolling out to the fleet.
+
+### 6. Verification hygiene (what AxonFlow enforces)
 
 - RS256 only — `alg: none` and HS256 algorithm-confusion tokens are rejected
   before any key material is consulted.

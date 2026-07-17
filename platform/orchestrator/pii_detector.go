@@ -1074,6 +1074,10 @@ func mapCategoryToPIIType(category sharedpolicy.PolicyCategory) PIIType {
 		return PIITypeBankAccount // Placeholder for Aadhaar/PAN
 	case sharedpolicy.CategoryPIIEU:
 		return PIITypeIBAN // EU PII commonly includes IBAN
+	case sharedpolicy.CategoryPIISingapore:
+		return PIITypeSSN // NRIC/FIN — national identity number (SSN analog), not Email
+	case sharedpolicy.CategoryPIIIndonesia:
+		return PIITypeSSN // NIK — national identity number (SSN analog), not Email
 	default:
 		return PIITypeEmail // Default to medium severity type
 	}

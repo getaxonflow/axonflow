@@ -31,10 +31,10 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"rust":       "0.7.0",
 	}
 	wantRecommended := map[string]string{
-		"python":     "8.5.1",
-		"typescript": "8.5.1",
-		"go":         "8.5.1",
-		"java":       "8.5.1",
+		"python":     "9.0.0",
+		"typescript": "9.0.0",
+		"go":         "9.0.0",
+		"java":       "9.0.0",
 		"rust":       "0.8.1",
 	}
 
@@ -70,10 +70,10 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"claude-desktop": "0.2.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw":       "2.7.0",
-		"claude-code":    "1.10.0",
-		"cursor":         "1.6.0",
-		"codex":          "1.6.0",
+		"openclaw":       "2.8.0",
+		"claude-code":    "1.11.0",
+		"cursor":         "1.7.0",
+		"codex":          "1.7.0",
 		"claude-desktop": "0.3.1",
 	}
 
