@@ -275,7 +275,7 @@ func TestConflictResponseSorting(t *testing.T) {
 	}
 
 	service := &PolicyConflictService{policyService: nil} // Direct test
-	_ = service // verify it compiles
+	_ = service                                           // verify it compiles
 
 	conflicts := findConflicts(policies, "")
 	if len(conflicts) < 2 {

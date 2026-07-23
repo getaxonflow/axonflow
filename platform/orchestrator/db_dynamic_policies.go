@@ -611,7 +611,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		Allowed:          true,
 		AppliedPolicies:  []string{},
 		DatabaseAccessed: true, // Mark that we're using DB-backed policies
-		ProcessingTimeMs: 0, // Will be set at the end
+		ProcessingTimeMs: 0,    // Will be set at the end
 		RiskScore:        0.0,
 		RequiredActions:  []string{},
 	}

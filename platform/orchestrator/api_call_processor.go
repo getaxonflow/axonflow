@@ -99,13 +99,13 @@ func (p *APICallProcessor) executeFlightSearch(ctx context.Context, step Workflo
 
 	// Format response for workflow
 	output := map[string]interface{}{
-		"provider":       "amadeus",
-		"function":       "flight-search",
-		"offers_count":   len(response.Data),
-		"offers":         response.Data,
-		"meta":           response.Meta,
-		"response_time":  duration.Milliseconds(),
-		"status":         "success",
+		"provider":      "amadeus",
+		"function":      "flight-search",
+		"offers_count":  len(response.Data),
+		"offers":        response.Data,
+		"meta":          response.Meta,
+		"response_time": duration.Milliseconds(),
+		"status":        "success",
 	}
 
 	// Extract top offers for easy access
@@ -133,8 +133,8 @@ func (p *APICallProcessor) executeFlightSearch(ctx context.Context, step Workflo
 // Extract flight search parameters from input
 func (p *APICallProcessor) extractFlightSearchParams(input map[string]interface{}, execution *WorkflowExecution) (*FlightSearchParams, error) {
 	params := &FlightSearchParams{
-		Adults:       1, // Default
-		Max:          10, // Default max results
+		Adults:       1,     // Default
+		Max:          10,    // Default max results
 		CurrencyCode: "EUR", // Default currency
 	}
 

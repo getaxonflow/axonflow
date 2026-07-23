@@ -1493,9 +1493,9 @@ func TestPolicyAPIHandler_CORSHeaders(t *testing.T) {
 	handler := &PolicyAPIHandler{}
 
 	tests := []struct {
-		name           string
-		origin         string
-		expectAllowed  bool
+		name          string
+		origin        string
+		expectAllowed bool
 	}{
 		{
 			name:          "localhost:3000 allowed",

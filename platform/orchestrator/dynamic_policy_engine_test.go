@@ -384,10 +384,10 @@ func TestApplyPolicyAction(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name           string
-		action         PolicyAction
-		req            OrchestratorRequest
-		initialResult  *PolicyEvaluationResult
+		name            string
+		action          PolicyAction
+		req             OrchestratorRequest
+		initialResult   *PolicyEvaluationResult
 		expectedAllowed bool
 		expectedActions int
 	}{
@@ -928,10 +928,10 @@ func TestEvaluatePolicy(t *testing.T) {
 // TestLoadPoliciesFromDB tests database policy loading
 func TestLoadPoliciesFromDB(t *testing.T) {
 	tests := []struct {
-		name          string
-		setupMock     func(sqlmock.Sqlmock)
-		expectError   bool
-		expectCount   int
+		name        string
+		setupMock   func(sqlmock.Sqlmock)
+		expectError bool
+		expectCount int
 	}{
 		{
 			name: "Successfully load policies from database",
@@ -1164,11 +1164,11 @@ func TestLogAuditEvent_NilDatabase(t *testing.T) {
 // TestGetTenantSpecificPolicies tests tenant-specific policy filtering
 func TestGetTenantSpecificPolicies(t *testing.T) {
 	tests := []struct {
-		name          string
-		setupMock     func(sqlmock.Sqlmock, *DynamicPolicyEngine)
-		tenantID      string
-		expectCount   int
-		expectQuery   bool
+		name        string
+		setupMock   func(sqlmock.Sqlmock, *DynamicPolicyEngine)
+		tenantID    string
+		expectCount int
+		expectQuery bool
 	}{
 		{
 			name: "Successfully filter tenant policies",
@@ -1486,8 +1486,8 @@ func TestGetFieldValue_MediaFields(t *testing.T) {
 				"has_pii":               true,
 				"pii_types":             []string{"email", "phone"},
 				"content_safe":          true,
-				"has_extracted_text":     true,
-				"extracted_text_length":  42,
+				"has_extracted_text":    true,
+				"extracted_text_length": 42,
 			},
 		},
 	}
@@ -1713,21 +1713,21 @@ func TestDatabaseDynamicPolicyEngine_StepGateEvaluation(t *testing.T) {
 	// StepInput: {"recipient_count": 5000, "tool": "email_sender", "action": "send_bulk"}
 	// These get merged as "step_input.recipient_count", "step_input.tool", etc.
 	contextData := map[string]interface{}{
-		"workflow_id":              "wf_test",
-		"workflow_name":            "support-automation",
-		"source":                   "api",
-		"step_id":                  "step-2",
-		"step_name":                "Send Email",
-		"step_type":                "tool_call",
-		"step_index":               2,
-		"model":                    "",
-		"provider":                 "",
-		"step_input.tool":          "email_sender",
-		"step_input.action":        "send_bulk",
+		"workflow_id":                "wf_test",
+		"workflow_name":              "support-automation",
+		"source":                     "api",
+		"step_id":                    "step-2",
+		"step_name":                  "Send Email",
+		"step_type":                  "tool_call",
+		"step_index":                 2,
+		"model":                      "",
+		"provider":                   "",
+		"step_input.tool":            "email_sender",
+		"step_input.action":          "send_bulk",
 		"step_input.recipient_count": float64(5000),
-		"step_input.subject":       "Support case update",
-		"tool_name":                "email_sender",
-		"tool_type":                "function",
+		"step_input.subject":         "Support case update",
+		"tool_name":                  "email_sender",
+		"tool_type":                  "function",
 	}
 
 	req := OrchestratorRequest{
@@ -1886,8 +1886,8 @@ func TestDatabaseDynamicPolicyEngine_CrossTenantCacheCollision(t *testing.T) {
 		},
 		Context: map[string]interface{}{
 			"step_input.recipient_count": float64(5000),
-			"step_input.tool":           "email_sender",
-			"tool_name":                 "email_sender",
+			"step_input.tool":            "email_sender",
+			"tool_name":                  "email_sender",
 		},
 	}
 

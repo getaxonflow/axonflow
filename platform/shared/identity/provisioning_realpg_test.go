@@ -360,6 +360,9 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 		return id
 	}
 	adminID := roleID("admin", `["*"]`)
+	// #2993: owner is a true superset of admin — its seeded bundle carries "*".
+	// The resolver must still classify it as owner (owner outranks wildcard→admin).
+	ownerID := roleID("owner", `["*","sso:configure"]`)
 	memberID := roleID("member", `["query"]`)
 	viewerID := roleID("viewer", `["read"]`)
 	customID := roleID("data_scientist", `["query","export"]`)
@@ -371,6 +374,10 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 	}
 	past := time.Now().Add(-time.Hour)
 	assign("wildcard@example.com", adminID, nil)
+	assign("owner@example.com", ownerID, nil)
+	// A user holding BOTH owner and admin resolves to owner (owner ≥ admin).
+	assign("owneradmin@example.com", ownerID, nil)
+	assign("owneradmin@example.com", adminID, nil)
 	assign("both@example.com", viewerID, nil)
 	assign("both@example.com", memberID, nil)
 	assign("expired@example.com", adminID, &past)
@@ -387,7 +394,12 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 		name, email, want string
 	}{
 		{"wildcard permission resolves admin", "wildcard@example.com", "admin"},
-		{"precedence picks member over viewer", "both@example.com", "member"},
+		{"owner with wildcard resolves owner, not admin (#2993 superset)", "owner@example.com", "owner"},
+		{"owner + admin resolves owner (owner outranks admin)", "owneradmin@example.com", "owner"},
+		// #2993 dropped "member": a still-seeded member role is now unmapped,
+		// so a user assigned viewer + member falls through to viewer (the
+		// highest recognized precedence among their assignments).
+		{"dropped member role falls through to viewer", "both@example.com", "viewer"},
 		{"expired admin assignment ignored", "expired@example.com", "viewer"},
 		{"custom-only role is unmapped (least privilege)", "custom@example.com", ""},
 		{"unknown identity is unmapped", "ghost@example.com", ""},

@@ -33,10 +33,10 @@ func LoadRoutingConfig() RoutingConfig {
 // and environment variables for LLM provider initialization.
 type LLMRouterConfig struct {
 	// API Keys
-	OpenAIKey    string
-	AnthropicKey string
-	GeminiKey    string
-	GeminiModel  string
+	OpenAIKey       string
+	AnthropicKey    string
+	GeminiKey       string
+	GeminiModel     string
 	MistralKey      string
 	MistralModel    string
 	MistralEndpoint string

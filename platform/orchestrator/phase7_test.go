@@ -396,8 +396,8 @@ func TestRecordProviderUsage(t *testing.T) {
 	collector := NewMetricsCollector()
 	defer collector.Close()
 
-	collector.RecordProviderUsage("openai", 1000, 0.02)  // 1000 tokens, $0.02
-	collector.RecordProviderUsage("openai", 1500, 0.03)  // 1500 tokens, $0.03
+	collector.RecordProviderUsage("openai", 1000, 0.02)     // 1000 tokens, $0.02
+	collector.RecordProviderUsage("openai", 1500, 0.03)     // 1500 tokens, $0.03
 	collector.RecordProviderUsage("anthropic", 1200, 0.025) // 1200 tokens, $0.025
 
 	metrics := collector.GetMetrics()
@@ -564,28 +564,28 @@ func TestPIIDetectorPatterns(t *testing.T) {
 	processor := NewResponseProcessor()
 
 	tests := []struct {
-		name        string
-		text        string
+		name         string
+		text         string
 		shouldDetect bool
 	}{
 		{
-			name:        "SSN detection",
-			text:        "My SSN is 123-45-6789",
+			name:         "SSN detection",
+			text:         "My SSN is 123-45-6789",
 			shouldDetect: true,
 		},
 		{
-			name:        "Email detection",
-			text:        "Contact me at user@example.com",
+			name:         "Email detection",
+			text:         "Contact me at user@example.com",
 			shouldDetect: true,
 		},
 		{
-			name:        "Phone detection",
-			text:        "Call me at 555-123-4567",
+			name:         "Phone detection",
+			text:         "Call me at 555-123-4567",
 			shouldDetect: true,
 		},
 		{
-			name:        "No PII",
-			text:        "This is a normal sentence",
+			name:         "No PII",
+			text:         "This is a normal sentence",
 			shouldDetect: false,
 		},
 	}
@@ -677,49 +677,109 @@ func TestHashingStrategy(t *testing.T) {
 	}
 }
 
-// TestPermissionBasedRedaction verifies role-based access
+// TestPermissionBasedRedaction verifies PII visibility is permission-driven,
+// never role-driven (#3001). The role field is deliberately varied across cases
+// to prove it has no effect at all.
 func TestPermissionBasedRedaction(t *testing.T) {
 	processor := NewResponseProcessor()
 
 	tests := []struct {
-		name              string
-		userRole          string
-		text              string
-		shouldRedact      bool
+		name        string
+		userRole    string
+		permissions []string
+		wantSSN     bool
 	}{
 		{
-			name:         "Admin sees PII",
-			userRole:     "admin",
-			text:         "SSN: 123-45-6789",
-			shouldRedact: false,
+			name:        "admin WITHOUT view_full_pii is redacted",
+			userRole:    "admin",
+			permissions: []string{},
+			wantSSN:     false,
 		},
 		{
-			name:         "User has PII redacted",
-			userRole:     "user",
-			text:         "SSN: 123-45-6789",
-			shouldRedact: true,
+			name:        "admin WITH view_full_pii sees SSN",
+			userRole:    "admin",
+			permissions: []string{"view_full_pii"},
+			wantSSN:     true,
+		},
+		{
+			name:        "owner behaves identically to admin without the permission",
+			userRole:    "owner",
+			permissions: []string{},
+			wantSSN:     false,
+		},
+		{
+			name:        "owner behaves identically to admin with the permission",
+			userRole:    "owner",
+			permissions: []string{"view_full_pii"},
+			wantSSN:     true,
+		},
+		{
+			name:        "unprivileged role WITH the permission sees SSN",
+			userRole:    "viewer",
+			permissions: []string{"view_full_pii"},
+			wantSSN:     true,
+		},
+		{
+			name:        "basic-pii grant does not reach SSN",
+			userRole:    "admin",
+			permissions: []string{"view_basic_pii"},
+			wantSSN:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			user := UserContext{
-				TenantID: "test-tenant",
-				Role:     tt.userRole,
-				Email:    "test@example.com",
+				TenantID:    "test-tenant",
+				Role:        tt.userRole,
+				Email:       "test@example.com",
+				Permissions: tt.permissions,
 			}
 
 			allowedPII := processor.getAllowedPIITypes(user)
 
-			// Admin should have access to more PII types
-			if tt.userRole == "admin" && len(allowedPII) == 0 {
-				t.Error("Expected admin to have access to PII types")
+			// No path may ever return the old blanket wildcard.
+			for _, p := range allowedPII {
+				if p == "*" {
+					t.Fatalf("getAllowedPIITypes returned wildcard %q for role %q — "+
+						"role-based PII bypass must not exist (#3001)", p, tt.userRole)
+				}
 			}
 
-			if tt.userRole != "admin" && len(allowedPII) > 0 {
-				t.Logf("Non-admin user has access to: %v", allowedPII)
+			gotSSN := false
+			for _, p := range allowedPII {
+				if p == "ssn" {
+					gotSSN = true
+				}
+			}
+			if gotSSN != tt.wantSSN {
+				t.Errorf("role=%q perms=%v: ssn allowed = %v, want %v (allowed=%v)",
+					tt.userRole, tt.permissions, gotSSN, tt.wantSSN, allowedPII)
 			}
 		})
+	}
+}
+
+// TestPIIVisibilityIsRoleAgnostic pins the invariant directly: for every role
+// name, the allowed set depends ONLY on permissions. Before #3001 the literal
+// role=="admin" made admin a superset of owner, inverting the role model.
+func TestPIIVisibilityIsRoleAgnostic(t *testing.T) {
+	processor := NewResponseProcessor()
+
+	roles := []string{"admin", "owner", "policy_admin", "developer", "viewer", "", "user"}
+	for _, perms := range [][]string{nil, {"view_full_pii"}, {"view_basic_pii"}} {
+		var baseline []string
+		for i, role := range roles {
+			got := processor.getAllowedPIITypes(UserContext{Role: role, Permissions: perms})
+			if i == 0 {
+				baseline = got
+				continue
+			}
+			if strings.Join(got, ",") != strings.Join(baseline, ",") {
+				t.Errorf("perms=%v: role %q got %v but role %q got %v — "+
+					"PII visibility must not vary by role", perms, role, got, roles[0], baseline)
+			}
+		}
 	}
 }
 
@@ -785,7 +845,7 @@ func TestProcessResponseEndToEnd(t *testing.T) {
 
 	response := &LLMResponse{
 		Content: "User SSN is 123-45-6789 and email is user@example.com",
-		Model:    "gpt-4",
+		Model:   "gpt-4",
 	}
 
 	processed, redactionInfo := processor.ProcessResponse(ctx, user, response)
@@ -819,16 +879,16 @@ func TestResponseValidation(t *testing.T) {
 		{
 			name: "Valid response",
 			response: &LLMResponse{
-				Content:  "Valid response",
-				Model:    "gpt-4",
+				Content: "Valid response",
+				Model:   "gpt-4",
 			},
 			shouldPass: true,
 		},
 		{
 			name: "Empty content",
 			response: &LLMResponse{
-				Content:  "",
-				Model:    "gpt-4",
+				Content: "",
+				Model:   "gpt-4",
 			},
 			shouldPass: false,
 		},

@@ -22,8 +22,8 @@ import (
 	"net/http"
 	"time"
 
-	"axonflow/platform/shared/serviceauth"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // Note: Internal service authentication is handled by the shared serviceauth package.
@@ -164,7 +164,7 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	// Extract response data
 	// Agent returns "data" array (see agent mcp_handler.go)
 	success, _ := agentResp["success"].(bool)
-	rows, _ := agentResp["data"].([]interface{}) // Agent uses "data" for results
+	rows, _ := agentResp["data"].([]interface{})    // Agent uses "data" for results
 	rowCount, _ := agentResp["row_count"].(float64) // JSON numbers are float64
 	durationMs, _ := agentResp["duration_ms"].(float64)
 
@@ -177,14 +177,14 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 		RequestID: req.RequestID,
 		Success:   success,
 		Data: map[string]interface{}{
-			"connector":  connector,
-			"rows":       rows,
-			"row_count":  int(rowCount),
-			"duration":   fmt.Sprintf("%.0fms", durationMs),
+			"connector": connector,
+			"rows":      rows,
+			"row_count": int(rowCount),
+			"duration":  fmt.Sprintf("%.0fms", durationMs),
 			"metadata": map[string]interface{}{
-				"processed_at":      time.Now().Format(time.RFC3339),
+				"processed_at":       time.Now().Format(time.RFC3339),
 				"processed_for_role": req.User.Role,
-				"request_id":        req.RequestID,
+				"request_id":         req.RequestID,
 			},
 		},
 		ProcessingTime: duration.String(),

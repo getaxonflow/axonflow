@@ -37,11 +37,11 @@ type PolicyTemplate struct {
 // TemplateVariable defines a variable that can be substituted in a template
 type TemplateVariable struct {
 	Name        string      `json:"name"`
-	Type        string      `json:"type,omitempty"`         // string, number, boolean, array
+	Type        string      `json:"type,omitempty"` // string, number, boolean, array
 	Default     interface{} `json:"default,omitempty"`
 	Description string      `json:"description,omitempty"`
 	Required    bool        `json:"required,omitempty"`
-	Validation  string      `json:"validation,omitempty"`   // regex pattern for validation
+	Validation  string      `json:"validation,omitempty"` // regex pattern for validation
 }
 
 // PolicyTemplateUsage tracks when a template is used to create a policy
@@ -57,7 +57,7 @@ type PolicyTemplateUsage struct {
 type ListTemplatesParams struct {
 	Category string `json:"category"`
 	Search   string `json:"search"`
-	Tags     string `json:"tags"`      // Comma-separated tags
+	Tags     string `json:"tags"` // Comma-separated tags
 	Active   *bool  `json:"active"`
 	Builtin  *bool  `json:"builtin"`
 	Page     int    `json:"page"`
@@ -94,10 +94,10 @@ type TemplatePaginationMeta struct {
 
 // ApplyTemplateResponse for template application result
 type ApplyTemplateResponse struct {
-	Success    bool            `json:"success"`
-	Policy     *PolicyResource `json:"policy,omitempty"`
-	UsageID    string          `json:"usage_id"`
-	Message    string          `json:"message,omitempty"`
+	Success bool            `json:"success"`
+	Policy  *PolicyResource `json:"policy,omitempty"`
+	UsageID string          `json:"usage_id"`
+	Message string          `json:"message,omitempty"`
 }
 
 // TemplateUsageStatsResponse for template usage statistics

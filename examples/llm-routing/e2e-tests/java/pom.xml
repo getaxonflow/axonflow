@@ -22,7 +22,7 @@
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>2.22.0</version>
+                <version>2.22.1</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -31,18 +31,18 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>8.5.1</version>
+            <version>9.0.0</version>
         </dependency>
         <!-- Override transitive jackson for GHSA-72hv-8253-57qq -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.22.0</version>
+            <version>2.22.1</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.22.0</version>
+            <version>2.22.1</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

@@ -100,11 +100,11 @@ func TestConditionalProcessor(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name              string
-		step              WorkflowStep
-		execution         *WorkflowExecution
-		expectedResult    bool
-		expectedBranch    string
+		name           string
+		step           WorkflowStep
+		execution      *WorkflowExecution
+		expectedResult bool
+		expectedBranch string
 	}{
 		{
 			name: "True condition - simple equality",
@@ -180,12 +180,12 @@ func TestConditionalBranchExecution(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name                   string
-		step                   WorkflowStep
-		execution              *WorkflowExecution
-		expectedBranch         string
-		expectedStepsExecuted  int
-		expectedStepNames      []string
+		name                  string
+		step                  WorkflowStep
+		execution             *WorkflowExecution
+		expectedBranch        string
+		expectedStepsExecuted int
+		expectedStepNames     []string
 	}{
 		{
 			name: "Execute if_true branch with function-call steps",
@@ -824,11 +824,11 @@ func TestStepGrouping(t *testing.T) {
 	engine := NewWorkflowEngine()
 
 	tests := []struct {
-		name            string
-		steps           []WorkflowStep
-		enableParallel  bool
-		expectedGroups  int
-		firstGroupSize  int
+		name               string
+		steps              []WorkflowStep
+		enableParallel     bool
+		expectedGroups     int
+		firstGroupSize     int
 		firstGroupParallel bool
 	}{
 		{

@@ -32,38 +32,40 @@ type mockLicenseCheckerForSim struct {
 	hitlExpiryHours          int
 }
 
-func (m *mockLicenseCheckerForSim) IsEnterprise() bool               { return license.IsPaidTier(m.tier) }
-func (m *mockLicenseCheckerForSim) Tier() license.Tier               { return m.tier }
-func (m *mockLicenseCheckerForSim) PolicyLimit() int                 { return 50 }
-func (m *mockLicenseCheckerForSim) OrgPolicyLimit() int              { return 5 }
-func (m *mockLicenseCheckerForSim) CustomPolicyConnectorLimit() int  { return 5 }
-func (m *mockLicenseCheckerForSim) AuditRetentionDays() int          { return 14 }
-func (m *mockLicenseCheckerForSim) MaxLLMProviders() int             { return 3 }
-func (m *mockLicenseCheckerForSim) MaxExecutionHistory() int         { return 500 }
-func (m *mockLicenseCheckerForSim) MaxConcurrentExecutions() int     { return 25 }
-func (m *mockLicenseCheckerForSim) MaxPlans() int                    { return 100 }
-func (m *mockLicenseCheckerForSim) MaxVersionsPerPlan() int          { return 25 }
-func (m *mockLicenseCheckerForSim) MaxSSEConnections() int           { return 25 }
-func (m *mockLicenseCheckerForSim) MaxCostEstimatesPerDay() int      { return 100 }
-func (m *mockLicenseCheckerForSim) MaxPendingApprovals() int         { return 100 }
-func (m *mockLicenseCheckerForSim) MediaGovernanceEnabled() bool     { return true }
-func (m *mockLicenseCheckerForSim) IsHITLApprovalEnabled() bool      { return m.hitlEnabled }
-func (m *mockLicenseCheckerForSim) HITLExpiryHours() int             { return m.hitlExpiryHours }
-func (m *mockLicenseCheckerForSim) IsPolicySimulationEnabled() bool  { return m.policySimEnabled }
-func (m *mockLicenseCheckerForSim) MaxSimulationsPerDay() int        { return m.maxSimsPerDay }
-func (m *mockLicenseCheckerForSim) MaxImpactReportInputs() int       { return m.maxImpactInputs }
-func (m *mockLicenseCheckerForSim) IsEvidenceExportEnabled() bool    { return m.evidenceExportEnabled }
-func (m *mockLicenseCheckerForSim) MaxEvidenceExportRecords() int    { return m.maxEvidenceExportRecords }
-func (m *mockLicenseCheckerForSim) MaxEvidenceWindowDays() int       { return m.maxEvidenceWindowDays }
-func (m *mockLicenseCheckerForSim) MaxEvidenceExportsPerDay() int    { return m.maxEvidenceExportsPerDay }
+func (m *mockLicenseCheckerForSim) IsEnterprise() bool              { return license.IsPaidTier(m.tier) }
+func (m *mockLicenseCheckerForSim) Tier() license.Tier              { return m.tier }
+func (m *mockLicenseCheckerForSim) PolicyLimit() int                { return 50 }
+func (m *mockLicenseCheckerForSim) OrgPolicyLimit() int             { return 5 }
+func (m *mockLicenseCheckerForSim) CustomPolicyConnectorLimit() int { return 5 }
+func (m *mockLicenseCheckerForSim) AuditRetentionDays() int         { return 14 }
+func (m *mockLicenseCheckerForSim) MaxLLMProviders() int            { return 3 }
+func (m *mockLicenseCheckerForSim) MaxExecutionHistory() int        { return 500 }
+func (m *mockLicenseCheckerForSim) MaxConcurrentExecutions() int    { return 25 }
+func (m *mockLicenseCheckerForSim) MaxPlans() int                   { return 100 }
+func (m *mockLicenseCheckerForSim) MaxVersionsPerPlan() int         { return 25 }
+func (m *mockLicenseCheckerForSim) MaxSSEConnections() int          { return 25 }
+func (m *mockLicenseCheckerForSim) MaxCostEstimatesPerDay() int     { return 100 }
+func (m *mockLicenseCheckerForSim) MaxPendingApprovals() int        { return 100 }
+func (m *mockLicenseCheckerForSim) MediaGovernanceEnabled() bool    { return true }
+func (m *mockLicenseCheckerForSim) IsHITLApprovalEnabled() bool     { return m.hitlEnabled }
+func (m *mockLicenseCheckerForSim) HITLExpiryHours() int            { return m.hitlExpiryHours }
+func (m *mockLicenseCheckerForSim) IsPolicySimulationEnabled() bool { return m.policySimEnabled }
+func (m *mockLicenseCheckerForSim) MaxSimulationsPerDay() int       { return m.maxSimsPerDay }
+func (m *mockLicenseCheckerForSim) MaxImpactReportInputs() int      { return m.maxImpactInputs }
+func (m *mockLicenseCheckerForSim) IsEvidenceExportEnabled() bool   { return m.evidenceExportEnabled }
+func (m *mockLicenseCheckerForSim) MaxEvidenceExportRecords() int   { return m.maxEvidenceExportRecords }
+func (m *mockLicenseCheckerForSim) MaxEvidenceWindowDays() int      { return m.maxEvidenceWindowDays }
+func (m *mockLicenseCheckerForSim) MaxEvidenceExportsPerDay() int   { return m.maxEvidenceExportsPerDay }
 
 // mockPolicyEngineForSim implements the policy engine interface for simulation tests.
 type mockPolicyEngineForSim struct {
 	evaluateResult *PolicyEvaluationResult
 	activePolicies []DynamicPolicy
+	lastReq        OrchestratorRequest
 }
 
-func (m *mockPolicyEngineForSim) EvaluateDynamicPolicies(_ context.Context, _ OrchestratorRequest) *PolicyEvaluationResult {
+func (m *mockPolicyEngineForSim) EvaluateDynamicPolicies(_ context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
+	m.lastReq = req
 	if m.evaluateResult != nil {
 		return m.evaluateResult
 	}
@@ -76,6 +78,70 @@ func (m *mockPolicyEngineForSim) EvaluateDynamicPolicies(_ context.Context, _ Or
 
 func (m *mockPolicyEngineForSim) ListActivePolicies() []DynamicPolicy {
 	return m.activePolicies
+}
+
+// TestSimulatePolicies_IgnoresBodyTenant is the mirror of
+// TestTestPolicyHandlerIgnoresBodyTenant, and it exists because the two halves
+// of that fix must not diverge — this one shipped unpinned once already.
+//
+// Simulation is a dry run but not a side-effect free one: EvaluateDynamicPolicies
+// records a policy_metrics analytics row whose org_id is ALSO the
+// app.current_org_id binding its INSERT is checked against, so a body-sourced
+// tenant lets an authenticated caller attribute rows to any org they name with
+// the RLS WITH CHECK passing by construction. This handler used to fill the
+// tenant only when the BODY left it empty, i.e. the body won.
+func TestSimulatePolicies_IgnoresBodyTenant(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{
+		tier:             license.TierEvaluation,
+		policySimEnabled: true,
+		maxSimsPerDay:    300,
+	}
+	engine := &mockPolicyEngineForSim{activePolicies: make([]DynamicPolicy, 1)}
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
+	handler.rateLimiter = &simulationRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	body := []byte(`{"query":"hello","request_type":"chat","user":{"tenant_id":"victim-org"},"client":{"tenant_id":"victim-org"}}`)
+	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "caller-org")
+	w := httptest.NewRecorder()
+
+	handler.SimulatePolicies(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := engine.lastReq.User.TenantID; got != "caller-org" {
+		t.Errorf("evaluated User.TenantID = %q, want %q — the body won, so a caller can attribute policy_metrics rows to any org they name", got, "caller-org")
+	}
+	// db_dynamic_policies.go prefers Client.TenantID over User.TenantID, so the
+	// body must not be able to steer the scope through that field either.
+	if got := engine.lastReq.Client.TenantID; got != "caller-org" {
+		t.Errorf("evaluated Client.TenantID = %q, want %q — the metrics writer PREFERS this field, so leaving it body-controlled reopens the same hole", got, "caller-org")
+	}
+}
+
+// TestSimulatePolicies_RequiresGatewayTenant: without a scope there is nothing
+// to attribute the evaluation to, and falling back to the body would let the
+// caller pick one.
+func TestSimulatePolicies_RequiresGatewayTenant(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{
+		tier:             license.TierEvaluation,
+		policySimEnabled: true,
+		maxSimsPerDay:    300,
+	}
+	handler := NewPolicySimulationHandler(&mockPolicyEngineForSim{}, nil, nil, checker)
+	handler.rateLimiter = &simulationRateLimiter{counts: make(map[string]int), resetAt: nextUTCMidnight()}
+
+	req := httptest.NewRequest("POST", "/api/v1/policies/simulate",
+		bytes.NewReader([]byte(`{"query":"hello","user":{"tenant_id":"victim-org"}}`)))
+	w := httptest.NewRecorder()
+	handler.SimulatePolicies(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status without X-Tenant-ID = %d, want 401", w.Code)
+	}
 }
 
 func TestSimulatePolicies_Success(t *testing.T) {

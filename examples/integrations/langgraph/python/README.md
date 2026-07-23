@@ -69,7 +69,8 @@ from axonflow.adapters import AxonFlowLangGraphAdapter, MCPInterceptorOptions
 async with AxonFlow(endpoint="http://localhost:8080") as client:
     adapter = AxonFlowLangGraphAdapter(client, "my-workflow")
 
-    # Default: operation="execute", connector_type="{server}.{tool}"
+    # Default: operation="execute", connector_type="{server}" (the tool name is
+    # sent separately as the `tool` field — no longer folded into connector_type)
     mcp_client = MultiServerMCPClient(
         {"postgres": {"url": "...", "transport": "http"}},
         tool_interceptors=[adapter.mcp_tool_interceptor()],
@@ -82,9 +83,10 @@ async with AxonFlow(endpoint="http://localhost:8080") as client:
         tool_interceptors=[adapter.mcp_tool_interceptor(opts)],
     )
 
-    # Custom connector type mapping
+    # Custom connector type mapping (connector_type_fn only controls
+    # connector_type; the tool name is always sent separately as `tool`)
     opts = MCPInterceptorOptions(
-        connector_type_fn=lambda req: req.server_name,
+        connector_type_fn=lambda req: f"prod.{req.server_name}",
     )
 ```
 

@@ -26,20 +26,20 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 	t.Skip("Skipping test that requires proper database mock injection")
 
 	tests := []struct {
-		name           string
-		setupEnv       func()
-		cleanupEnv     func()
-		expectError    bool
-		mockSetup      func(sqlmock.Sqlmock)
-		mockDBErr      bool
-		expectNil      bool
+		name        string
+		setupEnv    func()
+		cleanupEnv  func()
+		expectError bool
+		mockSetup   func(sqlmock.Sqlmock)
+		mockDBErr   bool
+		expectNil   bool
 	}{
 		{
 			name: "Success - database connects and initializes",
 			setupEnv: func() {
 				t.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 			},
-			cleanupEnv: func() {},
+			cleanupEnv:  func() {},
 			expectError: false,
 			mockSetup: func(mock sqlmock.Sqlmock) {
 				// Expect ping
@@ -63,7 +63,7 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 			setupEnv: func() {
 				// Don't set DATABASE_URL
 			},
-			cleanupEnv: func() {},
+			cleanupEnv:  func() {},
 			expectError: true,
 			mockSetup: func(mock sqlmock.Sqlmock) {
 				// No database calls expected
@@ -230,10 +230,10 @@ func TestSeedDefaultData(t *testing.T) {
 // TestRefreshPolicies tests policy refresh from database
 func TestRefreshPolicies(t *testing.T) {
 	tests := []struct {
-		name           string
-		mockSetup      func(sqlmock.Sqlmock)
-		expectError    bool
-		expectedCount  int
+		name          string
+		mockSetup     func(sqlmock.Sqlmock)
+		expectError   bool
+		expectedCount int
 	}{
 		{
 			name: "Success - load multiple policies",
@@ -246,7 +246,7 @@ func TestRefreshPolicies(t *testing.T) {
 				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
-			expectError: false,
+			expectError:   false,
 			expectedCount: 3,
 		},
 		{
@@ -257,7 +257,7 @@ func TestRefreshPolicies(t *testing.T) {
 				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
-			expectError: false,
+			expectError:   false,
 			expectedCount: 0,
 		},
 		{
@@ -266,7 +266,7 @@ func TestRefreshPolicies(t *testing.T) {
 				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnError(errors.New("database connection lost"))
 			},
-			expectError: true,
+			expectError:   true,
 			expectedCount: 0,
 		},
 		{
@@ -278,7 +278,7 @@ func TestRefreshPolicies(t *testing.T) {
 				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
-			expectError: false,
+			expectError:   false,
 			expectedCount: 1,
 		},
 	}
@@ -333,10 +333,10 @@ func TestRefreshPolicies(t *testing.T) {
 // TestGetPolicy tests policy retrieval
 func TestGetPolicy(t *testing.T) {
 	tests := []struct {
-		name        string
+		name          string
 		setupPolicies func(*DatabaseDynamicPolicyEngine)
-		policyName  string
-		expectFound bool
+		policyName    string
+		expectFound   bool
 	}{
 		{
 			name: "Policy exists - return it",
@@ -452,10 +452,10 @@ func TestGetAllPolicies(t *testing.T) {
 // TestEvaluateDynamicPolicies tests policy evaluation
 func TestEvaluateDynamicPolicies(t *testing.T) {
 	tests := []struct {
-		name            string
-		setupEngine     func(*DatabaseDynamicPolicyEngine, sqlmock.Sqlmock)
-		req             OrchestratorRequest
-		expectedAllowed bool
+		name             string
+		setupEngine      func(*DatabaseDynamicPolicyEngine, sqlmock.Sqlmock)
+		req              OrchestratorRequest
+		expectedAllowed  bool
 		expectedPolicies int
 	}{
 		{
@@ -860,10 +860,10 @@ func TestReportMetrics(t *testing.T) {
 	defer func() { _ = metricsDB.Close() }()
 
 	engine := &DatabaseDynamicPolicyEngine{
-		db:           db,
-		metricsDB:    metricsDB,
-		policies:     make(map[string]interface{}),
-		lastRefresh:  time.Now(),
+		db:          db,
+		metricsDB:   metricsDB,
+		policies:    make(map[string]interface{}),
+		lastRefresh: time.Now(),
 	}
 
 	// Add a test policy

@@ -17,16 +17,16 @@ type SimulatePoliciesRequest struct {
 
 // SimulatePoliciesResponse is the response for POST /api/v1/policies/simulate.
 type SimulatePoliciesResponse struct {
-	Allowed          bool                       `json:"allowed"`
-	AppliedPolicies  []string                   `json:"applied_policies"`
-	RiskScore        float64                    `json:"risk_score"`
-	RequiredActions  []string                   `json:"required_actions"`
-	ProcessingTimeMs int64                      `json:"processing_time_ms"`
-	TotalPolicies    int                        `json:"total_policies"`
-	DryRun           bool                       `json:"dry_run"`
-	SimulatedAt      time.Time                  `json:"simulated_at"`
-	Tier             string                     `json:"tier"`
-	DailyUsage       *SimulationDailyUsage      `json:"daily_usage,omitempty"`
+	Allowed          bool                  `json:"allowed"`
+	AppliedPolicies  []string              `json:"applied_policies"`
+	RiskScore        float64               `json:"risk_score"`
+	RequiredActions  []string              `json:"required_actions"`
+	ProcessingTimeMs int64                 `json:"processing_time_ms"`
+	TotalPolicies    int                   `json:"total_policies"`
+	DryRun           bool                  `json:"dry_run"`
+	SimulatedAt      time.Time             `json:"simulated_at"`
+	Tier             string                `json:"tier"`
+	DailyUsage       *SimulationDailyUsage `json:"daily_usage,omitempty"`
 }
 
 // SimulationDailyUsage tracks simulation quota usage.
@@ -52,17 +52,17 @@ type ImpactReportInput struct {
 
 // ImpactReportResponse is the response for POST /api/v1/policies/impact-report.
 type ImpactReportResponse struct {
-	PolicyID        string                `json:"policy_id"`
-	PolicyName      string                `json:"policy_name,omitempty"`
-	TotalInputs     int                   `json:"total_inputs"`
-	Matched         int                   `json:"matched"`
-	Blocked         int                   `json:"blocked"`
-	MatchRate       float64               `json:"match_rate"`
-	BlockRate       float64               `json:"block_rate"`
-	Results         []ImpactReportResult  `json:"results"`
-	ProcessingTimeMs int64               `json:"processing_time_ms"`
-	GeneratedAt     time.Time             `json:"generated_at"`
-	Tier            string                `json:"tier"`
+	PolicyID         string               `json:"policy_id"`
+	PolicyName       string               `json:"policy_name,omitempty"`
+	TotalInputs      int                  `json:"total_inputs"`
+	Matched          int                  `json:"matched"`
+	Blocked          int                  `json:"blocked"`
+	MatchRate        float64              `json:"match_rate"`
+	BlockRate        float64              `json:"block_rate"`
+	Results          []ImpactReportResult `json:"results"`
+	ProcessingTimeMs int64                `json:"processing_time_ms"`
+	GeneratedAt      time.Time            `json:"generated_at"`
+	Tier             string               `json:"tier"`
 }
 
 // ImpactReportResult is the result for a single input in the impact report.

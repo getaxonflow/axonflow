@@ -58,31 +58,31 @@ type ProviderMetrics struct {
 
 // PolicyMetrics tracks policy enforcement metrics
 type PolicyMetrics struct {
-	TotalEvaluations     int64                       `json:"total_evaluations"`
-	BlockedByPolicy      int64                       `json:"blocked_by_policy"`
-	RedactionCount       int64                       `json:"redaction_count"`
-	PolicyHitRate        map[string]int64            `json:"policy_hit_rate"`
-	AvgEvaluationTime    time.Duration               `json:"avg_evaluation_time_ms"`
-	RiskScoreDistribution map[string]int64           `json:"risk_score_distribution"`
+	TotalEvaluations      int64            `json:"total_evaluations"`
+	BlockedByPolicy       int64            `json:"blocked_by_policy"`
+	RedactionCount        int64            `json:"redaction_count"`
+	PolicyHitRate         map[string]int64 `json:"policy_hit_rate"`
+	AvgEvaluationTime     time.Duration    `json:"avg_evaluation_time_ms"`
+	RiskScoreDistribution map[string]int64 `json:"risk_score_distribution"`
 }
 
 // SystemMetrics tracks system-level metrics
 type SystemMetrics struct {
-	UptimeSeconds      int64     `json:"uptime_seconds"`
-	TotalRequests      int64     `json:"total_requests"`
-	ActiveConnections  int64     `json:"active_connections"`
-	QueueDepth         int64     `json:"queue_depth"`
-	LastHealthCheck    time.Time `json:"last_health_check"`
-	HealthCheckPassed  bool      `json:"health_check_passed"`
+	UptimeSeconds     int64     `json:"uptime_seconds"`
+	TotalRequests     int64     `json:"total_requests"`
+	ActiveConnections int64     `json:"active_connections"`
+	QueueDepth        int64     `json:"queue_depth"`
+	LastHealthCheck   time.Time `json:"last_health_check"`
+	HealthCheckPassed bool      `json:"health_check_passed"`
 }
 
 // NewMetricsCollector creates a new metrics collector
 func NewMetricsCollector() *MetricsCollector {
 	collector := &MetricsCollector{
 		metrics: &Metrics{
-			RequestMetrics:    make(map[string]*RequestTypeMetrics),
-			ProviderMetrics:   make(map[string]*ProviderMetrics),
-			PolicyMetrics:     &PolicyMetrics{
+			RequestMetrics:  make(map[string]*RequestTypeMetrics),
+			ProviderMetrics: make(map[string]*ProviderMetrics),
+			PolicyMetrics: &PolicyMetrics{
 				PolicyHitRate:         make(map[string]int64),
 				RiskScoreDistribution: make(map[string]int64),
 			},
@@ -156,10 +156,10 @@ func (c *MetricsCollector) RecordPolicyEvaluation(evaluationTime time.Duration, 
 	defer c.mu.Unlock()
 
 	c.metrics.PolicyMetrics.TotalEvaluations++
-	
+
 	// Update average evaluation time
 	currentAvg := c.metrics.PolicyMetrics.AvgEvaluationTime
-	newAvg := (currentAvg*time.Duration(c.metrics.PolicyMetrics.TotalEvaluations-1) + evaluationTime) / 
+	newAvg := (currentAvg*time.Duration(c.metrics.PolicyMetrics.TotalEvaluations-1) + evaluationTime) /
 		time.Duration(c.metrics.PolicyMetrics.TotalEvaluations)
 	c.metrics.PolicyMetrics.AvgEvaluationTime = newAvg
 
@@ -260,9 +260,9 @@ func (c *MetricsCollector) ResetMetrics() {
 	defer c.mu.Unlock()
 
 	c.metrics = &Metrics{
-		RequestMetrics:    make(map[string]*RequestTypeMetrics),
-		ProviderMetrics:   make(map[string]*ProviderMetrics),
-		PolicyMetrics:     &PolicyMetrics{
+		RequestMetrics:  make(map[string]*RequestTypeMetrics),
+		ProviderMetrics: make(map[string]*ProviderMetrics),
+		PolicyMetrics: &PolicyMetrics{
 			PolicyHitRate:         make(map[string]int64),
 			RiskScoreDistribution: make(map[string]int64),
 		},
@@ -294,7 +294,7 @@ func (c *MetricsCollector) calculateDerivedMetrics() {
 	for _, provMetrics := range c.metrics.ProviderMetrics {
 		if provMetrics.RequestCount > 0 {
 			provMetrics.Availability = float64(provMetrics.SuccessCount) / float64(provMetrics.RequestCount) * 100
-			
+
 			if provMetrics.SuccessCount > 0 {
 				// This is a simplified calculation - in production, track actual response times
 				provMetrics.AvgResponseTime = 100.0 // Mock value

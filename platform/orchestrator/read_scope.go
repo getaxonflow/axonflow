@@ -174,3 +174,56 @@ func resolveCallerReadScope(r *http.Request) callerReadScope {
 		UserEmail: email,
 	}
 }
+
+// Read-scope observability (#1, #2991). Before this, a fail-closed empty audit
+// read was a silent 200 {total:0} with nothing logged — indistinguishable to a
+// partner from "the data is gone." The additive X-Axonflow-Read-Scope RESPONSE
+// header echoes the resolved read authority on every audit read, and the
+// fail-closed "none" path logs one diagnostic line. This is purely diagnostic:
+// the response BODY is unchanged (clients/SDKs parse total/entries), and nothing
+// keys authorization off the response header.
+//
+// NB the header name is deliberately the SAME sharedidentity.HeaderReadScope the
+// portal plane uses as an INBOUND trusted assertion — request and response
+// headers are separate channels, so echoing it outbound cannot be laundered
+// back inbound to elevate: even if a response value were somehow replayed as a
+// request header, the inbound path honors ONLY "tenant" AND only when carried
+// over a valid X-Axonflow-Proxy-Auth token (resolveCallerReadScope), so an
+// echoed "own-rows"/"none" is ignored and an echoed "tenant" still needs the
+// HMAC proxy-auth secret. Values below are the outbound vocabulary.
+const (
+	// readScopeOwnRows: the read was scoped to the caller's own user_email rows.
+	readScopeOwnRows = "own-rows"
+	// readScopeNone: fail-closed empty read — the caller presented neither
+	// tenant-wide authority nor a per-user identity, so zero rows were returned.
+	readScopeNone = "none"
+)
+
+// readScopeLabel classifies a resolved callerReadScope into its
+// X-Axonflow-Read-Scope response-header value: "tenant" (cross-user),
+// "own-rows" (scoped to the caller's own email), or "none" (fail-closed empty).
+func readScopeLabel(scope callerReadScope) string {
+	switch {
+	case scope.TenantWide:
+		return sharedidentity.ReadScopeTenant // "tenant"
+	case scope.UserEmail != "":
+		return readScopeOwnRows
+	default:
+		return readScopeNone
+	}
+}
+
+// applyReadScopeHeader sets the additive X-Axonflow-Read-Scope response header
+// from the resolved scope and, on the fail-closed "none" path, emits one
+// diagnostic log line (these are low-frequency endpoints, so one line per
+// request is acceptable). It MUST be called before the handler writes its
+// status line / body, so callers invoke it immediately after resolving the
+// scope. Returns the label it set.
+func applyReadScopeHeader(w http.ResponseWriter, r *http.Request, scope callerReadScope) string {
+	label := readScopeLabel(scope)
+	w.Header().Set(sharedidentity.HeaderReadScope, label)
+	if label == readScopeNone {
+		log.Printf("[read-scope] %s: caller has no tenant-wide read authority (no admin/owner token) and no per-user identity → 0 rows returned. See docs/enterprise/per-developer-identity#role-scoped-reads", r.URL.Path)
+	}
+	return label
+}

@@ -173,12 +173,17 @@ type OIDCConfigProvider interface {
 // normalized to "" (least-privilege) by NormalizeRole — so no minting path,
 // current or future, can smuggle an unrecognized-but-privileged role string
 // through a validator even though JWT_SECRET is shared with the agent plane.
+// The five tiers of the #2993 role model. "member" was dropped: it mapped to
+// no distinct behavior (own-rows, exactly like developer/viewer minus their one
+// enforced capability), so it was removed from the mint vocabulary. A legacy
+// token still carrying role="member" is unknown here and NormalizeRole
+// collapses it to "" (own-rows) — the same least-privilege posture it already
+// had, so existing member tokens degrade safely with no runtime change.
 var knownRoles = map[string]bool{
 	"admin":        true,
 	"owner":        true,
 	"policy_admin": true,
 	"developer":    true,
-	"member":       true,
 	"viewer":       true,
 }
 

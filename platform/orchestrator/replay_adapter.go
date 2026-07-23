@@ -60,8 +60,8 @@ func (a *ReplayServiceAdapter) RecordStep(ctx context.Context, snapshot *ReplayS
 		TokensOut:         snapshot.TokensOut,
 		CostUSD:           snapshot.CostUSD,
 		ErrorMessage:      snapshot.Error,
-		PoliciesChecked:   snapshot.PoliciesChecked,   // Pass through policy info (Issue #1020)
-		PoliciesTriggered: policyEvents,               // Pass through policy events (Issue #1020)
+		PoliciesChecked:   snapshot.PoliciesChecked, // Pass through policy info (Issue #1020)
+		PoliciesTriggered: policyEvents,             // Pass through policy events (Issue #1020)
 	}
 
 	return a.service.RecordStep(ctx, execSnapshot)

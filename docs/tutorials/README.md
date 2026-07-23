@@ -17,11 +17,11 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-SDK versions: Python / TypeScript / Go / Java v8.5.1 + Rust v0.8.1 (preview).
+SDK versions: Python / TypeScript / Go / Java v9.0.0 + Rust v0.8.1 (preview).
 
 | Language | Package | Repository |
 |----------|---------|------------|
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v8` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v9` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
 | Python | `axonflow` (PyPI) | [axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) |
 | Java | `com.getaxonflow.sdk` (Maven Central) | [axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) |
 | TypeScript | `@axonflow/sdk` (npm) | [axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) |
@@ -30,17 +30,17 @@ SDK versions: Python / TypeScript / Go / Java v8.5.1 + Rust v0.8.1 (preview).
 
 ```bash
 # Go
-go get github.com/getaxonflow/axonflow-sdk-go/v8
+go get github.com/getaxonflow/axonflow-sdk-go/v9
 
 # Python
-pip3 install axonflow==8.5.1
+pip3 install axonflow==9.0.0
 
 # Java (Maven)
 # Add to pom.xml:
 #   <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>8.5.1</version>
+#     <version>9.0.0</version>
 #   </dependency>
 
 # TypeScript

@@ -25,9 +25,9 @@ import (
 // TestAmadeusConnector_Name tests the Name() getter
 func TestAmadeusConnector_Name(t *testing.T) {
 	tests := []struct {
-		name       string
-		connector  *AmadeusConnector
-		wantName   string
+		name      string
+		connector *AmadeusConnector
+		wantName  string
 	}{
 		{
 			name: "with config name",
@@ -180,9 +180,9 @@ func TestAmadeusConnector_toIATACode(t *testing.T) {
 // TestAmadeusConnector_getEnvironment tests environment detection
 func TestAmadeusConnector_getEnvironment(t *testing.T) {
 	tests := []struct {
-		name        string
-		baseURL     string
-		wantEnv     string
+		name    string
+		baseURL string
+		wantEnv string
 	}{
 		{
 			name:    "test environment",
@@ -740,7 +740,7 @@ func TestAmadeusConnector_toIATACode_Extended(t *testing.T) {
 		{"BERLIN", "BER"},
 		{"berlin", "BER"},
 		{"Madrid", "MAD"},
-		{"Rome", "ROM"},        // ROM not FCO based on actual implementation
+		{"Rome", "ROM"}, // ROM not FCO based on actual implementation
 		{"Amsterdam", "AMS"},
 		{"some unknown place", "PAR"}, // Unknown defaults to PAR
 		{"LHR", "LHR"},                // Already IATA code

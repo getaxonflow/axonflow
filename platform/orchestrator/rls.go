@@ -91,9 +91,10 @@ func ResetRLSContext(ctx context.Context, db *sql.DB) {
 // This is a helper function for operations that need RLS protection
 //
 // Example:
-//   err := WithRLS(ctx, db, client.OrgID, func(db *sql.DB) error {
-//       return recordUsageEvent(db, event)
-//   })
+//
+//	err := WithRLS(ctx, db, client.OrgID, func(db *sql.DB) error {
+//	    return recordUsageEvent(db, event)
+//	})
 func WithRLS(ctx context.Context, db *sql.DB, orgID string, fn func(*sql.DB) error) error {
 	// Set RLS context
 	if err := SetRLSContext(ctx, db, orgID); err != nil {

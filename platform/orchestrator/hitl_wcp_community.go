@@ -30,8 +30,8 @@ import (
 // evalWCPHITLAdapter is the Evaluation tier HITL adapter for WCP.
 // It creates HITL queue entries with a fixed 24h expiry and enforces pending limits.
 type evalWCPHITLAdapter struct {
-	db               *sql.DB
-	expiryDuration   time.Duration
+	db                  *sql.DB
+	expiryDuration      time.Duration
 	maxPendingPerTenant int
 }
 

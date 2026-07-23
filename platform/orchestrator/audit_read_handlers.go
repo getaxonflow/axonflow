@@ -372,19 +372,19 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		UserEmail string    `json:"user_email,omitempty"`
-		ClientID  string    `json:"client_id,omitempty"`
-		Action    string    `json:"action,omitempty"`
+		UserEmail string `json:"user_email,omitempty"`
+		ClientID  string `json:"client_id,omitempty"`
+		Action    string `json:"action,omitempty"`
 		// SessionID mirrors the /audit/search filter (#2857): without it a
 		// session-filtered export silently returns the whole tenant window.
-		SessionID string    `json:"session_id,omitempty"`
+		SessionID string `json:"session_id,omitempty"`
 		// Plugin Batch 1 filters — same silent-dropped-filter class as SessionID:
 		// the search API honors these, so a filtered export must too.
-		DecisionID string   `json:"decision_id,omitempty"`
-		PolicyName string   `json:"policy_name,omitempty"`
-		OverrideID string   `json:"override_id,omitempty"`
-		StartTime time.Time `json:"start_time"`
-		EndTime   time.Time `json:"end_time"`
+		DecisionID string    `json:"decision_id,omitempty"`
+		PolicyName string    `json:"policy_name,omitempty"`
+		OverrideID string    `json:"override_id,omitempty"`
+		StartTime  time.Time `json:"start_time"`
+		EndTime    time.Time `json:"end_time"`
 	}
 	// Body is optional (empty body => unfiltered export within tenant + retention).
 	// A present-but-malformed body is a client error.
@@ -418,7 +418,9 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 	// a non-tenant-wide caller exports only their own rows; the body's
 	// user_email ILIKE filter can only narrow further. Empty identity ⇒ empty
 	// export (fail-closed).
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			ts := time.Now().UTC().Format("20060102-150405")
 			if format == "csv" {
@@ -466,7 +468,7 @@ func auditExportHandler(w http.ResponseWriter, r *http.Request) {
 var auditExportCSVHeader = []string{
 	"id", "timestamp", "user_email", "tenant_id", "org_id", "policy_decision",
 	"request_type", "query", "response_sample", "provider", "model",
-	"response_time_ms", "correlation_id", "session_id",
+	"response_time_ms", "tokens", "correlation_id", "session_id",
 }
 
 func writeAuditExportCSV(w http.ResponseWriter, entries []*AuditEntry, ts string) {
@@ -495,6 +497,7 @@ func writeAuditExportCSV(w http.ResponseWriter, entries []*AuditEntry, ts string
 			csvFormulaSafe(e.Provider),
 			csvFormulaSafe(e.Model),
 			strconv.FormatInt(e.ResponseTime, 10),
+			strconv.Itoa(e.TokensUsed),
 			csvFormulaSafe(e.CorrelationID),
 			// session_id is server-generated (uuid/opaque id) but formula-safed
 			// like every other string cell for uniformity.
@@ -745,7 +748,9 @@ func auditReportHandler(w http.ResponseWriter, r *http.Request) {
 	// tenant's. Empty identity ⇒ the seeded all-zeroes report (fail-closed;
 	// same shape as "no rows in window" so clients render normally).
 	scopeUserEmail := ""
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			empty := &ActionReport{
 				TenantID:    tenantID,

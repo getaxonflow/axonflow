@@ -657,9 +657,9 @@ func TestConnectorMarketplace_CreateConnectorInstance_Unsupported(t *testing.T) 
 
 // Mock connector for testing (simple implementation)
 type mockMarketplaceConnector struct {
-	name           string
-	shouldFail     bool
-	healthyStatus  bool // Separate flag for health check status
+	name          string
+	shouldFail    bool
+	healthyStatus bool // Separate flag for health check status
 }
 
 func (m *mockMarketplaceConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {

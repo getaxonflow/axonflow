@@ -123,32 +123,32 @@ func TestHashQuery(t *testing.T) {
 // TestTruncateResponse verifies response truncation
 func TestTruncateResponse(t *testing.T) {
 	tests := []struct {
-		name     string
-		response interface{}
+		name            string
+		response        interface{}
 		expectTruncated bool
 	}{
 		{
-			name:     "Short response - no truncation",
-			response: "Hello world",
+			name:            "Short response - no truncation",
+			response:        "Hello world",
 			expectTruncated: false,
 		},
 		{
-			name:     "Long response - truncate with ellipsis",
-			response: strings.Repeat("This is a very long response that should be truncated ", 10),
+			name:            "Long response - truncate with ellipsis",
+			response:        strings.Repeat("This is a very long response that should be truncated ", 10),
 			expectTruncated: true,
 		},
 		{
-			name:     "Empty response",
-			response: "",
+			name:            "Empty response",
+			response:        "",
 			expectTruncated: false,
 		},
 		{
-			name:     "Map response",
-			response: map[string]string{"key": "value"},
+			name:            "Map response",
+			response:        map[string]string{"key": "value"},
 			expectTruncated: false,
 		},
 		{
-			name:     "Large map response",
+			name: "Large map response",
 			response: map[string]string{
 				"key1": strings.Repeat("value", 50),
 				"key2": strings.Repeat("value", 50),
@@ -185,9 +185,9 @@ func TestTruncateResponse(t *testing.T) {
 // TestCalculateQueryComplexity verifies query complexity calculation
 func TestCalculateQueryComplexity(t *testing.T) {
 	tests := []struct {
-		name       string
-		query      string
-		expected   string
+		name     string
+		query    string
+		expected string
 	}{
 		{
 			name:     "Simple query - low complexity",
@@ -236,43 +236,43 @@ func TestCalculateQueryComplexity(t *testing.T) {
 // TestContainsSensitiveAccess verifies sensitive access detection
 func TestContainsSensitiveAccess(t *testing.T) {
 	tests := []struct {
-		name        string
-		query       string
+		name            string
+		query           string
 		expectSensitive bool
 	}{
 		{
-			name:        "Contains password keyword",
-			query:       "What is my password for the account?",
+			name:            "Contains password keyword",
+			query:           "What is my password for the account?",
 			expectSensitive: true,
 		},
 		{
-			name:        "Contains social_security keyword (with underscore)",
-			query:       "Show me the social_security number",
+			name:            "Contains social_security keyword (with underscore)",
+			query:           "Show me the social_security number",
 			expectSensitive: true,
 		},
 		{
-			name:        "Contains credit_card keyword (with underscore)",
-			query:       "What is the credit_card number?",
+			name:            "Contains credit_card keyword (with underscore)",
+			query:           "What is the credit_card number?",
 			expectSensitive: true,
 		},
 		{
-			name:        "Contains API key keyword",
-			query:       "Get the API key for authentication",
+			name:            "Contains API key keyword",
+			query:           "Get the API key for authentication",
 			expectSensitive: true,
 		},
 		{
-			name:        "Normal query - no sensitive keywords",
-			query:       "Plan a trip to Paris",
+			name:            "Normal query - no sensitive keywords",
+			query:           "Plan a trip to Paris",
 			expectSensitive: false,
 		},
 		{
-			name:        "Contains 'secret' but in different context",
-			query:       "Tell me a secret recipe for pasta",
+			name:            "Contains 'secret' but in different context",
+			query:           "Tell me a secret recipe for pasta",
 			expectSensitive: true, // Function checks for "secret" keyword
 		},
 		{
-			name:        "Empty query",
-			query:       "",
+			name:            "Empty query",
+			query:           "",
 			expectSensitive: false,
 		},
 	}
@@ -430,27 +430,27 @@ func TestBatchWriter_Write(t *testing.T) {
 			name: "Single entry - successful insert",
 			entries: []*AuditEntry{
 				{
-					ID:             "audit_001",
-					RequestID:      "req_001",
-					Timestamp:      time.Now(),
-					UserID:         1,
-					UserEmail:      "test@example.com",
-					UserRole:       "user",
-					ClientID:       "client_001",
-					TenantID:       "tenant_001",
-					RequestType:    "query",
-					Query:          "What is the weather?",
-					QueryHash:      "abc123",
-					PolicyDecision: "allowed",
-					PolicyDetails:  map[string]interface{}{"risk_score": 0.1},
-					Provider:       "openai",
-					Model:          "gpt-4",
-					ResponseTime:   150,
-					TokensUsed:     100,
-					Cost:           0.005,
-					RedactedFields: []string{},
-					ErrorMessage:   "",
-					ResponseSample: "The weather is sunny",
+					ID:              "audit_001",
+					RequestID:       "req_001",
+					Timestamp:       time.Now(),
+					UserID:          1,
+					UserEmail:       "test@example.com",
+					UserRole:        "user",
+					ClientID:        "client_001",
+					TenantID:        "tenant_001",
+					RequestType:     "query",
+					Query:           "What is the weather?",
+					QueryHash:       "abc123",
+					PolicyDecision:  "allowed",
+					PolicyDetails:   map[string]interface{}{"risk_score": 0.1},
+					Provider:        "openai",
+					Model:           "gpt-4",
+					ResponseTime:    150,
+					TokensUsed:      100,
+					Cost:            0.005,
+					RedactedFields:  []string{},
+					ErrorMessage:    "",
+					ResponseSample:  "The weather is sunny",
 					ComplianceFlags: []string{"gdpr_applicable"},
 					SecurityMetrics: map[string]interface{}{"risk_score": 0.1},
 				},
@@ -484,52 +484,52 @@ func TestBatchWriter_Write(t *testing.T) {
 			name: "Multiple entries - batch insert",
 			entries: []*AuditEntry{
 				{
-					ID:             "audit_002",
-					RequestID:      "req_002",
-					Timestamp:      time.Now(),
-					UserID:         2,
-					UserEmail:      "user2@example.com",
-					UserRole:       "admin",
-					ClientID:       "client_002",
-					TenantID:       "tenant_002",
-					RequestType:    "mutation",
-					Query:          "Update user profile",
-					QueryHash:      "def456",
-					PolicyDecision: "allowed",
-					PolicyDetails:  map[string]interface{}{"risk_score": 0.3},
-					Provider:       "anthropic",
-					Model:          "claude-sonnet-4",
-					ResponseTime:   200,
-					TokensUsed:     150,
-					Cost:           0.008,
-					RedactedFields: []string{"email"},
-					ErrorMessage:   "",
-					ResponseSample: "Profile updated",
+					ID:              "audit_002",
+					RequestID:       "req_002",
+					Timestamp:       time.Now(),
+					UserID:          2,
+					UserEmail:       "user2@example.com",
+					UserRole:        "admin",
+					ClientID:        "client_002",
+					TenantID:        "tenant_002",
+					RequestType:     "mutation",
+					Query:           "Update user profile",
+					QueryHash:       "def456",
+					PolicyDecision:  "allowed",
+					PolicyDetails:   map[string]interface{}{"risk_score": 0.3},
+					Provider:        "anthropic",
+					Model:           "claude-sonnet-4",
+					ResponseTime:    200,
+					TokensUsed:      150,
+					Cost:            0.008,
+					RedactedFields:  []string{"email"},
+					ErrorMessage:    "",
+					ResponseSample:  "Profile updated",
 					ComplianceFlags: []string{},
 					SecurityMetrics: map[string]interface{}{"risk_score": 0.3},
 				},
 				{
-					ID:             "audit_003",
-					RequestID:      "req_003",
-					Timestamp:      time.Now(),
-					UserID:         3,
-					UserEmail:      "user3@example.com",
-					UserRole:       "user",
-					ClientID:       "client_003",
-					TenantID:       "tenant_003",
-					RequestType:    "query",
-					Query:          "Get account balance",
-					QueryHash:      "ghi789",
-					PolicyDecision: "redacted",
-					PolicyDetails:  map[string]interface{}{"risk_score": 0.6},
-					Provider:       "openai",
-					Model:          "gpt-4",
-					ResponseTime:   180,
-					TokensUsed:     120,
-					Cost:           0.006,
-					RedactedFields: []string{"account_number"},
-					ErrorMessage:   "",
-					ResponseSample: "Balance: [REDACTED]",
+					ID:              "audit_003",
+					RequestID:       "req_003",
+					Timestamp:       time.Now(),
+					UserID:          3,
+					UserEmail:       "user3@example.com",
+					UserRole:        "user",
+					ClientID:        "client_003",
+					TenantID:        "tenant_003",
+					RequestType:     "query",
+					Query:           "Get account balance",
+					QueryHash:       "ghi789",
+					PolicyDecision:  "redacted",
+					PolicyDetails:   map[string]interface{}{"risk_score": 0.6},
+					Provider:        "openai",
+					Model:           "gpt-4",
+					ResponseTime:    180,
+					TokensUsed:      120,
+					Cost:            0.006,
+					RedactedFields:  []string{"account_number"},
+					ErrorMessage:    "",
+					ResponseSample:  "Balance: [REDACTED]",
 					ComplianceFlags: []string{"sox_relevant", "pii_access"},
 					SecurityMetrics: map[string]interface{}{"risk_score": 0.6},
 				},
@@ -1122,9 +1122,9 @@ func TestSearchAuditLogs_TotalCountExceedsPageSize(t *testing.T) {
 // TestAuditLogger_IsHealthy verifies audit logger health check
 func TestAuditLogger_IsHealthy(t *testing.T) {
 	tests := []struct {
-		name           string
-		setupDB        func() *sql.DB
-		expectHealthy  bool
+		name          string
+		setupDB       func() *sql.DB
+		expectHealthy bool
 	}{
 		{
 			name: "Healthy database connection",
@@ -1192,9 +1192,9 @@ func TestCalculateSecurityMetrics(t *testing.T) {
 	logger := &AuditLogger{}
 
 	tests := []struct {
-		name         string
-		req          OrchestratorRequest
-		policyResult *PolicyEvaluationResult
+		name            string
+		req             OrchestratorRequest
+		policyResult    *PolicyEvaluationResult
 		expectedMetrics map[string]interface{}
 	}{
 		{
@@ -1977,4 +1977,3 @@ func TestDetectComplianceFlagsAdditional(t *testing.T) {
 		})
 	}
 }
-

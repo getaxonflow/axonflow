@@ -27,9 +27,9 @@ import (
 
 // Mock connector for testing
 type mockConnector struct {
-	name         string
-	shouldFail   bool
-	queryResult  *base.QueryResult
+	name          string
+	shouldFail    bool
+	queryResult   *base.QueryResult
 	commandResult *base.CommandResult
 }
 
@@ -81,9 +81,9 @@ func (m *mockConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 	}, nil
 }
 
-func (m *mockConnector) Name() string        { return m.name }
-func (m *mockConnector) Type() string        { return "mock" }
-func (m *mockConnector) Version() string     { return "1.0.0" }
+func (m *mockConnector) Name() string           { return m.name }
+func (m *mockConnector) Type() string           { return "mock" }
+func (m *mockConnector) Version() string        { return "1.0.0" }
 func (m *mockConnector) Capabilities() []string { return []string{"query", "execute"} }
 
 // Mock fallback provider

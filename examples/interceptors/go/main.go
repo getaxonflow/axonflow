@@ -23,8 +23,8 @@ import (
 	"fmt"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
-	"github.com/getaxonflow/axonflow-sdk-go/v8/interceptors"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v9"
+	"github.com/getaxonflow/axonflow-sdk-go/v9/interceptors"
 )
 
 var failures []string

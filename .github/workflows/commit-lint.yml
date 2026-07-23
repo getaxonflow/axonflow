@@ -3,7 +3,13 @@ name: Commit Lint
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # `edited` is required: this job lints the PR TITLE, and a title is changed
+    # by editing the PR, not by pushing. Without it a PR that fails the title
+    # check stays red forever — retitling correctly does not re-run the job,
+    # and the only way to clear it is an unrelated push to force `synchronize`.
+    # (`edited` also fires on body/base edits, which is harmless: the job is a
+    # 5-second string check.)
+    types: [opened, synchronize, reopened, edited]
 
 jobs:
   commitlint:

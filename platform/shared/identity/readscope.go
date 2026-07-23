@@ -39,12 +39,47 @@ const (
 )
 
 // RoleCanReadTenant reports whether the resolved authz role grants tenant-wide
-// (cross-user) READ access on the fleet plane: admin and owner do; every other
-// role — including "" (least-privilege / unmapped) and any unknown string —
-// reads own-rows only. Fail-closed by construction: NormalizeRole collapses
-// unrecognized input to "" before the check, so no minting or forwarding path
-// can smuggle an unrecognized-but-privileged role string past this gate.
+// (cross-user) READ access on the fleet plane: admin, owner and policy_admin
+// do; every other role — including "" (least-privilege / unmapped) and any
+// unknown string — reads own-rows only. Fail-closed by construction:
+// NormalizeRole collapses unrecognized input to "" before the check, so no
+// minting or forwarding path can smuggle an unrecognized-but-privileged role
+// string past this gate.
+//
+// policy_admin joined the tenant-wide set in #2993: it is the "read-everything,
+// change-nothing-identity" tier (tenant-wide audit/decision visibility without
+// SSO/SCIM/user administration), so a per-user policy_admin token must see the
+// whole tenant trail. developer and viewer stay own-rows — that own-vs-tenant
+// split is the enforced distinction between them and policy_admin on the fleet
+// plane (portal-plane distinctions live in the seeded role permission sets).
 func RoleCanReadTenant(role string) bool {
+	switch NormalizeRole(role) {
+	case "admin", "owner", "policy_admin":
+		return true
+	default:
+		return false
+	}
+}
+
+// RoleIsAdministrative reports whether the resolved authz role carries
+// ORG-ADMINISTRATIVE authority: admin and owner do, every other role — including
+// "" (least-privilege / unmapped) and any unknown string — does not.
+//
+// #3001: this exists so the "owner is a strict superset of admin" guarantee
+// (#2993) cannot be broken again by a literal `role == "admin"` compare. Two
+// sites did exactly that, and both EXCLUDED owner, inverting the model — an
+// owner received strictly LESS than an admin. Any site that wants "an org
+// administrator" must ask here rather than string-compare, so adding a role to
+// the administrative tier is one edit.
+//
+// Deliberately NOT policy_admin: that tier administers POLICIES, not the org
+// (it is the read-everything, change-nothing-identity role). Widening it here
+// would hand it enforcement relaxations the five-role model does not grant it.
+//
+// Fail-closed by construction: NormalizeRole collapses unrecognized input to ""
+// before the check, so no minting or forwarding path can smuggle an
+// unrecognized-but-privileged role string past this gate.
+func RoleIsAdministrative(role string) bool {
 	switch NormalizeRole(role) {
 	case "admin", "owner":
 		return true

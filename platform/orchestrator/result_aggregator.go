@@ -95,27 +95,27 @@ func (a *ResultAggregator) buildSynthesisPrompt(originalQuery string, results []
 	var promptBuilder strings.Builder
 
 	promptBuilder.WriteString("You are a result synthesis AI. Combine the following task results into a coherent, comprehensive answer.\n\n")
-	fmt.Fprintf(&promptBuilder,"Original Query: %s\n\n", originalQuery)
+	fmt.Fprintf(&promptBuilder, "Original Query: %s\n\n", originalQuery)
 	promptBuilder.WriteString("Task Results:\n\n")
 
 	// Add each task result
 	for i, result := range results {
-		fmt.Fprintf(&promptBuilder,"Task %d: %s\n", i+1, result.Name)
-		fmt.Fprintf(&promptBuilder,"Status: %s\n", result.Status)
-		fmt.Fprintf(&promptBuilder,"Time: %s\n", result.ProcessTime)
+		fmt.Fprintf(&promptBuilder, "Task %d: %s\n", i+1, result.Name)
+		fmt.Fprintf(&promptBuilder, "Status: %s\n", result.Status)
+		fmt.Fprintf(&promptBuilder, "Time: %s\n", result.ProcessTime)
 
 		// Extract meaningful output
 		if output, ok := result.Output["response"]; ok {
 			if responseData, ok := output.(*LLMResponse); ok {
-				fmt.Fprintf(&promptBuilder,"Result: %s\n", responseData.Content)
+				fmt.Fprintf(&promptBuilder, "Result: %s\n", responseData.Content)
 			} else if str, ok := output.(string); ok {
-				fmt.Fprintf(&promptBuilder,"Result: %s\n", str)
+				fmt.Fprintf(&promptBuilder, "Result: %s\n", str)
 			} else {
-				fmt.Fprintf(&promptBuilder,"Result: %v\n", output)
+				fmt.Fprintf(&promptBuilder, "Result: %v\n", output)
 			}
 		} else {
 			// Try to extract any text content
-			fmt.Fprintf(&promptBuilder,"Result: %v\n", result.Output)
+			fmt.Fprintf(&promptBuilder, "Result: %v\n", result.Output)
 		}
 
 		promptBuilder.WriteString("\n")
@@ -151,23 +151,23 @@ func (a *ResultAggregator) extractSynthesizedResult(response interface{}) (strin
 func (a *ResultAggregator) simpleConcatenation(results []StepExecution, originalQuery string) string {
 	var output strings.Builder
 
-	fmt.Fprintf(&output,"Results for: %s\n\n", originalQuery)
+	fmt.Fprintf(&output, "Results for: %s\n\n", originalQuery)
 
 	for i, result := range results {
-		fmt.Fprintf(&output,"%d. %s (completed in %s)\n", i+1, result.Name, result.ProcessTime)
+		fmt.Fprintf(&output, "%d. %s (completed in %s)\n", i+1, result.Name, result.ProcessTime)
 
 		// Extract output
 		if responseOutput, ok := result.Output["response"]; ok {
 			if llmResp, ok := responseOutput.(*LLMResponse); ok {
-				fmt.Fprintf(&output,"   %s\n\n", llmResp.Content)
+				fmt.Fprintf(&output, "   %s\n\n", llmResp.Content)
 			} else if str, ok := responseOutput.(string); ok {
-				fmt.Fprintf(&output,"   %s\n\n", str)
+				fmt.Fprintf(&output, "   %s\n\n", str)
 			} else {
-				fmt.Fprintf(&output,"   %v\n\n", responseOutput)
+				fmt.Fprintf(&output, "   %v\n\n", responseOutput)
 			}
 		} else {
 			// Fallback: stringify entire output
-			fmt.Fprintf(&output,"   %v\n\n", result.Output)
+			fmt.Fprintf(&output, "   %v\n\n", result.Output)
 		}
 	}
 

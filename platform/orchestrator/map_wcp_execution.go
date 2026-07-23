@@ -89,12 +89,12 @@ func (e *MAPWCPExecutor) ExecuteWithConfirm(ctx context.Context, plan *planning.
 	}
 
 	return &MAPWCPExecutionResult{
-		PlanID:      plan.PlanID,
-		WorkflowID:  wcpWorkflow.WorkflowID,
-		Status:      "awaiting_approval",
-		CurrentStep: 0,
-		TotalSteps:  totalSteps,
-		StepName:    firstStep.Name,
+		PlanID:       plan.PlanID,
+		WorkflowID:   wcpWorkflow.WorkflowID,
+		Status:       "awaiting_approval",
+		CurrentStep:  0,
+		TotalSteps:   totalSteps,
+		StepName:     firstStep.Name,
 		ApprovalInfo: gateResp,
 	}, nil
 }

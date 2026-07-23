@@ -808,6 +808,7 @@ func TestTestPolicyHandler(t *testing.T) {
 	tests := []struct {
 		name           string
 		body           interface{}
+		omitTenant     bool
 		expectedStatus int
 		description    string
 	}{
@@ -826,6 +827,18 @@ func TestTestPolicyHandler(t *testing.T) {
 			body:           "invalid json",
 			expectedStatus: http.StatusBadRequest,
 			description:    "Should return 400 for invalid JSON",
+		},
+		{
+			// The dry-run is not side-effect free: EvaluateDynamicPolicies
+			// records a policy_metrics row whose org_id is ALSO the
+			// app.current_org_id binding its INSERT is checked against. Without
+			// a gateway-stamped tenant there is no scope to attribute it to,
+			// and falling back to the body would let a caller pick one.
+			name:           "no gateway tenant scope",
+			body:           map[string]interface{}{"query": "test query", "request_type": "chat"},
+			omitTenant:     true,
+			expectedStatus: http.StatusUnauthorized,
+			description:    "Should return 401 when X-Tenant-ID is absent",
 		},
 	}
 
@@ -846,6 +859,9 @@ func TestTestPolicyHandler(t *testing.T) {
 
 			req := httptest.NewRequest("POST", "/policies/test", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
+			if !tt.omitTenant {
+				req.Header.Set("X-Tenant-ID", "tenant-under-test")
+			}
 			w := httptest.NewRecorder()
 
 			testPolicyHandler(w, req)
@@ -854,6 +870,46 @@ func TestTestPolicyHandler(t *testing.T) {
 				t.Errorf("%s: expected status %d, got %d", tt.description, tt.expectedStatus, w.Code)
 			}
 		})
+	}
+}
+
+// TestTestPolicyHandlerIgnoresBodyTenant pins that the policy dry-run scopes
+// itself to the tenant the GATEWAY stamped, never the one in the request body.
+//
+// /api/v1/policies/test is deliberately ungated for read-only roles (it is a
+// dry-run, and the policy screens call it), but it is not side-effect free:
+// EvaluateDynamicPolicies records a policy_metrics analytics row, and that
+// row's org_id is ALSO the app.current_org_id binding its INSERT is checked
+// against — so a body-sourced tenant would let an authenticated caller in org A
+// write rows attributed to org B, with the RLS WITH CHECK passing by
+// construction, without bound. Reading the tenant from the header closes it.
+func TestTestPolicyHandlerIgnoresBodyTenant(t *testing.T) {
+	prev := dynamicPolicyEngine
+	defer func() { dynamicPolicyEngine = prev }()
+	rec := &mockPolicyEngineForWCP{}
+	dynamicPolicyEngine = rec
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"query":        "test query",
+		"request_type": "chat",
+		"user":         map[string]interface{}{"email": "a@example.com", "tenant_id": "victim-org"},
+	})
+	req := httptest.NewRequest("POST", "/policies/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "caller-org")
+	w := httptest.NewRecorder()
+
+	testPolicyHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if rec.callCount != 1 {
+		t.Fatalf("policy engine called %d time(s), want 1 — the assertion below would be vacuous", rec.callCount)
+	}
+	if got := rec.lastReq.User.TenantID; got != "caller-org" {
+		t.Fatalf("evaluated tenant = %q, want %q — the body's tenant_id was honoured, so a caller can attribute policy_metrics rows to any org they name",
+			got, "caller-org")
 	}
 }
 

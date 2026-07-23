@@ -20,11 +20,15 @@ import (
 // Deterministic effective-role rule (interim pending the #2921 role-model
 // formalization; reconcile there at integration):
 //
-//  1. any active assignment whose role grants the wildcard "*" permission
-//     (the seeded admin role) → "admin";
-//  2. otherwise the highest-precedence KNOWN role name among the active
-//     assignments: owner > policy_admin > developer > member > viewer;
-//  3. otherwise (no assignments, or only custom roles outside the known
+//  1. an assignment to a role NAMED "owner" → "owner". owner is the top tier
+//     and OUTRANKS admin (#2993): the seeded owner role carries the "*" wildcard
+//     (it is a true superset of admin), so this name check MUST precede the
+//     wildcard→admin rule or a wildcard owner would collapse into admin.
+//  2. otherwise any active assignment whose role grants the wildcard "*"
+//     permission, or is named "admin" → "admin";
+//  3. otherwise the highest-precedence KNOWN role name among the active
+//     assignments: policy_admin > developer > viewer;
+//  4. otherwise (no assignments, or only custom roles outside the known
 //     set) → "" — unmapped, which every consumer must treat as
 //     least-privilege. A custom role's read-scope semantics are #2921's to
 //     define; guessing "custom probably means broad" here would be a
@@ -33,8 +37,14 @@ type scimRoleResolver struct {
 	db *sql.DB
 }
 
-// rolePrecedence orders the known non-admin role names, strongest first.
-var rolePrecedence = []string{"owner", "policy_admin", "developer", "member", "viewer"}
+// rolePrecedence orders the known non-admin role names, strongest first. It is
+// exactly knownRoles minus "admin" (which is matched separately, by name or by
+// the "*" wildcard permission). #2993 dropped "member" from the role model, so
+// it is gone here too — the lockstep guard test asserts rolePrecedence ∪
+// {"admin"} == knownRoles so this can never silently drift from the validator's
+// vocabulary. A legacy assignment to a role named "member" now falls through to
+// "" (least-privilege), matching NormalizeRole.
+var rolePrecedence = []string{"owner", "policy_admin", "developer", "viewer"}
 
 // NewSCIMRoleResolver builds a RoleResolver over the shared platform
 // database. role_assignments is FORCE-RLS org-isolated (mig 111), so reads
@@ -100,11 +110,21 @@ func (r *scimRoleResolver) ResolveRole(ctx context.Context, orgID, email string)
 	}
 
 	names := make(map[string]bool, len(assignments))
+	adminSignal := false
 	for _, a := range assignments {
-		if a.wildcard || a.name == "admin" {
-			return "admin", nil
-		}
 		names[a.name] = true
+		if a.wildcard || a.name == "admin" {
+			adminSignal = true
+		}
+	}
+	// owner outranks admin (#2993): a role named "owner" resolves to owner even
+	// though its seeded bundle carries "*", so owner can be a true superset of
+	// admin without collapsing into it. Checked BEFORE the wildcard→admin rule.
+	if names["owner"] {
+		return "owner", nil
+	}
+	if adminSignal {
+		return "admin", nil
 	}
 	for _, candidate := range rolePrecedence {
 		if names[candidate] {

@@ -56,13 +56,13 @@ type ExecutionConfig struct {
 
 // AgentDef defines a single agent within a configuration
 type AgentDef struct {
-	Name           string             `yaml:"name"`
-	Description    string             `yaml:"description"`
-	Type           string             `yaml:"type"` // llm-call, connector-call
-	LLM            *LLMAgentConfig    `yaml:"llm,omitempty"`
-	Connector      *ConnectorRef      `yaml:"connector,omitempty"`
-	PromptTemplate string             `yaml:"prompt_template,omitempty"`
-	Parameters     map[string]any     `yaml:"parameters,omitempty"`
+	Name           string          `yaml:"name"`
+	Description    string          `yaml:"description"`
+	Type           string          `yaml:"type"` // llm-call, connector-call
+	LLM            *LLMAgentConfig `yaml:"llm,omitempty"`
+	Connector      *ConnectorRef   `yaml:"connector,omitempty"`
+	PromptTemplate string          `yaml:"prompt_template,omitempty"`
+	Parameters     map[string]any  `yaml:"parameters,omitempty"`
 }
 
 // LLMAgentConfig specifies LLM settings for an agent

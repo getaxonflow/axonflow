@@ -9,7 +9,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@axonflow/sdk": "^8.5.1"
+    "@axonflow/sdk": "^9.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

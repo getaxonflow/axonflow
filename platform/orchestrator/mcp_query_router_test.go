@@ -201,8 +201,8 @@ func TestMCPQueryRouter_RouteToAgent(t *testing.T) {
 // TestMCPQueryRouter_IsHealthy tests health check
 func TestMCPQueryRouter_IsHealthy(t *testing.T) {
 	tests := []struct {
-		name         string
-		mockResponse func(w http.ResponseWriter, r *http.Request)
+		name          string
+		mockResponse  func(w http.ResponseWriter, r *http.Request)
 		expectHealthy bool
 	}{
 		{

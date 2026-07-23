@@ -83,11 +83,11 @@ type WorkflowEngine struct {
 
 // Workflow represents a workflow definition
 type Workflow struct {
-	APIVersion       string            `json:"apiVersion"`
-	Kind             string            `json:"kind"`
-	Metadata         WorkflowMetadata  `json:"metadata"`
-	Spec             WorkflowSpec      `json:"spec"`
-	EstimatedCostUSD *float64          `json:"estimated_cost_usd,omitempty"`
+	APIVersion       string           `json:"apiVersion"`
+	Kind             string           `json:"kind"`
+	Metadata         WorkflowMetadata `json:"metadata"`
+	Spec             WorkflowSpec     `json:"spec"`
+	EstimatedCostUSD *float64         `json:"estimated_cost_usd,omitempty"`
 }
 
 type WorkflowMetadata struct {
@@ -98,11 +98,11 @@ type WorkflowMetadata struct {
 }
 
 type WorkflowSpec struct {
-	Timeout string                 `json:"timeout"`
-	Retries int                   `json:"retries"`
-	Input   InputSchema           `json:"input"`
-	Steps   []WorkflowStep        `json:"steps"`
-	Output  map[string]string     `json:"output"`
+	Timeout string            `json:"timeout"`
+	Retries int               `json:"retries"`
+	Input   InputSchema       `json:"input"`
+	Steps   []WorkflowStep    `json:"steps"`
+	Output  map[string]string `json:"output"`
 	// SoftFailureTolerance configures how parallel step failures are handled (Issue #1082)
 	// Supported values:
 	//   - "none" or "" - All steps must succeed (default)
@@ -119,19 +119,19 @@ type InputSchema struct {
 }
 
 type WorkflowStep struct {
-	Name       string                  `json:"name"`
-	Type       string                  `json:"type"`       // "llm-call", "connector-call", "conditional", etc.
-	Provider   string                  `json:"provider,omitempty"`
-	Model      string                  `json:"model,omitempty"`
-	Prompt     string                  `json:"prompt,omitempty"`
-	Function   string                  `json:"function,omitempty"`
-	Condition  string                  `json:"condition,omitempty"`
-	IfTrue     []WorkflowStep          `json:"if_true,omitempty"`
-	IfFalse    []WorkflowStep          `json:"if_false,omitempty"`
-	Timeout    string                  `json:"timeout,omitempty"`
-	MaxTokens  int                     `json:"max_tokens,omitempty"`
-	Branches   map[string]WorkflowStep `json:"branches,omitempty"`
-	Output     map[string]interface{}  `json:"output_schema,omitempty"`
+	Name      string                  `json:"name"`
+	Type      string                  `json:"type"` // "llm-call", "connector-call", "conditional", etc.
+	Provider  string                  `json:"provider,omitempty"`
+	Model     string                  `json:"model,omitempty"`
+	Prompt    string                  `json:"prompt,omitempty"`
+	Function  string                  `json:"function,omitempty"`
+	Condition string                  `json:"condition,omitempty"`
+	IfTrue    []WorkflowStep          `json:"if_true,omitempty"`
+	IfFalse   []WorkflowStep          `json:"if_false,omitempty"`
+	Timeout   string                  `json:"timeout,omitempty"`
+	MaxTokens int                     `json:"max_tokens,omitempty"`
+	Branches  map[string]WorkflowStep `json:"branches,omitempty"`
+	Output    map[string]interface{}  `json:"output_schema,omitempty"`
 
 	// MCP Connector fields (for type="connector-call")
 	Connector  string                 `json:"connector,omitempty"`  // Name of registered connector
@@ -151,7 +151,7 @@ type WorkflowExecution struct {
 	Steps        []StepExecution        `json:"steps"`
 	StartTime    time.Time              `json:"start_time"`
 	EndTime      *time.Time             `json:"end_time,omitempty"`
-	UserContext  UserContext           `json:"user_context"`
+	UserContext  UserContext            `json:"user_context"`
 	Error        string                 `json:"error,omitempty"`
 }
 
@@ -315,10 +315,10 @@ func (p *LLMCallProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, i
 
 	// Process response based on expected output schema
 	output := map[string]interface{}{
-		"response":     response.Content,
-		"provider":     providerInfo.Provider,
-		"model":        providerInfo.Model,
-		"tokens_used":  providerInfo.TokensUsed,
+		"response":      response.Content,
+		"provider":      providerInfo.Provider,
+		"model":         providerInfo.Model,
+		"tokens_used":   providerInfo.TokensUsed,
 		"response_time": providerInfo.ResponseTimeMs,
 	}
 
@@ -338,7 +338,7 @@ func (p *LLMCallProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, i
 
 func (p *LLMCallProcessor) replaceTemplateVars(template string, stepInput map[string]interface{}, execution *WorkflowExecution) string {
 	result := template
-	
+
 	// Replace {{input.key}} variables
 	for key, value := range stepInput {
 		placeholder := fmt.Sprintf("{{input.%s}}", key)
@@ -346,7 +346,7 @@ func (p *LLMCallProcessor) replaceTemplateVars(template string, stepInput map[st
 			result = strings.ReplaceAll(result, placeholder, str)
 		}
 	}
-	
+
 	// Replace {{steps.stepname.output.key}} variables
 	for _, stepExec := range execution.Steps {
 		if stepExec.Status == "completed" {
@@ -517,22 +517,22 @@ func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowSte
 func (p *ConditionalProcessor) evaluateCondition(condition string, execution *WorkflowExecution) bool {
 	// Simple condition evaluation - in production this would be more sophisticated
 	// Example: "{{steps.initial-analysis.output.escalation_required == true}}"
-	
+
 	// For demo, parse basic equality conditions
 	if strings.Contains(condition, "==") {
 		parts := strings.Split(condition, "==")
 		if len(parts) == 2 {
 			left := strings.TrimSpace(parts[0])
 			right := strings.TrimSpace(parts[1])
-			
+
 			// Extract value from execution state
 			leftValue := p.extractValue(left, execution)
-			
+
 			// Compare with expected value
 			return fmt.Sprintf("%v", leftValue) == strings.Trim(right, " \"'")
 		}
 	}
-	
+
 	// Default to false for safety
 	return false
 }
@@ -542,12 +542,12 @@ func (p *ConditionalProcessor) extractValue(path string, execution *WorkflowExec
 	if strings.HasPrefix(path, "{{") && strings.HasSuffix(path, "}}") {
 		path = strings.Trim(path, "{}")
 	}
-	
+
 	parts := strings.Split(path, ".")
 	if len(parts) >= 4 && parts[0] == "steps" {
 		stepName := parts[1]
 		outputKey := parts[3]
-		
+
 		for _, stepExec := range execution.Steps {
 			if stepExec.Name == stepName && stepExec.Status == "completed" {
 				if value, exists := stepExec.Output[outputKey]; exists {
@@ -556,7 +556,7 @@ func (p *ConditionalProcessor) extractValue(path string, execution *WorkflowExec
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -574,26 +574,26 @@ func (p *FunctionCallProcessor) ExecuteStep(ctx context.Context, step WorkflowSt
 		"executed_at": time.Now().UTC(),
 		"status":      "simulated",
 	}
-	
+
 	// Add simulated function-specific outputs
 	switch step.Function {
 	case "data-validator":
 		output["validation_score"] = 0.95
 		output["compliance_checks"] = []string{"gdpr", "ccpa"}
 		output["status"] = "valid"
-		
+
 	case "risk-calculator":
 		output["final_risk_score"] = 25
 		output["recommendation"] = "auto-approve"
-		
+
 	case "auto-moderate":
 		output["action"] = "approved"
 		output["reason"] = "low risk score"
-		
+
 	default:
 		output["result"] = "function executed successfully"
 	}
-	
+
 	return output, nil
 }
 
@@ -669,7 +669,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 			log.Printf("[Replay] Warning: Failed to start execution tracking: %v", err)
 		}
 	}
-	
+
 	// Execute steps sequentially (basic implementation)
 	for stepIndex, step := range workflow.Spec.Steps {
 		stepExecution := StepExecution{
@@ -751,7 +751,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 
 		log.Printf("Completed step: %s in %s", step.Name, stepExecution.ProcessTime)
 	}
-	
+
 	// Mark workflow as completed
 	execution.Status = "completed"
 	now := time.Now()

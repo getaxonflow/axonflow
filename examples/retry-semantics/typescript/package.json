@@ -2,7 +2,7 @@
   "name": "retry-semantics-ts",
   "type": "module",
   "dependencies": {
-    "@axonflow/sdk": "file:///Users/saurabhjain/Development/axonflow-sdk-typescript",
+    "@axonflow/sdk": "^9.0.0",
     "dotenv": "^16.0.0"
   }
 }

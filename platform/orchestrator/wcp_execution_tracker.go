@@ -534,9 +534,9 @@ func projectApproverIdentity(step *workflow_control.WorkflowStep) (approvedBy st
 	case workflow_control.ApprovalStatusRejected:
 		rejectedBy = step.ApprovedBy
 		rejectedAt = step.ApprovedAt
-	// ApprovalStatusExpired intentionally has no case: an auto-timeout has no
-	// human actor, so neither approved_* nor rejected_* identity is populated —
-	// the expiry must never be attributed to a human reviewer (#2654).
+		// ApprovalStatusExpired intentionally has no case: an auto-timeout has no
+		// human actor, so neither approved_* nor rejected_* identity is populated —
+		// the expiry must never be attributed to a human reviewer (#2654).
 	}
 	return
 }
