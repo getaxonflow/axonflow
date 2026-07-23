@@ -479,8 +479,8 @@ func TestConfigStore_CacheDirectManipulation_Update(t *testing.T) {
 	store := newTestConfigStore()
 
 	store.cache["to-update"] = &MediaGovernanceConfig{
-		TenantID: "to-update",
-		Enabled:  true,
+		TenantID:  "to-update",
+		Enabled:   true,
 		UpdatedBy: "original-user",
 	}
 
@@ -580,8 +580,8 @@ func TestConfigStore_ConcurrentReadWrite(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				store.mu.Lock()
 				store.cache["rw-tenant"] = &MediaGovernanceConfig{
-					TenantID: "rw-tenant",
-					Enabled:  j%2 == 0,
+					TenantID:  "rw-tenant",
+					Enabled:   j%2 == 0,
 					UpdatedBy: "writer-" + string(rune('0'+idx)),
 				}
 				store.mu.Unlock()
@@ -680,10 +680,10 @@ func TestUpdateMediaGovernanceConfigRequest_EmptyAnalyzersList(t *testing.T) {
 
 func TestUpdateMediaGovernanceConfigRequest_JSONDeserialization(t *testing.T) {
 	tests := []struct {
-		name             string
-		jsonInput        string
-		expectEnabled    *bool
-		expectAnalyzers  []string
+		name            string
+		jsonInput       string
+		expectEnabled   *bool
+		expectAnalyzers []string
 	}{
 		{
 			name:      "empty object",
@@ -841,8 +841,8 @@ func TestConfigStore_CacheOverwrite(t *testing.T) {
 	// Initial entry
 	store.mu.Lock()
 	store.cache["overwrite-tenant"] = &MediaGovernanceConfig{
-		TenantID: "overwrite-tenant",
-		Enabled:  true,
+		TenantID:  "overwrite-tenant",
+		Enabled:   true,
 		UpdatedBy: "first-user",
 	}
 	store.mu.Unlock()
@@ -982,7 +982,6 @@ func TestNewMediaGovernanceConfigStore_LoadAllPopulatesCache(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
-
 
 // ---------- loadAll ----------
 

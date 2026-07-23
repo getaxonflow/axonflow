@@ -2,7 +2,7 @@
 
 **Last Updated:** May 2026
 
-**SDK Versions:** v8.5.1 (Go / Python / TypeScript / Java) — v0.8.1 preview (Rust) | **Platform Version:** v9.8.0
+**SDK Versions:** v9.0.0 (Go / Python / TypeScript / Java) — v0.8.1 preview (Rust) | **Platform Version:** v9.8.0
 
 AxonFlow provides official SDKs in five languages for integrating LLM governance into your applications. The four established SDKs (Go / Python / TypeScript / Java) offer identical feature coverage; the Rust SDK is in preview with a Phase-0 baseline (auth + proxy + audit + basic MAP + basic MCP) — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix.
 
@@ -14,7 +14,7 @@ All SDKs follow the same API design principles: type-safe clients, automatic ret
 
 | SDK | Repository | Install |
 |-----|-----------|---------|
-| **Go** | [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) | `go get github.com/getaxonflow/axonflow-sdk-go/v8` |
+| **Go** | [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) | `go get github.com/getaxonflow/axonflow-sdk-go/v9` |
 | **Python** | [github.com/getaxonflow/axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) | `pip install axonflow` |
 | **TypeScript** | [github.com/getaxonflow/axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) | `npm install @axonflow/sdk` |
 | **Java** | [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) | See [Maven Central](#java) |
@@ -27,7 +27,7 @@ All SDKs follow the same API design principles: type-safe clients, automatic ret
 ### Go
 
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go/v8
+go get github.com/getaxonflow/axonflow-sdk-go/v9
 ```
 
 ```go
@@ -36,7 +36,7 @@ package main
 import (
     "context"
     "fmt"
-    axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v9"
 )
 
 func main() {
@@ -113,7 +113,7 @@ Add to your `pom.xml`:
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>8.5.1</version>
+    <version>9.0.0</version>
 </dependency>
 ```
 

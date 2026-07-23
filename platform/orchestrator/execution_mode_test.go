@@ -461,9 +461,9 @@ func TestGroupStepsForBalancedExecution_EmptySteps(t *testing.T) {
 
 func TestGroupStepsForBalancedExecution_SingleStep(t *testing.T) {
 	tests := []struct {
-		name     string
-		step     WorkflowStep
-		wantPar  bool
+		name    string
+		step    WorkflowStep
+		wantPar bool
 	}{
 		{
 			name:    "single connector-call",

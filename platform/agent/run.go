@@ -35,7 +35,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
-	_ "github.com/lib/pq" // PostgreSQL driver
+	"github.com/lib/pq" // PostgreSQL driver
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
@@ -49,6 +49,7 @@ import (
 	"axonflow/platform/common/usage"
 	"axonflow/platform/orchestrator/cost"
 	"axonflow/platform/shared/idempotency"
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/secretenv"
@@ -125,6 +126,48 @@ func getDeploymentKind() string {
 		return "dev"
 	}
 	return kind
+}
+
+// openMigrationDB opens the migration connection WITH a server-message handler.
+//
+// database/sql's plain Open discards every NOTICE and WARNING the server sends:
+// lib/pq only delivers them through pq.ConnectorWithNoticeHandler, and nothing
+// on this path installed one. Migrations tell their entire diagnostic story
+// through RAISE NOTICE / RAISE WARNING — how many owner assignments were
+// backfilled, which orgs were left without one and need the break-glass
+// endpoint, and the RLS canaries in core/149 and core/151 that report the
+// migration role cannot see `organizations` at all — and none of it has ever
+// reached the agent log. A migration that "warns" into a connection that throws
+// warnings away is not a signal; it is the silent failure it was written to
+// prevent, one layer down.
+//
+// Errors are NOT routed here: a failed migration comes back through Exec and
+// run.go log.Fatalf's on it. This is for the messages that accompany a
+// SUCCESSFUL apply, which are exactly the ones that were being lost.
+func openMigrationDB(dbURL string) (*sql.DB, error) {
+	base, err := pq.NewConnector(dbURL)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(pq.ConnectorWithNoticeHandler(base, func(n *pq.Error) {
+		if n == nil {
+			return
+		}
+		// WARNING is the only elevated severity that can arrive here: lib/pq
+		// dispatches this handler on NoticeResponse ('N') only, and an
+		// ErrorResponse ('E') goes to the error path instead — which is why the
+		// note above says errors are not routed here. Listing ERROR/FATAL/PANIC
+		// arms would be dead code contradicting that.
+		//
+		// Prefixed distinctly because a migration WARNING means the apply
+		// SUCCEEDED but did less than it claims, which is the case an operator
+		// must not scroll past.
+		if n.Severity == "WARNING" {
+			log.Printf("⚠️  [migration %s] %s", n.Severity, n.Message)
+			return
+		}
+		log.Printf("[migration %s] %s", n.Severity, n.Message)
+	})), nil
 }
 
 // setMigrationSessionVars seeds the Postgres session GUCs that downstream
@@ -913,7 +956,7 @@ func Run() {
 			var err error
 
 			for attempt := 1; attempt <= maxRetries; attempt++ {
-				migrationDB, err = sql.Open("postgres", dbURL)
+				migrationDB, err = openMigrationDB(dbURL)
 				if err == nil {
 					// Test connection with ping
 					err = migrationDB.Ping()
@@ -1941,7 +1984,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	} else if sharedEngine != nil {
 		// Primary path: UnifiedPolicyEngine (same as Gateway handler)
 		skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
-		if user.Role == "admin" {
+		// #3001: routed through the shared role predicate rather than a
+		// literal `== "admin"`. The literal excluded `owner`, so an owner —
+		// a strict SUPERSET of admin since #2993 — was enforced MORE
+		// strictly than an admin on admin-access queries. `user` here is the
+		// ResolveUser-validated identity, not a client-supplied field.
+		if sharedidentity.RoleIsAdministrative(user.Role) {
 			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
 		}
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
@@ -2800,7 +2848,10 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		result = &StaticPolicyResult{}
 	} else if sharedEngine != nil {
 		skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
-		if testUser.Role == "admin" {
+		// #3001: same shared predicate as the real request plane above. This
+		// handler exists to SIMULATE enforcement, so a literal here would make
+		// the simulation disagree with what actually happens for an `owner`.
+		if sharedidentity.RoleIsAdministrative(testUser.Role) {
 			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
 		}
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{

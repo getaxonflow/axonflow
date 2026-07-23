@@ -18,7 +18,7 @@ import (
 // loadDefaultDynamicPolicies returns the default set of dynamic policies
 func loadDefaultDynamicPolicies() []DynamicPolicy {
 	now := time.Now()
-	
+
 	return []DynamicPolicy{
 		// High-risk query blocking
 		{
@@ -53,7 +53,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Sensitive data access control
 		{
 			ID:          "pol_sensitive_data_control",
@@ -85,7 +85,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 				{
 					Type: "log",
 					Config: map[string]interface{}{
-						"level": "warning",
+						"level":   "warning",
 						"message": "Non-admin attempted to access salary data",
 					},
 				},
@@ -93,7 +93,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Medical data HIPAA compliance
 		{
 			ID:          "pol_hipaa_compliance",
@@ -125,7 +125,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 				{
 					Type: "redact",
 					Config: map[string]interface{}{
-						"fields": []string{"ssn", "patient_id", "diagnosis_details"},
+						"fields":            []string{"ssn", "patient_id", "diagnosis_details"},
 						"unless_permission": "view_phi",
 					},
 				},
@@ -133,7 +133,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Financial data protection
 		{
 			ID:          "pol_financial_data_protection",
@@ -168,7 +168,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Rate limiting for expensive queries
 		{
 			ID:          "pol_expensive_query_limit",
@@ -206,7 +206,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// GDPR compliance for EU users
 		{
 			ID:          "pol_gdpr_compliance",
@@ -239,14 +239,14 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 					Type: "redact",
 					Config: map[string]interface{}{
 						"consent_required": true,
-						"fields": []string{"email", "phone", "address"},
+						"fields":           []string{"email", "phone", "address"},
 					},
 				},
 			},
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Anomaly detection
 		{
 			ID:          "pol_anomaly_detection",
@@ -280,7 +280,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Cross-tenant access prevention
 		{
 			ID:          "pol_tenant_isolation",
@@ -319,7 +319,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// LLM cost optimization
 		{
 			ID:          "pol_llm_cost_optimization",
@@ -352,7 +352,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		
+
 		// Debug mode restrictions
 		{
 			ID:          "pol_debug_mode_restriction",

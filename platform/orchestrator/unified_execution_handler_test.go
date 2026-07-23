@@ -966,8 +966,8 @@ func (f *failingListRepo) List(_ context.Context, _ execution.ListExecutionsRequ
 // while List still works (returns empty results) so the WCP/MAP trackers' metadata searches fail.
 type failingGetByMetadataRepo struct {
 	mockRepo
-	getErr            error
-	getByMetadataErr  error
+	getErr           error
+	getByMetadataErr error
 }
 
 func (f *failingGetByMetadataRepo) Get(_ context.Context, _ string) (*execution.ExecutionStatus, error) {

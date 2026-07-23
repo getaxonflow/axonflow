@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "dependencies": {
-    "@axonflow/sdk": "file:../../../../../axonflow-sdk-typescript-1673"
+    "@axonflow/sdk": "^9.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

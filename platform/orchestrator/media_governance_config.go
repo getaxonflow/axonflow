@@ -23,11 +23,11 @@ import (
 
 // MediaGovernanceConfig represents per-tenant media governance configuration.
 type MediaGovernanceConfig struct {
-	TenantID         string   `json:"tenant_id"`
-	Enabled          bool     `json:"enabled"`
-	AllowedAnalyzers []string `json:"allowed_analyzers,omitempty"`
+	TenantID         string    `json:"tenant_id"`
+	Enabled          bool      `json:"enabled"`
+	AllowedAnalyzers []string  `json:"allowed_analyzers,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at"`
-	UpdatedBy        string   `json:"updated_by,omitempty"`
+	UpdatedBy        string    `json:"updated_by,omitempty"`
 }
 
 // MediaGovernanceStatus represents the media governance feature status for a tier.

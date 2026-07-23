@@ -30,7 +30,7 @@ type PlanningEngine struct {
 	templates       map[string]*DomainTemplate
 	registry        *AgentRegistry // Config-based agent registry (MAP 0.5)
 	logger          *logger.Logger
-	connectorRouter *ConnectorRouter // Generic connector routing (MAP v1.0)
+	connectorRouter *ConnectorRouter  // Generic connector routing (MAP v1.0)
 	pricingConfig   PlanCostEstimator // Cost estimation for plan steps
 }
 
@@ -115,9 +115,9 @@ func (e *PlanningEngine) tryLoadAgentConfigs() bool {
 	// Standard config locations to check (in order of priority)
 	configPaths := []string{
 		os.Getenv("AXONFLOW_AGENT_CONFIG_DIR"), // Environment variable override
-		"./agents",                              // Current directory
-		"./platform/orchestrator/agents",        // Platform relative path
-		"/etc/axonflow/agents",                  // System-wide config
+		"./agents",                             // Current directory
+		"./platform/orchestrator/agents",       // Platform relative path
+		"/etc/axonflow/agents",                 // System-wide config
 	}
 
 	for _, path := range configPaths {
@@ -410,7 +410,7 @@ func (e *PlanningEngine) heuristicAnalysis(query string, domainHint string) *Que
 
 	analysis := &QueryAnalysis{
 		Domain:           domainHint,
-		Complexity:       3, // Default moderate complexity
+		Complexity:       3,    // Default moderate complexity
 		RequiresParallel: true, // Default to parallel
 		SuggestedTasks:   []string{"task-1", "task-2", "task-3"},
 		Reasoning:        "Heuristic analysis (LLM unavailable)",
@@ -742,24 +742,24 @@ func (e *PlanningEngine) createTaskStep(taskName string, query string, domain st
 		if strings.Contains(strings.ToLower(taskName), "flight") {
 			// Use Amadeus connector for flight search
 			return WorkflowStep{
-				Name:      taskName,
-				Type:      "connector-call",
-				Connector: "amadeus-travel",
-				Operation: "query",
-				Statement: "search_flights",
+				Name:       taskName,
+				Type:       "connector-call",
+				Connector:  "amadeus-travel",
+				Operation:  "query",
+				Statement:  "search_flights",
 				Parameters: e.extractFlightParameters(query),
-				Timeout:   "30s",
+				Timeout:    "30s",
 			}
 		} else if strings.Contains(strings.ToLower(taskName), "hotel") {
 			// Use Amadeus connector for hotel search
 			return WorkflowStep{
-				Name:      taskName,
-				Type:      "connector-call",
-				Connector: "amadeus-travel",
-				Operation: "query",
-				Statement: "search_hotels",
+				Name:       taskName,
+				Type:       "connector-call",
+				Connector:  "amadeus-travel",
+				Operation:  "query",
+				Statement:  "search_hotels",
 				Parameters: e.extractHotelParameters(query),
-				Timeout:   "30s",
+				Timeout:    "30s",
 			}
 		}
 	}
@@ -767,10 +767,10 @@ func (e *PlanningEngine) createTaskStep(taskName string, query string, domain st
 	// Fall back to LLM calls for other queries
 	taskPrompt := e.buildTaskPrompt(taskName, query, domain)
 	return WorkflowStep{
-		Name:     taskName,
-		Type:     "llm-call",
-		Prompt:   taskPrompt,
-		Timeout:  "30s",
+		Name:    taskName,
+		Type:    "llm-call",
+		Prompt:  taskPrompt,
+		Timeout: "30s",
 	}
 }
 
@@ -797,11 +797,11 @@ func (e *PlanningEngine) routeToConnectors(workflow *Workflow, query, clientID, 
 			if len(matches) > 0 {
 				match := matches[0] // Primary connector
 				e.logger.Info(clientID, requestID, "Routing step to connector (enterprise, fallback chain available)", map[string]interface{}{
-					"step_name":   step.Name,
-					"connector":   match.Connector,
-					"operation":   match.Operation,
-					"domain":      match.Domain,
-					"fallbacks":   len(matches) - 1,
+					"step_name": step.Name,
+					"connector": match.Connector,
+					"operation": match.Operation,
+					"domain":    match.Domain,
+					"fallbacks": len(matches) - 1,
 				})
 				e.applyConnectorMatch(step, &match, query)
 				convertedCount++
@@ -872,11 +872,11 @@ func (e *PlanningEngine) convertToAmadeusConnectorCalls(workflow *Workflow, quer
 		// Check if this is a flight search step
 		if strings.Contains(stepNameLower, "flight") {
 			e.logger.Info(clientID, requestID, "Converting step to Amadeus connector-call (flights)", map[string]interface{}{
-				"step_name":        step.Name,
-				"original_type":    "llm-call",
-				"new_type":         "connector-call",
-				"connector":        "amadeus-travel",
-				"operation":        "search_flights",
+				"step_name":     step.Name,
+				"original_type": "llm-call",
+				"new_type":      "connector-call",
+				"connector":     "amadeus-travel",
+				"operation":     "search_flights",
 			})
 			step.Type = "connector-call"
 			step.Connector = "amadeus-travel"
@@ -890,11 +890,11 @@ func (e *PlanningEngine) convertToAmadeusConnectorCalls(workflow *Workflow, quer
 			convertedCount++
 		} else if strings.Contains(stepNameLower, "hotel") {
 			e.logger.Info(clientID, requestID, "Converting step to Amadeus connector-call (hotels)", map[string]interface{}{
-				"step_name":        step.Name,
-				"original_type":    "llm-call",
-				"new_type":         "connector-call",
-				"connector":        "amadeus-travel",
-				"operation":        "search_hotels",
+				"step_name":     step.Name,
+				"original_type": "llm-call",
+				"new_type":      "connector-call",
+				"connector":     "amadeus-travel",
+				"operation":     "search_hotels",
 			})
 			step.Type = "connector-call"
 			step.Connector = "amadeus-travel"
@@ -912,7 +912,7 @@ func (e *PlanningEngine) convertToAmadeusConnectorCalls(workflow *Workflow, quer
 	if convertedCount > 0 {
 		e.logger.Info(clientID, requestID, "Amadeus connector conversion complete", map[string]interface{}{
 			"converted_steps": convertedCount,
-			"query":          query,
+			"query":           query,
 		})
 	}
 }
@@ -1412,7 +1412,7 @@ func (e *PlanningEngine) extractHotelParameters(query string) map[string]interfa
 	}
 
 	// Set check-in/check-out dates
-	params["check_in"] = time.Now().AddDate(0, 0, 7).Format("2006-01-02")  // 1 week from now
+	params["check_in"] = time.Now().AddDate(0, 0, 7).Format("2006-01-02")   // 1 week from now
 	params["check_out"] = time.Now().AddDate(0, 0, 10).Format("2006-01-02") // 10 days from now
 
 	return params

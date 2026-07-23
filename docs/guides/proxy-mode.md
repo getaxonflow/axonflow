@@ -71,7 +71,7 @@ const response = await axonflow.protect(async () => {
 ```go
 import (
     "os"
-    "github.com/getaxonflow/axonflow-sdk-go/v8"
+    "github.com/getaxonflow/axonflow-sdk-go/v9"
 )
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{

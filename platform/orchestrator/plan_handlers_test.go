@@ -39,8 +39,8 @@ func TestUpdatePlanHandler(t *testing.T) {
 			planID: "plan_update_ok",
 			orgID:  "org_1",
 			body: map[string]interface{}{
-				"version": 1,
-				"execution_mode":   "parallel",
+				"version":        1,
+				"execution_mode": "parallel",
 			},
 			setupService: true,
 			setupPlan: &planning.Plan{
@@ -61,8 +61,8 @@ func TestUpdatePlanHandler(t *testing.T) {
 			planID: "plan_update_conflict",
 			orgID:  "org_1",
 			body: map[string]interface{}{
-				"version": 5, // plan is at version 1
-				"execution_mode":   "parallel",
+				"version":        5, // plan is at version 1
+				"execution_mode": "parallel",
 			},
 			setupService: true,
 			setupPlan: &planning.Plan{
@@ -104,8 +104,8 @@ func TestUpdatePlanHandler(t *testing.T) {
 			planID: "nonexistent_plan",
 			orgID:  "org_1",
 			body: map[string]interface{}{
-				"version": 1,
-				"execution_mode":   "parallel",
+				"version":        1,
+				"execution_mode": "parallel",
 			},
 			setupService:   true,
 			setupPlan:      nil, // no plan stored
@@ -117,8 +117,8 @@ func TestUpdatePlanHandler(t *testing.T) {
 			planID: "plan_update_completed",
 			orgID:  "org_1",
 			body: map[string]interface{}{
-				"version": 1,
-				"execution_mode":   "parallel",
+				"version":        1,
+				"execution_mode": "parallel",
 			},
 			setupService: true,
 			setupPlan: &planning.Plan{
@@ -140,8 +140,8 @@ func TestUpdatePlanHandler(t *testing.T) {
 			planID: "plan_any",
 			orgID:  "org_1",
 			body: map[string]interface{}{
-				"version": 1,
-				"execution_mode":   "parallel",
+				"version":        1,
+				"execution_mode": "parallel",
 			},
 			setupService:   false,
 			setupPlan:      nil,
@@ -256,8 +256,8 @@ func TestUpdatePlanHandler_SuccessResponseFields(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"version": 1,
-		"execution_mode":   "parallel",
+		"version":        1,
+		"execution_mode": "parallel",
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/plan/plan_update_fields", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -321,8 +321,8 @@ func TestUpdatePlanHandler_InvalidExecutionMode(t *testing.T) {
 	defer os.Setenv("DEPLOYMENT_MODE", oldDeployment)
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"version": 1,
-		"execution_mode":   "invalid_mode",
+		"version":        1,
+		"execution_mode": "invalid_mode",
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/plan/plan_bad_mode", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -371,7 +371,7 @@ func TestUpdatePlanHandler_CrossTenantRejected(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"version": 1,
-		"domain":           "travel",
+		"domain":  "travel",
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/plan/plan_cross_tenant_update", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1087,13 +1087,13 @@ func TestGetPlanStatusHandler_LegacyPathReturnsUnifiedFields(t *testing.T) {
 	mockRepo := planning.NewMockRepository()
 	now := time.Now()
 	testPlan := &planning.Plan{
-		PlanID:    "plan_status_unified",
-		OrgID:     "org_1",
-		Query:     "analyze travel data",
-		Domain:    "travel",
-		Status:    planning.PlanStatusCompleted,
-		StepCount: 3,
-		Version:   2,
+		PlanID:             "plan_status_unified",
+		OrgID:              "org_1",
+		Query:              "analyze travel data",
+		Domain:             "travel",
+		Status:             planning.PlanStatusCompleted,
+		StepCount:          3,
+		Version:            2,
 		ExecutionMode:      "sequential",
 		Complexity:         3,
 		WorkflowDefinition: json.RawMessage(`{"spec":{"steps":[{"name":"fetch","type":"api-call"},{"name":"analyze","type":"llm-call"},{"name":"report","type":"llm-call"}]}}`),

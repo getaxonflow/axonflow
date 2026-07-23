@@ -42,7 +42,7 @@ Claude returns tool_use blocks
 | ComputerUseGovernor.check_tool_use(block)     |
 | 1. Local bash pattern check (fast, no network)|
 |    - rm -rf, dd if=, cat ~/.ssh/, curl|bash   |
-| 2. mcp_check_input(computer_use.{action})     |
+| 2. mcp_check_input(computer_use, tool={name}) |
 |    - PII in type text, SQLi, secrets          |
 | Decision: ALLOW or BLOCK                       |
 +-----------------------------------------------+
@@ -53,7 +53,7 @@ Execute tool (screenshot, click, type, bash)
     v
 +-----------------------------------------------+
 | ComputerUseGovernor.check_result(name, result)|
-| mcp_check_output(computer_use.{name})         |
+| mcp_check_output(computer_use, tool={name})   |
 | Decision: ALLOW, REDACT, or BLOCK             |
 +-----------------------------------------------+
     |

@@ -178,8 +178,8 @@ func TestMCPConnector_BuildParameters_WithTemplates(t *testing.T) {
 	}
 
 	input := map[string]interface{}{
-		"destination":  "Paris",
-		"max_results":  "10",
+		"destination": "Paris",
+		"max_results": "10",
 		"extra_param": "extra",
 	}
 

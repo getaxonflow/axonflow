@@ -542,7 +542,9 @@ func sessionSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	// caller with no per-user identity gets an empty bucket list (fail-closed).
 	scopeUserEmail := ""
 	scopedEmpty := false
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			scopedEmpty = true
 		}

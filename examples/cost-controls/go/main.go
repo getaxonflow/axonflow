@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v9"
 )
 
 func isNotFoundError(err error) bool {

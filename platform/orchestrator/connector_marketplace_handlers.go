@@ -30,19 +30,19 @@ var credentialEncryptor *config.CredentialEncryptor
 
 // ConnectorMetadata represents connector information for the marketplace
 type ConnectorMetadata struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	Category     string   `json:"category"`
-	Icon         string   `json:"icon"`
-	Tags         []string `json:"tags"`
-	Capabilities []string `json:"capabilities"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	Type         string      `json:"type"`
+	Version      string      `json:"version"`
+	Description  string      `json:"description"`
+	Category     string      `json:"category"`
+	Icon         string      `json:"icon"`
+	Tags         []string    `json:"tags"`
+	Capabilities []string    `json:"capabilities"`
 	ConfigSchema interface{} `json:"config_schema"`
-	Installed    bool     `json:"installed"`
-	Healthy      bool     `json:"healthy,omitempty"`
-	LastCheck    string   `json:"last_check,omitempty"`
+	Installed    bool        `json:"installed"`
+	Healthy      bool        `json:"healthy,omitempty"`
+	LastCheck    string      `json:"last_check,omitempty"`
 }
 
 // ConnectorInstallRequest represents a request to install a connector
@@ -149,7 +149,7 @@ func listConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"connectors": metadata,
-		"total": len(metadata),
+		"total":      len(metadata),
 	}); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
@@ -272,10 +272,10 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "Connector installed successfully",
+		"success":      true,
+		"message":      "Connector installed successfully",
 		"connector_id": connectorID,
-		"name": req.Name,
+		"name":         req.Name,
 	}); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}

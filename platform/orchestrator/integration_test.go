@@ -88,7 +88,7 @@ func TestEndToEndPlanningToExecution(t *testing.T) {
 	}
 
 	workflow, err := planningEngine.GeneratePlan(ctx, req)
-	if err != nil{
+	if err != nil {
 		t.Fatalf("Planning failed: %v", err)
 	}
 

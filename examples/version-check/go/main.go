@@ -16,7 +16,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v8"
+	"github.com/getaxonflow/axonflow-sdk-go/v9"
 )
 
 var failures []string

@@ -133,7 +133,7 @@ curl -X POST "https://your-axonflow-host/api/v1/query/execute" \
 **Go:**
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v8/axonflow"
+import "github.com/getaxonflow/axonflow-sdk-go/v9/axonflow"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "https://your-axonflow-host",

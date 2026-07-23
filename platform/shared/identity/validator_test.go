@@ -110,12 +110,13 @@ func TestRegistry_OrderDuplicatesAndLookup(t *testing.T) {
 // #2963: IsFleetRole / FleetRoleNames expose the resolver's closed vocabulary
 // so a configuration surface can reject an unrecognized role name up front.
 func TestIsFleetRole(t *testing.T) {
-	for _, r := range []string{"admin", "owner", "policy_admin", "developer", "member", "viewer"} {
+	for _, r := range []string{"admin", "owner", "policy_admin", "developer", "viewer"} {
 		if !IsFleetRole(r) {
 			t.Errorf("IsFleetRole(%q) = false, want true", r)
 		}
 	}
-	for _, r := range []string{"", "Admin", "ADMIN", "billing_ops", "superuser", "root", "*"} {
+	// "member" was dropped from the role model in #2993; it is now unknown.
+	for _, r := range []string{"", "member", "Admin", "ADMIN", "billing_ops", "superuser", "root", "*"} {
 		if IsFleetRole(r) {
 			t.Errorf("IsFleetRole(%q) = true, want false", r)
 		}
@@ -128,8 +129,8 @@ func TestIsFleetRole(t *testing.T) {
 // rolePrecedence is defined only in the enterprise build.)
 func TestFleetRoleNames_MatchesNormalize(t *testing.T) {
 	names := FleetRoleNames()
-	if len(names) != 6 {
-		t.Fatalf("FleetRoleNames() has %d entries, want 6: %v", len(names), names)
+	if len(names) != 5 {
+		t.Fatalf("FleetRoleNames() has %d entries, want 5 (#2993 dropped member): %v", len(names), names)
 	}
 	for _, n := range names {
 		if NormalizeRole(n) != n {

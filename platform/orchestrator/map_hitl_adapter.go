@@ -38,10 +38,10 @@ func (c *MAPHITLPolicyChecker) CheckPolicy(ctx context.Context, step WorkflowSte
 		RequestType: "map_step",
 		User:        execution.UserContext,
 		Context: map[string]interface{}{
-			"step_name":    step.Name,
-			"step_type":    step.Type,
+			"step_name":     step.Name,
+			"step_type":     step.Type,
 			"step_provider": step.Provider,
-			"step_model":   step.Model,
+			"step_model":    step.Model,
 		},
 	}
 

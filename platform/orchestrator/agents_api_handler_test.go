@@ -984,9 +984,9 @@ func TestAgentsAPIHandler_CORS_WithValidOrigin(t *testing.T) {
 	handler := NewAgentsAPIHandler(registry)
 
 	tests := []struct {
-		name           string
-		origin         string
-		expectOrigin   bool
+		name         string
+		origin       string
+		expectOrigin bool
 	}{
 		{
 			name:         "allowed localhost origin",

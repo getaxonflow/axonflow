@@ -177,12 +177,12 @@ func TestMAPWCPExecutor_ExecuteWithStep_NilService(t *testing.T) {
 
 func TestMAPWCPExecutionResult_Fields(t *testing.T) {
 	result := &MAPWCPExecutionResult{
-		PlanID:      "plan-abc",
-		WorkflowID:  "wf-123",
-		Status:      "awaiting_approval",
-		CurrentStep: 2,
-		TotalSteps:  5,
-		StepName:    "validate_input",
+		PlanID:       "plan-abc",
+		WorkflowID:   "wf-123",
+		Status:       "awaiting_approval",
+		CurrentStep:  2,
+		TotalSteps:   5,
+		StepName:     "validate_input",
 		ApprovalInfo: map[string]string{"url": "https://example.com/approve"},
 	}
 

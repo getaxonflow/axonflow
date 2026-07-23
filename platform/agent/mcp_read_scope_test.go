@@ -117,9 +117,10 @@ func TestSessionCanReadTenant(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	cases := map[string]bool{
-		"admin": true, "owner": true,
-		"developer": false, "member": false, "viewer": false,
-		"policy_admin": false, "": false, "root": false,
+		"admin": true, "owner": true, "policy_admin": true, // #2993: policy_admin reads tenant-wide
+		"developer": false, "viewer": false,
+		"member": false, // dropped from the model → unknown → own-rows
+		"":       false, "root": false,
 	}
 	for role, want := range cases {
 		if got := sessionCanReadTenant(&mcpSession{userRole: role}); got != want {

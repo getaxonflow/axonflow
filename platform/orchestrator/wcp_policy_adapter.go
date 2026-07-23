@@ -125,7 +125,7 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 		Severity:      deriveSeverityFromResult(result),
 		RequestContext: map[string]interface{}{
 			"workflow_id":   step.WorkflowID,
-			"step_id":      step.StepID,
+			"step_id":       step.StepID,
 			"workflow_name": step.WorkflowName,
 			"step_index":    step.StepIndex,
 			"model":         step.Model,

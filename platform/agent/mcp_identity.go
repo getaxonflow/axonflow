@@ -107,11 +107,16 @@ func registerFleetValidators() {
 	}
 
 	// Path B — IdP-issued OIDC/JWKS tokens, role resolved from the SCIM-synced
-	// directory (never the token's own role claim).
+	// directory (never the token's own role claim). #2989 (ADR-060 P1): the
+	// role resolver is now reached through the shared IdentityAttributeResolver
+	// seam rather than NewSCIMRoleResolver directly — IdentityAttributeResolver
+	// embeds RoleResolver, so it satisfies NewOIDCVerifier's dependency
+	// unmodified, and the role logic it delegates to is byte-for-byte the same
+	// scimRoleResolver as before this change.
 	cfg, cfgErr := sharedidentity.NewDBOIDCConfigProvider(db)
-	roles, roleErr := sharedidentity.NewSCIMRoleResolver(db)
-	if cfgErr == nil && roleErr == nil {
-		if v, verr := sharedidentity.NewOIDCVerifier(cfg, roles); verr == nil {
+	attrs, attrsErr := sharedidentity.NewIdentityAttributeResolver(db)
+	if cfgErr == nil && attrsErr == nil {
+		if v, verr := sharedidentity.NewOIDCVerifier(cfg, attrs); verr == nil {
 			if regErr := sharedidentity.RegisterValidator(v); regErr != nil {
 				log.Printf("[MCP-Server] OIDC validator not registered: %v", regErr)
 			}
@@ -122,18 +127,18 @@ func registerFleetValidators() {
 		if cfgErr != nil && !errors.Is(cfgErr, sharedidentity.ErrEnterpriseOnly) {
 			log.Printf("[MCP-Server] OIDC config provider unavailable: %v", cfgErr)
 		}
-		if roleErr != nil && !errors.Is(roleErr, sharedidentity.ErrEnterpriseOnly) {
-			log.Printf("[MCP-Server] SCIM role resolver unavailable: %v", roleErr)
+		if attrsErr != nil && !errors.Is(attrsErr, sharedidentity.ErrEnterpriseOnly) {
+			log.Printf("[MCP-Server] identity attribute resolver unavailable: %v", attrsErr)
 		}
 	}
 }
 
 // sessionCanReadTenant reports whether this MCP session may read tenant-wide
-// (cross-user) rows (#2922): a validated admin/owner role, or a Community-mode
-// deployment (single-operator, no fleet — mirrors the orchestrator's
-// resolveCallerReadScope Community posture so the two planes agree). Every
-// other session — shared-credential, trust-gated header identity, developer/
-// member/viewer tokens — reads own-rows only.
+// (cross-user) rows (#2922): a validated admin/owner/policy_admin role (#2993),
+// or a Community-mode deployment (single-operator, no fleet — mirrors the
+// orchestrator's resolveCallerReadScope Community posture so the two planes
+// agree). Every other session — shared-credential, trust-gated header identity,
+// developer/viewer tokens — reads own-rows only.
 func sessionCanReadTenant(s *mcpSession) bool {
 	if isCommunityMode() {
 		return true

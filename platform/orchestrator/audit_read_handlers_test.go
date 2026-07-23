@@ -229,7 +229,7 @@ func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
 	rows := sqlmock.NewRows(auditExportColumns).AddRow(
 		"aud-9", "req-9", ts, 1, "dev@acme.com", "agent", "acme", "acme",
 		"org", "tool_call", "Tool: bash", "blocked", []byte(`{}`), "", "",
-		int64(5), 0, 0.0, []byte(`[]`), "", "resp [REDACTED:ssn]", "corr-9", "sess-9")
+		int64(5), 137, 0.0, []byte(`[]`), "", "resp [REDACTED:ssn]", "corr-9", "sess-9")
 	mock.ExpectQuery("SELECT id, request_id, timestamp").
 		WithArgs("acme").WillReturnRows(rows)
 
@@ -261,6 +261,21 @@ func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
 		// redacted content preserved verbatim in the export
 		if recs[1][8] != "resp [REDACTED:ssn]" {
 			t.Fatalf("response_sample not preserved: %q", recs[1][8])
+		}
+		// tokens column (Ajeya request): sourced from tokens_used, sits right
+		// after response_time_ms. Assert both header position and the row cell.
+		tokIdx := -1
+		for i, h := range recs[0] {
+			if h == "tokens" {
+				tokIdx = i
+				break
+			}
+		}
+		if tokIdx == -1 {
+			t.Fatalf("tokens column absent from header: %v", recs[0])
+		}
+		if recs[1][tokIdx] != "137" {
+			t.Fatalf("want tokens=137 in tokens cell, got %q (row %v)", recs[1][tokIdx], recs[1])
 		}
 	})
 }
@@ -371,7 +386,7 @@ func TestAuditExportHandler_PluginBatch1Filters(t *testing.T) {
 				"org", "llm_call", "q", "blocked", []byte(`{}`), "", "",
 				int64(3), 0, 0.0, []byte(`[]`), "", "", "corr-b", "sess-b")
 			// Tenant from the trusted header ($1), the filter value from the body ($2).
-			mock.ExpectQuery("SELECT id, request_id, timestamp(.+)" + tc.sqlFrag).
+			mock.ExpectQuery("SELECT id, request_id, timestamp(.+)"+tc.sqlFrag).
 				WithArgs("acme", tc.argVal).
 				WillReturnRows(rows)
 			withGlobalAuditLogger(al, func() {

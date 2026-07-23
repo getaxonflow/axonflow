@@ -2301,12 +2301,35 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TENANT SCOPE COMES FROM THE AUTHENTICATED REQUEST, NEVER THE BODY.
+	//
+	// This is a dry-run, but it is not side-effect free: EvaluateDynamicPolicies
+	// records a policy_metrics analytics row, and that row's org_id — which is
+	// also the app.current_org_id RLS binding the INSERT is checked against —
+	// is taken from the evaluated request's tenant. Sourced from the body, an
+	// authenticated caller in org A could write metrics rows attributed to org
+	// B (the WITH CHECK passes by construction, because the same value binds
+	// the GUC), and repeat it without bound.
+	//
+	// So the body's user.tenant_id is DISCARDED and replaced with the tenant
+	// the gateway stamped. /impact-report and /conflicts already resolved their
+	// scope this way; /policies/simulate did NOT — it filled the tenant only
+	// when the body left it empty, so the body won — and was corrected in the
+	// same change. Everything else about the sample request stays
+	// caller-supplied; that is the point of a dry-run.
+	scopedTenant := resolveTenantOrFail(w, r, "policy/test")
+	if scopedTenant == "" {
+		return
+	}
+	user := testReq.User
+	user.TenantID = scopedTenant
+
 	// Create test request
 	req := OrchestratorRequest{
 		RequestID:   "test-" + generateRequestID(),
 		Query:       testReq.Query,
 		RequestType: testReq.RequestType,
-		User:        testReq.User,
+		User:        user,
 		Timestamp:   time.Now(),
 	}
 
@@ -2644,7 +2667,9 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		searchReq.Limit = 100
 	}
 
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			writeEmptyAuditSearchResponse(w, searchReq.Limit, searchReq.Offset)
 			return
