@@ -428,14 +428,14 @@ func TestWCPExecutionTracker_SyncWorkflowStatus(t *testing.T) {
 	totalSteps := 2
 	now := time.Now()
 	workflow := &workflow_control.Workflow{
-		WorkflowID:       "wf_sync_test",
-		WorkflowName:     "Sync Test",
-		Source:           workflow_control.WorkflowSourceExternal,
-		Status:           workflow_control.WorkflowStatusInProgress,
-		TotalSteps:       &totalSteps,
-		StartedAt:        now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		WorkflowID:   "wf_sync_test",
+		WorkflowName: "Sync Test",
+		Source:       workflow_control.WorkflowSourceExternal,
+		Status:       workflow_control.WorkflowStatusInProgress,
+		TotalSteps:   &totalSteps,
+		StartedAt:    now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	_, err := tracker.StartWorkflowExecution(ctx, workflow)
@@ -656,14 +656,14 @@ func TestSyncStepCompleted(t *testing.T) {
 	// Create a workflow with one step
 	totalSteps := 2
 	workflow := &workflow_control.Workflow{
-		WorkflowID:       "wf_step_completed",
-		WorkflowName:     "Step Completed Test",
-		Source:           workflow_control.WorkflowSourceLangGraph,
-		Status:           workflow_control.WorkflowStatusInProgress,
-		TotalSteps:       &totalSteps,
-		StartedAt:        now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		WorkflowID:   "wf_step_completed",
+		WorkflowName: "Step Completed Test",
+		Source:       workflow_control.WorkflowSourceLangGraph,
+		Status:       workflow_control.WorkflowStatusInProgress,
+		TotalSteps:   &totalSteps,
+		StartedAt:    now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 		Steps: []workflow_control.WorkflowStep{
 			{
 				StepID:        "step_1",

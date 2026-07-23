@@ -17,8 +17,8 @@ type ConfirmModeEvaluator struct{}
 // EvaluateStepGate always returns require_approval for confirm mode.
 func (e *ConfirmModeEvaluator) EvaluateStepGate(ctx context.Context, step *workflow_control.StepGateContext) *workflow_control.StepGateEvaluation {
 	return &workflow_control.StepGateEvaluation{
-		Decision:          workflow_control.GateDecisionRequireApproval,
-		Reason:            "MAP confirm mode: all steps require explicit approval",
+		Decision:  workflow_control.GateDecisionRequireApproval,
+		Reason:    "MAP confirm mode: all steps require explicit approval",
 		PolicyIDs: []string{"map-confirm-mode"},
 	}
 }

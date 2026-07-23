@@ -41,12 +41,12 @@ type PolicyConflictResponse struct {
 
 // PolicyConflict describes a detected conflict between two policies.
 type PolicyConflict struct {
-	PolicyA         PolicyConflictRef `json:"policy_a"`
-	PolicyB         PolicyConflictRef `json:"policy_b"`
-	ConflictType    string            `json:"conflict_type"` // contradictory_action, shadow, redundant
-	Description     string            `json:"description"`
-	Severity        string            `json:"severity"` // high, medium, low
-	OverlappingField string           `json:"overlapping_field"`
+	PolicyA          PolicyConflictRef `json:"policy_a"`
+	PolicyB          PolicyConflictRef `json:"policy_b"`
+	ConflictType     string            `json:"conflict_type"` // contradictory_action, shadow, redundant
+	Description      string            `json:"description"`
+	Severity         string            `json:"severity"` // high, medium, low
+	OverlappingField string            `json:"overlapping_field"`
 }
 
 // PolicyConflictRef identifies a policy in a conflict pair.

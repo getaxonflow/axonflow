@@ -229,35 +229,35 @@ func (c *AmadeusClient) SearchFlights(ctx context.Context, params FlightSearchPa
 func DestinationToIATA(destination string) string {
 	iataMap := map[string]string{
 		// Europe
-		"paris":      "PAR",
-		"london":     "LON",
-		"amsterdam":  "AMS",
-		"barcelona":  "BCN",
-		"rome":       "ROM",
-		"berlin":     "BER",
-		"madrid":     "MAD",
-		"lisbon":     "LIS",
+		"paris":     "PAR",
+		"london":    "LON",
+		"amsterdam": "AMS",
+		"barcelona": "BCN",
+		"rome":      "ROM",
+		"berlin":    "BER",
+		"madrid":    "MAD",
+		"lisbon":    "LIS",
 
 		// Asia
-		"tokyo":      "TYO",
-		"singapore":  "SIN",
-		"bangkok":    "BKK",
-		"hong kong":  "HKG",
-		"seoul":      "SEL",
-		"dubai":      "DXB",
+		"tokyo":     "TYO",
+		"singapore": "SIN",
+		"bangkok":   "BKK",
+		"hong kong": "HKG",
+		"seoul":     "SEL",
+		"dubai":     "DXB",
 
 		// Americas
-		"new york":   "NYC",
-		"los angeles": "LAX",
+		"new york":      "NYC",
+		"los angeles":   "LAX",
 		"san francisco": "SFO",
-		"chicago":    "CHI",
-		"miami":      "MIA",
-		"toronto":    "YTO",
+		"chicago":       "CHI",
+		"miami":         "MIA",
+		"toronto":       "YTO",
 
 		// Oceania
-		"sydney":     "SYD",
-		"melbourne":  "MEL",
-		"auckland":   "AKL",
+		"sydney":    "SYD",
+		"melbourne": "MEL",
+		"auckland":  "AKL",
 	}
 
 	// Normalize input

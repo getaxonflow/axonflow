@@ -2,4 +2,4 @@ module examples/gateway-policy-config/go
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v8 v8.5.1
+require github.com/getaxonflow/axonflow-sdk-go/v9 v9.0.0

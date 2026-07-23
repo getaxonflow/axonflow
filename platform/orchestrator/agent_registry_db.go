@@ -329,9 +329,9 @@ func (r *AgentRegistry) HybridStats() HybridStats {
 			ReloadCount:   atomic.LoadInt64(&r.reloadCount),
 			DefaultDomain: r.defaultDomain,
 		},
-		DBSourcedDomains:  dbCount,
+		DBSourcedDomains:   dbCount,
 		FileSourcedDomains: fileCount,
-		Mode:              string(r.mode),
-		OrgID:             r.orgID,
+		Mode:               string(r.mode),
+		OrgID:              r.orgID,
 	}
 }

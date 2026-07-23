@@ -32,8 +32,8 @@ type AgentResource struct {
 
 // AgentListResponse for paginated list of agents (Community).
 type AgentListResponse struct {
-	Agents     []AgentResource       `json:"agents"`
-	Pagination AgentPaginationMeta   `json:"pagination"`
+	Agents     []AgentResource     `json:"agents"`
+	Pagination AgentPaginationMeta `json:"pagination"`
 }
 
 // AgentPaginationMeta contains pagination metadata.
@@ -67,9 +67,9 @@ type ValidateAgentConfigRequest struct {
 
 // ValidateAgentConfigResponse contains validation results.
 type ValidateAgentConfigResponse struct {
-	Valid   bool                     `json:"valid"`
-	Errors  []AgentValidationError   `json:"errors,omitempty"`
-	Summary string                   `json:"summary,omitempty"`
+	Valid   bool                   `json:"valid"`
+	Errors  []AgentValidationError `json:"errors,omitempty"`
+	Summary string                 `json:"summary,omitempty"`
 }
 
 // AgentValidationError represents a single validation error.

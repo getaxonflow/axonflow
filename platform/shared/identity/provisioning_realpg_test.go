@@ -360,6 +360,9 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 		return id
 	}
 	adminID := roleID("admin", `["*"]`)
+	// #2993: owner is a true superset of admin — its seeded bundle carries "*".
+	// The resolver must still classify it as owner (owner outranks wildcard→admin).
+	ownerID := roleID("owner", `["*","sso:configure"]`)
 	memberID := roleID("member", `["query"]`)
 	viewerID := roleID("viewer", `["read"]`)
 	customID := roleID("data_scientist", `["query","export"]`)
@@ -371,6 +374,10 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 	}
 	past := time.Now().Add(-time.Hour)
 	assign("wildcard@example.com", adminID, nil)
+	assign("owner@example.com", ownerID, nil)
+	// A user holding BOTH owner and admin resolves to owner (owner ≥ admin).
+	assign("owneradmin@example.com", ownerID, nil)
+	assign("owneradmin@example.com", adminID, nil)
 	assign("both@example.com", viewerID, nil)
 	assign("both@example.com", memberID, nil)
 	assign("expired@example.com", adminID, &past)
@@ -387,7 +394,12 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 		name, email, want string
 	}{
 		{"wildcard permission resolves admin", "wildcard@example.com", "admin"},
-		{"precedence picks member over viewer", "both@example.com", "member"},
+		{"owner with wildcard resolves owner, not admin (#2993 superset)", "owner@example.com", "owner"},
+		{"owner + admin resolves owner (owner outranks admin)", "owneradmin@example.com", "owner"},
+		// #2993 dropped "member": a still-seeded member role is now unmapped,
+		// so a user assigned viewer + member falls through to viewer (the
+		// highest recognized precedence among their assignments).
+		{"dropped member role falls through to viewer", "both@example.com", "viewer"},
 		{"expired admin assignment ignored", "expired@example.com", "viewer"},
 		{"custom-only role is unmapped (least privilege)", "custom@example.com", ""},
 		{"unknown identity is unmapped", "ghost@example.com", ""},
@@ -412,6 +424,111 @@ func TestSCIMRoleResolver_RealPostgres(t *testing.T) {
 		}
 		if got != "" {
 			t.Fatalf("org-b must not inherit org-a roles, got %q", got)
+		}
+	})
+}
+
+// #3030 defense-in-depth (M2): the resolver must refuse to confer a role from a
+// scim_users directory row the IdP has DEACTIVATED, while remaining inert for
+// principals with no directory row at all (manual/portal identities) and for
+// active directory users. NOTE the sibling TestSCIMRoleResolver_RealPostgres
+// runs with NO scim_users table — that is the existence-guard leg (the resolver
+// must not break where enterprise mig 117 was never applied); this test is the
+// table-PRESENT counterpart the live harness cannot reach (the service-side
+// revoke empties the assignments before any read, so the resolver branch never
+// fires there).
+func TestSCIMRoleResolver_DeactivatedDirectoryUser_RealPostgres(t *testing.T) {
+	testutil.SkipIfNoDocker(t)
+	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	db := pc.DB
+	ctx := context.Background()
+
+	// Minimal mirrors of custom_roles + role_assignments (as above) PLUS
+	// scim_users with the columns the deactivated-check reads (mig 117:
+	// tenant_id-keyed, email, active).
+	pc.RunMigration(t, `
+		CREATE TABLE custom_roles (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			org_id VARCHAR(255) NOT NULL,
+			name VARCHAR(100) NOT NULL,
+			permissions JSONB NOT NULL DEFAULT '[]'::jsonb
+		);
+		CREATE TABLE role_assignments (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			org_id VARCHAR(255) NOT NULL,
+			user_email VARCHAR(255) NOT NULL,
+			role_id UUID NOT NULL REFERENCES custom_roles(id),
+			source VARCHAR(20) DEFAULT 'scim',
+			expires_at TIMESTAMPTZ,
+			assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE TABLE scim_users (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id VARCHAR(255) NOT NULL,
+			user_name VARCHAR(255),
+			email VARCHAR(255) NOT NULL,
+			active BOOLEAN NOT NULL DEFAULT true
+		);
+	`)
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	var padminID string
+	if err := db.QueryRow(`INSERT INTO custom_roles (org_id, name, permissions) VALUES ('org-a', 'policy_admin', '["policies:write"]'::jsonb) RETURNING id`).Scan(&padminID); err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	// All three principals hold the SAME assignment shape; only the directory
+	// row differs.
+	for _, email := range []string{"deactivated@example.com", "manual@example.com", "active@example.com", "sourcemanual@example.com"} {
+		mustExec(`INSERT INTO role_assignments (org_id, user_email, role_id) VALUES ('org-a', $1, $2)`, email, padminID)
+	}
+	// The single-tenant posture: the addressing tenant == the org.
+	mustExec(`INSERT INTO scim_users (tenant_id, email, active) VALUES ('org-a', 'deactivated@example.com', false)`)
+	mustExec(`INSERT INTO scim_users (tenant_id, email, active) VALUES ('org-a', 'active@example.com', true)`)
+	// A deactivated row whose grant is source='manual': the fleet plane still
+	// refuses (blanket refusal — the IdP says this human must not act), even
+	// though the grant survives in storage and the portal plane is unaffected.
+	mustExec(`INSERT INTO scim_users (tenant_id, email, active) VALUES ('org-a', 'sourcemanual@example.com', false)`)
+	mustExec(`UPDATE role_assignments SET source = 'manual' WHERE user_email = 'sourcemanual@example.com'`)
+	// manual@example.com deliberately has NO scim_users row.
+
+	resolver, err := NewSCIMRoleResolver(db)
+	if err != nil {
+		t.Fatalf("NewSCIMRoleResolver: %v", err)
+	}
+
+	cases := []struct {
+		name, email, want string
+	}{
+		{"assignment + deactivated directory row confers nothing", "deactivated@example.com", ""},
+		{"assignment + NO directory row (manual principal) still resolves", "manual@example.com", "policy_admin"},
+		{"assignment + active directory row resolves", "active@example.com", "policy_admin"},
+		{"deactivated refusal is blanket: even a source='manual' grant is not conferred on the fleet plane", "sourcemanual@example.com", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolver.ResolveRole(ctx, "org-a", tc.email)
+			if err != nil {
+				t.Fatalf("ResolveRole: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("ResolveRole(%q) = %q, want %q", tc.email, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("reactivating the directory row restores resolution", func(t *testing.T) {
+		mustExec(`UPDATE scim_users SET active = true WHERE email = 'deactivated@example.com'`)
+		got, err := resolver.ResolveRole(ctx, "org-a", "deactivated@example.com")
+		if err != nil {
+			t.Fatalf("ResolveRole: %v", err)
+		}
+		if got != "policy_admin" {
+			t.Fatalf("reactivated directory row must resolve again, got %q", got)
 		}
 	})
 }

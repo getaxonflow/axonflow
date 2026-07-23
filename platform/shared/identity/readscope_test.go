@@ -5,12 +5,13 @@ package identity
 
 import "testing"
 
-// TestRoleCanReadTenant pins the #2922 read-authority contract: only admin and
-// owner may read cross-user (tenant-wide) rows; every other role — including
-// the least-privilege "" sentinel and any unrecognized string — is own-rows.
-// Fail-closed by construction (NormalizeRole collapses unknowns to "").
+// TestRoleCanReadTenant pins the read-authority contract: admin, owner and
+// policy_admin (as of #2993) may read cross-user (tenant-wide) rows; every
+// other role — including the least-privilege "" sentinel and any unrecognized
+// string — is own-rows. Fail-closed by construction (NormalizeRole collapses
+// unknowns to "").
 func TestRoleCanReadTenant(t *testing.T) {
-	tenantWide := []string{"admin", "owner"}
+	tenantWide := []string{"admin", "owner", "policy_admin"}
 	for _, r := range tenantWide {
 		if !RoleCanReadTenant(r) {
 			t.Errorf("RoleCanReadTenant(%q) = false, want true", r)
@@ -19,9 +20,8 @@ func TestRoleCanReadTenant(t *testing.T) {
 
 	ownRowsOnly := []string{
 		"",              // least-privilege sentinel (shared credential / no token)
-		"policy_admin",  // manages policy, NOT a tenant-wide auditor
-		"developer",     // the reported exploit's role
-		"member",        //
+		"developer",     // own-rows; distinguished from viewer by token:rotate:self
+		"member",        // dropped from the model (#2993) → unknown → own-rows
 		"viewer",        // read role, but scoped per-user for cross-user data
 		"Admin",         // case-sensitive — not the canonical "admin"
 		"administrator", // near-miss, unknown → least-privilege
@@ -90,6 +90,48 @@ func TestIsSharedSyntheticIdentity(t *testing.T) {
 	for _, c := range cases {
 		if got := IsSharedSyntheticIdentity(c.email, c.community); got != c.want {
 			t.Errorf("IsSharedSyntheticIdentity(%q, community=%v) = %v, want %v", c.email, c.community, got, c.want)
+		}
+	}
+}
+
+// #3001: RoleIsAdministrative exists so "owner is a strict superset of admin"
+// cannot be broken again by a literal role compare. Two sites string-compared
+// `== "admin"` and both EXCLUDED owner, inverting the model.
+func TestRoleIsAdministrative(t *testing.T) {
+	for _, tc := range []struct {
+		role string
+		want bool
+	}{
+		{"admin", true},
+		{"owner", true},
+		// policy_admin administers POLICIES, not the org. It reads tenant-wide
+		// but must not inherit org-administrative enforcement relaxations.
+		{"policy_admin", false},
+		{"developer", false},
+		{"viewer", false},
+		// Least-privilege / unmapped, and anything unrecognized, fail closed
+		// via NormalizeRole.
+		{"", false},
+		{"member", false},
+		{"root", false},
+		{"Admin", false}, // vocabulary is exact-match; case variants are unknown
+		{"superuser", false},
+	} {
+		if got := RoleIsAdministrative(tc.role); got != tc.want {
+			t.Errorf("RoleIsAdministrative(%q) = %v, want %v", tc.role, got, tc.want)
+		}
+	}
+}
+
+// The superset invariant itself: owner must never be treated as LESS than
+// admin by any shared role predicate. This is the property #3001 found broken.
+func TestOwnerIsNeverLessThanAdmin(t *testing.T) {
+	for name, pred := range map[string]func(string) bool{
+		"RoleIsAdministrative": RoleIsAdministrative,
+		"RoleCanReadTenant":    RoleCanReadTenant,
+	} {
+		if pred("admin") && !pred("owner") {
+			t.Errorf("%s: admin=true but owner=false — owner is a strict SUPERSET of admin (#2993); this inverts the model", name)
 		}
 	}
 }

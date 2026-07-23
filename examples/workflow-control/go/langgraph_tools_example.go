@@ -2,7 +2,7 @@
 
 // LangGraph Per-Tool Governance Example - Go
 //
-// Requires: axonflow-sdk-go v5.0.0+
+// Requires: axonflow-sdk-go/v9 v9.0.0+
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
 //
@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v8"
+	"github.com/getaxonflow/axonflow-sdk-go/v9"
 )
 
 var toolsFailures []string

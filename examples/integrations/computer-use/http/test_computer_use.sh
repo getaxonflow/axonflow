@@ -34,10 +34,12 @@ assert_contains() {
 }
 
 call_check_input() {
-    local connector_type="$1" statement="$2"
+    local connector_type="$1" tool="$2" statement="$3"
     local body
-    body=$(jq -n --arg ct "$connector_type" --arg stmt "$statement" \
-        '{connector_type: $ct, statement: $stmt, operation: "execute"}')
+    # SDK 9.0.0 two-field identity: connector_type="computer_use" + separate tool
+    # (computer/bash/text_editor); the action stays in the statement.
+    body=$(jq -n --arg ct "$connector_type" --arg tool "$tool" --arg stmt "$statement" \
+        '{connector_type: $ct, tool: $tool, statement: $stmt, operation: "execute"}')
     curl -s -w "\n%{http_code}" \
         -H "Authorization: Basic $AUTH" \
         -H "Content-Type: application/json" \
@@ -46,10 +48,10 @@ call_check_input() {
 }
 
 call_check_output() {
-    local connector_type="$1" message="$2"
+    local connector_type="$1" tool="$2" message="$3"
     local body
-    body=$(jq -n --arg ct "$connector_type" --arg msg "$message" \
-        '{connector_type: $ct, message: $msg}')
+    body=$(jq -n --arg ct "$connector_type" --arg tool "$tool" --arg msg "$message" \
+        '{connector_type: $ct, tool: $tool, message: $msg}')
     curl -s -w "\n%{http_code}" \
         -H "Authorization: Basic $AUTH" \
         -H "Content-Type: application/json" \
@@ -63,7 +65,7 @@ echo ""
 
 # Test 1: Screenshot action allowed
 echo "--- Test 1: Screenshot action ---"
-RESPONSE=$(call_check_input "computer_use.screenshot" '{"action": "screenshot"}')
+RESPONSE=$(call_check_input "computer_use" "computer" '{"action": "screenshot"}')
 STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 assert_status "Screenshot returns 200" "$STATUS" "200"
@@ -72,7 +74,7 @@ assert_contains "Allowed" "$BODY" '"allowed"'
 # Test 2: Bash clean command allowed
 echo ""
 echo "--- Test 2: Clean bash command ---"
-RESPONSE=$(call_check_input "computer_use.bash" '{"command": "ls -la /tmp"}')
+RESPONSE=$(call_check_input "computer_use" "bash" '{"command": "ls -la /tmp"}')
 STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 assert_status "Clean bash returns 200" "$STATUS" "200"
@@ -81,7 +83,7 @@ assert_contains "Allowed" "$BODY" '"allowed"'
 # Test 3: SQLi in bash blocked
 echo ""
 echo "--- Test 3: SQL injection in tool input ---"
-RESPONSE=$(call_check_input "computer_use.bash" '{"command": "SELECT * FROM users; DROP TABLE users;--"}')
+RESPONSE=$(call_check_input "computer_use" "bash" '{"command": "SELECT * FROM users; DROP TABLE users;--"}')
 STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 if [ "$STATUS" = "403" ]; then
@@ -94,7 +96,7 @@ fi
 # Test 4: Clean output allowed
 echo ""
 echo "--- Test 4: Clean output ---"
-RESPONSE=$(call_check_output "computer_use.bash" '"Command output: file1.txt file2.txt"')
+RESPONSE=$(call_check_output "computer_use" "bash" '"Command output: file1.txt file2.txt"')
 STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 assert_status "Clean output returns 200" "$STATUS" "200"
@@ -102,7 +104,7 @@ assert_status "Clean output returns 200" "$STATUS" "200"
 # Test 5: PII in output
 echo ""
 echo "--- Test 5: PII in output ---"
-RESPONSE=$(call_check_output "computer_use.bash" '"{\"name\": \"John\", \"ssn\": \"123-45-6789\"}"')
+RESPONSE=$(call_check_output "computer_use" "bash" '"{\"name\": \"John\", \"ssn\": \"123-45-6789\"}"')
 STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 assert_status "PII output returns 200" "$STATUS" "200"

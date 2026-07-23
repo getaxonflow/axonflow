@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v9"
 )
 
 const policyName = "Retry on gated-not-completed wire requires approval"

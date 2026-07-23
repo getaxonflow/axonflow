@@ -139,9 +139,9 @@ func TestAPICallProcessor_replaceTemplateVars(t *testing.T) {
 			expected: "Result: {{steps.search.output.result}}", // Unchanged
 		},
 		{
-			name:     "no variables to replace",
-			template: "Simple text without variables",
-			input:    map[string]interface{}{},
+			name:      "no variables to replace",
+			template:  "Simple text without variables",
+			input:     map[string]interface{}{},
 			execution: &WorkflowExecution{},
 			expected:  "Simple text without variables",
 		},
@@ -407,8 +407,8 @@ func TestAPICallProcessor_ExecuteStep(t *testing.T) {
 				Provider: "amadeus",
 				Function: "flight-search",
 			},
-			input:     map[string]interface{}{},
-			execution: &WorkflowExecution{},
+			input:       map[string]interface{}{},
+			execution:   &WorkflowExecution{},
 			expectError: false, // Should return mock response
 		},
 	}

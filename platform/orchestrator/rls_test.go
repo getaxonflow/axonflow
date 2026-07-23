@@ -1017,12 +1017,12 @@ func TestGetCurrentOrgID_WithMock(t *testing.T) {
 // TestVerifyRLSActive_WithMock tests VerifyRLSActive with sqlmock
 func TestVerifyRLSActive_WithMock(t *testing.T) {
 	tests := []struct {
-		name          string
-		tableName     string
-		mockSetup     func(sqlmock.Sqlmock)
+		name           string
+		tableName      string
+		mockSetup      func(sqlmock.Sqlmock)
 		expectedActive bool
-		expectError   bool
-		errorContains string
+		expectError    bool
+		errorContains  string
 	}{
 		{
 			name:      "RLS enabled",

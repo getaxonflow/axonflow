@@ -112,7 +112,8 @@ async def test_allowed_with_policy_evaluation(
 
     # Verify the policy engine actually ran by making a direct check-input call
     direct = await client.mcp_check_input(
-        connector_type="postgres.query",
+        connector_type="postgres",
+        tool="query",
         statement="SELECT product, price FROM catalog WHERE price < 20",
     )
     assert_check(direct.allowed, "Direct check-input confirms query is allowed")
@@ -153,7 +154,8 @@ async def test_sqli_actually_blocked(
 
     # Verify the underlying policy engine returns the same verdict
     direct = await client.mcp_check_input(
-        connector_type="postgres.query",
+        connector_type="postgres",
+        tool="query",
         statement="SELECT * FROM users WHERE id=1; DROP TABLE users;--",
     )
     assert_check(not direct.allowed, "Direct check-input confirms SQLi is blocked")
@@ -174,7 +176,8 @@ async def test_pii_in_input_detected(
 
     # Verify the policy engine detects PII via direct call first
     direct = await client.mcp_check_input(
-        connector_type="postgres.query",
+        connector_type="postgres",
+        tool="query",
         statement="SELECT * FROM users WHERE ssn = '123-45-6789'",
     )
 
@@ -221,7 +224,8 @@ async def test_pii_in_output_redacted(
 
     # Verify the policy engine detects PII in output via direct call
     direct = await client.mcp_check_output(
-        connector_type="postgres.query",
+        connector_type="postgres",
+        tool="query",
         message='{"name": "John Doe", "ssn": "123-45-6789", "email": "john@example.com"}',
     )
 
@@ -284,7 +288,8 @@ async def test_custom_operation_query(
 
     # Verify operation is forwarded correctly via direct call
     direct = await client.mcp_check_input(
-        connector_type="postgres.list_tables",
+        connector_type="postgres",
+        tool="list_tables",
         statement='{"schema": "public"}',
         operation="query",
     )

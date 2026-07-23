@@ -26,6 +26,7 @@ import (
 
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/sqli"
+	sharedidentity "axonflow/platform/shared/identity"
 
 	_ "github.com/lib/pq"
 )
@@ -884,8 +885,12 @@ func (r *RiskCalculator) CalculateRiskScore(req OrchestratorRequest) float64 {
 		}
 	}
 
-	// Check user role
-	if req.User.Role == "admin" {
+	// Check user role. #3001: routed through the shared role predicate rather
+	// than a literal `== "admin"`, which excluded `owner` — so an owner, a
+	// strict SUPERSET of admin since #2993, scored LOWER risk than an admin
+	// for the identical query. Same inversion as the response-plane bypass,
+	// in the risk engine.
+	if sharedidentity.RoleIsAdministrative(req.User.Role) {
 		score += r.riskWeights["admin_query"]
 	}
 

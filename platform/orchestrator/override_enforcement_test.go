@@ -11,7 +11,7 @@ import (
 func TestSelectOverridablePolicy_NoneOverridable(t *testing.T) {
 	policies := []AppliedPolicyDetail{
 		{PolicyID: "p-1", RiskLevel: "critical", AllowOverride: true}, // critical never overridable
-		{PolicyID: "p-2", RiskLevel: "high", AllowOverride: false},     // explicitly disabled
+		{PolicyID: "p-2", RiskLevel: "high", AllowOverride: false},    // explicitly disabled
 	}
 	got := SelectOverridablePolicy(policies)
 	if got != nil {

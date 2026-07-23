@@ -146,7 +146,7 @@ func (p *MCPConnectorProcessor) ExecuteStep(ctx context.Context, step WorkflowSt
 	} else {
 		// Query operation (read)
 		query := &base.Query{
-			Statement:  step.Statement,  // e.g., "search_flights" for Amadeus
+			Statement:  step.Statement, // e.g., "search_flights" for Amadeus
 			Parameters: params,
 		}
 
@@ -269,12 +269,12 @@ func (p *MCPConnectorProcessor) formatResponse(stepName string, rows []map[strin
 
 	// Generic formatting
 	var builder strings.Builder
-	fmt.Fprintf(&builder,"Found %d result(s):\n\n", len(rows))
+	fmt.Fprintf(&builder, "Found %d result(s):\n\n", len(rows))
 
 	for i, row := range rows {
-		fmt.Fprintf(&builder,"%d. ", i+1)
+		fmt.Fprintf(&builder, "%d. ", i+1)
 		for k, v := range row {
-			fmt.Fprintf(&builder,"%s: %v, ", k, v)
+			fmt.Fprintf(&builder, "%s: %v, ", k, v)
 		}
 		builder.WriteString("\n")
 	}
@@ -285,14 +285,14 @@ func (p *MCPConnectorProcessor) formatResponse(stepName string, rows []map[strin
 // formatFlightResults formats flight search results
 func (p *MCPConnectorProcessor) formatFlightResults(rows []map[string]interface{}) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder,"Found %d flight option(s):\n\n", len(rows))
+	fmt.Fprintf(&builder, "Found %d flight option(s):\n\n", len(rows))
 
 	for i, row := range rows {
-		fmt.Fprintf(&builder,"Option %d:\n", i+1)
+		fmt.Fprintf(&builder, "Option %d:\n", i+1)
 
 		if price, ok := row["price"].(map[string]interface{}); ok {
 			if total, ok := price["total"].(string); ok {
-				fmt.Fprintf(&builder,"  Price: %s\n", total)
+				fmt.Fprintf(&builder, "  Price: %s\n", total)
 			}
 		}
 
@@ -300,7 +300,7 @@ func (p *MCPConnectorProcessor) formatFlightResults(rows []map[string]interface{
 			builder.WriteString("  Itinerary:\n")
 			// Format first itinerary
 			// (In production, would parse full Amadeus response structure)
-			fmt.Fprintf(&builder,"    %v\n", itineraries[0])
+			fmt.Fprintf(&builder, "    %v\n", itineraries[0])
 		}
 
 		builder.WriteString("\n")
@@ -312,17 +312,17 @@ func (p *MCPConnectorProcessor) formatFlightResults(rows []map[string]interface{
 // formatHotelResults formats hotel search results
 func (p *MCPConnectorProcessor) formatHotelResults(rows []map[string]interface{}) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder,"Found %d hotel option(s):\n\n", len(rows))
+	fmt.Fprintf(&builder, "Found %d hotel option(s):\n\n", len(rows))
 
 	for i, row := range rows {
-		fmt.Fprintf(&builder,"%d. ", i+1)
+		fmt.Fprintf(&builder, "%d. ", i+1)
 
 		if name, ok := row["name"].(string); ok {
-			fmt.Fprintf(&builder,"%s - ", name)
+			fmt.Fprintf(&builder, "%s - ", name)
 		}
 
 		if price, ok := row["price"].(string); ok {
-			fmt.Fprintf(&builder,"$%s/night", price)
+			fmt.Fprintf(&builder, "$%s/night", price)
 		}
 
 		builder.WriteString("\n")
@@ -355,10 +355,10 @@ func (p *MCPConnectorProcessor) routeToAgent(ctx context.Context, step WorkflowS
 		User:        UserContext{}, // Will be populated from execution context if available
 		Client:      ClientContext{},
 		Context: map[string]interface{}{
-			"connector":  connectorName,
-			"params":     params,
-			"operation":  operation,
-			"step_name":  step.Name,
+			"connector": connectorName,
+			"params":    params,
+			"operation": operation,
+			"step_name": step.Name,
 		},
 		Timestamp: time.Now(),
 	}

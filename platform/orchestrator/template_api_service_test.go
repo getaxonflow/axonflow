@@ -263,10 +263,10 @@ func TestTemplateService_DeepSubstitute(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		input    interface{}
-		checkFn  func(result interface{}) bool
-		desc     string
+		name    string
+		input   interface{}
+		checkFn func(result interface{}) bool
+		desc    string
 	}{
 		{
 			name: "nested map substitution",

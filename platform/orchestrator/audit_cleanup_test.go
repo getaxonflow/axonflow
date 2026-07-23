@@ -30,12 +30,12 @@ func TestAuditCleanupService_CleanupExpiredAuditLogs(t *testing.T) {
 	defer db.Close()
 
 	tests := []struct {
-		name           string
-		tier           license.Tier
-		retentionDays  int
-		rowsAffected   int64
-		expectDelete   bool
-		expectErr      bool
+		name          string
+		tier          license.Tier
+		retentionDays int
+		rowsAffected  int64
+		expectDelete  bool
+		expectErr     bool
 	}{
 		{
 			name:          "Community tier - 3 day retention",
@@ -401,6 +401,7 @@ func (m *mockPurgeRepo) Update(_ context.Context, _ *execution.ExecutionStatus) 
 func (m *mockPurgeRepo) List(_ context.Context, _ execution.ListExecutionsRequest) ([]execution.ExecutionStatus, int, error) {
 	return nil, 0, nil
 }
+
 // v9 Phase 8 #2384 PR-C1: Delete/Update*/Expire signatures gained
 // orgID + tenantID for RLS scoping (mig 042 execution_history is gated by
 // app.current_tenant_id).
@@ -411,8 +412,10 @@ func (m *mockPurgeRepo) UpdateStatus(_ context.Context, _, _, _ string, _ execut
 func (m *mockPurgeRepo) UpdateSteps(_ context.Context, _, _, _ string, _ []execution.StepStatus) error {
 	return nil
 }
-func (m *mockPurgeRepo) UpdateCost(_ context.Context, _, _, _ string, _, _ *float64) error { return nil }
-func (m *mockPurgeRepo) CountActive(_ context.Context, _ string) (int, error)              { return 0, nil }
+func (m *mockPurgeRepo) UpdateCost(_ context.Context, _, _, _ string, _, _ *float64) error {
+	return nil
+}
+func (m *mockPurgeRepo) CountActive(_ context.Context, _ string) (int, error) { return 0, nil }
 func (m *mockPurgeRepo) GetByPlanID(_ context.Context, _ string) (*execution.ExecutionStatus, error) {
 	return nil, execution.ErrExecutionNotFound
 }

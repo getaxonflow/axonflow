@@ -8292,7 +8292,7 @@ components:
           additionalProperties:
             type: string
           example:
-            python: "8.5.1"
+            python: "9.0.0"
 
     PluginCompatInfo:
       type: object

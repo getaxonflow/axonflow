@@ -115,38 +115,80 @@ func TestProcessResponse_DetectsAndRedactsSSN(t *testing.T) {
 	}
 }
 
-// Test ProcessResponse with admin user (should not redact)
-func TestProcessResponse_AdminUser_NoRedaction(t *testing.T) {
-	processor := NewResponseProcessor()
-	ctx := context.Background()
-	user := UserContext{
-		ID:          1,
-		Email:       "admin@example.com",
-		Role:        "admin", // Admin role
-		Permissions: []string{},
-		TenantID:    "test-tenant",
+// TestProcessResponse_PIIVisibilityIsPermissionDriven is the end-to-end
+// counterpart of the #3001 behavior change.
+//
+// It previously asserted the opposite ("admin sees everything, no redactions"),
+// which is exactly the bypass that was removed: an admin-role caller received
+// the raw SSN off the LLM response with no permission granting it, while an
+// owner — a strict superset of admin since #2993 — was redacted.
+//
+// The contract is now: raw PII requires the view_full_pii permission, whoever
+// you are. No system role is seeded with it.
+func TestProcessResponse_PIIVisibilityIsPermissionDriven(t *testing.T) {
+	const ssn = "123-45-6789"
+
+	tests := []struct {
+		name        string
+		role        string
+		permissions []string
+		wantRaw     bool
+	}{
+		{
+			name:        "admin WITHOUT view_full_pii is redacted",
+			role:        "admin",
+			permissions: []string{},
+			wantRaw:     false,
+		},
+		{
+			name:        "admin WITH view_full_pii sees raw",
+			role:        "admin",
+			permissions: []string{"view_full_pii"},
+			wantRaw:     true,
+		},
+		{
+			name:        "owner WITHOUT view_full_pii is redacted (identical to admin)",
+			role:        "owner",
+			permissions: []string{},
+			wantRaw:     false,
+		},
+		{
+			name:        "owner WITH view_full_pii sees raw (identical to admin)",
+			role:        "owner",
+			permissions: []string{"view_full_pii"},
+			wantRaw:     true,
+		},
 	}
 
-	response := &LLMResponse{
-		Content: "User SSN is 123-45-6789.",
-		Model:   "test-model",
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor := NewResponseProcessor()
+			user := UserContext{
+				ID:          1,
+				Email:       "someone@example.com",
+				Role:        tt.role,
+				Permissions: tt.permissions,
+				TenantID:    "test-tenant",
+			}
 
-	result, redactionInfo := processor.ProcessResponse(ctx, user, response)
+			result, redactionInfo := processor.ProcessResponse(context.Background(), user, &LLMResponse{
+				Content: "User SSN is " + ssn + ".",
+				Model:   "test-model",
+			})
+			if result == nil {
+				t.Fatal("ProcessResponse() returned nil result")
+			}
 
-	if result == nil {
-		t.Fatal("ProcessResponse() returned nil result")
-	}
-
-	// Admin should see everything - no redactions
-	if redactionInfo.HasRedactions {
-		t.Error("Admin user should not have redactions")
-	}
-
-	// Original SSN should still be present
-	resultStr := getString(result)
-	if !strings.Contains(resultStr, "123-45-6789") {
-		t.Error("Admin should see original SSN")
+			gotRaw := strings.Contains(getString(result), ssn)
+			if gotRaw != tt.wantRaw {
+				t.Errorf("role=%q perms=%v: raw SSN present = %v, want %v (got %q)",
+					tt.role, tt.permissions, gotRaw, tt.wantRaw, getString(result))
+			}
+			if redactionInfo.HasRedactions == tt.wantRaw {
+				t.Errorf("role=%q perms=%v: HasRedactions = %v, want %v",
+					tt.role, tt.permissions, redactionInfo.HasRedactions, !tt.wantRaw)
+			}
+		})
 	}
 }
 
@@ -254,10 +296,14 @@ func TestIsAllowed(t *testing.T) {
 		want       bool
 	}{
 		{
-			name:       "admin wildcard allows all",
+			// #3001: the blanket allow-all is gone. A literal "*" in the
+			// allowed list is now just an unmatched string, so a stored
+			// admin role (whose Permissions are literally ["*"]) can never
+			// reach this function and re-open allow-all.
+			name:       "literal wildcard no longer allows all",
 			piiType:    "ssn",
 			allowedPII: []string{"*"},
-			want:       true,
+			want:       false,
 		},
 		{
 			name:       "specific permission allows type",
@@ -298,10 +344,24 @@ func TestGetAllowedPIITypes(t *testing.T) {
 		user UserContext
 		want []string
 	}{
+		// #3001: no role bypasses redaction any more. Unredaction is
+		// permission-driven, so a role name alone grants nothing.
 		{
-			name: "admin role gets wildcard",
+			// #3001: the role literal is gone. An admin with no explicit
+			// grant is redacted like anybody else.
+			name: "admin role without permissions gets nothing",
 			user: UserContext{Role: "admin", Permissions: []string{}},
-			want: []string{"*"},
+			want: []string{},
+		},
+		{
+			name: "owner role without permissions gets nothing",
+			user: UserContext{Role: "owner", Permissions: []string{}},
+			want: []string{},
+		},
+		{
+			name: "admin role with view_full_pii gets the mapped set",
+			user: UserContext{Role: "admin", Permissions: []string{"view_full_pii"}},
+			want: []string{"ssn", "credit_card", "bank_account", "email", "phone", "address"},
 		},
 		{
 			name: "view_full_pii permission",
@@ -324,15 +384,16 @@ func TestGetAllowedPIITypes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := processor.getAllowedPIITypes(tt.user)
 
-			// For wildcard, just check it exists
-			if len(tt.want) == 1 && tt.want[0] == "*" {
-				if len(got) != 1 || got[0] != "*" {
-					t.Errorf("getAllowedPIITypes() = %v, want wildcard", got)
-				}
-				return
+			// Exact-length check first (#3001 R3 / L1): the per-type loop
+			// below only asserts that each wanted type is PRESENT, so with
+			// want=[] it never executes and the case passes on ANY output —
+			// including the pre-fix []string{"*"}. The "admin/owner without
+			// permissions gets nothing" cases are exactly that shape, so
+			// without this they were not regression guards at all.
+			if len(got) != len(tt.want) {
+				t.Errorf("getAllowedPIITypes() = %v (len %d), want %v (len %d)",
+					got, len(got), tt.want, len(tt.want))
 			}
-
-			// Check all expected types are present
 			for _, expected := range tt.want {
 				found := false
 				for _, actual := range got {
@@ -345,6 +406,12 @@ func TestGetAllowedPIITypes(t *testing.T) {
 					t.Errorf("getAllowedPIITypes() missing expected type: %s", expected)
 				}
 			}
+			// No role may ever reintroduce the allow-everything wildcard.
+			for _, actual := range got {
+				if actual == "*" {
+					t.Errorf("getAllowedPIITypes() returned the \"*\" wildcard for role %q — the #3001 role-based redaction bypass is BACK", tt.user.Role)
+				}
+			}
 		})
 	}
 }
@@ -354,11 +421,11 @@ func TestRedactString(t *testing.T) {
 	processor := NewResponseProcessor()
 
 	tests := []struct {
-		name        string
-		input       string
-		detectedPII map[string][]string
-		allowedPII  []string
-		wantContain string
+		name           string
+		input          string
+		detectedPII    map[string][]string
+		allowedPII     []string
+		wantContain    string
 		wantNotContain string
 	}{
 		{
@@ -367,9 +434,9 @@ func TestRedactString(t *testing.T) {
 			detectedPII: map[string][]string{
 				"ssn": {"123-45-6789"},
 			},
-			allowedPII:      []string{},
-			wantNotContain:  "123-45-6789",
-			wantContain:     "XXX-XX-",
+			allowedPII:     []string{},
+			wantNotContain: "123-45-6789",
+			wantContain:    "XXX-XX-",
 		},
 		{
 			name:  "keep SSN when allowed",
@@ -377,16 +444,16 @@ func TestRedactString(t *testing.T) {
 			detectedPII: map[string][]string{
 				"ssn": {"123-45-6789"},
 			},
-			allowedPII:      []string{"ssn"},
-			wantContain:     "123-45-6789",
-			wantNotContain:  "",
+			allowedPII:     []string{"ssn"},
+			wantContain:    "123-45-6789",
+			wantNotContain: "",
 		},
 		{
-			name:  "no redaction when no PII detected",
-			input: "Normal text",
-			detectedPII: map[string][]string{},
-			allowedPII:  []string{},
-			wantContain: "Normal text",
+			name:           "no redaction when no PII detected",
+			input:          "Normal text",
+			detectedPII:    map[string][]string{},
+			allowedPII:     []string{},
+			wantContain:    "Normal text",
 			wantNotContain: "",
 		},
 	}
@@ -442,10 +509,13 @@ func TestShouldRedactField(t *testing.T) {
 			want:       false,
 		},
 		{
-			name:       "admin with wildcard",
+			// #3001: the blanket allow-all is gone here too. A literal "*" in
+			// the allowed list no longer exempts a sensitive field name — it is
+			// just an unmatched string, so the field is still redacted.
+			name:       "literal wildcard no longer exempts a sensitive field",
 			fieldName:  "user_ssn",
 			allowedPII: []string{"*"},
-			want:       false,
+			want:       true,
 		},
 	}
 
@@ -746,11 +816,11 @@ func TestRedactData(t *testing.T) {
 			checkType:  "map",
 		},
 		{
-			name: "slice data",
-			data: []interface{}{"item1", "item2"},
+			name:        "slice data",
+			data:        []interface{}{"item1", "item2"},
 			detectedPII: map[string][]string{},
-			allowedPII: []string{},
-			checkType:  "slice",
+			allowedPII:  []string{},
+			checkType:   "slice",
 		},
 		{
 			name:        "integer data (default case)",
@@ -1440,5 +1510,72 @@ func TestProcessResponse_Verdict_BlockedOnValidationDenial(t *testing.T) {
 	}
 	if info.ValidationError == "" {
 		t.Error("expected ValidationError to be populated on a blocked response")
+	}
+}
+
+// #3001: an admin with NO explicit PII permission must receive a REDACTED
+// response. This is the end-to-end proof of the product decision — the unit
+// test above pins the allow-list, this one pins what the caller actually gets
+// back, which is the thing a compliance reviewer cares about.
+func TestProcessResponse_AdminRoleDoesNotBypassRedaction(t *testing.T) {
+	processor := NewResponseProcessor()
+	ctx := context.Background()
+
+	// Both administrative roles, so the fix cannot be half-applied: before
+	// #3001 "admin" saw raw PII and "owner" did not, which INVERTED the
+	// superset relationship the role model guarantees.
+	for _, role := range []string{"admin", "owner"} {
+		t.Run(role, func(t *testing.T) {
+			user := UserContext{
+				ID:          1,
+				Email:       "boss@example.com",
+				Role:        role,
+				Permissions: []string{}, // no view_* grant
+				TenantID:    "test-tenant",
+			}
+			response := &LLMResponse{
+				Content: "User SSN is 123-45-6789 and email is user@example.com.",
+				Model:   "test-model",
+			}
+
+			result, info := processor.ProcessResponse(ctx, user, response)
+			if result == nil {
+				t.Fatal("ProcessResponse() returned nil result")
+			}
+			resultStr := getString(result)
+
+			if strings.Contains(resultStr, "123-45-6789") {
+				t.Errorf("role %q received an UNREDACTED SSN — the #3001 redaction bypass is BACK: %s", role, resultStr)
+			}
+			if info == nil || !info.HasRedactions {
+				t.Errorf("role %q: expected redactions to be recorded, got info=%+v", role, info)
+			}
+		})
+	}
+}
+
+// The deliberate opt-in still works: granting view_full_pii to an admin
+// restores raw PII. Without this, "we removed the bypass" could equally be
+// satisfied by breaking unredaction altogether.
+func TestProcessResponse_AdminWithViewFullPIISeesRawPII(t *testing.T) {
+	processor := NewResponseProcessor()
+	user := UserContext{
+		ID:          1,
+		Email:       "boss@example.com",
+		Role:        "admin",
+		Permissions: []string{"view_full_pii"},
+		TenantID:    "test-tenant",
+	}
+	response := &LLMResponse{
+		Content: "User SSN is 123-45-6789.",
+		Model:   "test-model",
+	}
+
+	result, _ := processor.ProcessResponse(context.Background(), user, response)
+	if result == nil {
+		t.Fatal("ProcessResponse() returned nil result")
+	}
+	if !strings.Contains(getString(result), "123-45-6789") {
+		t.Error("an admin explicitly granted view_full_pii must still see raw PII")
 	}
 }

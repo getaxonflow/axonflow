@@ -59,14 +59,14 @@ func TestDomainTemplates(t *testing.T) {
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
-		domain          string
+		domain            string
 		minExpectedAgents int // Min agents (may vary between hardcoded and YAML configs)
-		shouldHaveHints bool
+		shouldHaveHints   bool
 	}{
-		{"travel", 4, true},       // At least 4 agents
-		{"healthcare", 4, true},   // At least 4 agents
-		{"finance", 4, true},      // At least 4 agents
-		{"generic", 0, true},      // Generic may have 0 or more
+		{"travel", 4, true},     // At least 4 agents
+		{"healthcare", 4, true}, // At least 4 agents
+		{"finance", 4, true},    // At least 4 agents
+		{"generic", 0, true},    // Generic may have 0 or more
 	}
 
 	for _, tt := range tests {
@@ -204,8 +204,8 @@ func TestParseAnalysisResponse(t *testing.T) {
 			shouldError: true,
 		},
 		{
-			name: "Valid JSON as string",
-			response: `{"domain":"finance","complexity":2,"requires_parallel":true,"suggested_tasks":["market-data"],"reasoning":"parallel"}`,
+			name:        "Valid JSON as string",
+			response:    `{"domain":"finance","complexity":2,"requires_parallel":true,"suggested_tasks":["market-data"],"reasoning":"parallel"}`,
 			shouldError: false,
 		},
 	}
@@ -344,23 +344,23 @@ func TestBuildSynthesisPrompt(t *testing.T) {
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
-		domain         string
+		domain           string
 		expectedKeywords []string
 	}{
 		{
-			domain: "travel",
+			domain:           "travel",
 			expectedKeywords: []string{"Flights", "Hotels", "Itinerary", "Budget", "TOTAL ESTIMATED COST"},
 		},
 		{
-			domain: "healthcare",
+			domain:           "healthcare",
 			expectedKeywords: []string{"clinical", "treatment", "dosages", "outcomes"},
 		},
 		{
-			domain: "finance",
+			domain:           "finance",
 			expectedKeywords: []string{"investment", "Risk", "returns", "allocations"},
 		},
 		{
-			domain: "generic",
+			domain:           "generic",
 			expectedKeywords: []string{"summary", "recommendations", "Action items"},
 		},
 	}
@@ -1128,9 +1128,9 @@ func TestGetDomainTemplateFromRegistry(t *testing.T) {
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
-		name     string
-		domain   string
-		wantNil  bool
+		name    string
+		domain  string
+		wantNil bool
 	}{
 		{"travel domain", "travel", false},
 		{"healthcare domain", "healthcare", false},
@@ -1677,7 +1677,7 @@ func TestEstimateStepTokens_MultibyteCJK(t *testing.T) {
 
 	tokensIn, _ := estimateStepTokens(step)
 
-	expectedIn := 100/4 + 50 // 25 + 50 = 75 (rune-based)
+	expectedIn := 100/4 + 50  // 25 + 50 = 75 (rune-based)
 	wrongByteIn := 300/4 + 50 // 75 + 50 = 125 (byte-based, wrong)
 
 	if tokensIn != expectedIn {
@@ -1694,9 +1694,9 @@ func TestEstimateStepTokens_WithOutputSchema(t *testing.T) {
 		Type:   "llm-call",
 		Prompt: "Analyze this data.",
 		Output: map[string]interface{}{
-			"summary":         "string",
+			"summary":          "string",
 			"confidence_score": "float",
-			"categories":      []string{"a", "b", "c"},
+			"categories":       []string{"a", "b", "c"},
 		},
 	}
 

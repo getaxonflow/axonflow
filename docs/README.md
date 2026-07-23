@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: July 2026** | **Platform: v9.8.0** | **SDKs: Python / Go / TypeScript / Java v8.5.1 + Rust v0.8.1 (preview)**
+**Last Updated: July 2026** | **Platform: v9.8.0** | **SDKs: Python / Go / TypeScript / Java v9.0.0 + Rust v0.8.1 (preview)**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -31,7 +31,7 @@ Configuration and how-to guides for common tasks.
 
 ## SDK Documentation
 
-AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.5.1) plus Rust (preview v0.8.1).
+AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v9.0.0) plus Rust (preview v0.8.1).
 
 | Document | Description |
 |----------|-------------|
@@ -41,7 +41,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.
 ### Go SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go)
-- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v8`
+- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v9`
 
 ### Python SDK
 
@@ -51,7 +51,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.
 ### Java SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java)
-- **Install:** Maven `com.getaxonflow:axonflow-sdk:8.5.1`
+- **Install:** Maven `com.getaxonflow:axonflow-sdk:9.0.0`
 
 ### TypeScript SDK
 

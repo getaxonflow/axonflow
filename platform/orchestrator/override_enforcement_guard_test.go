@@ -29,7 +29,7 @@ func TestFindActiveOverride_AllowGuard(t *testing.T) {
 	// parentheses/quotes are matched literally.
 	guard := regexp.QuoteMeta("(action_override IS NULL OR action_override = 'allow')")
 	expiry := time.Now().Add(time.Hour)
-	mock.ExpectQuery(`SELECT id, policy_id, policy_type.*FROM policy_overrides.*` + guard).
+	mock.ExpectQuery(`SELECT id, policy_id, policy_type.*FROM policy_overrides.*`+guard).
 		WithArgs("pol-1", "u@x", "tenant-1", "").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"},

@@ -411,16 +411,16 @@ func NewTierValidationError(message, code string) *TierValidationError {
 
 // Tier error codes
 const (
-	ErrCodeSystemTierImmutable           = "SYSTEM_TIER_IMMUTABLE"
-	ErrCodeOrgTierEnterprise             = "ORG_TIER_REQUIRES_ENTERPRISE"
-	ErrCodeOrgTierEvaluationOrHigher     = "ORG_TIER_REQUIRES_EVALUATION_OR_HIGHER"
-	ErrCodePolicyLimitExceeded           = "POLICY_LIMIT_EXCEEDED"
-	ErrCodeOrgPolicyLimitExceeded        = "ORG_POLICY_LIMIT_EXCEEDED"
-	ErrCodeConnectorLimitExceeded        = "CONNECTOR_LIMIT_EXCEEDED"
-	ErrCodeLicenseExpired                = "LICENSE_EXPIRED"
-	ErrCodeCostEstimateLimitExceeded     = "COST_ESTIMATE_LIMIT_EXCEEDED"
-	ErrCodePendingApprovalLimitExceeded  = "PENDING_APPROVAL_LIMIT_EXCEEDED"
-	ErrCodeSimulationLimitExceeded       = "SIMULATION_LIMIT_EXCEEDED"
-	ErrCodeEvidenceExportLimitExceeded   = "EVIDENCE_EXPORT_LIMIT_EXCEEDED"
-	ErrCodeFeatureRequiresEvaluation     = "FEATURE_REQUIRES_EVALUATION_LICENSE"
+	ErrCodeSystemTierImmutable          = "SYSTEM_TIER_IMMUTABLE"
+	ErrCodeOrgTierEnterprise            = "ORG_TIER_REQUIRES_ENTERPRISE"
+	ErrCodeOrgTierEvaluationOrHigher    = "ORG_TIER_REQUIRES_EVALUATION_OR_HIGHER"
+	ErrCodePolicyLimitExceeded          = "POLICY_LIMIT_EXCEEDED"
+	ErrCodeOrgPolicyLimitExceeded       = "ORG_POLICY_LIMIT_EXCEEDED"
+	ErrCodeConnectorLimitExceeded       = "CONNECTOR_LIMIT_EXCEEDED"
+	ErrCodeLicenseExpired               = "LICENSE_EXPIRED"
+	ErrCodeCostEstimateLimitExceeded    = "COST_ESTIMATE_LIMIT_EXCEEDED"
+	ErrCodePendingApprovalLimitExceeded = "PENDING_APPROVAL_LIMIT_EXCEEDED"
+	ErrCodeSimulationLimitExceeded      = "SIMULATION_LIMIT_EXCEEDED"
+	ErrCodeEvidenceExportLimitExceeded  = "EVIDENCE_EXPORT_LIMIT_EXCEEDED"
+	ErrCodeFeatureRequiresEvaluation    = "FEATURE_REQUIRES_EVALUATION_LICENSE"
 )

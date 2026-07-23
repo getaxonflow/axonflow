@@ -139,18 +139,24 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 		orchReq.RequestType = "simulation"
 	}
 
-	// Propagate tenant ID into evaluation context so tenant-scoped policies
-	// are included in the simulation (not just global policies).
-	if tenantID != "" {
-		if orchReq.User.TenantID == "" {
-			orchReq.User.TenantID = tenantID
-		}
-		if orchReq.Client.TenantID == "" {
-			orchReq.Client.TenantID = tenantID
-		}
-		if orchReq.Client.ID == "" {
-			orchReq.Client.ID = tenantID
-		}
+	// Force the tenant the GATEWAY stamped into the evaluation context, so
+	// tenant-scoped policies are included in the simulation (not just global
+	// ones) — and so the caller cannot choose which tenant is simulated.
+	//
+	// This used to fill the tenant only when the BODY left it empty, i.e. a
+	// body-supplied tenant won. Simulation is a dry run, but not a side-effect
+	// free one: EvaluateDynamicPolicies records a policy_metrics analytics row
+	// whose org_id is ALSO the app.current_org_id binding its INSERT is checked
+	// against, so the RLS WITH CHECK passes for whatever tenant the caller
+	// names. Same class as the /policies/test fix in run.go; kept identical
+	// here so the two evaluation endpoints cannot diverge.
+	// Client.ID still falls back only when unset — it is a client identifier,
+	// not a scope, and overwriting it would change which client's policies
+	// match.
+	orchReq.User.TenantID = tenantID
+	orchReq.Client.TenantID = tenantID
+	if orchReq.Client.ID == "" {
+		orchReq.Client.ID = tenantID
 	}
 
 	// Evaluate

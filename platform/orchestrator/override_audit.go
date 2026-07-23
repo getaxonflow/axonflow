@@ -26,19 +26,19 @@ const (
 // (at the AuditEntry level) discriminates which lifecycle transition
 // occurred.
 type OverrideAuditEntry struct {
-	OverrideID     string
-	PolicyIDs      []string
-	TenantID       string
-	OrgID          string
-	ClientID       string
-	UserEmail      string
-	ToolSignature  string // optional, empty if not scoped
-	Reason         string // free-text justification (required at creation)
-	TTLSeconds     int64  // clamped server-side per ADR-044
-	DecisionID     string // set only for override_used events
-	RequestedTTL   int64  // original TTL requested by client (before clamping)
-	Clamped        bool   // true if TTL was clamped from RequestedTTL
-	RevokedBy      string // set only for override_revoked events
+	OverrideID    string
+	PolicyIDs     []string
+	TenantID      string
+	OrgID         string
+	ClientID      string
+	UserEmail     string
+	ToolSignature string // optional, empty if not scoped
+	Reason        string // free-text justification (required at creation)
+	TTLSeconds    int64  // clamped server-side per ADR-044
+	DecisionID    string // set only for override_used events
+	RequestedTTL  int64  // original TTL requested by client (before clamping)
+	Clamped       bool   // true if TTL was clamped from RequestedTTL
+	RevokedBy     string // set only for override_revoked events
 }
 
 // LogOverrideEvent records an override lifecycle event to the audit log.

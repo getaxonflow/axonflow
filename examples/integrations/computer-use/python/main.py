@@ -55,7 +55,8 @@ async def test_screenshot_allowed(governor: ComputerUseGovernor, client: AxonFlo
 
     # Verify via direct API
     direct = await client.mcp_check_input(
-        connector_type="computer_use.screenshot",
+        connector_type="computer_use",
+        tool="computer",
         statement='{"action": "screenshot"}',
     )
     assert_check(direct.allowed, "Direct check confirms allowed")
@@ -158,7 +159,8 @@ async def test_pii_in_type_action(governor: ComputerUseGovernor, client: AxonFlo
 
     # Direct check first
     direct = await client.mcp_check_input(
-        connector_type="computer_use.type",
+        connector_type="computer_use",
+        tool="computer",
         statement=json.dumps({"action": "type", "text": "SSN: 123-45-6789"}),
     )
     pii_detected = direct.policies_evaluated > 0
@@ -209,7 +211,8 @@ async def test_pii_in_result_redacted(governor: ComputerUseGovernor, client: Axo
 
     # Direct check
     direct = await client.mcp_check_output(
-        connector_type="computer_use.bash",
+        connector_type="computer_use",
+        tool="bash",
         message=pii_result,
     )
     if direct.redacted_data is not None:
@@ -233,20 +236,29 @@ async def test_pii_in_result_redacted(governor: ComputerUseGovernor, client: Axo
 
 async def test_connector_type_derivation(governor: ComputerUseGovernor, client: AxonFlow) -> None:
     print("=" * 60)
-    print("[Test 10] Connector type derivation — correct naming")
+    print("[Test 10] Two-field identity — connector_type + separate tool")
     print("=" * 60)
 
-    # Verify the governor derives correct connector types by checking
-    # that the direct API accepts them
-    for ct in ["computer_use.screenshot", "computer_use.left_click",
-               "computer_use.bash", "computer_use.text_editor"]:
+    # The governor sends a constant connector_type="computer_use" plus the tool
+    # NAME (computer / bash / text_editor) as a separate `tool` field. The action
+    # (screenshot, left_click, …) is not a tool identity — it stays in the
+    # statement, never folded into connector_type (SDK 9.0.0 de-concatenation).
+    for tool_name, action in [
+        ("computer", "screenshot"),
+        ("computer", "left_click"),
+        ("bash", None),
+        ("text_editor", None),
+    ]:
+        statement = json.dumps({"action": action}) if action else "{}"
         direct = await client.mcp_check_input(
-            connector_type=ct,
-            statement="{}",
+            connector_type="computer_use",
+            tool=tool_name,
+            statement=statement,
         )
         assert_check(
             direct.policies_evaluated > 0,
-            f"Connector type '{ct}' accepted by server ({direct.policies_evaluated} policies)",
+            f"tool '{tool_name}' accepted with connector_type='computer_use' "
+            f"({direct.policies_evaluated} policies)",
         )
     print()
 
