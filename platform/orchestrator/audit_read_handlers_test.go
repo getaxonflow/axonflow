@@ -262,7 +262,7 @@ func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
 		if recs[1][8] != "resp [REDACTED:ssn]" {
 			t.Fatalf("response_sample not preserved: %q", recs[1][8])
 		}
-		// tokens column (Ajeya request): sourced from tokens_used, sits right
+		// tokens column (#3027): sourced from tokens_used, sits right
 		// after response_time_ms. Assert both header position and the row cell.
 		tokIdx := -1
 		for i, h := range recs[0] {
