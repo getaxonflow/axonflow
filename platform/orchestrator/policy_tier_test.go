@@ -581,10 +581,15 @@ func TestPolicyService_CreatePolicy_EvaluationTierTenantPolicyLimit(t *testing.T
 	repo := NewPolicyRepository(db)
 	evalService := NewPolicyServiceWithLicense(repo, nil, newMockLicenseChecker(license.TierEvaluation))
 
-	// Mock count returning at Evaluation tier limit (50 tenant policies)
+	// Mock count returning at Evaluation tier limit (50 tenant policies).
+	// #3039: CountByTenant now runs org-scoped (BEGIN + set_config + COUNT +
+	// COMMIT) so RLS admits the tenant's rows under app_role.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(license.EvaluationLimits.TenantPolicies))
+	mock.ExpectCommit()
 
 	req := &CreatePolicyRequest{
 		Name:        "Policy 51",
@@ -630,10 +635,14 @@ func TestPolicyService_CreatePolicy_TenantTierPolicyLimit(t *testing.T) {
 	repo := NewPolicyRepository(db)
 	communityService := NewPolicyServiceWithLicense(repo, nil, newMockLicenseChecker(license.TierCommunity))
 
-	// Mock count returning at limit
+	// Mock count returning at limit. #3039: CountByTenant now runs
+	// org-scoped (BEGIN + set_config + COUNT + COMMIT).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(license.CommunityLimits.TenantPolicies))
+	mock.ExpectCommit()
 
 	req := &CreatePolicyRequest{
 		Name:        "Test Policy",
@@ -678,9 +687,13 @@ func TestPolicyRepository_CountByTenant(t *testing.T) {
 
 	repo := NewPolicyRepository(db)
 
+	// #3039: CountByTenant runs org-scoped (BEGIN + set_config + COUNT + COMMIT).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
+	mock.ExpectCommit()
 
 	count, err := repo.CountByTenant(context.Background(), "tenant-1")
 	if err != nil {
@@ -803,7 +816,10 @@ func TestPolicyService_UpdatePolicy_RejectSystemTier(t *testing.T) {
 
 	now := time.Now()
 
-	// Mock GetByID returning a system tier policy (args: policyID, tenantID per query)
+	// Mock GetByID returning a system tier policy (args: policyID, tenantID per query).
+	// #3039: GetByID runs org-scoped (BEGIN + set_config + SELECT + COMMIT).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("system-policy-1", "tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -817,6 +833,7 @@ func TestPolicyService_UpdatePolicy_RejectSystemTier(t *testing.T) {
 			100, true, 1, "system", "system",
 			now, now,
 		))
+	mock.ExpectCommit()
 
 	name := "Updated Name"
 	req := &UpdatePolicyRequest{
@@ -850,7 +867,10 @@ func TestPolicyService_DeletePolicy_RejectSystemTier(t *testing.T) {
 
 	now := time.Now()
 
-	// Mock GetByID returning a system tier policy (args: policyID, tenantID per query)
+	// Mock GetByID returning a system tier policy (args: policyID, tenantID per query).
+	// #3039: GetByID runs org-scoped (BEGIN + set_config + SELECT + COMMIT).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("system-policy-1", "tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -864,6 +884,7 @@ func TestPolicyService_DeletePolicy_RejectSystemTier(t *testing.T) {
 			100, true, 1, "system", "system",
 			now, now,
 		))
+	mock.ExpectCommit()
 
 	err = service.DeletePolicy(context.Background(), "tenant-1", "system-policy-1", "user-1")
 	if err == nil {

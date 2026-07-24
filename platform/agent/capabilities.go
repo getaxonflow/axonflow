@@ -208,7 +208,7 @@ func getPluginCompatibility() PluginCompatInfo {
 		// governed call; the MinPluginVersion floor stays 1.4.0 / 2.4.0
 		// (claude-desktop's floor is 0.2.0, see above).
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":       "2.8.0",
+			"openclaw":       "2.8.4",
 			"claude-code":    "1.11.0",
 			"cursor":         "1.7.0",
 			"codex":          "1.7.0",

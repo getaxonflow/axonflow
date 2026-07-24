@@ -22,7 +22,7 @@ and compliance.
 | Resolved role | Audit / decision / override reads |
 |---|---|
 | `admin`, `owner` | **Full tenant** — every user's rows |
-| `developer`, `member`, `viewer`, `policy_admin` | **Own rows only** — rows attributed to their identity |
+| `developer`, `viewer`, `policy_admin` | **Own rows only** — rows attributed to their identity |
 | unmapped / unknown role, with a validated per-user identity | **Own rows only** (least-privilege) |
 | no per-user token, or a shared / synthesized identity (`mcp-client:*`, the reserved `@axonflow.local` / `@axonflow.internal` service domains) | **Zero rows** — fail-closed. A shared identity is a multi-developer pool, so scoping a read to it would return that whole pool; the read resolves to no rows instead. |
 

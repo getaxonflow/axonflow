@@ -1,0 +1,114 @@
+name: Reap Ephemeral Perf Stacks
+
+# Safety-net reaper for the ephemeral perf/benchmark stacks
+# (axonflow-in-vpc-enterprise-*, axonflow-saas-perf-testing-*).
+#
+# These stacks have a deploy → sweep → tear down lifecycle. Two teardown layers
+# already exist — deploy-platform's failure-path delete (Phase 5) and the
+# scheduled-performance-benchmark teardown job — but both only run as part of
+# the run that created the stack. A cancelled workflow, a crashed runner, a
+# dispatch bug (the 2026-07-20 stack ran 3+ days on exactly that), or a
+# forgotten keep_stack=true leaves the stack burning ALB + RDS + ECS money
+# with nothing watching. This is the independent third layer.
+#
+# Policy:
+#   - Any stack matching an ephemeral prefix, older than MAX_AGE_HOURS, in a
+#     live-ish status, is deleted via delete-stack.yml (which handles the
+#     deletion-protected RDS).
+#   - To intentionally keep a stack past the window, tag the CFN stack:
+#       axonflow:keep = true
+#     The reaper skips tagged stacks and lists them in the summary instead.
+#   - The reaper FAILS LOUDLY if a delete dispatch fails, so a broken reaper
+#     shows up as a red scheduled run, not as silence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be reaped without deleting'
+        required: false
+        type: boolean
+        default: false
+      max_age_hours:
+        description: 'Reap stacks older than this many hours'
+        required: false
+        type: string
+        default: '12'
+  schedule:
+    # Daily 09:00 UTC — comfortably after the Monday 06:00 UTC benchmark's
+    # own teardown (~08:00) so the reaper only ever sees genuine leftovers.
+    - cron: '0 9 * * *'
+
+env:
+  AWS_REGION: us-east-1
+  MAX_AGE_HOURS: ${{ inputs.max_age_hours || '12' }}
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  reap:
+    name: Reap orphaned ephemeral stacks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Find and reap orphaned stacks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout in this job — gh needs explicit repo context
+          # (the missing-GH_REPO class broke the benchmark teardown for weeks).
+          GH_REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%FT%TZ)
+          echo "::notice::Reaping ephemeral stacks created before $CUTOFF (dry_run=$DRY_RUN)"
+
+          # Live-ish statuses only. DELETE_IN_PROGRESS is excluded (already
+          # dying); DELETE_FAILED/ROLLBACK_FAILED are included — those are the
+          # stacks that most need delete-stack.yml's RDS-protection handling.
+          FOUND=$(aws cloudformation list-stacks --region "$AWS_REGION" \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE CREATE_FAILED ROLLBACK_COMPLETE ROLLBACK_FAILED DELETE_FAILED \
+            --query "StackSummaries[?CreationTime < '${CUTOFF}'].StackName" \
+            --output text | tr '\t' '\n' \
+            | grep -E '^axonflow-(in-vpc-enterprise|saas-perf-testing)-[0-9]{8}-[0-9]{6}$' || true)
+
+          if [ -z "$FOUND" ]; then
+            echo "::notice::No orphaned ephemeral stacks. ✅"
+            exit 0
+          fi
+
+          FAILED=0
+          for STACK in $FOUND; do
+            KEEP=$(aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$STACK" \
+              --query "Stacks[0].Tags[?Key=='axonflow:keep'].Value | [0]" --output text 2>/dev/null || echo "None")
+            if [ "$KEEP" = "true" ]; then
+              echo "::warning::SKIP $STACK — tagged axonflow:keep=true (intentional keep; remove the tag to let the reaper collect it)"
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::notice::[dry-run] would reap: $STACK"
+              continue
+            fi
+            echo "::warning::Reaping orphaned ephemeral stack: $STACK"
+            if gh workflow run delete-stack.yml \
+                -f stack_name="$STACK" \
+                -f region="$AWS_REGION" \
+                -f dry_run=false \
+                -f confirm_delete=DELETE \
+                -f disable_rds_protection=true; then
+              echo "::notice::delete-stack.yml dispatched for $STACK"
+            else
+              echo "::error::delete-stack.yml dispatch FAILED for $STACK"
+              FAILED=1
+            fi
+          done
+          exit $FAILED

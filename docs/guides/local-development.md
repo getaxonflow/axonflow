@@ -368,6 +368,109 @@ environment:
 
 ---
 
+## Building and Testing from Source
+
+The Docker Compose flow above is the recommended workflow. For working on the Go services directly you additionally need:
+
+| Software | Version | Purpose |
+|----------|---------|---------|
+| Go | 1.25+ | Backend development |
+| Node.js | 20+ | Portal frontend |
+| golangci-lint | latest | Linting |
+
+### Build
+
+```bash
+# Build all platform packages
+go build ./platform/...
+
+# Build specific services
+go build -o bin/agent ./platform/agent
+go build -o bin/orchestrator ./platform/orchestrator
+```
+
+### Run Tests
+
+```bash
+# All tests
+go test ./platform/... -v
+
+# With coverage
+go test ./platform/... -cover -coverprofile=coverage.out
+go tool cover -html=coverage.out -o coverage.html
+
+# Specific package
+go test ./platform/agent/... -v
+go test ./platform/orchestrator/... -v
+go test ./platform/connectors/... -v
+
+# With race detection
+go test ./platform/... -race
+```
+
+### Linting
+
+```bash
+golangci-lint run ./platform/...
+
+# Auto-fix issues
+golangci-lint run --fix ./platform/...
+```
+
+### Debugging
+
+```bash
+# Debug logging
+export LOG_LEVEL=debug
+export LOG_FORMAT=json  # or 'text'
+
+# Debug with Delve
+go install github.com/go-delve/delve/cmd/dlv@latest
+dlv debug ./platform/agent
+
+# Profile performance
+go test -cpuprofile cpu.out -bench . ./platform/orchestrator/...
+go tool pprof cpu.out
+```
+
+---
+
+## Testing with SDKs
+
+Point any SDK at your local Agent (`http://localhost:8080`) to test end to end:
+
+```bash
+# Go SDK
+go get github.com/getaxonflow/axonflow-sdk-go/v9
+
+# TypeScript SDK
+npm install @axonflow/sdk
+
+# Python SDK
+pip install axonflow
+
+# Java SDK (Maven)
+# com.getaxonflow:axonflow-sdk
+```
+
+Runnable examples live under `examples/` in the repository.
+
+---
+
+## Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | - | PostgreSQL connection string |
+| `REDIS_URL` | No | - | Redis for distributed rate limiting |
+| `DEPLOYMENT_MODE` | No | community | `community`, `enterprise`, or `saas` |
+| `AXONFLOW_LICENSE_KEY` | Enterprise | - | License key (enterprise/saas modes) |
+| `ENVIRONMENT` | No | development | Environment name |
+| `LOG_LEVEL` | No | info | debug, info, warn, error |
+| `LOG_FORMAT` | No | text | text or json |
+
+---
+
 ## Troubleshooting
 
 ### Services won't start
@@ -451,10 +554,7 @@ curl http://localhost:8080/health
 
 ### 3. Deploy to AWS (only after local testing passes)
 
-```bash
-cd /Users/saurabhjain/Development/axonflow-worktree-deployment
-./scripts/deploy.sh staging
-```
+Use your standard deployment pipeline once local testing passes.
 
 ---
 
@@ -536,7 +636,7 @@ docker compose exec postgres psql -U axonflow -d axonflow -c "SELECT * FROM sche
 
 ## Why This Matters for Community Edition
 
-When AxonFlow goes source-available, contributors MUST have fast local testing:
+AxonFlow is source-available, and contributors need fast local testing:
 
 - ✅ Test changes in 5-10 minutes (not 2-4 hours)
 - ✅ No AWS account required

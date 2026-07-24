@@ -30,6 +30,7 @@ import (
 
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
+	"axonflow/platform/agent/rls"
 )
 
 // V1 Plugin Pro MCP tool names. Used for switch-dispatch in handleMCPToolsCall
@@ -317,9 +318,14 @@ func countActiveTenantPolicies(ctx context.Context, db *sql.DB, tenantID string)
 	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	var count int
-	err := db.QueryRowContext(queryCtx,
-		`SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND enabled = true`,
-		tenantID).Scan(&count)
+	// Org-scoped: dynamic_policies is RLS-enabled (mig 018) and under
+	// axonflow_app_role a bare COUNT read 0 — combined with fail-open this
+	// meant the active_policies FreeUsageLimit never fired (#3039).
+	err := rls.WithOrgScope(queryCtx, db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(queryCtx,
+			`SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND enabled = true`,
+			tenantID).Scan(&count)
+	})
 	if err != nil {
 		return 0 // fail open
 	}
@@ -342,10 +348,14 @@ func countHITLApprovalsInWindow(ctx context.Context, db *sql.DB, tenantID string
 	cutoff := time.Now().Add(-window)
 	var count int
 	var oldest time.Time
-	err := db.QueryRowContext(queryCtx,
-		`SELECT COUNT(*), COALESCE(MIN(created_at), NOW()) FROM hitl_approval_queue
-		 WHERE tenant_id = $1 AND created_at > $2`,
-		tenantID, cutoff).Scan(&count, &oldest)
+	// Org-scoped: hitl_approval_queue is RLS-enabled (mig 025) — same
+	// fail-open-through-RLS hole as countActiveTenantPolicies (#3039).
+	err := rls.WithOrgScope(queryCtx, db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(queryCtx,
+			`SELECT COUNT(*), COALESCE(MIN(created_at), NOW()) FROM hitl_approval_queue
+			 WHERE tenant_id = $1 AND created_at > $2`,
+			tenantID, cutoff).Scan(&count, &oldest)
+	})
 	if err != nil {
 		return 0, time.Time{}
 	}

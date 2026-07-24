@@ -91,7 +91,13 @@ func clampOverrideTTL(requestedSeconds int64) (time.Duration, bool, string) {
 // `policy_matches[].policy_id`; an end-user who calls
 // `createOverride({ policyId: that })` would otherwise get a 404 even
 // though the policy exists.
-func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, bool, string, error) {
+// #3039: static/dynamic_policies are RLS-enabled (mig 018) and a bare read
+// on the app-role pool matched 0 rows — every override create 404'd "policy
+// not found". The lookup runs tenant-scoped first, then 'global'-scoped for
+// system rows, with a matching SQL tenancy predicate so a bypass-RLS pool
+// (master-role deployments) can't become a cross-tenant name/existence
+// oracle — tenant A can never resolve or probe tenant B's policies.
+func policyRiskAndOverride(ctx context.Context, db *sql.DB, tenantID, policyID, policyType string) (string, bool, string, error) {
 	var table string
 	switch policyType {
 	case "static":
@@ -119,7 +125,8 @@ func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, boo
 		query = fmt.Sprintf(`
 			SELECT risk_level, allow_override, id::text
 			FROM %s
-			WHERE id::text = $1 OR policy_id = $1
+			WHERE (id::text = $1 OR policy_id = $1)
+			  AND (tenant_id = $2 OR tenant_id = 'global')
 			LIMIT 1`, table)
 	} else {
 		query = fmt.Sprintf(`
@@ -127,12 +134,21 @@ func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, boo
 			       COALESCE(allow_override, false) AS allow_override,
 			       id::text
 			FROM %s
-			WHERE id::text = $1 OR name = $1
+			WHERE (id::text = $1 OR name = $1)
+			  AND (tenant_id = $2 OR tenant_id = 'global')
 			LIMIT 1`, table)
 	}
 	var riskLevel, canonicalUUID string
 	var allowOverride bool
-	err := db.QueryRow(query, policyID).Scan(&riskLevel, &allowOverride, &canonicalUUID)
+	scopedGet := func(scopeOrg string) error {
+		return agent.WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, query, policyID, tenantID).Scan(&riskLevel, &allowOverride, &canonicalUUID)
+		})
+	}
+	err := scopedGet(tenantID)
+	if err == sql.ErrNoRows && tenantID != GlobalTenantSentinel {
+		err = scopedGet(GlobalTenantSentinel)
+	}
 	if err != nil {
 		return "", false, "", err
 	}
@@ -142,34 +158,44 @@ func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, boo
 // resolvePolicyUUID returns the canonical UUID id for a policy given the
 // UUID, the static_policies slug, or the dynamic_policies name. Returns
 // an empty string (no error) when no match is found.
-func resolvePolicyUUID(ctx context.Context, db *sql.DB, policyID string) (string, error) {
+func resolvePolicyUUID(ctx context.Context, db *sql.DB, tenantID, policyID string) (string, error) {
 	if db == nil || policyID == "" {
 		return "", nil
 	}
+	// Same scoped two-pass + tenancy predicate as policyRiskAndOverride
+	// (#3039): visible under app-role RLS, never a cross-tenant oracle on
+	// bypass pools.
 	var uuid string
-	err := db.QueryRowContext(ctx, `
-		SELECT id::text FROM static_policies
-		WHERE id::text = $1 OR policy_id = $1
-		LIMIT 1
-	`, policyID).Scan(&uuid)
-	if err == nil {
-		return uuid, nil
+	lookup := func(scopeOrg string) error {
+		return agent.WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
+			err := tx.QueryRowContext(ctx, `
+				SELECT id::text FROM static_policies
+				WHERE (id::text = $1 OR policy_id = $1)
+				  AND (tenant_id = $2 OR tenant_id = 'global')
+				LIMIT 1
+			`, policyID, tenantID).Scan(&uuid)
+			if err == nil || err != sql.ErrNoRows {
+				return err
+			}
+			return tx.QueryRowContext(ctx, `
+				SELECT id::text FROM dynamic_policies
+				WHERE (id::text = $1 OR name = $1)
+				  AND (tenant_id = $2 OR tenant_id = 'global')
+				LIMIT 1
+			`, policyID, tenantID).Scan(&uuid)
+		})
 	}
-	if err != sql.ErrNoRows {
-		return "", err
-	}
-	err = db.QueryRowContext(ctx, `
-		SELECT id::text FROM dynamic_policies
-		WHERE id::text = $1 OR name = $1
-		LIMIT 1
-	`, policyID).Scan(&uuid)
-	if err == nil {
-		return uuid, nil
+	err := lookup(tenantID)
+	if err == sql.ErrNoRows && tenantID != GlobalTenantSentinel {
+		err = lookup(GlobalTenantSentinel)
 	}
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
-	return "", err
+	if err != nil {
+		return "", err
+	}
+	return uuid, nil
 }
 
 // invalidateCachedDeniedDecisions deletes workflow_steps cache rows that
@@ -215,19 +241,29 @@ func invalidateCachedDeniedDecisions(ctx context.Context, db *sql.DB, tenantID, 
 			}
 		}
 	}
-	if rows, err := db.QueryContext(ctx,
-		"SELECT policy_id, name FROM static_policies WHERE id::text = $1 OR policy_id = $1 OR name = $1",
-		policyID,
-	); err == nil {
-		addRow(rows)
-		_ = rows.Close()
-	}
-	if rows, err := db.QueryContext(ctx,
-		"SELECT '' AS policy_id, name FROM dynamic_policies WHERE id::text = $1 OR name = $1",
-		policyID,
-	); err == nil {
-		addRow(rows)
-		_ = rows.Close()
+	// Scoped two-pass (#3039): best-effort, so scope errors are ignored the
+	// same way the old bare-read errors were.
+	for _, scopeOrg := range []string{tenantID, GlobalTenantSentinel} {
+		if scopeOrg == "" || (scopeOrg == GlobalTenantSentinel && tenantID == GlobalTenantSentinel) {
+			continue
+		}
+		_ = agent.WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
+			if rows, err := tx.QueryContext(ctx,
+				"SELECT policy_id, name FROM static_policies WHERE (id::text = $1 OR policy_id = $1 OR name = $1) AND (tenant_id = $2 OR tenant_id = 'global')",
+				policyID, tenantID,
+			); err == nil {
+				addRow(rows)
+				_ = rows.Close()
+			}
+			if rows, err := tx.QueryContext(ctx,
+				"SELECT '' AS policy_id, name FROM dynamic_policies WHERE (id::text = $1 OR name = $1) AND (tenant_id = $2 OR tenant_id = 'global')",
+				policyID, tenantID,
+			); err == nil {
+				addRow(rows)
+				_ = rows.Close()
+			}
+			return nil
+		})
 	}
 
 	synArr := make([]string, 0, len(synonyms))
@@ -348,7 +384,7 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	// ADR-044: critical risk policies cannot be overridden.
 	// policyRiskAndOverride accepts either the UUID or the human-readable
 	// slug/name and returns the canonical UUID to store in policy_overrides.
-	riskLevel, allowOverride, canonicalUUID, err := policyRiskAndOverride(usageDB, req.PolicyID, req.PolicyType)
+	riskLevel, allowOverride, canonicalUUID, err := policyRiskAndOverride(r.Context(), usageDB, tenantID, req.PolicyID, req.PolicyType)
 	if err == sql.ErrNoRows {
 		sendErrorResponse(w, "Policy not found", http.StatusNotFound)
 		return
@@ -633,7 +669,7 @@ func listOverridesHandler(w http.ResponseWriter, r *http.Request) {
 	// degradation is visible in the orchestrator logs.
 	policyUUID := policyIDParam
 	if policyIDParam != "" {
-		if uuid, err := resolvePolicyUUID(r.Context(), usageDB, policyIDParam); err != nil {
+		if uuid, err := resolvePolicyUUID(r.Context(), usageDB, tenantID, policyIDParam); err != nil {
 			log.Printf("override list: resolvePolicyUUID(%q) failed, using raw param: %v",
 				policyIDParam, err)
 		} else if uuid != "" {

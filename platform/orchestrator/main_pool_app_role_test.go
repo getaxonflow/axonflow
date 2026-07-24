@@ -293,7 +293,9 @@ func TestBootLogCanonicalShape(t *testing.T) {
 	// boot-log line entirely (rather than mangling its shape), the per-file
 	// subtest passes (zero emitters in that file) but the global count
 	// drops below 9 and this assertion catches it.
-	const wantEmitters = 9
+	// 10th emitter: the dynamic-policy engine's BYPASSRLS gate-cache refresh
+	// pool (#3039).
+	const wantEmitters = 10
 	if totalEmitters != wantEmitters {
 		t.Errorf("found %d boot-log emitters across %d files; want %d — a site was added or removed without updating this audit",
 			totalEmitters, len(files), wantEmitters)

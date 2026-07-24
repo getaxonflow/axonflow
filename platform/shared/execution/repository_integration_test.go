@@ -403,6 +403,14 @@ func TestPostgresRepository_List(t *testing.T) {
 	})
 
 	t.Run("filter by tenant", func(t *testing.T) {
+		// #3039: a tenant-filtered List now runs scope-wrapped
+		// (WithOrgAndTenantScope: BEGIN + set_config×3 + count + select +
+		// COMMIT) so mig 042's RLS admits the rows under app_role.
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
 			WithArgs("tenant-1").
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -411,6 +419,7 @@ func TestPostgresRepository_List(t *testing.T) {
 			WithArgs("tenant-1", 10).
 			WillReturnRows(sqlmock.NewRows(columns).
 				AddRow("plan_1", "map_plan", "Plan 1", "", "tenant-1", nil, nil, nil, "pending", 0, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now))
+		mock.ExpectCommit()
 
 		results, _, err := repo.List(ctx, ListExecutionsRequest{TenantID: "tenant-1", Limit: 10})
 		if err != nil {

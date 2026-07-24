@@ -190,7 +190,7 @@ func getPluginCompatibility() PluginCompatInfo {
 		// shared-identity zero-rows fallback. claude-desktop unchanged.
 		// Mirrors platform/agent/capabilities.go.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":       "2.8.0",
+			"openclaw":       "2.8.4",
 			"claude-code":    "1.11.0",
 			"cursor":         "1.7.0",
 			"codex":          "1.7.0",

@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v5.0.0 | **Platform Version:** v5.0.0
+**SDK Version:** 9.0.0 | **Platform Version:** 9.12.0
 
 **Status:** Production Ready
 
@@ -78,7 +78,7 @@ const client = new AxonFlow({
 interface AxonFlowConfig {
   clientId?: string;          // Authentication identity
   clientSecret?: string;      // Authentication credential
-  endpoint?: string;          // Agent URL (default: https://staging-eu.getaxonflow.com)
+  endpoint?: string;          // Agent URL (default: http://localhost:8080)
   mode?: 'sandbox' | 'production'; // Default: production when credentials provided
   tenant?: string;            // Deprecated; use clientId instead
   debug?: boolean;            // Enable debug logging (default: false)
@@ -417,7 +417,7 @@ try {
 The SDK exports from `@axonflow/sdk`:
 
 - **`AxonFlow`** -- The client class (also available as `default` export).
-- **`VERSION`** -- SDK version string (`'3.5.0'`).
+- **`VERSION`** -- SDK version string (`'9.0.0'`).
 - **`wasRedacted()`** -- Utility to check if a connector response was redacted.
 - **`WorkflowHelpers`** -- Helper utilities for workflow operations.
 - **`ExecutionHelpers`** -- Helper utilities for unified execution operations.
@@ -426,4 +426,4 @@ The SDK exports from `@axonflow/sdk`:
 
 ---
 
-*This specification describes the AxonFlow TypeScript SDK v5.0.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*
+*This specification describes the AxonFlow TypeScript SDK v9.0.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*

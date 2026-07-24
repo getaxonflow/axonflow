@@ -270,14 +270,20 @@ func TestInvalidateCachedDeniedDecisions_Scopes(t *testing.T) {
 
 	// The helper first resolves policy synonyms via two SELECT queries
 	// against static_policies + dynamic_policies so cache rows that store
-	// the policy name can still be matched. Return empty rows so only the
-	// caller-supplied policy_id is used as a synonym.
-	mock.ExpectQuery("SELECT policy_id, name FROM static_policies").
-		WithArgs("pol-uuid").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
-	mock.ExpectQuery("SELECT '' AS policy_id, name FROM dynamic_policies").
-		WithArgs("pol-uuid").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
+	// the policy name can still be matched. #3039: those lookups now run in
+	// two org-scoped passes (tenant, then 'global'). Return empty rows so
+	// only the caller-supplied policy_id is used as a synonym.
+	for _, scope := range []string{"tenant-x", "global"} {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery("SELECT policy_id, name FROM static_policies").
+			WithArgs("pol-uuid", "tenant-x").
+			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
+		mock.ExpectQuery("SELECT '' AS policy_id, name FROM dynamic_policies").
+			WithArgs("pol-uuid", "tenant-x").
+			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
+		mock.ExpectCommit()
+	}
 
 	mock.ExpectExec("DELETE FROM workflow_steps").
 		WithArgs("tenant-x", "dev@example.com", sqlmock.AnyArg()).

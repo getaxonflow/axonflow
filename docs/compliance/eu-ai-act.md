@@ -1,6 +1,6 @@
 # EU AI Act Compliance Guide
 
-*Last updated: April 2026 | AxonFlow Platform v6.0.0 | SDKs: Python v6.1.0, Go v5.1.0, TypeScript v5.1.0, Java v5.1.0*
+*Last updated: July 2026 | AxonFlow Platform 9.12.0 | SDKs: Go / Python / TypeScript / Java 9.0.0*
 
 AxonFlow provides comprehensive support for EU AI Act compliance. This guide covers the key features and APIs available for organizations operating AI systems in the European Union.
 
@@ -479,7 +479,7 @@ Proxy LLM calls through AxonFlow with EU AI Act compliance policies applied auto
 **Go:**
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v9/axonflow"
+import "github.com/getaxonflow/axonflow-sdk-go/v9"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "https://your-axonflow-host",
@@ -529,18 +529,18 @@ const client = new AxonFlow({
   clientSecret: 'your-client-secret',
 });
 
-const response = await client.proxyLLMCall(
-  'user-eu-001',
-  'Assess this loan application for regulatory compliance',
-  'loan_assessment',
-  { region: 'eu', risk_level: 'high' },
+const response = await client.proxyLLMCall({
+  userToken: 'user-eu-001',
+  query: 'Assess this loan application for regulatory compliance',
+  requestType: 'loan_assessment',
+  context: { region: 'eu', risk_level: 'high' },
 );
 ```
 
 **Java:**
 
 ```java
-import com.axonflow.sdk.AxonFlowClient;
+import com.getaxonflow.sdk.AxonFlowClient;
 
 AxonFlowClient client = AxonFlowClient.builder()
     .endpoint("https://your-axonflow-host")
@@ -569,5 +569,5 @@ For detailed setup instructions, see the [Enterprise Deployment Guide](https://e
 ## Related Documentation
 
 - [PII Detection](../guides/pii-detection.md)
-- [SEBI Compliance](./sebi-compliance.md)
+- [SEBI Compliance](./sebi-ai-ml.md)
 - [Policy Templates](../reference/policy-templates.md)

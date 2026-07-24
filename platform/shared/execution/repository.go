@@ -29,11 +29,35 @@ var (
 // PostgresRepository implements ExecutionRepository for PostgreSQL.
 type PostgresRepository struct {
 	db *sql.DB
+	// lookupDB serves the by-id/by-metadata DISCOVERY reads (Get,
+	// GetByPlanID, GetByMetadata): the row is what establishes which tenant
+	// an execution belongs to, so no tenant GUC can be set beforehand —
+	// under axonflow_app_role the bare read matches 0 rows through mig 042's
+	// RLS and every lookup returns ErrExecutionNotFound (#3039). Callers
+	// post-authorize the result (the unified handler rejects tenant/org
+	// mismatch; the tracker uses the row's own org/tenant to scope its
+	// follow-up writes), so a BYPASSRLS pool here is the same trust shape as
+	// the SECURITY DEFINER portal_session_lookup (mig 118). Falls back to db
+	// when unset (tests, non-app-role deployments where db sees everything).
+	lookupDB *sql.DB
 }
 
 // NewPostgresRepository creates a new PostgreSQL repository.
 func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 	return &PostgresRepository{db: db}
+}
+
+// SetCrossOrgDB installs a BYPASSRLS (axonflow_platform_admin) pool for the
+// repository's discovery reads. See the lookupDB field comment (#3039).
+func (r *PostgresRepository) SetCrossOrgDB(db *sql.DB) {
+	r.lookupDB = db
+}
+
+func (r *PostgresRepository) lookup() *sql.DB {
+	if r.lookupDB != nil {
+		return r.lookupDB
+	}
+	return r.db
 }
 
 // Create inserts a new execution record.
@@ -115,7 +139,8 @@ func (r *PostgresRepository) Get(ctx context.Context, executionID string) (*Exec
 	var stepsJSON, metadataJSON []byte
 	var errorMsg sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, executionID).Scan(
+	// Discovery read — runs on the lookup pool (see lookupDB field comment).
+	err := r.lookup().QueryRowContext(ctx, query, executionID).Scan(
 		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &source,
 		&tenantID, &orgID, &userID, &clientID,
 		&exec.Status, &exec.CurrentStepIndex, &exec.TotalSteps,
@@ -261,14 +286,33 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 		argIdx++
 	}
 
-	// Count total
-	countQuery := "SELECT COUNT(*) " + baseQuery
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count executions: %w", err)
+	// mig 042's RLS keys execution_history on app.current_tenant_id — the
+	// bare reads matched 0 rows under axonflow_app_role, so the portal
+	// Executions page and /unified/executions listed nothing for orgs with
+	// live workflows (#3039). Writers were wrapped in PR-C1; wrap the readers
+	// with the same dual-key scope whenever the caller supplied a tenant/org
+	// filter. A filterless call is a deliberate cross-tenant listing
+	// (ops/admin path) and keeps the legacy bare read.
+	scopeOrg, scopeTenant := req.OrgID, req.TenantID
+	if scopeOrg == "" {
+		scopeOrg = scopeTenant
+	}
+	if scopeTenant == "" {
+		scopeTenant = scopeOrg
+	}
+	runQuery := func(fn func(q queryer) error) error {
+		if scopeOrg == "" {
+			return fn(r.db)
+		}
+		return rls.WithOrgAndTenantScope(ctx, r.db, scopeOrg, scopeTenant, func(tx *sql.Tx) error {
+			return fn(tx)
+		})
 	}
 
-	// Get results
+	countQuery := "SELECT COUNT(*) " + baseQuery
+	countArgs := make([]interface{}, len(args))
+	copy(countArgs, args)
+
 	selectQuery := `
 		SELECT
 			id, execution_type, name, source,
@@ -288,12 +332,37 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 		args = append(args, req.Offset)
 	}
 
-	rows, err := r.db.QueryContext(ctx, selectQuery, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list executions: %w", err)
+	// Count + select in one scope so both see the same GUC transaction.
+	var total int
+	var executions []ExecutionStatus
+	if err := runQuery(func(q queryer) error {
+		if cErr := q.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); cErr != nil {
+			return fmt.Errorf("failed to count executions: %w", cErr)
+		}
+		rows, qErr := q.QueryContext(ctx, selectQuery, args...)
+		if qErr != nil {
+			return fmt.Errorf("failed to list executions: %w", qErr)
+		}
+		defer rows.Close()
+		var scanErr error
+		executions, scanErr = scanExecutionRows(rows)
+		return scanErr
+	}); err != nil {
+		return nil, 0, err
 	}
-	defer rows.Close()
 
+	return executions, total, nil
+}
+
+// queryer is the subset of *sql.DB / *sql.Tx the List reads need, so the
+// same closure can run bare (legacy cross-tenant path) or scope-wrapped.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// scanExecutionRows converts result rows into ExecutionStatus values.
+func scanExecutionRows(rows *sql.Rows) ([]ExecutionStatus, error) {
 	var executions []ExecutionStatus
 	for rows.Next() {
 		var exec ExecutionStatus
@@ -311,7 +380,7 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 			&stepsJSON, &errorMsg, &metadataJSON, &exec.CreatedAt, &exec.UpdatedAt,
 		)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan execution: %w", err)
+			return nil, fmt.Errorf("failed to scan execution: %w", err)
 		}
 
 		exec.Source = source.String
@@ -334,12 +403,12 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 
 		if len(stepsJSON) > 0 {
 			if err := json.Unmarshal(stepsJSON, &exec.Steps); err != nil {
-				return nil, 0, fmt.Errorf("failed to unmarshal steps: %w", err)
+				return nil, fmt.Errorf("failed to unmarshal steps: %w", err)
 			}
 		}
 		if len(metadataJSON) > 0 {
 			if err := json.Unmarshal(metadataJSON, &exec.Metadata); err != nil {
-				return nil, 0, fmt.Errorf("failed to unmarshal metadata: %w", err)
+				return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 			}
 		}
 
@@ -347,10 +416,10 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("rows iteration error: %w", err)
+		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
 
-	return executions, total, nil
+	return executions, nil
 }
 
 // Delete removes an execution record.
@@ -549,11 +618,12 @@ func (r *PostgresRepository) getByMetadataHardcoded(ctx context.Context, key, va
 	var stepsJSON, metadataJSON []byte
 	var errorMsg sql.NullString
 
+	// Discovery read — runs on the lookup pool (see lookupDB field comment).
 	var row *sql.Row
 	if key == "plan_id" {
-		row = r.db.QueryRowContext(ctx, query, value)
+		row = r.lookup().QueryRowContext(ctx, query, value)
 	} else {
-		row = r.db.QueryRowContext(ctx, query, key, value)
+		row = r.lookup().QueryRowContext(ctx, query, key, value)
 	}
 	err := row.Scan(
 		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &source,
@@ -640,7 +710,12 @@ func (r *PostgresRepository) ExpireExecution(ctx context.Context, orgID, tenantI
 func (r *PostgresRepository) CountActive(ctx context.Context, tenantID string) (int, error) {
 	query := `SELECT COUNT(*) FROM execution_history WHERE tenant_id = $1 AND status IN ('running', 'pending')`
 	var count int
-	err := r.db.QueryRowContext(ctx, query, tenantID).Scan(&count)
+	// Tenant-scoped read: mig 042's RLS keys on app.current_tenant_id, so the
+	// bare COUNT read 0 under axonflow_app_role and concurrency limits never
+	// engaged (#3039). org_id == tenant_id post-Phase-6 at this caller.
+	err := rls.WithOrgAndTenantScope(ctx, r.db, tenantID, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, tenantID).Scan(&count)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to count active executions: %w", err)
 	}
