@@ -69,7 +69,7 @@ logged:
 ```
 
 - `role` must be one of `admin`, `owner`, `policy_admin`, `developer`,
-  `member`, `viewer`.
+  `viewer`.
 - `ttl_hours` defaults to 720 (30 days), capped at 8760 (1 year). Every token
   carries `exp` — unbounded tokens cannot be minted.
 - Emails are canonicalized (lower-cased, trimmed) at mint, validation, and
@@ -259,18 +259,18 @@ First discover the role UUIDs:
 ```bash
 curl "$PORTAL_URL/api/v1/scim/roles" -H "Cookie: <portal session>"
 # => {"roles":[{"id":"3f2b…","name":"developer","display_name":"Developer",…}, …],
-#     "count":6}
+#     "count":5}
 ```
 
-Every org has the six fleet-mappable system roles seeded automatically
-(`core/146`): `admin`, `owner`, `policy_admin`, `developer`, `member`,
-`viewer`. New orgs get them on creation; existing orgs were backfilled. These
+Every org has the five fleet-mappable system roles seeded automatically:
+`owner`, `admin`, `policy_admin`, `developer`, `viewer`. New orgs get them on
+creation; existing orgs were backfilled. These
 are the only role names a SCIM group may map to — the fleet resolver keys on the
 role **name**, so mapping a group to a differently-named custom role is
 **rejected** (`400`) at the next step rather than silently resolving every
-member to least privilege. Map each group to whichever of the six fits: `admin`
-or `owner` for a group that should read the whole tenant, `developer` / `member`
-/ `viewer` for own-rows access.
+member to least privilege. Map each group to whichever of the five fits: `admin`
+or `owner` for a group that should read the whole tenant, `developer` /
+`viewer` for own-rows access.
 
 Then map a group. The `<group-id>` is the SCIM group id — list them from the
 SCIM router with the **SCIM bearer token** (a different router and credential

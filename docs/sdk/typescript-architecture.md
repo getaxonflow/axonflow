@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v5.0.0 | **Platform Version:** v5.0.0
+**SDK Version:** 9.0.0 | **Platform Version:** 9.12.0
 
 ---
 
@@ -73,7 +73,7 @@ const client = new AxonFlow({
 interface AxonFlowConfig {
   clientId?: string;          // Authentication identity (X-Client-Id)
   clientSecret?: string;      // Authentication credential (X-Client-Secret)
-  endpoint?: string;          // AxonFlow Agent URL (default: https://staging-eu.getaxonflow.com)
+  endpoint?: string;          // AxonFlow Agent URL (default: http://localhost:8080)
   mode?: 'sandbox' | 'production'; // Deployment mode
   tenant?: string;            // Multi-tenant routing context (deprecated; use clientId)
   debug?: boolean;            // Enable debug logging (default: false)
@@ -258,4 +258,4 @@ Application
 
 ---
 
-*This document describes the architecture of the AxonFlow TypeScript SDK v5.0.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
+*This document describes the architecture of the AxonFlow TypeScript SDK v9.0.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*

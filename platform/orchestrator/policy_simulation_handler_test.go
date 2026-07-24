@@ -721,7 +721,15 @@ func TestImpactReport_Success(t *testing.T) {
 	conditionsJSON := `[{"field":"query","operator":"contains","value":"harmful"}]`
 	actionsJSON := `[{"type":"block","config":{"message":"Blocked by policy"}}]`
 
+	// #3039: GetByID now runs org-scoped (BEGIN + set_config + SELECT +
+	// COMMIT) so RLS admits the tenant's rows under app_role.
+	expectScopedGet := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
 	// Input 1: "harmful content" — should match
+	expectScopedGet()
 	mock.ExpectQuery("SELECT .+ FROM dynamic_policies").
 		WithArgs("pol-test", "test-tenant").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -739,8 +747,10 @@ func TestImpactReport_Success(t *testing.T) {
 			"admin", "admin",
 			now, now,
 		))
+	mock.ExpectCommit()
 
 	// Input 2: "safe question" — policy fetched again, won't match
+	expectScopedGet()
 	mock.ExpectQuery("SELECT .+ FROM dynamic_policies").
 		WithArgs("pol-test", "test-tenant").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -758,6 +768,7 @@ func TestImpactReport_Success(t *testing.T) {
 			"admin", "admin",
 			now, now,
 		))
+	mock.ExpectCommit()
 
 	body, _ := json.Marshal(ImpactReportRequest{
 		PolicyID: "pol-test",

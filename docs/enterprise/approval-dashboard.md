@@ -2,7 +2,7 @@
 
 **Last Updated:** April 2026
 
-**Platform Version:** v5.0.0 | **SDK Version:** v5.0.0
+**Platform Version:** 9.12.0 | **SDK Version:** 9.0.0
 
 The Approval Dashboard provides a human-in-the-loop (HITL) approval queue for workflow steps that require manual review before proceeding. It displays pending approvals with full policy context, enables approve/reject actions with mandatory justification, and supports real-time queue management.
 

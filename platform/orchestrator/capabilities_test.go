@@ -70,7 +70,7 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"claude-desktop": "0.2.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw":       "2.8.0",
+		"openclaw":       "2.8.4",
 		"claude-code":    "1.11.0",
 		"cursor":         "1.7.0",
 		"codex":          "1.7.0",

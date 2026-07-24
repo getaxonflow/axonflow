@@ -10,6 +10,40 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.12.1] - 2026-07-24 (RLS-blind reads under the app-role posture: policy enforcement, portal sessions, RBAC checks and execution reads restored)
+
+> **Who was affected:** only deployments whose database pools actually run as `axonflow_app_role` (`AXONFLOW_DB_USE_APP_ROLE=true` **with** the app-role DSNs provisioned — e.g. CloudFormation stacks flipped to `AppRoleProvisioned=true`, or self-hosted operators who followed the hardened-posture provisioning guide). Default docker-compose, default install-bundle, and default CloudFormation deployments connect as the table-owning role and were **not** affected.
+
+### Security
+
+- **A policy's version history was readable across tenants by ID (Community).** `GetVersions` had no tenant predicate of its own, so on deployments whose pool bypasses RLS (the non-app-role default), any authenticated tenant could read any other tenant's full policy version snapshots given the policy ID. The read now verifies parent ownership (tenant or `global`) in SQL, and runs org-scoped under RLS. (#3039)
+- **Override policy lookups can no longer act as a cross-tenant existence oracle (Community).** The ADR-044 override create/list lookups resolve a policy by UUID, slug, or name; they now run as scoped two-pass (tenant, then `global`) lookups with explicit tenancy predicates, so a caller can never probe or resolve another tenant's policy identities regardless of the pool's RLS posture. (#3039)
+
+### Community
+
+#### Fixed
+
+- **Tenant dynamic policies were silently NOT ENFORCED on app-role deployments.** The dynamic-policy engine's gate-evaluation cache is loaded by a deliberate all-tenants `SELECT ... WHERE enabled = true`. That refresh ran on the request pool — `axonflow_app_role`, `NOBYPASSRLS` — where `dynamic_policies`' RLS predicate (`org_id = get_current_org_id()`, migration 018) evaluates against an unset GUC and admits **zero rows**. The cache loaded empty on every refresh cycle, fell back to the built-in defaults, and every **tenant-created** dynamic policy stopped being enforced at WCP step gates and the decide plane — an over-threshold wire transfer whose policy demands `require_approval` sailed through as `allow`, observed on a live deployment. Reads under RLS fail to *silent zero rows* (unlike writes, which error on `WITH CHECK`), which is why five weeks of green health checks never surfaced it. The refresh and the boot-time policy count now run on the BYPASSRLS `axonflow_platform_admin` pool — the same split the node monitor and idempotency sweep already use — and the orchestrator now **refuses to boot** (`RequirePlatformAdminOrFatal`) when the app-role gate is on without the admin DSN, because silently not enforcing policies is strictly worse than not starting. (#3039)
+- **Policy CRUD read-back, exports and tier counts read zero under app-role RLS.** The policy repository's writers were org-scoped in the v9 Phase-8 sweep; its readers never were. On app-role deployments a freshly created dynamic policy 404'd on GET-by-id, the list and export came back empty, and the tenant/org tier-limit counts read 0 (which, combined with fail-open semantics, meant limits never engaged). All repository reads now run org-scoped like their sibling writers; the list/get read the tenant scope and then the `'global'` scope with explicit per-scope tenancy predicates, so system-wide wildcard policies stay visible without double-counting on non-RLS pools. Policy **export** now pages through the list (a page-size clamp silently truncated exports to 20 policies). Agent-side free-tier usage counts (active policies, HITL approvals-per-window) are org-scoped so those limits actually engage. (#3039)
+- **Executions API returned zero rows; execution status updates silently failed.** `execution_history` is RLS-keyed on the legacy tenant GUC (migration 042); its writers were scope-wrapped, its readers were not. On app-role deployments `GET /api/v1/unified/executions` returned `{"executions":null,"total":0}` for tenants with live workflows, by-id lookups 404'd — and because the tracker's lifecycle updates re-read the row before writing, execution status updates failed too, stranding rows at their initial state. The by-id/by-metadata lookups (discovery reads: the row itself establishes the tenant, and every caller post-authorizes the result against the caller's tenant) now run on the BYPASSRLS pool; list/count reads scope-wrap with the caller's tenant. The per-tenant execution-history retention purge, whose cross-tenant enumeration read zero rows and never purged, now runs on the retention admin pool the cleanup service already held. (#3039)
+
+#### Changed
+
+- **`/health` recommended openclaw plugin version: 2.8.0 → 2.8.4.** Advertises the already-published npm release carrying the self-hosted endpoint fix and audit hardening; no floor change.
+
+### Enterprise
+
+#### Fixed
+
+- **Portal sessions bounced to /login on every hard navigation.** `GET /api/v1/auth/session` read `user_sessions` with a bare pre-auth SELECT — the same lookup class migration 118 fixed for the auth middleware with a `SECURITY DEFINER` helper, but the session endpoint was never converted, so under app-role RLS every valid cookie answered `authenticated:false` and the portal SPA bounced to /login on any full page load. The endpoint now uses `portal_session_lookup` with the middleware's exact fallback, and the session mutations (logout delete, expiry delete, last-activity update — all silent 0-row no-ops under RLS, so logout never invalidated the server-side session) run org-scoped. (#3039)
+- **RBAC permission checks denied everyone on app-role deployments.** Every reader in the RBAC roles repository was unscoped — including `GetUserPermissions`, the read every portal permission gate funnels through — so on an app-role deployment running 9.12.0's role-gated routes, **every** gated route (policy CRUD, roles management, SSO configure) answered 403 for every user, regardless of role. All seven readers now scope-wrap like the repository's writers; override create no longer 404s "policy not found" and stale-deny cache invalidation actually fires. (#3039)
+
+### Migration
+
+**⚠️ HAS MIGRATION: core/153** — backfills `org_id='global'` onto the migration-seeded `tenant_id='global'` system policy rows (the earlier org-id backfill deliberately skipped them), without which they are invisible to every scoped read. Fast, idempotent, self-testing, with a down; applies automatically on boot. **App-role deployments:** `AXONFLOW_DB_PLATFORM_ADMIN_URL` is now a boot requirement on the orchestrator when the app-role gate is enabled.
+
+---
+
 ## [9.12.0] - 2026-07-22 (the five-role RBAC model made real: enforced per-role behavior, owner bootstrap & permission-driven PII)
 
 ### Fixed

@@ -1,8 +1,8 @@
 # Azure OpenAI Provider
 
-**Last Updated:** February 2026
+**Last Updated:** July 2026
 
-**Platform Version:** v6.0.0 | **SDKs:** v5.0.0
+**Platform:** 9.12.0 · **SDKs:** 9.0.0
 
 AxonFlow supports Azure OpenAI Service as a Community LLM provider, available without an enterprise license.
 
@@ -148,7 +148,7 @@ response = client.proxy_llm_call(
     request_type="chat",
     context={"provider": "azure-openai"},
 )
-print(response.content)
+print(response.data)
 ```
 
 ### Go SDK
@@ -172,7 +172,7 @@ resp, err := client.ProxyLLMCall(
 if err != nil {
     log.Fatal(err)
 }
-fmt.Println(resp.Content)
+fmt.Println(resp.Data)
 ```
 
 ### TypeScript SDK
@@ -190,7 +190,7 @@ const response = await client.proxyLLMCall({
   requestType: 'chat',
   context: { provider: 'azure-openai' },
 });
-console.log(response.content);
+console.log(response.data);
 ```
 
 ### Java SDK
@@ -229,6 +229,27 @@ Azure OpenAI requires quota allocation. If you can't deploy models:
 1. Check your subscription type (some free tiers have no quota)
 2. Request quota increase in Azure Portal → Quotas
 3. Consider using Azure AI Foundry which may have different quota policies
+
+### Connection Refused
+
+Azure OpenAI resource not accessible:
+1. Verify the endpoint URL is correct
+2. Check Azure network security settings
+3. Verify your IP is allowed (if using a firewall)
+
+## Azure-Specific Features
+
+### Data Residency
+
+Azure OpenAI keeps data within your Azure region. Configure AxonFlow with region-specific endpoints for compliance.
+
+### Private Endpoints
+
+For VNet integration, configure Azure Private Link and update `AZURE_OPENAI_ENDPOINT` to use your private endpoint.
+
+### Azure Active Directory
+
+For Entra ID (AAD) authentication instead of API keys, obtain a Bearer token from AAD and set it as `AZURE_OPENAI_API_KEY`.
 
 ## Examples
 

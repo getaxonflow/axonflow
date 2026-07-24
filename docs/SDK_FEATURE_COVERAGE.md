@@ -1,6 +1,6 @@
 # SDK Feature Coverage
 
-**Last Updated:** 2026-03-01
+**Last Updated:** 2026-05-21
 **Reference:** ADR-022 SDK Method Inclusion Criteria
 
 This document defines what features AxonFlow SDKs cover and explicitly exclude.

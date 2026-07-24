@@ -1133,7 +1133,16 @@ func initializeComponents() {
 	// Checks AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE env vars
 	SetConfigFileLoaderFromEnv() // Logs its own success/failure messages
 
-	// Initialize Dynamic Policy Engine (try database-backed first)
+	// Initialize Dynamic Policy Engine (try database-backed first).
+	//
+	// #3039 boot guard: the engine's gate-cache refresh is a cross-org read
+	// that MUST run on the BYPASSRLS platform-admin pool under app-role —
+	// a silent fallback means tenant dynamic policies are not enforced.
+	// Refuse to boot instead (no-op when AXONFLOW_DB_USE_APP_ROLE=false).
+	// Fired here at the production boot path, not in the constructor, so
+	// tests can build the engine under app-role fixtures without an admin
+	// DSN.
+	agent.RequirePlatformAdminOrFatal("DynamicPolicyEngine")
 	dbEngine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
 		log.Printf("Failed to initialize database-backed dynamic policy engine: %v", err)
@@ -1453,7 +1462,24 @@ func initializeComponents() {
 	// Initialize Policy CRUD API (Track A - Policy Enforcement)
 	log.Println("Initializing Policy CRUD API...")
 	if usageDB != nil {
+		// ONE shared BYPASSRLS pool for the #3039 cross-org/discovery reads
+		// in this init block: policy-repo cross-tenant counts and execution
+		// by-id/by-metadata lookups. Same OpenPlatformAdminConnection split
+		// as NodeMonitor and the idempotency sweep; nil-with-nil-err means
+		// the admin DSN is unset (documented fallback contract).
+		var rls3039AdminDB *sql.DB
+		if adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil || adminDB == nil {
+			log.Printf("⚠️  #3039 cross-org read pool: platform-admin pool unavailable (err=%v) — policy counts / execution lookups fall back to the main pool (under app-role RLS they read 0 rows / 404)", adminErr)
+		} else {
+			adminDB.SetMaxOpenConns(4)
+			adminDB.SetMaxIdleConns(1)
+			rls3039AdminDB = adminDB
+		}
+
 		policyRepo := NewPolicyRepository(usageDB)
+		if rls3039AdminDB != nil {
+			policyRepo.SetCrossOrgDB(rls3039AdminDB)
+		}
 		// Issue #1082: Pass the policy engine as a PolicyEngineRefresher so the
 		// PolicyService can trigger immediate cache refresh after policy changes.
 		// Both DynamicPolicyEngine and DatabaseDynamicPolicyEngine implement RefreshPolicies().
@@ -1557,7 +1583,16 @@ func initializeComponents() {
 
 		// Initialize unified execution tracking (#1075)
 		log.Println("Initializing Unified Execution Tracker for MAP...")
-		executionRepo = execution.NewPostgresRepository(usageDB)
+		executionPGRepo := execution.NewPostgresRepository(usageDB)
+		// By-id/by-metadata discovery reads (Get/GetByPlanID/GetByMetadata)
+		// establish which tenant an execution belongs to — no GUC can be set
+		// first, so under axonflow_app_role they read 0 rows through mig 042's
+		// RLS and every lookup 404s (#3039). Route them through the shared
+		// BYPASSRLS pool; callers post-authorize the result.
+		if rls3039AdminDB != nil {
+			executionPGRepo.SetCrossOrgDB(rls3039AdminDB)
+		}
+		executionRepo = executionPGRepo
 		mapExecutionTracker = NewMAPExecutionTracker(executionRepo, planService)
 		mapExecutionTracker.MaxConcurrentExecutions = tierChecker.MaxConcurrentExecutions()
 		// Wire execution repo to audit cleanup for history purging

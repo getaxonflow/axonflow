@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v5.0.0 | **SDK Version:** v5.0.0
+**Platform Version:** 9.12.0 | **SDK Version:** 9.0.0
 
 This guide covers audit logging specific to MCP (Model Context Protocol) connector operations. For general audit logging (LLM proxy calls, policy evaluations), see [Audit Logging](./audit-logging.md). Every MCP query and execute operation is automatically logged to provide a complete audit trail for compliance and security analysis.
 
@@ -233,7 +233,7 @@ if (result.policyInfo) {
 ### Java
 
 ```java
-import com.axonflow.sdk.AxonFlowClient;
+import com.getaxonflow.sdk.AxonFlowClient;
 
 AxonFlowClient client = AxonFlowClient.builder()
     .endpoint(System.getenv("AXONFLOW_ENDPOINT"))

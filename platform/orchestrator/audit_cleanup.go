@@ -312,14 +312,13 @@ func (s *AuditCleanupService) PurgeExcessExecutionHistory(ctx context.Context) (
 	// v9 Phase 8 #2384 PR-C1 DoD-closure D-4: PurgeOldest now requires both
 	// orgID + tenantID for the WithOrgAndTenantScope wrap (mig 042 RLS).
 	// Fetch (org_id, tenant_id) pairs so each PurgeOldest call can pin the
-	// right scope. Under axonflow_app_role this outer SELECT is itself
-	// gated by mig 042's USING and returns zero rows when run with no
-	// app.current_tenant_id pinned — so the whole AuditCleanupService
-	// caller path MUST route on the platform_admin pool (BYPASSRLS) to
-	// see all tenants. That admin-pool routing is tracked separately
-	// (sister to the tenant_delete.go #2397 follow-up); this PR closes the
-	// signature mismatch so the build is consistent.
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT org_id, tenant_id FROM execution_history WHERE tenant_id != '' AND org_id != ''`)
+	// right scope. #3039: this outer SELECT is a deliberate cross-tenant
+	// enumeration — under axonflow_app_role it read 0 rows through mig 042's
+	// USING and the purge silently never fired (unbounded execution-history
+	// growth, tier limit unenforced). Route it on the BYPASSRLS retention
+	// pool the service already holds; retentionDB() falls back to s.db on
+	// deployments without the admin role, where s.db sees everything.
+	rows, err := s.retentionDB().QueryContext(ctx, `SELECT DISTINCT org_id, tenant_id FROM execution_history WHERE tenant_id != '' AND org_id != ''`)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query tenant IDs: %w", err)
 	}

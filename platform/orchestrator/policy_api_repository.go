@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,14 +26,37 @@ import (
 	"axonflow/platform/agent"
 )
 
+// GlobalTenantSentinel is the tenant_id/org_id wildcard used by system-seeded
+// policies that apply across all tenants (mig 090's 'global' sentinel).
+const GlobalTenantSentinel = "global"
+
 // PolicyRepository handles database operations for policies
 type PolicyRepository struct {
 	db *sql.DB
+	// crossOrgDB serves deliberate cross-tenant reads (CountOrgPolicies).
+	// Optional: when unset those reads run on db, which is only correct on
+	// deployments where db bypasses RLS (AXONFLOW_DB_USE_APP_ROLE=false).
+	// See #3039.
+	crossOrgDB *sql.DB
 }
 
 // NewPolicyRepository creates a new policy repository
 func NewPolicyRepository(db *sql.DB) *PolicyRepository {
 	return &PolicyRepository{db: db}
+}
+
+// SetCrossOrgDB installs a BYPASSRLS (axonflow_platform_admin) pool for the
+// repository's deliberate cross-tenant reads. Under axonflow_app_role those
+// reads silently count 0 rows through RLS (#3039).
+func (r *PolicyRepository) SetCrossOrgDB(db *sql.DB) {
+	r.crossOrgDB = db
+}
+
+func (r *PolicyRepository) crossOrg() *sql.DB {
+	if r.crossOrgDB != nil {
+		return r.crossOrgDB
+	}
+	return r.db
 }
 
 // Create inserts a new policy into the database
@@ -128,14 +152,29 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 	var conditionsJSON, actionsJSON []byte
 	var policyType, category, tier, orgID string
 
-	err := r.db.QueryRowContext(ctx, query, policyID, tenantID).Scan(
-		&policy.ID, &policy.Name, &policy.Description, &policyType,
-		&category, &tier,
-		&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
-		&policy.Priority, &policy.Enabled, &policy.Version,
-		&policy.CreatedBy, &policy.UpdatedBy,
-		&policy.CreatedAt, &policy.UpdatedAt,
-	)
+	// dynamic_policies is RLS-enabled (mig 018, org_id = get_current_org_id()).
+	// The writers in this repository already wrap in WithOrgScope; the readers
+	// never did, so under axonflow_app_role a freshly created policy 404'd on
+	// read-back (#3039). The WHERE admits both the tenant's rows and the
+	// 'global' wildcard rows, but a single GUC can only unlock one org's rows
+	// at a time — read under the tenant scope first, then fall back to the
+	// 'global' scope so system-tier wildcard policies stay retrievable.
+	scopedGet := func(scopeOrg string) error {
+		return agent.WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, query, policyID, tenantID).Scan(
+				&policy.ID, &policy.Name, &policy.Description, &policyType,
+				&category, &tier,
+				&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+				&policy.Priority, &policy.Enabled, &policy.Version,
+				&policy.CreatedBy, &policy.UpdatedBy,
+				&policy.CreatedAt, &policy.UpdatedAt,
+			)
+		})
+	}
+	err := scopedGet(tenantID)
+	if err == sql.ErrNoRows && tenantID != GlobalTenantSentinel {
+		err = scopedGet(GlobalTenantSentinel)
+	}
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -163,8 +202,12 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 // List retrieves policies with filtering and pagination
 func (r *PolicyRepository) List(ctx context.Context, tenantID string, params ListPoliciesParams) ([]PolicyResource, int, error) {
 	// Build dynamic query
-	// Include both tenant-specific and system/global policies
-	whereConditions := []string{"(tenant_id = $1 OR tenant_id = 'global')"}
+	// Include both tenant-specific and system/global policies. The tenancy
+	// predicate is a $1 placeholder filled PER SCOPE below (tenant pass reads
+	// tenant_id = tenantID, global pass reads tenant_id = 'global') so the
+	// two scoped queries return disjoint sets on every deployment — with or
+	// without RLS enforcement (#3039).
+	whereConditions := []string{"tenant_id = $1"}
 	args := []interface{}{tenantID}
 	argIndex := 2
 
@@ -206,13 +249,6 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 
 	whereClause := strings.Join(whereConditions, " AND ")
 
-	// Count total
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM dynamic_policies WHERE %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count policies: %w", err)
-	}
-
 	// Sort and pagination
 	sortBy := "created_at"
 	if params.SortBy != "" {
@@ -238,6 +274,14 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 
 	offset := (params.Page - 1) * params.PageSize
 
+	// The WHERE admits both the tenant's rows and the 'global' wildcard rows,
+	// but dynamic_policies is RLS-enabled (mig 018, org_id =
+	// get_current_org_id()) and a single GUC unlocks one org's rows at a time.
+	// Under axonflow_app_role the old bare read returned 0 rows (#3039).
+	// Query each scope in its own WithOrgScope wrap (RLS does the row
+	// filtering per scope; the SQL filter keeps deployments without app-role
+	// on the same result shape), merge, sort, and paginate in memory. Policy
+	// counts are tier-capped, so the full-set read stays small.
 	query := fmt.Sprintf(`
 		SELECT policy_id, name, description, policy_type,
 		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
@@ -248,50 +292,118 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 		FROM dynamic_policies
 		WHERE %s
 		ORDER BY %s %s
-		LIMIT %d OFFSET %d
-	`, whereClause, sortBy, sortDir, params.PageSize, offset)
+	`, whereClause, sortBy, sortDir)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	scopedList := func(scopeOrg string) ([]PolicyResource, error) {
+		// Per-scope tenancy arg: $1 = the scope being read, so the tenant
+		// pass and the global pass return disjoint sets even without RLS.
+		scopeArgs := make([]interface{}, len(args))
+		copy(scopeArgs, args)
+		scopeArgs[0] = scopeOrg
+		var out []PolicyResource
+		scopeErr := agent.WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
+			rows, qErr := tx.QueryContext(ctx, query, scopeArgs...)
+			if qErr != nil {
+				return qErr
+			}
+			defer func() { _ = rows.Close() }()
+
+			for rows.Next() {
+				var policy PolicyResource
+				var conditionsJSON, actionsJSON []byte
+				var policyType, category, tier, orgID string
+
+				if sErr := rows.Scan(
+					&policy.ID, &policy.Name, &policy.Description, &policyType,
+					&category, &tier,
+					&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+					&policy.Priority, &policy.Enabled, &policy.Version,
+					&policy.CreatedBy, &policy.UpdatedBy,
+					&policy.CreatedAt, &policy.UpdatedAt,
+				); sErr != nil {
+					return fmt.Errorf("failed to scan policy: %w", sErr)
+				}
+
+				policy.Type = string(policyType)
+				policy.Category = category
+				policy.Tier = PolicyTier(tier)
+				policy.OrganizationID = orgID
+
+				if uErr := json.Unmarshal(conditionsJSON, &policy.Conditions); uErr != nil {
+					return fmt.Errorf("failed to unmarshal conditions: %w", uErr)
+				}
+				if uErr := json.Unmarshal(actionsJSON, &policy.Actions); uErr != nil {
+					return fmt.Errorf("failed to unmarshal actions: %w", uErr)
+				}
+				out = append(out, policy)
+			}
+			return rows.Err()
+		})
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		return out, nil
+	}
+
+	policies, err := scopedList(tenantID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list policies: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var policies []PolicyResource
-	for rows.Next() {
-		var policy PolicyResource
-		var conditionsJSON, actionsJSON []byte
-		var policyType, category, tier, orgID string
-
-		err := rows.Scan(
-			&policy.ID, &policy.Name, &policy.Description, &policyType,
-			&category, &tier,
-			&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
-			&policy.Priority, &policy.Enabled, &policy.Version,
-			&policy.CreatedBy, &policy.UpdatedBy,
-			&policy.CreatedAt, &policy.UpdatedAt,
-		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan policy: %w", err)
+	if tenantID != GlobalTenantSentinel {
+		globalPolicies, gErr := scopedList(GlobalTenantSentinel)
+		if gErr != nil {
+			return nil, 0, fmt.Errorf("failed to list global policies: %w", gErr)
 		}
-
-		policy.Type = string(policyType)
-		policy.Category = category
-		policy.Tier = PolicyTier(tier)
-		policy.OrganizationID = orgID
-
-		if err := json.Unmarshal(conditionsJSON, &policy.Conditions); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal conditions: %w", err)
-		}
-
-		if err := json.Unmarshal(actionsJSON, &policy.Actions); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal actions: %w", err)
-		}
-
-		policies = append(policies, policy)
+		policies = append(policies, globalPolicies...)
 	}
 
-	return policies, total, nil
+	sortPolicyResources(policies, sortBy, sortDir)
+
+	total := len(policies)
+	if offset >= total {
+		return nil, total, nil
+	}
+	end := offset + params.PageSize
+	if end > total {
+		end = total
+	}
+	return policies[offset:end], total, nil
+}
+
+// sortPolicyResources orders the merged tenant+global result set by the
+// validated sort column, mirroring the ORDER BY the per-scope queries used.
+func sortPolicyResources(policies []PolicyResource, sortBy, sortDir string) {
+	asc := strings.EqualFold(sortDir, "ASC")
+	sort.SliceStable(policies, func(i, j int) bool {
+		var less bool
+		switch sortBy {
+		case "name":
+			less = policies[i].Name < policies[j].Name
+		case "priority":
+			less = policies[i].Priority < policies[j].Priority
+		case "updated_at":
+			less = policies[i].UpdatedAt.Before(policies[j].UpdatedAt)
+		default: // created_at
+			less = policies[i].CreatedAt.Before(policies[j].CreatedAt)
+		}
+		if asc {
+			return less
+		}
+		return !less && !policyResourceSortEqual(policies[i], policies[j], sortBy)
+	})
+}
+
+func policyResourceSortEqual(a, b PolicyResource, sortBy string) bool {
+	switch sortBy {
+	case "name":
+		return a.Name == b.Name
+	case "priority":
+		return a.Priority == b.Priority
+	case "updated_at":
+		return a.UpdatedAt.Equal(b.UpdatedAt)
+	default:
+		return a.CreatedAt.Equal(b.CreatedAt)
+	}
 }
 
 // Update modifies an existing policy
@@ -500,46 +612,85 @@ func (r *PolicyRepository) Delete(ctx context.Context, tenantID, policyID string
 
 // GetVersions retrieves version history for a policy
 func (r *PolicyRepository) GetVersions(ctx context.Context, tenantID, policyID string) ([]PolicyVersionEntry, error) {
+	// The parent-ownership predicate is load-bearing on deployments where
+	// the pool bypasses RLS (superuser/master): without it any tenant could
+	// read any policy's full version snapshots by ID. Under app-role RLS
+	// the same subquery evaluates against the transaction's org GUC.
 	query := `
 		SELECT version, snapshot, COALESCE(changed_by, ''), changed_at,
 		       change_type, COALESCE(change_summary, '')
 		FROM policy_versions
 		WHERE policy_id = $1
+		  AND policy_id IN (
+			SELECT policy_id FROM dynamic_policies
+			WHERE tenant_id = $2 OR tenant_id = 'global'
+		  )
 		ORDER BY version DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, policyID)
+	// policy_versions is RLS-enabled (mig 022, re-keyed to org_id in mig 110)
+	// — read under the tenant scope, falling back to the 'global' scope for
+	// system-seeded wildcard policies (#3039).
+	scopedVersions := func(scopeOrg string) ([]PolicyVersionEntry, error) {
+		var out []PolicyVersionEntry
+		scopeErr := agent.WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
+			rows, qErr := tx.QueryContext(ctx, query, policyID, tenantID)
+			if qErr != nil {
+				return qErr
+			}
+			defer func() { _ = rows.Close() }()
+
+			for rows.Next() {
+				var entry PolicyVersionEntry
+				var snapshotJSON []byte
+
+				if sErr := rows.Scan(&entry.Version, &snapshotJSON, &entry.ChangedBy,
+					&entry.ChangedAt, &entry.ChangeType, &entry.ChangeSummary); sErr != nil {
+					return fmt.Errorf("failed to scan version: %w", sErr)
+				}
+				if uErr := json.Unmarshal(snapshotJSON, &entry.Snapshot); uErr != nil {
+					return fmt.Errorf("failed to unmarshal snapshot: %w", uErr)
+				}
+				out = append(out, entry)
+			}
+			return rows.Err()
+		})
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		return out, nil
+	}
+
+	versions, err := scopedVersions(tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get versions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	var versions []PolicyVersionEntry
-	for rows.Next() {
-		var entry PolicyVersionEntry
-		var snapshotJSON []byte
-
-		err := rows.Scan(&entry.Version, &snapshotJSON, &entry.ChangedBy,
-			&entry.ChangedAt, &entry.ChangeType, &entry.ChangeSummary)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan version: %w", err)
+	if len(versions) == 0 && tenantID != GlobalTenantSentinel {
+		if versions, err = scopedVersions(GlobalTenantSentinel); err != nil {
+			return nil, fmt.Errorf("failed to get versions: %w", err)
 		}
-
-		if err := json.Unmarshal(snapshotJSON, &entry.Snapshot); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal snapshot: %w", err)
-		}
-
-		versions = append(versions, entry)
 	}
 
 	return versions, nil
 }
 
-// ExportAll exports all policies for a tenant
+// ExportAll exports all policies for a tenant.
+//
+// Pages through List in max-page-size chunks: the old single call passed
+// PageSize 1000, which List's clamp silently reset to 20 — exports were
+// truncated to 20 policies (#3039 R3 finding).
 func (r *PolicyRepository) ExportAll(ctx context.Context, tenantID string) ([]PolicyResource, error) {
-	params := ListPoliciesParams{PageSize: 1000, Page: 1}
-	policies, _, err := r.List(ctx, tenantID, params)
-	return policies, err
+	var all []PolicyResource
+	for page := 1; ; page++ {
+		policies, total, err := r.List(ctx, tenantID, ListPoliciesParams{Page: page, PageSize: 100})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, policies...)
+		if len(policies) == 0 || len(all) >= total {
+			return all, nil
+		}
+	}
 }
 
 // ImportBulk imports multiple policies within a transaction.
@@ -796,14 +947,17 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 	var conditionsJSON, actionsJSON []byte
 	var policyType, category, tier, orgID string
 
-	err := r.db.QueryRowContext(ctx, query, name, tenantID).Scan(
-		&policy.ID, &policy.Name, &policy.Description, &policyType,
-		&category, &tier,
-		&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
-		&policy.Priority, &policy.Enabled, &policy.Version,
-		&policy.CreatedBy, &policy.UpdatedBy,
-		&policy.CreatedAt, &policy.UpdatedAt,
-	)
+	// Org-scoped for the same RLS reason as GetByID (#3039).
+	err := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, name, tenantID).Scan(
+			&policy.ID, &policy.Name, &policy.Description, &policyType,
+			&category, &tier,
+			&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+			&policy.Priority, &policy.Enabled, &policy.Version,
+			&policy.CreatedBy, &policy.UpdatedBy,
+			&policy.CreatedAt, &policy.UpdatedAt,
+		)
+	})
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -828,17 +982,24 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 func (r *PolicyRepository) CountByTenant(ctx context.Context, tenantID string) (int, error) {
 	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND deleted_at IS NULL AND tier != 'system'`
 	var count int
-	if err := r.db.QueryRowContext(ctx, query, tenantID).Scan(&count); err != nil {
+	// Org-scoped read: under axonflow_app_role the bare COUNT read 0 through
+	// RLS, so tier-limit enforcement undercounted (#3039).
+	if err := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, tenantID).Scan(&count)
+	}); err != nil {
 		return 0, fmt.Errorf("failed to count policies: %w", err)
 	}
 	return count, nil
 }
 
 // CountOrgPolicies counts organization-tier policies across all tenants (for Basic tier limit enforcement).
+// Cross-tenant by design — runs on the BYPASSRLS cross-org pool when
+// installed (SetCrossOrgDB); on the app-role pool RLS filters every row and
+// the limit check undercounts to 0 (#3039).
 func (r *PolicyRepository) CountOrgPolicies(ctx context.Context) (int, error) {
 	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tier = 'organization' AND deleted_at IS NULL`
 	var count int
-	if err := r.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+	if err := r.crossOrg().QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count organization policies: %w", err)
 	}
 	return count, nil

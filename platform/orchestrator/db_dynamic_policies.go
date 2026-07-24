@@ -30,8 +30,18 @@ import (
 )
 
 type DatabaseDynamicPolicyEngine struct {
-	db           *sql.DB
-	metricsDB    *sql.DB
+	db        *sql.DB
+	metricsDB *sql.DB
+	// refreshDB serves the cache-refresh SELECT and the boot-time policy
+	// COUNT — both deliberate ALL-tenants reads feeding the multi-tenant
+	// gate cache. dynamic_policies is RLS-enabled (mig 018, org_id =
+	// get_current_org_id()), so on an app-role deployment these reads MUST
+	// run on the BYPASSRLS axonflow_platform_admin pool: on the app-role
+	// pool with no org GUC they match 0 rows and the gate cache silently
+	// empties — tenant dynamic policies stop being enforced (#3039). Falls
+	// back to db (with a loud log) on deployments without the admin role,
+	// where db is the table owner and sees everything anyway.
+	refreshDB    *sql.DB
 	policies     map[string]interface{}
 	mu           sync.RWMutex
 	lastRefresh  time.Time
@@ -86,9 +96,38 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 	log.Printf("[dynamic-policy-engine] ✅ metricsDB pool connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
 		metricsRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 
+	// Cross-org read pool for the gate cache (see refreshDB field comment).
+	// Same OpenAppRoleConnection-vs-admin split as NodeMonitor (run.go) and
+	// the idempotency sweep: prefer axonflow_platform_admin (BYPASSRLS).
+	//
+	// This is the POLICY ENFORCEMENT path: on an app-role deployment a
+	// silent fallback to the main pool means the gate cache loads empty and
+	// tenant dynamic policies stop being enforced. The refuse-to-boot guard
+	// (RequirePlatformAdminOrFatal) fires at the run.go boot path, not
+	// here — tests construct the engine directly under app-role fixtures
+	// without an admin DSN and must not os.Exit the suite.
+	refreshDB := db
+	if adminDB, adminErr := agent.OpenPlatformAdminConnection(bootCtx, 3); adminErr != nil || adminDB == nil {
+		// Reachable only when the gate is off (guard above no-ops) or the
+		// configured admin DSN is broken. nil-with-nil-err = DSN unset.
+		log.Printf("[dynamic-policy-engine] ⚠️  platform-admin pool unavailable (err=%v, dsn_configured=%v) — gate-cache refresh falls back to the main pool; "+
+			"under AXONFLOW_DB_USE_APP_ROLE=true this reads 0 rows through RLS and tenant dynamic policies will NOT be enforced (#3039)",
+			adminErr, os.Getenv(agent.EnvPlatformAdminURL) != "")
+	} else {
+		adminDB.SetMaxOpenConns(3)
+		adminDB.SetMaxIdleConns(1)
+		refreshDB = adminDB
+		var refreshRole string
+		if err := adminDB.QueryRowContext(bootCtx, "SELECT current_user").Scan(&refreshRole); err == nil {
+			log.Printf("[dynamic-policy-engine] ✅ gate-cache refresh pool (BYPASSRLS cross-org reads) connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+				refreshRole, agent.UseAppRoleEnabled(), agent.EnvPlatformAdminURL, os.Getenv(agent.EnvPlatformAdminURL) != "")
+		}
+	}
+
 	engine := &DatabaseDynamicPolicyEngine{
 		db:           db,
 		metricsDB:    metricsDB,
+		refreshDB:    refreshDB,
 		policies:     make(map[string]interface{}),
 		cacheTimeout: 30 * time.Second,
 		lastRefresh:  time.Now(), // Initialize to prevent zero-time issues
@@ -138,9 +177,11 @@ func (e *DatabaseDynamicPolicyEngine) seedDefaultData() error {
 		log.Printf("Warning: Failed to seed system media policies: %v", err)
 	}
 
-	// Insert sample policies if table is empty
+	// Insert sample policies if table is empty. Cross-org COUNT — must run
+	// on the refresh pool: on the app-role pool RLS filters every row and
+	// the count reads 0 on every boot, re-attempting the sample seed.
 	var count int
-	err := e.db.QueryRow("SELECT COUNT(*) FROM dynamic_policies").Scan(&count)
+	err := e.crossOrgDB().QueryRow("SELECT COUNT(*) FROM dynamic_policies").Scan(&count)
 	if err != nil {
 		return err
 	}
@@ -341,6 +382,17 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 	return nil
 }
 
+// crossOrgDB returns the pool for deliberate all-tenants reads (gate-cache
+// refresh, boot COUNT). Falls back to the main pool when refreshDB is unset —
+// tests construct the engine via struct literals without the admin pool, and
+// non-app-role deployments read everything through db anyway.
+func (e *DatabaseDynamicPolicyEngine) crossOrgDB() *sql.DB {
+	if e.refreshDB != nil {
+		return e.refreshDB
+	}
+	return e.db
+}
+
 func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	// Plugin Batch 1 (ADR-044): also load risk_level + allow_override so
 	// the evaluator can populate AppliedPoliciesDetail for override
@@ -358,7 +410,11 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 		ORDER BY priority DESC, created_at DESC
 	`
 
-	rows, err := e.db.Query(query)
+	// ALL-tenants read feeding the multi-tenant gate cache — must run on the
+	// BYPASSRLS refresh pool (see refreshDB field comment / #3039). On the
+	// app-role pool this SELECT silently returns 0 rows and every dynamic
+	// policy stops being enforced at the gate.
+	rows, err := e.crossOrgDB().Query(query)
 	if err != nil {
 		return fmt.Errorf("failed to query policies: %w", err)
 	}
@@ -1285,6 +1341,9 @@ func (e *DatabaseDynamicPolicyEngine) Close() error {
 		default:
 			close(e.stopCh)
 		}
+	}
+	if e.refreshDB != nil && e.refreshDB != e.db {
+		_ = e.refreshDB.Close()
 	}
 	if e.db != nil {
 		_ = e.db.Close()

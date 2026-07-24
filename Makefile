@@ -131,4 +131,4 @@ endpoints: ## Show all service endpoints
 
 docs: ## Generate documentation
 	@echo "$(YELLOW)Opening documentation...$(NC)"
-	@open docs/LOCAL_DEVELOPMENT.md || xdg-open docs/LOCAL_DEVELOPMENT.md || echo "See docs/LOCAL_DEVELOPMENT.md"
+	@open docs/guides/local-development.md || xdg-open docs/guides/local-development.md || echo "See docs/guides/local-development.md"

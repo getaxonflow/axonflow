@@ -73,19 +73,22 @@ All connectors must implement the `base.Connector` interface:
 ```go
 // platform/connectors/base/connector.go
 type Connector interface {
-    // Lifecycle
+    // Lifecycle Management
     Connect(ctx context.Context, config *ConnectorConfig) error
-    Close() error
-    Ping(ctx context.Context) error
+    Disconnect(ctx context.Context) error
+    HealthCheck(ctx context.Context) (*HealthStatus, error)
+
+    // Data Operations (MCP Resources - read-only)
+    Query(ctx context.Context, query *Query) (*QueryResult, error)
+
+    // Action Operations (MCP Tools - write operations)
+    Execute(ctx context.Context, cmd *Command) (*CommandResult, error)
 
     // Metadata
-    Type() string
-    Version() string
-    Capabilities() []string
-
-    // Operations
-    Query(ctx context.Context, query *Query) (*QueryResult, error)
-    Execute(ctx context.Context, cmd *Command) (*CommandResult, error)
+    Name() string           // Unique connector instance name
+    Type() string           // Connector type (postgres, cassandra, http_api)
+    Version() string        // Connector version
+    Capabilities() []string // List of capabilities (query, execute, transactions)
 }
 ```
 
@@ -114,12 +117,12 @@ func (c *MyConnector) Connect(ctx context.Context, config *base.ConnectorConfig)
 }
 ```
 
-#### Close
+#### Disconnect
 
 Clean up resources:
 
 ```go
-func (c *MyConnector) Close() error {
+func (c *MyConnector) Disconnect(ctx context.Context) error {
     if c.client != nil {
         return c.client.Close()
     }
@@ -127,21 +130,37 @@ func (c *MyConnector) Close() error {
 }
 ```
 
-#### Ping
+#### HealthCheck
 
 Health check the connection:
 
 ```go
-func (c *MyConnector) Ping(ctx context.Context) error {
-    return c.client.HealthCheck(ctx)
+func (c *MyConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
+    start := time.Now()
+    if err := c.client.Ping(ctx); err != nil {
+        return &base.HealthStatus{
+            Healthy:   false,
+            Error:     err.Error(),
+            Timestamp: time.Now(),
+        }, err
+    }
+    return &base.HealthStatus{
+        Healthy:   true,
+        Latency:   time.Since(start),
+        Timestamp: time.Now(),
+    }, nil
 }
 ```
 
-#### Type, Version, Capabilities
+#### Name, Type, Version, Capabilities
 
 Return connector metadata:
 
 ```go
+func (c *MyConnector) Name() string {
+    return c.config.Name // Unique instance name from configuration
+}
+
 func (c *MyConnector) Type() string {
     return "myconnector"
 }
@@ -340,30 +359,48 @@ func (c *HTTPAPIConnector) Connect(ctx context.Context, config *base.ConnectorCo
     return nil
 }
 
-func (c *HTTPAPIConnector) Close() error {
+func (c *HTTPAPIConnector) Disconnect(ctx context.Context) error {
     c.httpClient.CloseIdleConnections()
     return nil
 }
 
-func (c *HTTPAPIConnector) Ping(ctx context.Context) error {
+func (c *HTTPAPIConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
+    start := time.Now()
+
     req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/health", nil)
     if err != nil {
-        return err
+        return nil, err
     }
 
     c.addAuthHeaders(req)
 
     resp, err := c.httpClient.Do(req)
     if err != nil {
-        return fmt.Errorf("health check failed: %w", err)
+        return &base.HealthStatus{
+            Healthy:   false,
+            Error:     err.Error(),
+            Timestamp: time.Now(),
+        }, fmt.Errorf("health check failed: %w", err)
     }
     defer resp.Body.Close()
 
     if resp.StatusCode != http.StatusOK {
-        return fmt.Errorf("health check returned status %d", resp.StatusCode)
+        return &base.HealthStatus{
+            Healthy:   false,
+            Error:     fmt.Sprintf("health check returned status %d", resp.StatusCode),
+            Timestamp: time.Now(),
+        }, fmt.Errorf("health check returned status %d", resp.StatusCode)
     }
 
-    return nil
+    return &base.HealthStatus{
+        Healthy:   true,
+        Latency:   time.Since(start),
+        Timestamp: time.Now(),
+    }, nil
+}
+
+func (c *HTTPAPIConnector) Name() string {
+    return c.config.Name
 }
 
 func (c *HTTPAPIConnector) Type() string {
@@ -579,11 +616,11 @@ func TestHTTPAPIConnector_Integration(t *testing.T) {
     if err != nil {
         t.Fatalf("Connect failed: %v", err)
     }
-    defer connector.Close()
+    defer connector.Disconnect(context.Background())
 
-    // Test ping
-    if err := connector.Ping(context.Background()); err != nil {
-        t.Errorf("Ping failed: %v", err)
+    // Test health check
+    if status, err := connector.HealthCheck(context.Background()); err != nil || !status.Healthy {
+        t.Errorf("HealthCheck failed: %v", err)
     }
 }
 ```
@@ -750,7 +787,70 @@ if resp.Redacted {
 }
 ```
 
-See the [MCP Policy Enforcement Guide](/mcp/policy-enforcement) for details.
+See the [MCP Audit Logging & Policy Enforcement Guide](mcp-audit-logging.md) for details.
+
+## Existing Connectors (Reference)
+
+Study these connectors as implementation references:
+
+| Connector | Type | Directory | Good Example For |
+|-----------|------|-----------|------------------|
+| `postgres` | Database | `platform/connectors/postgres/` | SQL queries, connection pooling |
+| `redis` | Cache | `platform/connectors/redis/` | Simple operations |
+| `http` | API | `platform/connectors/http/` | REST calls |
+| `amadeus` | Travel API | `ee/connectors/amadeus/` | OAuth, complex external API |
+| `salesforce` | CRM | `ee/connectors/salesforce/` | Enterprise auth |
+
+Community connectors live under `platform/connectors/`; Enterprise connector implementations live under `ee/connectors/`.
+
+## Connector SDK
+
+The AxonFlow Connector SDK (`platform/connectors/sdk`) provides production-ready utilities so you don't have to build them per connector:
+
+### Authentication Providers
+
+```go
+import "axonflow/platform/connectors/sdk"
+
+// API Key, Basic, Bearer, OAuth 2.0, AWS IAM, chained providers
+auth := sdk.NewAPIKeyAuth("key", sdk.APIKeyInHeader, "X-API-Key")
+auth := sdk.NewBasicAuth(username, password)
+auth := sdk.NewOAuthAuth(&sdk.OAuthConfig{ /* token URL, client creds, scopes */ })
+auth := sdk.NewIAMAuth(&sdk.IAMCredentials{ /* access key, secret, region */ })
+```
+
+### Rate Limiting
+
+```go
+// Token bucket rate limiter
+limiter := sdk.NewRateLimiter(100, 100) // 100 requests/sec, burst 100
+limiter.Wait(ctx)
+
+// Adaptive rate limiter (adjusts between a min and max rate)
+adaptive := sdk.NewAdaptiveRateLimiter(10, 100, 100)
+
+// Sliding window and multi-tenant variants
+sw := sdk.NewSlidingWindowRateLimiter(time.Minute, 600)
+mt := sdk.NewMultiTenantRateLimiter(100, 100)
+mt.Wait(ctx, tenantID)
+```
+
+### Metrics Collection
+
+```go
+metrics := sdk.NewConnectorMetrics("myconnector")
+metrics.RecordQuery(latency)
+metrics.RecordQueryError()
+
+// Prometheus export
+exporter := sdk.NewPrometheusExporter("axonflow")
+```
+
+### BaseConnector
+
+`sdk.NewBaseConnector(connType)` provides a reusable base with the metadata methods pre-wired, so your connector only implements the operations that differ.
+
+Full SDK documentation: `platform/connectors/sdk/README.md` in the repository.
 
 ## Contributing
 

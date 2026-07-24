@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: July 2026** | **Platform: v9.8.0** | **SDKs: Python / Go / TypeScript / Java v9.0.0 + Rust v0.8.1 (preview)**
+**Last Updated: July 2026** | **Platform: v9.12.0** | **SDKs: Python / Go / TypeScript / Java v9.0.0 + Rust v0.8.1 (preview)**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -73,11 +73,16 @@ Technical specifications and architecture documentation.
 
 | Document | Description |
 |----------|-------------|
-| [Configurable Agents](./reference/configurable-agents.md) | Configure agents via YAML (MAP 0.5) |
+| [Configurable Agents](./reference/configurable-agents.md) | Configure agents via YAML |
 | [LLM Architecture](./reference/llm-architecture.md) | LLM provider system architecture |
 | [Policy Templates](./reference/policy-templates.md) | Policy templates API |
 | [Secrets & Logging](./reference/secrets-logging-checklist.md) | Security checklist |
 | [License Migration](./reference/license-migration.md) | License key migration guide |
+| [Architecture](./ARCHITECTURE.md) | Platform architecture and the five runtime modes |
+| [Compatibility Matrix](./COMPATIBILITY_MATRIX.md) | Platform ↔ SDK version compatibility |
+| [Telemetry](./TELEMETRY.md) | Telemetry overview |
+| [Telemetry Contract](./TELEMETRY_CONTRACT.md) | Delivered-heartbeat telemetry specification |
+| [Test Visibility Policy](./test-visibility-policy.md) | What test tiers run where |
 
 ## Compliance
 
@@ -86,7 +91,6 @@ Regulatory compliance documentation.
 | Document | Description |
 |----------|-------------|
 | [EU AI Act](./compliance/eu-ai-act.md) | EU AI Act compliance features |
-| [SEBI Compliance](./compliance/sebi-compliance.md) | SEBI regulatory compliance (India) |
 | [SEBI AI/ML Framework](./compliance/sebi-ai-ml.md) | SEBI AI/ML circular compliance |
 | [RBI Free AI](./compliance/rbi-free-ai.md) | RBI guidelines for AI in banking (India) |
 
