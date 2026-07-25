@@ -319,13 +319,30 @@ func (r *PolicyOverrideRepository) GetByID(ctx context.Context, id string) (*Pol
 	var createdBy, updatedBy sql.NullString
 	var orgIDCol sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&override.ID, &override.PolicyID, &override.PolicyType,
-		&override.OrganizationID, &override.TenantID, &orgIDCol,
-		&actionOverride, &enabledOverride,
-		&override.OverrideReason, &expiresAt,
-		&createdBy, &override.CreatedAt, &updatedBy, &override.UpdatedAt,
-	)
+	scan := func(row *sql.Row) error {
+		return row.Scan(
+			&override.ID, &override.PolicyID, &override.PolicyType,
+			&override.OrganizationID, &override.TenantID, &orgIDCol,
+			&actionOverride, &enabledOverride,
+			&override.OverrideReason, &expiresAt,
+			&createdBy, &override.CreatedAt, &updatedBy, &override.UpdatedAt,
+		)
+	}
+
+	// #3048: policy_overrides is RLS-enabled (mig 110, app.current_org_id) —
+	// the bare read matched 0 rows under axonflow_app_role and every by-id
+	// override access 404'd. Override rows are org-owned (never 'global'),
+	// so a single caller-org scope suffices; an unknown caller org keeps the
+	// legacy bare read (owner-pool contexts, RLS bypassed). RLS scoping the
+	// read also strengthens the existing header-derived tenant isolation.
+	var err error
+	if callerOrg := OrgIDFromContext(ctx); callerOrg != "" {
+		err = WithOrgScope(ctx, r.db, callerOrg, func(tx *sql.Tx) error {
+			return scan(tx.QueryRowContext(ctx, query, id))
+		})
+	} else {
+		err = scan(r.db.QueryRowContext(ctx, query, id))
+	}
 	if err == sql.ErrNoRows {
 		return nil, ErrOverrideNotFound
 	}
@@ -381,9 +398,23 @@ func (r *PolicyOverrideRepository) GetEffectiveAction(
 	var enabledOverride sql.NullBool
 	var expiresAt sql.NullTime
 
-	err := r.db.QueryRowContext(ctx, query, policyID, tenantID).Scan(
-		&actionOverride, &enabledOverride, &expiresAt,
-	)
+	// #3048: org-scoped reads — bare, these matched 0 rows under
+	// axonflow_app_role and effective-action resolution silently ignored
+	// every live override. Scope key mirrors the write path (org header,
+	// falling back to the org_id==tenant_id identity).
+	scopeOrg := OrgIDFromContext(ctx)
+	if scopeOrg == "" && orgID != nil && *orgID != "" {
+		scopeOrg = *orgID
+	}
+	if scopeOrg == "" {
+		scopeOrg = tenantID
+	}
+
+	err := WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, policyID, tenantID).Scan(
+			&actionOverride, &enabledOverride, &expiresAt,
+		)
+	})
 	if err == nil && actionOverride.Valid {
 		return OverrideAction(actionOverride.String), true, nil
 	}
@@ -403,9 +434,11 @@ func (r *PolicyOverrideRepository) GetEffectiveAction(
 			LIMIT 1
 		`
 
-		err = r.db.QueryRowContext(ctx, query, policyID, *orgID).Scan(
-			&actionOverride, &enabledOverride, &expiresAt,
-		)
+		err = WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, query, policyID, *orgID).Scan(
+				&actionOverride, &enabledOverride, &expiresAt,
+			)
+		})
 		if err == nil && actionOverride.Valid {
 			return OverrideAction(actionOverride.String), true, nil
 		}

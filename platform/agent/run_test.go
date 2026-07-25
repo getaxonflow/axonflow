@@ -905,28 +905,42 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 		// Create fresh tier-aware engine
 		tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
 
-		// Mock returning a tenant policy that blocks "blocked_pattern"
-		rows := sqlmock.NewRows([]string{
+		// Mock returning a tenant policy that blocks "blocked_pattern".
+		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
+		// rows + overrides; 'global' scope: system rows).
+		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
 			"organization_id", "tenant_id", "org_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
-			"override_id", "action_override", "enabled_override",
-			"expires_at", "override_reason",
-		}).AddRow(
-			"policy-uuid", "custom_test123", "Block Pattern", "security-admin",
-			"blocked_pattern", "high",
-			"Blocks blocked_pattern", "block", "tenant", 50, true,
-			nil, "tenant_1", nil,
-			"[]", "{}", 1,
-			time.Now(), time.Now(), "admin", "admin",
-			nil, nil, nil, nil, nil,
-		)
-
+		}
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("test-tenant").
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
 			WithArgs("test-tenant", "").
-			WillReturnRows(rows)
+			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
+				"policy-uuid", "custom_test123", "Block Pattern", "security-admin",
+				"blocked_pattern", "high",
+				"Blocks blocked_pattern", "block", "tenant", 50, true,
+				nil, "tenant_1", nil,
+				"[]", "{}", 1,
+				time.Now(), time.Now(), "admin", "admin",
+			))
+		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+			}))
+		mock.ExpectCommit()
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs(GlobalOrgSentinel).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery(`SELECT`).
+			WillReturnRows(sqlmock.NewRows(effCols))
+		mock.ExpectCommit()
 
 		body, _ := json.Marshal(map[string]string{
 			"query":        "this has blocked_pattern in it",
@@ -971,27 +985,41 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 		tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
 
 		// Mock returning a tenant policy with "warn" action
-		rows := sqlmock.NewRows([]string{
+		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
+		// rows + overrides; 'global' scope: system rows).
+		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
 			"organization_id", "tenant_id", "org_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
-			"override_id", "action_override", "enabled_override",
-			"expires_at", "override_reason",
-		}).AddRow(
+		}
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("test-tenant").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("test-tenant", "").
+			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 			"policy-uuid", "custom_test456", "Warn Pattern", "security-admin",
 			"warn_pattern", "medium",
 			"Warns on pattern", "warn", "tenant", 50, true, // action is "warn" not "block"
 			nil, "tenant_1", nil,
 			"[]", "{}", 1,
 			time.Now(), time.Now(), "admin", "admin",
-			nil, nil, nil, nil, nil,
-		)
-
+		))
+		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+			}))
+		mock.ExpectCommit()
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs(GlobalOrgSentinel).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "").
-			WillReturnRows(rows)
+			WillReturnRows(sqlmock.NewRows(effCols))
+		mock.ExpectCommit()
 
 		body, _ := json.Marshal(map[string]string{
 			"query":        "this has warn_pattern in it",
@@ -2679,27 +2707,41 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 
 	t.Run("tenant policy blocks matching pattern", func(t *testing.T) {
 		// Mock the GetEffective query to return a tenant policy that blocks "secret_pattern"
-		rows := sqlmock.NewRows([]string{
+		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
+		// rows + overrides; 'global' scope: system rows).
+		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
 			"organization_id", "tenant_id", "org_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
-			"override_id", "action_override", "enabled_override",
-			"expires_at", "override_reason",
-		}).AddRow(
+		}
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("test-tenant").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("test-tenant", "").
+			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 			"policy-uuid", "custom_tenant123", "Block Secret Pattern", "security-admin",
 			"secret_pattern", "high",
 			"Block secret patterns", "block", "tenant", 50, true,
 			nil, "test-tenant", nil,
 			"[]", "{}", 1,
 			time.Now(), time.Now(), "admin", "admin",
-			nil, nil, nil, nil, nil,
-		)
-
+		))
+		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+			}))
+		mock.ExpectCommit()
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs(GlobalOrgSentinel).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "").
-			WillReturnRows(rows)
+			WillReturnRows(sqlmock.NewRows(effCols))
+		mock.ExpectCommit()
 
 		// Test user
 		user := &User{
@@ -2727,27 +2769,41 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 
 	t.Run("no match when pattern not in input", func(t *testing.T) {
 		// Mock the GetEffective query
-		rows := sqlmock.NewRows([]string{
+		// #3048: GetEffective runs two scoped passes (org scope: tenant/org
+		// rows + overrides; 'global' scope: system rows).
+		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
 			"organization_id", "tenant_id", "org_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
-			"override_id", "action_override", "enabled_override",
-			"expires_at", "override_reason",
-		}).AddRow(
+		}
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("test-tenant").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("test-tenant", "").
+			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 			"policy-uuid", "custom_tenant456", "Block Secret Pattern", "security-admin",
 			"secret_pattern", "high",
 			"Block secret patterns", "block", "tenant", 50, true,
 			nil, "test-tenant", nil,
 			"[]", "{}", 1,
 			time.Now(), time.Now(), "admin", "admin",
-			nil, nil, nil, nil, nil,
-		)
-
+		))
+		mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+			}))
+		mock.ExpectCommit()
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs(GlobalOrgSentinel).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "").
-			WillReturnRows(rows)
+			WillReturnRows(sqlmock.NewRows(effCols))
+		mock.ExpectCommit()
 
 		// Evaluate with input that does NOT match
 		ctx := context.Background()

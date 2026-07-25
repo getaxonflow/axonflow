@@ -369,12 +369,42 @@ func (s *RuntimeConfigService) loadConnectorsFromDatabase(ctx context.Context, t
 		ORDER BY cc.connector_name
 	`
 
-	rows, err := s.db.QueryContext(ctx, queryWithCredentials, tenantID)
+	// #3048: connector_configs is FORCE-RLS (mig 107) — the bare per-tenant
+	// read matched 0 rows under axonflow_app_role and every runtime
+	// connector config silently vanished. org_id == tenant_id on this
+	// table's writers (portal connector config path), so the tenant key is
+	// the scope. The transaction stays open across the row drain — the scan
+	// loop below runs inside it via the queryer indirection.
+	tx, txErr := s.db.BeginTx(ctx, nil)
+	if txErr != nil {
+		return nil, fmt.Errorf("begin org-scoped read: %w", txErr)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, gucErr := tx.ExecContext(ctx, "SELECT set_config('app.current_org_id', $1, true)", tenantID); gucErr != nil {
+		return nil, fmt.Errorf("set org scope: %w", gucErr)
+	}
+
+	rows, err := tx.QueryContext(ctx, queryWithCredentials, tenantID)
 	if err != nil {
 		// Backward compatibility for databases that predate connector_configs.credentials.
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "42703" && strings.Contains(pqErr.Message, "cc.credentials") {
 			s.logger.Printf("connector_configs.credentials column not found, retrying with legacy query")
-			rows, err = s.db.QueryContext(ctx, legacyQuery, tenantID)
+			// The failed statement aborted the transaction — start a fresh
+			// scoped transaction for the legacy retry.
+			_ = tx.Rollback()
+			tx, txErr = s.db.BeginTx(ctx, nil)
+			if txErr != nil {
+				return nil, fmt.Errorf("begin org-scoped read (legacy retry): %w", txErr)
+			}
+			if _, gucErr := tx.ExecContext(ctx, "SELECT set_config('app.current_org_id', $1, true)", tenantID); gucErr != nil {
+				return nil, fmt.Errorf("set org scope (legacy retry): %w", gucErr)
+			}
+			rows, err = tx.QueryContext(ctx, legacyQuery, tenantID)
 		}
 	}
 	if err != nil {
@@ -474,7 +504,15 @@ func (s *RuntimeConfigService) loadConnectorsFromDatabase(ctx context.Context, t
 		configs = append(configs, cfg)
 	}
 
-	return configs, rows.Err()
+	if rErr := rows.Err(); rErr != nil {
+		return nil, rErr
+	}
+	_ = rows.Close()
+	if cErr := tx.Commit(); cErr != nil {
+		return nil, fmt.Errorf("commit org-scoped read: %w", cErr)
+	}
+	committed = true
+	return configs, nil
 }
 
 // loadLLMProvidersFromDatabase loads LLM provider configs from the database

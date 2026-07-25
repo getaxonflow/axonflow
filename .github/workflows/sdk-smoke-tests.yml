@@ -291,11 +291,76 @@ jobs:
     # available inside `jobs.<job_id>.steps.*` contexts), so the gate uses
     # `github.repository` instead: run only on the enterprise repo where
     # the file ships; skip on the community mirror.
-    if: github.repository == 'getaxonflow/axonflow-enterprise'
+    # Dependabot runs have no access to repo secrets, and #3048's agent
+    # content-enforcement assertions need a minted Enterprise license (AWS
+    # signing keys) — skip wholesale for Dependabot (the summary gate accepts
+    # 'skipped'; same precedent as cross-system-hitl-e2e).
+    if: github.repository == 'getaxonflow/axonflow-enterprise' && github.actor != 'dependabot[bot]'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Set up Go (license keygen)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: platform/go.mod
+          cache: false
+
+      - name: Configure AWS credentials (license signing keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: us-east-1
+
+      # #3048: the extended 3039_rls_blind_reads suite drives the AGENT's
+      # /api/v1/mcp/check-input + check-output directly (static content
+      # enforcement — the plane that was silently OFF under app-role).
+      # Enterprise-mode agent auth is an Ed25519 license via Basic auth, so
+      # the stack needs a real license at boot and the suite needs the
+      # matching AXONFLOW_AUTH. Same mint pattern as cross-system-hitl-e2e.
+      # The license org MUST equal the deployment ORG_ID (compose default
+      # local-dev-org) — the agent refuses to boot on a mismatch.
+      - name: Mint Enterprise license for agent auth (#3048)
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVAL_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id axonflow/license-signing/evaluation-private-key \
+            --region us-east-1 --query SecretString --output text)
+          ENT_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id axonflow/license-signing/enterprise-private-key \
+            --region us-east-1 --query SecretString --output text)
+          if [ -z "$EVAL_KEY" ] || [ -z "$ENT_KEY" ]; then
+            echo "::error::Failed to fetch signing keys from AWS Secrets Manager"
+            exit 1
+          fi
+          echo "::add-mask::$EVAL_KEY"
+          echo "::add-mask::$ENT_KEY"
+
+          cd ee/platform/agent/license/cmd/keygen
+          LICENSE_KEY=$(AXONFLOW_EVAL_SIGNING_KEY="$EVAL_KEY" AXONFLOW_ENT_SIGNING_KEY="$ENT_KEY" \
+            go run -tags enterprise . \
+              -tier Enterprise \
+              -org local-dev-org \
+              -days 1 \
+              -permissions "mcp:*:*,llm:*:*,hitl:*:*" \
+              -quiet)
+          if [ -z "$LICENSE_KEY" ]; then
+            echo "::error::License generation returned empty key"
+            exit 1
+          fi
+          echo "::add-mask::$LICENSE_KEY"
+          cd "$GITHUB_WORKSPACE"
+          # The agent reads AXONFLOW_LICENSE_KEY from .env at compose up.
+          echo "AXONFLOW_LICENSE_KEY=$LICENSE_KEY" >> .env
+          # The suite authenticates check-input/check-output with Basic auth.
+          POSTURE_AUTH=$(printf '%s:%s' local-dev-org "$LICENSE_KEY" | base64 -w0)
+          echo "::add-mask::$POSTURE_AUTH"
+          echo "AXONFLOW_AUTH=$POSTURE_AUTH" >> "$GITHUB_ENV"
+          echo "AXONFLOW_CLIENT_ID=local-dev-org" >> "$GITHUB_ENV"
+          echo "License minted (Enterprise tier, 1 day, org local-dev-org — the compose ORG_ID default; the agent refuses a mismatched license org)"
 
       - name: Install postgresql-client (psql)
         run: |

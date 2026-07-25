@@ -13,6 +13,7 @@ package registry
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -53,8 +54,11 @@ func NewRegistry() *Registry {
 type RegistryOption func(*registryOptions)
 
 type registryOptions struct {
-	encryptor       *config.CredentialEncryptor
-	appRoleOpener   AppRoleOpener
+	encryptor     *config.CredentialEncryptor
+	appRoleOpener AppRoleOpener
+	// crossOrgDB is the BYPASSRLS pool for the storage's deployment-wide
+	// reads (#3048) — see PostgreSQLStorage.lookupDB.
+	crossOrgDB *sql.DB
 }
 
 // WithEncryptor sets a credential encryptor for the registry's storage layer.
@@ -73,6 +77,19 @@ func WithEncryptor(enc *config.CredentialEncryptor) RegistryOption {
 func WithAppRoleOpener(opener AppRoleOpener) RegistryOption {
 	return func(o *registryOptions) {
 		o.appRoleOpener = opener
+	}
+}
+
+// WithCrossOrgDB installs a BYPASSRLS (axonflow_platform_admin) pool for the
+// storage's deployment-wide reads: the registry's cross-replica sync
+// (ListConnectors) and by-id lazy loads (GetConnector) are cross-org by
+// design and read ZERO rows through mig 107's FORCE RLS on the app-role
+// runtime pool (#3048). Production orchestrator code SHOULD pass this when
+// AXONFLOW_DB_USE_APP_ROLE=true; without it the reads fall back to the
+// runtime pool (correct on owner-pool deployments).
+func WithCrossOrgDB(db *sql.DB) RegistryOption {
+	return func(o *registryOptions) {
+		o.crossOrgDB = db
 	}
 }
 
@@ -96,6 +113,9 @@ func NewRegistryWithStorage(dbURL string, opts ...RegistryOption) (*Registry, er
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 	storage.encryptor = o.encryptor
+	if o.crossOrgDB != nil {
+		storage.SetCrossOrgDB(o.crossOrgDB)
+	}
 
 	registry := &Registry{
 		connectors: make(map[string]base.Connector),

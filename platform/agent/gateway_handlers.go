@@ -690,8 +690,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
-			TenantID:        user.TenantID,
-			OrgID:           user.OrgID,
+			TenantID: user.TenantID,
+			OrgID:    user.OrgID,
+			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
+			// validated caller org (org_id may differ from tenant_id).
+			OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID),
 			ConnectorName:   "gateway",
 			UserID:          fmt.Sprintf("%d", user.ID),
 			Categories:      gatewayPreCheckPolicyCategories,

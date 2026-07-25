@@ -219,11 +219,17 @@ func TestQueryLatestPolicyVersion_HappyPath(t *testing.T) {
 	usageDB = mockDB
 	defer func() { usageDB = origDB }()
 
+	// #3048: org-scoped read.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-x").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT version FROM static_policy_versions`).
 		WithArgs("pol-sqli").
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(12))
+	mock.ExpectCommit()
 
-	got := queryLatestPolicyVersion("pol-sqli")
+	got := queryLatestPolicyVersion("tenant-x", "pol-sqli")
 	if got != 12 {
 		t.Errorf("queryLatestPolicyVersion = %d, want 12", got)
 	}
@@ -247,11 +253,20 @@ func TestQueryLatestPolicyVersion_NoRowsReturnsZero(t *testing.T) {
 	usageDB = mockDB
 	defer func() { usageDB = origDB }()
 
-	mock.ExpectQuery(`SELECT version FROM static_policy_versions`).
-		WithArgs("pol-vanished").
-		WillReturnError(sql.ErrNoRows)
+	// #3048: the org-scope pass misses, then the 'global'-scope fallback
+	// misses too — both roll back.
+	for _, scope := range []string{"tenant-x", GlobalTenantSentinel} {
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs(scope).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery(`SELECT version FROM static_policy_versions`).
+			WithArgs("pol-vanished").
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+	}
 
-	got := queryLatestPolicyVersion("pol-vanished")
+	got := queryLatestPolicyVersion("tenant-x", "pol-vanished")
 	if got != 0 {
 		t.Errorf("queryLatestPolicyVersion = %d on missing row, want 0", got)
 	}
@@ -260,7 +275,7 @@ func TestQueryLatestPolicyVersion_NoRowsReturnsZero(t *testing.T) {
 func TestQueryLatestPolicyVersion_EmptyPolicyIDReturnsZero(t *testing.T) {
 	// Guard: caller passes empty policy_id (no matched policies on the
 	// decision). Must short-circuit without hitting the DB.
-	got := queryLatestPolicyVersion("")
+	got := queryLatestPolicyVersion("tenant-x", "")
 	if got != 0 {
 		t.Errorf("queryLatestPolicyVersion(\"\") = %d, want 0", got)
 	}
@@ -286,7 +301,7 @@ func TestBuildExplanation_FallsBackToPolicyIDs(t *testing.T) {
 }
 
 func TestCheckOverrideAvailability_NoUserReturnsFalse(t *testing.T) {
-	ok, id := checkOverrideAvailability("tenant-x", "", "", []ExplainPolicy{
+	ok, id := checkOverrideAvailability("tenant-x", "tenant-x", "", "", []ExplainPolicy{
 		{PolicyID: "p-1", AllowOverride: true, RiskLevel: "medium"},
 	})
 	if ok {
@@ -298,7 +313,7 @@ func TestCheckOverrideAvailability_NoUserReturnsFalse(t *testing.T) {
 }
 
 func TestCheckOverrideAvailability_NoMatchesReturnsFalse(t *testing.T) {
-	ok, id := checkOverrideAvailability("tenant-x", "user@example.com", "", nil)
+	ok, id := checkOverrideAvailability("tenant-x", "tenant-x", "user@example.com", "", nil)
 	if ok {
 		t.Error("expected false for no matches")
 	}
@@ -316,7 +331,7 @@ func TestCheckOverrideAvailability_AllCriticalReturnsFalse(t *testing.T) {
 		{PolicyID: "p-1", AllowOverride: true, RiskLevel: "critical"},
 		{PolicyID: "p-2", AllowOverride: false, RiskLevel: "high"},
 	}
-	ok, id := checkOverrideAvailability("tenant-x", "user@example.com", "", matches)
+	ok, id := checkOverrideAvailability("tenant-x", "tenant-x", "user@example.com", "", matches)
 	if ok {
 		t.Error("expected false when all matches are critical or non-overridable")
 	}

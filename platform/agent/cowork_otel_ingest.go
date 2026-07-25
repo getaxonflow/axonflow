@@ -454,7 +454,7 @@ func coworkRedactDefault(ctx context.Context, tenantID, userID, source, content 
 	// gate a transient load failure would SKIP the generic-PII pass and persist
 	// raw content (email / SSN / phone). PoliciesLoadable distinguishes the two;
 	// a storage redactor must never hold content it could not scan.
-	if err := engine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+	if err := engine.PoliciesLoadable(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse); err != nil {
 		return coworkRedactResult{text: "[redaction-unavailable: content withheld]", verdict: sharedaudit.DecisionError}
 	}
 
@@ -467,14 +467,22 @@ func coworkRedactDefault(ctx context.Context, tenantID, userID, source, content 
 	// coerces every one of those categories to ActionRedact regardless of the
 	// deployment's PII_ACTION, so warn/log/block deployments still mask before store.
 	{
-		piiCats := engine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		piiCats := engine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
 		if len(piiCats) > 0 {
 			overrides := make(map[sharedpolicy.PolicyCategory]sharedpolicy.Action, len(piiCats))
 			for _, c := range piiCats {
 				overrides[c] = sharedpolicy.ActionRedact
 			}
 			res := engine.EvaluateResponse(ctx, []map[string]interface{}{{"statement": working}}, sharedpolicy.EvalOptions{
-				TenantID:        tenantID,
+				TenantID: tenantID,
+				// #3048 R3 HIGH-3 (N1): evaluate under the SAME org scope the
+				// PoliciesLoadable + EnabledPIICategories derivations above use
+				// (OrgIDFromContext(ctx)); on app-role with org≠tenant an
+				// org-custom tenant-tier PII category was derived but its
+				// pattern was RLS-invisible at evaluation → raw content
+				// persisted to storage (violates the invariant at
+				// pii_detector.go:1027).
+				OrganizationID:  sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)),
 				UserID:          userID,
 				ConnectorName:   source,
 				Categories:      piiCats,

@@ -44,7 +44,13 @@ import (
 //
 // Thread Safety: DynamicPolicyEngine is safe for concurrent use.
 type DynamicPolicyEngine struct {
-	db             *sql.DB
+	db *sql.DB
+	// refreshDB serves the ALL-tenants policy reload (loadPoliciesFromDB) —
+	// a deliberate cross-org read that must run on the BYPASSRLS
+	// platform-admin pool under axonflow_app_role (#3048; mirrors
+	// DatabaseDynamicPolicyEngine.refreshDB / #3039). Falls back to db when
+	// unset (tests, non-app-role deployments where db sees everything).
+	refreshDB      *sql.DB
 	policies       []DynamicPolicy
 	policyMutex    sync.RWMutex
 	riskCalculator *RiskCalculator
@@ -185,6 +191,23 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 			log.Printf("[dynamic-policy-fallback] ✅ db pool connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
 				connectedRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 
+			// #3048: loadPoliciesFromDB is an ALL-tenants read feeding the
+			// in-memory policy set — the same cross-org class as
+			// DatabaseDynamicPolicyEngine's gate-cache refresh (#3039). On
+			// the app-role pool RLS filters every row and the fallback
+			// engine silently enforces only the built-in defaults. Route
+			// the refresh through the BYPASSRLS platform-admin pool; the
+			// production boot path already refuses to start without the
+			// admin DSN under app-role (RequirePlatformAdminOrFatal in
+			// initializeComponents).
+			if adminDB, adminErr := agent.OpenPlatformAdminConnection(bootCtx, 3); adminErr != nil || adminDB == nil {
+				log.Printf("[dynamic-policy-fallback] ⚠️ platform-admin pool unavailable (err=%v) — policy reloads fall back to the main pool (under app-role RLS they read 0 rows)", adminErr)
+			} else {
+				adminDB.SetMaxOpenConns(2)
+				adminDB.SetMaxIdleConns(1)
+				engine.refreshDB = adminDB
+			}
+
 			// Load initial policies from DB
 			if err := engine.loadPoliciesFromDB(); err != nil {
 				log.Printf("Failed to load dynamic policies from DB: %v", err)
@@ -231,7 +254,7 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 	// For database-backed policies, also check tenant-specific rules
 	if e.dbAvailable && req.User.TenantID != "" {
 		// Query tenant-specific dynamic rules (simulating DB access latency)
-		tenantPolicies := e.getTenantSpecificPolicies(req.User.TenantID)
+		tenantPolicies := e.getTenantSpecificPolicies(req.User.OrgID, req.User.TenantID)
 		if len(tenantPolicies) > 0 {
 			log.Printf("Evaluating %d tenant-specific policies for tenant %s", len(tenantPolicies), req.User.TenantID)
 		}
@@ -287,7 +310,9 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 }
 
 // getTenantSpecificPolicies queries database for tenant-specific policies
-func (e *DynamicPolicyEngine) getTenantSpecificPolicies(tenantID string) []DynamicPolicy {
+// scopeOrg is the caller's validated org (#3048 R3 HIGH-3); empty falls
+// back to the org_id==tenant_id identity.
+func (e *DynamicPolicyEngine) getTenantSpecificPolicies(scopeOrg, tenantID string) []DynamicPolicy {
 	if !e.dbAvailable || e.db == nil {
 		return nil
 	}
@@ -298,8 +323,15 @@ func (e *DynamicPolicyEngine) getTenantSpecificPolicies(tenantID string) []Dynam
 		WHERE tenant_id = $1 AND enabled = true
 	`
 
+	// #3048: org-scoped — dynamic_policies is RLS-enabled (mig 018) and the
+	// bare COUNT read 0 under axonflow_app_role.
+	if scopeOrg == "" {
+		scopeOrg = tenantID
+	}
 	var count int
-	err := e.db.QueryRow(query, tenantID).Scan(&count)
+	err := agent.WithOrgScope(context.Background(), e.db, scopeOrg, func(tx *sql.Tx) error {
+		return tx.QueryRow(query, tenantID).Scan(&count)
+	})
 	if err != nil {
 		log.Printf("Failed to query tenant policies: %v", err)
 	}
@@ -668,7 +700,14 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 		ORDER BY priority DESC, created_at DESC
 	`
 
-	rows, err := e.db.Query(query)
+	// ALL-tenants read — runs on the BYPASSRLS refresh pool (see refreshDB
+	// field comment, #3048). On the app-role pool this SELECT silently
+	// returns 0 rows and the fallback engine enforces only built-ins.
+	pool := e.db
+	if e.refreshDB != nil {
+		pool = e.refreshDB
+	}
+	rows, err := pool.Query(query)
 	if err != nil {
 		return fmt.Errorf("failed to query dynamic policies: %v", err)
 	}

@@ -1017,17 +1017,17 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 	// guard keeps the fail-open from being inherited if it is ever wired. A
 	// couldn't-scan is signalled as ok=false (detector could not run), NOT as a
 	// clean {Content: content}.
-	if err := engine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+	if err := engine.PoliciesLoadable(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseResponse); err != nil {
 		log.Printf("[PIIDetector] Could not load response-phase policies; reporting detector-unavailable (fail-closed, #2820): %v", err)
 		return nil, false
 	}
 
 	// Policy-derived PII categories (not a hardcoded literal, which had silently
 	// omitted pii-indonesia). nil => no enabled PII policies => nothing to scan.
-	// Derivation org scope MUST match what EvaluateResponse loads with (it loads
-	// via OrganizationID, left nil here) so categories and evaluation use the same
-	// policy set.
-	piiCats := engine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+	// Derivation org scope MUST match what EvaluateResponse loads with (both
+	// pass OrganizationID = the caller org, #3048 R3 HIGH-3) so categories and
+	// evaluation use the same policy set.
+	piiCats := engine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseResponse)
 	if len(piiCats) == 0 {
 		return &sharedpolicy.ResponseResult{Content: content}, true
 	}
@@ -1035,6 +1035,7 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 	result := engine.EvaluateResponse(ctx, content, sharedpolicy.EvalOptions{
 		TenantID:        tenantID,
 		OrgID:           orgID,
+		OrganizationID:  sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3
 		Categories:      piiCats,
 		SkipCategories:  gwCfg.SkipCategories,
 		ActionOverrides: gwCfg.BuildActionOverrides(),

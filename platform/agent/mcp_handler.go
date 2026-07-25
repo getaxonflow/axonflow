@@ -777,14 +777,17 @@ func evaluateInputPolicies(
 			sharedpolicy.CategoryComplianceEUAIAct,
 			sharedpolicy.CategoryComplianceMASFEAT,
 		}
-		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)...)
+		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
-			TenantID:      tenantID,
-			OrgID:         orgID,
-			ConnectorName: connectorName,
-			UserID:        userID,
-			Parameters:    parameters,
-			Categories:    inputCats,
+			TenantID: tenantID,
+			OrgID:    orgID,
+			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
+			// validated caller org (org_id may differ from tenant_id).
+			OrganizationID: sharedpolicy.OrgScopePtr(orgID),
+			ConnectorName:  connectorName,
+			UserID:         userID,
+			Parameters:     parameters,
+			Categories:     inputCats,
 			// #2801: capability-scoped evaluation. Advisory planes pass the
 			// caller-sent tool identity (e.g.
 			// claude_code.mcp__atlassian__editJiraIssue); managed-connector
@@ -876,7 +879,7 @@ func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, 
 	// with PII unredacted (fulfilling a /decide redact_pii obligation it did not
 	// actually discharge). Reporting evaluated=false makes the PEP fail CLOSED
 	// (the #2563 B1 contract: redaction_evaluated=false → do not forward).
-	if err := policyEngine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseRequest); err != nil {
+	if err := policyEngine.PoliciesLoadable(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseRequest); err != nil {
 		log.Printf("[MCP] redactInputStatement: could not load request-phase policies (fail-closed, #2820): %v", err)
 		return "", false, false
 	}
@@ -894,10 +897,12 @@ func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, 
 	// when no PII policy is enabled — we MUST skip the EvaluateResponse call in
 	// that case, because passing an empty Categories evaluates ALL policies (the
 	// whitelist short-circuits).
-	piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseRequest)
+	piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseRequest)
 	if len(piiCats) > 0 {
 		result := policyEngine.EvaluateResponse(ctx, []map[string]interface{}{{"statement": working}}, sharedpolicy.EvalOptions{
-			TenantID:        tenantID,
+			TenantID:       tenantID,
+			OrganizationID: sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), // #3048 R3 HIGH-3
+
 			ConnectorName:   connectorName,
 			UserID:          userID,
 			Categories:      piiCats,
@@ -1148,7 +1153,7 @@ func evaluateOutputPolicies(
 	// Indonesia checksum masker (step 2) is NOT sufficient on its own — it cannot
 	// clear generic PII — so a load error must block, not fall through to it.
 	if policyEngine := sharedpolicy.GetGlobalEngine(); policyEngine != nil && detectionGate {
-		if err := policyEngine.PoliciesLoadable(ctx, tenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+		if err := policyEngine.PoliciesLoadable(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse); err != nil {
 			log.Printf("[MCP] Response withheld: policy engine could not load response-phase policies (fail-closed, #2820): %v", err)
 			out.StaticResult = &sharedpolicy.ResponseResult{
 				Blocked:         true,
@@ -1252,12 +1257,12 @@ func evaluateOutputPolicies(
 		// had silently omitted pii-indonesia). nil => no enabled PII policies =>
 		// skip the static PII pass; must NOT pass empty Categories, which would
 		// evaluate ALL policies (the whitelist short-circuits on empty).
-		piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
 		// #2705: also evaluate the sensitive-data (secrets) category so a credential-
 		// shaped connector RESPONSE is warn/block-enforced per the profile lever (the
 		// block is already honored below via out.StaticResult.Blocked). nil+nil => skip
 		// (must NOT pass empty Categories — the whitelist footgun evaluates ALL).
-		sensCats := policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		sensCats := policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
 		// #2727: also evaluate the security-dangerous category (dangerous commands +
 		// indirect prompt-injection patterns, migrations 059/116) against the tool
 		// OUTPUT. These policies seeded phase='request', so a malicious instruction
@@ -1271,7 +1276,7 @@ func evaluateOutputPolicies(
 		// warn/block), and the outcome is audited through the existing
 		// out.StaticResult redacted/blocked path. nil => no enabled security-dangerous
 		// policy for this phase => skip (must NOT pass empty Categories, the footgun).
-		dangerCats := policyEngine.EnabledSecurityDangerousCategories(ctx, tenantID, nil, sharedpolicy.PhaseResponse)
+		dangerCats := policyEngine.EnabledSecurityDangerousCategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
 		outCats := append(append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...), dangerCats...)
 		if responseContent != nil && len(outCats) > 0 {
 			// #2727: the security-dangerous (injection) category is REDACTED on the
@@ -1284,10 +1289,11 @@ func evaluateOutputPolicies(
 			actionOverrides := mcpDetectionCfg.BuildActionOverrides()
 			actionOverrides[sharedpolicy.CategorySecurityDangerous] = ResolveResponseInjectionAction(ctx, OrgIDFromContext(ctx)).ToPolicyAction()
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
-				TenantID:      tenantID,
-				ConnectorName: connectorName,
-				UserID:        userID,
-				Categories:    outCats,
+				TenantID:       tenantID,
+				OrganizationID: sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), // #3048 R3 HIGH-3
+				ConnectorName:  connectorName,
+				UserID:         userID,
+				Categories:     outCats,
 				// #2801: capability scoping on the response plane. For the
 				// categories evaluated here it only affects a text-document
 				// tool's security-dangerous EXECUTION-class policies (the

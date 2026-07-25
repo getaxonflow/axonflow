@@ -24,8 +24,14 @@ type MetricsCollector struct {
 	responseTimeTotal int64 // Microseconds
 
 	// Error counts
-	loadErrors      int64
+	loadErrors       int64
 	evaluationErrors int64
+	// emptySystemSetErrors counts loads that SUCCEEDED but returned zero
+	// system-tier policies (#3048 item-10 — policy data unreachable, e.g.
+	// an RLS-blind read on a mis-provisioned app-role deployment). Kept
+	// distinct from loadErrors so operators can tell "DB down" apart from
+	// "policy rows invisible".
+	emptySystemSetErrors int64
 }
 
 // AuditQueue interface for async logging.
@@ -174,6 +180,8 @@ func (m *MetricsCollector) RecordError(errorType string) {
 		atomic.AddInt64(&m.loadErrors, 1)
 	case "evaluation":
 		atomic.AddInt64(&m.evaluationErrors, 1)
+	case "load_empty_system_set":
+		atomic.AddInt64(&m.emptySystemSetErrors, 1)
 	}
 }
 
@@ -191,16 +199,19 @@ func (m *MetricsCollector) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"request_evaluations":   requestCount,
-		"response_evaluations":  responseCount,
-		"blocked_requests":      atomic.LoadInt64(&m.blockedRequests),
-		"blocked_responses":     atomic.LoadInt64(&m.blockedResponses),
-		"redactions_applied":    atomic.LoadInt64(&m.redactionsApplied),
-		"policies_matched":      atomic.LoadInt64(&m.policiesMatched),
-		"avg_request_time_ms":   avgRequestTime,
-		"avg_response_time_ms":  avgResponseTime,
-		"load_errors":           atomic.LoadInt64(&m.loadErrors),
-		"evaluation_errors":     atomic.LoadInt64(&m.evaluationErrors),
+		"request_evaluations":  requestCount,
+		"response_evaluations": responseCount,
+		"blocked_requests":     atomic.LoadInt64(&m.blockedRequests),
+		"blocked_responses":    atomic.LoadInt64(&m.blockedResponses),
+		"redactions_applied":   atomic.LoadInt64(&m.redactionsApplied),
+		"policies_matched":     atomic.LoadInt64(&m.policiesMatched),
+		"avg_request_time_ms":  avgRequestTime,
+		"avg_response_time_ms": avgResponseTime,
+		"load_errors":          atomic.LoadInt64(&m.loadErrors),
+		"evaluation_errors":    atomic.LoadInt64(&m.evaluationErrors),
+		// #3048 item-10: successful loads that returned zero system-tier
+		// policies (fail-closed; distinct from load_errors).
+		"policy_load_empty_system_set": atomic.LoadInt64(&m.emptySystemSetErrors),
 	}
 }
 
@@ -216,6 +227,7 @@ func (m *MetricsCollector) Reset() {
 	atomic.StoreInt64(&m.responseTimeTotal, 0)
 	atomic.StoreInt64(&m.loadErrors, 0)
 	atomic.StoreInt64(&m.evaluationErrors, 0)
+	atomic.StoreInt64(&m.emptySystemSetErrors, 0)
 }
 
 // extractPolicyIDs extracts policy IDs from matches.
@@ -230,6 +242,6 @@ func extractPolicyIDs(matches []PolicyMatch) []string {
 // NoOpAuditQueue is a no-op implementation of AuditQueue for testing.
 type NoOpAuditQueue struct{}
 
-func (n *NoOpAuditQueue) LogViolation(entry AuditEntry) error                    { return nil }
-func (n *NoOpAuditQueue) LogMetric(entry AuditEntry) error                       { return nil }
+func (n *NoOpAuditQueue) LogViolation(entry AuditEntry) error                   { return nil }
+func (n *NoOpAuditQueue) LogMetric(entry AuditEntry) error                      { return nil }
 func (n *NoOpAuditQueue) LogPolicyEvaluation(entry PolicyEvaluationEntry) error { return nil }

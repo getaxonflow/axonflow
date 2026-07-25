@@ -196,7 +196,12 @@ func TestExportEvidence_WithEndDate(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 
 	// Expect the recordExport INSERT
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
@@ -258,7 +263,12 @@ func TestExportEvidence_EnterpriseTierNoDisclaimer(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -370,7 +380,11 @@ func TestGetEvidenceSummary_Success(t *testing.T) {
 
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
+	// #3048: the HITL COUNT runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/evidence/summary", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -422,7 +436,11 @@ func TestGetEvidenceSummary_EnterpriseTier(t *testing.T) {
 
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(50))
+	// #3048: the HITL COUNT runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
+	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/evidence/summary", nil)
 	req.Header.Set("X-Tenant-ID", "enterprise-tenant")
@@ -480,7 +498,12 @@ func TestExportEvidence_WithDataRows(t *testing.T) {
 	)
 
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -575,7 +598,12 @@ func TestExportEvidence_TenantFromContext(t *testing.T) {
 	stepCols := []string{"id", "workflow_id", "step_id", "step_type", "status", "tenant_id", "started_at", "completed_at"}
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body, _ := json.Marshal(EvidenceExportRequest{StartDate: "2026-02-01"})
@@ -616,7 +644,12 @@ func TestExportEvidence_RequestLimit(t *testing.T) {
 	stepCols := []string{"id", "workflow_id", "step_id", "step_type", "status", "tenant_id", "started_at", "completed_at"}
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body, _ := json.Marshal(EvidenceExportRequest{
@@ -710,7 +743,11 @@ func TestGetEvidenceSummary_TenantFromContext(t *testing.T) {
 
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	// #3048: the HITL COUNT runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/evidence/summary", nil)
 	ctx := context.WithValue(req.Context(), "tenant_id", "ctx-tenant")
@@ -804,7 +841,12 @@ func TestExportEvidence_RecordExportError(t *testing.T) {
 	stepCols := []string{"id", "workflow_id", "step_id", "step_type", "status", "tenant_id", "started_at", "completed_at"}
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 	// recordExport fails — should still return 200 (error only logged)
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnError(err)
 
@@ -973,7 +1015,12 @@ func TestExportEvidence_DateOnlyEndDateIncludesThatDay(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1028,7 +1075,12 @@ func TestExportEvidence_RFC3339EndDateExactBound(t *testing.T) {
 	stepCols := []string{"id", "workflow_id", "step_id", "step_type", "status", "tenant_id", "started_at", "completed_at"}
 	mock.ExpectQuery("SELECT .+ FROM workflow_steps").WillReturnRows(sqlmock.NewRows(stepCols))
 	hitlCols := []string{"id", "request_id", "tenant_id", "original_query", "request_type", "status", "severity", "created_at", "expires_at", "reviewed_at"}
+	// #3048: HITL evidence reads run org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT .+ FROM hitl_approval_queue").WillReturnRows(sqlmock.NewRows(hitlCols))
+	mock.ExpectCommit()
 	mock.ExpectExec("INSERT INTO evidence_exports").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body, _ := json.Marshal(EvidenceExportRequest{

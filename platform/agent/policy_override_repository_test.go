@@ -335,12 +335,17 @@ func TestGetEffectiveAction(t *testing.T) {
 			tenantID: "tenant-1",
 			orgID:    &orgID,
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Tenant override exists
+				// Tenant override exists — org-scoped read (#3048).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("org-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
 					WithArgs("policy-1", "tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{
 						"action_override", "enabled_override", "expires_at",
 					}).AddRow("warn", nil, nil))
+				mock.ExpectCommit()
 			},
 			expectedAction: ActionWarn,
 			hasOverride:    true,
@@ -352,17 +357,27 @@ func TestGetEffectiveAction(t *testing.T) {
 			tenantID: "tenant-1",
 			orgID:    &orgID,
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// No tenant override
+				// No tenant override — org-scoped read (#3048).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("org-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
 					WithArgs("policy-1", "tenant-1").
 					WillReturnError(sql.ErrNoRows)
+				mock.ExpectRollback()
 
-				// Org override exists
+				// Org override exists — same scope key.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("org-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
 					WithArgs("policy-1", "org-1").
 					WillReturnRows(sqlmock.NewRows([]string{
 						"action_override", "enabled_override", "expires_at",
 					}).AddRow("log", nil, nil))
+				mock.ExpectCommit()
 			},
 			expectedAction: ActionLog,
 			hasOverride:    true,
@@ -374,10 +389,16 @@ func TestGetEffectiveAction(t *testing.T) {
 			tenantID: "tenant-1",
 			orgID:    nil,
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// No tenant override
+				// No tenant override — org-scoped read (#3048): with orgID
+				// nil and no ctx org, the scope key falls back to the tenant.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
 					WithArgs("policy-1", "tenant-1").
 					WillReturnError(sql.ErrNoRows)
+				mock.ExpectRollback()
 			},
 			expectedAction: "",
 			hasOverride:    false,
@@ -389,10 +410,15 @@ func TestGetEffectiveAction(t *testing.T) {
 			tenantID: "tenant-1",
 			orgID:    nil,
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Query excludes expired, so no rows returned
+				// Query excludes expired, so no rows returned (#3048 scoped).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
 					WithArgs("policy-1", "tenant-1").
 					WillReturnError(sql.ErrNoRows)
+				mock.ExpectRollback()
 			},
 			expectedAction: "",
 			hasOverride:    false,

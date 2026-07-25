@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -112,7 +113,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	// Load policies from cache or database
 	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrganizationID, PhaseRequest)
 	if err != nil {
-		e.metrics.RecordError("load")
+		e.recordLoadError(err)
 		// #2862: fail CLOSED on the request plane, symmetric with #2820's
 		// response-plane fix. A request gate that could not load policies has
 		// not scanned the input for SQLi / dangerous-command / PII-block
@@ -275,7 +276,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	// Load policies from cache or database
 	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrganizationID, PhaseResponse)
 	if err != nil {
-		e.metrics.RecordError("load")
+		e.recordLoadError(err)
 		// #2820: mark couldn't-scan regardless of the degradation mode so a
 		// response-plane redactor can tell this apart from scanned-clean and
 		// fail closed. Under GracefulDegradation the content is returned
@@ -396,6 +397,18 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	}
 
 	return result
+}
+
+// recordLoadError records a policy-load failure metric, distinguishing the
+// #3048 item-10 empty-system-set state (policy data unreachable — RLS-blind
+// read / missing seeds) from a plain load failure (DB unavailable) so
+// operators can tell the two apart. Both states fail closed at the gates.
+func (e *UnifiedPolicyEngine) recordLoadError(err error) {
+	if errors.Is(err, ErrEmptySystemPolicySet) {
+		e.metrics.RecordError("load_empty_system_set")
+		return
+	}
+	e.metrics.RecordError("load")
 }
 
 // EnabledPIICategories returns the distinct PII categories (by the pii-*/media-pii

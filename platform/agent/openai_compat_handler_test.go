@@ -23,6 +23,7 @@ import (
 	"github.com/gorilla/mux"
 
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 // openaiCompatForTest sends a raw body through handleOpenAICompat without
@@ -48,9 +49,17 @@ func installSharedEngineForOpenAITest(t *testing.T) {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { _ = mockDB.Close() })
-	mockSQL.ExpectQuery("SELECT").WillReturnRows(
-		sqlmock.NewRows([]string{"id", "name", "pattern", "category", "severity", "action", "enabled", "tier", "tenant_id", "description", "metadata"}),
-	)
+	mockSQL.MatchExpectationsInOrder(false)
+	// #3048: two scoped passes per load; a zero-system-set load fails CLOSED,
+	// so serve one benign never-matching system policy per pass.
+	for i := 0; i < 8; i++ {
+		mockSQL.ExpectQuery("SELECT").WillReturnRows(
+			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
+				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
+		)
+	}
+	policytest.ScopedTxPlumbing(mockSQL, 8)
 	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.EngineConfig{}, nil)
 	old := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(engine)

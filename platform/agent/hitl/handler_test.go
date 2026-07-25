@@ -542,11 +542,14 @@ func TestGetStats(t *testing.T) {
 	handler, mock, cleanup := setupTestHandler(t)
 	defer cleanup()
 
-	// Mock get_hitl_pending_count function
+	// Mock get_hitl_pending_count function — org-scoped (#3048).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total_pending", "high_priority", "critical_priority", "oldest_pending_hours",
 		}).AddRow(10, 5, 2, 3.5))
+	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/stats", nil)
 	req.Header.Set("X-Org-ID", "org-1")
@@ -1092,6 +1095,10 @@ func TestGetRequestHistory(t *testing.T) {
 
 	requestID := uuid.New()
 	now := time.Now()
+
+	// #3048 R3 BLOCKER-2: the history flow resolves + org-checks the parent
+	// request first.
+	expectApprovalLookup(mock, requestID, "org-1")
 
 	mock.ExpectQuery("SELECT").
 		WithArgs(requestID).

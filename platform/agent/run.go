@@ -1505,6 +1505,16 @@ func Run() {
 	// Register HITL (Human-in-the-Loop) API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Human oversight queue for high-risk AI decisions
 	hitlRepo := hitl.NewRepository(usageDB)
+	// #3048: the repo's by-request-id discovery reads (GetByRequestID /
+	// GetHistory) and the deployment queue view (List) read ZERO rows through
+	// mig 025's RLS on the app-role pool — approve/reject/override flows died
+	// on "approval request not found". Route them through the BYPASSRLS admin
+	// pool already opened for the expire ticker above; when it is
+	// unavailable the repo falls back to the main pool (owner-pool
+	// deployments are unaffected, app-role deployments log the WARN above).
+	if hitlExpireAdminDB != nil {
+		hitlRepo.SetCrossOrgDB(hitlExpireAdminDB)
+	}
 	// Read pending approval limit from license tier
 	hitlLimits := license.GetCurrentLimits(context.Background())
 	hitlService := hitl.NewService(hitlRepo, hitl.ServiceConfig{
@@ -1995,6 +2005,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
 			TenantID:        user.TenantID,
 			OrgID:           user.OrgID,
+			OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID), // #3048 R3 HIGH-3 (N2)
 			ConnectorName:   "proxy",
 			UserID:          fmt.Sprintf("%d", user.ID),
 			Categories:      proxyPolicyCategories,
@@ -2857,6 +2868,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
 			TenantID:        testUser.TenantID,
 			OrgID:           testUser.OrgID,
+			OrganizationID:  sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
 			ConnectorName:   "proxy",
 			UserID:          fmt.Sprintf("%d", testUser.ID),
 			Categories:      proxyPolicyCategories,

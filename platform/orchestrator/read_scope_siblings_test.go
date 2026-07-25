@@ -99,9 +99,14 @@ func TestGetOverride_NonAdmin_OtherUsersOverrideIs404(t *testing.T) {
 			"created_by", "created_at", "revoked_at", "revoked_by",
 		}).AddRow("ov-1", "pol-1", "static", "tenant-x", nil, nil,
 			"reason", time.Now().Add(time.Hour), "someone-else@acme.com", time.Now(), nil, nil)
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+			WithArgs("tenant-x").
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE id = .+ AND tenant_id").
 			WithArgs("ov-1", "tenant-x").
 			WillReturnRows(rows)
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/overrides/ov-1", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "ov-1"})
@@ -126,9 +131,14 @@ func TestGetOverride_NonAdmin_OwnOverrideIs200(t *testing.T) {
 			"created_by", "created_at", "revoked_at", "revoked_by",
 		}).AddRow("ov-1", "pol-1", "static", "tenant-x", nil, nil,
 			"reason", time.Now().Add(time.Hour), "Dev@Acme.com", time.Now(), nil, nil)
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+			WithArgs("tenant-x").
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery("SELECT .+ FROM policy_overrides WHERE id = .+ AND tenant_id").
 			WithArgs("ov-1", "tenant-x").
 			WillReturnRows(rows)
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("GET", "/api/v1/overrides/ov-1", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "ov-1"})
@@ -149,10 +159,15 @@ func TestGetOverride_NonAdmin_OwnOverrideIs200(t *testing.T) {
 func TestRevokeOverride_NonAdmin_OtherUsersOverrideIs404(t *testing.T) {
 	withEnterpriseProxyValidator(t)
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+			WithArgs("tenant-x").
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery("SELECT policy_id, created_by FROM policy_overrides").
 			WithArgs("ov-1", "tenant-x").
 			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "created_by"}).
 				AddRow("pol-1", "someone-else@acme.com"))
+		mock.ExpectCommit()
 		// No UPDATE expected — the scope guard rejects before any write.
 
 		req := httptest.NewRequest("DELETE", "/api/v1/overrides/ov-1", nil)

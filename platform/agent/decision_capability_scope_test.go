@@ -9,6 +9,7 @@ package agent
 // an unknown/absent target keeps full evaluation.
 
 import (
+	"time"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 	"axonflow/platform/agent/circuitbreaker"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 // installCircuitBreakerWithMockDB swaps the breaker for one whose repository
@@ -50,18 +52,18 @@ func installSharedEngineWithPolicyRows(t *testing.T) {
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mockSQL.MatchExpectationsInOrder(false)
 
-	cols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
-		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata"}
+	// #3048: loader cols carry created_at; each load is two scoped passes.
+	cols := policytest.LoaderCols()
 	for i := 0; i < 8; i++ {
 		rows := sqlmock.NewRows(cols).AddRow(
 			"11111111-1111-1111-1111-111111111111", "sys_sqli_revoke", "REVOKE Privileges Statement",
 			"security-sqli", "system", `(?i)\bREVOKE\s+`, "critical",
 			"Detects REVOKE privilege statement", "request", "block", nil,
-			true, 100, "global", nil, []byte(`{}`),
+			true, 100, "global", nil, []byte(`{}`), time.Now().UTC(),
 		)
 		mockSQL.ExpectQuery("SELECT").WillReturnRows(rows)
 	}
+	policytest.ScopedTxPlumbing(mockSQL, 8)
 
 	cfg := sharedpolicy.DefaultEngineConfig()
 	cfg.RefreshInterval = 0

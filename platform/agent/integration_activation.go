@@ -232,11 +232,22 @@ func activateIntegration(db *sql.DB, integrationID, activatedBy string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// #3048 census: activate_integration is a plain (SECURITY INVOKER)
+	// plpgsql function whose body UPDATEs static_policies rows with
+	// tenant_id='global' / org_id='global'. static_policies is RLS-enabled
+	// (mig 018), so under axonflow_app_role the UPDATE's USING predicate saw
+	// zero rows with the GUC unset — activation "succeeded" with
+	// policy_count=0 and the integration's int_* policies silently never
+	// enabled on app-role deployments. Wrap in the 'global' org scope so the
+	// UPDATE sees (and WITH CHECK re-admits) the global rows. The call slips
+	// past the write-audit static test because it is lexically a SELECT.
 	var policyCount int
-	err := db.QueryRowContext(ctx,
-		"SELECT activate_integration($1, $2, $3, $4, $5)",
-		integration.ID, integration.DisplayName, integration.ConnectorPrefix, integration.PolicyPrefix, activatedBy,
-	).Scan(&policyCount)
+	err := WithOrgScope(ctx, db, GlobalOrgSentinel, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			"SELECT activate_integration($1, $2, $3, $4, $5)",
+			integration.ID, integration.DisplayName, integration.ConnectorPrefix, integration.PolicyPrefix, activatedBy,
+		).Scan(&policyCount)
+	})
 
 	if err != nil {
 		log.Printf("[Integration] Failed to activate %s: %v", logutil.Sanitize(integrationID), err)

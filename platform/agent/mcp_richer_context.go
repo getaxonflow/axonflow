@@ -42,10 +42,19 @@ func buildRicherCheckInputBlock(
 		return nil, "", nil, ""
 	}
 
+	// #3048: static_policies is RLS-enabled — the by-slug lookups below need
+	// an org scope under axonflow_app_role. The caller's org is the scope for
+	// tenant/org-tier policies; the helpers fall back to the 'global' scope
+	// for system-tier rows internally.
+	scopeOrg := OrgIDFromContext(ctx)
+	if scopeOrg == "" {
+		scopeOrg = tenantID
+	}
+
 	matches = make([]RicherPolicyMatch, 0, len(matched))
 	var firstOverridablePolicyID string
 	for _, m := range matched {
-		risk, allowOverride, version, err := lookupPolicyMeta(ctx, db, m.PolicyID)
+		risk, allowOverride, version, err := lookupPolicyMeta(ctx, db, scopeOrg, m.PolicyID)
 		if err != nil {
 			log.Printf("richer context: policy lookup failed for %s: %v", m.PolicyID, err)
 			// Emit a stub entry so the plugin sees it was matched even when
@@ -116,16 +125,38 @@ func buildRicherCheckInputBlock(
 // callers stamp the value into audit_logs.policy_details so the explain
 // endpoint can answer "which version evaluated me?" without a separate
 // lookup. Forward-only — pre-α1 decisions surface no version.
-func lookupPolicyMeta(ctx context.Context, db *sql.DB, policyID string) (string, bool, int, error) {
+//
+// #3048: static_policies is RLS-enabled (mig 018) — the old bare read
+// matched zero rows under axonflow_app_role, so every matched policy lost
+// its risk/override metadata. Matched policies are either the caller org's
+// own rows or the shared system rows (org_id='global', mig 153), so the
+// read is a two-scope pass: scopeOrg first, 'global' on miss. An empty
+// scopeOrg keeps the legacy bare read (owner-pool contexts).
+func lookupPolicyMeta(ctx context.Context, db *sql.DB, scopeOrg, policyID string) (string, bool, int, error) {
 	var risk sql.NullString
 	var allowOverride sql.NullBool
 	var version sql.NullInt64
-	err := db.QueryRowContext(ctx, `
+	const query = `
 		SELECT risk_level, allow_override, version
 		FROM static_policies
 		WHERE policy_id = $1
 		LIMIT 1
-	`, policyID).Scan(&risk, &allowOverride, &version)
+	`
+	scan := func(row *sql.Row) error { return row.Scan(&risk, &allowOverride, &version) }
+
+	var err error
+	if scopeOrg == "" {
+		err = scan(db.QueryRowContext(ctx, query, policyID))
+	} else {
+		err = WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
+			return scan(tx.QueryRowContext(ctx, query, policyID))
+		})
+		if err == sql.ErrNoRows && scopeOrg != GlobalOrgSentinel {
+			err = WithOrgScope(ctx, db, GlobalOrgSentinel, func(tx *sql.Tx) error {
+				return scan(tx.QueryRowContext(ctx, query, policyID))
+			})
+		}
+	}
 	if err == sql.ErrNoRows {
 		return "", false, 0, nil
 	}
@@ -166,32 +197,60 @@ func lookupPolicyVersionsByID(ctx context.Context, db *sql.DB, policyIDs []strin
 	if db == nil || len(policyIDs) == 0 {
 		return nil
 	}
-	rows, err := db.QueryContext(ctx, `
+	const query = `
 		SELECT policy_id, version
 		FROM static_policies
 		WHERE policy_id = ANY($1)
-	`, pq.Array(policyIDs))
-	if err != nil {
-		log.Printf("richer context: policy_versions batch lookup failed: %v", err)
-		return nil
-	}
-	defer func() { _ = rows.Close() }()
-
+	`
 	out := make(map[string]int, len(policyIDs))
-	for rows.Next() {
-		var pid string
-		var ver sql.NullInt64
-		if err := rows.Scan(&pid, &ver); err != nil {
-			log.Printf("richer context: policy_versions row scan failed: %v", err)
-			continue
+	collect := func(rows *sql.Rows, qErr error) {
+		if qErr != nil {
+			log.Printf("richer context: policy_versions batch lookup failed: %v", qErr)
+			return
 		}
-		if ver.Valid {
-			out[pid] = int(ver.Int64)
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var pid string
+			var ver sql.NullInt64
+			if err := rows.Scan(&pid, &ver); err != nil {
+				log.Printf("richer context: policy_versions row scan failed: %v", err)
+				continue
+			}
+			if ver.Valid {
+				out[pid] = int(ver.Int64)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("richer context: policy_versions iteration failed: %v", err)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		log.Printf("richer context: policy_versions iteration failed: %v", err)
+
+	// #3048: static_policies is RLS-enabled — under axonflow_app_role the
+	// old bare batch read returned zero rows and audit rows lost their
+	// policy_versions map. The matched ids span the caller org's rows and
+	// the shared 'global' system rows, so read BOTH scopes and merge (on
+	// owner pools both passes see the full set — the map merge is
+	// idempotent). An empty caller org keeps the legacy bare read.
+	scopeOrg := OrgIDFromContext(ctx)
+	if scopeOrg == "" {
+		rows, qErr := db.QueryContext(ctx, query, pq.Array(policyIDs))
+		collect(rows, qErr)
+	} else {
+		scopes := []string{scopeOrg}
+		if scopeOrg != GlobalOrgSentinel {
+			scopes = append(scopes, GlobalOrgSentinel)
+		}
+		for _, scope := range scopes {
+			if err := WithOrgScope(ctx, db, scope, func(tx *sql.Tx) error {
+				rows, qErr := tx.QueryContext(ctx, query, pq.Array(policyIDs))
+				collect(rows, qErr)
+				return nil
+			}); err != nil {
+				log.Printf("richer context: policy_versions scoped lookup (%s) failed: %v", scope, err)
+			}
+		}
 	}
+
 	if len(out) == 0 {
 		return nil
 	}
@@ -211,22 +270,82 @@ func lookupPolicyVersionsByID(ctx context.Context, db *sql.DB, policyIDs []strin
 // passes the slug. We do the join in a single statement so the index on
 // static_policies.policy_id stays hot.
 func lookupActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, policySlugOrUUID string) (string, bool, error) {
+	// #3048: both tables here are RLS-enabled (static_policies mig 018,
+	// policy_overrides mig 110) and live in DIFFERENT org scopes when the
+	// policy is a system-tier row: the policy carries org_id='global' while
+	// the override row carries the caller's org. The old single statement
+	// resolved the slug via a subselect INSIDE the caller's (unset) scope —
+	// under axonflow_app_role it matched nothing and every active override
+	// silently stopped applying. Resolve the policy UUID first (caller org
+	// scope, then 'global'), then read the override under the caller's org
+	// scope. An empty caller org keeps the legacy bare single statement
+	// (owner-pool contexts, RLS bypassed).
+	scopeOrg := OrgIDFromContext(ctx)
+	if scopeOrg == "" {
+		scopeOrg = tenantID
+	}
+
 	var id string
-	err := db.QueryRowContext(ctx, `
-		SELECT po.id
-		FROM policy_overrides po
-		WHERE po.policy_id = (
-		        SELECT sp.id FROM static_policies sp
-		        WHERE sp.policy_id = $1
-		        LIMIT 1
-		      )
-		  AND po.created_by = $2
-		  AND (po.tenant_id = $3 OR po.tenant_id IS NULL)
-		  AND po.revoked_at IS NULL
-		  AND (po.expires_at IS NULL OR po.expires_at > NOW())
-		ORDER BY po.created_at DESC
+	if scopeOrg == "" {
+		err := db.QueryRowContext(ctx, `
+			SELECT po.id
+			FROM policy_overrides po
+			WHERE po.policy_id = (
+			        SELECT sp.id FROM static_policies sp
+			        WHERE sp.policy_id = $1
+			        LIMIT 1
+			      )
+			  AND po.created_by = $2
+			  AND (po.tenant_id = $3 OR po.tenant_id IS NULL)
+			  AND po.revoked_at IS NULL
+			  AND (po.expires_at IS NULL OR po.expires_at > NOW())
+			ORDER BY po.created_at DESC
+			LIMIT 1
+		`, policySlugOrUUID, userEmail, tenantID).Scan(&id)
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		return id, true, nil
+	}
+
+	const resolveQuery = `
+		SELECT sp.id FROM static_policies sp
+		WHERE sp.policy_id = $1
 		LIMIT 1
-	`, policySlugOrUUID, userEmail, tenantID).Scan(&id)
+	`
+	var policyUUID string
+	resolve := func(scope string) error {
+		return WithOrgScope(ctx, db, scope, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, resolveQuery, policySlugOrUUID).Scan(&policyUUID)
+		})
+	}
+	err := resolve(scopeOrg)
+	if err == sql.ErrNoRows && scopeOrg != GlobalOrgSentinel {
+		err = resolve(GlobalOrgSentinel)
+	}
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	err = WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			SELECT po.id
+			FROM policy_overrides po
+			WHERE po.policy_id::text = $1
+			  AND po.created_by = $2
+			  AND (po.tenant_id = $3 OR po.tenant_id IS NULL)
+			  AND po.revoked_at IS NULL
+			  AND (po.expires_at IS NULL OR po.expires_at > NOW())
+			ORDER BY po.created_at DESC
+			LIMIT 1
+		`, policyUUID, userEmail, tenantID).Scan(&id)
+	})
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}

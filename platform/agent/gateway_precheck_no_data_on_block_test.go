@@ -17,6 +17,7 @@ import (
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 // #2867: a handler-level guard for the fetch site (gateway_handlers.go, the
@@ -42,17 +43,16 @@ func seedGlobalEngineWithMarkerPolicy(t *testing.T, actionRequest, pattern strin
 	}
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mockSQL.MatchExpectationsInOrder(false)
-	cols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
-		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata"}
-	for i := 0; i < 4; i++ { // headroom for any repeat load before the cache warms
+	cols := policytest.LoaderCols() // #3048: includes created_at
+	for i := 0; i < 8; i++ { // headroom: two scoped passes per load (#3048)
 		mockSQL.ExpectQuery("SELECT").WillReturnRows(
 			sqlmock.NewRows(cols).AddRow(
 				"p1", "test_marker_policy", "Test Marker", "compliance-rbi", "system",
 				pattern, "critical", "test marker", "request", actionRequest, nil,
-				true, 100, "global", nil, []byte("{}"),
+				true, 100, "global", nil, []byte("{}"), time.Now().UTC(),
 			))
 	}
+	policytest.ScopedTxPlumbing(mockSQL, 8)
 	cfg := sharedpolicy.DefaultEngineConfig()
 	cfg.RefreshInterval = 0
 	cfg.EnableMetrics = false

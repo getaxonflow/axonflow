@@ -292,7 +292,7 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 	// load failure would leave evalCats empty and return the LLM response
 	// unredacted (fail-OPEN). Withhold the response instead — a redactor must
 	// never forward content it could not scan.
-	if err := p.sharedPolicyEngine.PoliciesLoadable(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse); err != nil {
+	if err := p.sharedPolicyEngine.PoliciesLoadable(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), sharedpolicy.PhaseResponse); err != nil {
 		log.Printf("[ResponseProcessor] Response withheld: could not load response-phase policies (fail-closed, #2820): %v", err)
 		return data, &RedactionInfo{
 			Verdict:         responseVerdictBlocked,
@@ -307,8 +307,8 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 	// evaluated, so a credential-shaped LLM response was never warn/block-enforced.
 	// nil+nil = nothing enabled → skip; must NOT fall through to EvaluateResponse
 	// with empty Categories (that evaluates ALL policies — the whitelist footgun).
-	piiCats := p.sharedPolicyEngine.EnabledPIICategories(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse)
-	sensCats := p.sharedPolicyEngine.EnabledSensitiveDataCategories(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse)
+	piiCats := p.sharedPolicyEngine.EnabledPIICategories(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), sharedpolicy.PhaseResponse)
+	sensCats := p.sharedPolicyEngine.EnabledSensitiveDataCategories(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), sharedpolicy.PhaseResponse)
 	evalCats := append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...)
 	if len(evalCats) == 0 {
 		log.Printf("[ResponseProcessor] No enabled PII/sensitive-data policies, skipping shared engine")
@@ -317,8 +317,10 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 
 	result := p.sharedPolicyEngine.EvaluateResponse(ctx, data, sharedpolicy.EvalOptions{
 		// v9 Phase 8 #2384 PR-C1: OrgID propagation for RLS-aware audit writes.
+		// #3048 R3 HIGH-3: OrganizationID scopes the loader's tenant pass.
 		TenantID:        user.TenantID,
 		OrgID:           user.OrgID,
+		OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID),
 		UserID:          fmt.Sprintf("%d", user.ID),
 		Categories:      evalCats,
 		SkipCategories:  gwCfg.SkipCategories,

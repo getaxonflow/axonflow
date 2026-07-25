@@ -513,11 +513,22 @@ func revokeOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	// SECURITY: Scope the lookup to the caller's tenant so tenant A cannot
 	// revoke tenant B's overrides even if A knows the UUID. Also confirms
 	// the override belongs to the caller's tenant before any write.
+	//
+	// #3048: policy_overrides is RLS-enabled (mig 110, app.current_org_id) —
+	// the bare read matched 0 rows under axonflow_app_role, so every revoke
+	// 404'd before reaching the (already-scoped) UPDATE below. Same scope
+	// key as that UPDATE.
+	lookupScope := orgID
+	if lookupScope == "" {
+		lookupScope = tenantID
+	}
 	var policyID, createdBy string
-	err := usageDB.QueryRow(
-		"SELECT policy_id, created_by FROM policy_overrides WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
-		overrideID, tenantID,
-	).Scan(&policyID, &createdBy)
+	err := agent.WithOrgScope(r.Context(), usageDB, lookupScope, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(r.Context(),
+			"SELECT policy_id, created_by FROM policy_overrides WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
+			overrideID, tenantID,
+		).Scan(&policyID, &createdBy)
+	})
 	if err == sql.ErrNoRows {
 		sendErrorResponse(w, "Override not found or already revoked", http.StatusNotFound)
 		return
@@ -617,16 +628,26 @@ func getOverrideHandler(w http.ResponseWriter, r *http.Request) {
 		RevokedBy      *string    `json:"revoked_by,omitempty"`
 	}
 
+	// #3048: org-scoped read — bare, this matched 0 rows under
+	// axonflow_app_role (mig 110 RLS) and every override GET 404'd. Same
+	// scope key convention as createOverrideHandler (X-Org-ID falling back
+	// to tenant).
+	getScope := r.Header.Get("X-Org-ID")
+	if getScope == "" {
+		getScope = tenantID
+	}
 	var row overrideRow
-	err := usageDB.QueryRow(`
-		SELECT id, policy_id, policy_type, tenant_id, organization_id, tool_signature,
-		       override_reason, expires_at, created_by, created_at, revoked_at, revoked_by
-		FROM policy_overrides WHERE id = $1 AND tenant_id = $2
-	`, overrideID, tenantID).Scan(
-		&row.ID, &row.PolicyID, &row.PolicyType, &row.TenantID, &row.OrgID,
-		&row.ToolSignature, &row.OverrideReason, &row.ExpiresAt,
-		&row.CreatedBy, &row.CreatedAt, &row.RevokedAt, &row.RevokedBy,
-	)
+	err := agent.WithOrgScope(r.Context(), usageDB, getScope, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(r.Context(), `
+			SELECT id, policy_id, policy_type, tenant_id, organization_id, tool_signature,
+			       override_reason, expires_at, created_by, created_at, revoked_at, revoked_by
+			FROM policy_overrides WHERE id = $1 AND tenant_id = $2
+		`, overrideID, tenantID).Scan(
+			&row.ID, &row.PolicyID, &row.PolicyType, &row.TenantID, &row.OrgID,
+			&row.ToolSignature, &row.OverrideReason, &row.ExpiresAt,
+			&row.CreatedBy, &row.CreatedAt, &row.RevokedAt, &row.RevokedBy,
+		)
+	})
 	if err == sql.ErrNoRows {
 		sendErrorResponse(w, "Override not found", http.StatusNotFound)
 		return

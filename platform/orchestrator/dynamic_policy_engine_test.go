@@ -1173,10 +1173,15 @@ func TestGetTenantSpecificPolicies(t *testing.T) {
 		{
 			name: "Successfully filter tenant policies",
 			setupMock: func(mock sqlmock.Sqlmock, engine *DynamicPolicyEngine) {
-				// Mock the COUNT query
+				// Mock the COUNT query — org-scoped (#3048).
+				mock.ExpectBegin()
+				mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+				mock.ExpectCommit()
 
 				// Add test policies to engine
 				engine.policies = []DynamicPolicy{
@@ -1192,9 +1197,14 @@ func TestGetTenantSpecificPolicies(t *testing.T) {
 		{
 			name: "No policies for tenant",
 			setupMock: func(mock sqlmock.Sqlmock, engine *DynamicPolicyEngine) {
+				mock.ExpectBegin()
+				mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+					WithArgs("tenant-999").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
 					WithArgs("tenant-999").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+				mock.ExpectCommit()
 
 				engine.policies = []DynamicPolicy{
 					{ID: "policy-1", TenantID: "tenant-1", Name: "Policy 1"},
@@ -1207,9 +1217,14 @@ func TestGetTenantSpecificPolicies(t *testing.T) {
 		{
 			name: "Database query fails - returns filtered policies anyway",
 			setupMock: func(mock sqlmock.Sqlmock, engine *DynamicPolicyEngine) {
+				mock.ExpectBegin()
+				mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
 					WithArgs("tenant-1").
 					WillReturnError(fmt.Errorf("query failed"))
+				mock.ExpectRollback()
 
 				engine.policies = []DynamicPolicy{
 					{ID: "policy-1", TenantID: "tenant-1", Name: "Policy 1"},
@@ -1240,7 +1255,7 @@ func TestGetTenantSpecificPolicies(t *testing.T) {
 			tt.setupMock(mock, engine)
 
 			// Execute
-			tenantPolicies := engine.getTenantSpecificPolicies(tt.tenantID)
+			tenantPolicies := engine.getTenantSpecificPolicies("", tt.tenantID)
 
 			// Verify count
 			if len(tenantPolicies) != tt.expectCount {
@@ -1269,7 +1284,7 @@ func TestGetTenantSpecificPolicies_NilDatabase(t *testing.T) {
 		dbAvailable: false,
 	}
 
-	result := engine.getTenantSpecificPolicies("tenant-1")
+	result := engine.getTenantSpecificPolicies("", "tenant-1")
 	if result != nil {
 		t.Error("Expected nil result when database is not available")
 	}

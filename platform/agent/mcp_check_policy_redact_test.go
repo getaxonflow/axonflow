@@ -14,6 +14,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 // validNIKStatement is a statement that contains a checksum-valid Indonesian
@@ -50,12 +51,16 @@ func TestMCPToolCheckPolicy_PIIRedact_RequiresRedactionField(t *testing.T) {
 	}
 	defer db.Close()
 	mock.MatchExpectationsInOrder(false)
-	emptyCols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
-		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata"}
-	for i := 0; i < 6; i++ {
-		mock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows(emptyCols))
+	// #3048: zero-system-set loads fail CLOSED — the honest "engine present,
+	// no PII policies" state is a benign never-matching non-PII system row.
+	for i := 0; i < 8; i++ {
+		mock.ExpectQuery("SELECT").WillReturnRows(
+			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+			"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
+			"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
+		)
 	}
+	policytest.ScopedTxPlumbing(mock, 8)
 	// withMCPPIIAction set the engine to nil; replace it with the stub.
 	// The t.Cleanup registered by withMCPPIIAction restores the original engine.
 	sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(db, sharedpolicy.EngineConfig{GracefulDegradation: true}, nil))

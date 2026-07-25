@@ -33,6 +33,7 @@ import (
 
 	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 // installUsageDBMock swaps usageDB for a sqlmock and restores it after the
@@ -341,36 +342,28 @@ func installBlockingStaticEngine(t *testing.T) sqlmock.Sqlmock {
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mock.MatchExpectationsInOrder(false)
 
-	policyCols := []string{
-		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
-		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata",
-	}
+	policyCols := policytest.LoaderCols()
 	// The loader may fetch more than once (per phase/org cache key); a few
 	// identical expectations cover every load. Unconsumed ones are harmless —
 	// these tests assert on the RESPONSE, not ExpectationsWereMet.
+	//
+	// #3048: each load is now TWO scoped passes (tenant then 'global'). The
+	// 'global'-scope pass (args 'global') returns the system policy; those
+	// expectations are registered FIRST so unordered matching binds them by
+	// args. The argless expectations after them absorb the tenant passes
+	// (empty — the fixture has no tenant policies). ScopedTxPlumbing absorbs
+	// the BEGIN/set_config/COMMIT traffic.
 	for i := 0; i < 4; i++ {
-		mock.ExpectQuery(`SELECT\s+id, policy_id`).WillReturnRows(
-			sqlmock.NewRows(policyCols).AddRow(
-				"11111111-1111-1111-1111-111111111111", // id (UUID)
-				"sys_test_block_marker",                // policy_id (slug)
-				"Test blocking policy",                 // name
-				"security-sqli",                        // category (in check-input's category set; no validator)
-				"system",                               // tier
-				"FORBIDDEN_MARKER",                     // pattern
-				"high",                                 // severity
-				nil,                                    // description
-				"request",                              // phase
-				"block",                                // action_request
-				nil,                                    // action_response
-				true,                                   // enabled
-				100,                                    // priority
-				"global",                               // tenant_id
-				nil,                                    // organization_id
-				[]byte(`{}`),                           // metadata
-			),
+		mock.ExpectQuery(`SELECT\s+id, policy_id`).WithArgs("global").WillReturnRows(
+			policytest.SystemPolicyRow(sqlmock.NewRows(policyCols),
+				"11111111-1111-1111-1111-111111111111", "sys_test_block_marker",
+				"security-sqli", "FORBIDDEN_MARKER", "high", "request", "block", 100),
 		)
 	}
+	for i := 0; i < 4; i++ {
+		mock.ExpectQuery(`SELECT\s+id, policy_id`).WillReturnRows(sqlmock.NewRows(policyCols))
+	}
+	policytest.ScopedTxPlumbing(mock, 16)
 
 	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.EngineConfig{}, nil)
 	old := sharedpolicy.GetGlobalEngine()
@@ -389,13 +382,21 @@ func installBlockingStaticEngine(t *testing.T) sqlmock.Sqlmock {
 // active-override lookups (buildRicherCheckInputBlock + the apply loop), both
 // keyed on the override-owner email the test expects the handler to use.
 func expectOverridableRicherContext(mock sqlmock.Sqlmock, ownerEmail, overrideID string) {
+	// #3048: the lookups now run inside WithOrgScope transactions; the
+	// override lookup resolves the policy UUID first, then reads the
+	// override row keyed by that UUID. Plumbing spares absorb the
+	// BEGIN/set_config/COMMIT/ROLLBACK traffic (unordered mocks).
+	policytest.ScopedTxPlumbing(mock, 12)
 	mock.ExpectQuery(`SELECT risk_level, allow_override, version`).
 		WithArgs("sys_test_block_marker").
 		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
 			AddRow("low", true, 3))
 	for i := 0; i < 2; i++ {
+		mock.ExpectQuery(`SELECT sp\.id`).
+			WithArgs("sys_test_block_marker").
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("11111111-1111-1111-1111-111111111111"))
 		mock.ExpectQuery(`SELECT po\.id`).
-			WithArgs("sys_test_block_marker", ownerEmail, sqlmock.AnyArg()).
+			WithArgs("11111111-1111-1111-1111-111111111111", ownerEmail, sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(overrideID))
 	}
 }
@@ -851,9 +852,21 @@ func TestSharedIdentityCensus_NeverAppliesOverride(t *testing.T) {
 			t.Fatalf("sqlmock.New: %v", err)
 		}
 		defer mockDB.Close()
+		// #3048 scoped shape: resolve UUID, then read the override.
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app\.current_org_id'`).
+			WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(`SELECT sp\.id`).
+			WithArgs("sys_test_block_marker").
+			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-marker"))
+		mock.ExpectCommit()
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app\.current_org_id'`).
+			WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectQuery(`SELECT po\.id`).
-			WithArgs(sqlmock.AnyArg(), "local-dev@axonflow.local", sqlmock.AnyArg()).
+			WithArgs("uuid-marker", "local-dev@axonflow.local", sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ovr-local"))
+		mock.ExpectCommit()
 		matches := []RicherPolicyMatch{{PolicyID: "sys_test_block_marker", RiskLevel: "low", AllowOverride: true}}
 		id, _, applied := applyOverrideToCheckInputBlock(context.Background(), mockDB, "t1", "local-dev@axonflow.local", matches)
 		if !applied || id != "ovr-local" {
