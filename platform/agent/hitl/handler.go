@@ -176,6 +176,12 @@ func (h *Handler) ListRequests(w http.ResponseWriter, r *http.Request) {
 	filter.PolicyID = r.URL.Query().Get("policy_id")
 	filter.ClientID = r.URL.Query().Get("client_id")
 	filter.UserID = r.URL.Query().Get("user_id")
+	// #3048 R3 BLOCKER-2: org isolation. X-Org-ID is set (overwritten) by
+	// apiAuthMiddleware from the authenticated credentials — never a
+	// client-chosen value. The repo List runs on a BYPASSRLS lookup pool,
+	// so this filter is the tenancy boundary; without it the queue listed
+	// EVERY org's approvals (including original_query content).
+	filter.OrgID = r.Header.Get("X-Org-ID")
 
 	requests, total, err := h.service.ListApprovalRequests(r.Context(), filter)
 	if err != nil {
@@ -313,7 +319,7 @@ func (h *Handler) GetRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := h.service.GetApprovalRequest(r.Context(), requestID)
+	req, err := h.service.GetApprovalRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID)
 	if err != nil {
 		hitlRequestsTotal.WithLabelValues("GET", "/api/v1/hitl/queue/{id}", "error").Inc()
 		if strings.Contains(err.Error(), "not found") {
@@ -360,7 +366,7 @@ func (h *Handler) ApproveRequest(w http.ResponseWriter, r *http.Request) {
 		IP:    getClientIP(r),
 	}
 
-	if err := h.service.ApproveRequest(r.Context(), requestID, reviewer, input.Comment); err != nil {
+	if err := h.service.ApproveRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID, reviewer, input.Comment); err != nil {
 		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/approve", "error").Inc()
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, err.Error())
@@ -408,7 +414,7 @@ func (h *Handler) RejectRequest(w http.ResponseWriter, r *http.Request) {
 		IP:    getClientIP(r),
 	}
 
-	if err := h.service.RejectRequest(r.Context(), requestID, reviewer, input.Comment); err != nil {
+	if err := h.service.RejectRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID, reviewer, input.Comment); err != nil {
 		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/reject", "error").Inc()
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, err.Error())
@@ -456,7 +462,7 @@ func (h *Handler) OverrideRequest(w http.ResponseWriter, r *http.Request) {
 		IP:    getClientIP(r),
 	}
 
-	if err := h.service.OverrideRequest(r.Context(), requestID, input.Justification, authorizedBy); err != nil {
+	if err := h.service.OverrideRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID, input.Justification, authorizedBy); err != nil {
 		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/override", "error").Inc()
 		switch {
 		case strings.Contains(err.Error(), "not found"):
@@ -495,7 +501,7 @@ func (h *Handler) GetRequestHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	history, err := h.service.GetRequestHistory(r.Context(), requestID)
+	history, err := h.service.GetRequestHistory(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID)
 	if err != nil {
 		hitlRequestsTotal.WithLabelValues("GET", "/api/v1/hitl/queue/{id}/history", "error").Inc()
 		h.writeError(w, http.StatusInternalServerError, err.Error())

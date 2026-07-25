@@ -11,6 +11,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 const orchValidNIK = "3174042506780001" // checksum-valid (shared with 2478 + agent #2565)
@@ -99,12 +100,16 @@ func withSharedEngineProcessor(t *testing.T) *ResponseProcessor {
 	}
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mockSQL.MatchExpectationsInOrder(false)
-	cols := []string{"id", "policy_id", "name", "category", "tier", "pattern", "severity",
-		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata"}
+	// #3048: zero-system-set loads fail CLOSED — the "clean, empty policy
+	// set" premise is expressed with a benign never-matching system row.
 	for i := 0; i < 8; i++ {
-		mockSQL.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows(cols))
+		mockSQL.ExpectQuery("SELECT").WillReturnRows(
+			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
+				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
+		)
 	}
+	policytest.ScopedTxPlumbing(mockSQL, 8)
 
 	eng := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.DefaultEngineConfig(), nil)
 	orig := sharedpolicy.GetGlobalEngine()

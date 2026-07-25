@@ -108,7 +108,7 @@ func TestApplyOverrideToResult_AllCriticalNoOp(t *testing.T) {
 }
 
 func TestFindActiveOverride_NilDBReturnsNil(t *testing.T) {
-	ov, err := FindActiveOverride(context.Background(), nil, "t", "u@x.com", "p-1", "")
+	ov, err := FindActiveOverride(context.Background(), nil, "t", "t", "u@x.com", "p-1", "")
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -118,7 +118,7 @@ func TestFindActiveOverride_NilDBReturnsNil(t *testing.T) {
 }
 
 func TestFindActiveOverride_EmptyUserReturnsNil(t *testing.T) {
-	ov, err := FindActiveOverride(context.Background(), nil, "t", "", "p-1", "")
+	ov, err := FindActiveOverride(context.Background(), nil, "t", "t", "", "p-1", "")
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -128,7 +128,7 @@ func TestFindActiveOverride_EmptyUserReturnsNil(t *testing.T) {
 }
 
 func TestFindActiveOverride_EmptyPolicyReturnsNil(t *testing.T) {
-	ov, err := FindActiveOverride(context.Background(), nil, "t", "u@x.com", "", "")
+	ov, err := FindActiveOverride(context.Background(), nil, "t", "t", "u@x.com", "", "")
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}

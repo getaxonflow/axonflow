@@ -186,7 +186,7 @@ func (s *Service) CreateApprovalRequest(ctx context.Context, input CreateApprova
 	// Check pending approval limit per tenant (after validation, before DB writes)
 	maxPending := int(s.maxPendingApprovals.Load())
 	if maxPending > 0 {
-		pendingCount, err := s.repo.CountPendingByTenant(ctx, input.TenantID)
+		pendingCount, err := s.repo.CountPendingByTenant(ctx, input.OrgID, input.TenantID)
 		if err != nil {
 			log.Printf("[HITL] Failed to check pending approval count for tenant %s: %v", logutil.Sanitize(input.TenantID), err)
 			return nil, fmt.Errorf("failed to verify pending approval limit: %w", err)
@@ -247,6 +247,46 @@ func (s *Service) CreateApprovalRequest(ctx context.Context, input CreateApprova
 	return req, nil
 }
 
+
+// callerOrgContextKey carries the authenticated caller org for the HITL
+// service flows (#3048 R3 BLOCKER-2). The HTTP handlers stamp it from the
+// middleware-derived X-Org-ID (apiAuthMiddleware overwrites any
+// client-supplied value); internal in-process callers (the WCP resume
+// bridge) leave it unset and are pre-authorized by their own ingress guards.
+type hitlContextKey string
+
+const callerOrgContextKey hitlContextKey = "hitl_caller_org"
+
+// WithCallerOrg returns a context carrying the authenticated caller org.
+func WithCallerOrg(ctx context.Context, org string) context.Context {
+	if org == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, callerOrgContextKey, org)
+}
+
+// callerOrgFromContext returns the authenticated caller org, or "".
+func callerOrgFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(callerOrgContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// rejectCrossOrg enforces org isolation on the by-id flows (#3048 R3
+// BLOCKER-2): the repository's by-uuid discovery read runs on a BYPASSRLS
+// pool, so it resolves ANY org's row — the service must compare the row's
+// org to the authenticated caller BEFORE acting. Mismatches return the same
+// not-found error a genuinely missing id yields (no cross-org existence
+// oracle, mirroring the repo's existing "approval request not found" reply).
+func rejectCrossOrg(ctx context.Context, req *ApprovalRequest, requestID uuid.UUID) error {
+	callerOrg := callerOrgFromContext(ctx)
+	if callerOrg != "" && req != nil && req.OrgID != callerOrg {
+		return fmt.Errorf("approval request not found: %s", requestID)
+	}
+	return nil
+}
+
 // GetApprovalRequest retrieves an approval request by ID.
 func (s *Service) GetApprovalRequest(ctx context.Context, requestID uuid.UUID) (*ApprovalRequest, error) {
 	req, err := s.repo.GetByRequestID(ctx, requestID)
@@ -255,6 +295,9 @@ func (s *Service) GetApprovalRequest(ctx context.Context, requestID uuid.UUID) (
 	}
 	if req == nil {
 		return nil, fmt.Errorf("approval request not found: %s", requestID)
+	}
+	if err := rejectCrossOrg(ctx, req, requestID); err != nil {
+		return nil, err
 	}
 	return req, nil
 }
@@ -273,6 +316,9 @@ func (s *Service) ApproveRequest(ctx context.Context, requestID uuid.UUID, revie
 	}
 	if req == nil {
 		return fmt.Errorf("approval request not found")
+	}
+	if err := rejectCrossOrg(ctx, req, requestID); err != nil {
+		return err
 	}
 
 	// Validate state transition
@@ -329,6 +375,9 @@ func (s *Service) RejectRequest(ctx context.Context, requestID uuid.UUID, review
 	if req == nil {
 		return fmt.Errorf("approval request not found")
 	}
+	if err := rejectCrossOrg(ctx, req, requestID); err != nil {
+		return err
+	}
 
 	// Validate state transition
 	if req.Status != "pending" {
@@ -384,6 +433,9 @@ func (s *Service) OverrideRequest(ctx context.Context, requestID uuid.UUID, just
 	if req == nil {
 		return fmt.Errorf("approval request not found")
 	}
+	if err := rejectCrossOrg(ctx, req, requestID); err != nil {
+		return err
+	}
 
 	// Can only override pending requests
 	if req.Status != "pending" {
@@ -429,6 +481,18 @@ func (s *Service) GetPendingStats(ctx context.Context, orgID string) (*PendingSt
 
 // GetRequestHistory returns the audit trail for a request.
 func (s *Service) GetRequestHistory(ctx context.Context, requestID uuid.UUID) ([]*ApprovalHistory, error) {
+	// #3048 R3 BLOCKER-2: resolve the parent request first so the caller-org
+	// check applies before any history rows leave the service.
+	req, err := s.repo.GetByRequestID(ctx, requestID)
+	if err != nil {
+		return nil, fmt.Errorf("get approval request: %w", err)
+	}
+	if req == nil {
+		return nil, fmt.Errorf("approval request not found: %s", requestID)
+	}
+	if err := rejectCrossOrg(ctx, req, requestID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetHistory(ctx, requestID)
 }
 

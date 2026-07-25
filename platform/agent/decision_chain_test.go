@@ -1139,9 +1139,15 @@ func TestGetRecentChainsFromDB(t *testing.T) {
 		AddRow("chain-1", 3, int64(200), false, false, firstDecision, lastDecision).
 		AddRow("chain-2", 5, int64(350), true, true, firstDecision, lastDecision)
 
+	// #3048: GetRecentChains runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT chain_id, COUNT").
 		WithArgs("org-1", "tenant-1", sqlmock.AnyArg(), 10).
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	ctx := context.Background()
 	summaries, err := tracker.GetRecentChains(ctx, "org-1", "tenant-1", time.Hour, 10)

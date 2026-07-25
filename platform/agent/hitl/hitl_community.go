@@ -89,6 +89,11 @@ func NewService(repo *Repository, config ServiceConfig) *Service {
 // Community Edition: No-op implementation.
 type Repository struct{}
 
+// SetCrossOrgDB is a no-op in Community Edition (mirrors the Enterprise
+// repository's BYPASSRLS lookup-pool setter, #3048, so run.go wires it
+// unconditionally).
+func (r *Repository) SetCrossOrgDB(_ *sql.DB) {}
+
 // ExpireStaleRequests expires stale pending approval requests.
 // Community Edition: No-op, returns 0.
 func (s *Service) ExpireStaleRequests(ctx context.Context) (int, error) {

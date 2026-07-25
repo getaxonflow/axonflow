@@ -41,12 +41,21 @@ func (a *evalWCPHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprov
 		return nil, fmt.Errorf("database connection not available")
 	}
 
-	// Enforce pending approval limit
+	// Enforce pending approval limit.
+	//
+	// #3048: hitl_approval_queue is RLS-enabled (mig 025) — the bare COUNT
+	// read 0 under axonflow_app_role, so the pending-approval limit never
+	// engaged. Same req.OrgID scope key the INSERT below uses.
+	if req.OrgID == "" {
+		return nil, fmt.Errorf("HITLApprovalRequest.OrgID is required under RLS")
+	}
 	var pendingCount int
-	err := a.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM hitl_approval_queue WHERE tenant_id = $1 AND status = 'pending'`,
-		req.TenantID,
-	).Scan(&pendingCount)
+	err := agent.WithOrgScope(ctx, a.db, req.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM hitl_approval_queue WHERE tenant_id = $1 AND status = 'pending'`,
+			req.TenantID,
+		).Scan(&pendingCount)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to check pending approvals: %w", err)
 	}

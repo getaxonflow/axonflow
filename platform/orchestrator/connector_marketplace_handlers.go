@@ -88,15 +88,33 @@ func initializeConnectorRegistry() {
 	// Check if DATABASE_URL is available for persistent storage
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL != "" {
-		var err error
-		connectorRegistry, err = registry.NewRegistryWithStorage(
-			dbURL,
+		// #3048: the registry's cross-replica sync (ListConnectors) + by-id
+		// lazy loads (GetConnector) are deployment-wide reads that match 0
+		// rows through mig 107's FORCE RLS on the app-role runtime pool —
+		// installed connectors silently vanished from the registry on
+		// app-role deployments. Same OpenPlatformAdminConnection split as
+		// the #3039 cross-org read pools; nil-with-nil-err means the admin
+		// DSN is unset (documented fallback contract for owner-pool
+		// deployments).
+		registryOpts := []registry.RegistryOption{
 			registry.WithEncryptor(credentialEncryptor),
 			// v9 Brief 11.5 / Session 20: inject the agent's app-role opener
 			// so the connector_registry's runtime pool authenticates as
 			// axonflow_app_role and the FORCE RLS policies on connectors +
 			// connector_configs (mig 107) gate this code path.
 			registry.WithAppRoleOpener(agent.OpenAppRoleConnection),
+		}
+		if adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil || adminDB == nil {
+			log.Printf("⚠️  connector-registry cross-org read pool: platform-admin pool unavailable (err=%v) — registry sync reads fall back to the runtime pool (under app-role RLS they read 0 rows)", adminErr)
+		} else {
+			adminDB.SetMaxOpenConns(2)
+			adminDB.SetMaxIdleConns(1)
+			registryOpts = append(registryOpts, registry.WithCrossOrgDB(adminDB))
+		}
+		var err error
+		connectorRegistry, err = registry.NewRegistryWithStorage(
+			dbURL,
+			registryOpts...,
 		)
 		if err != nil {
 			log.Printf("Failed to initialize registry with storage: %v. Falling back to in-memory.", err)

@@ -511,11 +511,16 @@ func TestRepository_GetPendingStats_Success(t *testing.T) {
 	ctx := context.Background()
 
 	oldestHours := 5.5
+	// #3048: GetPendingStats runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT \\* FROM get_hitl_pending_count").
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total_pending", "high_priority", "critical_priority", "oldest_pending_hours",
 		}).AddRow(10, 5, 2, oldestHours))
+
+	mock.ExpectCommit()
 
 	stats, err := repo.GetPendingStats(ctx, "org-1")
 	if err != nil {
@@ -550,11 +555,16 @@ func TestRepository_GetPendingStats_NullOldest(t *testing.T) {
 	repo := NewRepository(db)
 	ctx := context.Background()
 
+	// #3048: GetPendingStats runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT \\* FROM get_hitl_pending_count").
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total_pending", "high_priority", "critical_priority", "oldest_pending_hours",
 		}).AddRow(0, 0, 0, nil))
+
+	mock.ExpectCommit()
 
 	stats, err := repo.GetPendingStats(ctx, "org-1")
 	if err != nil {

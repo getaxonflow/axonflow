@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/agent"
 )
 
 const evalDisclaimer = "NOT FOR REGULATORY SUBMISSION - EVALUATION LICENSE"
@@ -303,10 +305,20 @@ func (h *EvidenceExportHandler) GetEvidenceSummary(w http.ResponseWriter, r *htt
 		tenantID, since,
 	).Scan(&counts.WorkflowSteps)
 
-	_ = h.db.QueryRow(
-		`SELECT COUNT(*) FROM hitl_approval_queue WHERE tenant_id = $1 AND created_at >= $2`,
-		tenantID, since,
-	).Scan(&counts.HITLApprovals)
+	// #3048: hitl_approval_queue is RLS-enabled (mig 025) — the bare COUNT
+	// read 0 under axonflow_app_role and evidence summaries under-reported.
+	// Scope by the validated caller org when present (R3 HIGH-3), else the
+	// org_id==tenant_id identity.
+	summaryScope := r.Header.Get("X-Org-ID")
+	if summaryScope == "" {
+		summaryScope = tenantID
+	}
+	_ = agent.WithOrgScope(r.Context(), h.db, summaryScope, func(tx *sql.Tx) error {
+		return tx.QueryRow(
+			`SELECT COUNT(*) FROM hitl_approval_queue WHERE tenant_id = $1 AND created_at >= $2`,
+			tenantID, since,
+		).Scan(&counts.HITLApprovals)
+	})
 
 	counts.Total = counts.AuditLogs + counts.WorkflowSteps + counts.HITLApprovals
 
@@ -374,19 +386,36 @@ func (h *EvidenceExportHandler) queryWorkflowSteps(r *http.Request, tenantID str
 
 // queryHITLApprovals queries hitl_approval_queue for the given tenant and date range.
 func (h *EvidenceExportHandler) queryHITLApprovals(r *http.Request, tenantID string, start, end time.Time, limit int) ([]map[string]interface{}, error) {
-	rows, err := h.db.QueryContext(r.Context(),
-		`SELECT id, request_id, tenant_id, original_query, request_type, status, severity, created_at, expires_at, reviewed_at
-		 FROM hitl_approval_queue
-		 WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
-		 ORDER BY created_at DESC
-		 LIMIT $4`,
-		tenantID, start, end, limit,
-	)
+	// #3048: org-scoped — bare, this read 0 rows under axonflow_app_role and
+	// HITL evidence exports were silently empty. Scope by the validated
+	// caller org when present (R3 HIGH-3), else the org_id==tenant_id
+	// identity.
+	exportScope := r.Header.Get("X-Org-ID")
+	if exportScope == "" {
+		exportScope = tenantID
+	}
+	var out []map[string]interface{}
+	err := agent.WithOrgScope(r.Context(), h.db, exportScope, func(tx *sql.Tx) error {
+		rows, qErr := tx.QueryContext(r.Context(),
+			`SELECT id, request_id, tenant_id, original_query, request_type, status, severity, created_at, expires_at, reviewed_at
+			 FROM hitl_approval_queue
+			 WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
+			 ORDER BY created_at DESC
+			 LIMIT $4`,
+			tenantID, start, end, limit,
+		)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		var sErr error
+		out, sErr = scanRowsToMaps(rows)
+		return sErr
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanRowsToMaps(rows)
+	return out, nil
 }
 
 // scanRowsToMaps converts sql.Rows to a slice of maps.

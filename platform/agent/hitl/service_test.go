@@ -921,11 +921,15 @@ func TestGetPendingStats(t *testing.T) {
 	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
+	// #3048: GetPendingStats runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total_pending", "high_priority", "critical_priority", "oldest_pending_hours",
 		}).AddRow(10, 5, 2, 3.5))
+	mock.ExpectCommit()
 
 	stats, err := svc.GetPendingStats(ctx, "org-1")
 	if err != nil {
@@ -953,6 +957,10 @@ func TestGetRequestHistoryService(t *testing.T) {
 	ctx := context.Background()
 
 	requestID := uuid.New()
+
+	// #3048 R3 BLOCKER-2: GetRequestHistory resolves + org-checks the parent
+	// request before reading history.
+	expectApprovalLookup(mock, requestID, "org-1")
 
 	mock.ExpectQuery("SELECT").
 		WithArgs(requestID).

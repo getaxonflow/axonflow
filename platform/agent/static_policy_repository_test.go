@@ -118,10 +118,15 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Community"))
 
-				// Count tenant policies
+				// Count tenant policies — org-scoped (#3048).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+				mock.ExpectCommit()
 
 				// v9 Phase 8 #2384 PR-C1: Create wraps the INSERT in
 				// WithOrgScope so app.current_org_id is pinned before the
@@ -164,10 +169,15 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Community"))
 
-				// Count tenant policies - at limit
+				// Count tenant policies - at limit — org-scoped (#3048).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(30))
+				mock.ExpectCommit()
 			},
 			wantErr: ErrTenantPolicyLimitReached,
 		},
@@ -678,19 +688,23 @@ func TestList(t *testing.T) {
 	now := time.Now()
 	tier := TierTenant
 
-	// Count query
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies WHERE`).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	listCols := []string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+	}
 
-	// List query
+	// #3048: List runs two DISJOINT scoped passes — the tenant scope
+	// (tier <> 'system' AND tenant_id = $N) then the 'global' scope
+	// (tier = 'system') — merged + paginated in memory. No COUNT query.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "policy_id", "name", "category", "pattern", "severity",
-			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id",
-			"tags", "metadata", "version",
-			"created_at", "updated_at", "created_by", "updated_by",
-		}).AddRow(
+		WillReturnRows(sqlmock.NewRows(listCols).AddRow(
 			"policy-1", "custom_1", "Policy 1", "security-sqli", `\btest1\b`, "high",
 			nil, "block", "tenant", 50, true,
 			nil, "tenant-1", nil,
@@ -703,6 +717,15 @@ func TestList(t *testing.T) {
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
+	mock.ExpectCommit()
+	// Global pass: no system rows match the tier filter in this fixture.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs(GlobalOrgSentinel).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).
+		WillReturnRows(sqlmock.NewRows(listCols))
+	mock.ExpectCommit()
 
 	repo := NewStaticPolicyRepository(db)
 	result, err := repo.List(context.Background(), "tenant-1", &ListStaticPoliciesParams{
@@ -728,33 +751,51 @@ func TestGetEffective(t *testing.T) {
 	now := time.Now()
 	orgID := "org-1"
 
-	mock.ExpectQuery(`SELECT .* FROM static_policies sp LEFT JOIN policy_overrides po ON`).
+	policyCols := []string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+	}
+
+	// #3048: GetEffective runs pass A (caller org scope: tenant/org-tier
+	// rows + the live static overrides), then pass B ('global' scope:
+	// system-tier rows). Overrides are applied in Go from the pass-A map.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WithArgs("tenant-1", "org-1").
+		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
+			"org-pol-1", "org_policy_1", "Org Policy", "pii-global", `\bSSN\b`, "high",
+			nil, "block", "organization", 80, true,
+			"org-1", "tenant-1", nil,
+			nil, nil, 1,
+			now, now, nil, nil,
+		))
+	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
 		WithArgs("tenant-1", "org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "policy_id", "name", "category", "pattern", "severity",
-			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id",
-			"tags", "metadata", "version",
-			"created_at", "updated_at", "created_by", "updated_by",
-			"override_id", "action_override", "enabled_override",
-			"expires_at", "override_reason",
+			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
 		}).AddRow(
+			"override-1", "sys-1", "warn", nil, nil, "Testing phase",
+		))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs(GlobalOrgSentinel).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"sys-1", "sys_sqli_1", "System SQLi Policy", "security-sqli", `\bDROP\b`, "critical",
 			nil, "block", "system", 100, true,
 			nil, "global", nil,
 			nil, nil, 1,
 			now, now, nil, nil,
-			"override-1", "warn", nil, // Has override
-			nil, "Testing phase",
-		).AddRow(
-			"org-1", "org_policy_1", "Org Policy", "pii-global", `\bSSN\b`, "high",
-			nil, "block", "organization", 80, true,
-			"org-1", "tenant-1", nil,
-			nil, nil, 1,
-			now, now, nil, nil,
-			nil, nil, nil, // No override
-			nil, nil,
 		))
+	mock.ExpectCommit()
 
 	repo := NewStaticPolicyRepository(db)
 	policies, err := repo.GetEffective(context.Background(), "tenant-1", &orgID)
@@ -810,9 +851,15 @@ func TestGetVersions(t *testing.T) {
 				WithArgs("tenant-1").
 				WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow(tt.licenseTier))
 
-			// Get versions - use a simpler regex pattern
-			mock.ExpectQuery(`SELECT id, policy_id, version, snapshot, change_type, change_summary, changed_by, changed_at`).
-				WithArgs("policy-1", tt.expectedLimit).
+			// Get versions — org-scoped with a parent-ownership predicate
+			// (#3048); ctx has no org so the scope key falls back to the
+			// tenant.
+			mock.ExpectBegin()
+			mock.ExpectExec(`SELECT set_config`).
+				WithArgs("tenant-1").
+				WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(`SELECT v.id, v.policy_id, v.version, v.snapshot, v.change_type, v.change_summary, v.changed_by, v.changed_at`).
+				WithArgs("policy-1", "tenant-1", "", tt.expectedLimit).
 				WillReturnRows(sqlmock.NewRows([]string{
 					"id", "policy_id", "version", "snapshot", "change_type",
 					"change_summary", "changed_by", "changed_at",
@@ -820,6 +867,7 @@ func TestGetVersions(t *testing.T) {
 					"v1", "policy-1", 1, []byte(`{"name": "Test"}`), "create",
 					"Created", "user1", time.Now(),
 				))
+			mock.ExpectCommit()
 
 			repo := NewStaticPolicyRepository(db)
 			versions, err := repo.GetVersions(context.Background(), "policy-1", "tenant-1")
@@ -980,9 +1028,15 @@ func TestCountTenantPolicies(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
+	// #3048: org-scoped count.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
+	mock.ExpectCommit()
 
 	repo := NewStaticPolicyRepository(db)
 	count, err := repo.countTenantPolicies(context.Background(), "tenant-1")

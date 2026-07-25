@@ -36,6 +36,7 @@ import (
 
 	"axonflow/platform/agent/circuitbreaker"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policy/policytest"
 )
 
 // decideForTest sends a DecideRequest body through the raw handler (no
@@ -67,11 +68,17 @@ func installSharedEngineWithMockDB(t *testing.T) {
 	// empty-result SELECTs. Extra unmet expectations are harmless (the tests
 	// don't assert ExpectationsWereMet).
 	mockSQL.MatchExpectationsInOrder(false)
-	for i := 0; i < 4; i++ {
+	// #3048: each load is two scoped passes; a load whose result carries ZERO
+	// system-tier policies now fails CLOSED (ErrEmptySystemPolicySet), so the
+	// fixture returns one benign never-matching system policy per pass.
+	for i := 0; i < 8; i++ {
 		mockSQL.ExpectQuery("SELECT").WillReturnRows(
-			sqlmock.NewRows([]string{"id", "name", "pattern", "category", "severity", "action", "enabled", "tier", "tenant_id", "description", "metadata"}),
+			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
+				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
 		)
 	}
+	policytest.ScopedTxPlumbing(mockSQL, 8)
 	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.EngineConfig{}, nil)
 	old := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(engine)

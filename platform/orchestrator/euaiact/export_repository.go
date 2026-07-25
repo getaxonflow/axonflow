@@ -6,6 +6,8 @@
 package euaiact
 
 import (
+	"axonflow/platform/agent/rls"
+
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -456,30 +458,38 @@ func (r *PostgresExportRepository) GetPolicyViolations(ctx context.Context, orgI
 		LIMIT 100000
 	`
 	fromArg, toArg := nullableRangeArgs(from, to)
-	rows, err := r.db.QueryContext(ctx, q, orgID, fromArg, toArg)
+	// #3048: policy_violations is RLS-enabled (mig 018) — the bare read
+	// matched 0 rows under axonflow_app_role and EU-AI-Act exports were
+	// silently empty. Scoped by the org being exported.
+	records := make([]PolicyViolationRecord, 0, 16)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, qErr := tx.QueryContext(ctx, q, orgID, fromArg, toArg)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rec PolicyViolationRecord
+			var detailsJSON string
+			if sErr := rows.Scan(
+				&rec.ID, &rec.OrgID, &rec.ViolationType, &rec.Severity,
+				&rec.ClientID, &rec.UserID, &rec.Description, &detailsJSON, &rec.CreatedAt,
+			); sErr != nil {
+				return sErr
+			}
+			if detailsJSON != "" {
+				if uErr := json.Unmarshal([]byte(detailsJSON), &rec.Details); uErr != nil {
+					return fmt.Errorf("unmarshal policy_violations.details: %w", uErr)
+				}
+			}
+			records = append(records, rec)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	records := make([]PolicyViolationRecord, 0, 16)
-	for rows.Next() {
-		var rec PolicyViolationRecord
-		var detailsJSON string
-		if err := rows.Scan(
-			&rec.ID, &rec.OrgID, &rec.ViolationType, &rec.Severity,
-			&rec.ClientID, &rec.UserID, &rec.Description, &detailsJSON, &rec.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		if detailsJSON != "" {
-			if err := json.Unmarshal([]byte(detailsJSON), &rec.Details); err != nil {
-				return nil, fmt.Errorf("unmarshal policy_violations.details: %w", err)
-			}
-		}
-		records = append(records, rec)
-	}
-	return records, rows.Err()
+	return records, nil
 }
 
 // GetHITLApprovalHistory returns hitl_approval_history rows for an org within an
@@ -500,26 +510,33 @@ func (r *PostgresExportRepository) GetHITLApprovalHistory(ctx context.Context, o
 		LIMIT 100000
 	`
 	fromArg, toArg := nullableRangeArgs(from, to)
-	rows, err := r.db.QueryContext(ctx, q, orgID, fromArg, toArg)
+	// #3048: hitl_approval_history is RLS-enabled (mig 025) — same
+	// silent-empty-export class as GetPolicyViolations above.
+	records := make([]HITLApprovalRecord, 0, 16)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, qErr := tx.QueryContext(ctx, q, orgID, fromArg, toArg)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rec HITLApprovalRecord
+			if sErr := rows.Scan(
+				&rec.ID, &rec.RequestID, &rec.OrgID, &rec.TenantID, &rec.Action,
+				&rec.ActorID, &rec.ActorEmail, &rec.ActorRole,
+				&rec.Comment, &rec.Justification,
+				&rec.PreviousStatus, &rec.NewStatus, &rec.CreatedAt,
+			); sErr != nil {
+				return sErr
+			}
+			records = append(records, rec)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	records := make([]HITLApprovalRecord, 0, 16)
-	for rows.Next() {
-		var rec HITLApprovalRecord
-		if err := rows.Scan(
-			&rec.ID, &rec.RequestID, &rec.OrgID, &rec.TenantID, &rec.Action,
-			&rec.ActorID, &rec.ActorEmail, &rec.ActorRole,
-			&rec.Comment, &rec.Justification,
-			&rec.PreviousStatus, &rec.NewStatus, &rec.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		records = append(records, rec)
-	}
-	return records, rows.Err()
+	return records, nil
 }
 
 // GetAccuracyMetrics returns euaiact_accuracy_metrics rows for an org within an

@@ -688,13 +688,47 @@ func (t *DecisionChainTracker) GetChain(ctx context.Context, chainID string) ([]
 		ORDER BY step_number ASC
 	`
 
-	rows, err := t.db.QueryContext(ctx, query, chainID)
+	// #3048: decision_chain is RLS-enabled (mig 025/101, FORCE) — the bare
+	// read matched 0 rows under axonflow_app_role. Scope by the caller's org
+	// when known; the org-scoped fetchers in decision_chain_signing.go are
+	// the canonical audited surface, this method keeps the legacy bare read
+	// only for owner-pool contexts with no caller org.
+	var runQuery func(func(rows *sql.Rows) error) error
+	if callerOrg := OrgIDFromContext(ctx); callerOrg != "" {
+		runQuery = func(fn func(rows *sql.Rows) error) error {
+			return WithOrgScope(ctx, t.db, callerOrg, func(tx *sql.Tx) error {
+				rows, qErr := tx.QueryContext(ctx, query, chainID)
+				if qErr != nil {
+					return qErr
+				}
+				defer rows.Close()
+				return fn(rows)
+			})
+		}
+	} else {
+		runQuery = func(fn func(rows *sql.Rows) error) error {
+			rows, qErr := t.db.QueryContext(ctx, query, chainID)
+			if qErr != nil {
+				return qErr
+			}
+			defer rows.Close()
+			return fn(rows)
+		}
+	}
+
+	var entries []DecisionEntry
+	err := runQuery(func(rows *sql.Rows) error {
+		return scanDecisionChainRows(rows, &entries)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query chain: %w", err)
 	}
-	defer rows.Close()
 
-	var entries []DecisionEntry
+	return entries, nil
+}
+
+// scanDecisionChainRows scans GetChain result rows into entries.
+func scanDecisionChainRows(rows *sql.Rows, entries *[]DecisionEntry) error {
 	for rows.Next() {
 		var entry DecisionEntry
 		var decisionType, decisionOutcome, riskLevel string
@@ -714,7 +748,7 @@ func (t *DecisionChainTracker) GetChain(ctx context.Context, chainID string) ([]
 			&entry.CreatedAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+			return fmt.Errorf("failed to scan row: %w", err)
 		}
 
 		entry.DecisionType = DecisionType(decisionType)
@@ -727,10 +761,10 @@ func (t *DecisionChainTracker) GetChain(ctx context.Context, chainID string) ([]
 			_ = json.Unmarshal(metadata, &entry.Metadata)
 		}
 
-		entries = append(entries, entry)
+		*entries = append(*entries, entry)
 	}
 
-	return entries, rows.Err()
+	return rows.Err()
 }
 
 // GetChainSummary returns aggregate statistics for a chain.
@@ -846,27 +880,35 @@ func (t *DecisionChainTracker) GetRecentChains(ctx context.Context, orgID, tenan
 		LIMIT $4
 	`
 
-	rows, err := t.db.QueryContext(ctx, query, orgID, tenantID, since.String(), limit)
+	// #3048: decision_chain is RLS-enabled (FORCE, mig 101) — the bare read
+	// matched 0 rows under axonflow_app_role. Scoped by the caller-supplied
+	// orgID, which is also the SQL predicate.
+	var summaries []ChainSummary
+	err := WithOrgScope(ctx, t.db, orgID, func(tx *sql.Tx) error {
+		rows, qErr := tx.QueryContext(ctx, query, orgID, tenantID, since.String(), limit)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var summary ChainSummary
+			if sErr := rows.Scan(
+				&summary.ChainID, &summary.TotalSteps,
+				&summary.TotalProcessingMs, &summary.HasBlocked, &summary.RequiresReview,
+				&summary.FirstDecisionAt, &summary.LastDecisionAt,
+			); sErr != nil {
+				return fmt.Errorf("failed to scan row: %w", sErr)
+			}
+			summaries = append(summaries, summary)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query recent chains: %w", err)
 	}
-	defer rows.Close()
 
-	var summaries []ChainSummary
-	for rows.Next() {
-		var summary ChainSummary
-		err := rows.Scan(
-			&summary.ChainID, &summary.TotalSteps,
-			&summary.TotalProcessingMs, &summary.HasBlocked, &summary.RequiresReview,
-			&summary.FirstDecisionAt, &summary.LastDecisionAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-		summaries = append(summaries, summary)
-	}
-
-	return summaries, rows.Err()
+	return summaries, nil
 }
 
 // =============================================================================

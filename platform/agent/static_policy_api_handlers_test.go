@@ -63,32 +63,38 @@ func TestHandleListStaticPolicies(t *testing.T) {
 			queryParams: "",
 			tenantID:    "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Count query
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
-
-				// Main query
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "tier", "pattern",
-					"severity", "description", "action", "priority", "enabled",
+				// #3048: List runs two DISJOINT scoped passes (tenant scope,
+				// then 'global' scope for system rows); no COUNT query.
+				listCols := []string{
+					"id", "policy_id", "name", "category", "pattern", "severity",
+					"description", "action", "tier", "priority", "enabled",
 					"organization_id", "tenant_id", "org_id", "tags", "metadata",
 					"version", "created_at", "updated_at", "created_by", "updated_by",
-				}).
-					AddRow(
-						"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "system", "union\\s+select",
-						"critical", "Blocks UNION-based SQL injection", "block", 100, true,
-						nil, "global", "", "[]", "{}",
-						1, testTime, testTime, "system", "system",
-					).
-					AddRow(
-						"uuid-2", "pii_ssn", "PII SSN Detection", "pii-us", "tenant", "\\d{3}-\\d{2}-\\d{4}",
-						"high", "Detects SSN patterns", "redact", 50, true,
+				}
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT.*FROM static_policies`).
+					WillReturnRows(sqlmock.NewRows(listCols).AddRow(
+						"uuid-2", "pii_ssn", "PII SSN Detection", "pii-us", "\\d{3}-\\d{2}-\\d{4}", "high",
+						"Detects SSN patterns", "redact", "tenant", 50, true,
 						nil, "test-tenant", "", "[]", "{}",
 						1, testTime, testTime, "user", "user",
-					)
-
+					))
+				mock.ExpectCommit()
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs(GlobalOrgSentinel).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WillReturnRows(rows)
+					WillReturnRows(sqlmock.NewRows(listCols).AddRow(
+						"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "union\\s+select", "critical",
+						"Blocks UNION-based SQL injection", "block", "system", 100, true,
+						nil, "global", "", "[]", "{}",
+						1, testTime, testTime, "system", "system",
+					))
+				mock.ExpectCommit()
 			},
 			expectedStatus: http.StatusOK,
 			expectedCount:  2,
@@ -98,16 +104,27 @@ func TestHandleListStaticPolicies(t *testing.T) {
 			queryParams: "?category=nonexistent",
 			tenantID:    "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-
+				// #3048: two empty scoped passes.
+				listCols := []string{
+					"id", "policy_id", "name", "category", "pattern", "severity",
+					"description", "action", "tier", "priority", "enabled",
+					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"version", "created_at", "updated_at", "created_by", "updated_by",
+				}
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WillReturnRows(sqlmock.NewRows([]string{
-						"id", "policy_id", "name", "category", "tier", "pattern",
-						"severity", "description", "action", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id", "tags", "metadata",
-						"version", "created_at", "updated_at", "created_by", "updated_by",
-					}))
+					WillReturnRows(sqlmock.NewRows(listCols))
+				mock.ExpectCommit()
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs(GlobalOrgSentinel).
+					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT.*FROM static_policies`).
+					WillReturnRows(sqlmock.NewRows(listCols))
+				mock.ExpectCommit()
 			},
 			expectedStatus: http.StatusOK,
 			expectedCount:  0,
@@ -338,10 +355,18 @@ func TestHandleUpdateStaticPolicy(t *testing.T) {
 				"description": "Updated description",
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Query to get existing policy returns empty
-				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
-					WithArgs("nonexistent").
-					WillReturnRows(sqlmock.NewRows([]string{}))
+				// #3048: GetByID reads under the caller org scope, then
+				// falls back to the 'global' scope — both miss here.
+				for _, scope := range []string{"test-org", GlobalOrgSentinel} {
+					mock.ExpectBegin()
+					mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+						WithArgs(scope).
+						WillReturnResult(sqlmock.NewResult(0, 0))
+					mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
+						WithArgs("nonexistent").
+						WillReturnRows(sqlmock.NewRows([]string{}))
+					mock.ExpectRollback()
+				}
 			},
 			expectedStatus: http.StatusNotFound,
 		},
@@ -353,10 +378,18 @@ func TestHandleUpdateStaticPolicy(t *testing.T) {
 				"name": "Updated Policy",
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Handler tries to query with empty ID, resulting in not found error
-				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
-					WithArgs("").
-					WillReturnRows(sqlmock.NewRows([]string{}))
+				// Handler tries to query with empty ID, resulting in not
+				// found on both scoped passes (#3048).
+				for _, scope := range []string{"test-org", GlobalOrgSentinel} {
+					mock.ExpectBegin()
+					mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+						WithArgs(scope).
+						WillReturnResult(sqlmock.NewResult(0, 0))
+					mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
+						WithArgs("").
+						WillReturnRows(sqlmock.NewRows([]string{}))
+					mock.ExpectRollback()
+				}
 			},
 			expectedStatus: http.StatusNotFound,
 		},
@@ -517,29 +550,37 @@ func TestHandleGetEffectivePolicies(t *testing.T) {
 			name:     "success",
 			tenantID: "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Main policies query
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "tier", "pattern",
-					"severity", "description", "action", "priority", "enabled",
+				// #3048: GetEffective runs pass A (org scope: tenant/org
+				// rows + overrides) then pass B ('global' scope: system).
+				effCols := []string{
+					"id", "policy_id", "name", "category", "pattern", "severity",
+					"description", "action", "tier", "priority", "enabled",
 					"organization_id", "tenant_id", "org_id", "tags", "metadata",
 					"version", "created_at", "updated_at", "created_by", "updated_by",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "system", "union\\s+select",
-					"critical", "Blocks UNION-based SQL injection", "block", 100, true,
-					nil, "global", "", "[]", "{}",
-					1, testTime, testTime, "system", "system",
-				)
-
+				}
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WillReturnRows(rows)
-
-				// Overrides query
-				mock.ExpectQuery(`SELECT.*FROM policy_overrides`).
+					WillReturnRows(sqlmock.NewRows(effCols))
+				mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
 					WillReturnRows(sqlmock.NewRows([]string{
-						"id", "policy_id", "policy_type", "organization_id", "tenant_id",
-						"action_override", "enabled_override", "override_reason", "expires_at",
-						"created_by", "created_at", "updated_by", "updated_at",
+						"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
 					}))
+				mock.ExpectCommit()
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs(GlobalOrgSentinel).
+					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT.*FROM static_policies`).
+					WillReturnRows(sqlmock.NewRows(effCols).AddRow(
+						"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "union\\s+select", "critical",
+						"Blocks UNION-based SQL injection", "block", "system", 100, true,
+						nil, "global", "", "[]", "{}",
+						1, testTime, testTime, "system", "system",
+					))
+				mock.ExpectCommit()
 			},
 			expectedStatus: http.StatusOK,
 		},
@@ -697,7 +738,7 @@ func TestHandleGetVersionHistory(t *testing.T) {
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("enterprise"))
 
-				// Then the versions query
+				// Then the versions query — org-scoped (#3048).
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "version", "snapshot", "change_type", "change_summary", "changed_by", "changed_at",
 				}).AddRow(
@@ -706,8 +747,13 @@ func TestHandleGetVersionHistory(t *testing.T) {
 					"version-2", "test-policy", 2, []byte("{}"), "update", "Policy updated", "user", testTime,
 				)
 
-				mock.ExpectQuery(`SELECT.*FROM static_policy_versions WHERE`).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(`SELECT.*FROM static_policy_versions v`).
 					WillReturnRows(rows)
+				mock.ExpectCommit()
 			},
 			expectedStatus: http.StatusOK,
 		},

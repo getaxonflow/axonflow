@@ -318,6 +318,22 @@ func AllComplianceCategories() []PolicyCategory {
 	}
 }
 
+// OrgScopePtr converts a caller org string into the *string
+// EvalOptions.OrganizationID / loader orgID parameter shape: nil when empty
+// (single-tenant/community contexts — the loader falls back to the
+// org_id==tenant_id identity), a pointer otherwise. #3048 R3 HIGH-3: gates
+// MUST pass the validated caller org through this so the loader's tenant
+// pass scopes the RLS GUC to the org that actually stamps the rows — an org
+// with org_id != tenant_id otherwise silently loses its tenant/org-tier
+// policies under app-role RLS (and the zero-system-set guard does NOT trip,
+// because the 'global' pass still loads).
+func OrgScopePtr(orgID string) *string {
+	if orgID == "" {
+		return nil
+	}
+	return &orgID
+}
+
 // EvalOptions configures policy evaluation behavior.
 type EvalOptions struct {
 	// Multi-tenancy context

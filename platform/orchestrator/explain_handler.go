@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/agent"
 	sharedidentity "axonflow/platform/shared/identity"
 )
 
@@ -102,6 +104,13 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		callerEmail = r.Header.Get("X-User-ID")
 	}
 	callerTenant := r.Header.Get("X-Tenant-ID")
+	// #3048 R3 HIGH-3: the validated caller org (set by the agent proxy)
+	// scopes the RLS reads below; falls back to the org_id==tenant_id
+	// identity when absent.
+	callerOrg := r.Header.Get("X-Org-ID")
+	if callerOrg == "" {
+		callerOrg = callerTenant
+	}
 	if callerTenant == "" {
 		// Fail closed (#1623 retro): without a trusted tenant scope on the
 		// request, post-fetch authorization could be bypassed by simply
@@ -214,7 +223,7 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 	// returns 0 → omitempty); explain still returns the recorded version
 	// even if the latest cannot be resolved.
 	if len(exp.PolicyMatches) > 0 {
-		exp.LatestPolicyVersion = queryLatestPolicyVersion(exp.PolicyMatches[0].PolicyID)
+		exp.LatestPolicyVersion = queryLatestPolicyVersion(callerOrg, exp.PolicyMatches[0].PolicyID)
 	}
 
 	// Check for existing active override (drives override_available).
@@ -224,7 +233,7 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 	// user asks about a decision for tool B, which would be stricter than
 	// runtime enforcement and mislead the unblock UX (reviewer-caught).
 	exp.OverrideAvailable, exp.OverrideExistingID = checkOverrideAvailability(
-		callerTenant, callerEmail, exp.ToolSignature, exp.PolicyMatches,
+		callerOrg, callerTenant, callerEmail, exp.ToolSignature, exp.PolicyMatches,
 	)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -351,17 +360,32 @@ func buildExplanation(decisionID string, ts time.Time,
 // deleted since the decision). 0 is omitempty in the response, so the
 // caller surfaces "no latest version available" by absence rather than a
 // zero value the consumer has to special-case.
-func queryLatestPolicyVersion(policyID string) int {
+func queryLatestPolicyVersion(scopeOrg, policyID string) int {
 	if policyID == "" {
 		return 0
 	}
-	var version int
-	err := usageDB.QueryRow(`
+	// #3048: static_policy_versions is RLS-enabled (mig 110,
+	// app.current_org_id) — bare, this read matched 0 rows under
+	// axonflow_app_role and explain silently lost latest_policy_version.
+	// Version rows carry the parent policy's org: the caller's org for
+	// tenant policies, 'global' for system-policy versions — read the
+	// caller-org scope first (#3048 R3 HIGH-3), then fall back to 'global'.
+	query := `
 		SELECT version FROM static_policy_versions
 		WHERE policy_id = $1
 		ORDER BY version DESC
 		LIMIT 1
-	`, policyID).Scan(&version)
+	`
+	var version int
+	scopedGet := func(scope string) error {
+		return agent.WithOrgScope(context.Background(), usageDB, scope, func(tx *sql.Tx) error {
+			return tx.QueryRow(query, policyID).Scan(&version)
+		})
+	}
+	err := scopedGet(scopeOrg)
+	if err == sql.ErrNoRows && scopeOrg != GlobalTenantSentinel {
+		err = scopedGet(GlobalTenantSentinel)
+	}
 	if err == sql.ErrNoRows {
 		return 0
 	}
@@ -415,7 +439,9 @@ func queryHistoricalHitCount(userEmail string, matches []ExplainPolicy, anchorTi
 // FindActiveOverride / ApplyOverrideToResult (ADR-044): tool-specific
 // override wins over tool-agnostic when both exist for the same policy;
 // when the decision has no tool context, only tool-agnostic overrides match.
-func checkOverrideAvailability(tenantID, userEmail, toolSignature string, matches []ExplainPolicy) (bool, string) {
+// scopeOrg is the RLS scope key (#3048 R3 HIGH-3): caller org else the
+// org_id==tenant_id identity — the same key the override writers stamp.
+func checkOverrideAvailability(scopeOrg, tenantID, userEmail, toolSignature string, matches []ExplainPolicy) (bool, string) {
 	if userEmail == "" || len(matches) == 0 {
 		return false, ""
 	}
@@ -436,8 +462,12 @@ func checkOverrideAvailability(tenantID, userEmail, toolSignature string, matche
 		if m.RiskLevel == "critical" || !m.AllowOverride {
 			continue
 		}
+		// #3048: org-scoped (mig 110 RLS) — bare, this matched 0 rows under
+		// axonflow_app_role and explain always reported "no existing
+		// override". Same org_id==tenant_id key the create path stamps.
 		var id string
-		err := usageDB.QueryRow(`
+		err := agent.WithOrgScope(context.Background(), usageDB, scopeOrg, func(tx *sql.Tx) error {
+			return tx.QueryRow(`
 			SELECT id FROM policy_overrides
 			WHERE policy_id = $1 AND created_by = $2 AND tenant_id = $3
 			  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
@@ -454,6 +484,7 @@ func checkOverrideAvailability(tenantID, userEmail, toolSignature string, matche
 			  created_at DESC
 			LIMIT 1
 		`, m.PolicyID, userEmail, tenantID, toolSignature).Scan(&id)
+		})
 		if err == nil {
 			return true, id
 		}

@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"log"
 	"time"
+
+	"axonflow/platform/agent"
 )
 
 // ActiveOverride represents a single row from policy_overrides matched
@@ -30,7 +32,12 @@ type ActiveOverride struct {
 //   - tenant_id = tenantID (or NULL)
 //   - policy_id = policyID
 //   - tool_signature IS NULL OR matches toolSignature
-func FindActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, policyID, toolSignature string) (*ActiveOverride, error) {
+//
+// scopeOrg is the RLS scope key for the lookup (#3048 R3 HIGH-3): the
+// caller's validated org when known, else the org_id==tenant_id identity.
+// Override rows are stamped with createOverrideHandler's X-Org-ID-else-tenant
+// key, so the same precedence applies here.
+func FindActiveOverride(ctx context.Context, db *sql.DB, scopeOrg, tenantID, userEmail, policyID, toolSignature string) (*ActiveOverride, error) {
 	if db == nil || userEmail == "" || policyID == "" {
 		return nil, nil
 	}
@@ -40,7 +47,16 @@ func FindActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, po
 	// tool. When caller has no tool context ($4 = ''), only tool-agnostic
 	// overrides match — a tool-scoped override shouldn't silently apply to a
 	// non-tool step. ORDER BY prefers exact-tool match over tool-agnostic.
-	row := db.QueryRowContext(ctx, `
+	//
+	// #3048: policy_overrides is RLS-enabled (mig 110, app.current_org_id) —
+	// the bare read matched 0 rows under axonflow_app_role, so an active
+	// ADR-044 session override silently stopped flipping denies.
+	if scopeOrg == "" {
+		scopeOrg = tenantID
+	}
+	var ov ActiveOverride
+	err := agent.WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
 		SELECT id, policy_id, policy_type, COALESCE(tool_signature, ''), override_reason, expires_at
 		FROM policy_overrides
 		WHERE policy_id = $1
@@ -63,10 +79,9 @@ func FindActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, po
 		       ELSE 2 END,
 		  created_at DESC
 		LIMIT 1
-	`, policyID, userEmail, tenantID, toolSignature)
-
-	var ov ActiveOverride
-	err := row.Scan(&ov.ID, &ov.PolicyID, &ov.PolicyType, &ov.ToolSignature, &ov.Reason, &ov.ExpiresAt)
+	`, policyID, userEmail, tenantID, toolSignature).Scan(
+			&ov.ID, &ov.PolicyID, &ov.PolicyType, &ov.ToolSignature, &ov.Reason, &ov.ExpiresAt)
+	})
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -108,7 +123,7 @@ func ApplyOverrideToResult(
 			continue
 		}
 
-		ov, err := FindActiveOverride(ctx, db, tenantID, userEmail, p.PolicyID, toolSignature)
+		ov, err := FindActiveOverride(ctx, db, orgID, tenantID, userEmail, p.PolicyID, toolSignature)
 		if err != nil {
 			log.Printf("override enforcement: lookup failed for policy=%s: %v", p.PolicyID, err)
 			continue

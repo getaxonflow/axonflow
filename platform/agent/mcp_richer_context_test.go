@@ -27,6 +27,17 @@ func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	return db, mock
 }
 
+// expectScopedTx registers the BEGIN + SET LOCAL prologue of one
+// rls.WithOrgScope transaction (#3048 — the richer-context lookups now run
+// org-scoped). Follow with the in-tx query expectation(s) and then
+// mock.ExpectCommit() (or ExpectRollback() when the closure errors).
+func expectScopedTx(mock sqlmock.Sqlmock, org string) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app\.current_org_id'`).
+		WithArgs(org).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
 // TestLookupPolicyMeta_HappyPath covers the common case: a matching
 // policy row returns its risk_level + allow_override + version.
 func TestLookupPolicyMeta_HappyPath(t *testing.T) {
@@ -36,7 +47,7 @@ func TestLookupPolicyMeta_HappyPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
 			AddRow("high", true, 7))
 
-	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "pol-1")
+	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "", "pol-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,9 +65,40 @@ func TestLookupPolicyMeta_NotFoundReturnsEmpty(t *testing.T) {
 		WithArgs("pol-missing").
 		WillReturnError(sql.ErrNoRows)
 
-	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "pol-missing")
+	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "", "pol-missing")
 	if err != nil || risk != "" || ao || version != 0 {
 		t.Errorf("not-found should return (\"\", false, 0, nil); got (%q, %v, %d, %v)", risk, ao, version, err)
+	}
+}
+
+// TestLookupPolicyMeta_ScopedFallsBackToGlobal — #3048: with a caller org
+// scope, a miss in the org scope retries in the 'global' scope so system-tier
+// policy metadata stays resolvable under app-role RLS.
+func TestLookupPolicyMeta_ScopedFallsBackToGlobal(t *testing.T) {
+	db, mock := newMockDB(t)
+	// Org-scope pass: no row (tenant scope can't see the global system row).
+	expectScopedTx(mock, "org-1")
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
+		WithArgs("sys_pol").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+	// Global-scope pass: hit.
+	expectScopedTx(mock, GlobalOrgSentinel)
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
+		WithArgs("sys_pol").
+		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
+			AddRow("high", true, 7))
+	mock.ExpectCommit()
+
+	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "org-1", "sys_pol")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if risk != "high" || !ao || version != 7 {
+		t.Errorf("got (%q, %v, %d), want (high, true, 7)", risk, ao, version)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
@@ -65,9 +107,18 @@ func TestLookupPolicyMeta_NotFoundReturnsEmpty(t *testing.T) {
 // to the same override row.
 func TestLookupActiveOverride_HappyPath(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
-		WithArgs("pol-slug", "dev@example.com", "tenant-x").
+	// #3048 scoped shape: resolve the policy UUID in the caller org scope,
+	// then read the override row in the same scope.
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-slug").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-pol-slug"))
+	mock.ExpectCommit()
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT po\\.id\\s+FROM policy_overrides po").
+		WithArgs("uuid-pol-slug", "dev@example.com", "tenant-x").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ov-1"))
+	mock.ExpectCommit()
 
 	id, found, err := lookupActiveOverride(context.Background(), db,
 		"tenant-x", "dev@example.com", "pol-slug")
@@ -81,9 +132,18 @@ func TestLookupActiveOverride_HappyPath(t *testing.T) {
 
 func TestLookupActiveOverride_NotFound(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
-		WithArgs("pol-x", "dev@example.com", "tenant-x").
+	// Resolve misses in the org scope AND the 'global' scope → not found,
+	// without ever consulting policy_overrides.
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-x").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+	expectScopedTx(mock, GlobalOrgSentinel)
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-x").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	_, found, err := lookupActiveOverride(context.Background(), db,
 		"tenant-x", "dev@example.com", "pol-x")
@@ -102,13 +162,24 @@ func TestLookupActiveOverride_NotFound(t *testing.T) {
 // RicherPolicyMatch (#1983 / α1).
 func TestBuildRicherCheckInputBlock_NoOverride(t *testing.T) {
 	db, mock := newMockDB(t)
+	// #3048 scoped shape: meta lookup, then override lookup (resolve UUID +
+	// override read), each in its own org-scoped transaction.
+	expectScopedTx(mock, "tenant-x")
 	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-1").
 		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
 			AddRow("high", true, 3))
-	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
-		WithArgs("pol-1", "dev@example.com", "tenant-x").
+	mock.ExpectCommit()
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-pol-1"))
+	mock.ExpectCommit()
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT po\\.id\\s+FROM policy_overrides po").
+		WithArgs("uuid-pol-1", "dev@example.com", "tenant-x").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	matches := []sharedpolicy.PolicyMatch{{PolicyID: "pol-1", PolicyName: "Bypass"}}
 	m, topRisk, overrideAvail, overrideID := buildRicherCheckInputBlock(
@@ -135,13 +206,22 @@ func TestBuildRicherCheckInputBlock_NoOverride(t *testing.T) {
 // override already exists, so override_existing_id is populated.
 func TestBuildRicherCheckInputBlock_ExistingOverride(t *testing.T) {
 	db, mock := newMockDB(t)
+	expectScopedTx(mock, "tenant-x")
 	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-1").
 		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
 			AddRow("medium", true, 1))
-	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
-		WithArgs("pol-1", "dev@example.com", "tenant-x").
+	mock.ExpectCommit()
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-pol-1"))
+	mock.ExpectCommit()
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT po\\.id\\s+FROM policy_overrides po").
+		WithArgs("uuid-pol-1", "dev@example.com", "tenant-x").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ov-42"))
+	mock.ExpectCommit()
 
 	matches := []sharedpolicy.PolicyMatch{{PolicyID: "pol-1", PolicyName: "Bypass"}}
 	_, _, _, overrideID := buildRicherCheckInputBlock(
@@ -156,10 +236,12 @@ func TestBuildRicherCheckInputBlock_ExistingOverride(t *testing.T) {
 // policies never surface as overridable, even if allow_override=true.
 func TestBuildRicherCheckInputBlock_Critical_NotOverridable(t *testing.T) {
 	db, mock := newMockDB(t)
+	expectScopedTx(mock, "tenant-x")
 	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-crit").
 		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
 			AddRow("critical", false, 9))
+	mock.ExpectCommit()
 
 	matches := []sharedpolicy.PolicyMatch{{PolicyID: "pol-crit", PolicyName: "Catastrophic"}}
 	m, topRisk, overrideAvail, _ := buildRicherCheckInputBlock(
@@ -198,9 +280,16 @@ func TestBuildRicherCheckInputBlock_NilDBOrEmpty(t *testing.T) {
 // active override.
 func TestApplyOverrideToCheckInputBlock_Flip(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
-		WithArgs("pol-1", "dev@example.com", "tenant-x").
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-pol-1"))
+	mock.ExpectCommit()
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT po\\.id\\s+FROM policy_overrides po").
+		WithArgs("uuid-pol-1", "dev@example.com", "tenant-x").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ov-7"))
+	mock.ExpectCommit()
 
 	matches := []RicherPolicyMatch{
 		{PolicyID: "pol-1", PolicyName: "Bypass", RiskLevel: "medium", AllowOverride: true, Version: 4},
@@ -234,9 +323,11 @@ func TestApplyOverrideToCheckInputBlock_CriticalNoFlip(t *testing.T) {
 // match. Returns ("", nil, false) when no match yields a usable override.
 func TestApplyOverrideToCheckInputBlock_LookupError(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
-		WithArgs("pol-1", "dev@example.com", "tenant-x").
+	expectScopedTx(mock, "tenant-x")
+	mock.ExpectQuery("SELECT sp\\.id FROM static_policies sp").
+		WithArgs("pol-1").
 		WillReturnError(fmt.Errorf("db down"))
+	mock.ExpectRollback()
 
 	matches := []RicherPolicyMatch{
 		{PolicyID: "pol-1", PolicyName: "Bypass", RiskLevel: "medium", AllowOverride: true, Version: 4},
@@ -748,7 +839,7 @@ func TestLookupPolicyMeta_DBError(t *testing.T) {
 	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-err").
 		WillReturnError(fmt.Errorf("db broken"))
-	_, _, _, err := lookupPolicyMeta(context.Background(), db, "pol-err")
+	_, _, _, err := lookupPolicyMeta(context.Background(), db, "", "pol-err")
 	if err == nil || err.Error() != "db broken" {
 		t.Errorf("want 'db broken', got %v", err)
 	}
@@ -757,9 +848,11 @@ func TestLookupPolicyMeta_DBError(t *testing.T) {
 // TestLookupActiveOverride_DBError — error branch returns the SQL error.
 func TestLookupActiveOverride_DBError(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("FROM policy_overrides").
-		WithArgs("pol-1", "u@e.com", "t1").
+	expectScopedTx(mock, "t1")
+	mock.ExpectQuery("FROM static_policies").
+		WithArgs("pol-1").
 		WillReturnError(fmt.Errorf("db broken"))
+	mock.ExpectRollback()
 	_, _, err := lookupActiveOverride(context.Background(), db, "t1", "u@e.com", "pol-1")
 	if err == nil || err.Error() != "db broken" {
 		t.Errorf("want 'db broken', got %v", err)
@@ -770,9 +863,11 @@ func TestLookupActiveOverride_DBError(t *testing.T) {
 // error path: stub entry is emitted instead of dropping the match.
 func TestBuildRicherCheckInputBlock_RiskLookupError(t *testing.T) {
 	db, mock := newMockDB(t)
+	expectScopedTx(mock, "t1")
 	mock.ExpectQuery("FROM static_policies").
 		WithArgs("pol-1").
 		WillReturnError(fmt.Errorf("db down"))
+	mock.ExpectRollback()
 
 	matches, topRisk, avail, _ := buildRicherCheckInputBlock(
 		context.Background(), db, "t1", "u@e.com",
@@ -793,13 +888,17 @@ func TestBuildRicherCheckInputBlock_RiskLookupError(t *testing.T) {
 // error does not fail the block; overrideAvailable stays true with no id.
 func TestBuildRicherCheckInputBlock_ActiveLookupError(t *testing.T) {
 	db, mock := newMockDB(t)
+	expectScopedTx(mock, "t1")
 	mock.ExpectQuery("FROM static_policies").
 		WithArgs("pol-1").
 		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
 			AddRow("high", true, 2))
-	mock.ExpectQuery("FROM policy_overrides").
-		WithArgs("pol-1", "u@e.com", "t1").
+	mock.ExpectCommit()
+	expectScopedTx(mock, "t1")
+	mock.ExpectQuery("FROM static_policies").
+		WithArgs("pol-1").
 		WillReturnError(fmt.Errorf("active lookup broken"))
+	mock.ExpectRollback()
 
 	_, _, avail, id := buildRicherCheckInputBlock(
 		context.Background(), db, "t1", "u@e.com",

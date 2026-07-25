@@ -53,19 +53,38 @@ type PostgreSQLStorage struct {
 	db        *sql.DB
 	encryptor *config.CredentialEncryptor
 	logger    *log.Logger
+	// lookupDB serves the registry's deployment-wide reads (ListConnectors —
+	// the cross-replica sync/boot load) and the by-id GetConnector discovery
+	// read: both are cross-org by design and read ZERO rows through mig
+	// 107's FORCE RLS on the app-role pool (#3048). Falls back to db when
+	// unset (tests, owner-pool deployments where db sees everything).
+	lookupDB *sql.DB
+}
+
+// SetCrossOrgDB installs a BYPASSRLS (axonflow_platform_admin) pool for the
+// storage's deployment-wide/discovery reads. See the lookupDB field comment.
+func (s *PostgreSQLStorage) SetCrossOrgDB(db *sql.DB) {
+	s.lookupDB = db
+}
+
+func (s *PostgreSQLStorage) lookup() *sql.DB {
+	if s.lookupDB != nil {
+		return s.lookupDB
+	}
+	return s.db
 }
 
 // ConnectorRecord represents a persisted connector configuration
 type ConnectorRecord struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name"`
-	Type         string                 `json:"type"`
-	TenantID     string                 `json:"tenant_id"`
-	Options      map[string]interface{} `json:"options"`
-	Credentials  map[string]string      `json:"credentials"`
-	InstalledAt  time.Time              `json:"installed_at"`
-	LastHealthCheck *time.Time          `json:"last_health_check,omitempty"`
-	HealthStatus *base.HealthStatus     `json:"health_status,omitempty"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Type            string                 `json:"type"`
+	TenantID        string                 `json:"tenant_id"`
+	Options         map[string]interface{} `json:"options"`
+	Credentials     map[string]string      `json:"credentials"`
+	InstalledAt     time.Time              `json:"installed_at"`
+	LastHealthCheck *time.Time             `json:"last_health_check,omitempty"`
+	HealthStatus    *base.HealthStatus     `json:"health_status,omitempty"`
 }
 
 // AppRoleOpener is the signature shared with platform/agent.OpenAppRoleConnection.
@@ -319,7 +338,18 @@ func (s *PostgreSQLStorage) GetConnector(ctx context.Context, id string) (*base.
 	var name, connType, tenantID string
 	var optionsJSON, credentialsJSON []byte
 
-	err := s.db.QueryRowContext(ctx, query, id).Scan(
+	// #3048: connectors is FORCE-RLS (mig 107) — a bare by-id read matched
+	// 0 rows under axonflow_app_role, so the registry's storage loads always
+	// missed. Reachability evidence (R3 MEDIUM-4): this method is called
+	// ONLY from Registry.loadFromStorage (boot) and Registry.ReloadFromStorage
+	// (periodic replica sync), and in both the ids come from ListConnectors —
+	// never from a caller-supplied name. The tenant-reachable ingress
+	// (Registry.Get → lazyLoadConnector) reads only the in-memory configs
+	// map and never touches storage with a caller id. The lookup pool is
+	// therefore serving a purely internal deployment-wide sync; per-tenant
+	// scoping of the loaded configs is the registry consumers' concern
+	// (GetConnectorsByTenant filters by config.TenantID).
+	err := s.lookup().QueryRowContext(ctx, query, id).Scan(
 		&name,
 		&connType,
 		&tenantID,
@@ -397,7 +427,9 @@ func (s *PostgreSQLStorage) DeleteConnector(ctx context.Context, orgID, id strin
 func (s *PostgreSQLStorage) ListConnectors(ctx context.Context) ([]string, error) {
 	query := `SELECT id FROM connectors ORDER BY installed_at DESC`
 
-	rows, err := s.db.QueryContext(ctx, query)
+	// Deployment-wide listing (cross-replica registry sync) — lookup pool
+	// (#3048; bare on the app-role pool it listed nothing).
+	rows, err := s.lookup().QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list connectors: %w", err)
 	}
@@ -423,7 +455,10 @@ func (s *PostgreSQLStorage) ListConnectors(ctx context.Context) ([]string, error
 func (s *PostgreSQLStorage) ListConnectorsByTenant(ctx context.Context, tenantID string) ([]string, error) {
 	query := `SELECT id FROM connectors WHERE tenant_id = $1 OR tenant_id = '*' ORDER BY installed_at DESC`
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID)
+	// #3048: spans two org scopes (the tenant's rows + the '*' shared rows)
+	// which one GUC cannot unlock together — runs on the lookup pool; the
+	// SQL tenancy predicate preserves isolation on every posture.
+	rows, err := s.lookup().QueryContext(ctx, query, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list connectors by tenant: %w", err)
 	}

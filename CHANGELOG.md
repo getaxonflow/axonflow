@@ -10,6 +10,41 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [9.12.2] - 2026-07-25 (security patch: static-policy enforcement restored under the least-privilege DB posture, plus tenant-isolation hardening)
+
+> **Who was affected:** the enforcement and visibility fixes apply to deployments running the hardened least-privilege DB posture (`AXONFLOW_DB_USE_APP_ROLE=true`). Default Docker-Compose, install-bundle, and CloudFormation deployments connect as the database owner and were NOT affected by the silent-enforcement issue. The tenant-isolation hardening (global-baseline write guard, HITL org isolation) and the fail-closed policy-load guard benefit every deployment.
+
+### Security
+
+- **Static-policy enforcement silently evaluated zero policies on least-privilege deployments** *(Community)* — the agent's `static_policies` readers and the shared policy loader ran unscoped on the restricted DB role, so row-level security matched zero rows and the request/response content gates (SQL-injection, dangerous-command, PII block/redact) allowed everything with `policies_evaluated: 0`. All readers now run org-scoped (two disjoint passes: caller scope + global baseline), restoring full enforcement. (#3048)
+- **Policy engine now fails closed on an empty system policy set** *(Community)* — a successful policy load that contains zero system-tier policies is an impossible state on a healthy deployment (they are migration-seeded) and is now treated exactly like a load failure on both the request and response planes, with a distinct `policy_load_empty_system_set` log line and metric. Any future defect class that produces an empty policy load blocks at the gate instead of silently allowing. Note: a deployment booted without its migrations directory now fails closed at the gates instead of running ungoverned. (#3048)
+- **Global baseline policies are no longer mutable by tenant callers** *(Community)* — update/delete/disable of shared `org_id='global'` policy rows (SQL-injection guards, PII detection, EU-AI-Act templates, integration policies) through the tenant policy API is now rejected with 403 for every caller. (#3048)
+- **HITL approval queue is organization-isolated** *(Community + Enterprise)* — queue listing, request lookup, history, approve, reject, and override now bind to the authenticated caller's organization; cross-organization requests return not-found. Previously these flows were unavailable on least-privilege deployments and deployment-wide on owner-connection multi-tenant deployments. (#3048)
+- **Enforcement gates pass the caller's organization** *(Community)* — all policy-evaluation gates (MCP check-input/check-output, gateway pre-check, OpenAI-compat, cowork telemetry redaction, response processing) now scope policy loads by the validated caller organization, closing a silent under-enforcement gap for organizations whose organization and tenant identifiers differ. (#3048)
+
+### Community
+
+#### Fixed
+- Customer portal "Static (Read-only)" policy count and the unified policies view showed 0 static policies on least-privilege deployments; the dashboard "Total Policies" tile counted only dynamic policies. (#3048)
+- HITL approve/reject flows returned "approval request not found" on least-privilege deployments. (#3048)
+- Integration activation enabled zero `int_*` policies on least-privilege deployments. (#3048)
+- Policy explain, override lookups, decision-chain reads, LLM provider listing, connector runtime configuration, and policy version history (including organization-tier parents) returned empty results on least-privilege deployments. (#3048)
+- Policy version history (`GetVersions`) now includes organization-tier parent policies for all tenants of the owning organization. (#3048)
+
+#### Changed
+- Effective-policy responses collapse multiple live overrides on one policy to the latest-created entry (previously duplicate rows could appear). (#3048)
+
+### Enterprise
+
+#### Fixed
+- HITL approval repository (enterprise edition), SCIM role readers, EU-AI-Act and evidence export repositories, and portal API-key handlers returned empty results on least-privilege deployments. (#3048)
+
+### Migration
+
+- ⚠️ **HAS MIGRATION: core/154** — re-runs the `org_id='global'` backfill for `tenant_id='global'` policy rows (covers industry template seeds applied after core/153) and installs `BEFORE INSERT` triggers on `static_policies` and `dynamic_policies` that default the organization key on global-sentinel rows. Additive and idempotent; no maintenance window needed.
+- Behavior change: tenant-API writes to global baseline policy rows now return 403 (previously rejected only for system-tier rows).
+- Behavior change: a deployment booted with no migrations applied (no seeded system policies) fails closed at the enforcement gates instead of running ungoverned.
+
 ## [9.12.1] - 2026-07-24 (RLS-blind reads under the app-role posture: policy enforcement, portal sessions, RBAC checks and execution reads restored)
 
 > **Who was affected:** only deployments whose database pools actually run as `axonflow_app_role` (`AXONFLOW_DB_USE_APP_ROLE=true` **with** the app-role DSNs provisioned — e.g. CloudFormation stacks flipped to `AppRoleProvisioned=true`, or self-hosted operators who followed the hardened-posture provisioning guide). Default docker-compose, default install-bundle, and default CloudFormation deployments connect as the table-owning role and were **not** affected.

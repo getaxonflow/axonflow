@@ -200,10 +200,16 @@ func TestApplyOverrideToResult_IsIdentityKeyed_TheSink(t *testing.T) {
 	defer mockDB.Close()
 
 	// The victim has an active "allow" override on the blocking policy.
+	// #3048: the lookup runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org"). // ApplyOverrideToResult passes orgID as the scope key (R3 HIGH-3)
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id, policy_id, policy_type`).
 		WithArgs("sys_block_marker", "victim@corp.example", "tenant-shared", "").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"}).
 			AddRow("ovr-victim", "sys_block_marker", "dynamic", "", "victim needed it", nil))
+	mock.ExpectCommit()
 
 	result := &PolicyEvaluationResult{
 		Allowed: false,
@@ -226,9 +232,14 @@ func TestApplyOverrideToResult_IsIdentityKeyed_TheSink(t *testing.T) {
 	// victim's identity, which the WS1c guards make unreachable.
 	mock2DB, mock2, _ := sqlmock.New()
 	defer mock2DB.Close()
+	mock2.ExpectBegin()
+	mock2.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org"). // ApplyOverrideToResult passes orgID as the scope key (R3 HIGH-3)
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock2.ExpectQuery(`SELECT id, policy_id, policy_type`).
 		WithArgs("sys_block_marker", "attacker@corp.example", "tenant-shared", "").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"}))
+	mock2.ExpectRollback()
 	result2 := &PolicyEvaluationResult{
 		Allowed:               false,
 		AppliedPoliciesDetail: []AppliedPolicyDetail{{PolicyID: "sys_block_marker", RiskLevel: "low", AllowOverride: true}},

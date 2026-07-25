@@ -202,23 +202,30 @@ func (s *PostgresStorage) ListProviders(ctx context.Context, orgID string) ([]st
 		ORDER BY name
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list providers: %w", err)
-	}
-	defer rows.Close()
-
+	// #3048: llm_providers is RLS-enabled (mig 027) — the bare read matched
+	// 0 rows under axonflow_app_role. Same org key as the write wraps.
 	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("failed to scan provider name: %w", err)
+	err := rls.WithOrgScope(ctx, s.db, orgID, func(tx *sql.Tx) error {
+		rows, qErr := tx.QueryContext(ctx, query, orgID)
+		if qErr != nil {
+			return fmt.Errorf("failed to list providers: %w", qErr)
 		}
-		names = append(names, name)
-	}
+		defer rows.Close()
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating providers: %w", err)
+		for rows.Next() {
+			var name string
+			if sErr := rows.Scan(&name); sErr != nil {
+				return fmt.Errorf("failed to scan provider name: %w", sErr)
+			}
+			names = append(names, name)
+		}
+		if rErr := rows.Err(); rErr != nil {
+			return fmt.Errorf("error iterating providers: %w", rErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return names, nil

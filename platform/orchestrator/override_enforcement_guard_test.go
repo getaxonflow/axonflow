@@ -29,13 +29,19 @@ func TestFindActiveOverride_AllowGuard(t *testing.T) {
 	// parentheses/quotes are matched literally.
 	guard := regexp.QuoteMeta("(action_override IS NULL OR action_override = 'allow')")
 	expiry := time.Now().Add(time.Hour)
+	// #3048: the lookup runs org-scoped.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id, policy_id, policy_type.*FROM policy_overrides.*`+guard).
 		WithArgs("pol-1", "u@x", "tenant-1", "").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"},
 		).AddRow("ov-1", "pol-1", "dynamic", "", "session bypass", expiry))
+	mock.ExpectCommit()
 
-	ov, err := FindActiveOverride(context.Background(), db, "tenant-1", "u@x", "pol-1", "")
+	ov, err := FindActiveOverride(context.Background(), db, "tenant-1", "tenant-1", "u@x", "pol-1", "")
 	if err != nil {
 		t.Fatalf("FindActiveOverride: %v", err)
 	}
@@ -58,13 +64,18 @@ func TestFindActiveOverride_NoRowGuardedOut(t *testing.T) {
 	}
 	defer db.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`FROM policy_overrides`).
 		WithArgs("pol-1", "u@x", "tenant-1", "").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"},
 		)) // zero rows → the action-override was guarded out
+	mock.ExpectRollback()
 
-	ov, err := FindActiveOverride(context.Background(), db, "tenant-1", "u@x", "pol-1", "")
+	ov, err := FindActiveOverride(context.Background(), db, "tenant-1", "tenant-1", "u@x", "pol-1", "")
 	if err != nil {
 		t.Fatalf("FindActiveOverride: %v", err)
 	}
