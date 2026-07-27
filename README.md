@@ -100,7 +100,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **Community Quickstart Demo (Code + Terminal, 2.5 min):** Governed calls, PII block, Gateway Mode with LangChain/CrewAI, and MAP from YAML — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
 
-**Runtime Control Demo (Portal + Workflow, 3 min):** Want the product/runtime view? See approvals, retry safety, execution state, and the audit viewer in action — [Watch on YouTube](https://youtu.be/6UatGpn7KwE)
+**Runtime Control Demo (Portal + Workflow, 2.5 min):** Want the product/runtime view? See approvals, retry safety, execution state, and the audit viewer in action — [Watch on YouTube](https://youtu.be/sRTv2uF0sxY)
 
 **Architecture deep dive (12 min):** How the control plane works, policy enforcement flow, and multi-agent planning — [Watch on YouTube](https://youtu.be/Q2CZ1qnquhg)
 
