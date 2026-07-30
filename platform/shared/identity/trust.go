@@ -44,6 +44,36 @@ import (
 // jwtAuth claim).
 const EnvVar = "AXONFLOW_TRUST_IDENTITY_HEADERS"
 
+// HeaderIdentityGated is an ADVISORY request header the AxonFlow Agent stamps
+// on a proxied request whose client-asserted identity headers it DROPPED
+// because the trust gate (EnvVar) is off. It exists so a downstream service
+// can tell "the caller sent no identity" apart from "the caller sent one and
+// we deliberately removed it" — the two need opposite remediations, and
+// conflating them is what made the override 401 unactionable (#3062).
+//
+// SECURITY: diagnostic ONLY. It must never influence a verdict, an authz
+// decision, policy selection, attribution, or tenant/org resolution — the sole
+// permitted effect is which human-readable error string a 4xx carries. The
+// agent Del()s any inbound value before setting its own (gateProxyIdentityHeaders),
+// so a governed caller cannot assert it through the gateway; a caller reaching
+// a service directly can, and gains nothing but a different sentence.
+const HeaderIdentityGated = "X-Axonflow-Identity-Gated"
+
+// IdentityGatedTrue is the sole recognized HeaderIdentityGated value. Anything
+// else (including "1"/"TRUE") is treated as absent, matching Parse's
+// exact-match posture — a marker that fails to parse must degrade to the
+// generic message, never to a wrong diagnosis.
+const IdentityGatedTrue = "true"
+
+// IdentityWasGated reports whether the agent stamped HeaderIdentityGated on
+// this request, i.e. the caller DID present per-user identity and the trust
+// gate dropped it. Both the header name and the exact-match rule live here so
+// the stamping plane (agent) and the reading plane (orchestrator) can never
+// drift.
+func IdentityWasGated(headerValue string) bool {
+	return strings.TrimSpace(headerValue) == IdentityGatedTrue
+}
+
 // Parse applies the fail-safe trust-gate parse contract: only the exact
 // string "true" (after whitespace trim) opts in. "" and "false" are the
 // recognized off states. Anything else returns recognized=false — callers

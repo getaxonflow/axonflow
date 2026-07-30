@@ -34,6 +34,12 @@
             <artifactId>axonflow-sdk</artifactId>
             <version>9.0.0</version>
         </dependency>
+        <!-- Override transitive jackson-databind for CVE-2026-54512 / CVE-2026-54513 (#3116) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.22.1</version>
+        </dependency>
         <!-- Override transitive jackson-core for CVE fix -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -49,7 +55,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.1.0</version>
                 <configuration>
-                    <mainClass>com.getaxonflow.examples.enforcement.EnforcementExample</mainClass>
+                    <mainClass>com.getaxonflow.examples.EnforcementExample</mainClass>
                 </configuration>
             </plugin>
         </plugins>

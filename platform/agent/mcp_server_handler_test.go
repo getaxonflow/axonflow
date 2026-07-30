@@ -502,23 +502,71 @@ func TestMCPServer_SessionDelete_MissingHeader(t *testing.T) {
 	}
 }
 
+// TestMCPServer_CORS_Preflight drives the preflight through the REAL route
+// registration.
+//
+// #3117 M4 INVERTED THE THIRD ASSERTION. This test used to require that the
+// handler "reflect" the request Origin, which is exactly the defect: the
+// handler set Access-Control-Allow-Origin from r.Header.Get("Origin")
+// unconditionally, bypassing resolveCORSOptions() and echoing any origin at all
+// — including under the deny-all default #3096 introduced. The preflight is
+// still answered here (204) and still advertises its methods; what changed is
+// that WHICH origins are blessed now comes from the one shared policy.
+//
+// The deployment mode is named explicitly rather than inherited from the
+// ambient environment, because the answer depends on it.
 func TestMCPServer_CORS_Preflight(t *testing.T) {
 	router := setupMCPServerRouter()
 
-	req := httptest.NewRequest("OPTIONS", "/api/v1/mcp-server", nil)
-	req.Header.Set("Origin", "https://example.com")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	preflight := func(t *testing.T, origin string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("OPTIONS", "/api/v1/mcp-server", nil)
+		req.Header.Set("Origin", origin)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Errorf("Expected 204 for CORS preflight, got %d", w.Code)
+		if w.Code != http.StatusNoContent {
+			t.Errorf("Expected 204 for CORS preflight, got %d", w.Code)
+		}
+		if w.Header().Get("Access-Control-Allow-Methods") == "" {
+			t.Error("Expected CORS Allow-Methods header")
+		}
+		return w
 	}
-	if w.Header().Get("Access-Control-Allow-Methods") == "" {
-		t.Error("Expected CORS Allow-Methods header")
-	}
-	if w.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
-		t.Errorf("Expected CORS origin to reflect request, got '%s'", w.Header().Get("Access-Control-Allow-Origin"))
-	}
+
+	t.Run("unconfigured non-community deployment refuses the origin", func(t *testing.T) {
+		t.Setenv("DEPLOYMENT_MODE", "enterprise")
+		t.Setenv(corsAllowedOriginsEnv, "")
+
+		w := preflight(t, "https://example.com")
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("Access-Control-Allow-Origin = %q, want empty — the handler must not "+
+				"reflect an origin the shared policy denies (#3117)", got)
+		}
+	})
+
+	t.Run("allowlisted origin is echoed", func(t *testing.T) {
+		t.Setenv("DEPLOYMENT_MODE", "enterprise")
+		t.Setenv(corsAllowedOriginsEnv, "https://example.com")
+
+		w := preflight(t, "https://example.com")
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://example.com" {
+			t.Errorf("Access-Control-Allow-Origin = %q, want the allowlisted origin", got)
+		}
+	})
+
+	t.Run("community deployment allows all without credentials", func(t *testing.T) {
+		t.Setenv("DEPLOYMENT_MODE", "community")
+		t.Setenv(corsAllowedOriginsEnv, "")
+
+		w := preflight(t, "https://example.com")
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+		}
+		if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Errorf("Access-Control-Allow-Credentials = %q, want empty", got)
+		}
+	})
 }
 
 func TestMCPServer_GET_MethodNotAllowed(t *testing.T) {

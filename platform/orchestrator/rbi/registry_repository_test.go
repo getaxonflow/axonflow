@@ -75,17 +75,23 @@ func TestRegistryRepository_Create_Success(t *testing.T) {
 	ctx := context.Background()
 
 	system := &AISystem{
-		OrgID:       "org-001",
-		SystemID:    "sys-credit-001",
-		SystemName:  "Credit Scoring Model",
+		OrgID:        "org-001",
+		SystemID:     "sys-credit-001",
+		SystemName:   "Credit Scoring Model",
 		RiskCategory: RiskCategoryHigh,
-		DataSources: []string{"transaction_history"},
-		Tags:        []string{"production"},
-		Metadata:    map[string]interface{}{"env": "prod"},
+		DataSources:  []string{"transaction_history"},
+		Tags:         []string{"production"},
+		Metadata:     map[string]interface{}{"env": "prod"},
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_system_registry`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, system)
 	assert.NoError(t, err)
@@ -112,8 +118,14 @@ func TestRegistryRepository_Create_LowRisk(t *testing.T) {
 		RiskCategory: RiskCategoryLow,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_system_registry`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, system)
 	assert.NoError(t, err)
@@ -137,8 +149,14 @@ func TestRegistryRepository_Create_DuplicateKey(t *testing.T) {
 		RiskCategory: RiskCategoryHigh,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_system_registry`)).
 		WillReturnError(fmt.Errorf("pq: duplicate key value violates unique constraint"))
+
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, system)
 	assert.ErrorIs(t, err, ErrSystemAlreadyExists)
@@ -163,8 +181,14 @@ func TestRegistryRepository_Create_PresetID(t *testing.T) {
 		CreatedAt:    now,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_system_registry`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, system)
 	assert.NoError(t, err)
@@ -184,9 +208,15 @@ func TestRegistryRepository_Get_Success(t *testing.T) {
 	rows := sqlmock.NewRows(registryColumns).
 		AddRow(sampleSystemRow("id-001", "org-001", "sys-credit-001")...)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "id-001").
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	system, err := repo.Get(ctx, "org-001", "id-001")
 	require.NoError(t, err)
@@ -220,9 +250,15 @@ func TestRegistryRepository_Get_NotFound(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "nonexistent").
 		WillReturnError(sql.ErrNoRows)
+
+	mock.ExpectRollback()
 
 	system, err := repo.Get(ctx, "org-001", "nonexistent")
 	assert.Nil(t, system)
@@ -241,9 +277,15 @@ func TestRegistryRepository_GetBySystemID_Success(t *testing.T) {
 	rows := sqlmock.NewRows(registryColumns).
 		AddRow(sampleSystemRow("id-001", "org-001", "sys-credit-001")...)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND system_id = $2`)).
 		WithArgs("org-001", "sys-credit-001").
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	system, err := repo.GetBySystemID(ctx, "org-001", "sys-credit-001")
 	require.NoError(t, err)
@@ -261,6 +303,10 @@ func TestRegistryRepository_List_Success(t *testing.T) {
 
 	params := &ListAISystemsParams{Limit: 10, Offset: 0}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -272,6 +318,8 @@ func TestRegistryRepository_List_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(dataRows)
+
+	mock.ExpectCommit()
 
 	systems, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -297,6 +345,10 @@ func TestRegistryRepository_List_WithFilters(t *testing.T) {
 		Offset:              0,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001", "high", "production", "approved", "Risk Management").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -307,6 +359,8 @@ func TestRegistryRepository_List_WithFilters(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", "high", "production", "approved", "Risk Management", 20, 0).
 		WillReturnRows(dataRows)
+
+	mock.ExpectCommit()
 
 	systems, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -323,6 +377,10 @@ func TestRegistryRepository_List_NilParams(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -330,6 +388,8 @@ func TestRegistryRepository_List_NilParams(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 20, 0).
 		WillReturnRows(sqlmock.NewRows(registryColumns))
+
+	mock.ExpectCommit()
 
 	systems, total, err := repo.List(ctx, "org-001", nil)
 	require.NoError(t, err)
@@ -348,6 +408,10 @@ func TestRegistryRepository_List_LimitCapping(t *testing.T) {
 
 	params := &ListAISystemsParams{Limit: 200}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -355,6 +419,8 @@ func TestRegistryRepository_List_LimitCapping(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 100, 0).
 		WillReturnRows(sqlmock.NewRows(registryColumns))
+
+	mock.ExpectCommit()
 
 	_, _, err = repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -381,8 +447,14 @@ func TestRegistryRepository_Update_Success(t *testing.T) {
 		Metadata:         map[string]interface{}{"version": 2},
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_ai_system_registry SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, system)
 	assert.NoError(t, err)
@@ -405,8 +477,14 @@ func TestRegistryRepository_Update_NotFound(t *testing.T) {
 		RiskCategory: RiskCategoryLow,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_ai_system_registry SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, system)
 	assert.ErrorIs(t, err, ErrSystemNotFound)
@@ -421,9 +499,15 @@ func TestRegistryRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_ai_system_registry`)).
 		WithArgs(string(DeploymentStatusDeprecated), sqlmock.AnyArg(), "org-001", "id-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "id-001")
 	assert.NoError(t, err)
@@ -438,9 +522,15 @@ func TestRegistryRepository_Delete_NotFound(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_ai_system_registry`)).
 		WithArgs(string(DeploymentStatusDeprecated), sqlmock.AnyArg(), "org-001", "nonexistent").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "nonexistent")
 	assert.ErrorIs(t, err, ErrSystemNotFound)
@@ -455,6 +545,10 @@ func TestRegistryRepository_GetSummary_Success(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Total count
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM rbi_ai_system_registry WHERE org_id = $1`)).
 		WithArgs("org-001").
@@ -485,6 +579,8 @@ func TestRegistryRepository_GetSummary_Success(t *testing.T) {
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
+	mock.ExpectCommit()
+
 	summary, err := repo.GetSummary(ctx, "org-001")
 	require.NoError(t, err)
 	assert.Equal(t, 5, summary.TotalSystems)
@@ -506,9 +602,15 @@ func TestRegistryRepository_GetSummary_TotalCountError(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM rbi_ai_system_registry WHERE org_id = $1`)).
 		WithArgs("org-001").
 		WillReturnError(fmt.Errorf("table not found"))
+
+	mock.ExpectRollback()
 
 	summary, err := repo.GetSummary(ctx, "org-001")
 	assert.Nil(t, summary)
@@ -525,6 +627,10 @@ func TestRegistryRepository_GetSummary_RiskCountError(t *testing.T) {
 	repo := NewPostgresAISystemRepository(db)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM rbi_ai_system_registry WHERE org_id = $1`)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
@@ -532,6 +638,8 @@ func TestRegistryRepository_GetSummary_RiskCountError(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT risk_category, COUNT(*)`)).
 		WithArgs("org-001").
 		WillReturnError(fmt.Errorf("query error"))
+
+	mock.ExpectRollback()
 
 	summary, err := repo.GetSummary(ctx, "org-001")
 	assert.Nil(t, summary)
@@ -551,9 +659,15 @@ func TestRegistryRepository_Create_OmitsGeneratedColumn(t *testing.T) {
 	defer db.Close()
 	repo := NewPostgresAISystemRepository(db)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO rbi_ai_system_registry").
 		WithArgs(anyArgs(31)...).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
 
 	err := repo.Create(context.Background(), &AISystem{
 		OrgID:        "org-1",
@@ -574,9 +688,15 @@ func TestRegistryRepository_Update_OmitsGeneratedColumn(t *testing.T) {
 	defer db.Close()
 	repo := NewPostgresAISystemRepository(db)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE rbi_ai_system_registry").
 		WithArgs(anyArgs(30)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err := repo.Update(context.Background(), &AISystem{
 		ID:           "id-1",

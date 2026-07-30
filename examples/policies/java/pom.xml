@@ -36,6 +36,12 @@
             <artifactId>axonflow-sdk</artifactId>
             <version>9.0.0</version>
         </dependency>
+        <!-- Override transitive jackson-databind for CVE-2026-54512 / CVE-2026-54513 (#3116) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.22.1</version>
+        </dependency>
         <!-- Override transitive jackson-core for CVE fix -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

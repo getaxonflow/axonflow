@@ -12,6 +12,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // PostgresRepository implements Repository using PostgreSQL
@@ -260,6 +262,17 @@ func (r *PostgresRepository) SaveSummary(ctx context.Context, summary *Execution
 		return ErrInvalidInput
 	}
 
+	// #3065 (R3 round 1): migration core/156 puts NOT NULL + a non-empty CHECK
+	// on execution_summaries.org_id/tenant_id, so an unstamped insert would
+	// otherwise surface as a raw 23502/23514 from the driver — and both
+	// callers only log a warning and continue, which would silently stop
+	// recording the replay/audit trail. Refuse here with an error that names
+	// the cause instead.
+	if err := tenantscope.ValidateRowKeys(summary.OrgID, summary.TenantID); err != nil {
+		return fmt.Errorf("refusing to record execution %s with no org/tenant key (the row would be reachable by nobody and, pre-#3065, by everybody): %w",
+			summary.RequestID, err)
+	}
+
 	query := `
 		INSERT INTO execution_summaries (
 			request_id, workflow_name, status, total_steps, completed_steps,
@@ -368,17 +381,30 @@ func (r *PostgresRepository) GetSummary(ctx context.Context, requestID string) (
 	return summary, nil
 }
 
-// summaryOrgScopeSQL admits a summary row when it belongs to the caller's
-// org/tenant or carries no org/tenant stamp (pre-attribution rows). An empty
-// caller value leaves that dimension unfiltered — mirrors ListSummaries'
-// filter semantics. Placeholders are the org and tenant arg positions.
+// summaryOrgScopeSQL admits a summary row ONLY when both tenancy keys match
+// the caller's exactly.
+//
+// #3065: this carried the fail-open disjunction (an empty $2 or a NULL/empty
+// org_id matched), so a caller who omitted X-Org-ID could read, export and —
+// via DeleteExecutionScoped, which reuses this same fragment — DESTROY any
+// tenant's execution trail. Pre-attribution rows that carry no stamp are now
+// owned by nobody and reachable by nobody; migration core/156 stamps them
+// with the unowned sentinel so the equality can never accidentally match.
+//
+// Placeholders are the org and tenant arg positions. Every entry point
+// validates the scope before issuing the query, so an unbound caller never
+// reaches the comparison at all.
 const summaryOrgScopeSQL = `
-	  AND ($2 = '' OR org_id IS NULL OR org_id = '' OR org_id = $2)
-	  AND ($3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = $3)`
+	  AND org_id = $2
+	  AND tenant_id = $3`
 
 // GetSummaryScoped retrieves an execution summary by request ID, isolated to
 // the caller's org/tenant in the SQL WHERE clause (#2934 — never post-fetch).
 func (r *PostgresRepository) GetSummaryScoped(ctx context.Context, requestID string, scope AccessScope) (*ExecutionSummary, error) {
+	if err := scope.Validate(); err != nil {
+		return nil, err
+	}
+
 	query := `
 		SELECT request_id, workflow_name, status, total_steps, completed_steps,
 			started_at, completed_at, duration_ms,
@@ -443,6 +469,13 @@ func (r *PostgresRepository) GetSummaryScoped(ctx context.Context, requestID str
 
 // ListSummaries retrieves execution summaries with filtering and pagination
 func (r *PostgresRepository) ListSummaries(ctx context.Context, opts ListOptions) ([]ExecutionSummary, int, error) {
+	// #3065: the org/tenant conditions below are appended only when non-empty,
+	// so an unscoped call listed every tenant's executions — the by-id
+	// fail-open, one query down. Refuse instead of narrowing silently.
+	if err := (AccessScope{OrgID: opts.OrgID, TenantID: opts.TenantID}).Validate(); err != nil {
+		return nil, 0, err
+	}
+
 	// Build dynamic query based on options
 	var conditions []string
 	var args []interface{}
@@ -636,6 +669,10 @@ func (r *PostgresRepository) DeleteExecution(ctx context.Context, requestID stri
 // carry no org column) are only deleted when that scoped DELETE hit a row, all
 // inside one transaction.
 func (r *PostgresRepository) DeleteExecutionScoped(ctx context.Context, requestID string, scope AccessScope) error {
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)

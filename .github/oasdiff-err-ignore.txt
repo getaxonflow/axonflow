@@ -225,3 +225,22 @@ in API POST /api/v1/media/analyze api path removed without deprecation
 # baseline, which carried the fully-inlined shape.
 in API POST /api/v1/euaiact/export removed the request body
 in API POST /api/v1/euaiact/export removed the success response with the status `200`
+
+# PR axonflow-enterprise#3099 (#3066 C3-3) — RBI audit-export scope binding.
+# X-Org-ID was already mandatory on these five operations at runtime before the
+# spec caught up: the AxonFlow Agent gateway Set()s the header from the
+# validated client credential on every /api/v1/rbi request, and the orchestrator
+# now fails closed (401) without it. The in-repo example clients DO set the
+# header (go, python, typescript, java), but no client can rely on its own
+# value: the agent gateway Set()s X-Org-ID from the validated credential on
+# every /api/v1/rbi request, overwriting whatever the caller sent. So the
+# parameter becoming required is not breaking for any real caller.
+# any client-provided value. The parameter is therefore "newly required" only in
+# the document; nothing that reaches these routes can break. The companion
+# removal of the `?org_id=` query parameter is the security fix itself (it let a
+# caller select another organization's exports) and lands as a WARN, not an ERR.
+in API GET /api/v1/rbi/audit-exports added the new required `header` request parameter `x-org-id`
+in API POST /api/v1/rbi/audit-exports added the new required `header` request parameter `x-org-id`
+in API GET /api/v1/rbi/audit-exports/{export_id} added the new required `header` request parameter `x-org-id`
+in API DELETE /api/v1/rbi/audit-exports/{export_id} added the new required `header` request parameter `x-org-id`
+in API POST /api/v1/rbi/audit-exports/{export_id}/process added the new required `header` request parameter `x-org-id`

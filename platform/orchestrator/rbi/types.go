@@ -899,8 +899,14 @@ type UpdateAISystemRequest struct {
 type BoardApprovalRequest struct {
 	Action    string `json:"action" validate:"required,oneof=approve reject revoke"`
 	Reference string `json:"reference,omitempty" validate:"max=100"`
-	Approver  string `json:"approver" validate:"required,max=255"`
 	Notes     string `json:"notes,omitempty"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	Approver string `json:"-"`
 }
 
 // ListAISystemsParams are the parameters for listing AI systems.

@@ -131,8 +131,8 @@ func TestWorkflowIsTerminal(t *testing.T) {
 
 func TestGateDecisionIsBlockingDecision(t *testing.T) {
 	tests := []struct {
-		name        string
-		decision    GateDecision
+		name         string
+		decision     GateDecision
 		wantBlocking bool
 	}{
 		{"allow is not blocking", GateDecisionAllow, false},

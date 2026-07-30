@@ -3,18 +3,29 @@ name: Version Alignment Check
 on:
   pull_request:
     branches: [main, develop]
+    # VERSION and the script itself were missing (#3089). The gate exists to
+    # catch VERSION drifting from the latest CHANGELOG heading — and a PR that
+    # edited ONLY VERSION, the single most likely way to introduce exactly that
+    # drift, did not run it. A PR that gutted the script's VERSION check
+    # likewise self-approved.
     paths:
       - 'CHANGELOG.md'
+      - 'VERSION'
       - 'docker-compose*.yml'
       - '**/Dockerfile*'
       - '**/capabilities.go'
+      - '.github/scripts/validate-version-alignment.sh'
+      - '.github/workflows/validate-version-alignment.yml'
   push:
     branches: [main, develop]
     paths:
       - 'CHANGELOG.md'
+      - 'VERSION'
       - 'docker-compose*.yml'
       - '**/Dockerfile*'
       - '**/capabilities.go'
+      - '.github/scripts/validate-version-alignment.sh'
+      - '.github/workflows/validate-version-alignment.yml'
   merge_group:
     branches: [main, develop]
 

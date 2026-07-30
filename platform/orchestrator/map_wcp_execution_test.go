@@ -118,9 +118,11 @@ func TestMAPWCPExecutor_ExecuteWithConfirm_NilService(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "test-plan-1",
-		Domain: "test",
-		Query:  "test query",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "test-plan-1",
+		Domain:   "test",
+		Query:    "test query",
 	}
 
 	workflow := &Workflow{
@@ -149,9 +151,11 @@ func TestMAPWCPExecutor_ExecuteWithStep_NilService(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "test-plan-2",
-		Domain: "test",
-		Query:  "test query",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "test-plan-2",
+		Domain:   "test",
+		Query:    "test query",
 	}
 
 	workflow := &Workflow{
@@ -232,9 +236,11 @@ func TestMAPWCPExecutor_ExecuteWithConfirm_Success(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "confirm-plan-1",
-		Domain: "travel",
-		Query:  "book a flight",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "confirm-plan-1",
+		Domain:   "travel",
+		Query:    "book a flight",
 	}
 
 	workflow := &Workflow{
@@ -284,9 +290,11 @@ func TestMAPWCPExecutor_ExecuteWithConfirm_SingleStep(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "confirm-single-1",
-		Domain: "test",
-		Query:  "single step",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "confirm-single-1",
+		Domain:   "test",
+		Query:    "single step",
 	}
 
 	workflow := &Workflow{
@@ -319,9 +327,11 @@ func TestMAPWCPExecutor_ExecuteWithStep_Success(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "step-plan-1",
-		Domain: "finance",
-		Query:  "analyze portfolio",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "step-plan-1",
+		Domain:   "finance",
+		Query:    "analyze portfolio",
 	}
 
 	workflow := &Workflow{
@@ -370,9 +380,11 @@ func TestMAPWCPExecutor_ExecuteWithStep_SingleStep(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "step-single-1",
-		Domain: "test",
-		Query:  "single step",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "step-single-1",
+		Domain:   "test",
+		Query:    "single step",
 	}
 
 	workflow := &Workflow{
@@ -854,9 +866,11 @@ func TestExecuteWithStep_TwoSteps(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
-		PlanID: "step-two-1",
-		Domain: "test",
-		Query:  "two steps",
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "step-two-1",
+		Domain:   "test",
+		Query:    "two steps",
 	}
 
 	workflow := &Workflow{

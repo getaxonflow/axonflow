@@ -38,6 +38,10 @@ func (m *mockPolicyEngineForWCP) ListActivePolicies() []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 
+func (m *mockPolicyEngineForWCP) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+	return []DynamicPolicy{}
+}
+
 func (m *mockPolicyEngineForWCP) IsHealthy() bool {
 	return true
 }

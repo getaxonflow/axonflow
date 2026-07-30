@@ -29,16 +29,16 @@ func TestHandler_StepGate_IncludePriorOutputParam(t *testing.T) {
 	ctx := context.Background()
 
 	wf, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{WorkflowName: "tc"},
-		"", "", "", "")
+		"tenant-1", "org-1", "user-1", "client-1")
 
 	// Prime: gate + complete so there's a prior output.
 	gateReq := &StepGateRequest{StepType: StepTypeToolCall, StepName: "s"}
-	if _, err := svc.StepGate(ctx, wf.WorkflowID, "s1", gateReq, "", "", "", ""); err != nil {
+	if _, err := svc.StepGate(ctx, wf.WorkflowID, "s1", gateReq, "tenant-1", "org-1", "user-1", "client-1"); err != nil {
 		t.Fatalf("prime gate: %v", err)
 	}
 	out := map[string]interface{}{"transfer_id": "TXN-xyz"}
 	if err := svc.MarkStepCompleted(ctx, wf.WorkflowID, "s1",
-		&StepCompleteRequest{Output: out}, "", ""); err != nil {
+		&StepCompleteRequest{Output: out}, "tenant-1", "org-1"); err != nil {
 		t.Fatalf("prime complete: %v", err)
 	}
 
@@ -47,6 +47,8 @@ func TestHandler_StepGate_IncludePriorOutputParam(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/s1/gate",
 			bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "s1"})
 		rr := httptest.NewRecorder()
 		handler.StepGate(rr, req)
@@ -70,6 +72,8 @@ func TestHandler_StepGate_IncludePriorOutputParam(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/s1/gate?include_prior_output=true",
 			bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "s1"})
 		rr := httptest.NewRecorder()
 		handler.StepGate(rr, req)
@@ -96,10 +100,10 @@ func TestHandler_IdempotencyKeyMismatch_409Envelope(t *testing.T) {
 	handler, svc, _ := setupTestHandler()
 	ctx := context.Background()
 
-	wf, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{WorkflowName: "tc"}, "", "", "", "")
+	wf, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{WorkflowName: "tc"}, "tenant-1", "org-1", "user-1", "client-1")
 	if _, err := svc.StepGate(ctx, wf.WorkflowID, "s1", &StepGateRequest{
 		StepType: StepTypeToolCall, IdempotencyKey: "K-initial",
-	}, "", "", "", ""); err != nil {
+	}, "tenant-1", "org-1", "user-1", "client-1"); err != nil {
 		t.Fatalf("prime gate: %v", err)
 	}
 
@@ -108,6 +112,8 @@ func TestHandler_IdempotencyKeyMismatch_409Envelope(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/s1/gate",
 			bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "s1"})
 		rr := httptest.NewRecorder()
 		handler.StepGate(rr, req)
@@ -119,6 +125,8 @@ func TestHandler_IdempotencyKeyMismatch_409Envelope(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/s1/complete",
 			bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.ContentLength = int64(len(body))
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "s1"})
 		rr := httptest.NewRecorder()
@@ -160,7 +168,7 @@ func assertMismatch409(t *testing.T, rr *httptest.ResponseRecorder, wfID, stepID
 func TestHandler_IdempotencyKey_MaxLength(t *testing.T) {
 	handler, svc, _ := setupTestHandler()
 	ctx := context.Background()
-	wf, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{WorkflowName: "tc"}, "", "", "", "")
+	wf, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{WorkflowName: "tc"}, "tenant-1", "org-1", "user-1", "client-1")
 
 	tooLong := strings.Repeat("x", 256) // limit is 255
 
@@ -169,6 +177,8 @@ func TestHandler_IdempotencyKey_MaxLength(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/s1/gate",
 			bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "s1"})
 		rr := httptest.NewRecorder()
 		handler.StepGate(rr, req)
@@ -180,13 +190,15 @@ func TestHandler_IdempotencyKey_MaxLength(t *testing.T) {
 	t.Run("complete rejects oversized key", func(t *testing.T) {
 		// Prime a step to complete
 		if _, err := svc.StepGate(ctx, wf.WorkflowID, "s2",
-			&StepGateRequest{StepType: StepTypeToolCall}, "", "", "", ""); err != nil {
+			&StepGateRequest{StepType: StepTypeToolCall}, "tenant-1", "org-1", "user-1", "client-1"); err != nil {
 			t.Fatalf("prime: %v", err)
 		}
 		body, _ := json.Marshal(StepCompleteRequest{IdempotencyKey: tooLong})
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/s2/complete",
 			bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.ContentLength = int64(len(body))
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "s2"})
 		rr := httptest.NewRecorder()

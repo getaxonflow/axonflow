@@ -171,8 +171,17 @@ func TestAPIAuthMiddleware_CORSPreflight(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	if !called {
-		t.Error("Expected OPTIONS to pass through to handler")
+	// #3092: a preflight is TERMINATED at the auth boundary, not forwarded.
+	// This assertion used to read `if !called` — i.e. it pinned the bypass in
+	// place as intended behaviour. A genuine browser preflight never gets this
+	// far (rs/cors answers it outside the router), so nothing legitimate
+	// depended on the passthrough; what did reach here was a non-preflight
+	// OPTIONS reaching an auth-gated handler anonymously.
+	if called {
+		t.Error("OPTIONS must not reach the auth-gated handler (#3092)")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("preflight status = %d, want %d", rr.Code, http.StatusNoContent)
 	}
 }
 
@@ -285,14 +294,24 @@ func TestAPIAuthMiddleware_EnterpriseMode_WrongPassword(t *testing.T) {
 	}
 }
 
-// TestAPIAuthMiddleware_CommunityMode_DefaultUnset verifies community mode
-// when DEPLOYMENT_MODE is not set (default behavior).
-func TestAPIAuthMiddleware_CommunityMode_DefaultUnset(t *testing.T) {
+// TestAPIAuthMiddleware_UnsetDeploymentMode_RequiresAuth pins the #3096
+// behaviour change at the middleware.
+//
+// This test previously asserted the opposite — that an unset DEPLOYMENT_MODE
+// authenticated nobody and defaulted the tenant to "community". That was the
+// defect: forgetting to configure a deployment mode disabled authentication.
+// An unset mode now takes the enterprise path, so an anonymous request is
+// rejected instead of being handed a default tenant.
+func TestAPIAuthMiddleware_UnsetDeploymentMode_RequiresAuth(t *testing.T) {
 	os.Unsetenv("DEPLOYMENT_MODE")
 
-	var capturedTenant string
+	oldAuthDB := authDB
+	authDB = nil
+	defer func() { authDB = oldAuthDB }()
+
+	handlerRan := false
 	handler := apiAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedTenant = TenantIDFromContext(r.Context())
+		handlerRan = true
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -300,11 +319,11 @@ func TestAPIAuthMiddleware_CommunityMode_DefaultUnset(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", rr.Code)
+	if handlerRan {
+		t.Error("an anonymous request reached the handler with DEPLOYMENT_MODE unset (#3096)")
 	}
-	if capturedTenant != "community" {
-		t.Errorf("Expected 'community', got %q", capturedTenant)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -492,7 +511,10 @@ func TestRevokeAPIKey_NotFound_Middleware(t *testing.T) {
 // TestProxyAuthMiddleware_CommunityMode_InjectsTenantFromBasicAuth verifies that
 // the proxy middleware injects X-Tenant-ID from Basic auth clientId in community mode.
 func TestProxyAuthMiddleware_CommunityMode_InjectsTenantFromBasicAuth(t *testing.T) {
-	// Force community mode
+	// Force community mode. #3096: naming the mode is now required — clearing
+	// the license key alone no longer selects the community posture.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	oldLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	os.Unsetenv("AXONFLOW_LICENSE_KEY")
 	defer func() {
@@ -551,14 +573,20 @@ func TestProxyAuthMiddleware_CommunityMode_InjectsTenantFromBasicAuth(t *testing
 		}
 	})
 
-	t.Run("CORS preflight passes through", func(t *testing.T) {
+	// #3092: the preflight is answered at the proxy auth boundary and never
+	// forwarded to the orchestrator, so the backend must not observe it.
+	t.Run("CORS preflight is terminated, not proxied", func(t *testing.T) {
+		receivedTenantID = ""
 		req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies", nil)
 		w := httptest.NewRecorder()
 
 		handler(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Errorf("Expected 200 for OPTIONS, got %d", w.Code)
+		if w.Code != http.StatusNoContent {
+			t.Errorf("Expected 204 for OPTIONS, got %d", w.Code)
+		}
+		if receivedTenantID != "" {
+			t.Errorf("preflight was proxied to the backend (tenant %q)", receivedTenantID)
 		}
 	})
 }
@@ -599,6 +627,12 @@ func TestProxyAuthMiddleware_DB_Integration(t *testing.T) {
 // TestAPIAuthMiddleware_CommunityMode_DefaultsTenant verifies the API auth
 // middleware defaults to "community" tenant in community mode.
 func TestAPIAuthMiddleware_CommunityMode_DefaultsTenant(t *testing.T) {
+	// #3096: community mode must now be declared explicitly. This test used to
+	// reach it by clearing the license key and letting an unset DEPLOYMENT_MODE
+	// fall through to the community default — the very default that change
+	// removed. Naming the mode keeps the test about tenant defaulting.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	oldLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	os.Unsetenv("AXONFLOW_LICENSE_KEY")
 	defer func() {
@@ -745,12 +779,14 @@ func TestProxyAuthMiddleware_EnterpriseMode_RequiresAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("CORS preflight passes in enterprise mode", func(t *testing.T) {
+	// #3092: terminated here too — an unauthenticated preflight must not be
+	// forwarded to the orchestrator in enterprise mode either.
+	t.Run("CORS preflight is terminated in enterprise mode", func(t *testing.T) {
 		req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies", nil)
 		w := httptest.NewRecorder()
 		handler(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("Expected 200 for OPTIONS, got %d", w.Code)
+		if w.Code != http.StatusNoContent {
+			t.Errorf("Expected 204 for OPTIONS, got %d", w.Code)
 		}
 	})
 }
@@ -766,10 +802,30 @@ func TestIsCommunityMode(t *testing.T) {
 		}
 	}()
 
-	t.Run("empty DEPLOYMENT_MODE is community", func(t *testing.T) {
+	// #3096: an unset DEPLOYMENT_MODE must NOT confer the community posture.
+	// Community bypasses authentication and license validation entirely, so it
+	// has to be asked for by name; forgetting to configure a mode now yields
+	// the enterprise posture, matching isAdminAuthRequired's deny-by-default.
+	t.Run("empty DEPLOYMENT_MODE is NOT community", func(t *testing.T) {
 		os.Unsetenv("DEPLOYMENT_MODE")
-		if !isCommunityMode() {
-			t.Error("Expected community mode when DEPLOYMENT_MODE unset")
+		if isCommunityMode() {
+			t.Error("unset DEPLOYMENT_MODE must fail closed to the enterprise posture (#3096)")
+		}
+	})
+
+	t.Run("unrecognised DEPLOYMENT_MODE is not community", func(t *testing.T) {
+		os.Setenv("DEPLOYMENT_MODE", "communtiy") // typo
+		if isCommunityMode() {
+			t.Error("a typo'd DEPLOYMENT_MODE must not confer the community posture")
+		}
+	})
+
+	// Not trimmed and not case-folded on purpose: every widening of this
+	// predicate disables authentication. See the doc comment on isCommunityMode.
+	t.Run("whitespace-padded DEPLOYMENT_MODE is not community", func(t *testing.T) {
+		os.Setenv("DEPLOYMENT_MODE", " community ")
+		if isCommunityMode() {
+			t.Error("a whitespace-padded mode must fail closed, not widen the community set")
 		}
 	})
 

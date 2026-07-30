@@ -374,7 +374,7 @@ type StepGateResponse struct {
 	DecisionID        string        `json:"decision_id,omitempty"`
 	PolicyIDs         []string      `json:"policy_ids,omitempty"`
 	Reason            string        `json:"reason,omitempty"`
-	ApprovalID        string        `json:"approval_id,omitempty"`  // HITL queue entry UUID when Decision is require_approval
+	ApprovalID        string        `json:"approval_id,omitempty"` // HITL queue entry UUID when Decision is require_approval
 	ApprovalURL       string        `json:"approval_url,omitempty"`
 	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
 	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched and contributed to decision (Issue #1021)

@@ -132,6 +132,13 @@ func (b *HITLBridge) CreateApprovalFromPolicy(
 }
 
 // GetApprovalStatus checks the current status of an approval request.
+//
+// #3065: the ctx MUST carry the authenticated caller org (hitl.WithCallerOrg)
+// — the service's by-id flows are fail-closed and an org-less context is a
+// denial, not a bypass. This bridge deliberately does not synthesize one:
+// fabricating an org here would be the very hole #3065 closed. The bridge has
+// no non-test constructor caller today; the requirement is recorded so the
+// first real caller wires it rather than discovering a "not found" at runtime.
 func (b *HITLBridge) GetApprovalStatus(ctx context.Context, approvalID uuid.UUID) (string, error) {
 	if b.service == nil {
 		return "", fmt.Errorf("HITL service not configured")

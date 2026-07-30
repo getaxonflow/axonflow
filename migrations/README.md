@@ -11,13 +11,23 @@ runner tracks applied migrations in the `schema_migrations` table keyed by
 | Directory              | Versions          | When it runs (DEPLOYMENT_MODE)                                |
 | ---------------------- | ----------------- | ------------------------------------------------------------- |
 | `core/`                | 001 – ~099, 100+  | Every deployment mode.                                        |
-| `enterprise/`          | 100 – 199         | `saas`, `in-vpc-*`. Not run in `community`/`community-saas`.  |
+| `enterprise/`          | 100 – 199         | `saas`, `in-vpc-*`, `enterprise`. Not `community`/`community-saas`. |
 | `community-saas/`      | 085+              | `community-saas` only (try.getaxonflow.com hosted infra).     |
 | `industry/healthcare/` | 250 – 299         | `saas`, `in-vpc-healthcare`.                                  |
 | `industry/banking/`    | 300 – 349, 400+   | `saas`, `in-vpc-banking`.                                     |
 | `industry/travel/`     | 200 – 249         | `saas`, `in-vpc-travel`.                                      |
+| `internal/`            | (historical)      | **Never.** AxonFlow's own seed data. Not published to the community mirror, so this row has no directory there. |
 
-See `platform/agent/migration_helpers.go` for the full DEPLOYMENT_MODE matrix.
+See `canonicalDeploymentModes` in `platform/agent/migration_helpers.go` for the
+full DEPLOYMENT_MODE matrix. That map is also the definition of *recognised*: a
+value that is neither one of its keys nor one of the `deploymentModeAliases`
+keys (`enterprise`, `invpc`) makes the agent refuse to boot rather than fall
+through to the widest set (#3167). An **unset** `DEPLOYMENT_MODE` still resolves
+to `community` here, while the runtime posture of an unset value has been the
+enterprise one since #3096 — the two halves disagree, deliberately and with the
+measurement recorded in
+`technical-docs/DEPLOYMENT_MODE_MIGRATION_SELECTOR_DECISION.md` (#3128). Name the
+mode explicitly and neither applies.
 
 Cross-directory version overlap is intentional (`core/100_*` and
 `enterprise/100_*` apply under different modes). In-directory overlap is

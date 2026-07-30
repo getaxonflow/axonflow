@@ -44,6 +44,33 @@ var xUserTokenReadAllowlist = map[string]string{
 var xUserTokenMentionOnlyAllowlist = map[string]string{
 	"platform/agent/mcp_server_handler.go": "doc comments describing the per-user identity model; reads go through extractPerUserToken",
 	"platform/shared/identity/trust.go":    "package doc — the #2941 dual-envelope census + collision rule",
+	// #3062: names the header in a 401 error STRING as the alternative remedy
+	// when the identity trust gate dropped the caller's X-User-Email. Prose
+	// only — it never reads the header, and the orchestrator has no per-user
+	// token ingest at all (validators are enterprise/agent-side). Reviewed and
+	// admitted deliberately: telling a blocked user which credential to
+	// present is the entire point of the message, and a vaguer wording would
+	// re-create the unactionable error this fixes.
+	//
+	// #3077 moved those message BODIES out of
+	// platform/orchestrator/identity_required_error.go and into the shared
+	// package, so the MCP-server plane (platform/agent, which cannot import
+	// platform/orchestrator without a cycle) refuses through the same choke
+	// point. The prose-only admission moves with them, unchanged in kind:
+	//
+	//   - identity_required.go holds all three refusal bodies. Still prose
+	//     only; the shared package has no request-reading code at all.
+	//   - identity_trust.go names the header in the doc comment explaining WHY
+	//     the MCP refusal offers a token only to enterprise sessions. That
+	//     conditional is the point: the census's own fail-closed posture is
+	//     what makes "not resolvable here" a true statement, so the comment
+	//     citing it is load-bearing documentation, not a second channel.
+	//
+	// The orchestrator file keeps only the marker-trust helper and no longer
+	// spells the header, so its entry is retired rather than kept as a
+	// no-longer-true allowance.
+	"platform/shared/identity/identity_required.go": "#3062/#3077 actionable refusal bodies — names the header as a remedy; no read, no ingest",
+	"platform/agent/identity_trust.go":              "#3077 doc comment on why the MCP refusal offers a token only for enterprise sessions; no read, no ingest",
 }
 
 // userTokenBodyFieldAllowlist is the exact set of production files whose

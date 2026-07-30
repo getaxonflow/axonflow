@@ -229,6 +229,8 @@ func TestWorkflowToExecutionStatus(t *testing.T) {
 	t.Run("completed workflow", func(t *testing.T) {
 		totalSteps := 2
 		workflow := &workflow_control.Workflow{
+			OrgID:            "org_1",
+			TenantID:         "tenant_1",
 			WorkflowID:       "wf_completed",
 			WorkflowName:     "Completed Workflow",
 			Source:           workflow_control.WorkflowSourceCrewAI,
@@ -273,6 +275,8 @@ func TestWorkflowToExecutionStatus(t *testing.T) {
 	t.Run("workflow with pending approval", func(t *testing.T) {
 		pending := workflow_control.ApprovalStatusPending
 		workflow := &workflow_control.Workflow{
+			OrgID:            "org_1",
+			TenantID:         "tenant_1",
 			WorkflowID:       "wf_approval",
 			WorkflowName:     "Approval Workflow",
 			Source:           workflow_control.WorkflowSourceExternal,
@@ -302,6 +306,8 @@ func TestWorkflowToExecutionStatus(t *testing.T) {
 
 	t.Run("workflow with blocked step", func(t *testing.T) {
 		workflow := &workflow_control.Workflow{
+			OrgID:            "org_1",
+			TenantID:         "tenant_1",
 			WorkflowID:       "wf_blocked",
 			WorkflowName:     "Blocked Workflow",
 			Source:           workflow_control.WorkflowSourceLangChain,
@@ -330,6 +336,8 @@ func TestWorkflowToExecutionStatus(t *testing.T) {
 
 	t.Run("empty workflow", func(t *testing.T) {
 		workflow := &workflow_control.Workflow{
+			OrgID:        "org_1",
+			TenantID:     "tenant_1",
 			WorkflowID:   "wf_empty",
 			WorkflowName: "Empty Workflow",
 			Source:       workflow_control.WorkflowSourceExternal,
@@ -428,6 +436,8 @@ func TestWCPExecutionTracker_SyncWorkflowStatus(t *testing.T) {
 	totalSteps := 2
 	now := time.Now()
 	workflow := &workflow_control.Workflow{
+		OrgID:        "org_1",
+		TenantID:     "tenant_1",
 		WorkflowID:   "wf_sync_test",
 		WorkflowName: "Sync Test",
 		Source:       workflow_control.WorkflowSourceExternal,
@@ -656,6 +666,8 @@ func TestSyncStepCompleted(t *testing.T) {
 	// Create a workflow with one step
 	totalSteps := 2
 	workflow := &workflow_control.Workflow{
+		OrgID:        "org_1",
+		TenantID:     "tenant_1",
 		WorkflowID:   "wf_step_completed",
 		WorkflowName: "Step Completed Test",
 		Source:       workflow_control.WorkflowSourceLangGraph,
@@ -1013,6 +1025,8 @@ func TestOnStepCompleted_ThenOnWorkflowCompleted(t *testing.T) {
 	// Create a workflow with a step
 	totalSteps := 1
 	workflow := &workflow_control.Workflow{
+		OrgID:        "org_1",
+		TenantID:     "tenant_1",
 		WorkflowID:   "wf_full_lifecycle",
 		WorkflowName: "Full Lifecycle Test",
 		Source:       workflow_control.WorkflowSourceCrewAI,
@@ -1082,6 +1096,8 @@ func TestOnStepCompletedWithMetrics(t *testing.T) {
 	// Create a workflow with one step
 	totalSteps := 1
 	workflow := &workflow_control.Workflow{
+		OrgID:        "org_1",
+		TenantID:     "tenant_1",
 		WorkflowID:   "wf_metrics_test",
 		WorkflowName: "Metrics Test",
 		Source:       workflow_control.WorkflowSourceLangGraph,

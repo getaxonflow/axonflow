@@ -43,9 +43,13 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 
 	pc := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
 	db := pc.DB
-	ctx := context.Background()
 
 	const org = "acme-eval-org" // free-form, NON-UUID license id (the #2792 class)
+
+	// #3065 (F7): the override by-id read is org-scoped and fails closed when
+	// the caller org is unknown, so the context must carry the authenticated
+	// org exactly as the request path supplies it.
+	ctx := context.WithValue(context.Background(), ContextKeyOrgID, org)
 	const tenant = "acme-eval-org"
 
 	// Post-133 schema: organization_id is TEXT on both policy tables; policy_id is

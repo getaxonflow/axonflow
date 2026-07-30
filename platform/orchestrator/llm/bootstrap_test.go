@@ -93,7 +93,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 			t.Error("expected anthropic in bootstrapped providers")
 		}
 
-		if !result.Registry.Has("anthropic") {
+		if !result.Registry.Has(GlobalTenant, "anthropic") {
 			t.Error("expected anthropic to be registered")
 		}
 	})
@@ -381,7 +381,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 			t.Error("expected same registry to be returned")
 		}
 
-		if !registry.Has("anthropic") {
+		if !registry.Has(GlobalTenant, "anthropic") {
 			t.Error("expected anthropic to be registered in provided registry")
 		}
 	})
@@ -844,7 +844,7 @@ func TestQuickBootstrap(t *testing.T) {
 		}
 
 		// Verify registry has the provider
-		if !router.Registry().Has("ollama") {
+		if !router.Registry().Has(GlobalTenant, "ollama") {
 			t.Error("expected ollama provider in registry")
 		}
 	})

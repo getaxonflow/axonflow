@@ -33,28 +33,51 @@ type GenerateReportRequest struct {
 	ReportPeriodStart *time.Time `json:"report_period_start,omitempty"`
 	ReportPeriodEnd   *time.Time `json:"report_period_end,omitempty"`
 	ReportQuarter     string     `json:"report_quarter,omitempty"`
-	GeneratedBy       string     `json:"generated_by,omitempty"`
-	GeneratedByEmail  string     `json:"generated_by_email,omitempty"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	GeneratedBy      string `json:"-"`
+	GeneratedByEmail string `json:"-"`
 }
 
 // SubmitForApprovalRequest is the request to submit a report for approval.
 type SubmitForApprovalRequest struct {
-	SubmittedBy      string `json:"submitted_by" validate:"required"`
-	SubmittedByEmail string `json:"submitted_by_email,omitempty"`
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	SubmittedBy      string `json:"-"`
+	SubmittedByEmail string `json:"-"`
 }
 
 // ApproveReportRequest is the request to approve a board report.
 type ApproveReportRequest struct {
-	ApprovedBy      string `json:"approved_by" validate:"required"`
-	ApprovedByEmail string `json:"approved_by_email,omitempty"`
-	ApprovalNotes   string `json:"approval_notes,omitempty"`
+	ApprovalNotes string `json:"approval_notes,omitempty"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	ApprovedBy      string `json:"-"`
+	ApprovedByEmail string `json:"-"`
 }
 
 // RejectReportRequest is the request to reject a board report.
 type RejectReportRequest struct {
-	RejectedBy      string `json:"rejected_by" validate:"required"`
-	RejectedByEmail string `json:"rejected_by_email,omitempty"`
 	RejectionReason string `json:"rejection_reason" validate:"required"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	RejectedBy      string `json:"-"`
+	RejectedByEmail string `json:"-"`
 }
 
 // UpdateCorrectiveActionRequest is the request to update a corrective action.

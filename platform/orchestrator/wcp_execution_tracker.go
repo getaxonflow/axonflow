@@ -131,7 +131,12 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 		// "Approval: pending" on the portal timeline. Best-effort — a WCP
 		// fetch failure falls back to the cached snapshot.
 		if t.wcpService != nil && len(status.Steps) > 0 {
-			if wf, werr := t.wcpService.GetWorkflow(ctx, workflowID, "", ""); werr == nil && wf != nil {
+			// #3065: named unscoped read — this reconciliation holds no
+			// request scope, and the result is authorized by the HTTP layer
+			// (UnifiedExecutionHandler.checkTenantOwnership) before it reaches
+			// a client. The old GetWorkflow(ctx, id, "", "") relied on an
+			// empty-string bypass that is now a denial.
+			if wf, werr := t.wcpService.GetWorkflowUnscoped(ctx, workflowID); werr == nil && wf != nil {
 				reconcileStepApprovals(status.Steps, wf.Steps)
 			}
 		}
@@ -147,10 +152,10 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 	}
 
 	// Tenant/org scoping is enforced at the handler layer via
-	// checkTenantOwnership after resolveExecution returns. We pass empty
-	// strings here to fetch the raw workflow; the handler then compares
-	// its tenant_id/org_id against the caller's headers.
-	workflow, err := t.wcpService.GetWorkflow(ctx, workflowID, "", "")
+	// checkTenantOwnership after resolveExecution returns. #3065: the raw
+	// fetch now goes through the explicitly named unscoped accessor rather
+	// than an empty-string bypass of the scoped one.
+	workflow, err := t.wcpService.GetWorkflowUnscoped(ctx, workflowID)
 	if err != nil {
 		if isWCPNotFoundError(err) {
 			return nil, fmt.Errorf("workflow %s: %w", workflowID, execution.ErrExecutionNotFound)

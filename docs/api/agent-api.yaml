@@ -908,9 +908,13 @@ paths:
     get:
       tags:
         - MCP Connectors
-      summary: List all MCP connectors
+      summary: List the caller's MCP connectors
       description: |
-        Returns all registered MCP connectors with their health status.
+        Returns the MCP connectors the **authenticated tenant** may reach,
+        with their health status. Deployment-shared connectors (those
+        registered under the wildcard tenancy `*`) are included for every
+        tenant; another tenant's connectors are not
+        (`platform/agent/mcp_handler.go:612-620`).
 
         Connectors provide access to external data sources:
         - PostgreSQL
@@ -919,7 +923,23 @@ paths:
         - Snowflake
         - Amadeus (travel API)
         - Slack
+
+        **Authentication.** Wrapped in `apiAuthMiddleware`
+        (`platform/agent/mcp_handler.go:581`); the tenancy comes from the
+        credential, never from a caller-supplied header or path segment.
+        Registered for `GET` only — `apiAuthMiddleware` forwards CORS
+        preflights unauthenticated, so registering `OPTIONS` would reach the
+        handler with no identity in context.
+
+        *(Behaviour change in #3067: this route was previously registered
+        with no auth middleware and returned every tenant's connector names,
+        types, versions, capabilities, health and raw driver error strings to
+        an anonymous caller.)*
       operationId: listMCPConnectors
+      security:
+        - BasicAuth: []
+        - InternalServiceID: []
+          InternalServiceToken: []
       responses:
         '200':
           description: List of connectors
@@ -946,25 +966,51 @@ paths:
                       - "search_flights"
                       - "search_hotels"
                 count: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '503':
           description: MCP registry not initialized
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "MCP registry not initialized"
 
   /mcp/connectors/{name}/health:
     get:
       tags:
         - MCP Connectors
       summary: Check connector health
-      description: Returns health status for a specific connector
+      description: |
+        Returns health status for one of the **authenticated tenant's**
+        connectors (or a deployment-shared one).
+
+        Naming another tenant's connector returns the same `404` as a
+        nonexistent one — there is no existence oracle, and no live
+        connection is opened with the other tenant's credentials
+        (`platform/agent/mcp_handler.go:665-676`).
+
+        **Authentication.** Wrapped in `apiAuthMiddleware`
+        (`platform/agent/mcp_handler.go:584`), `GET` only.
+
+        *(Behaviour change in #3067: this route was previously registered
+        with no auth middleware, so an anonymous caller could name any
+        tenant's connector and have the agent open a live connection with
+        that tenant's decrypted credentials.)*
       operationId: getMCPConnectorHealth
+      security:
+        - BasicAuth: []
+        - InternalServiceID: []
+          InternalServiceToken: []
       parameters:
         - name: name
           in: path
           required: true
-          description: Connector name
+          description: |
+            Connector name. Resolved within the authenticated tenancy, with a
+            fallback to the deployment-shared (`*`) tenancy.
           schema:
             type: string
           example: "postgres_main"
@@ -979,12 +1025,29 @@ paths:
                 healthy: true
                 latency_ms: 5
                 last_check: "2025-01-15T10:30:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Connector not found
+          description: |
+            Connector not found **within the caller's tenancy**. Returned
+            both for a name that does not exist and for a name that belongs
+            to another tenant.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Connector not found"
+        '503':
+          description: MCP registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "MCP registry not initialized"
 
   /mcp/resources/query:
     post:
@@ -1367,7 +1430,25 @@ paths:
       tags:
         - MCP Connectors
       summary: Overall MCP health
-      description: Returns aggregate health status for all MCP connectors
+      description: |
+        Unauthenticated liveness probe.
+
+        ⚠️ **`healthy_count` + `unhealthy_count` do not sum to
+        `total_connectors`, by design** (`platform/agent/mcp_handler.go:3377-3405`).
+        Because this route is anonymous, the live health checks it performs
+        are limited to the **deployment-shared** (operator-configured,
+        wildcard-tenancy `*`) connectors, while `total_connectors` keeps its
+        pre-existing deployment-wide meaning so operator dashboards do not
+        silently change scale. A deployment consisting only of tenant-owned
+        connectors therefore reports `healthy: true` with zero counts even if
+        every backend is down.
+
+        Use the authenticated `GET /mcp/connectors` for per-tenant connector
+        health.
+
+        *(Behaviour change in #3067: this route previously opened a live
+        connection to **every** tenant's backend on every anonymous GET —
+        cross-tenant credential use plus a free amplification lever.)*
       operationId: getMCPHealth
       responses:
         '200':
@@ -1379,22 +1460,39 @@ paths:
                 properties:
                   healthy:
                     type: boolean
-                    description: True if all connectors are healthy
+                    description: |
+                      True when no deployment-shared connector reported
+                      unhealthy. Says nothing about tenant-owned connectors.
                   total_connectors:
                     type: integer
+                    description: |
+                      Deployment-wide cached-connector count
+                      (`registry.Count()`) — a different scale from the two
+                      counts below.
                   healthy_count:
                     type: integer
+                    description: Healthy **deployment-shared** connectors only
                   unhealthy_count:
                     type: integer
+                    description: Unhealthy **deployment-shared** connectors only
                   timestamp:
                     type: string
                     format: date-time
               example:
                 healthy: true
                 total_connectors: 3
-                healthy_count: 3
+                healthy_count: 1
                 unhealthy_count: 0
-                timestamp: "2025-01-15T10:30:00Z"
+                timestamp: "2026-07-28T10:30:00Z"
+        '503':
+          description: MCP registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "MCP registry not initialized"
 
   # ==========================================================================
   # MCP Server (Streamable HTTP, spec 2025-06-18)
@@ -1578,37 +1676,97 @@ paths:
     post:
       tags:
         - MCP Connectors
-      summary: Refresh all connector caches
+      summary: Refresh the caller's connector caches
       description: |
-        Invalidates and refreshes all cached connector instances across all tenants.
-        Use this after bulk configuration changes or deployments.
+        Invalidates and refreshes cached connector instances.
+        Use this after configuration changes or deployments.
 
-        **Performance Impact:** This operation clears all cached connectors.
-        The next request for each connector will incur factory creation overhead.
+        **The scope depends on which credential you present**
+        (`platform/agent/connector_refresh_api.go:184-216`):
 
-        ⚠️ **Ops/internal endpoint — currently unauthenticated** (#2883):
-        the connector refresh + cache-stats routes are registered without
-        the auth middleware. Deploy them behind network-level controls
-        until #2883 lands.
+        | Credential | Scope | `message` | `tenant_id` |
+        |---|---|---|---|
+        | Basic auth (tenant) | the authenticated tenant's connectors only | `Tenant connector caches refreshed` | present |
+        | Internal-service | every tenant's connectors | `All connector caches refreshed` | **absent** |
+
+        **Performance impact:** the next request for each evicted connector
+        incurs factory-creation overhead.
+
+        **Authentication.** This route is wrapped in `apiAuthMiddleware`
+        (`platform/agent/connector_refresh_api.go:123`) and the tenancy comes
+        from the authenticated identity — a caller can no longer evict another
+        tenant's pool. Supply **either**:
+
+        - `Authorization: Basic base64(clientId:clientSecret)` — the tenant
+          lane (no credentials are required when
+          `DEPLOYMENT_MODE=community`); or
+        - `X-Internal-Service-ID` + `X-Internal-Service-Token` — the
+          operator lane, which is the only way to trigger a deployment-wide
+          eviction.
+
+        *(Historical note: these four routes were registered with no auth
+        middleware at all — #2883. They are authenticated as of #3067; the
+        pre-#3067 "deploy behind network-level controls" advisory no longer
+        applies.)*
+
+        `stats.cached_connectors` is **structurally 0** on this route: the
+        refresh empties the scope immediately before the count is taken. That
+        is the success signal, not a failure.
       operationId: refreshAllConnectors
+      security:
+        - BasicAuth: []
+        - InternalServiceID: []
+          InternalServiceToken: []
       responses:
         '200':
-          description: All connectors refreshed
+          description: Connectors refreshed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConnectorRefreshResponse'
+              examples:
+                tenantCredential:
+                  summary: Basic auth — the caller's own pool
+                  value:
+                    success: true
+                    message: "Tenant connector caches refreshed"
+                    scope: "all"
+                    tenant_id: "acme-corp"
+                    duration: "12.345ms"
+                    stats:
+                      cached_connectors: 0
+                internalServiceCredential:
+                  summary: Internal-service credential — deployment-wide
+                  value:
+                    success: true
+                    message: "All connector caches refreshed"
+                    scope: "all"
+                    duration: "12.345ms"
+                    stats:
+                      cached_connectors: 0
+        '401':
+          description: |
+            No usable credential. Written by the auth middleware as
+            `JSONError` (`platform/agent/auth.go:602`), or — when the
+            middleware admitted the caller but resolved no tenancy — by the
+            handler as `ErrorResponse`
+            (`platform/agent/connector_refresh_api.go:148`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
               example:
-                success: true
-                message: "All connector caches refreshed"
-                scope: "all"
-                duration: "12.345ms"
-                stats:
-                  cached_connectors: 0
-                  hits: 12345
-                  misses: 234
-                  evictions: 15
-                  hit_rate_percent: 98.1
+                success: false
+                error: "authenticated tenant required"
+        '500':
+          description: Refresh failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Failed to refresh connectors: connection refused"
         '503':
           description: Registry not initialized
           content:
@@ -1625,17 +1783,41 @@ paths:
         - MCP Connectors
       summary: Refresh tenant connector caches
       description: |
-        Invalidates and refreshes all cached connector instances for a specific tenant.
+        Invalidates and refreshes all cached connector instances for a tenant.
         Use this after updating a tenant's connector configuration.
+
+        **`{tenant_id}` is not a selector.** It is validated against the
+        identity `apiAuthMiddleware` resolved and a mismatch is `403`
+        (`platform/agent/connector_refresh_api.go:152-156`); the tenancy that
+        is actually refreshed always comes from the credential.
+
+        - **Basic auth:** the resolved identity is your licensed org, so this
+          route can only ever refresh your own pool.
+        - **Internal-service credential:** the resolved identity is whatever
+          `X-Tenant-ID` you send (`platform/agent/authenticator.go:127-130`),
+          so an operator targets a named tenant by sending that header *and*
+          the matching path segment. Naming a tenant in the path with no
+          `X-Tenant-ID` is `403`, because the identity then falls back to the
+          synthetic `orchestrator-internal` client id.
+
+        `stats.cached_connectors` is **structurally 0** on this route — the
+        refresh empties the tenant's scope immediately before the count is
+        taken.
       operationId: refreshTenantConnectors
+      security:
+        - BasicAuth: []
+        - InternalServiceID: []
+          InternalServiceToken: []
       parameters:
         - name: tenant_id
           in: path
           required: true
-          description: The tenant ID whose connectors should be refreshed
+          description: |
+            The tenant whose connectors should be refreshed. Must equal the
+            authenticated tenant — see the description.
           schema:
             type: string
-          example: "tenant-123"
+          example: "acme-corp"
       responses:
         '200':
           description: Tenant connectors refreshed
@@ -1647,19 +1829,64 @@ paths:
                 success: true
                 message: "Tenant connector caches refreshed"
                 scope: "tenant"
-                tenant_id: "tenant-123"
+                tenant_id: "acme-corp"
                 duration: "2.456ms"
                 stats:
-                  cached_connectors: 12
-                  evictions: 3
+                  cached_connectors: 0
         '400':
           description: Missing tenant_id
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "tenant_id is required"
+        '401':
+          description: |
+            No usable credential. Written by the auth middleware as
+            `JSONError` (`platform/agent/auth.go:602`), or — when the
+            middleware admitted the caller but resolved no tenancy — by the
+            handler as `ErrorResponse`
+            (`platform/agent/connector_refresh_api.go:148`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "authenticated tenant required"
+        '403':
+          description: |
+            The `{tenant_id}` path segment does not match the authenticated
+            tenant (`platform/agent/connector_refresh_api.go:152-156`).
+            Refused rather than silently downgraded to the caller's own scope,
+            so an operator who mistypes a tenant learns about it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "tenant_id does not match the authenticated tenant"
+        '500':
+          description: Refresh failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Failed to refresh tenant connectors: connection refused"
         '503':
           description: Registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "TenantConnectorRegistry not initialized"
 
   /api/v1/connectors/refresh/{tenant_id}/{connector_name}:
     post:
@@ -1669,15 +1896,31 @@ paths:
       description: |
         Invalidates and refreshes a specific connector instance for a tenant.
         Use this after updating a single connector's credentials or configuration.
+
+        **`{tenant_id}` is not a selector** — same contract as
+        `POST /api/v1/connectors/refresh/{tenant_id}`: the segment is
+        validated against the authenticated identity and a mismatch is `403`
+        (`platform/agent/connector_refresh_api.go:152-156`).
+
+        Unlike the two broader refresh routes, `stats.cached_connectors` here
+        is informative: it is the caller's **remaining** cached-connector
+        count after this one connector was evicted
+        (`platform/agent/connector_refresh_api.go:314,404-408`).
       operationId: refreshConnector
+      security:
+        - BasicAuth: []
+        - InternalServiceID: []
+          InternalServiceToken: []
       parameters:
         - name: tenant_id
           in: path
           required: true
-          description: The tenant ID
+          description: |
+            The tenant that owns the connector. Must equal the authenticated
+            tenant — see the description.
           schema:
             type: string
-          example: "tenant-123"
+          example: "acme-corp"
         - name: connector_name
           in: path
           required: true
@@ -1696,13 +1939,63 @@ paths:
                 success: true
                 message: "Connector cache refreshed"
                 scope: "connector"
-                tenant_id: "tenant-123"
+                tenant_id: "acme-corp"
                 connector: "customer-db"
                 duration: "0.789ms"
+                stats:
+                  cached_connectors: 1
         '400':
           description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "tenant_id and connector_name are required"
+        '401':
+          description: |
+            No usable credential. Written by the auth middleware as
+            `JSONError` (`platform/agent/auth.go:602`), or — when the
+            middleware admitted the caller but resolved no tenancy — by the
+            handler as `ErrorResponse`
+            (`platform/agent/connector_refresh_api.go:148`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "authenticated tenant required"
+        '403':
+          description: |
+            The `{tenant_id}` path segment does not match the authenticated
+            tenant (`platform/agent/connector_refresh_api.go:152-156`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "tenant_id does not match the authenticated tenant"
+        '500':
+          description: Refresh failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Failed to refresh connector: connection refused"
         '503':
           description: Registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "TenantConnectorRegistry not initialized"
 
   /api/v1/connectors/cache/stats:
     get:
@@ -1710,9 +2003,43 @@ paths:
         - MCP Connectors
       summary: Get connector cache statistics
       description: |
-        Returns cache performance statistics including hit rate, miss count,
-        evictions, and factory operation counts. Useful for monitoring cache health.
+        Returns the caller's cached-connector count. **The response is
+        tenant-scoped** (`platform/agent/connector_refresh_api.go:350-355`):
+        `cached_connectors` is the authenticated tenant's own count, not the
+        deployment's.
+
+        **The cache-health counters are operator telemetry.** `hits`,
+        `misses`, `evictions`, `factory_creations`, `factory_failures`,
+        `connection_errors`, `hit_rate_percent`, `last_eviction` and
+        `last_factory_create` are deployment-wide figures. They appear here
+        **only** inside a `deployment` object, and **only** for the
+        internal-service credential
+        (`platform/agent/connector_refresh_api.go:356-369`). A tenant caller
+        must not read their absence as zero — it has no cache-health data on
+        this surface.
+
+        Un-scoped equivalents for five of them are always available to
+        operators on `/prometheus` as
+        `axonflow_connector_cache_stats{stat="cached_connectors"|"hits"|"misses"|"evictions"|"hit_rate"}`,
+        refreshed on every call to this endpoint
+        (`platform/agent/connector_refresh_api.go:338-342`).
+        `factory_creations`, `factory_failures`, `connection_errors`,
+        `last_eviction` and `last_factory_create` have **no** Prometheus
+        series — the `deployment` block is their only surface.
+
+        **Authentication.** Wrapped in `apiAuthMiddleware`
+        (`platform/agent/connector_refresh_api.go:132`). This route takes no
+        `{tenant_id}` path segment, so it never returns `403`.
+
+        *(Historical note: this route was registered with no auth middleware
+        at all and served the deployment-wide counters to anonymous callers —
+        #2883, where the `evictions` delta was an existence oracle for
+        `(tenant, connector)` pairs. Authenticated and scoped as of #3067.)*
       operationId: getConnectorCacheStats
+      security:
+        - BasicAuth: []
+        - InternalServiceID: []
+          InternalServiceToken: []
       responses:
         '200':
           description: Cache statistics
@@ -1720,21 +2047,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConnectorCacheStats'
+              examples:
+                tenantCredential:
+                  summary: Basic auth — four fields, and only these four
+                  value:
+                    cached_connectors: 15
+                    registry_enabled: true
+                    tenant_id: "acme-corp"
+                    timestamp: "2026-07-28T14:25:00.123456Z"
+                internalServiceCredential:
+                  summary: Internal-service credential — adds the deployment block
+                  value:
+                    cached_connectors: 0
+                    registry_enabled: true
+                    tenant_id: "orchestrator-internal"
+                    timestamp: "2026-07-28T14:25:00.123456Z"
+                    deployment:
+                      cached_connectors: 15
+                      hits: 12345
+                      misses: 234
+                      evictions: 12
+                      factory_creations: 246
+                      factory_failures: 0
+                      connection_errors: 2
+                      hit_rate_percent: 98.1
+                      last_eviction: "2026-07-28T10:30:00Z"
+                      last_factory_create: "2026-07-28T14:20:00Z"
+        '401':
+          description: |
+            No usable credential. Written by the auth middleware as
+            `JSONError` (`platform/agent/auth.go:602`), or — when the
+            middleware admitted the caller but resolved no tenancy — by the
+            handler as `ErrorResponse`
+            (`platform/agent/connector_refresh_api.go:148`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
               example:
-                cached_connectors: 15
-                hits: 12345
-                misses: 234
-                evictions: 12
-                factory_creations: 246
-                factory_failures: 0
-                connection_errors: 2
-                hit_rate_percent: 98.1
-                last_eviction: "2025-12-09T10:30:00Z"
-                last_factory_create: "2025-12-09T14:20:00Z"
-                registry_enabled: true
-                timestamp: "2025-12-09T14:25:00Z"
+                success: false
+                error: "authenticated tenant required"
         '503':
           description: Registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "TenantConnectorRegistry not initialized"
 
   # ==========================================================================
   # HITL - Human-in-the-Loop (EU AI Act Article 14)
@@ -3747,6 +4108,48 @@ components:
         # Without clientSecret (community mode)
         curl -H "Authorization: Basic $(echo -n 'my-org:' | base64)" ...
         ```
+
+    InternalServiceID:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-ID
+      description: |
+        Internal-service (operator lane) credential — **part one of two**.
+        Must be sent together with `X-Internal-Service-Token`; either header
+        alone is not a credential.
+
+        This is the HMAC identity the Orchestrator and the Enterprise
+        customer-portal use to call agent endpoints without holding a
+        customer license. `apiAuthMiddleware` lifts both headers (plus an
+        optional `X-Tenant-ID` scope) into `AuthHints`
+        (`platform/agent/auth.go:588-594`) and `Authenticate()` validates
+        them before any mode-specific auth
+        (`platform/agent/authenticator.go:120-155`).
+
+        Value: the service id, `orchestrator-internal`.
+
+        ⚠️ An invalid or expired token is **not** an error by itself — it
+        falls through to the deployment's normal auth
+        (`platform/agent/authenticator.go:153-154`). Send the internal-service
+        headers on their own: paired with an `Authorization: Basic` header, a
+        stale token silently yields a *tenant*-scoped answer that looks like a
+        successful operator call.
+
+    InternalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+      description: |
+        Internal-service (operator lane) credential — **part two of two**.
+        Must be sent together with `X-Internal-Service-ID`.
+
+        Format: `AXON-INTERNAL-{unix_ts}-{sig}`, where `sig` is the first 16
+        hex characters of HMAC-SHA256 over `orchestrator-internal:{unix_ts}`
+        keyed with `AXONFLOW_INTERNAL_SERVICE_SECRET`. Validated by
+        `platform/shared/serviceauth` within a 5-minute clock-skew window, so
+        it must be re-minted per session. See
+        `technical-docs/runbooks/RUNBOOK_CONNECTOR_CONFIGURATION.md` for the
+        exact minting snippet.
 
   parameters:
     LicenseKey:
@@ -5774,21 +6177,30 @@ components:
 
     ConnectorRefreshResponse:
       type: object
-      description: Response from connector cache refresh operations
+      description: |
+        Response from connector cache refresh operations. Source of truth:
+        `platform/agent/connector_refresh_api.go` (`ConnectorRefreshResponse`,
+        lines 61-69).
       properties:
         success:
           type: boolean
           description: Whether the refresh operation succeeded
         message:
           type: string
-          description: Human-readable status message
+          description: |
+            Human-readable status message. Also the signal for which scope
+            the credential bought: `Tenant connector caches refreshed` vs
+            `All connector caches refreshed`.
         scope:
           type: string
           enum: [all, tenant, connector]
-          description: Scope of the refresh operation
+          description: Which route produced this response
         tenant_id:
           type: string
-          description: Tenant ID (when scope is tenant or connector)
+          description: |
+            The authenticated tenant. Omitted on a deployment-wide refresh
+            (internal-service credential on `POST /api/v1/connectors/refresh`),
+            because no single tenancy describes the work done.
         connector:
           type: string
           description: Connector name (when scope is connector)
@@ -5806,69 +6218,133 @@ components:
 
     ConnectorRefreshStats:
       type: object
-      description: Cache statistics after refresh
+      description: |
+        Cache statistics after refresh. Source of truth:
+        `platform/agent/connector_refresh_api.go` (`RefreshStatsInfo`, lines
+        83-88).
+
+        This object carries `cached_connectors` **and nothing else**. It used
+        to also declare `hits`, `misses`, `evictions` and `hit_rate_percent`;
+        no producer ever set them, so they always serialized as misleading
+        hard zeros, and they are deployment-wide figures that disclose other
+        tenants' cache activity. They were removed from the struct in #3067 —
+        read them from the `deployment` block of
+        `GET /api/v1/connectors/cache/stats` (internal-service credential) or
+        from the un-scoped `/prometheus` gauges.
       properties:
         cached_connectors:
           type: integer
-          description: Number of connectors currently cached
-        hits:
-          type: integer
-          description: Total cache hits
-        misses:
-          type: integer
-          description: Total cache misses
-        evictions:
-          type: integer
-          description: Total manual evictions
-        hit_rate_percent:
-          type: number
-          format: float
-          description: Cache hit rate percentage
+          format: int64
+          description: |
+            Cached-connector count *after* the eviction, scoped to the work
+            just done: the caller's own count on a tenant refresh
+            (`tenantRefreshStats`, lines 404-408), the deployment-wide count
+            on an internal-service deployment-wide refresh
+            (`deploymentRefreshStats`, lines 415-419).
+
+            Structurally `0` on `POST /api/v1/connectors/refresh` and
+            `POST /api/v1/connectors/refresh/{tenant_id}` — those routes evict
+            the whole scope immediately before counting it. Only informative
+            on `.../{tenant_id}/{connector_name}`.
 
     ConnectorCacheStats:
       type: object
-      description: Full connector cache statistics
+      description: |
+        Connector cache statistics. Source of truth:
+        `platform/agent/connector_refresh_api.go`
+        (`connectorCacheStatsHandler`, lines 350-369).
+
+        **Tenant-scoped.** A Basic-auth caller receives exactly four
+        top-level fields — `cached_connectors`, `registry_enabled`,
+        `tenant_id`, `timestamp` — and no cache-health counters at all. The
+        counters live in `deployment`, which is present **only** for the
+        internal-service credential.
+
+        Before #3067 all of the counters were served flat at the top level to
+        anonymous callers; the flat shape no longer exists on any code path.
       properties:
+        tenant_id:
+          type: string
+          description: |
+            The authenticated tenant `cached_connectors` is scoped to. For an
+            internal-service caller this is whatever `X-Tenant-ID` was sent,
+            or the synthetic `orchestrator-internal` client id when it was
+            not (`platform/agent/authenticator.go:127-130`).
+          example: "acme-corp"
         cached_connectors:
           type: integer
-          description: Number of connectors currently cached
-        hits:
-          type: integer
-          description: Total cache hits
-        misses:
-          type: integer
-          description: Total cache misses
-        evictions:
-          type: integer
-          description: Total manual evictions
-        factory_creations:
-          type: integer
-          description: Successful connector factory creations
-        factory_failures:
-          type: integer
-          description: Failed connector factory creations
-        connection_errors:
-          type: integer
-          description: Connector initialization errors
-        hit_rate_percent:
-          type: number
-          format: float
-          description: Cache hit rate percentage
-        last_eviction:
-          type: string
-          format: date-time
-          description: Timestamp of last eviction
-        last_factory_create:
-          type: string
-          format: date-time
-          description: Timestamp of last factory creation
+          description: |
+            The number of connectors cached **for `tenant_id`**
+            (`registry.CountByTenant`), not for the deployment. It is
+            typically `0` for an internal-service caller that sent no
+            `X-Tenant-ID` — read `deployment.cached_connectors` instead.
         registry_enabled:
           type: boolean
-          description: Whether the registry is enabled
+          description: |
+            Always `true` when the endpoint answers 200 — a disabled or
+            uninitialized registry returns 503 before this body is built.
         timestamp:
           type: string
           format: date-time
-          description: Current timestamp
+          description: Server time (UTC) at which the body was built
+        deployment:
+          type: object
+          description: |
+            Deployment-wide operator telemetry. **Present only for the
+            internal-service credential**
+            (`platform/agent/connector_refresh_api.go:356`). Absent for every
+            tenant caller; its absence must not be read as zero.
+
+            Counter values come from `TenantRegistryStats`
+            (`platform/agent/tenant_connector_registry.go:131-141`).
+          properties:
+            cached_connectors:
+              type: integer
+              description: Deployment-wide cached-connector count (`registry.Count()`)
+            hits:
+              type: integer
+              format: int64
+              description: Total cache hits, deployment-wide
+            misses:
+              type: integer
+              format: int64
+              description: Total cache misses, deployment-wide
+            evictions:
+              type: integer
+              format: int64
+              description: Total manual evictions, deployment-wide
+            factory_creations:
+              type: integer
+              format: int64
+              description: Successful connector factory creations
+            factory_failures:
+              type: integer
+              format: int64
+              description: Failed connector factory creations
+            connection_errors:
+              type: integer
+              format: int64
+              description: Connector initialization errors
+            hit_rate_percent:
+              type: number
+              format: double
+              description: |
+                `hits / (hits + misses) * 100`, deployment-wide; `0` when
+                neither counter has moved
+                (`platform/agent/tenant_connector_registry.go:525-534`).
+            last_eviction:
+              type: string
+              format: date-time
+              description: |
+                Timestamp of the last eviction. Serializes as the Go zero
+                time `0001-01-01T00:00:00Z` when nothing has been evicted yet.
+            last_factory_create:
+              type: string
+              format: date-time
+              description: |
+                Timestamp of the last factory creation. Serializes as the Go
+                zero time `0001-01-01T00:00:00Z` when no connector has been
+                created yet.
 
     ConnectorListResponse:
       type: object

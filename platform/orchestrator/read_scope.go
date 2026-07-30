@@ -62,7 +62,12 @@ func enforceTenantWideAuditExport(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		// #3060: gates on AdminAuthority, NOT TenantWide. These are an
+		// AUTHORIZATION question ("is this caller an administrator?"), and the
+		// two axes diverge for Community-SaaS — a single-operator evaluator
+		// reads its own tenant tenant-wide without thereby earning
+		// whole-tenant compliance artifacts. See callerReadScope.
+		if scope := resolveCallerReadScope(r); !scope.AdminAuthority {
 			log.Printf("[audit-export] BLOCKED: caller lacks tenant-wide read authority for %s", r.URL.Path)
 			sendErrorResponse(w, "tenant-wide audit export requires an admin/owner role", http.StatusForbidden)
 			return
@@ -85,13 +90,50 @@ func enforceTenantWideAuditExport(next http.Handler) http.Handler {
 // user_email rows, keyed on the SAME canonical email the write path stamps.
 
 // callerReadScope is the resolved read authority for one request.
+//
+// It carries TWO INDEPENDENT AXES. Keeping them apart is load-bearing; they
+// were one field until #3060 and that conflation is why answering the scoping
+// question could not help but answer the authorization one:
+//
+//   - TenantWide is a SCOPING answer: "how wide may this caller see WITHIN its
+//     own tenant?" It never crosses the tenant — every consumer applies it on
+//     top of a server-derived tenant predicate.
+//   - AdminAuthority is an AUTHORIZATION answer: "is this caller an
+//     administrator of the tenant?" It gates route families that have no
+//     own-rows form at all and are therefore denied outright to non-admins.
+//
+// Admin authority IMPLIES tenant-wide scoping (an org admin reads everything in
+// the org). The converse does NOT hold: a single-operator Community-SaaS
+// evaluator sees its whole tenant precisely because its tenant is itself, which
+// says nothing about whether it may run a whole-tenant compliance export or
+// mutate budgets. Widening one axis must never silently widen the other.
 type callerReadScope struct {
 	// TenantWide is true when the caller may read every user's rows within
 	// the (already header-forced) tenant scope: a validated admin/owner role
 	// delivered over the trusted proxy-auth channel, an internal-service
-	// tenant-scope assertion (customer-portal plane), or a Community-mode
-	// deployment (single-operator, no fleet — see resolveCallerReadScope).
+	// tenant-scope assertion (customer-portal plane), a Community-mode
+	// deployment, or an agent-proxied Community-SaaS caller (both
+	// single-operator, no fleet — see resolveCallerReadScope).
 	TenantWide bool
+	// AdminAuthority is true only when the caller has established ADMINISTRATIVE
+	// authority over the tenant: a validated admin/owner/policy_admin role over
+	// the trusted proxy-auth channel, the customer-portal's explicit
+	// X-Axonflow-Read-Scope: tenant assertion, or Community mode (a local
+	// single-operator deployment where the operator IS the administrator —
+	// this is the pre-#3060 behavior and must not narrow).
+	//
+	// Deliberately FALSE for Community-SaaS (#3060). A csaas tenant is a
+	// self-registered free evaluation account: it should read its own
+	// governance data, and it should NOT thereby acquire whole-tenant
+	// compliance exports, budget-governance CRUD, execution cancel/delete, or
+	// unredacted spend figures. Those 403s are the free-tier boundary, not
+	// collateral damage from the read bug.
+	//
+	// Consumed ONLY by the two router-level gates (enforceTenantWideAuditExport,
+	// enforceDomainReadAuthority) and the budgets/check spend-redaction
+	// decision. Every other consumer asks the scoping question and must keep
+	// reading TenantWide.
+	AdminAuthority bool
 	// UserEmail is the canonical own-rows identity for a non-tenant-wide
 	// caller. Empty means the caller presented no per-user identity at all —
 	// consumers MUST return an empty result set, never fall through to an
@@ -106,20 +148,46 @@ type callerReadScope struct {
 //
 // Trust rules, in order:
 //
-//  1. Community mode: tenant-wide. A community deployment is a single-operator
-//     local instance — there is no per-user token machinery (validators are
-//     enterprise-only) and no fleet of distinct users to protect from each
-//     other; scoping it to own-rows would permanently blind the operator to
-//     the non-attributed rows their own SDK traffic writes. Mirrors the
+//  1. Community mode: tenant-wide AND admin authority. A community deployment
+//     is a single-operator local instance — there is no per-user token
+//     machinery (validators are enterprise-only) and no fleet of distinct users
+//     to protect from each other; scoping it to own-rows would permanently
+//     blind the operator to the non-attributed rows their own SDK traffic
+//     writes. The operator is also the administrator, so admin authority comes
+//     with it — this is the pre-#3060 behavior and must not narrow, or a local
+//     stack loses its compliance exports and cost/usage APIs. Mirrors the
 //     Community posture of verifyAgentProxyAuth (agent_proxy_guard.go).
 //
 //  2. Valid X-Axonflow-Proxy-Auth token (the #2896 trusted channel — only the
 //     agent gateway / customer-portal hold the HMAC secret): honor
-//     X-Axonflow-User-Role (validated fleet role; admin/owner ⇒ tenant-wide)
-//     and X-Axonflow-Read-Scope: tenant (portal-plane assertion). The agent
-//     strips both headers from inbound client traffic on every proxied route
-//     and the MCP forwarders build fresh requests, so a governed caller can
-//     never launder either header through the gateway.
+//     X-Axonflow-User-Role (validated fleet role; admin/owner/policy_admin ⇒
+//     tenant-wide + admin authority) and X-Axonflow-Read-Scope: tenant
+//     (portal-plane assertion, same). The agent strips both headers from
+//     inbound client traffic on every proxied route and the MCP forwarders
+//     build fresh requests, so a governed caller can never launder either
+//     header through the gateway.
+//
+//     That "every proxied route" claim had one hole until #3092:
+//     proxyAuthMiddleware returned early on OPTIONS, ABOVE the strip, while
+//     the reverse-proxy Director appended a valid HMAC proxy-auth token
+//     unconditionally — so a preflight was a request shape on which a caller
+//     could self-assert X-Axonflow-User-Role and have the agent vouch for it.
+//     It was not exploitable only because every handler here independently
+//     405s or guards OPTIONS, i.e. it was one route registration away from
+//     live. The agent now terminates preflights at the auth boundary and
+//     scrubs the headers regardless (agent/proxy.go:
+//     stripClientAssertedProxyHeaders), so the claim above holds for every
+//     method, not just the ones that reach a handler.
+//
+//     Community-SaaS (#3060) is admitted here — INSIDE the validated-token
+//     branch, deliberately not alongside Community in rule 1, and with
+//     AdminAuthority deliberately FALSE. See the inline comment at the grant
+//     for the full argument; in short, a csaas tenant is single-operator
+//     (OrgID == TenantID == ClientID == cs_<uuid>) so "tenant-wide" is exactly
+//     that one evaluator's own data, but the tenant boundary on these reads is
+//     a SQL `tenant_id = $N` predicate fed from X-Tenant-ID — with no RLS
+//     backstop on audit_logs — so the grant is only sound when that header is
+//     agent-stamped rather than self-asserted.
 //
 //  3. Everything else — no/invalid proxy-auth, or proxy-auth without an
 //     elevating header — is least-privilege: own-rows on the canonical
@@ -134,17 +202,86 @@ type callerReadScope struct {
 // scope.UserEmail == "" which consumers must map to zero rows.
 func resolveCallerReadScope(r *http.Request) callerReadScope {
 	if isCommunityMode() {
-		return callerReadScope{TenantWide: true}
+		return callerReadScope{TenantWide: true, AdminAuthority: true}
 	}
 
 	if proxyTokenValidator != nil {
 		if tok := r.Header.Get("X-Axonflow-Proxy-Auth"); tok != "" {
 			if valid, _, _ := proxyTokenValidator.ValidateToken(tok); valid {
-				if sharedidentity.RoleCanReadTenant(r.Header.Get(sharedidentity.HeaderUserRole)) {
+				// #3060: Community-SaaS reads are tenant-wide, for the same
+				// reason Community's are in rule 1 — a csaas tenant is a
+				// single-operator evaluation account. Registration mints one
+				// cs_<uuid> that IS the org, the tenant and the credential
+				// (community_saas_register.go: csaas_register_tenant +
+				// registerTenantAndOrg(tenantID, tenantID); auth.go stamps
+				// OrgID == TenantID == ClientID == the Basic-auth username), so
+				// there is no fleet of distinct users inside a csaas tenant to
+				// protect from each other. "Tenant-wide" here reads exactly the
+				// rows the caller's own credential wrote.
+				//
+				// Without this the mode had NO path to a non-empty audit or
+				// decision read at all: csaas is not Community, per-user tokens
+				// are enterprise-only (proxy.go gates on AuthKindEnterprise),
+				// POST /api/v1/dev/token is unregistered in csaas, the agent
+				// strips X-Axonflow-User-Role / X-Axonflow-Read-Scope
+				// unconditionally, and X-User-Email is deleted unless the
+				// trust gate is on — and even then the rows carry
+				// evaluator@try.getaxonflow.com, which IsSharedSyntheticIdentity
+				// censuses to "". Every branch below therefore terminated in
+				// own-rows-on-empty-identity ⇒ a silent 200 with zero rows.
+				//
+				// Gated on the VALIDATED proxy token rather than granted in
+				// rule 1 next to Community, because the two modes have
+				// different tenant-boundary substrates. audit_logs is NOT
+				// RLS-enabled (migration 018's table list covers
+				// agent_audit_logs / orchestrator_audit_logs, not audit_logs),
+				// so cross-tenant isolation on these reads rests entirely on
+				// the handlers' `tenant_id = $N` predicate, sourced from
+				// X-Tenant-ID. That header is trustworthy only when the agent
+				// set it from the authenticated cs_ credential
+				// (proxy.go proxyAuthMiddleware Set()s it over any client
+				// value); a caller reaching the orchestrator directly asserts
+				// it freely. Community mode ships as a single-tenant local
+				// stack where that distinction is moot; csaas is a shared
+				// multi-tenant deployment where it is the whole ballgame — so
+				// tenant-wide is granted only over the channel that makes the
+				// tenant id non-forgeable. A direct-to-orchestrator csaas
+				// caller falls through to least-privilege below exactly as
+				// before, and a csaas deployment that forgot
+				// AXONFLOW_INTERNAL_SERVICE_SECRET (proxyTokenValidator == nil)
+				// never reaches this branch — both fail closed, now visibly:
+				// applyReadScopeHeader stamps X-Axonflow-Read-Scope: none and
+				// logs the reason.
+				//
+				// AdminAuthority is deliberately left FALSE. TenantWide is
+				// consumed by two ROUTER-LEVEL middlewares as well as by the
+				// read handlers, so granting it as one undifferentiated flag
+				// would flip twelve route families from 403-everyone to
+				// 200-tenant-wide — the whole compliance/evidence export
+				// family, budget-governance CRUD, execution cancel/delete, and
+				// unredacted spend on budgets/check. Those 403s are the free
+				// tier's boundary, not collateral damage from this bug, and
+				// restoring an evaluator's own audit trail must not hand a
+				// self-registered free account whole-tenant compliance
+				// artifacts. See callerReadScope's two-axes note.
+				//
+				// The non-empty X-Tenant-ID guard is defence in depth: every
+				// read handler rejects a missing tenant header on its own, but
+				// enforceDomainReadAuthority is a bare gate with no such check
+				// and replay/postgres_repository.go treats an empty org as
+				// UNFILTERED. Pre-fix that path had a hard 403; keep it
+				// unreachable rather than relying on the consumers.
+				// TrimSpace, not a bare != "": not every consumer trims, so a
+				// whitespace-only header would satisfy a bare check and then
+				// reach a consumer that treats it as empty.
+				if isCommunitySaasMode() && strings.TrimSpace(r.Header.Get("X-Tenant-ID")) != "" {
 					return callerReadScope{TenantWide: true}
 				}
+				if sharedidentity.RoleCanReadTenant(r.Header.Get(sharedidentity.HeaderUserRole)) {
+					return callerReadScope{TenantWide: true, AdminAuthority: true}
+				}
 				if r.Header.Get(sharedidentity.HeaderReadScope) == sharedidentity.ReadScopeTenant {
-					return callerReadScope{TenantWide: true}
+					return callerReadScope{TenantWide: true, AdminAuthority: true}
 				}
 			}
 		}

@@ -61,8 +61,9 @@ func TestAuditExportHandler_Create(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body, _ := json.Marshal(tt.body)
-			req := httptest.NewRequest("POST", "/api/v1/rbi/audit-exports?org_id=org-1", bytes.NewReader(body))
+			req := httptest.NewRequest("POST", "/api/v1/rbi/audit-exports", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Org-ID", "org-1")
 			rr := httptest.NewRecorder()
 
 			mux.ServeHTTP(rr, req)
@@ -110,7 +111,8 @@ func TestAuditExportHandler_List(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	req := httptest.NewRequest("GET", "/api/v1/rbi/audit-exports?org_id=org-1", nil)
+	req := httptest.NewRequest("GET", "/api/v1/rbi/audit-exports", nil)
+	req.Header.Set("X-Org-ID", "org-1")
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -171,7 +173,8 @@ func TestAuditExportHandler_Get(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/api/v1/rbi/audit-exports/"+tt.id+"?org_id="+tt.orgID, nil)
+			req := httptest.NewRequest("GET", "/api/v1/rbi/audit-exports/"+tt.id, nil)
+			req.Header.Set("X-Org-ID", tt.orgID)
 			rr := httptest.NewRecorder()
 
 			mux.ServeHTTP(rr, req)
@@ -222,7 +225,8 @@ func TestAuditExportHandler_Delete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("DELETE", "/api/v1/rbi/audit-exports/"+tt.id+"?org_id="+tt.orgID, nil)
+			req := httptest.NewRequest("DELETE", "/api/v1/rbi/audit-exports/"+tt.id, nil)
+			req.Header.Set("X-Org-ID", tt.orgID)
 			rr := httptest.NewRecorder()
 
 			mux.ServeHTTP(rr, req)
@@ -275,7 +279,8 @@ func TestAuditExportHandler_Process(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/v1/rbi/audit-exports/"+tt.id+"/process?org_id="+tt.orgID, nil)
+			req := httptest.NewRequest("POST", "/api/v1/rbi/audit-exports/"+tt.id+"/process", nil)
+			req.Header.Set("X-Org-ID", tt.orgID)
 			rr := httptest.NewRecorder()
 
 			mux.ServeHTTP(rr, req)
@@ -295,7 +300,7 @@ func TestAuditExportHandler_Process(t *testing.T) {
 	}
 }
 
-func TestAuditExportHandler_MissingOrgID(t *testing.T) {
+func TestAuditExportHandler_NoAuthenticatedOrg(t *testing.T) {
 	repo := NewMockAuditExportRepository()
 	service := NewAuditExportService(repo, nil, nil, nil, nil, nil, "/tmp/test-exports", nil)
 	handler := NewAuditExportHandler(service)
@@ -303,7 +308,9 @@ func TestAuditExportHandler_MissingOrgID(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	// Test various endpoints without org_id
+	// Test various endpoints with no authenticated org. #3066 C3-3: the response
+	// is 401 (no authenticated identity), not 400 — and, critically, `?org_id=`
+	// is no longer one of the ways to supply one.
 	endpoints := []struct {
 		method string
 		path   string
@@ -328,8 +335,8 @@ func TestAuditExportHandler_MissingOrgID(t *testing.T) {
 
 			mux.ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusBadRequest {
-				t.Errorf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("expected status %d, got %d", http.StatusUnauthorized, rr.Code)
 			}
 		})
 	}
@@ -343,8 +350,9 @@ func TestAuditExportHandler_InvalidJSON(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	req := httptest.NewRequest("POST", "/api/v1/rbi/audit-exports?org_id=org-1", bytes.NewReader([]byte("invalid json")))
+	req := httptest.NewRequest("POST", "/api/v1/rbi/audit-exports", bytes.NewReader([]byte("invalid json")))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Org-ID", "org-1")
 	rr := httptest.NewRecorder()
 
 	mux.ServeHTTP(rr, req)
@@ -362,7 +370,7 @@ func TestAuditExportHandler_XOrgIDHeader(t *testing.T) {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	// Test with X-Org-ID header instead of query param
+	// The gateway-stamped X-Org-ID header is the ONLY source of scope (#3066 C3-3).
 	body := CreateAuditExportRequest{
 		ExportType: AuditExportTypeFull,
 		Format:     AuditExportFormatJSON,

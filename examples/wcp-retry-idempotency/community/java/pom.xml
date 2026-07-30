@@ -16,9 +16,20 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Pin Jackson to 2.22.1 to override the SDK 5.5.0 transitive 2.17.0,
-             which is vulnerable to GHSA-72hv-8253-57qq (jackson-core async parser DoS).
-             Drop this pin once the Java SDK ships a release that bumps Jackson. -->
+        <!-- Pin the whole Jackson family to 2.22.1 via the BOM below.
+             axonflow-sdk 9.0.0 - the current released line on Maven Central -
+             pins jackson 2.17.0 in its own pom, which reaches this project
+             transitively and matches seven advisories: on jackson-core,
+             GHSA-r7wm-3cxj-wff9 (High) and GHSA-72hv-8253-57qq (Moderate),
+             both non-blocking (async) parser defects; on jackson-databind,
+             CVE-2026-54512 and CVE-2026-54513 (both High, PolymorphicTypeValidator
+             allowlist bypasses) plus CVE-2026-54514, CVE-2026-54515 and
+             CVE-2026-59888 (Moderate). 2.22.1 matches none of them.
+
+             KEEP THIS PIN until a RELEASED axonflow-sdk actually ships the bump.
+             The SDK-side fix is prepared but unreleased (axonflow-sdk-java#203),
+             so dropping the pin now would put 2.17.0 back on the compile
+             classpath of everyone who follows this example. Tracked in #3110. -->
         <jackson.version>2.22.1</jackson.version>
     </properties>
 

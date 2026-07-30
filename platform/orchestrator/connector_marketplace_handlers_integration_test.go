@@ -29,6 +29,11 @@ import (
 
 // getTestDBURL returns a database URL for integration tests.
 // Uses DATABASE_URL if set, otherwise starts a testcontainers PostgreSQL instance.
+// testTenantID is the tenancy every connector in this integration suite is
+// registered under. #3067 keyed the connector registry by tenant, so the
+// lookups have to name the same tenancy the config carries.
+const testTenantID = "test-tenant-integration"
+
 func getTestDBURL(t *testing.T) string {
 	t.Helper()
 
@@ -68,7 +73,7 @@ func TestConnectorMarketplace_InitializeConnectorRegistry_WithDatabase(t *testin
 
 	// Verify it's using database storage (not in-memory)
 	// In-memory registry starts empty, DB registry may have persisted connectors
-	connectors := connectorRegistry.ListWithTypes()
+	connectors := connectorRegistry.ListWithTypes(testTenantID)
 
 	// Just verify registry is functional, don't assume it's empty
 	t.Logf("Registry initialized with %d persisted connectors", len(connectors))
@@ -93,7 +98,7 @@ func TestConnectorMarketplace_InitializeConnectorRegistry_WithInvalidDB(t *testi
 	}
 
 	// In-memory registry should start empty
-	connectors := connectorRegistry.ListWithTypes()
+	connectors := connectorRegistry.ListWithTypes(testTenantID)
 	if len(connectors) != 0 {
 		t.Errorf("In-memory fallback registry should start empty, got %d connectors", len(connectors))
 	}
@@ -126,7 +131,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 
 	// Clean up test connector after test
 	defer func() {
-		_ = connectorRegistry.Unregister(testConnectorID)
+		_ = connectorRegistry.Unregister(testTenantID, testConnectorID)
 	}()
 
 	// Create and register HTTP connector
@@ -138,7 +143,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 	config := &base.ConnectorConfig{
 		Name:     "Test HTTP Connector",
 		Type:     "http",
-		TenantID: "test-tenant-integration",
+		TenantID: testTenantID,
 		Options: map[string]interface{}{
 			"base_url":          mockServer.URL,
 			"allow_private_ips": true,
@@ -153,7 +158,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 	}
 
 	// Verify connector is registered
-	connectors := connectorRegistry.ListWithTypes()
+	connectors := connectorRegistry.ListWithTypes(testTenantID)
 	if _, exists := connectors[testConnectorID]; !exists {
 		t.Error("Connector should be registered in memory")
 	}
@@ -176,7 +181,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 	// After ReloadFromStorage, connectors are lazy-loaded (stored in configs but not
 	// instantiated). Use GetConfig to check persistence rather than ListWithTypes
 	// which only returns instantiated connectors.
-	if _, err := newRegistry.GetConfig(testConnectorID); err != nil {
+	if _, err := newRegistry.GetConfig(testTenantID, testConnectorID); err != nil {
 		t.Error("Connector should be persisted in database and reloaded")
 	}
 }
@@ -207,7 +212,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 
 	// Clean up test connector after test (in case uninstall fails)
 	defer func() {
-		_ = connectorRegistry.Unregister(testConnectorID)
+		_ = connectorRegistry.Unregister(testTenantID, testConnectorID)
 	}()
 
 	// Create and register HTTP connector
@@ -219,7 +224,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 	config := &base.ConnectorConfig{
 		Name:     "Test HTTP Connector Uninstall",
 		Type:     "http",
-		TenantID: "test-tenant-integration",
+		TenantID: testTenantID,
 		Options: map[string]interface{}{
 			"base_url":          mockServer.URL,
 			"allow_private_ips": true,
@@ -234,19 +239,19 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 	}
 
 	// Verify connector exists
-	connectors := connectorRegistry.ListWithTypes()
+	connectors := connectorRegistry.ListWithTypes(testTenantID)
 	if _, exists := connectors[testConnectorID]; !exists {
 		t.Fatal("Connector should be registered")
 	}
 
 	// Uninstall connector (should delete from database)
-	err = connectorRegistry.Unregister(testConnectorID)
+	err = connectorRegistry.Unregister(testTenantID, testConnectorID)
 	if err != nil {
 		t.Fatalf("Failed to unregister connector: %v", err)
 	}
 
 	// Verify connector is removed from memory
-	connectors = connectorRegistry.ListWithTypes()
+	connectors = connectorRegistry.ListWithTypes(testTenantID)
 	if _, exists := connectors[testConnectorID]; exists {
 		t.Error("Connector should be unregistered from memory")
 	}
@@ -267,7 +272,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 
 	// Verify connector was deleted from database
 	// Use GetConfig (checks configs map) for consistency with lazy-loading behavior
-	if _, err := newRegistry.GetConfig(testConnectorID); err == nil {
+	if _, err := newRegistry.GetConfig(testTenantID, testConnectorID); err == nil {
 		t.Error("Connector should be deleted from database")
 	}
 }
@@ -308,7 +313,7 @@ func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
 
 	// Clean up test connector after test
 	defer func() {
-		_ = connectorRegistry.Unregister(testConnectorID)
+		_ = connectorRegistry.Unregister(testTenantID, testConnectorID)
 	}()
 
 	// Create a second registry to simulate another orchestrator instance
@@ -327,7 +332,7 @@ func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
 	config := &base.ConnectorConfig{
 		Name:     "Test Reload Connector",
 		Type:     "http",
-		TenantID: "test-tenant-reload",
+		TenantID: testTenantID,
 		Options: map[string]interface{}{
 			"base_url":          mockServer.URL,
 			"allow_private_ips": true,
@@ -345,7 +350,7 @@ func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
 	found := false
 	for i := 0; i < 4; i++ {
 		time.Sleep(600 * time.Millisecond)
-		if _, err := connectorRegistry.GetConfig(testConnectorID); err == nil {
+		if _, err := connectorRegistry.GetConfig(testTenantID, testConnectorID); err == nil {
 			found = true
 			break
 		}

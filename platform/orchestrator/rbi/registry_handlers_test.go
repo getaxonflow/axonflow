@@ -17,14 +17,14 @@ import (
 
 // MockAISystemRegistryService is a mock implementation for testing handlers.
 type MockAISystemRegistryService struct {
-	createFunc          func(ctx context.Context, orgID string, req *CreateAISystemRequest) (*AISystem, error)
-	getFunc             func(ctx context.Context, orgID, id string) (*AISystem, error)
-	listFunc            func(ctx context.Context, orgID string, params *ListAISystemsParams) ([]*AISystem, int, error)
-	updateFunc          func(ctx context.Context, orgID, id string, req *UpdateAISystemRequest) (*AISystem, error)
-	deleteFunc          func(ctx context.Context, orgID, id string) error
-	processBoardFunc    func(ctx context.Context, orgID, id string, req *BoardApprovalRequest) (*AISystem, error)
-	getSummaryFunc      func(ctx context.Context, orgID string) (*AISystemSummary, error)
-	scheduleValFunc     func(ctx context.Context, orgID, id string, validationDate time.Time) (*AISystem, error)
+	createFunc       func(ctx context.Context, orgID string, req *CreateAISystemRequest) (*AISystem, error)
+	getFunc          func(ctx context.Context, orgID, id string) (*AISystem, error)
+	listFunc         func(ctx context.Context, orgID string, params *ListAISystemsParams) ([]*AISystem, int, error)
+	updateFunc       func(ctx context.Context, orgID, id string, req *UpdateAISystemRequest) (*AISystem, error)
+	deleteFunc       func(ctx context.Context, orgID, id string) error
+	processBoardFunc func(ctx context.Context, orgID, id string, req *BoardApprovalRequest) (*AISystem, error)
+	getSummaryFunc   func(ctx context.Context, orgID string) (*AISystemSummary, error)
+	scheduleValFunc  func(ctx context.Context, orgID, id string, validationDate time.Time) (*AISystem, error)
 }
 
 func (m *MockAISystemRegistryService) CreateSystem(ctx context.Context, orgID string, req *CreateAISystemRequest) (*AISystem, error) {
@@ -90,7 +90,8 @@ func TestAISystemRegistryHandler_CreateSystem(t *testing.T) {
 
 	t.Run("successful creation", func(t *testing.T) {
 		body := `{"system_id":"test-sys","system_name":"Test System","risk_category":"low"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -124,7 +125,8 @@ func TestAISystemRegistryHandler_CreateSystem(t *testing.T) {
 
 	t.Run("invalid JSON", func(t *testing.T) {
 		body := `{invalid json}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -151,8 +153,15 @@ func TestAISystemRegistryHandler_CreateSystem(t *testing.T) {
 }
 
 func TestAISystemRegistryHandler_ListSystems(t *testing.T) {
+	// gotParams records what the handler actually parsed out of the query string.
+	// Asserting only w.Code == 200 cannot distinguish "filters parsed" from
+	// "filters silently dropped" (a malformed URL such as
+	// `/api/v1/rbi/ai-systems&risk_category=high` leaves RawQuery empty and still
+	// returns 200), so the filter subtest below asserts the parsed values instead.
+	var gotParams *ListAISystemsParams
 	mockService := &MockAISystemRegistryService{
 		listFunc: func(ctx context.Context, orgID string, params *ListAISystemsParams) ([]*AISystem, int, error) {
+			gotParams = params
 			return []*AISystem{
 				{ID: "sys-1", OrgID: orgID, SystemName: "System 1"},
 				{ID: "sys-2", OrgID: orgID, SystemName: "System 2"},
@@ -162,7 +171,8 @@ func TestAISystemRegistryHandler_ListSystems(t *testing.T) {
 	handler := NewAISystemRegistryHandler(mockService)
 
 	t.Run("list all systems", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystems(w, req)
@@ -181,13 +191,37 @@ func TestAISystemRegistryHandler_ListSystems(t *testing.T) {
 	})
 
 	t.Run("with filters", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems?org_id=org-1&risk_category=high&limit=10&offset=0", nil)
+		gotParams = nil
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/rbi/ai-systems?risk_category=high&deployment_status=production&owner_department=risk&validation_overdue=true&limit=10&offset=5", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystems(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if gotParams == nil {
+			t.Fatal("ListSystems was never invoked, so no filter was parsed")
+		}
+		if gotParams.RiskCategory != "high" {
+			t.Errorf("RiskCategory = %q, want %q", gotParams.RiskCategory, "high")
+		}
+		if gotParams.DeploymentStatus != "production" {
+			t.Errorf("DeploymentStatus = %q, want %q", gotParams.DeploymentStatus, "production")
+		}
+		if gotParams.OwnerDepartment != "risk" {
+			t.Errorf("OwnerDepartment = %q, want %q", gotParams.OwnerDepartment, "risk")
+		}
+		if gotParams.ValidationOverdue == nil || !*gotParams.ValidationOverdue {
+			t.Errorf("ValidationOverdue = %v, want a non-nil true", gotParams.ValidationOverdue)
+		}
+		if gotParams.Limit != 10 {
+			t.Errorf("Limit = %d, want 10", gotParams.Limit)
+		}
+		if gotParams.Offset != 5 {
+			t.Errorf("Offset = %d, want 5", gotParams.Offset)
 		}
 	})
 }
@@ -204,7 +238,8 @@ func TestAISystemRegistryHandler_GetSystem(t *testing.T) {
 	handler := NewAISystemRegistryHandler(mockService)
 
 	t.Run("get existing system", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems/sys-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems/sys-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystemByID(w, req)
@@ -223,7 +258,8 @@ func TestAISystemRegistryHandler_GetSystem(t *testing.T) {
 	})
 
 	t.Run("system not found", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems/not-found?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems/not-found", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystemByID(w, req)
@@ -248,7 +284,8 @@ func TestAISystemRegistryHandler_UpdateSystem(t *testing.T) {
 
 	t.Run("update system", func(t *testing.T) {
 		body := `{"system_name":"Updated System Name"}`
-		req := httptest.NewRequest(http.MethodPatch, "/api/v1/rbi/ai-systems/sys-123?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/rbi/ai-systems/sys-123", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -272,7 +309,8 @@ func TestAISystemRegistryHandler_DeleteSystem(t *testing.T) {
 	handler := NewAISystemRegistryHandler(mockService)
 
 	t.Run("delete existing system", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/ai-systems/sys-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/ai-systems/sys-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystemByID(w, req)
@@ -283,7 +321,8 @@ func TestAISystemRegistryHandler_DeleteSystem(t *testing.T) {
 	})
 
 	t.Run("delete non-existent system", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/ai-systems/not-found?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/ai-systems/not-found", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystemByID(w, req)
@@ -316,7 +355,8 @@ func TestAISystemRegistryHandler_BoardApproval(t *testing.T) {
 
 	t.Run("approve system", func(t *testing.T) {
 		body := `{"action":"approve","approver":"CRO","reference":"BOARD-001"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/board-approval?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/board-approval", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -337,7 +377,8 @@ func TestAISystemRegistryHandler_BoardApproval(t *testing.T) {
 
 	t.Run("reject system", func(t *testing.T) {
 		body := `{"action":"reject","approver":"CRO","notes":"Risk assessment failed"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/board-approval?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/board-approval", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -355,7 +396,8 @@ func TestAISystemRegistryHandler_ScheduleValidation(t *testing.T) {
 
 	t.Run("schedule validation", func(t *testing.T) {
 		body := `{"validation_date":"2025-12-11T10:00:00Z"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/validation?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/validation", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -368,7 +410,8 @@ func TestAISystemRegistryHandler_ScheduleValidation(t *testing.T) {
 
 	t.Run("schedule validation without date uses now", func(t *testing.T) {
 		body := `{}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/validation?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123/validation", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -397,7 +440,8 @@ func TestAISystemRegistryHandler_GetSummary(t *testing.T) {
 	handler := NewAISystemRegistryHandler(mockService)
 
 	t.Run("get summary", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems/summary?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/ai-systems/summary", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleSummary(w, req)
@@ -442,7 +486,8 @@ func TestAISystemRegistryHandler_MethodNotAllowed(t *testing.T) {
 	handler := NewAISystemRegistryHandler(mockService)
 
 	t.Run("PUT not allowed on collection", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/rbi/ai-systems?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/rbi/ai-systems", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystems(w, req)
@@ -453,7 +498,8 @@ func TestAISystemRegistryHandler_MethodNotAllowed(t *testing.T) {
 	})
 
 	t.Run("POST not allowed on item", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems/sys-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleAISystemByID(w, req)
@@ -474,7 +520,8 @@ func TestAISystemRegistryHandler_ServiceErrors(t *testing.T) {
 		handler := NewAISystemRegistryHandler(mockService)
 
 		body := `{"system_id":"test-sys","system_name":"Test System","risk_category":"low"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -494,7 +541,8 @@ func TestAISystemRegistryHandler_ServiceErrors(t *testing.T) {
 		handler := NewAISystemRegistryHandler(mockService)
 
 		body := `{"system_id":"test-sys","system_name":"Test System","risk_category":"low"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/ai-systems", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -520,12 +568,13 @@ func TestAISystemRegistryHandler_RegisterRoutes(t *testing.T) {
 			path   string
 			want   int
 		}{
-			{http.MethodGet, "/api/v1/rbi/ai-systems?org_id=org-1", http.StatusOK},
-			{http.MethodGet, "/api/v1/rbi/ai-systems/summary?org_id=org-1", http.StatusOK},
+			{http.MethodGet, "/api/v1/rbi/ai-systems", http.StatusOK},
+			{http.MethodGet, "/api/v1/rbi/ai-systems/summary", http.StatusOK},
 		}
 
 		for _, tc := range testCases {
 			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)
 

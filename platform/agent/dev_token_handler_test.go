@@ -93,14 +93,24 @@ func TestDevTokenEndpointEnabled_FailClosedMatrix(t *testing.T) {
 }
 
 // TestDevTokenEndpointEnabled_DoesNotReuseFailOpenHelpers pins the regression
-// that the gate must NOT inherit the fail-open default of isCommunityMode()
-// (true on unset DEPLOYMENT_MODE) or getDeploymentKind() (unset → "dev").
+// that the gate must NOT inherit a fail-open default from a helper it consults
+// nearby — originally isCommunityMode() (then true on unset DEPLOYMENT_MODE)
+// and getDeploymentKind() (unset → "dev").
+//
+// #3096 removed the first of those two fail-open defaults: isCommunityMode() is
+// now false on unset, so this file's deliberately-duplicated `== "community"`
+// check (dev_token_handler.go) and the shared helper finally agree. The test
+// keeps its shape rather than being deleted, because getDeploymentKind() STILL
+// defaults to "dev" on unset and the gate must stay closed regardless.
 func TestDevTokenEndpointEnabled_DoesNotReuseFailOpenHelpers(t *testing.T) {
 	clearGateEnv(t)
-	// Sanity: the legacy helpers DO fail open on this exact unset state...
-	if !isCommunityMode() {
-		t.Fatal("precondition: isCommunityMode() should be true on unset DEPLOYMENT_MODE")
+	// #3096: unset is no longer community. Pinned here so that re-introducing
+	// the fail-open default trips this test as well as the ones in
+	// auth_middleware_test.go / community_mode_test.go.
+	if isCommunityMode() {
+		t.Fatal("precondition: isCommunityMode() must be FALSE on unset DEPLOYMENT_MODE (#3096)")
 	}
+	// getDeploymentKind() does still fail open on this exact unset state...
 	if getDeploymentKind() != "dev" {
 		t.Fatal("precondition: getDeploymentKind() should default to 'dev' on unset")
 	}

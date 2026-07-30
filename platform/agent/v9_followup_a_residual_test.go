@@ -150,7 +150,9 @@ func TestMCPProxyToAgent_BasicAuth_UsesClientID(t *testing.T) {
 func TestAuthenticateMCPServerRequest_UserRoleNotFabricated(t *testing.T) {
 	// Community mode: Authenticate succeeds without DB and no per-user token
 	// is presented, so the caller takes the least-privilege path.
-	t.Setenv("AXONFLOW_MODE", "community")
+	// #3096: this said AXONFLOW_MODE, which nothing reads — the test worked
+	// only because an unset DEPLOYMENT_MODE meant community. Name the real one.
+	t.Setenv("DEPLOYMENT_MODE", "community")
 
 	req := httptest.NewRequest("POST", "/", nil)
 	req.Header.Set("X-User-Email", "alice@example.com")

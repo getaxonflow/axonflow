@@ -31,6 +31,7 @@ import (
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/rls"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // V1 Plugin Pro MCP tool names. Used for switch-dispatch in handleMCPToolsCall
@@ -108,7 +109,7 @@ func v1ProMCPTools() []mcpTool {
 					},
 					"connector_type": map[string]interface{}{
 						"type":        "string",
-						"description": "Tool / connector this policy applies to (e.g. 'claude_code.Bash', '*' for all).",
+						"description": "Tool / connector this policy documents an intent for (e.g. 'claude_code.Bash', '*' for all). NOTE: this is recorded in the policy description and is NOT yet enforced as a scope (#3061) — the policy matches its pattern on every governed connector regardless of this value.",
 					},
 					"pattern": map[string]interface{}{
 						"type":        "string",
@@ -517,10 +518,11 @@ func resolveHITLServiceForMCP() *hitl.Service {
 //   - audit            -> log               (enhanced audit logging)
 //   - require_approval -> require_approval  (HITL gate)
 //
-// The user's `connector_type` arg is preserved in the policy
-// description (the dynamic-policy engine doesn't expose a connector
-// field as a first-class condition; the prior direct-INSERT shape
-// stored connector_type in malformed JSON the engine couldn't read).
+// The user's `connector_type` is recorded in the policy DESCRIPTION and is
+// deliberately NOT emitted as a {field:"connector"} condition — see
+// buildTenantPolicyConditions for the evidence and the follow-up issue.
+// A policy therefore governs the pattern on EVERY connector, not just the
+// one named; the tool says so rather than implying scoping it cannot deliver.
 func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
 	name, _ := args["name"].(string)
 	connectorType, _ := args["connector_type"].(string)
@@ -536,9 +538,8 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 		return nil, fmt.Errorf("action must be one of: block, warn, audit, require_approval")
 	}
 
-	// Compose a description that retains the user's connector_type for
-	// readability without smuggling it into the condition JSON (where
-	// the engine wouldn't read it).
+	// The `[connector=...]` description prefix remains the ONLY record of the
+	// connector the user named (see buildTenantPolicyConditions).
 	combinedDescription := fmt.Sprintf("[connector=%s] %s", connectorType, description)
 
 	body := map[string]interface{}{
@@ -546,13 +547,7 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 		"description": combinedDescription,
 		"type":        "content",
 		"tier":        "tenant", // triggers IsPaidTier gate at policy_api_service
-		"conditions": []map[string]interface{}{
-			{
-				"field":    "query",
-				"operator": "regex",
-				"value":    pattern,
-			},
-		},
+		"conditions":  buildTenantPolicyConditions(pattern),
 		"actions": []map[string]interface{}{
 			{
 				"type": engineAction,
@@ -583,6 +578,59 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 	// when this tool used direct DB writes.
 	policyMap := extractPolicyFromResponse(resp)
 
+	// #3061: report the deployment's ACTUAL enforcement posture instead of
+	// unconditionally promising "It will apply to subsequent governed calls."
+	// That promise was false on every default install (both community
+	// docker-compose and the community-saas CFN template ship
+	// MCP_DYNAMIC_POLICIES_ENABLED=false), and a policy the operator believes
+	// is blocking but is not is worse than no policy at all.
+	enforced, blockedReason, restrictedTo := tenantPolicyEnforcementStatus()
+	message := fmt.Sprintf(
+		"Successfully created tenant-scoped policy %q. It will apply to subsequent governed calls.",
+		name)
+	if enforced && len(restrictedTo) > 0 {
+		message += fmt.Sprintf(
+			" This deployment restricts governed calls to connectors [%s] (MCP_DYNAMIC_POLICIES_CONNECTORS),"+
+				" so the policy applies only there.", strings.Join(restrictedTo, ", "))
+	}
+	// The connector the caller named is NOT enforced as a scope — see
+	// buildTenantPolicyConditions. Say so rather than let connector_type imply
+	// a narrowing the stored policy does not carry.
+	if enforced {
+		message += fmt.Sprintf(
+			" NOTE: connector_type %q is recorded in the policy description but is NOT yet enforced as a scope,"+
+				" so this policy matches its pattern on EVERY governed connector, not only %q.",
+			connectorType, connectorType)
+	}
+	if !enforced {
+		message = fmt.Sprintf(
+			"Created tenant-scoped policy %q, but it is STORED AND NOT ENFORCED on this deployment: %s. "+
+				"To enforce it, set MCP_DYNAMIC_POLICIES_ENABLED=true on the agent (and, if "+
+				"MCP_DYNAMIC_POLICIES_CONNECTORS is set, include the connectors you want governed in that "+
+				"list), then restart the agent. The policy is stored and takes effect as soon as that is "+
+				"done — no need to recreate it.",
+			name, blockedReason)
+	}
+	// Only `block` gates a call on this plane: the MCP evaluation response
+	// carries allow/deny (MCPPolicyEvaluationResponse), with no approval or
+	// alert channel, so alert/log/require_approval policies are RECORDED as
+	// matched and do not stop the call. Say so rather than let the action name
+	// imply a gate that does not exist here.
+	if enforced && engineAction != "block" {
+		message += fmt.Sprintf(
+			" NOTE: on the MCP tool-governance plane the %q action is recorded on the matching decision"+
+				" but does not stop the call; only the \"block\" action denies a tool call there.", action)
+	}
+	// `enforced` describes the MCP tool-governance plane only. Decision Mode
+	// (/decide) passes runDynamicPolicy=false — dynamic evaluation there is M2
+	// scope per epic #2426 — so a PEP integrated via /decide does not evaluate
+	// this policy at all, whatever the flag says.
+	if enforced {
+		message += " Scope: this covers MCP tool-governance calls (check-input and the MCP planes)." +
+			" Decision Mode (POST /api/v1/decide) does not evaluate tenant dynamic policies yet, so a" +
+			" PEP integrated through /decide is not governed by this policy."
+	}
+
 	created := map[string]interface{}{
 		// Explicit positive signal for LLM consumers (#1986). Without
 		// `success: true` + `created: true`, models can misread the
@@ -595,7 +643,22 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 		"pattern":        pattern,
 		"action":         action,
 		"enabled":        true,
-		"message":        fmt.Sprintf("Successfully created tenant-scoped policy %q. It will apply to subsequent governed calls.", name),
+		// Machine-readable sibling of `message` so an LLM consumer does not
+		// have to parse prose to learn the policy is inert. `enabled` describes
+		// the stored row; `enforced` describes this deployment's runtime.
+		"enforced": enforced,
+		// #3061: the stored policy carries no connector condition, so the
+		// connector the caller named is descriptive only. Machine-readable so an
+		// LLM consumer does not have to infer it from prose.
+		"connector_scope_enforced": false,
+		"applies_to_connectors":    "all",
+		"message":                  message,
+	}
+	if enforced && len(restrictedTo) > 0 {
+		created["applies_to_connectors"] = restrictedTo
+	}
+	if !enforced {
+		created["enforcement_blocked_reason"] = blockedReason
 	}
 	if policyID, ok := policyMap["id"].(string); ok && policyID != "" {
 		created["id"] = policyID
@@ -604,6 +667,83 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 		created["policy_id"] = policyKey
 	}
 	return created, nil
+}
+
+// buildTenantPolicyConditions builds the condition list for a tenant policy:
+// the pattern, and ONLY the pattern.
+//
+// #3061 DOCUMENTED DEFERRAL — why connector_type is not a condition here.
+//
+// The obvious fix for "the user's connector is discarded into the description"
+// is to emit {field:"connector", operator:"equals", value:connectorType}. That
+// is correct for the MCP plane, whose evaluator has resolved `connector` from
+// MCPPolicyEvaluationRequest.ConnectorName since #968 — but it BREAKS the
+// planes where these policies already work today. These rows are
+// policy_type='content', and the orchestrator content engine that governs the
+// LLM / MAP / WCP planes has no `connector` field at all: getFieldValue
+// (db_dynamic_policies.go) falls through to its default arm and returns nil,
+// `equals` then compares "<nil>" against the real connector name and yields
+// false, and with conditions present ALL must match — so the entire policy is
+// skipped. Adding the condition would therefore trade MCP-plane enforcement
+// for the loss of enforcement where it already worked: the same defect class
+// #3061 exists to fix, inverted.
+//
+// Making `connector` resolvable on the orchestrator content engine is the real
+// fix, and it belongs in db_dynamic_policies.go — a file owned by another
+// in-flight workstream, so it is NOT touched here. Tracked as the follow-up
+// filed against #3061; until it lands, a tenant policy governs its pattern on
+// EVERY connector rather than the one named. That is over-broad rather than
+// under-broad (it fails toward more governance, not less), it matches the
+// pre-#3061 stored shape so no existing row changes meaning, and the tool's
+// response says so plainly instead of promising scoping it cannot deliver.
+func buildTenantPolicyConditions(pattern string) []map[string]interface{} {
+	return []map[string]interface{}{
+		{
+			"field":    "query",
+			"operator": "regex",
+			"value":    pattern,
+		},
+	}
+}
+
+// tenantPolicyEnforcementStatus reports whether tenant policies are EVALUATED
+// at all on this agent's MCP governance plane, plus (when they are) any
+// connector allowlist that narrows where they apply (#3061).
+//
+// Deliberately a PLANE-level question, not a per-connector one. The stored
+// policy carries no connector condition (see buildTenantPolicyConditions), so
+// it applies to every connector the plane evaluates; asking
+// IsEnabled(connectorType) would answer a question about a scoping that does
+// not exist. It would also be actively misleading: with an empty allowlist
+// IsEnabled returns true for ANY string, so a caller who passed a connector
+// name the platform never emits — "shell" rather than the composite
+// "<client>.<Tool>" the plugins send — would be told the policy is enforced
+// for that connector, which is exactly the false-promise class #3061 exists
+// to eliminate.
+//
+// This inspects the agent's live evaluator rather than auto-enabling anything.
+// Auto-enabling on first policy creation would flip a deployment-wide
+// enforcement posture as a side effect of one MCP tool call:
+// MCP_DYNAMIC_POLICIES_ENABLED gates the plane for EVERY connector and every
+// caller, not just this policy, and with MCP_DYNAMIC_POLICIES_GRACEFUL
+// defaulting to true an orchestrator blip would then fail open on traffic the
+// operator never opted into governing. Reporting honestly is the safe half of
+// that trade; the operator keeps the decision.
+//
+// A nil evaluator means the process never initialized one, which is itself a
+// not-enforced state — never dereference it (IsEnabled takes a lock).
+func tenantPolicyEnforcementStatus() (enforced bool, blockedReason string, restrictedTo []string) {
+	evaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	if evaluator == nil {
+		return false, "the agent has no MCP dynamic-policy evaluator initialized", nil
+	}
+	cfg := evaluator.GetConfig()
+	if !cfg.Enabled {
+		return false, "MCP dynamic policy evaluation is disabled on this agent (MCP_DYNAMIC_POLICIES_ENABLED is not true)", nil
+	}
+	// Empty allowlist means every connector; a non-empty one means the plane —
+	// and therefore this policy — only runs for those connectors.
+	return true, "", cfg.EnabledConnectors
 }
 
 // mapTenantPolicyAction translates the user-facing tenant-policy

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 )
 
 // PlanAuditLogger interface for audit logging plan operations
@@ -21,18 +22,18 @@ type PlanAuditLogger interface {
 
 // PlanAuditEntry represents an audit entry for plan operations
 type PlanAuditEntry struct {
-	PlanID     string
-	Query      string
-	Domain     string
-	Operation  string // created, execution_started, completed, failed, expired, cancelled
-	Status     string // pending, executing, completed, failed, expired
-	StepCount  int
-	ErrorMsg   string
-	TenantID   string
-	OrgID      string
-	ClientID   string
-	UserID     string
-	Metadata   map[string]interface{}
+	PlanID    string
+	Query     string
+	Domain    string
+	Operation string // created, execution_started, completed, failed, expired, cancelled
+	Status    string // pending, executing, completed, failed, expired
+	StepCount int
+	ErrorMsg  string
+	TenantID  string
+	OrgID     string
+	ClientID  string
+	UserID    string
+	Metadata  map[string]interface{}
 }
 
 // ServiceConfig holds configuration for the planning service
@@ -90,6 +91,18 @@ func (s *Service) StorePlan(ctx context.Context, req *CreatePlanRequest) (*Plan,
 	}
 	if len(req.WorkflowDefinition) == 0 {
 		return nil, ErrInvalidWorkflow
+	}
+
+	// #3065 (F2): make the empty state unrepresentable. `plans` has NO RLS at
+	// all, so the org key on the row IS the entire tenancy boundary — and
+	// SavePlan writes it through nullString(), which turned an absent header
+	// into a permanent NULL. A NULL-org plan was reachable by every tenant
+	// (the old `plan.OrgID != "" && ...` compare skipped the check) and can
+	// never be re-authorized now that the compare fails closed, so persisting
+	// one only manufactures orphans. Migration core/156 enforces the same
+	// invariant in the database.
+	if err := tenantscope.ValidateRowKeys(req.OrgID, req.TenantID); err != nil {
+		return nil, fmt.Errorf("cannot store plan without an authenticated org and tenant: %w", err)
 	}
 
 	ttl := req.TTL
@@ -158,11 +171,14 @@ func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID 
 		return nil, err
 	}
 
-	// Authorization: verify the requesting org matches the plan's org
-	// This prevents cross-tenant plan execution
-	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
-		log.Printf("[PlanService] Authorization failed: plan %s belongs to org %s, requested by org %s",
-			logutil.Sanitize(planID), logutil.Sanitize(plan.OrgID), logutil.Sanitize(orgID))
+	// Authorization: the requesting org must match the plan's org.
+	// #3065 (F2): this was `orgID != "" && plan.OrgID != "" && plan.OrgID != orgID`
+	// — omitting X-Org-ID skipped it entirely and let any caller execute any
+	// tenant's plan. authorizePlan fails closed on an empty value on either
+	// side.
+	if err := authorizePlan(plan, orgID); err != nil {
+		log.Printf("[PlanService] Authorization failed for plan %s requested by org %q: %v",
+			logutil.Sanitize(planID), logutil.Sanitize(orgID), err)
 		return nil, ErrPlanNotFound // Return not found to avoid leaking plan existence
 	}
 
@@ -291,10 +307,10 @@ func (s *Service) CancelPlan(ctx context.Context, planID string, orgID string, r
 		return fmt.Errorf("failed to get plan: %w", err)
 	}
 
-	// Authorization: verify the requesting org matches the plan's org
-	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
-		log.Printf("[PlanService] Cancel authorization failed: plan %s belongs to org %s, requested by org %s",
-			logutil.Sanitize(planID), logutil.Sanitize(plan.OrgID), logutil.Sanitize(orgID))
+	// Authorization: the requesting org must match the plan's org (#3065 F2).
+	if err := authorizePlan(plan, orgID); err != nil {
+		log.Printf("[PlanService] Cancel authorization failed for plan %s requested by org %q: %v",
+			logutil.Sanitize(planID), logutil.Sanitize(orgID), err)
 		return ErrPlanNotFound // Return not found to avoid leaking plan existence
 	}
 
@@ -327,9 +343,52 @@ func (s *Service) CancelPlan(ctx context.Context, planID string, orgID string, r
 	return nil
 }
 
-// GetPlan retrieves a plan by ID (for status checks)
-func (s *Service) GetPlan(ctx context.Context, planID string) (*Plan, error) {
+// GetPlan retrieves a plan by ID (for status checks), scoped to the caller's
+// org.
+//
+// #3065 (F3): this method had NO authorization check at all. Its callers —
+// the plan-status handler, the cost-estimation handler, the plan-resume
+// handler — each re-implemented (or, in the resume handler's case, omitted)
+// the fail-open compare afterwards. The check now lives here, once, so a
+// fourth caller inherits it instead of forgetting it. Callers that hold no
+// request scope use GetPlanUnscoped.
+func (s *Service) GetPlan(ctx context.Context, planID, orgID string) (*Plan, error) {
+	plan, err := s.repo.GetPlan(ctx, planID)
+	if err != nil {
+		return nil, err
+	}
+	if err := authorizePlan(plan, orgID); err != nil {
+		log.Printf("[PlanService] GetPlan authorization failed for plan %s requested by org %q: %v",
+			logutil.Sanitize(planID), logutil.Sanitize(orgID), err)
+		return nil, ErrPlanNotFound // not-found, never 403 — no existence oracle
+	}
+	return plan, nil
+}
+
+// GetPlanUnscoped fetches a plan WITHOUT tenancy authorization.
+//
+// #3065: the named replacement for calling the old unscoped GetPlan. Exactly
+// one caller is legitimate — MAPExecutionTracker.GetPlanStatus, in-process
+// reconciliation whose result is authorized by the HTTP layer
+// (UnifiedExecutionHandler.checkTenantOwnership) before any byte reaches a
+// client. Never call this from a request handler.
+func (s *Service) GetPlanUnscoped(ctx context.Context, planID string) (*Plan, error) {
 	return s.repo.GetPlan(ctx, planID)
+}
+
+// authorizePlan is the single by-id authorization for `plans` (#3065 F2/F3).
+//
+// It is AuthorizeOrgOnly rather than the two-dimension Authorize because the
+// plan by-id call sites thread a bare orgID string: GetPlanForExecution's
+// signature is fixed by a call site in a region of run.go owned by another
+// workstream, and having half the plan surface check both keys while the
+// other half checks one is precisely the kind of per-door divergence this
+// issue exists to end. `plans.org_id` has always been the plan tenancy key.
+func authorizePlan(plan *Plan, callerOrgID string) error {
+	if plan == nil {
+		return ErrPlanNotFound
+	}
+	return tenantscope.NewOrgOnly(callerOrgID).AuthorizeOrgOnly(plan.OrgID)
 }
 
 // UpdatePlan updates a plan with optimistic locking and version history
@@ -347,8 +406,8 @@ func (s *Service) UpdatePlan(ctx context.Context, req *UpdatePlanRequest) (*Plan
 		return nil, err
 	}
 
-	// Authorization check
-	if req.OrgID != "" && plan.OrgID != "" && plan.OrgID != req.OrgID {
+	// Authorization check (#3065 F2 — fail closed on an empty value either side)
+	if err := authorizePlan(plan, req.OrgID); err != nil {
 		return nil, ErrPlanNotFound
 	}
 
@@ -454,7 +513,7 @@ func (s *Service) GetPlanVersions(ctx context.Context, planID string, orgID stri
 	if err != nil {
 		return nil, err
 	}
-	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
+	if err := authorizePlan(plan, orgID); err != nil {
 		return nil, ErrPlanNotFound
 	}
 
@@ -477,8 +536,8 @@ func (s *Service) RollbackPlan(ctx context.Context, req *RollbackPlanRequest) (*
 		return nil, err
 	}
 
-	// Authorization check
-	if req.OrgID != "" && plan.OrgID != "" && plan.OrgID != req.OrgID {
+	// Authorization check (#3065 F2 — fail closed on an empty value either side)
+	if err := authorizePlan(plan, req.OrgID); err != nil {
 		return nil, ErrPlanNotFound
 	}
 

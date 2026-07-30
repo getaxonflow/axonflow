@@ -560,6 +560,33 @@ func AuthKindFromContext(ctx context.Context) AuthKind {
 	return AuthKindEnterprise
 }
 
+// writeTerminalPreflightResponse answers an OPTIONS request AT the auth
+// boundary and returns WITHOUT invoking the wrapped handler.
+//
+// #3092: both agent auth middlewares used to `next(w, r)` on OPTIONS so that a
+// CORS preflight would not be auth-checked. That is only safe if every wrapped
+// handler refuses OPTIONS itself, and they did not. `/api/v1/decide`
+// (decision_handler.go) and `/v1/chat/completions` (openai_compat_handler.go)
+// are both registered `.Methods("POST", "OPTIONS")`, so an OPTIONS carrying a
+// POST body ran the full decision engine with EMPTY tenancy, skipped
+// enforceCommunitySaasDailyCap and wrote audit_logs rows with no tenant.
+//
+// Terminating here costs nothing, because a genuine browser preflight never
+// reaches this code. rs/cors wraps the entire router (run.go:
+// `globalCORS.Handler(globalRouter)`) and answers any OPTIONS that also carries
+// Access-Control-Request-Method itself, before the router matches a route
+// (github.com/rs/cors@v1.11.1 cors.go:274). What can reach a middleware is
+// therefore only a NON-preflight OPTIONS — a request no browser generates — and
+// 204 with no body is both the correct answer for it and the safest.
+//
+// The response deliberately carries no CORS headers of its own: the outer
+// rs/cors handler has already applied the configured actual-request policy on
+// the way in, and duplicating it here would create a second, drifting source of
+// truth for the origin policy.
+func writeTerminalPreflightResponse(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // apiAuthMiddleware authenticates API requests using OAuth2 Client Credentials
 // (RFC 6749 Section 4.4) and stores the authenticated identity in request context.
 //
@@ -571,9 +598,9 @@ func AuthKindFromContext(ctx context.Context) AuthKind {
 // a warning is logged but the auth-derived tenant is used.
 func apiAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// CORS preflight passthrough
+		// CORS preflight is TERMINATED here, never forwarded (#3092).
 		if r.Method == http.MethodOptions {
-			next.ServeHTTP(w, r)
+			writeTerminalPreflightResponse(w)
 			return
 		}
 

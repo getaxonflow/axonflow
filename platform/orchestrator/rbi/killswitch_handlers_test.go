@@ -329,10 +329,15 @@ func TestKillSwitchHandler_ActivateKillSwitch(t *testing.T) {
 	})
 
 	t.Run("activate kill switch", func(t *testing.T) {
-		body := `{"actor_id":"user-123","actor_email":"admin@example.com","reason":"Security concern"}`
+		// INVERTED BY #3150. This case used to send actor_id in the body and
+		// assert it became ActivatedBy — pinning the forgery as a requirement.
+		// The body values below are now DECOYS: X-Client-ID is stamped by the
+		// agent from the validated credential, so the credential must win.
+		body := `{"actor_id":"user-123","actor_email":"admin@example.com","actor_role":"chief_risk_officer","actor_ip":"1.2.3.4","reason":"Security concern"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/killswitches/"+ks.ID+"/activate", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Client-ID", "client-alpha")
 
 		rr := httptest.NewRecorder()
 		handler.handleKillSwitchRoutes(rr, req)
@@ -349,8 +354,11 @@ func TestKillSwitchHandler_ActivateKillSwitch(t *testing.T) {
 		if !result.IsActive {
 			t.Error("Expected IsActive to be true")
 		}
-		if result.ActivatedBy != "user-123" {
-			t.Errorf("ActivatedBy = %v, want user-123", result.ActivatedBy)
+		if result.ActivatedBy != "client-alpha" {
+			t.Errorf("ActivatedBy = %v, want the authenticated credential client-alpha", result.ActivatedBy)
+		}
+		if result.ActivatedByEmail != "client-alpha@axonflow.local" {
+			t.Errorf("ActivatedByEmail = %v, want the synthetic credential identity", result.ActivatedByEmail)
 		}
 	})
 }
@@ -371,10 +379,12 @@ func TestKillSwitchHandler_DeactivateKillSwitch(t *testing.T) {
 	})
 
 	t.Run("deactivate kill switch", func(t *testing.T) {
-		body := `{"actor_id":"user-456","reason":"Issue resolved"}`
+		// INVERTED BY #3150 — see the activate case. actor_id is a decoy.
+		body := `{"actor_id":"user-456","actor_email":"cro@example.com","reason":"Issue resolved"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/killswitches/"+ks.ID+"/deactivate", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Client-ID", "client-alpha")
 
 		rr := httptest.NewRecorder()
 		handler.handleKillSwitchRoutes(rr, req)
@@ -391,8 +401,11 @@ func TestKillSwitchHandler_DeactivateKillSwitch(t *testing.T) {
 		if result.IsActive {
 			t.Error("Expected IsActive to be false")
 		}
-		if result.DeactivatedBy != "user-456" {
-			t.Errorf("DeactivatedBy = %v, want user-456", result.DeactivatedBy)
+		if result.DeactivatedBy != "client-alpha" {
+			t.Errorf("DeactivatedBy = %v, want the authenticated credential client-alpha", result.DeactivatedBy)
+		}
+		if result.DeactivatedByEmail != "client-alpha@axonflow.local" {
+			t.Errorf("DeactivatedByEmail = %v, want the synthetic credential identity", result.DeactivatedByEmail)
 		}
 	})
 }

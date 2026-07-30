@@ -16,7 +16,24 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3103. Migration 301 switches RLS on for all seven rbi_* tables with a
+// `FOR ALL USING (org_id = get_current_org_id())` policy, but this package
+// never set app.current_org_id. On an axonflow_app_role pool that made every
+// read return SILENT ZERO ROWS and every write fail closed ("new row violates
+// row-level security policy" — a FOR ALL USING expression doubles as the
+// INSERT/UPDATE WITH CHECK), and on a master/BYPASSRLS pool it left the hand-
+// written `WHERE org_id = $n` predicate as the ENTIRE tenant boundary with no
+// database backstop underneath — which is why #3099's `?org_id=` override was
+// directly exploitable rather than caught one layer down.
+//
+// Every statement below therefore runs inside rls.WithOrgScope, which opens a
+// transaction and SET LOCALs the GUC the policy reads. The SQL org_id
+// predicates are KEPT: the wrap is a backstop, not a replacement, and the two
+// failing independently is the point.
 
 // ErrAuditExportNotFound is returned when an audit export is not found.
 var ErrAuditExportNotFound = errors.New("audit export not found")
@@ -80,35 +97,38 @@ func (r *PostgresAuditExportRepository) Create(ctx context.Context, export *Audi
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		export.ID,
-		export.OrgID,
-		string(export.ExportType),
-		string(export.Format),
-		nullTime(export.StartDate),
-		nullTime(export.EndDate),
-		pq.Array(export.SystemIDs),
-		pq.Array(export.RiskCategories),
-		export.IncludeArchived,
-		string(export.Status),
-		nullString(export.ErrorMessage),
-		nullString(export.RequestedBy),
-		nullString(export.RequestedByEmail),
-		nullString(export.Purpose),
-		nullTime(export.StartedAt),
-		nullTime(export.CompletedAt),
-		nullString(export.FilePath),
-		export.FileSizeBytes,
-		nullString(export.FileChecksum),
-		export.RecordCount,
-		summaryJSON,
-		nullTime(export.ExpiresAt),
-		nullString(export.DownloadURL),
-		nullString(export.StorageType),
-		nullString(export.StorageKey),
-		export.CreatedAt,
-		export.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, export.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			export.ID,
+			export.OrgID,
+			string(export.ExportType),
+			string(export.Format),
+			nullTime(export.StartDate),
+			nullTime(export.EndDate),
+			pq.Array(export.SystemIDs),
+			pq.Array(export.RiskCategories),
+			export.IncludeArchived,
+			string(export.Status),
+			nullString(export.ErrorMessage),
+			nullString(export.RequestedBy),
+			nullString(export.RequestedByEmail),
+			nullString(export.Purpose),
+			nullTime(export.StartedAt),
+			nullTime(export.CompletedAt),
+			nullString(export.FilePath),
+			export.FileSizeBytes,
+			nullString(export.FileChecksum),
+			export.RecordCount,
+			summaryJSON,
+			nullTime(export.ExpiresAt),
+			nullString(export.DownloadURL),
+			nullString(export.StorageType),
+			nullString(export.StorageKey),
+			export.CreatedAt,
+			export.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create audit export: %w", err)
 	}
@@ -130,7 +150,15 @@ func (r *PostgresAuditExportRepository) Get(ctx context.Context, orgID, id strin
 		FROM rbi_audit_exports
 		WHERE id = $1 AND org_id = $2
 	`
-	return r.scanAuditExport(r.db.QueryRowContext(ctx, query, id, orgID))
+	var export *AuditExport
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		export, scanErr = r.scanAuditExport(tx.QueryRowContext(ctx, query, id, orgID))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return export, nil
 }
 
 // List retrieves audit exports with optional filtering.
@@ -175,10 +203,6 @@ func (r *PostgresAuditExportRepository) List(ctx context.Context, orgID string, 
 
 	// Count total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM rbi_audit_exports WHERE %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count audit exports: %w", err)
-	}
 
 	// Fetch records
 	query := fmt.Sprintf(`
@@ -195,24 +219,38 @@ func (r *PostgresAuditExportRepository) List(ctx context.Context, orgID string, 
 		ORDER BY created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argIdx, argIdx+1)
-	args = append(args, params.Limit, params.Offset)
+	countArgs := args
+	args = append(append([]interface{}{}, args...), params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list audit exports: %w", err)
-	}
-	defer rows.Close()
-
+	// One wrap for BOTH statements: the count and the page are separate call
+	// sites and each had to be scoped, and sharing the transaction also makes
+	// total and rows a consistent snapshot.
 	var exports []*AuditExport
-	for rows.Next() {
-		export, err := r.scanAuditExportRows(rows)
-		if err != nil {
-			return nil, 0, err
+	var total int
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count audit exports: %w", err)
 		}
-		exports = append(exports, export)
+
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list audit exports: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			export, scanErr := r.scanAuditExportRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			exports = append(exports, export)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, 0, err
 	}
 
-	return exports, total, rows.Err()
+	return exports, total, nil
 }
 
 // Update updates an existing audit export.
@@ -231,24 +269,29 @@ func (r *PostgresAuditExportRepository) Update(ctx context.Context, export *Audi
 		WHERE id = $1 AND org_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		export.ID,
-		export.OrgID,
-		string(export.Status),
-		nullString(export.ErrorMessage),
-		nullTime(export.StartedAt),
-		nullTime(export.CompletedAt),
-		nullString(export.FilePath),
-		export.FileSizeBytes,
-		nullString(export.FileChecksum),
-		export.RecordCount,
-		summaryJSON,
-		nullTime(export.ExpiresAt),
-		nullString(export.DownloadURL),
-		nullString(export.StorageType),
-		nullString(export.StorageKey),
-		export.UpdatedAt,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, export.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			export.ID,
+			export.OrgID,
+			string(export.Status),
+			nullString(export.ErrorMessage),
+			nullTime(export.StartedAt),
+			nullTime(export.CompletedAt),
+			nullString(export.FilePath),
+			export.FileSizeBytes,
+			nullString(export.FileChecksum),
+			export.RecordCount,
+			summaryJSON,
+			nullTime(export.ExpiresAt),
+			nullString(export.DownloadURL),
+			nullString(export.StorageType),
+			nullString(export.StorageKey),
+			export.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update audit export: %w", err)
 	}
@@ -263,10 +306,15 @@ func (r *PostgresAuditExportRepository) Update(ctx context.Context, export *Audi
 
 // Delete removes an audit export.
 func (r *PostgresAuditExportRepository) Delete(ctx context.Context, orgID, id string) error {
-	result, err := r.db.ExecContext(ctx,
-		"DELETE FROM rbi_audit_exports WHERE id = $1 AND org_id = $2",
-		id, orgID,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx,
+			"DELETE FROM rbi_audit_exports WHERE id = $1 AND org_id = $2",
+			id, orgID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete audit export: %w", err)
 	}
@@ -280,6 +328,19 @@ func (r *PostgresAuditExportRepository) Delete(ctx context.Context, orgID, id st
 }
 
 // GetPending retrieves all pending audit exports for processing.
+//
+// DELIBERATELY UNWRAPPED, and the only read in this file that is. There is no
+// caller org: the statement spans every tenant by design, and rls.WithOrgScope
+// rejects an empty orgID precisely so that "scope me to nothing" cannot be
+// spelled by accident. Cross-org work belongs on the BYPASSRLS
+// axonflow_platform_admin pool (see OpenPlatformAdminConnection), so a
+// repository backing this method MUST be constructed with that pool.
+//
+// On an axonflow_app_role pool this returns zero rows silently. It has no
+// production caller today — ProcessPendingExports/CleanupExpiredExports are
+// unwired — so no live path is affected, but wiring either one MUST route this
+// repository through the admin pool. Allowlisted in rlsReadAllowlist() with
+// this reason (#3103).
 func (r *PostgresAuditExportRepository) GetPending(ctx context.Context) ([]*AuditExport, error) {
 	query := `
 		SELECT
@@ -315,6 +376,10 @@ func (r *PostgresAuditExportRepository) GetPending(ctx context.Context) ([]*Audi
 }
 
 // GetExpired retrieves all expired audit exports for cleanup.
+//
+// DELIBERATELY UNWRAPPED for the same reason as GetPending: a retention sweep
+// is cross-org by definition and belongs on the axonflow_platform_admin pool.
+// Also unwired today. Allowlisted in rlsReadAllowlist() (#3103).
 func (r *PostgresAuditExportRepository) GetExpired(ctx context.Context) ([]*AuditExport, error) {
 	query := `
 		SELECT

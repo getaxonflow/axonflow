@@ -20,12 +20,12 @@ func TestCreateWorkflow(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name        string
-		req         *CreateWorkflowRequest
-		tenantID    string
-		wantErr     bool
-		wantSource  WorkflowSource
-		wantStatus  WorkflowStatus
+		name       string
+		req        *CreateWorkflowRequest
+		tenantID   string
+		wantErr    bool
+		wantSource WorkflowSource
+		wantStatus WorkflowStatus
 	}{
 		{
 			name: "create basic workflow",
@@ -119,7 +119,7 @@ func TestGetWorkflow(t *testing.T) {
 
 	// Test get existing workflow
 	t.Run("get existing workflow", func(t *testing.T) {
-		got, err := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+		got, err := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 			return
@@ -131,7 +131,7 @@ func TestGetWorkflow(t *testing.T) {
 
 	// Test get non-existent workflow
 	t.Run("get non-existent workflow", func(t *testing.T) {
-		_, err := svc.GetWorkflow(ctx, "non-existent", "", "")
+		_, err := svc.GetWorkflow(ctx, "non-existent", "tenant-1", "org-1")
 		if err == nil {
 			t.Error("expected error for non-existent workflow")
 		}
@@ -179,7 +179,7 @@ func TestStepGate_TerminalWorkflow(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 
 	// Try to check step gate on completed workflow
 	req := &StepGateRequest{
@@ -204,19 +204,19 @@ func TestCompleteWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete workflow
-	err := svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	err := svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Verify status
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.Status != WorkflowStatusCompleted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusCompleted)
 	}
 
 	// Try to complete again (should fail)
-	err = svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	err = svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error when completing already completed workflow")
 	}
@@ -233,13 +233,13 @@ func TestAbortWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Abort workflow
-	err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "test abort", "", "")
+	err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "test abort", "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Verify status
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.Status != WorkflowStatusAborted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusAborted)
 	}
@@ -256,13 +256,13 @@ func TestFailWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Fail workflow
-	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "test failure", "", "")
+	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "test failure", "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Verify status
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.Status != WorkflowStatusFailed {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusFailed)
 	}
@@ -294,12 +294,12 @@ func TestCompleteWorkflow_FinalizesTotalSteps(t *testing.T) {
 	}
 
 	// Complete the workflow
-	if err := svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", ""); err != nil {
+	if err := svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1"); err != nil {
 		t.Fatalf("CompleteWorkflow() error = %v", err)
 	}
 
 	// TotalSteps should now equal the number of steps that ran
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.TotalSteps == nil {
 		t.Fatal("TotalSteps should be set after completion")
 	}
@@ -329,11 +329,11 @@ func TestCompleteWorkflow_PreservesDeclaredTotalSteps(t *testing.T) {
 		}, "tenant-1", "org-1", "user-1", "client-1")
 	}
 
-	if err := svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", ""); err != nil {
+	if err := svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1"); err != nil {
 		t.Fatalf("CompleteWorkflow() error = %v", err)
 	}
 
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.TotalSteps == nil || *updated.TotalSteps != declared {
 		t.Errorf("TotalSteps = %v, want %d (declared value must not be overwritten)", updated.TotalSteps, declared)
 	}
@@ -354,11 +354,11 @@ func TestAbortWorkflow_FinalizesTotalSteps(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	if err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "user cancelled", "", ""); err != nil {
+	if err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "user cancelled", "tenant-1", "org-1"); err != nil {
 		t.Fatalf("AbortWorkflow() error = %v", err)
 	}
 
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.TotalSteps == nil {
 		t.Fatal("TotalSteps should be set after abort")
 	}
@@ -386,11 +386,11 @@ func TestFailWorkflow_FinalizesTotalSteps(t *testing.T) {
 		StepType: StepTypeToolCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	if err := svc.FailWorkflow(ctx, workflow.WorkflowID, "llm error", "", ""); err != nil {
+	if err := svc.FailWorkflow(ctx, workflow.WorkflowID, "llm error", "tenant-1", "org-1"); err != nil {
 		t.Fatalf("FailWorkflow() error = %v", err)
 	}
 
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.TotalSteps == nil {
 		t.Fatal("TotalSteps should be set after failure")
 	}
@@ -418,20 +418,35 @@ func TestListWorkflows(t *testing.T) {
 		}, "tenant-2", "org-1", "user-1", "client-1")
 	}
 
-	// Test listing with filters
-	t.Run("list all", func(t *testing.T) {
-		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Limit: 100})
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-			return
+	// #3065: "list all" is no longer a thing. The listing scope is mandatory,
+	// so the widest a caller can see is its own tenancy — the 8 rows below
+	// span two tenants and no single caller may see both.
+	t.Run("unscoped listing is denied", func(t *testing.T) {
+		if _, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Limit: 100}); err == nil {
+			t.Error("an unscoped list must be refused, not silently widened to every tenant")
 		}
-		if response.Total != 8 {
-			t.Errorf("total = %d, want 8", response.Total)
+	})
+
+	t.Run("a tenant never sees another tenant's rows", func(t *testing.T) {
+		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Limit: 100})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Assert on IDENTIFIERS, not just the count: every returned workflow
+		// id must be one tenant-1 owns.
+		for _, wf := range response.Workflows {
+			owned, err := svc.GetWorkflow(ctx, wf.WorkflowID, "tenant-1", "org-1")
+			if err != nil || owned == nil {
+				t.Errorf("listing returned %s, which tenant-1 cannot fetch — a cross-tenant row leaked into the list", wf.WorkflowID)
+			}
+		}
+		if response.Total != 5 {
+			t.Errorf("total = %d, want 5 (tenant-1's own rows only)", response.Total)
 		}
 	})
 
 	t.Run("list by tenant", func(t *testing.T) {
-		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", Limit: 100})
+		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Limit: 100})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 			return
@@ -443,7 +458,7 @@ func TestListWorkflows(t *testing.T) {
 
 	t.Run("list by source", func(t *testing.T) {
 		source := WorkflowSourceLangGraph
-		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Source: &source, Limit: 100})
+		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Source: &source, Limit: 100})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 			return
@@ -454,7 +469,7 @@ func TestListWorkflows(t *testing.T) {
 	})
 
 	t.Run("list with pagination", func(t *testing.T) {
-		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Limit: 3, Offset: 0})
+		response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Limit: 3, Offset: 0})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 			return
@@ -479,14 +494,14 @@ func TestResumeWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Resume should work on in-progress workflow
-	err := svc.ResumeWorkflow(ctx, workflow.WorkflowID, "", "")
+	err := svc.ResumeWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Complete and try to resume (should fail)
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
-	err = svc.ResumeWorkflow(ctx, workflow.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
+	err = svc.ResumeWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error when resuming completed workflow")
 	}
@@ -510,13 +525,13 @@ func TestMarkStepCompleted(t *testing.T) {
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Mark step completed (nil request — backward compatible)
-	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", nil, "", "")
+	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", nil, "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Try to mark non-existent step completed
-	err = svc.MarkStepCompleted(ctx, workflow.WorkflowID, "non-existent", nil, "", "")
+	err = svc.MarkStepCompleted(ctx, workflow.WorkflowID, "non-existent", nil, "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error for non-existent step")
 	}
@@ -667,13 +682,13 @@ func TestApproveStep(t *testing.T) {
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step
-	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "", "", "approver@example.com", "")
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "tenant-1", "org-1", "approver@example.com", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Try to approve again (should fail)
-	err = svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "", "", "approver@example.com", "")
+	err = svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "tenant-1", "org-1", "approver@example.com", "")
 	if err == nil {
 		t.Error("expected error when approving already approved step")
 	}
@@ -697,13 +712,13 @@ func TestRejectStep(t *testing.T) {
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Reject the step
-	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "", "", "rejecter@example.com", "")
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "tenant-1", "org-1", "rejecter@example.com", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Verify workflow was aborted
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.Status != WorkflowStatusAborted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusAborted)
 	}
@@ -876,7 +891,7 @@ func TestApproveStepNonExistent(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	err := svc.ApproveStep(ctx, workflow.WorkflowID, "non-existent", "", "", "approver@test.com", "")
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "non-existent", "tenant-1", "org-1", "approver@test.com", "")
 	if err == nil {
 		t.Error("expected error for non-existent step")
 	}
@@ -891,7 +906,7 @@ func TestRejectStepNonExistent(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	err := svc.RejectStep(ctx, workflow.WorkflowID, "non-existent", "", "", "rejector@test.com", "")
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "non-existent", "tenant-1", "org-1", "rejector@test.com", "")
 	if err == nil {
 		t.Error("expected error for non-existent step")
 	}
@@ -902,7 +917,7 @@ func TestAbortWorkflowNonExistent(t *testing.T) {
 	svc := NewService(repo, nil, nil)
 	ctx := context.Background()
 
-	err := svc.AbortWorkflow(ctx, "non-existent", "test reason", "", "")
+	err := svc.AbortWorkflow(ctx, "non-existent", "test reason", "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error for non-existent workflow")
 	}
@@ -913,7 +928,7 @@ func TestCompleteWorkflowNonExistent(t *testing.T) {
 	svc := NewService(repo, nil, nil)
 	ctx := context.Background()
 
-	err := svc.CompleteWorkflow(ctx, "non-existent", "", "")
+	err := svc.CompleteWorkflow(ctx, "non-existent", "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error for non-existent workflow")
 	}
@@ -924,7 +939,7 @@ func TestFailWorkflowNonExistent(t *testing.T) {
 	svc := NewService(repo, nil, nil)
 	ctx := context.Background()
 
-	err := svc.FailWorkflow(ctx, "non-existent", "test reason", "", "")
+	err := svc.FailWorkflow(ctx, "non-existent", "test reason", "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error for non-existent workflow")
 	}
@@ -935,7 +950,7 @@ func TestResumeWorkflowNonExistent(t *testing.T) {
 	svc := NewService(repo, nil, nil)
 	ctx := context.Background()
 
-	err := svc.ResumeWorkflow(ctx, "non-existent", "", "")
+	err := svc.ResumeWorkflow(ctx, "non-existent", "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error for non-existent workflow")
 	}
@@ -954,7 +969,7 @@ func TestListWorkflowsDefaultLimit(t *testing.T) {
 	}
 
 	// List with no limit (should default to 20)
-	response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Limit: 0})
+	response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Limit: 0})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 		return
@@ -974,7 +989,7 @@ func TestListWorkflowsByStatus(t *testing.T) {
 	workflow1, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
 		WorkflowName: "test-workflow-1",
 	}, "tenant-1", "org-1", "user-1", "client-1")
-	svc.CompleteWorkflow(ctx, workflow1.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow1.WorkflowID, "tenant-1", "org-1")
 
 	svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
 		WorkflowName: "test-workflow-2",
@@ -982,7 +997,7 @@ func TestListWorkflowsByStatus(t *testing.T) {
 
 	// List only completed workflows
 	status := WorkflowStatusCompleted
-	response, _ := svc.ListWorkflows(ctx, ListWorkflowsOptions{Status: &status, Limit: 100})
+	response, _ := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Status: &status, Limit: 100})
 
 	if response.Total != 1 {
 		t.Errorf("total = %d, want 1 completed workflow", response.Total)
@@ -1319,13 +1334,13 @@ func TestResumeWorkflowAfterApproval(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step
-	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "", "", "approver@test.com", "")
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "tenant-1", "org-1", "approver@test.com", "")
 	if err != nil {
 		t.Errorf("approve step error: %v", err)
 	}
 
 	// Now resume should work
-	err = svc.ResumeWorkflow(ctx, workflow.WorkflowID, "", "")
+	err = svc.ResumeWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("resume after approval should succeed: %v", err)
 	}
@@ -1354,7 +1369,7 @@ func TestResumeWorkflowAfterExpiry(t *testing.T) {
 		t.Fatalf("set step expired: %v", err)
 	}
 
-	err := svc.ResumeWorkflow(ctx, workflow.WorkflowID, "", "")
+	err := svc.ResumeWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if err == nil {
 		t.Fatal("resume after expiry should fail")
 	}
@@ -1373,13 +1388,13 @@ func TestAbortAlreadyAbortedWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Abort once
-	err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "first abort", "", "")
+	err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "first abort", "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("first abort unexpected error: %v", err)
 	}
 
 	// Abort again should fail
-	err = svc.AbortWorkflow(ctx, workflow.WorkflowID, "second abort", "", "")
+	err = svc.AbortWorkflow(ctx, workflow.WorkflowID, "second abort", "tenant-1", "org-1")
 	if err == nil {
 		t.Error("second abort should fail on terminal state")
 	}
@@ -1395,13 +1410,13 @@ func TestFailAlreadyFailedWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Fail once
-	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "first failure", "", "")
+	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "first failure", "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("first fail unexpected error: %v", err)
 	}
 
 	// Fail again should fail
-	err = svc.FailWorkflow(ctx, workflow.WorkflowID, "second failure", "", "")
+	err = svc.FailWorkflow(ctx, workflow.WorkflowID, "second failure", "tenant-1", "org-1")
 	if err == nil {
 		t.Error("second fail should fail on terminal state")
 	}
@@ -1462,7 +1477,7 @@ func TestListWorkflowsMaxLimit(t *testing.T) {
 	}
 
 	// Request with limit 100 (should still work)
-	response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Limit: 100})
+	response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{TenantID: "tenant-1", OrgID: "org-1", Limit: 100})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -1486,7 +1501,7 @@ func TestRejectStepAlreadyRejected(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Reject first time
-	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "", "", "user@test.com", "")
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "tenant-1", "org-1", "user@test.com", "")
 	if err != nil {
 		t.Errorf("first reject unexpected error: %v", err)
 	}
@@ -1502,10 +1517,10 @@ func TestRejectStepAlreadyRejected(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve first
-	svc.ApproveStep(ctx, workflow2.WorkflowID, "step-1", "", "", "approver@test.com", "")
+	svc.ApproveStep(ctx, workflow2.WorkflowID, "step-1", "tenant-1", "org-1", "approver@test.com", "")
 
 	// Try to reject after approval
-	err = svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "", "", "user@test.com", "")
+	err = svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "tenant-1", "org-1", "user@test.com", "")
 	if err == nil {
 		t.Error("reject after approval should fail")
 	}
@@ -1636,7 +1651,7 @@ func TestFailWorkflow_FiresWebhook(t *testing.T) {
 	}
 
 	// Fail the workflow
-	err = svc.FailWorkflow(ctx, workflow.WorkflowID, "LLM provider timeout", "", "")
+	err = svc.FailWorkflow(ctx, workflow.WorkflowID, "LLM provider timeout", "tenant-1", "org-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1678,7 +1693,7 @@ func TestAbortWorkflow_FiresWebhook(t *testing.T) {
 		WorkflowName: "abort-test",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	svc.AbortWorkflow(ctx, workflow.WorkflowID, "user cancelled", "", "")
+	svc.AbortWorkflow(ctx, workflow.WorkflowID, "user cancelled", "tenant-1", "org-1")
 
 	if len(notifier.Events) != 1 {
 		t.Fatalf("webhook events = %d, want 1", len(notifier.Events))
@@ -1699,7 +1714,7 @@ func TestCompleteWorkflow_FiresWebhook(t *testing.T) {
 		WorkflowName: "complete-test",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 
 	if len(notifier.Events) != 1 {
 		t.Fatalf("webhook events = %d, want 1", len(notifier.Events))
@@ -1719,7 +1734,7 @@ func TestFailWorkflow_NoWebhookWithoutNotifier(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Should not panic when no notifier is set
-	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "test failure", "", "")
+	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "test failure", "tenant-1", "org-1")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -1789,7 +1804,7 @@ func TestMarkStepCompletedWithMetrics(t *testing.T) {
 		CostUSD:   &costUSD,
 	}
 
-	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", req, "", "")
+	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1848,7 +1863,7 @@ func TestMarkStepCompletedOverridesGateMetrics(t *testing.T) {
 		TokensIn:  &actualTokensIn,
 		TokensOut: &actualTokensOut,
 		CostUSD:   &actualCost,
-	}, "", "")
+	}, "tenant-1", "org-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -28,6 +28,10 @@ func (m *mockPolicyEngineForHITL) ListActivePolicies() []DynamicPolicy {
 	return nil
 }
 
+func (m *mockPolicyEngineForHITL) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+	return nil
+}
+
 func (m *mockPolicyEngineForHITL) IsHealthy() bool {
 	return true
 }
@@ -106,6 +110,7 @@ func TestMapStepApproveHandler_CommunityWithEvalLicenseBypassesTierCheck(t *test
 
 func TestMapStepApproveHandler_HITLDisabled(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origEnabled := hitlEnabled
 	origEngine := hitlWorkflowEngine
@@ -120,6 +125,7 @@ func TestMapStepApproveHandler_HITLDisabled(t *testing.T) {
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/approve", mapStepApproveHandler).Methods("POST")
 
 	req := httptest.NewRequest("POST", "/api/v1/plans/plan-123/steps/step-1/approve", nil)
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -130,6 +136,7 @@ func TestMapStepApproveHandler_HITLDisabled(t *testing.T) {
 
 func TestMapStepApproveHandler_NoPausedExecution(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origEnabled := hitlEnabled
 	origEngine := hitlWorkflowEngine
@@ -144,6 +151,7 @@ func TestMapStepApproveHandler_NoPausedExecution(t *testing.T) {
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/approve", mapStepApproveHandler).Methods("POST")
 
 	req := httptest.NewRequest("POST", "/api/v1/plans/plan-123/steps/step-1/approve", nil)
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -232,7 +240,7 @@ func TestMAPHITLApprovalAdapter_GetApproval_Found(t *testing.T) {
 
 	// Store a matching execution in the execution store
 	executionStoreMutex.Lock()
-	executionStore[resp.ApprovalID.String()] = &HITLWorkflowExecution{
+	executionStore[hitlStoreKey("org-approval", resp.ApprovalID.String())] = &HITLWorkflowExecution{
 		ApprovalID:     resp.ApprovalID,
 		ApprovalStatus: "pending",
 	}
@@ -240,12 +248,14 @@ func TestMAPHITLApprovalAdapter_GetApproval_Found(t *testing.T) {
 
 	defer func() {
 		executionStoreMutex.Lock()
-		delete(executionStore, resp.ApprovalID.String())
+		delete(executionStore, hitlStoreKey("org-approval", resp.ApprovalID.String()))
 		executionStoreMutex.Unlock()
 	}()
 
 	// Now retrieve it
-	got, err := adapter.GetApproval(nil, resp.ApprovalID)
+	// #3067: the store scan is bound to the caller's org scope, carried on
+	// the context by the approve/reject handlers.
+	got, err := adapter.GetApproval(WithHITLScope(context.Background(), "org-approval"), resp.ApprovalID)
 	if err != nil {
 		t.Fatalf("GetApproval error: %v", err)
 	}
@@ -259,6 +269,7 @@ func TestMAPHITLApprovalAdapter_GetApproval_Found(t *testing.T) {
 
 func TestMapStepRejectHandler_HITLDisabled(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origEnabled := hitlEnabled
 	origEngine := hitlWorkflowEngine
@@ -274,6 +285,7 @@ func TestMapStepRejectHandler_HITLDisabled(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/plans/plan-123/steps/step-1/reject",
 		strings.NewReader(`{"reason":"not needed"}`))
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -284,6 +296,7 @@ func TestMapStepRejectHandler_HITLDisabled(t *testing.T) {
 
 func TestMapStepRejectHandler_NoPausedExecution(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origEnabled := hitlEnabled
 	origEngine := hitlWorkflowEngine
@@ -299,6 +312,7 @@ func TestMapStepRejectHandler_NoPausedExecution(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/plans/plan-123/steps/step-1/reject",
 		strings.NewReader(`{"reason":"test"}`))
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

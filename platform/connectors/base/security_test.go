@@ -197,6 +197,40 @@ func TestIsPrivateIP(t *testing.T) {
 		{"link-local IPv6", "fe80::1", true},
 		{"unspecified IPv6", "::", true},
 
+		// Boundary addresses immediately outside each special-purpose range —
+		// these guard against a range being silently widened.
+		{"below CGNAT", "100.63.255.255", false},
+		{"CGNAT first", "100.64.0.0", true},
+		{"CGNAT last", "100.127.255.255", true},
+		{"above CGNAT", "100.128.0.0", false},
+		{"multicast last", "239.255.255.255", true},
+		{"reserved first", "240.0.0.0", true},
+		{"below multicast", "223.255.255.255", false},
+
+		// 198.18.0.0/15 (RFC 2544 / RFC 6815 inter-network benchmarking) is
+		// deliberately NOT rejected. runtime-e2e suites carve sentinel networks
+		// out of it because it must remain dialable under the egress guard.
+		// Rejecting it here is a breaking change, not a hardening tweak.
+		{"below benchmarking range", "198.17.255.255", false},
+		{"benchmarking range first", "198.18.0.0", false},
+		{"benchmarking range last", "198.19.255.255", false},
+		{"above benchmarking range", "198.20.0.0", false},
+
+		// IPv4-mapped IPv6 must be classified on the embedded IPv4 address.
+		{"IPv4-mapped CGNAT", "::ffff:100.64.0.1", true},
+		{"IPv4-mapped benchmarking", "::ffff:198.18.0.1", false},
+
+		// Closed deliberately in #3104 — rejected by none of the nine
+		// pre-#3104 classifiers. The wrapped forms are classified on the
+		// address actually reached, so a wrapped public address stays public.
+		{"IPv6 documentation", "2001:db8::1", true},
+		{"above IPv6 documentation", "2001:db9::1", false},
+		{"NAT64 wrapping loopback", "64:ff9b::7f00:1", true},
+		{"NAT64 wrapping public", "64:ff9b::808:808", false},
+		{"6to4 wrapping loopback", "2002:7f00:1::", true},
+		{"6to4 wrapping public", "2002:808:808::", false},
+		{"IPv4-compatible wrapping loopback", "::7f00:1", true},
+
 		// Public IPs (should return false)
 		{"public google DNS", "8.8.8.8", false},
 		{"public IPv6 google", "2001:4860:4860::8888", false},
@@ -210,9 +244,9 @@ func TestIsPrivateIP(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("failed to parse IP: %s", tt.ip)
 			}
-			result := isPrivateIP(ip)
+			result := IsPrivateIP(ip)
 			if result != tt.expected {
-				t.Errorf("isPrivateIP(%s) = %v, want %v", tt.ip, result, tt.expected)
+				t.Errorf("IsPrivateIP(%s) = %v, want %v", tt.ip, result, tt.expected)
 			}
 		})
 	}

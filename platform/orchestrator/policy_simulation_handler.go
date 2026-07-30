@@ -20,7 +20,7 @@ import (
 type PolicySimulationHandler struct {
 	engine interface {
 		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
-		ListActivePolicies() []DynamicPolicy
+		ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
 	}
 	policyService   *PolicyService
 	conflictService *PolicyConflictService
@@ -67,7 +67,7 @@ func (rl *simulationRateLimiter) tryConsume(tenantID string, limit int) (bool, i
 // NewPolicySimulationHandler creates a new policy simulation handler.
 func NewPolicySimulationHandler(engine interface {
 	EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
-	ListActivePolicies() []DynamicPolicy
+	ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
 }, policyService *PolicyService, conflictService *PolicyConflictService, tierChecker LicenseChecker) *PolicySimulationHandler {
 	return &PolicySimulationHandler{
 		engine:          engine,
@@ -161,7 +161,10 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 
 	// Evaluate
 	result := h.engine.EvaluateDynamicPolicies(r.Context(), orchReq)
-	totalPolicies := len(h.engine.ListActivePolicies())
+	// Count only the policies visible to the CALLER's tenant. The raw
+	// ListActivePolicies cache is deployment-wide, so counting it leaked how
+	// many policies exist across ALL tenants in every simulate response.
+	totalPolicies := len(h.engine.ListActivePoliciesForTenant(tenantID))
 
 	// Build usage info
 	var usage *SimulationDailyUsage

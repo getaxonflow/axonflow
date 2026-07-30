@@ -160,7 +160,7 @@ func (h *BoardReportHandler) handleReportRoutes(w http.ResponseWriter, r *http.R
 
 // generateReport handles POST /api/v1/rbi/reports
 func (h *BoardReportHandler) generateReport(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -173,6 +173,13 @@ func (h *BoardReportHandler) generateReport(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// #3150: generated_by / generated_by_email are persisted onto
+	// rbi_board_reports as the author of the RBI FREE-AI board report. They
+	// come from the authenticated caller, never the body.
+	actor := resolveActor(r)
+	req.GeneratedBy = actor.ID
+	req.GeneratedByEmail = actor.Email
+
 	report, err := h.service.GenerateReport(r.Context(), orgID, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -184,7 +191,7 @@ func (h *BoardReportHandler) generateReport(w http.ResponseWriter, r *http.Reque
 
 // listReports handles GET /api/v1/rbi/reports
 func (h *BoardReportHandler) listReports(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -235,7 +242,7 @@ func (h *BoardReportHandler) listReports(w http.ResponseWriter, r *http.Request)
 
 // getReport handles GET /api/v1/rbi/reports/{id}
 func (h *BoardReportHandler) getReport(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -252,7 +259,7 @@ func (h *BoardReportHandler) getReport(w http.ResponseWriter, r *http.Request, i
 
 // deleteReport handles DELETE /api/v1/rbi/reports/{id}
 func (h *BoardReportHandler) deleteReport(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -268,7 +275,7 @@ func (h *BoardReportHandler) deleteReport(w http.ResponseWriter, r *http.Request
 
 // getPendingApproval handles GET /api/v1/rbi/reports/pending
 func (h *BoardReportHandler) getPendingApproval(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -288,7 +295,7 @@ func (h *BoardReportHandler) getPendingApproval(w http.ResponseWriter, r *http.R
 
 // getLatestReport handles GET /api/v1/rbi/reports/latest
 func (h *BoardReportHandler) getLatestReport(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -311,7 +318,7 @@ func (h *BoardReportHandler) getLatestReport(w http.ResponseWriter, r *http.Requ
 
 // submitForApproval handles POST /api/v1/rbi/reports/{id}/submit
 func (h *BoardReportHandler) submitForApproval(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -324,6 +331,14 @@ func (h *BoardReportHandler) submitForApproval(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// #3150: submitted_by / submitted_by_email reach only the operational log
+	// today (the BoardReport row has no submitter column), which is exactly
+	// why they are bound here too: a `validate:"required"` field that writes
+	// nothing is one schema change away from becoming a persisted actor.
+	actor := resolveActor(r)
+	req.SubmittedBy = actor.ID
+	req.SubmittedByEmail = actor.Email
+
 	report, err := h.service.SubmitForApproval(r.Context(), orgID, id, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -335,7 +350,7 @@ func (h *BoardReportHandler) submitForApproval(w http.ResponseWriter, r *http.Re
 
 // approveReport handles POST /api/v1/rbi/reports/{id}/approve
 func (h *BoardReportHandler) approveReport(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -348,6 +363,14 @@ func (h *BoardReportHandler) approveReport(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// #3150: approved_by / approved_by_email are persisted onto
+	// rbi_board_reports.approved_by(_email) and are the single most sensitive
+	// actor in this module — a board approval is the artefact the regulator
+	// reads. Bound to the authenticated caller.
+	actor := resolveActor(r)
+	req.ApprovedBy = actor.ID
+	req.ApprovedByEmail = actor.Email
+
 	report, err := h.service.ApproveReport(r.Context(), orgID, id, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -359,7 +382,7 @@ func (h *BoardReportHandler) approveReport(w http.ResponseWriter, r *http.Reques
 
 // rejectReport handles POST /api/v1/rbi/reports/{id}/reject
 func (h *BoardReportHandler) rejectReport(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -372,6 +395,12 @@ func (h *BoardReportHandler) rejectReport(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// #3150: same class as approveReport. rejected_by is log-only today; see
+	// the submitForApproval note for why it is bound anyway.
+	actor := resolveActor(r)
+	req.RejectedBy = actor.ID
+	req.RejectedByEmail = actor.Email
+
 	report, err := h.service.RejectReport(r.Context(), orgID, id, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -383,7 +412,7 @@ func (h *BoardReportHandler) rejectReport(w http.ResponseWriter, r *http.Request
 
 // addCorrectiveAction handles POST /api/v1/rbi/reports/{id}/actions
 func (h *BoardReportHandler) addCorrectiveAction(w http.ResponseWriter, r *http.Request, reportID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -407,7 +436,7 @@ func (h *BoardReportHandler) addCorrectiveAction(w http.ResponseWriter, r *http.
 
 // updateCorrectiveAction handles PUT /api/v1/rbi/reports/{id}/actions/{action_id}
 func (h *BoardReportHandler) updateCorrectiveAction(w http.ResponseWriter, r *http.Request, reportID, actionID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -427,14 +456,6 @@ func (h *BoardReportHandler) updateCorrectiveAction(w http.ResponseWriter, r *ht
 	}
 
 	h.writeJSON(w, http.StatusOK, report)
-}
-
-// getOrgID extracts the organization ID from the request.
-func (h *BoardReportHandler) getOrgID(r *http.Request) string {
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		return orgID
-	}
-	return r.URL.Query().Get("org_id")
 }
 
 // handleCORS handles OPTIONS requests.

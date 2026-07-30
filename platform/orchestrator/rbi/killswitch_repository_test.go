@@ -83,8 +83,15 @@ func TestKillSwitchRepository_Create_Success(t *testing.T) {
 		FallbackConfig:   map[string]interface{}{"msg": "blocked"},
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_kill_switches`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, ks)
 	assert.NoError(t, err)
@@ -108,8 +115,15 @@ func TestKillSwitchRepository_Create_DBError(t *testing.T) {
 		FallbackBehavior: FallbackBehaviorBlockAll,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_kill_switches`)).
 		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, ks)
 	assert.Error(t, err)
@@ -133,8 +147,15 @@ func TestKillSwitchRepository_Create_PresetID(t *testing.T) {
 		FallbackBehavior: FallbackBehaviorHumanReview,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_kill_switches`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, ks)
 	assert.NoError(t, err)
@@ -153,9 +174,16 @@ func TestKillSwitchRepository_Get_Success(t *testing.T) {
 	rows := sqlmock.NewRows(killSwitchColumns).
 		AddRow(sampleKillSwitchRow("ks-001", "org-001", KillSwitchScopeSystem, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE id = $1 AND org_id = $2`)).
 		WithArgs("ks-001", "org-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	ks, err := repo.Get(ctx, "org-001", "ks-001")
 	require.NoError(t, err)
@@ -180,9 +208,16 @@ func TestKillSwitchRepository_Get_NotFound(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE id = $1 AND org_id = $2`)).
 		WithArgs("nonexistent", "org-001").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	ks, err := repo.Get(ctx, "org-001", "nonexistent")
 	assert.Nil(t, ks)
@@ -201,9 +236,16 @@ func TestKillSwitchRepository_GetByScope_Global(t *testing.T) {
 	rows := sqlmock.NewRows(killSwitchColumns).
 		AddRow(sampleKillSwitchRow("ks-global", "org-001", KillSwitchScopeGlobal, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND scope = $2`)).
 		WithArgs("org-001", string(KillSwitchScopeGlobal)).
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	ks, err := repo.GetByScope(ctx, "org-001", KillSwitchScopeGlobal, "", "")
 	require.NoError(t, err)
@@ -222,9 +264,16 @@ func TestKillSwitchRepository_GetByScope_System(t *testing.T) {
 	rows := sqlmock.NewRows(killSwitchColumns).
 		AddRow(sampleKillSwitchRow("ks-sys", "org-001", KillSwitchScopeSystem, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND scope = $2 AND system_id = $3`)).
 		WithArgs("org-001", string(KillSwitchScopeSystem), "sys-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	ks, err := repo.GetByScope(ctx, "org-001", KillSwitchScopeSystem, "sys-001", "")
 	require.NoError(t, err)
@@ -243,9 +292,16 @@ func TestKillSwitchRepository_GetByScope_Model(t *testing.T) {
 	rows := sqlmock.NewRows(killSwitchColumns).
 		AddRow(sampleKillSwitchRow("ks-model", "org-001", KillSwitchScopeModel, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND scope = $2 AND system_id = $3 AND target_identifier = $4`)).
 		WithArgs("org-001", string(KillSwitchScopeModel), "sys-001", "model-v2").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	ks, err := repo.GetByScope(ctx, "org-001", KillSwitchScopeModel, "sys-001", "model-v2")
 	require.NoError(t, err)
@@ -263,6 +319,12 @@ func TestKillSwitchRepository_List_Success(t *testing.T) {
 
 	params := &ListKillSwitchParams{Limit: 10, Offset: 0}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -274,6 +336,7 @@ func TestKillSwitchRepository_List_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	switches, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -298,6 +361,12 @@ func TestKillSwitchRepository_List_WithFilters(t *testing.T) {
 		Limit:    20,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001", "sys-001", "system", true).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -308,6 +377,7 @@ func TestKillSwitchRepository_List_WithFilters(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", "sys-001", "system", true, 20, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	switches, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -324,6 +394,12 @@ func TestKillSwitchRepository_List_NilParams(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -331,6 +407,7 @@ func TestKillSwitchRepository_List_NilParams(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 50, 0).
 		WillReturnRows(sqlmock.NewRows(killSwitchColumns))
+	mock.ExpectCommit()
 
 	switches, total, err := repo.List(ctx, "org-001", nil)
 	require.NoError(t, err)
@@ -351,9 +428,16 @@ func TestKillSwitchRepository_ListActive_Success(t *testing.T) {
 		AddRow(sampleKillSwitchRow("ks-1", "org-001", KillSwitchScopeGlobal, true)...).
 		AddRow(sampleKillSwitchRow("ks-2", "org-001", KillSwitchScopeSystem, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND is_active = true`)).
 		WithArgs("org-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	switches, err := repo.ListActive(ctx, "org-001")
 	require.NoError(t, err)
@@ -372,9 +456,16 @@ func TestKillSwitchRepository_ListBySystem_Success(t *testing.T) {
 	dataRows := sqlmock.NewRows(killSwitchColumns).
 		AddRow(sampleKillSwitchRow("ks-1", "org-001", KillSwitchScopeSystem, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND system_id = $2`)).
 		WithArgs("org-001", "sys-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	switches, err := repo.ListBySystem(ctx, "org-001", "sys-001")
 	require.NoError(t, err)
@@ -401,8 +492,15 @@ func TestKillSwitchRepository_Update_Success(t *testing.T) {
 		FallbackConfig:   map[string]interface{}{},
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_kill_switches SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, ks)
 	assert.NoError(t, err)
@@ -427,8 +525,15 @@ func TestKillSwitchRepository_Update_NotFound(t *testing.T) {
 		FallbackConfig:   map[string]interface{}{},
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_kill_switches SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, ks)
 	assert.ErrorIs(t, err, ErrKillSwitchNotFound)
@@ -443,9 +548,16 @@ func TestKillSwitchRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_kill_switches WHERE id = $1 AND org_id = $2`)).
 		WithArgs("ks-001", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "ks-001")
 	assert.NoError(t, err)
@@ -460,9 +572,16 @@ func TestKillSwitchRepository_Delete_NotFound(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_kill_switches WHERE id = $1 AND org_id = $2`)).
 		WithArgs("nonexistent", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "nonexistent")
 	assert.ErrorIs(t, err, ErrKillSwitchNotFound)
@@ -478,20 +597,27 @@ func TestKillSwitchRepository_AddHistoryEntry_Success(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &KillSwitchHistoryEntry{
-		OrgID:        "org-001",
-		KillSwitchID: "ks-001",
-		Action:       KillSwitchActionActivated,
-		ActorID:      "admin-001",
-		ActorEmail:   "admin@example.com",
-		ActorRole:    "admin",
-		Reason:       "Emergency stop",
+		OrgID:         "org-001",
+		KillSwitchID:  "ks-001",
+		Action:        KillSwitchActionActivated,
+		ActorID:       "admin-001",
+		ActorEmail:    "admin@example.com",
+		ActorRole:     "admin",
+		Reason:        "Emergency stop",
 		PreviousState: map[string]interface{}{"is_active": false},
-		NewState:     map[string]interface{}{"is_active": true},
-		Metadata:     map[string]interface{}{"source": "manual"},
+		NewState:      map[string]interface{}{"is_active": true},
+		Metadata:      map[string]interface{}{"source": "manual"},
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO rbi_kill_switch_history`)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(1)))
+	mock.ExpectCommit()
 
 	err = repo.AddHistoryEntry(ctx, entry)
 	assert.NoError(t, err)
@@ -514,8 +640,15 @@ func TestKillSwitchRepository_AddHistoryEntry_DBError(t *testing.T) {
 		ActorID:      "admin-001",
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO rbi_kill_switch_history`)).
 		WillReturnError(fmt.Errorf("foreign key violation"))
+	mock.ExpectRollback()
 
 	err = repo.AddHistoryEntry(ctx, entry)
 	assert.Error(t, err)
@@ -558,9 +691,16 @@ func TestKillSwitchRepository_GetHistory_Success(t *testing.T) {
 			now,
 		)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "ks-001", 50).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	entries, err := repo.GetHistory(ctx, "org-001", "ks-001", 0)
 	require.NoError(t, err)
@@ -581,9 +721,16 @@ func TestKillSwitchRepository_GetHistory_LimitCapping(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "ks-001", 100).
 		WillReturnRows(sqlmock.NewRows(historyColumns))
+	mock.ExpectCommit()
 
 	entries, err := repo.GetHistory(ctx, "org-001", "ks-001", 999)
 	require.NoError(t, err)
@@ -602,9 +749,16 @@ func TestKillSwitchRepository_CheckActive_GlobalFound(t *testing.T) {
 	rows := sqlmock.NewRows(killSwitchColumns).
 		AddRow(sampleKillSwitchRow("ks-global", "org-001", KillSwitchScopeGlobal, true)...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`scope = 'global' AND is_active = true`)).
 		WithArgs("org-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	active, ks, err := repo.CheckActive(ctx, "org-001", KillSwitchScopeModel, "sys-001", "model-v2")
 	require.NoError(t, err)
@@ -622,6 +776,12 @@ func TestKillSwitchRepository_CheckActive_SystemFound(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Global not found
 	mock.ExpectQuery(regexp.QuoteMeta(`scope = 'global' AND is_active = true`)).
 		WithArgs("org-001").
@@ -634,6 +794,7 @@ func TestKillSwitchRepository_CheckActive_SystemFound(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`scope = 'system' AND system_id = $2 AND is_active = true`)).
 		WithArgs("org-001", "sys-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	active, ks, err := repo.CheckActive(ctx, "org-001", KillSwitchScopeModel, "sys-001", "model-v2")
 	require.NoError(t, err)
@@ -651,6 +812,12 @@ func TestKillSwitchRepository_CheckActive_NoneFound(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Global not found
 	mock.ExpectQuery(regexp.QuoteMeta(`scope = 'global' AND is_active = true`)).
 		WithArgs("org-001").
@@ -665,6 +832,7 @@ func TestKillSwitchRepository_CheckActive_NoneFound(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`scope = $2 AND system_id = $3 AND target_identifier = $4 AND is_active = true`)).
 		WithArgs("org-001", string(KillSwitchScopeModel), "sys-001", "model-v2").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectCommit()
 
 	active, ks, err := repo.CheckActive(ctx, "org-001", KillSwitchScopeModel, "sys-001", "model-v2")
 	require.NoError(t, err)
@@ -681,10 +849,17 @@ func TestKillSwitchRepository_CheckActive_NoSystemID(t *testing.T) {
 	repo := NewPostgresKillSwitchRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Global not found
 	mock.ExpectQuery(regexp.QuoteMeta(`scope = 'global' AND is_active = true`)).
 		WithArgs("org-001").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectCommit()
 
 	// No system check because systemID is empty
 	active, ks, err := repo.CheckActive(ctx, "org-001", KillSwitchScopeGlobal, "", "")

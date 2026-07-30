@@ -243,7 +243,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 	ctx := context.Background()
 	wf, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
 		WorkflowName: "lifecycle",
-	}, tenantID, "", "", "")
+	}, tenantID, "org-1", "user-1", "client-1")
 	if err != nil {
 		t.Fatalf("CreateWorkflow: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 	resp1, err := svc.StepGate(ctx, wfID, "s1", &StepGateRequest{
 		StepType:       StepTypeToolCall,
 		IdempotencyKey: key,
-	}, tenantID, "", "", "")
+	}, tenantID, "org-1", "user-1", "client-1")
 	if err != nil {
 		t.Fatalf("gate 1: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 	if err := svc.MarkStepCompleted(ctx, wfID, "s1", &StepCompleteRequest{
 		IdempotencyKey: key,
 		Output:         map[string]interface{}{"tx": "TXN-01"},
-	}, tenantID, ""); err != nil {
+	}, tenantID, "org-1"); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 	resp2, err := svc.StepGate(ctx, wfID, "s1", &StepGateRequest{
 		StepType:       StepTypeToolCall,
 		IdempotencyKey: key,
-	}, tenantID, "", "", "")
+	}, tenantID, "org-1", "user-1", "client-1")
 	if err != nil {
 		t.Fatalf("gate 2: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 	_, err = svc.StepGate(ctx, wfID, "s1", &StepGateRequest{
 		StepType:       StepTypeToolCall,
 		IdempotencyKey: "K-different",
-	}, tenantID, "", "", "")
+	}, tenantID, "org-1", "user-1", "client-1")
 	if err == nil {
 		t.Fatal("gate with mismatched key should fail")
 	}
@@ -308,7 +308,7 @@ func TestIntegration_FullLifecycle_ThroughServiceLayer(t *testing.T) {
 		StepType:           StepTypeToolCall,
 		IdempotencyKey:     key,
 		IncludePriorOutput: true,
-	}, tenantID, "", "", "")
+	}, tenantID, "org-1", "user-1", "client-1")
 	if err != nil {
 		t.Fatalf("gate 3: %v", err)
 	}

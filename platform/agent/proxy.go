@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	sharedidentity "axonflow/platform/shared/identity"
@@ -34,7 +35,42 @@ import (
 // proxyTokenGenerator signs proxied requests so the orchestrator can verify
 // they came through the Agent gateway (not directly from an external caller).
 // Uses the same AXONFLOW_INTERNAL_SERVICE_SECRET shared secret as MCP auth.
+//
+// #3068: this MUST be initialized before the HTTP server starts accepting
+// requests, not lazily when the reverse proxy is constructed. Run() serves
+// /health and then registers /api/request (→ forwardToOrchestrator) hundreds of
+// lines before NewReverseProxyHandler ran, so a request arriving in that window
+// used to send no token. That was harmless when the orchestrator accepted
+// unauthenticated calls; now it is a hard 403 on the governed request plane.
+// InitProxyTokenGenerator is therefore called at the top of Run(), before the
+// serving goroutine is spawned — which also means this variable is written
+// exactly once, before any request goroutine can read it.
 var proxyTokenGenerator *serviceauth.TokenGenerator
+
+// proxyTokenGeneratorOnce guarantees the single write above happens once even
+// if several construction paths call InitProxyTokenGenerator.
+var proxyTokenGeneratorOnce sync.Once
+
+// InitProxyTokenGenerator builds the internal-service token generator from
+// AXONFLOW_INTERNAL_SERVICE_SECRET. Idempotent and safe to call from any
+// initialization path; a no-op after the first call.
+//
+// secretenv.Get trims trailing whitespace so an SM-resolved secret with a stray
+// newline doesn't produce a different HMAC than the receiver computes.
+func InitProxyTokenGenerator() {
+	proxyTokenGeneratorOnce.Do(func() {
+		secret := secretenv.Get(serviceauth.SecretEnvVar)
+		if secret == "" {
+			log.Printf("[Proxy] [SECURITY] %s is not set — this agent cannot sign internal-service "+
+				"requests and the orchestrator will REFUSE every call it makes. Set %s to the same "+
+				"value on the agent, the orchestrator and the customer-portal.",
+				serviceauth.SecretEnvVar, serviceauth.SecretEnvVar)
+			return
+		}
+		proxyTokenGenerator = serviceauth.NewTokenGenerator(secret, nil)
+		log.Printf("[Proxy] Internal service token signing enabled for proxied requests")
+	})
+}
 
 // proxyDailyLimitChecker is the seam tests use to drive the
 // proxyAuthMiddleware daily-cap branch without standing up Redis or a
@@ -163,13 +199,10 @@ type ReverseProxyHandler struct {
 func NewReverseProxyHandler(config ProxyConfig) (*ReverseProxyHandler, error) {
 	handler := &ReverseProxyHandler{}
 
-	// Initialize proxy token generator for signing proxied requests.
-	// secretenv.Get trims trailing whitespace so an SM-resolved secret with
-	// a stray newline doesn't produce a different HMAC than the receiver.
-	if secret := secretenv.Get(serviceauth.SecretEnvVar); secret != "" {
-		proxyTokenGenerator = serviceauth.NewTokenGenerator(secret, nil)
-		log.Printf("[Proxy] Internal service token signing enabled for proxied requests")
-	}
+	// #3068: idempotent — Run() already did this before the HTTP server started.
+	// Kept so direct callers (tests, embedders) that construct the proxy without
+	// going through Run() still get a signing generator.
+	InitProxyTokenGenerator()
 
 	// Parse and configure Orchestrator proxy
 	if config.OrchestratorInternalURL != "" {
@@ -328,28 +361,132 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 // validated credential just above the call site) and the HMAC proxy-auth
 // token (injected in the reverse-proxy Director, after this runs) are NOT
 // touched — only the three forgeable per-user identity headers are gated.
+// It additionally stamps the advisory X-Axonflow-Identity-Gated marker (#3062)
+// when it actually DROPPED a header the caller had sent. Downstream, an
+// endpoint that requires per-user identity can then say WHY it has none —
+// "your client sent it and this deployment is configured not to trust it" is a
+// different problem, with a different fix, from "your client sent nothing".
+// The marker is diagnostic only: it selects an error string and nothing else
+// (see sharedidentity.HeaderIdentityGated).
 func gateProxyIdentityHeaders(r *http.Request) {
+	// The marker is ours to stamp, never the client's to assert. Delete any
+	// inbound value FIRST — unconditionally, before any early return can be
+	// added below — so a governed caller can never pre-seed it through the
+	// gateway. It only selects a sentence, but the header-hygiene rule is
+	// absolute here: the #2896 census lesson is that "harmless" client-settable
+	// headers are exactly the ones that later acquire meaning.
+	r.Header.Del(sharedidentity.HeaderIdentityGated)
+
+	// Resolved once, not per header: trustIdentityHeaders() also drives a
+	// once-per-process warning latch, and the value cannot change mid-request.
+	gateOff := !trustIdentityHeaders()
+
+	dropped := false
 	for _, hdr := range []struct {
 		name   string
 		maxLen int
+		// marksIdentity is true only for headers that name a PRINCIPAL, i.e.
+		// the ones a downstream identity-required refusal actually reads.
+		// X-Session-Id names a conversation, not a person: no endpoint resolves
+		// a caller from it, so dropping it is never the reason such an endpoint
+		// refused. Marking it would produce a confidently WRONG diagnosis —
+		// "your client sent an identity and we removed it" — for a caller who
+		// sent no identity at all. Acting on that advice means enabling
+		// AXONFLOW_TRUST_IDENTITY_HEADERS, which makes all three forgeable
+		// headers trusted on every proxied route (including the ADR-044
+		// override-apply planes), and the call still fails. A security-posture
+		// relaxation that fixes nothing is strictly worse than the unactionable
+		// error #3062 set out to kill, so the trigger set is the READ set.
+		marksIdentity bool
 	}{
-		{identityHeaderUserEmail, maxAttributedEmailLen},
-		{identityHeaderUserID, maxAttributedUserIDLen},
-		{identityHeaderSessionID, maxAttributedSessionIDLen},
+		{identityHeaderUserEmail, maxAttributedEmailLen, true},
+		{identityHeaderUserID, maxAttributedUserIDLen, true},
+		{identityHeaderSessionID, maxAttributedSessionIDLen, false},
 	} {
+		// Presence is read BEFORE trustedIdentityHeader so the two reasons a
+		// header ends up deleted stay distinguishable: the gate dropped a value
+		// the caller sent (marker), versus the caller sent nothing, or sent
+		// something that sanitized away under an ON gate (no marker — that is a
+		// malformed-input problem, not a configuration one).
+		present := strings.TrimSpace(r.Header.Get(hdr.name)) != ""
 		if v := trustedIdentityHeader(r, hdr.name, hdr.maxLen); v != "" {
 			r.Header.Set(hdr.name, v)
-		} else {
-			r.Header.Del(hdr.name)
+			continue
 		}
+		if present && gateOff && hdr.marksIdentity {
+			dropped = true
+		}
+		r.Header.Del(hdr.name)
+	}
+
+	if dropped {
+		r.Header.Set(sharedidentity.HeaderIdentityGated, sharedidentity.IdentityGatedTrue)
+	}
+}
+
+// stripClientAssertedProxyHeaders removes every tenancy/authority header that
+// proxyAuthMiddleware would otherwise overwrite from the validated credential
+// before forwarding to the orchestrator.
+//
+// #3092: the OPTIONS early return sat ABOVE all of that overwriting — the
+// X-Tenant-ID / X-Org-ID / X-Client-ID `Set`, gateProxyIdentityHeaders, the
+// role/read-scope `Del` and the effective-tier `Del` — while the reverse-proxy
+// Director injects a valid internal HMAC proxy-auth token unconditionally. A
+// preflight was therefore the one request shape on which a caller could SUPPLY
+// tenancy rather than merely omit it, and have the agent vouch for it. That
+// falsifies the invariant documented on resolveCallerReadScope
+// (orchestrator/read_scope.go, trust rule 2: "the agent strips both headers
+// from inbound client traffic on every proxied route"); it
+// was not exploitable only because every orchestrator handler independently
+// 405s or guards OPTIONS, i.e. it was one route registration away from live.
+//
+// The scrub is kept even though the caller now terminates the request instead
+// of invoking `next`, because "terminate" and "do not launder headers" are two
+// separate guarantees and the second must not silently depend on the first. If
+// a future edit restores next(w, r) here — the exact edit this function exists
+// to survive — the headers are already gone.
+//
+// Only headers that are UNCONDITIONALLY overwritten or deleted on the
+// authenticated path belong here. In particular X-Org-ID is an INPUT on the
+// authenticated path (authenticator.go:135 reads it for the internal-service
+// credential) and X-User-Email / X-User-ID are inputs to
+// gateProxyIdentityHeaders' #3062 "we dropped what you sent" marker — which is
+// why this runs on the preflight branch only, after which nothing is read.
+func stripClientAssertedProxyHeaders(r *http.Request) {
+	for _, h := range []string{
+		// Auth-derived tenancy (ADR-052 §5 / ADR-053 §Step 2).
+		"X-Tenant-ID",
+		"X-Org-ID",
+		"X-Client-ID",
+		// #2922: never client-assertable — the orchestrator honours these on
+		// proxy-auth'd requests, so forwarding an inbound value would let any
+		// caller mint tenant-wide read authority.
+		sharedidentity.HeaderUserRole,
+		sharedidentity.HeaderReadScope,
+		// V1.1 SaaS plugin tier: resolved by the agent from the license lookup.
+		"X-Axonflow-Effective-Tier",
+		// #3062 diagnostic marker: ours to stamp, never the client's to assert.
+		sharedidentity.HeaderIdentityGated,
+		// #2896 forgeable per-user identity. On the authenticated path these
+		// are trust-gated by gateProxyIdentityHeaders; on a preflight there is
+		// no validated identity to gate them against, so they simply go.
+		identityHeaderUserEmail,
+		identityHeaderUserID,
+		identityHeaderSessionID,
+	} {
+		r.Header.Del(h)
 	}
 }
 
 func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Skip auth for CORS preflight
+		// CORS preflight is TERMINATED here, never forwarded (#3092). See
+		// writeTerminalPreflightResponse (auth.go) for why no genuine browser
+		// preflight can reach this point, and stripClientAssertedProxyHeaders
+		// for why the scrub runs even though `next` is not called.
 		if r.Method == http.MethodOptions {
-			next(w, r)
+			stripClientAssertedProxyHeaders(r)
+			writeTerminalPreflightResponse(w)
 			return
 		}
 
@@ -454,6 +591,22 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 					r.Header.Set(identityHeaderUserID, vid.Email)
 					if vid.Role != "" {
 						r.Header.Set(sharedidentity.HeaderUserRole, vid.Role)
+					}
+					// #3075: gateProxyIdentityHeaders may have stamped the
+					// advisory X-Axonflow-Identity-Gated marker a few lines up,
+					// because under a default-off trust gate it DID drop the
+					// X-User-Email this caller sent. The validated token has now
+					// restored a per-user identity, so the marker's invariant —
+					// "we removed the identity this caller sent, and that is why
+					// you have none" — is false from here on. Clear it: a
+					// downstream refusal that reads it would otherwise diagnose a
+					// gate problem for a request that carries a perfectly good
+					// identity, which is the confidently-wrong-diagnosis class
+					// #3062 exists to kill. Guarded on a non-empty email because
+					// an identity that resolved to no address restores nothing,
+					// and there the marker is still the truthful explanation.
+					if vid.Email != "" {
+						r.Header.Del(sharedidentity.HeaderIdentityGated)
 					}
 				}
 			}

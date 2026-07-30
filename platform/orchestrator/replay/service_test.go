@@ -248,6 +248,8 @@ func TestService_CompleteExecution_NotInCache(t *testing.T) {
 
 	// Add summary directly to repo (not in cache)
 	summary := &ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusRunning,
 		TotalSteps: 1,
@@ -318,6 +320,8 @@ func TestService_FailExecution_NotInCache(t *testing.T) {
 
 	// Add summary directly to repo
 	summary := &ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusRunning,
 		TotalSteps: 1,
@@ -356,6 +360,8 @@ func TestService_GetExecution(t *testing.T) {
 
 	// Add test data
 	summary := &ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusCompleted,
 		TotalSteps: 2,
@@ -375,7 +381,7 @@ func TestService_GetExecution(t *testing.T) {
 		Status:    StepStatusCompleted,
 	})
 
-	exec, err := service.GetExecution(ctx, "req-123", AccessScope{})
+	exec, err := service.GetExecution(ctx, "req-123", AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("GetExecution failed: %v", err)
 	}
@@ -392,7 +398,7 @@ func TestService_GetExecution_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.GetExecution(ctx, "nonexistent", AccessScope{})
+	_, err := service.GetExecution(ctx, "nonexistent", AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -406,6 +412,8 @@ func TestService_ListExecutions(t *testing.T) {
 	// Add test data
 	for i := 0; i < 5; i++ {
 		repo.AddSummary(&ExecutionSummary{
+			OrgID:      "org-1",
+			TenantID:   "tenant-1",
 			RequestID:  string(rune('a'+i)) + "-req",
 			Status:     ExecutionStatusCompleted,
 			TotalSteps: 1,
@@ -414,7 +422,7 @@ func TestService_ListExecutions(t *testing.T) {
 	}
 
 	// Test basic list
-	summaries, total, err := service.ListExecutions(ctx, ListOptions{Limit: 10})
+	summaries, total, err := service.ListExecutions(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Limit: 10})
 	if err != nil {
 		t.Fatalf("ListExecutions failed: %v", err)
 	}
@@ -426,7 +434,7 @@ func TestService_ListExecutions(t *testing.T) {
 	}
 
 	// Test with limit
-	summaries, total, err = service.ListExecutions(ctx, ListOptions{Limit: 2})
+	summaries, total, err = service.ListExecutions(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Limit: 2})
 	if err != nil {
 		t.Fatalf("ListExecutions failed: %v", err)
 	}
@@ -445,6 +453,7 @@ func TestService_ListExecutions_WithFilters(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		TenantID:   "tenant-1",
 		RequestID:  "req-1",
 		Status:     ExecutionStatusCompleted,
 		OrgID:      "org-1",
@@ -452,6 +461,7 @@ func TestService_ListExecutions_WithFilters(t *testing.T) {
 		StartedAt:  time.Now(),
 	})
 	repo.AddSummary(&ExecutionSummary{
+		TenantID:   "tenant-1",
 		RequestID:  "req-2",
 		Status:     ExecutionStatusFailed,
 		OrgID:      "org-1",
@@ -459,6 +469,7 @@ func TestService_ListExecutions_WithFilters(t *testing.T) {
 		StartedAt:  time.Now(),
 	})
 	repo.AddSummary(&ExecutionSummary{
+		TenantID:   "tenant-1",
 		RequestID:  "req-3",
 		Status:     ExecutionStatusCompleted,
 		OrgID:      "org-2",
@@ -467,24 +478,37 @@ func TestService_ListExecutions_WithFilters(t *testing.T) {
 	})
 
 	// Filter by status
-	summaries, total, _ := service.ListExecutions(ctx, ListOptions{
+	summaries, total, _ := service.ListExecutions(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1",
 		Status: "completed",
 		Limit:  10,
 	})
-	if total != 2 {
-		t.Errorf("expected 2 completed, got %d", total)
+	// org-2's completed execution (req-3) is invisible to org-1, so only
+	// req-1 remains.
+	if total != 1 {
+		t.Errorf("expected 1 completed within org-1, got %d", total)
 	}
 
-	// Filter by org
+	// #3065: the scope is mandatory, so "filter by org" is no longer a
+	// user-supplied filter — it is the caller's own identity. org-2's row is
+	// invisible to org-1 regardless of what the caller asks for. Assert on
+	// identifiers, not just the count.
 	summaries, total, _ = service.ListExecutions(ctx, ListOptions{
-		OrgID: "org-1",
-		Limit: 10,
+		OrgID:    "org-1",
+		TenantID: "tenant-1",
+		Limit:    10,
 	})
 	if total != 2 {
 		t.Errorf("expected 2 for org-1, got %d", total)
 	}
-	if len(summaries) != 2 {
-		t.Errorf("expected 2 summaries, got %d", len(summaries))
+	for _, sum := range summaries {
+		if sum.RequestID == "req-3" {
+			t.Errorf("org-2's execution req-3 leaked into org-1's listing")
+		}
+	}
+
+	// An unscoped listing is refused outright, not silently widened.
+	if _, _, err := service.ListExecutions(ctx, ListOptions{Limit: 10}); err != ErrNotFound {
+		t.Errorf("unscoped ListExecutions must be denied, got %v", err)
 	}
 }
 
@@ -494,7 +518,7 @@ func TestService_GetStep(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Add test data (summary anchors the #2934 scoped read)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -502,7 +526,7 @@ func TestService_GetStep(t *testing.T) {
 		Status:    StepStatusCompleted,
 	})
 
-	step, err := service.GetStep(ctx, "req-123", 0, AccessScope{})
+	step, err := service.GetStep(ctx, "req-123", 0, AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("GetStep failed: %v", err)
 	}
@@ -516,7 +540,7 @@ func TestService_GetStep_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.GetStep(ctx, "req-123", 0, AccessScope{})
+	_, err := service.GetStep(ctx, "req-123", 0, AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -528,7 +552,7 @@ func TestService_GetSteps(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Add test data (summary anchors the #2934 scoped read)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -540,7 +564,7 @@ func TestService_GetSteps(t *testing.T) {
 		StepName:  "step-2",
 	})
 
-	steps, err := service.GetSteps(ctx, "req-123", AccessScope{})
+	steps, err := service.GetSteps(ctx, "req-123", AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("GetSteps failed: %v", err)
 	}
@@ -557,6 +581,8 @@ func TestService_ExportExecution(t *testing.T) {
 	// Add test data
 	now := time.Now()
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:         "org-1",
+		TenantID:      "tenant-1",
 		RequestID:     "req-123",
 		Status:        ExecutionStatusCompleted,
 		TotalSteps:    1,
@@ -582,7 +608,7 @@ func TestService_ExportExecution(t *testing.T) {
 		IncludeInput:    true,
 		IncludeOutput:   true,
 		IncludePolicies: true,
-	}, AccessScope{})
+	}, AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("ExportExecution failed: %v", err)
 	}
@@ -617,6 +643,8 @@ func TestService_ExportExecution_Redacted(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:         "org-1",
+		TenantID:      "tenant-1",
 		RequestID:     "req-123",
 		Status:        ExecutionStatusCompleted,
 		TotalSteps:    1,
@@ -642,7 +670,7 @@ func TestService_ExportExecution_Redacted(t *testing.T) {
 		IncludeInput:    false,
 		IncludeOutput:   false,
 		IncludePolicies: false,
-	}, AccessScope{})
+	}, AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("ExportExecution failed: %v", err)
 	}
@@ -680,7 +708,7 @@ func TestService_ExportExecution_NotFound(t *testing.T) {
 	repo := NewMockRepository()
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.ExportExecution(ctx, "nonexistent", ExportOptions{}, AccessScope{})
+	_, err := service.ExportExecution(ctx, "nonexistent", ExportOptions{}, AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -696,7 +724,7 @@ func TestService_GetTimeline(t *testing.T) {
 	duration := 100
 
 	// Add test data (summary anchors the #2934 scoped read)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: now})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: now})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID:   "req-123",
 		StepIndex:   0,
@@ -722,7 +750,7 @@ func TestService_GetTimeline(t *testing.T) {
 		StartedAt: completedAt,
 	})
 
-	timeline, err := service.GetTimeline(ctx, "req-123", AccessScope{})
+	timeline, err := service.GetTimeline(ctx, "req-123", AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("GetTimeline failed: %v", err)
 	}
@@ -758,7 +786,7 @@ func TestService_GetTimeline_NotFound(t *testing.T) {
 	repo.GetSnapshotsErr = ErrNotFound
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
-	_, err := service.GetTimeline(ctx, "req-123", AccessScope{})
+	_, err := service.GetTimeline(ctx, "req-123", AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -770,7 +798,7 @@ func TestService_DeleteExecution(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Start execution (adds to cache)
-	_ = service.StartExecution(ctx, "req-123", "test-workflow", 1, "", "", "")
+	_ = service.StartExecution(ctx, "req-123", "test-workflow", 1, "org-1", "tenant-1", "")
 
 	// Verify in cache
 	service.mu.RLock()
@@ -781,7 +809,7 @@ func TestService_DeleteExecution(t *testing.T) {
 	}
 
 	// Delete execution
-	err := service.DeleteExecution(ctx, "req-123", AccessScope{})
+	err := service.DeleteExecution(ctx, "req-123", AccessScope{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("DeleteExecution failed: %v", err)
 	}
@@ -818,12 +846,12 @@ func TestService_GetExecutionCount(t *testing.T) {
 	service := NewServiceWithLogger(repo, log.New(io.Discard, "", 0))
 
 	// Add test data
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-1", Status: ExecutionStatusCompleted})
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-2", Status: ExecutionStatusCompleted})
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-3", Status: ExecutionStatusFailed})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-1", Status: ExecutionStatusCompleted})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-2", Status: ExecutionStatusCompleted})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-3", Status: ExecutionStatusFailed})
 
 	// Get count of all
-	count, err := service.GetExecutionCount(ctx, ListOptions{})
+	count, err := service.GetExecutionCount(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1"})
 	if err != nil {
 		t.Fatalf("GetExecutionCount failed: %v", err)
 	}
@@ -832,7 +860,7 @@ func TestService_GetExecutionCount(t *testing.T) {
 	}
 
 	// Get count by status
-	count, err = service.GetExecutionCount(ctx, ListOptions{Status: "completed"})
+	count, err = service.GetExecutionCount(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Status: "completed"})
 	if err != nil {
 		t.Fatalf("GetExecutionCount failed: %v", err)
 	}
@@ -848,6 +876,8 @@ func TestService_UpdateExecutionProgress_NotCached(t *testing.T) {
 
 	// Add summary to repo but not cache
 	summary := &ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusRunning,
 		TotalSteps: 2,

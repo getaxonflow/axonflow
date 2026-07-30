@@ -13,7 +13,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3133. Migration 400 RLS-gates mas_ai_system_registry with `FOR ALL USING
+// (org_id = get_current_org_id()) WITH CHECK (org_id = get_current_org_id())`,
+// but this package never set app.current_org_id. Every statement below now
+// runs inside rls.WithOrgScope; the hand-written `WHERE org_id = $n`
+// predicates are KEPT as an additive backstop. See the fuller note in
+// killswitch_repository.go.
 
 // RegistryRepository defines the interface for AI system registry data access.
 type RegistryRepository interface {
@@ -88,13 +97,16 @@ func (r *PostgresRegistryRepository) Create(ctx context.Context, system *AISyste
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		system.ID, system.OrgID, system.SystemID, system.SystemName, system.Description,
-		system.UseCase, system.Status, system.RiskRatingImpact, system.RiskRatingComplexity,
-		system.RiskRatingReliance, system.MaterialityClassification, system.OwnerTeam,
-		system.OwnerEmail, dataSourcesJSON, system.ModelType, system.Version,
-		system.DeploymentDate, metadataJSON, system.CreatedAt, system.UpdatedAt, system.CreatedBy,
-	)
+	err = rls.WithOrgScope(ctx, r.db, system.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			system.ID, system.OrgID, system.SystemID, system.SystemName, system.Description,
+			system.UseCase, system.Status, system.RiskRatingImpact, system.RiskRatingComplexity,
+			system.RiskRatingReliance, system.MaterialityClassification, system.OwnerTeam,
+			system.OwnerEmail, dataSourcesJSON, system.ModelType, system.Version,
+			system.DeploymentDate, metadataJSON, system.CreatedAt, system.UpdatedAt, system.CreatedBy,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to insert AI system: %w", err)
 	}
@@ -119,14 +131,16 @@ func (r *PostgresRegistryRepository) GetByID(ctx context.Context, orgID, id stri
 	var deploymentDate, lastAssessment, nextAssessment sql.NullTime
 	var description, modelType, version, updatedBy sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, orgID, id).Scan(
-		&system.ID, &system.OrgID, &system.SystemID, &system.SystemName, &description,
-		&system.UseCase, &system.Status, &system.RiskRatingImpact, &system.RiskRatingComplexity,
-		&system.RiskRatingReliance, &system.MaterialityClassification, &system.OwnerTeam,
-		&system.OwnerEmail, &dataSourcesJSON, &modelType, &version, &deploymentDate,
-		&lastAssessment, &nextAssessment, &metadataJSON, &system.CreatedAt, &system.UpdatedAt,
-		&system.CreatedBy, &updatedBy,
-	)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, orgID, id).Scan(
+			&system.ID, &system.OrgID, &system.SystemID, &system.SystemName, &description,
+			&system.UseCase, &system.Status, &system.RiskRatingImpact, &system.RiskRatingComplexity,
+			&system.RiskRatingReliance, &system.MaterialityClassification, &system.OwnerTeam,
+			&system.OwnerEmail, &dataSourcesJSON, &modelType, &version, &deploymentDate,
+			&lastAssessment, &nextAssessment, &metadataJSON, &system.CreatedAt, &system.UpdatedAt,
+			&system.CreatedBy, &updatedBy,
+		)
+	})
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -176,7 +190,9 @@ func (r *PostgresRegistryRepository) GetBySystemID(ctx context.Context, orgID, s
 	`
 
 	var id string
-	err := r.db.QueryRowContext(ctx, query, orgID, systemID).Scan(&id)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, orgID, systemID).Scan(&id)
+	})
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -184,6 +200,8 @@ func (r *PostgresRegistryRepository) GetBySystemID(ctx context.Context, orgID, s
 		return nil, fmt.Errorf("failed to get AI system by system_id: %w", err)
 	}
 
+	// GetByID opens its own wrap. Sequential, not nested: the transaction above
+	// has already committed by the time this runs.
 	return r.GetByID(ctx, orgID, id)
 }
 
@@ -217,62 +235,67 @@ func (r *PostgresRegistryRepository) List(ctx context.Context, orgID string, par
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list AI systems: %w", err)
-	}
-	defer rows.Close()
-
 	var systems []*AISystemRegistry
-	for rows.Next() {
-		system := &AISystemRegistry{}
-		var metadataJSON, dataSourcesJSON []byte
-		var deploymentDate, lastAssessment, nextAssessment sql.NullTime
-		var description, modelType, version, updatedBy sql.NullString
-
-		err := rows.Scan(
-			&system.ID, &system.OrgID, &system.SystemID, &system.SystemName, &description,
-			&system.UseCase, &system.Status, &system.RiskRatingImpact, &system.RiskRatingComplexity,
-			&system.RiskRatingReliance, &system.MaterialityClassification, &system.OwnerTeam,
-			&system.OwnerEmail, &dataSourcesJSON, &modelType, &version, &deploymentDate,
-			&lastAssessment, &nextAssessment, &metadataJSON, &system.CreatedAt, &system.UpdatedAt,
-			&system.CreatedBy, &updatedBy,
-		)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan AI system: %w", err)
+			return fmt.Errorf("failed to list AI systems: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			system := &AISystemRegistry{}
+			var metadataJSON, dataSourcesJSON []byte
+			var deploymentDate, lastAssessment, nextAssessment sql.NullTime
+			var description, modelType, version, updatedBy sql.NullString
+
+			if scanErr := rows.Scan(
+				&system.ID, &system.OrgID, &system.SystemID, &system.SystemName, &description,
+				&system.UseCase, &system.Status, &system.RiskRatingImpact, &system.RiskRatingComplexity,
+				&system.RiskRatingReliance, &system.MaterialityClassification, &system.OwnerTeam,
+				&system.OwnerEmail, &dataSourcesJSON, &modelType, &version, &deploymentDate,
+				&lastAssessment, &nextAssessment, &metadataJSON, &system.CreatedAt, &system.UpdatedAt,
+				&system.CreatedBy, &updatedBy,
+			); scanErr != nil {
+				return fmt.Errorf("failed to scan AI system: %w", scanErr)
+			}
+
+			// Handle nullable fields
+			if description.Valid {
+				system.Description = description.String
+			}
+			if modelType.Valid {
+				system.ModelType = modelType.String
+			}
+			if version.Valid {
+				system.Version = version.String
+			}
+			if updatedBy.Valid {
+				system.UpdatedBy = updatedBy.String
+			}
+			if deploymentDate.Valid {
+				system.DeploymentDate = &deploymentDate.Time
+			}
+			if lastAssessment.Valid {
+				system.LastAssessmentDate = &lastAssessment.Time
+			}
+			if nextAssessment.Valid {
+				system.NextAssessmentDue = &nextAssessment.Time
+			}
+
+			if len(metadataJSON) > 0 {
+				json.Unmarshal(metadataJSON, &system.Metadata)
+			}
+			if len(dataSourcesJSON) > 0 {
+				json.Unmarshal(dataSourcesJSON, &system.DataSources)
+			}
+
+			systems = append(systems, system)
 		}
 
-		// Handle nullable fields
-		if description.Valid {
-			system.Description = description.String
-		}
-		if modelType.Valid {
-			system.ModelType = modelType.String
-		}
-		if version.Valid {
-			system.Version = version.String
-		}
-		if updatedBy.Valid {
-			system.UpdatedBy = updatedBy.String
-		}
-		if deploymentDate.Valid {
-			system.DeploymentDate = &deploymentDate.Time
-		}
-		if lastAssessment.Valid {
-			system.LastAssessmentDate = &lastAssessment.Time
-		}
-		if nextAssessment.Valid {
-			system.NextAssessmentDue = &nextAssessment.Time
-		}
-
-		if len(metadataJSON) > 0 {
-			json.Unmarshal(metadataJSON, &system.Metadata)
-		}
-		if len(dataSourcesJSON) > 0 {
-			json.Unmarshal(dataSourcesJSON, &system.DataSources)
-		}
-
-		systems = append(systems, system)
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
 	return systems, nil
@@ -309,13 +332,16 @@ func (r *PostgresRegistryRepository) Update(ctx context.Context, system *AISyste
 		WHERE org_id = $18 AND id = $19
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		system.SystemName, system.Description, system.UseCase, system.Status,
-		system.RiskRatingImpact, system.RiskRatingComplexity, system.RiskRatingReliance,
-		system.MaterialityClassification, system.OwnerTeam, system.OwnerEmail,
-		dataSourcesJSON, system.ModelType, system.Version, system.DeploymentDate,
-		metadataJSON, system.UpdatedAt, system.UpdatedBy, system.OrgID, system.ID,
-	)
+	err = rls.WithOrgScope(ctx, r.db, system.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			system.SystemName, system.Description, system.UseCase, system.Status,
+			system.RiskRatingImpact, system.RiskRatingComplexity, system.RiskRatingReliance,
+			system.MaterialityClassification, system.OwnerTeam, system.OwnerEmail,
+			dataSourcesJSON, system.ModelType, system.Version, system.DeploymentDate,
+			metadataJSON, system.UpdatedAt, system.UpdatedBy, system.OrgID, system.ID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update AI system: %w", err)
 	}
@@ -331,7 +357,10 @@ func (r *PostgresRegistryRepository) Delete(ctx context.Context, orgID, id strin
 		WHERE org_id = $3 AND id = $4
 	`
 
-	_, err := r.db.ExecContext(ctx, query, SystemStatusRetired, time.Now().UTC(), orgID, id)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query, SystemStatusRetired, time.Now().UTC(), orgID, id)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete AI system: %w", err)
 	}
@@ -356,21 +385,34 @@ func (r *PostgresRegistryRepository) GetSummary(ctx context.Context, orgID strin
 		WHERE org_id = $1
 	`
 
-	err := r.db.QueryRowContext(ctx, query, orgID).Scan(
-		&summary.TotalSystems, &summary.ActiveSystems,
-		&summary.HighMateriality, &summary.MediumMateriality, &summary.LowMateriality,
-		&summary.AssessmentsDue,
-	)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, orgID).Scan(
+			&summary.TotalSystems, &summary.ActiveSystems,
+			&summary.HighMateriality, &summary.MediumMateriality, &summary.LowMateriality,
+			&summary.AssessmentsDue,
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get registry summary: %w", err)
 	}
 
-	// Get kill switches triggered count
+	// Get kill switches triggered count.
+	//
+	// This is a SECOND call site, against a DIFFERENT RLS-gated table
+	// (mas_kill_switches), and it needs its own scope (#3133). It deliberately
+	// gets its own wrap rather than sharing the transaction above: this
+	// statement's error has always been ignored — a summary is still returned
+	// with KillSwitchesTriggered left at zero — and inside a shared transaction
+	// a failure here would abort the txn and turn the whole COMMIT into an
+	// error, changing GetSummary's contract. The wrap is additive; the error
+	// tolerance is preserved exactly as it was.
 	killSwitchQuery := `
 		SELECT COUNT(*) FROM mas_kill_switches
 		WHERE org_id = $1 AND status = 'triggered'
 	`
-	r.db.QueryRowContext(ctx, killSwitchQuery, orgID).Scan(&summary.KillSwitchesTriggered)
+	_ = rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, killSwitchQuery, orgID).Scan(&summary.KillSwitchesTriggered)
+	})
 
 	return summary, nil
 }
@@ -384,20 +426,26 @@ func (r *PostgresRegistryRepository) CountByStatus(ctx context.Context, orgID st
 		GROUP BY status
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to count by status: %w", err)
-	}
-	defer rows.Close()
-
 	counts := make(map[SystemStatus]int)
-	for rows.Next() {
-		var status SystemStatus
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
-			return nil, fmt.Errorf("failed to scan count: %w", err)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID)
+		if err != nil {
+			return fmt.Errorf("failed to count by status: %w", err)
 		}
-		counts[status] = count
+		defer rows.Close()
+
+		for rows.Next() {
+			var status SystemStatus
+			var count int
+			if scanErr := rows.Scan(&status, &count); scanErr != nil {
+				return fmt.Errorf("failed to scan count: %w", scanErr)
+			}
+			counts[status] = count
+		}
+
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
 	return counts, nil

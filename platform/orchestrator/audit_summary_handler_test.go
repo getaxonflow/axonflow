@@ -22,6 +22,12 @@ import (
 )
 
 func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
+	// #3096: auditSummaryRequestHandler resolves its read scope via
+	// resolveCallerReadScope. This test covers the summary payload, not read
+	// authority, and reached the tenant-wide path via an unset
+	// DEPLOYMENT_MODE; unset is now the enterprise posture, so name the mode.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)

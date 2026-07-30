@@ -134,8 +134,14 @@ func (h *AuditSummaryHandler) HandleSummary(w http.ResponseWriter, r *http.Reque
 	// #2922 role-scoped reads: a non-tenant-wide caller's summary aggregates
 	// only their own rows. Empty identity ⇒ the zero-events summary
 	// (fail-closed; same shape as an empty window).
+	//
+	// #3060 (#2991 coverage gap): the zero-events summary below is a
+	// ComplianceScore:100 "all clear" — the most misleading possible shape for
+	// a fail-closed read. Stamp the scope header + log line so it is legible.
 	scopeUserEmail := ""
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			empty := &ComplianceSummary{
 				BySeverity:      map[string]int{},

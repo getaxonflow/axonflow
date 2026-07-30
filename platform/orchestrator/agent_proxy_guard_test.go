@@ -320,13 +320,20 @@ func TestExecutePlanHandler_DirectAccessBlocked(t *testing.T) {
 // trust-gated X-User-Email header, NEVER the forgeable request body. Mutation:
 // dropping the `req.User.Email = header` line lets the body's victim identity
 // through to the checkpoint.
+// #3066 C3-6 changed the signature and made the org/tenant binding fail closed.
+// The email contract is unchanged and is asserted here on BOTH outcomes: the
+// bound case, and the refused case (X-Tenant-ID only, no X-Org-ID → 401) where
+// the body-supplied actor must still have been dropped before the refusal.
 func TestApplyAuthoritativeIdentity_EmailFromHeaderNeverBody(t *testing.T) {
 	t.Run("header present → header wins over body", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/plan/execute", nil)
 		req.Header.Set("X-Tenant-ID", "t1")
+		req.Header.Set("X-Org-ID", "o1")
 		req.Header.Set("X-User-Email", "dev@corp.example")
 		pr := &PlanRequest{User: UserContext{Email: "victim@corp.example"}}
-		applyAuthoritativeIdentity(req, pr)
+		if status, msg := applyAuthoritativeIdentity(req, pr, "test"); status != 0 {
+			t.Fatalf("fully stamped request must bind, got %d %s", status, msg)
+		}
 		if pr.User.Email != "dev@corp.example" {
 			t.Errorf("actor email must come from the trusted header, got %q", pr.User.Email)
 		}
@@ -335,11 +342,27 @@ func TestApplyAuthoritativeIdentity_EmailFromHeaderNeverBody(t *testing.T) {
 	t.Run("header absent (gate off) → body email is dropped, not trusted", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/plan/execute", nil)
 		req.Header.Set("X-Tenant-ID", "t1")
+		req.Header.Set("X-Org-ID", "o1")
 		// No X-User-Email (the agent stripped it under gate off).
 		pr := &PlanRequest{User: UserContext{Email: "victim@corp.example"}}
-		applyAuthoritativeIdentity(req, pr)
+		if status, msg := applyAuthoritativeIdentity(req, pr, "test"); status != 0 {
+			t.Fatalf("fully stamped request must bind, got %d %s", status, msg)
+		}
 		if pr.User.Email != "" {
 			t.Errorf("body-supplied actor email must be dropped when the gate stripped the header, got %q", pr.User.Email)
+		}
+	})
+
+	t.Run("tenancy refused → body email is STILL dropped before the refusal", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/v1/plan/execute", nil)
+		req.Header.Set("X-Tenant-ID", "t1") // half-stamped: no X-Org-ID
+		pr := &PlanRequest{User: UserContext{Email: "victim@corp.example"}}
+		status, _ := applyAuthoritativeIdentity(req, pr, "test")
+		if status != http.StatusUnauthorized {
+			t.Fatalf("half-stamped tenancy must fail closed, got status %d", status)
+		}
+		if pr.User.Email != "" {
+			t.Errorf("body-supplied actor email must be dropped even on the refusal path, got %q", pr.User.Email)
 		}
 	})
 }

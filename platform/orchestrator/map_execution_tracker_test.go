@@ -304,6 +304,8 @@ func TestPlanToExecutionStatus(t *testing.T) {
 
 	t.Run("completed plan", func(t *testing.T) {
 		plan := &planning.Plan{
+			OrgID:              "org_1",
+			TenantID:           "tenant_1",
 			PlanID:             "plan_456",
 			Query:              "Completed query",
 			Domain:             "general",
@@ -332,6 +334,8 @@ func TestPlanToExecutionStatus(t *testing.T) {
 
 	t.Run("failed plan with error", func(t *testing.T) {
 		plan := &planning.Plan{
+			OrgID:              "org_1",
+			TenantID:           "tenant_1",
 			PlanID:             "plan_789",
 			Query:              "Failed query",
 			Status:             planning.PlanStatusFailed,
@@ -354,6 +358,8 @@ func TestPlanToExecutionStatus(t *testing.T) {
 
 	t.Run("expired plan", func(t *testing.T) {
 		plan := &planning.Plan{
+			OrgID:     "org_1",
+			TenantID:  "tenant_1",
 			PlanID:    "plan_exp",
 			Query:     "Expired query",
 			Status:    planning.PlanStatusExpired,
@@ -372,6 +378,8 @@ func TestPlanToExecutionStatus(t *testing.T) {
 
 	t.Run("plan without workflow definition", func(t *testing.T) {
 		plan := &planning.Plan{
+			OrgID:     "org_1",
+			TenantID:  "tenant_1",
 			PlanID:    "plan_no_wf",
 			Query:     "Query without workflow",
 			Status:    planning.PlanStatusPending,
@@ -392,6 +400,8 @@ func TestPlanToExecutionStatus(t *testing.T) {
 
 	t.Run("metadata is populated", func(t *testing.T) {
 		plan := &planning.Plan{
+			OrgID:             "org_1",
+			TenantID:          "tenant_1",
 			PlanID:            "plan_meta",
 			Query:             "Metadata test",
 			Status:            planning.PlanStatusPending,
@@ -496,6 +506,8 @@ func TestMAPExecutionTracker_StartPlanExecution_InvalidWorkflow(t *testing.T) {
 	ctx := context.Background()
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_invalid",
 		WorkflowDefinition: []byte("invalid json"),
 	}
@@ -523,6 +535,7 @@ func TestMAPExecutionTracker_GetPlanStatus_FromUnifiedExecution(t *testing.T) {
 
 	// Start a plan execution
 	plan := &planning.Plan{
+		OrgID:              "org_1",
 		PlanID:             "plan_status_test",
 		Query:              "Status test query",
 		StepCount:          1,
@@ -576,6 +589,8 @@ func TestMAPExecutionTracker_SyncPlanStatus(t *testing.T) {
 
 	// Start an execution
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_sync_test",
 		Query:              "Sync test",
 		StepCount:          1,
@@ -613,6 +628,8 @@ func TestMAPExecutionTracker_SyncPlanStatus_Failed(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_fail_test",
 		Query:              "Fail test",
 		StepCount:          1,
@@ -645,6 +662,8 @@ func TestMAPExecutionTracker_SyncPlanStatus_Expired(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_expire_test",
 		Query:              "Expire test",
 		StepCount:          1,
@@ -677,6 +696,8 @@ func TestMAPExecutionTracker_SyncPlanStatus_Cancelled(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_cancel_test",
 		Query:              "Cancel test",
 		StepCount:          1,
@@ -709,6 +730,8 @@ func TestMAPExecutionTracker_SyncPlanStatus_CancelledDefaultReason(t *testing.T)
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_cancel_default",
 		Query:              "Cancel default reason",
 		StepCount:          1,
@@ -866,6 +889,7 @@ func TestMAPExecutionTracker_GetPlanStatus_FallbackToPlanService_NoWorkflow(t *t
 
 	now := time.Now()
 	plan := &planning.Plan{
+		OrgID:             "org_1",
 		PlanID:            "plan_no_workflow",
 		Query:             "Simple query",
 		Domain:            "general",
@@ -918,6 +942,8 @@ func TestMAPExecutionTracker_GetPlanStatus_FallbackToPlanService_CompletedPlan(t
 
 	now := time.Now()
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_completed_svc",
 		Query:              "Completed plan query",
 		Domain:             "finance",
@@ -1023,6 +1049,8 @@ func TestMAPExecutionTracker_GetPlanStatus_UnifiedWins_OverPlanService(t *testin
 	now := time.Now()
 	// Store plan in planning repository
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_both_exist",
 		Query:              "Both exist query",
 		Domain:             "general",
@@ -1075,6 +1103,8 @@ func TestMAPExecutionTracker_GetPlanStatus_FallbackToPlanService_CancelledPlan(t
 
 	now := time.Now()
 	plan := &planning.Plan{
+		OrgID:             "org_1",
+		TenantID:          "tenant_1",
 		PlanID:            "plan_cancelled_svc",
 		Query:             "Cancelled query",
 		Domain:            "ops",
@@ -1120,6 +1150,8 @@ func TestMAPExecutionTracker_GetPlanStatus_FallbackToPlanService_FailedWithError
 
 	now := time.Now()
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_failed_svc",
 		Query:              "Failed query",
 		Domain:             "research",
@@ -1160,6 +1192,8 @@ func TestMAPExecutionTracker_GetPlanStatus_FallbackToPlanService_ZeroStepCount(t
 
 	now := time.Now()
 	plan := &planning.Plan{
+		OrgID:     "org_1",
+		TenantID:  "tenant_1",
 		PlanID:    "plan_zero_steps",
 		Query:     "Zero steps",
 		Status:    planning.PlanStatusPending,
@@ -1218,6 +1252,7 @@ func TestSyncStepResults_CompletedSteps(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
 		PlanID:             "plan_sync_steps",
 		Query:              "Sync step results test",
 		StepCount:          3,
@@ -1351,6 +1386,7 @@ func TestSyncStepResults_OutOfOrder(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
 		PlanID:             "plan_sync_steps_out_of_order",
 		Query:              "Out of order step results test",
 		StepCount:          3,
@@ -1451,6 +1487,7 @@ func TestSyncStepResults_FailedStep(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
 		PlanID:             "plan_fail_step",
 		Query:              "Failed step test",
 		StepCount:          2,
@@ -1522,6 +1559,7 @@ func TestSyncStepResults_NoCostEstimator(t *testing.T) {
 	workflowJSON, _ := json.Marshal(workflow)
 
 	plan := &planning.Plan{
+		OrgID:              "org_1",
 		PlanID:             "plan_no_cost",
 		Query:              "No cost estimator test",
 		StepCount:          1,

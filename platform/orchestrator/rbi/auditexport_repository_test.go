@@ -41,26 +41,26 @@ func newTestAuditExport() *AuditExport {
 	expiresAt := now.Add(7 * 24 * time.Hour)
 
 	return &AuditExport{
-		ID:              "export-001",
-		OrgID:           "org-001",
-		ExportType:      AuditExportTypeFull,
-		Format:          AuditExportFormatJSON,
-		StartDate:       &startDate,
-		EndDate:         &endDate,
-		SystemIDs:       []string{"sys-1", "sys-2"},
-		RiskCategories:  []string{"high", "medium"},
-		IncludeArchived: true,
-		Status:          AuditExportStatusCompleted,
-		ErrorMessage:    "",
-		RequestedBy:     "user-001",
+		ID:               "export-001",
+		OrgID:            "org-001",
+		ExportType:       AuditExportTypeFull,
+		Format:           AuditExportFormatJSON,
+		StartDate:        &startDate,
+		EndDate:          &endDate,
+		SystemIDs:        []string{"sys-1", "sys-2"},
+		RiskCategories:   []string{"high", "medium"},
+		IncludeArchived:  true,
+		Status:           AuditExportStatusCompleted,
+		ErrorMessage:     "",
+		RequestedBy:      "user-001",
 		RequestedByEmail: "user@example.com",
-		Purpose:         "Quarterly compliance audit",
-		StartedAt:       &startedAt,
-		CompletedAt:     &completedAt,
-		FilePath:        "/exports/org-001/export-001.json",
-		FileSizeBytes:   1048576,
-		FileChecksum:    "sha256:abc123def456",
-		RecordCount:     500,
+		Purpose:          "Quarterly compliance audit",
+		StartedAt:        &startedAt,
+		CompletedAt:      &completedAt,
+		FilePath:         "/exports/org-001/export-001.json",
+		FileSizeBytes:    1048576,
+		FileChecksum:     "sha256:abc123def456",
+		RecordCount:      500,
 		Summary: &AuditExportSummary{
 			TotalSystems:     10,
 			TotalValidations: 5,
@@ -179,6 +179,10 @@ func TestPostgresAuditExportRepository_Create(t *testing.T) {
 		)
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(insertQuery)).
 		WithArgs(
 			export.ID,
@@ -211,6 +215,8 @@ func TestPostgresAuditExportRepository_Create(t *testing.T) {
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
+	mock.ExpectCommit()
+
 	err = repo.Create(ctx, export)
 	require.NoError(t, err)
 	assert.Equal(t, "pre-set-id", export.ID)
@@ -232,6 +238,10 @@ func TestPostgresAuditExportRepository_Create_GeneratesID(t *testing.T) {
 	export := newTestAuditExport()
 	export.ID = "" // Empty ID should trigger UUID generation
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO rbi_audit_exports").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -243,6 +253,8 @@ func TestPostgresAuditExportRepository_Create_GeneratesID(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, export)
 	require.NoError(t, err)
@@ -261,6 +273,10 @@ func TestPostgresAuditExportRepository_Create_Error(t *testing.T) {
 
 	export := newTestAuditExport()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO rbi_audit_exports").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -272,6 +288,8 @@ func TestPostgresAuditExportRepository_Create_Error(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("connection refused"))
+
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, export)
 	require.Error(t, err)
@@ -307,9 +325,15 @@ func TestPostgresAuditExportRepository_Get(t *testing.T) {
 	rows := sqlmock.NewRows(auditExportColumns)
 	addAuditExportRow(rows, export)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs(export.ID, export.OrgID).
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	result, err := repo.Get(ctx, export.OrgID, export.ID)
 	require.NoError(t, err)
@@ -378,9 +402,15 @@ func TestPostgresAuditExportRepository_Get_NullableFieldsNil(t *testing.T) {
 		now, now,
 	)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs("export-002", "org-001").
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	result, err := repo.Get(ctx, "org-001", "export-002")
 	require.NoError(t, err)
@@ -426,9 +456,15 @@ func TestPostgresAuditExportRepository_Get_NotFound(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs("nonexistent-id", "org-001").
 		WillReturnError(sql.ErrNoRows)
+
+	mock.ExpectRollback()
 
 	result, err := repo.Get(ctx, "org-001", "nonexistent-id")
 	assert.Nil(t, result)
@@ -459,9 +495,15 @@ func TestPostgresAuditExportRepository_Get_Error(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs("export-001", "org-001").
 		WillReturnError(fmt.Errorf("database connection lost"))
+
+	mock.ExpectRollback()
 
 	result, err := repo.Get(ctx, "org-001", "export-001")
 	assert.Nil(t, result)
@@ -485,6 +527,10 @@ func TestPostgresAuditExportRepository_List(t *testing.T) {
 	params := &ListAuditExportsParams{}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -510,6 +556,8 @@ func TestPostgresAuditExportRepository_List(t *testing.T) {
 		WithArgs("org-001", 50, 0).
 		WillReturnRows(rows)
 
+	mock.ExpectCommit()
+
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
 	assert.Equal(t, 1, total)
@@ -528,6 +576,10 @@ func TestPostgresAuditExportRepository_List_NilParams(t *testing.T) {
 	ctx := context.Background()
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -549,6 +601,8 @@ func TestPostgresAuditExportRepository_List_NilParams(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listQuery)).
 		WithArgs("org-001", 50, 0).
 		WillReturnRows(sqlmock.NewRows(auditExportColumns))
+
+	mock.ExpectCommit()
 
 	results, total, err := repo.List(ctx, "org-001", nil)
 	require.NoError(t, err)
@@ -579,6 +633,10 @@ func TestPostgresAuditExportRepository_List_WithFilters(t *testing.T) {
 
 	// With all four filters, the WHERE clause has 5 conditions and args $1..$5
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1 AND export_type = $2 AND status = $3 AND created_at >= $4 AND created_at <= $5"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001", "full", "completed", startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
@@ -606,6 +664,8 @@ func TestPostgresAuditExportRepository_List_WithFilters(t *testing.T) {
 		WithArgs("org-001", "full", "completed", startDate, endDate, 25, 10).
 		WillReturnRows(rows)
 
+	mock.ExpectCommit()
+
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total)
@@ -628,6 +688,10 @@ func TestPostgresAuditExportRepository_List_LimitClamping(t *testing.T) {
 	}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -650,6 +714,8 @@ func TestPostgresAuditExportRepository_List_LimitClamping(t *testing.T) {
 		WithArgs("org-001", 100, 0). // 500 clamped to 100
 		WillReturnRows(sqlmock.NewRows(auditExportColumns))
 
+	mock.ExpectCommit()
+
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
 	assert.Equal(t, 0, total)
@@ -669,9 +735,15 @@ func TestPostgresAuditExportRepository_List_CountError(t *testing.T) {
 	params := &ListAuditExportsParams{}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001").
 		WillReturnError(fmt.Errorf("connection timeout"))
+
+	mock.ExpectRollback()
 
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.Error(t, err)
@@ -693,6 +765,10 @@ func TestPostgresAuditExportRepository_List_QueryError(t *testing.T) {
 	params := &ListAuditExportsParams{}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
@@ -714,6 +790,8 @@ func TestPostgresAuditExportRepository_List_QueryError(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listQuery)).
 		WithArgs("org-001", 50, 0).
 		WillReturnError(fmt.Errorf("query execution failed"))
+
+	mock.ExpectRollback()
 
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.Error(t, err)
@@ -738,6 +816,10 @@ func TestPostgresAuditExportRepository_List_WithExportTypeFilterOnly(t *testing.
 	}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1 AND export_type = $2"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001", "incidents").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -760,6 +842,8 @@ func TestPostgresAuditExportRepository_List_WithExportTypeFilterOnly(t *testing.
 		WithArgs("org-001", "incidents", 10, 0).
 		WillReturnRows(sqlmock.NewRows(auditExportColumns))
 
+	mock.ExpectCommit()
+
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
 	assert.Equal(t, 0, total)
@@ -781,6 +865,10 @@ func TestPostgresAuditExportRepository_List_WithStatusFilterOnly(t *testing.T) {
 	}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1 AND status = $2"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001", "pending").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -829,6 +917,8 @@ func TestPostgresAuditExportRepository_List_WithStatusFilterOnly(t *testing.T) {
 		WithArgs("org-001", "pending", 50, 0).
 		WillReturnRows(rows)
 
+	mock.ExpectCommit()
+
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
 	assert.Equal(t, 2, total)
@@ -859,6 +949,10 @@ func TestPostgresAuditExportRepository_Update(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(updateQuery)).
 		WithArgs(
 			export.ID,
@@ -879,6 +973,8 @@ func TestPostgresAuditExportRepository_Update(t *testing.T) {
 			sqlmock.AnyArg(), // updated_at
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, export)
 	require.NoError(t, err)
@@ -908,6 +1004,10 @@ func TestPostgresAuditExportRepository_Update_NotFound(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(updateQuery)).
 		WithArgs(
 			export.ID,
@@ -920,6 +1020,8 @@ func TestPostgresAuditExportRepository_Update_NotFound(t *testing.T) {
 			sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 0)) // 0 rows affected
+
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, export)
 	require.Error(t, err)
@@ -948,6 +1050,10 @@ func TestPostgresAuditExportRepository_Update_Error(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(updateQuery)).
 		WithArgs(
 			export.ID,
@@ -960,6 +1066,8 @@ func TestPostgresAuditExportRepository_Update_Error(t *testing.T) {
 			sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("deadlock detected"))
+
+	mock.ExpectRollback()
 
 	err = repo.Update(ctx, export)
 	require.Error(t, err)
@@ -979,9 +1087,15 @@ func TestPostgresAuditExportRepository_Delete(t *testing.T) {
 
 	deleteQuery := "DELETE FROM rbi_audit_exports WHERE id = $1 AND org_id = $2"
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(deleteQuery)).
 		WithArgs("export-001", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "export-001")
 	require.NoError(t, err)
@@ -999,9 +1113,15 @@ func TestPostgresAuditExportRepository_Delete_NotFound(t *testing.T) {
 
 	deleteQuery := "DELETE FROM rbi_audit_exports WHERE id = $1 AND org_id = $2"
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(deleteQuery)).
 		WithArgs("nonexistent-id", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 0)) // 0 rows affected
+
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "nonexistent-id")
 	require.Error(t, err)
@@ -1020,9 +1140,15 @@ func TestPostgresAuditExportRepository_Delete_Error(t *testing.T) {
 
 	deleteQuery := "DELETE FROM rbi_audit_exports WHERE id = $1 AND org_id = $2"
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(deleteQuery)).
 		WithArgs("export-001", "org-001").
 		WillReturnError(fmt.Errorf("permission denied"))
+
+	mock.ExpectRollback()
 
 	err = repo.Delete(ctx, "org-001", "export-001")
 	require.Error(t, err)
@@ -1321,6 +1447,10 @@ func TestPostgresAuditExportRepository_Create_NilSummary(t *testing.T) {
 		Summary:    nil,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO rbi_audit_exports").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -1332,6 +1462,8 @@ func TestPostgresAuditExportRepository_Create_NilSummary(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, export)
 	require.NoError(t, err)
@@ -1364,6 +1496,10 @@ func TestPostgresAuditExportRepository_Update_NilSummary(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(updateQuery)).
 		WithArgs(
 			export.ID, export.OrgID,
@@ -1375,6 +1511,8 @@ func TestPostgresAuditExportRepository_Update_NilSummary(t *testing.T) {
 			sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, export)
 	require.NoError(t, err)
@@ -1419,9 +1557,15 @@ func TestPostgresAuditExportRepository_Get_SummaryDeserialization(t *testing.T) 
 		now, now,
 	)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs("export-summary", "org-001").
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	result, err := repo.Get(ctx, "org-001", "export-summary")
 	require.NoError(t, err)
@@ -1472,9 +1616,15 @@ func TestPostgresAuditExportRepository_Get_EmptySummary(t *testing.T) {
 		now, now,
 	)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs("export-empty-sum", "org-001").
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	result, err := repo.Get(ctx, "org-001", "export-empty-sum")
 	require.NoError(t, err)
@@ -1500,6 +1650,10 @@ func TestPostgresAuditExportRepository_List_MultipleResults(t *testing.T) {
 	}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
@@ -1554,6 +1708,8 @@ func TestPostgresAuditExportRepository_List_MultipleResults(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listQuery)).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(rows)
+
+	mock.ExpectCommit()
 
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -1654,6 +1810,10 @@ func TestPostgresAuditExportRepository_List_StartDateFilterOnly(t *testing.T) {
 	}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1 AND created_at >= $2"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001", startDate).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -1675,6 +1835,8 @@ func TestPostgresAuditExportRepository_List_StartDateFilterOnly(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listQuery)).
 		WithArgs("org-001", startDate, 50, 0).
 		WillReturnRows(sqlmock.NewRows(auditExportColumns))
+
+	mock.ExpectCommit()
 
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -1698,6 +1860,10 @@ func TestPostgresAuditExportRepository_List_EndDateFilterOnly(t *testing.T) {
 	}
 
 	countQuery := "SELECT COUNT(*) FROM rbi_audit_exports WHERE org_id = $1 AND created_at <= $2"
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(countQuery)).
 		WithArgs("org-001", endDate).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -1719,6 +1885,8 @@ func TestPostgresAuditExportRepository_List_EndDateFilterOnly(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(listQuery)).
 		WithArgs("org-001", endDate, 50, 0).
 		WillReturnRows(sqlmock.NewRows(auditExportColumns))
+
+	mock.ExpectCommit()
 
 	results, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -1746,6 +1914,10 @@ func TestPostgresAuditExportRepository_Create_EmptySlices(t *testing.T) {
 		Status:         AuditExportStatusPending,
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO rbi_audit_exports").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -1757,6 +1929,8 @@ func TestPostgresAuditExportRepository_Create_EmptySlices(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, export)
 	require.NoError(t, err)
@@ -1789,6 +1963,10 @@ func TestPostgresAuditExportRepository_Update_WithErrorMessage(t *testing.T) {
 		WHERE id = $1 AND org_id = $2
 	`
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(updateQuery)).
 		WithArgs(
 			"export-failed", "org-001",
@@ -1801,6 +1979,8 @@ func TestPostgresAuditExportRepository_Update_WithErrorMessage(t *testing.T) {
 			sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, export)
 	require.NoError(t, err)

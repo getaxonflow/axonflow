@@ -15,7 +15,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3103. Migration 301 switches RLS on for all seven rbi_* tables with a
+// `FOR ALL USING (org_id = get_current_org_id())` policy, but this package
+// never set app.current_org_id — so on an axonflow_app_role pool every read
+// here returned SILENT ZERO ROWS and every write failed closed. Every
+// statement below therefore runs inside rls.WithOrgScope, which opens a
+// transaction and SET LOCALs the GUC the policy reads. The hand-written
+// `WHERE org_id = $n` predicates are KEPT: the wrap is a backstop, not a
+// replacement, and the two failing independently is the point. See the fuller
+// note in auditexport_repository.go.
 
 // ErrIncidentNotFound is returned when an incident is not found.
 var ErrIncidentNotFound = errors.New("incident not found")
@@ -115,43 +127,46 @@ func (r *PostgresAIIncidentRepository) Create(ctx context.Context, incident *AII
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		incident.ID,
-		incident.OrgID,
-		incident.IncidentID,
-		nullString(incident.SystemID),
-		string(incident.IncidentType),
-		string(incident.Severity),
-		incident.DetectedAt,
-		string(incident.DetectedBy),
-		nullString(incident.DetectionDetails),
-		incident.Title,
-		incident.Description,
-		nullString(incident.RootCause),
-		nullInt(incident.AffectedCustomersCount),
-		nullInt(incident.AffectedTransactionsCount),
-		nullFloat64(incident.FinancialImpactINR),
-		nullString(incident.ReputationalImpact),
-		remediationActionsJSON,
-		nullString(incident.ImmediateActionTaken),
-		nullString(incident.LongTermFix),
-		string(incident.Status),
-		nullTime(incident.ResolvedAt),
-		nullString(incident.ResolutionSummary),
-		nullString(incident.LessonsLearned),
-		incident.BoardNotified,
-		nullTime(incident.BoardNotificationDate),
-		nullString(incident.BoardNotificationReference),
-		incident.RBINotified,
-		nullTime(incident.RBINotificationDate),
-		nullString(incident.RBINotificationReference),
-		nullString(incident.RBIResponse),
-		evidenceFilesJSON,
-		tagsJSON,
-		metadataJSON,
-		incident.CreatedAt,
-		incident.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, incident.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			incident.ID,
+			incident.OrgID,
+			incident.IncidentID,
+			nullString(incident.SystemID),
+			string(incident.IncidentType),
+			string(incident.Severity),
+			incident.DetectedAt,
+			string(incident.DetectedBy),
+			nullString(incident.DetectionDetails),
+			incident.Title,
+			incident.Description,
+			nullString(incident.RootCause),
+			nullInt(incident.AffectedCustomersCount),
+			nullInt(incident.AffectedTransactionsCount),
+			nullFloat64(incident.FinancialImpactINR),
+			nullString(incident.ReputationalImpact),
+			remediationActionsJSON,
+			nullString(incident.ImmediateActionTaken),
+			nullString(incident.LongTermFix),
+			string(incident.Status),
+			nullTime(incident.ResolvedAt),
+			nullString(incident.ResolutionSummary),
+			nullString(incident.LessonsLearned),
+			incident.BoardNotified,
+			nullTime(incident.BoardNotificationDate),
+			nullString(incident.BoardNotificationReference),
+			incident.RBINotified,
+			nullTime(incident.RBINotificationDate),
+			nullString(incident.RBINotificationReference),
+			nullString(incident.RBIResponse),
+			evidenceFilesJSON,
+			tagsJSON,
+			metadataJSON,
+			incident.CreatedAt,
+			incident.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create incident: %w", err)
 	}
@@ -180,7 +195,15 @@ func (r *PostgresAIIncidentRepository) Get(ctx context.Context, orgID, id string
 		FROM rbi_ai_incidents
 		WHERE id = $1 AND org_id = $2
 	`
-	return r.scanIncident(r.db.QueryRowContext(ctx, query, id, orgID))
+	var incident *AIIncident
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		incident, scanErr = r.scanIncident(tx.QueryRowContext(ctx, query, id, orgID))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return incident, nil
 }
 
 // GetByIncidentID retrieves an incident by its incident ID.
@@ -204,7 +227,15 @@ func (r *PostgresAIIncidentRepository) GetByIncidentID(ctx context.Context, orgI
 		FROM rbi_ai_incidents
 		WHERE incident_id = $1 AND org_id = $2
 	`
-	return r.scanIncident(r.db.QueryRowContext(ctx, query, incidentID, orgID))
+	var incident *AIIncident
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		incident, scanErr = r.scanIncident(tx.QueryRowContext(ctx, query, incidentID, orgID))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return incident, nil
 }
 
 // List retrieves incidents with optional filtering.
@@ -269,10 +300,6 @@ func (r *PostgresAIIncidentRepository) List(ctx context.Context, orgID string, p
 
 	// Count total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM rbi_ai_incidents WHERE %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count incidents: %w", err)
-	}
 
 	// Fetch records
 	query := fmt.Sprintf(`
@@ -296,24 +323,41 @@ func (r *PostgresAIIncidentRepository) List(ctx context.Context, orgID string, p
 		ORDER BY detected_at DESC
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argIdx, argIdx+1)
-	args = append(args, params.Limit, params.Offset)
+	// countArgs must be captured BEFORE the LIMIT/OFFSET append, and the append
+	// must not write through the shared backing array — otherwise the count
+	// would run with the page args spliced in.
+	countArgs := args
+	args = append(append([]interface{}{}, args...), params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list incidents: %w", err)
-	}
-	defer rows.Close()
-
+	// One wrap for BOTH statements: the count and the page are separate call
+	// sites and each had to be scoped, and sharing the transaction also makes
+	// total and rows a consistent snapshot.
 	var incidents []*AIIncident
-	for rows.Next() {
-		incident, err := r.scanIncidentRows(rows)
-		if err != nil {
-			return nil, 0, err
+	var total int
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count incidents: %w", err)
 		}
-		incidents = append(incidents, incident)
+
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list incidents: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			incident, scanErr := r.scanIncidentRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			incidents = append(incidents, incident)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, 0, err
 	}
 
-	return incidents, total, rows.Err()
+	return incidents, total, nil
 }
 
 // ListBySystem retrieves all incidents for a specific system.
@@ -339,22 +383,27 @@ func (r *PostgresAIIncidentRepository) ListBySystem(ctx context.Context, orgID, 
 		ORDER BY detected_at DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID, systemID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list incidents by system: %w", err)
-	}
-	defer rows.Close()
-
 	var incidents []*AIIncident
-	for rows.Next() {
-		incident, err := r.scanIncidentRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID, systemID)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to list incidents by system: %w", err)
 		}
-		incidents = append(incidents, incident)
+		defer rows.Close()
+
+		for rows.Next() {
+			incident, scanErr := r.scanIncidentRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			incidents = append(incidents, incident)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return incidents, rows.Err()
+	return incidents, nil
 }
 
 // Update updates an existing incident.
@@ -403,41 +452,46 @@ func (r *PostgresAIIncidentRepository) Update(ctx context.Context, incident *AII
 		WHERE id = $1 AND org_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		incident.ID,
-		incident.OrgID,
-		nullString(incident.SystemID),
-		string(incident.IncidentType),
-		string(incident.Severity),
-		incident.DetectedAt,
-		string(incident.DetectedBy),
-		nullString(incident.DetectionDetails),
-		incident.Title,
-		incident.Description,
-		nullString(incident.RootCause),
-		nullInt(incident.AffectedCustomersCount),
-		nullInt(incident.AffectedTransactionsCount),
-		nullFloat64(incident.FinancialImpactINR),
-		nullString(incident.ReputationalImpact),
-		remediationActionsJSON,
-		nullString(incident.ImmediateActionTaken),
-		nullString(incident.LongTermFix),
-		string(incident.Status),
-		nullTime(incident.ResolvedAt),
-		nullString(incident.ResolutionSummary),
-		nullString(incident.LessonsLearned),
-		incident.BoardNotified,
-		nullTime(incident.BoardNotificationDate),
-		nullString(incident.BoardNotificationReference),
-		incident.RBINotified,
-		nullTime(incident.RBINotificationDate),
-		nullString(incident.RBINotificationReference),
-		nullString(incident.RBIResponse),
-		evidenceFilesJSON,
-		tagsJSON,
-		metadataJSON,
-		incident.UpdatedAt,
-	)
+	var result sql.Result
+	err = rls.WithOrgScope(ctx, r.db, incident.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			incident.ID,
+			incident.OrgID,
+			nullString(incident.SystemID),
+			string(incident.IncidentType),
+			string(incident.Severity),
+			incident.DetectedAt,
+			string(incident.DetectedBy),
+			nullString(incident.DetectionDetails),
+			incident.Title,
+			incident.Description,
+			nullString(incident.RootCause),
+			nullInt(incident.AffectedCustomersCount),
+			nullInt(incident.AffectedTransactionsCount),
+			nullFloat64(incident.FinancialImpactINR),
+			nullString(incident.ReputationalImpact),
+			remediationActionsJSON,
+			nullString(incident.ImmediateActionTaken),
+			nullString(incident.LongTermFix),
+			string(incident.Status),
+			nullTime(incident.ResolvedAt),
+			nullString(incident.ResolutionSummary),
+			nullString(incident.LessonsLearned),
+			incident.BoardNotified,
+			nullTime(incident.BoardNotificationDate),
+			nullString(incident.BoardNotificationReference),
+			incident.RBINotified,
+			nullTime(incident.RBINotificationDate),
+			nullString(incident.RBINotificationReference),
+			nullString(incident.RBIResponse),
+			evidenceFilesJSON,
+			tagsJSON,
+			metadataJSON,
+			incident.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update incident: %w", err)
 	}
@@ -452,10 +506,15 @@ func (r *PostgresAIIncidentRepository) Update(ctx context.Context, incident *AII
 
 // Delete removes an incident.
 func (r *PostgresAIIncidentRepository) Delete(ctx context.Context, orgID, id string) error {
-	result, err := r.db.ExecContext(ctx,
-		"DELETE FROM rbi_ai_incidents WHERE id = $1 AND org_id = $2",
-		id, orgID,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx,
+			"DELETE FROM rbi_ai_incidents WHERE id = $1 AND org_id = $2",
+			id, orgID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete incident: %w", err)
 	}
@@ -491,22 +550,27 @@ func (r *PostgresAIIncidentRepository) GetOpenIncidents(ctx context.Context, org
 		ORDER BY severity, detected_at DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get open incidents: %w", err)
-	}
-	defer rows.Close()
-
 	var incidents []*AIIncident
-	for rows.Next() {
-		incident, err := r.scanIncidentRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to get open incidents: %w", err)
 		}
-		incidents = append(incidents, incident)
+		defer rows.Close()
+
+		for rows.Next() {
+			incident, scanErr := r.scanIncidentRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			incidents = append(incidents, incident)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return incidents, rows.Err()
+	return incidents, nil
 }
 
 // GetPendingNotifications retrieves incidents pending notification.
@@ -559,22 +623,27 @@ func (r *PostgresAIIncidentRepository) GetPendingNotifications(ctx context.Conte
 		return nil, fmt.Errorf("invalid notification type: %s", notificationType)
 	}
 
-	rows, err := r.db.QueryContext(ctx, query, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending notifications: %w", err)
-	}
-	defer rows.Close()
-
 	var incidents []*AIIncident
-	for rows.Next() {
-		incident, err := r.scanIncidentRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to get pending notifications: %w", err)
 		}
-		incidents = append(incidents, incident)
+		defer rows.Close()
+
+		for rows.Next() {
+			incident, scanErr := r.scanIncidentRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			incidents = append(incidents, incident)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return incidents, rows.Err()
+	return incidents, nil
 }
 
 // scanIncident scans a single row into an AIIncident.

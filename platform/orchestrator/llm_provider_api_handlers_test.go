@@ -24,6 +24,19 @@ import (
 	"axonflow/platform/orchestrator/llm"
 )
 
+// testProviderTenant is the tenancy the provider-API tests operate under.
+// #3067 keyed the LLM registry by tenant and made every read handler require
+// an asserted tenancy, so a test provider must be registered under a tenant
+// and the request must carry the header the agent's auth chain stamps.
+const testProviderTenant = "test-tenant"
+
+// withTenant stamps the authenticated-tenant header the orchestrator sees
+// after apiAuthMiddleware has overwritten any client-supplied value.
+func withTenant(req *http.Request, tenantID string) *http.Request {
+	req.Header.Set("X-Tenant-ID", tenantID)
+	return req
+}
+
 // createTestRouter creates a mux.Router with the LLM provider API routes registered
 func createTestRouter(handler *LLMProviderAPIHandler) *mux.Router {
 	r := mux.NewRouter()
@@ -102,7 +115,7 @@ func TestLLMProviderAPIHandler_ProviderHealth(t *testing.T) {
 		handler := NewLLMProviderAPIHandler(registry, nil)
 		router := createTestRouter(handler)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/non-existent/health", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/non-existent/health", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -119,14 +132,15 @@ func TestLLMProviderAPIHandler_ProviderHealth(t *testing.T) {
 
 		// Register a test provider
 		config := &llm.ProviderConfig{
-			Name:   "health-test-provider",
-			Type:   llm.ProviderTypeOpenAI,
-			APIKey: "test-key",
+			Name:     "health-test-provider",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "test-key",
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "health-test-provider")
+		defer registry.Unregister(context.Background(), testProviderTenant, "health-test-provider")
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/health-test-provider/health", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/health-test-provider/health", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -164,15 +178,16 @@ func TestLLMProviderAPIHandler_StatusEndpoint(t *testing.T) {
 
 		// Register a test provider
 		config := &llm.ProviderConfig{
-			Name:    "status-test-provider",
-			Type:    llm.ProviderTypeOpenAI,
-			APIKey:  "test-key",
-			Enabled: true,
+			Name:     "status-test-provider",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "test-key",
+			Enabled:  true,
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "status-test-provider")
+		defer registry.Unregister(context.Background(), testProviderTenant, "status-test-provider")
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/status", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/status", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -214,12 +229,13 @@ func TestLLMProviderAPIHandler_HealthEndpointOptions(t *testing.T) {
 
 	// Register a test provider
 	config := &llm.ProviderConfig{
-		Name:   "options-health-provider",
-		Type:   llm.ProviderTypeOpenAI,
-		APIKey: "test-key",
+		Name:     "options-health-provider",
+		TenantID: testProviderTenant,
+		Type:     llm.ProviderTypeOpenAI,
+		APIKey:   "test-key",
 	}
 	registry.Register(context.Background(), config)
-	defer registry.Unregister(context.Background(), "options-health-provider")
+	defer registry.Unregister(context.Background(), testProviderTenant, "options-health-provider")
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/llm-providers/options-health-provider/health", nil)
 	w := httptest.NewRecorder()
@@ -237,7 +253,7 @@ func TestLLMProviderAPIHandler_ListProviders(t *testing.T) {
 	router := createTestRouter(handler)
 
 	t.Run("returns empty list when no providers", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -259,17 +275,18 @@ func TestLLMProviderAPIHandler_ListProviders(t *testing.T) {
 	t.Run("returns providers after registration", func(t *testing.T) {
 		// Register a provider
 		config := &llm.ProviderConfig{
-			Name:    "test-openai",
-			Type:    llm.ProviderTypeOpenAI,
-			APIKey:  "test-key",
-			Enabled: true,
+			Name:     "test-openai",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "test-key",
+			Enabled:  true,
 		}
 		if err := registry.Register(context.Background(), config); err != nil {
 			t.Fatalf("failed to register provider: %v", err)
 		}
-		defer registry.Unregister(context.Background(), "test-openai")
+		defer registry.Unregister(context.Background(), testProviderTenant, "test-openai")
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -360,7 +377,7 @@ func TestLLMProviderAPIHandler_CreateProvider(t *testing.T) {
 		}
 		bodyBytes, _ := json.Marshal(body)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes))
+		req := withTenant(httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes)), testProviderTenant)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -383,7 +400,7 @@ func TestLLMProviderAPIHandler_CreateProvider(t *testing.T) {
 		}
 		bodyBytes, _ := json.Marshal(body)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes))
+		req := withTenant(httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes)), testProviderTenant)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -410,9 +427,10 @@ func TestLLMProviderAPIHandler_CreateProvider(t *testing.T) {
 
 		// Register first provider
 		config := &llm.ProviderConfig{
-			Name:   "existing-provider",
-			Type:   llm.ProviderTypeOpenAI,
-			APIKey: "test-key",
+			Name:     "existing-provider",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "test-key",
 		}
 		registry.Register(context.Background(), config)
 
@@ -423,7 +441,7 @@ func TestLLMProviderAPIHandler_CreateProvider(t *testing.T) {
 		}
 		bodyBytes, _ := json.Marshal(body)
 
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes))
+		req := withTenant(httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes)), testProviderTenant)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -442,15 +460,16 @@ func TestLLMProviderAPIHandler_GetProvider(t *testing.T) {
 		router := createTestRouter(handler)
 
 		config := &llm.ProviderConfig{
-			Name:    "get-test-provider",
-			Type:    llm.ProviderTypeAnthropic,
-			APIKey:  "test-key",
-			Enabled: true,
+			Name:     "get-test-provider",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeAnthropic,
+			APIKey:   "test-key",
+			Enabled:  true,
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "get-test-provider")
+		defer registry.Unregister(context.Background(), testProviderTenant, "get-test-provider")
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/get-test-provider", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/get-test-provider", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -474,7 +493,7 @@ func TestLLMProviderAPIHandler_GetProvider(t *testing.T) {
 		handler := NewLLMProviderAPIHandler(registry, nil)
 		router := createTestRouter(handler)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/non-existent", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/non-existent", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -511,7 +530,7 @@ func TestLLMProviderAPIHandler_DeleteProvider(t *testing.T) {
 		}
 
 		// Verify deletion
-		if registry.Has("delete-test-provider") {
+		if registry.Has("tenant-x", "delete-test-provider") {
 			t.Error("provider should have been deleted")
 		}
 	})
@@ -557,7 +576,7 @@ func TestLLMProviderAPIHandler_DeleteProvider(t *testing.T) {
 			t.Errorf("expected status %d (cross-tenant masked as 404), got %d", http.StatusNotFound, w.Code)
 		}
 		// Provider must still exist in the registry — cross-tenant DELETE is a no-op.
-		if !registry.Has("tenant-b-provider") {
+		if !registry.Has("tenant-B", "tenant-b-provider") {
 			t.Error("cross-tenant DELETE should NOT have removed the provider")
 		}
 	})
@@ -594,7 +613,7 @@ func TestLLMProviderAPIHandler_UpdateProvider(t *testing.T) {
 			Enabled:  false,
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "update-test-provider")
+		defer registry.Unregister(context.Background(), "tenant-x", "update-test-provider")
 
 		enabled := true
 		body := UpdateLLMProviderRequest{
@@ -634,7 +653,7 @@ func TestLLMProviderAPIHandler_UpdateProvider(t *testing.T) {
 			Type:     llm.ProviderTypeOpenAI,
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "tenant-b-provider-update")
+		defer registry.Unregister(context.Background(), "tenant-B", "tenant-b-provider-update")
 
 		enabled := true
 		body := UpdateLLMProviderRequest{Enabled: &enabled}
@@ -717,7 +736,7 @@ func TestLLMProviderAPIHandler_RouteOrdering(t *testing.T) {
 
 	// Test that /routing is NOT treated as a provider name
 	t.Run("/routing should hit routing endpoint not provider endpoint", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/routing", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/routing", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -739,7 +758,7 @@ func TestLLMProviderAPIHandler_RouteOrdering(t *testing.T) {
 
 	// Test that /status is NOT treated as a provider name
 	t.Run("/status should hit status endpoint not provider endpoint", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/status", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/status", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -763,14 +782,15 @@ func TestLLMProviderAPIHandler_RouteOrdering(t *testing.T) {
 	t.Run("actual provider name should hit provider endpoint", func(t *testing.T) {
 		// Register a test provider
 		config := &llm.ProviderConfig{
-			Name:   "my-real-provider",
-			Type:   llm.ProviderTypeOpenAI,
-			APIKey: "test-key",
+			Name:     "my-real-provider",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "test-key",
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "my-real-provider")
+		defer registry.Unregister(context.Background(), testProviderTenant, "my-real-provider")
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/my-real-provider", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/my-real-provider", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -796,7 +816,7 @@ func TestLLMProviderAPIHandler_Routing(t *testing.T) {
 		handler := NewLLMProviderAPIHandler(registry, nil)
 		router := createTestRouter(handler)
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/routing", nil)
+		req := withTenant(httptest.NewRequest(http.MethodGet, "/api/v1/llm-providers/routing", nil), testProviderTenant)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -822,13 +842,14 @@ func TestLLMProviderAPIHandler_Routing(t *testing.T) {
 
 		// Create provider first
 		config := &llm.ProviderConfig{
-			Name:   "routing-test-provider",
-			Type:   llm.ProviderTypeOpenAI,
-			APIKey: "test-key",
-			Weight: 50,
+			Name:     "routing-test-provider",
+			TenantID: testProviderTenant,
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "test-key",
+			Weight:   50,
 		}
 		registry.Register(context.Background(), config)
-		defer registry.Unregister(context.Background(), "routing-test-provider")
+		defer registry.Unregister(context.Background(), testProviderTenant, "routing-test-provider")
 
 		body := UpdateLLMRoutingRequest{
 			Weights: map[string]int{
@@ -837,7 +858,7 @@ func TestLLMProviderAPIHandler_Routing(t *testing.T) {
 		}
 		bodyBytes, _ := json.Marshal(body)
 
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/llm-providers/routing", bytes.NewReader(bodyBytes))
+		req := withTenant(httptest.NewRequest(http.MethodPut, "/api/v1/llm-providers/routing", bytes.NewReader(bodyBytes)), testProviderTenant)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 

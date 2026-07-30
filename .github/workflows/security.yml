@@ -151,14 +151,47 @@ jobs:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
     needs: [detect-changes]
+    # ── Java scanning: why offline mode, and why it needs a warm ~/.m2 (#3116)
+    #
     # Trivy's Java analyzer resolves remote parent POMs by default. On
     # ee/examples/compliance/rbi-sebi/java/pom.xml that network call cancels
     # ("semaphore acquire: context canceled") and FATAL-aborts the WHOLE fs
-    # scan -> no SARIF -> Security Scan Summary red on every PR. Offline scan
-    # disables remote dependency resolution (the crash class); skip-dirs below
-    # also excludes example projects, which are not shipped artifacts.
+    # scan -> no SARIF -> Security Scan Summary red on every PR.
+    # TRIVY_OFFLINE_SCAN disables remote resolution, which removes that crash
+    # class. KEEP IT.
+    #
+    # But offline mode disables *resolution*, not the analyzer: directly
+    # declared versions are still scanned, while anything TRANSITIVE or
+    # BOM-imported becomes invisible unless the analyzer can read the artifacts
+    # out of the local Maven repository. This job had no setup-java, no mvn and
+    # no ~/.m2 — so Maven dependency scanning was effectively OFF. Isolating the
+    # variable against a plain consumer pom:
+    #
+    #   offline + EMPTY ~/.m2 (this job, before)  ->  0 findings
+    #   offline + WARM  ~/.m2 (this job, now)     ->  5 findings (2 HIGH)
+    #   no offline + empty ~/.m2                  ->  5 findings
+    #
+    # #3110's jackson exposure reached consumers transitively, so CI could
+    # never have seen it; it surfaced only on a developer machine that happened
+    # to have a populated ~/.m2. The warm-up step below closes that without
+    # reintroducing the FATAL.
+    #
+    # ── skip-dirs scope, stated accurately
+    #
+    # TRIVY_SKIP_DIRS is 'ee/examples' and that is ALL it excludes. An earlier
+    # comment here claimed it excluded "example projects, which are not shipped
+    # artifacts" — true of ee/examples, and false of the top-level examples/
+    # tree, which rsyncs to the public community mirror and is therefore a
+    # shipped artifact by any reasonable reading. 57 of the repo's 78
+    # jackson-referencing poms live under examples/. Those ARE scanned, on
+    # purpose. Do not "tidy" examples/ into this list.
+    #
+    # The variable is consumed by the warm-up step AND passed to every Trivy
+    # step below, so the set that is warmed and the set that is scanned cannot
+    # drift apart.
     env:
       TRIVY_OFFLINE_SCAN: 'true'
+      TRIVY_SKIP_DIRS: 'ee/examples'
     # Run if: push/schedule/workflow_dispatch OR (PR/merge_group with security-relevant changes)
     if: |
       always() &&
@@ -171,15 +204,107 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Set up JDK 17 (Maven warm-up for Trivy's Java analyzer)
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          # Keys on the pom hashes, so an unchanged pom set restores ~/.m2
+          # instead of re-downloading it. The warm-up below still runs and
+          # still asserts, so a stale or empty cache cannot make the scan blind.
+          cache: 'maven'
+
+      # NOTE ON BLAST RADIUS: this puts Maven Central on the critical path of
+      # `Security Scan Summary`, which is a required check. A Central outage or
+      # a rate-limit now reds a job that previously needed no package registry.
+      # That is a deliberate trade — the alternative is the scanner reporting a
+      # confident 0 for every Java project — but it is a real cost, and a
+      # rerun is the remedy, not a skip.
+      - name: Warm ~/.m2 so the offline Java analyzer can resolve transitively
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Derive the pom set from the SAME skip list Trivy is given, so the
+          # warmed set and the scanned set cannot drift. A pom Trivy scans but
+          # Maven never resolved is a pom whose transitive tree is invisible —
+          # the exact defect this step exists to close (#3116).
+          prune=()
+          IFS=',' read -ra _skip <<< "${TRIVY_SKIP_DIRS}"
+          for d in "${_skip[@]}"; do
+            d="${d#./}"; d="${d%/}"
+            [ -n "$d" ] || continue
+            prune+=( -path "./$d" -prune -o )
+          done
+
+          mapfile -t POMS < <(find . "${prune[@]}" -name pom.xml -type f -print | sort)
+          echo "Warming ${#POMS[@]} pom(s) (skip-dirs: ${TRIVY_SKIP_DIRS})"
+          if [ "${#POMS[@]}" -eq 0 ]; then
+            echo "::error::No pom.xml found outside the skip list. Either the Java"
+            echo "examples moved or the skip list swallowed them — refusing to run a"
+            echo "Java scan that would silently report zero findings."
+            exit 1
+          fi
+
+          # A pom that cannot resolve is a pom Trivy will read blind, so it is a
+          # hard failure rather than a warning. Retries absorb a flaky mirror;
+          # they do not absorb a genuinely broken pom.
+          failed=0
+          for p in "${POMS[@]}"; do
+            if ! mvn -q -B -ntp \
+                   -Dmaven.wagon.http.retryHandler.count=3 \
+                   -f "$p" dependency:go-offline; then
+              echo "::error file=${p#./}::mvn dependency:go-offline failed; Trivy would scan this pom with no resolvable transitive tree."
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more poms failed to resolve — see the errors above."
+            exit 1
+          fi
+
+          # ── Verification pass, and it is NOT "the loop above exited 0" ──
+          #
+          # The first cut of this check counted .pom files in ~/.m2/repository
+          # against a floor of 50. That number is worthless: a project with ZERO
+          # dependencies leaves 398 .pom files behind, all of them Maven's own
+          # plugin graph. Every "resolved nothing" state cleared that floor by
+          # 8x — a check that reports success without checking, inside the PR
+          # whose entire subject is checks that report success without checking.
+          #
+          # This asks the question Trivy's offline analyzer actually asks: with
+          # the network taken away, is everything this project needs already in
+          # the local repository? `-o` is the whole assertion. Measured against
+          # a repository holding only the plugin graph it exits 1; against a
+          # correctly warmed one all 58 poms exit 0. It is derived from the pom
+          # set rather than pinned to a coordinate, so it keeps working when the
+          # examples' dependencies change.
+          echo "Verifying the warm cache OFFLINE (-o) — the analyzer's own question"
+          cold=0
+          for p in "${POMS[@]}"; do
+            if ! mvn -o -q -B -ntp -f "$p" dependency:go-offline; then
+              echo "::error file=${p#./}::offline resolution failed after the warm-up — the local repository cannot supply this project's tree, so Trivy will scan it blind and report a misleading 0."
+              cold=1
+            fi
+          done
+          if [ "$cold" -ne 0 ]; then
+            echo "::error::The Maven warm-up did not populate ~/.m2/repository for every scanned pom."
+            echo "With TRIVY_OFFLINE_SCAN=true the Java analyzer resolves nothing it cannot"
+            echo "read from that repository, so transitive and BOM-imported CVEs would be"
+            echo "invisible — which is exactly the blind spot #3116 is about."
+            exit 1
+          fi
+          echo "All ${#POMS[@]} pom(s) resolve offline; the analyzer has a tree to read." 
+
       - name: Run Trivy vulnerability scanner (SARIF)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          skip-dirs: 'ee/examples'
+          skip-dirs: ${{ env.TRIVY_SKIP_DIRS }}
 
       - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@v4
@@ -194,14 +319,14 @@ jobs:
           category: 'trivy-filesystem'
 
       - name: Run Trivy (table for logs)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
-          skip-dirs: 'ee/examples'
+          skip-dirs: ${{ env.TRIVY_SKIP_DIRS }}
 
   # Trivy Configuration Scan
   trivy-config-scan:
@@ -221,7 +346,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Trivy config scanner (SARIF)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'config'
           scan-ref: '.'
@@ -240,7 +365,7 @@ jobs:
           category: 'trivy-config'
 
       - name: Run Trivy config (table)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'config'
           scan-ref: '.'
@@ -266,7 +391,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Trivy secret scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -306,7 +431,7 @@ jobs:
           docker build -t axonflow-agent:${{ github.sha }} -f platform/agent/Dockerfile .
 
       - name: Run Trivy scanner (SARIF)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'image'
           image-ref: 'axonflow-agent:${{ github.sha }}'
@@ -343,7 +468,7 @@ jobs:
           docker build -t axonflow-orchestrator:${{ github.sha }} -f platform/orchestrator/Dockerfile .
 
       - name: Run Trivy scanner (SARIF)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'image'
           image-ref: 'axonflow-orchestrator:${{ github.sha }}'

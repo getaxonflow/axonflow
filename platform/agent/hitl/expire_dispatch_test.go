@@ -195,7 +195,7 @@ func TestApproveRequest_LostRaceSkipsWebhook(t *testing.T) {
 	mock.ExpectRollback()
 
 	reviewer := &Reviewer{ID: "r1", Email: "r1@example.com"}
-	err := svc.ApproveRequest(context.Background(), requestID, reviewer, "ok")
+	err := svc.ApproveRequest(WithCallerOrg(context.Background(), "org-a"), requestID, reviewer, "ok")
 	if err == nil {
 		t.Fatal("expected lost-race error")
 	}
@@ -258,7 +258,7 @@ func TestRejectRequest_LostRaceSkipsWebhook(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 
-	err := svc.RejectRequest(context.Background(), requestID, &Reviewer{ID: "r1", Email: "r1@example.com"}, "no")
+	err := svc.RejectRequest(WithCallerOrg(context.Background(), "org-a"), requestID, &Reviewer{ID: "r1", Email: "r1@example.com"}, "no")
 	if err == nil || !strings.Contains(err.Error(), "cannot reject request") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestOverrideRequest_LostRaceSkipsWebhook(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 
-	err := svc.OverrideRequest(context.Background(), requestID, "policy escalation", &Reviewer{ID: "admin-1", Email: "admin@example.com"})
+	err := svc.OverrideRequest(WithCallerOrg(context.Background(), "org-a"), requestID, "policy escalation", &Reviewer{ID: "admin-1", Email: "admin@example.com"})
 	if err == nil || !strings.Contains(err.Error(), "cannot override request") {
 		t.Fatalf("unexpected error: %v", err)
 	}

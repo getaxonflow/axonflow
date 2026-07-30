@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // PostgresRepository implements Repository using PostgreSQL
@@ -24,6 +26,13 @@ func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 
 // CreateBudget creates a new budget
 func (r *PostgresRepository) CreateBudget(ctx context.Context, budget *Budget) error {
+	// #3065 (F4): refuse to persist a budget with no tenancy key. nullString()
+	// below turns an absent header into a NULL org — the exact value that used
+	// to make a row visible, editable and DELETABLE by every tenant.
+	if err := tenantscope.ValidateRowKeys(budget.OrgID, budget.TenantID); err != nil {
+		return fmt.Errorf("refusing to persist budget %s with no org/tenant key: %w", budget.ID, err)
+	}
+
 	thresholds, err := json.Marshal(budget.AlertThresholds)
 	if err != nil {
 		return fmt.Errorf("failed to marshal alert thresholds: %w", err)
@@ -95,18 +104,59 @@ func (r *PostgresRepository) GetBudget(ctx context.Context, id string) (*Budget,
 	return &budget, nil
 }
 
-// budgetOrgScopeSQL admits a budget row when it belongs to the caller's
-// org/tenant or carries no org/tenant stamp (deployment-global budget, and
-// the pre-#2934 rows written without headers). An empty caller value leaves
-// that dimension unfiltered — mirrors GetBudgetsForScope's semantics.
-// Placeholders are the org and tenant arg positions.
+// budgetOrgScopeSQL admits a budget row ONLY when both tenancy keys match the
+// caller's exactly.
+//
+// #3065 (F4): this predicate used to read
+//
+//	AND ($2 = '' OR org_id IS NULL OR org_id = '' OR org_id = $2)
+//	AND ($3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = $3)
+//
+// i.e. the fail-open compare, moved INTO the SQL by the #2934 fix whose own
+// comment claimed it was "isolated in the SQL WHERE clause — never
+// post-fetch". Isolation in SQL is not the same property as failing closed:
+// the caller's org falls back to the `org_id` QUERY PARAMETER
+// (handlers.callerOrgID), so `DELETE /api/v1/budgets/{id}` with no X-Org-ID
+// and no org_id param matched the `$2 = empty-string` disjunct and deleted
+// another tenant's budget.
+// `budgets` has no RLS, so nothing underneath caught it.
+//
+// This is why the fix had to be a choke point rather than eight conditionals
+// — the idiom demonstrably survives a change of language.
+//
+// Deliberate consequence: pre-#2934 rows that carry no tenancy stamp, and
+// deployment-global budget rows written with an empty org, are no longer
+// reachable through the by-id routes by anybody. They are owned by nobody.
+// They continue to APPLY during enforcement (GetBudgetsForScope still admits
+// unstamped rows — a global spend cap that binds everyone is a policy
+// decision, not an authorization boundary, and admitting it only ever
+// tightens spend). Operators who need to edit one should recreate it under a
+// real org.
+//
+// Placeholders are the org and tenant arg positions. The scoped entry points
+// refuse an empty caller value before the query is issued, so the `= $2`
+// comparison can never degenerate into matching unstamped rows.
 const budgetOrgScopeSQL = `
-	  AND ($2 = '' OR org_id IS NULL OR org_id = '' OR org_id = $2)
-	  AND ($3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = $3)`
+	  AND org_id = $2
+	  AND tenant_id = $3`
+
+// requireBudgetScope is the fail-closed precondition for every by-id budget
+// statement. An empty caller org or tenant is a denial, reported as
+// ErrBudgetNotFound so the by-id routes never become an existence oracle.
+func requireBudgetScope(orgID, tenantID string) error {
+	if err := tenantscope.ValidateRowKeys(orgID, tenantID); err != nil {
+		return ErrBudgetNotFound
+	}
+	return nil
+}
 
 // GetBudgetScoped retrieves a budget by ID, isolated to the caller's
 // org/tenant in the SQL WHERE clause (#2934 — never post-fetch).
 func (r *PostgresRepository) GetBudgetScoped(ctx context.Context, id, orgID, tenantID string) (*Budget, error) {
+	if err := requireBudgetScope(orgID, tenantID); err != nil {
+		return nil, err
+	}
+
 	query := `
 		SELECT id, name, description, scope, scope_id, limit_usd, period,
 			   on_exceed, alert_thresholds, enabled, org_id, tenant_id,
@@ -152,18 +202,29 @@ func (r *PostgresRepository) UpdateBudget(ctx context.Context, budget *Budget) e
 		return fmt.Errorf("failed to marshal alert thresholds: %w", err)
 	}
 
+	// #3065: the UPDATE is tenancy-bound in SQL, not merely preceded by a
+	// scoped fetch in the handler. A bare `WHERE id = $1` re-opens the window
+	// the scoped read closes the moment a second caller writes without
+	// fetching first.
+	if err := requireBudgetScope(budget.OrgID, budget.TenantID); err != nil {
+		return err
+	}
+
 	query := `
 		UPDATE budgets SET
 			name = $2, description = $3, scope = $4, scope_id = $5,
 			limit_usd = $6, period = $7, on_exceed = $8, alert_thresholds = $9,
 			enabled = $10, updated_by = $11, updated_at = $12
 		WHERE id = $1
+		  AND org_id = $13
+		  AND tenant_id = $14
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
 		budget.LimitUSD, budget.Period, budget.OnExceed, thresholds,
 		budget.Enabled, nullString(budget.UpdatedBy), time.Now().UTC(),
+		budget.OrgID, budget.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update budget: %w", err)
@@ -204,6 +265,10 @@ func (r *PostgresRepository) DeleteBudget(ctx context.Context, id string) error 
 // caller's org/tenant (same WHERE contract as GetBudgetScoped). A cross-org
 // id affects zero rows and surfaces as ErrBudgetNotFound.
 func (r *PostgresRepository) DeleteBudgetScoped(ctx context.Context, id, orgID, tenantID string) error {
+	if err := requireBudgetScope(orgID, tenantID); err != nil {
+		return err
+	}
+
 	query := `DELETE FROM budgets WHERE id = $1` + budgetOrgScopeSQL
 
 	result, err := r.db.ExecContext(ctx, query, id, orgID, tenantID)
@@ -224,6 +289,13 @@ func (r *PostgresRepository) DeleteBudgetScoped(ctx context.Context, id, orgID, 
 
 // ListBudgets lists budgets with filtering and pagination
 func (r *PostgresRepository) ListBudgets(ctx context.Context, opts ListBudgetsOptions) ([]Budget, int, error) {
+	// #3065: the org/tenant conditions below are appended only when non-empty,
+	// so an unscoped call listed every tenant's budgets — the same fail-open
+	// shape as the by-id predicate, one query down. Refuse instead.
+	if err := requireBudgetScope(opts.OrgID, opts.TenantID); err != nil {
+		return nil, 0, err
+	}
+
 	var conditions []string
 	var args []interface{}
 	argIndex := 1

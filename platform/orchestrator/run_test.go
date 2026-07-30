@@ -776,6 +776,10 @@ func TestListDynamicPoliciesHandler(t *testing.T) {
 	defer teardownTestComponents()
 
 	req := httptest.NewRequest("GET", "/policies/dynamic", nil)
+	// The handler is tenant-scoped and fails closed: the gateway-stamped
+	// X-Tenant-ID is required (tenant-less requests get a 401, pinned by
+	// TestListDynamicPoliciesHandler_FailClosedWithoutTenant).
+	req.Header.Set("X-Tenant-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	listDynamicPoliciesHandler(w, req)
@@ -1655,11 +1659,21 @@ func TestPlanRequestHandler(t *testing.T) {
 		planService = oldPlanService
 	}()
 
+	// #3066 C3-6: every case that expects to get PAST the tenancy binding must
+	// now carry the gateway-stamped headers. Cases that assert a 503 or a
+	// malformed-body 400 short-circuit before the binding and are left bare on
+	// purpose, so the ordering itself is pinned: a change that moved the bind
+	// ahead of the JSON decode or the nil-engine checks would fail them.
+	const hdrOrg = "plan-org"
+	const hdrTenant = "plan-tenant"
+	stamped := map[string]string{"X-Org-ID": hdrOrg, "X-Tenant-ID": hdrTenant}
+
 	tests := []struct {
 		name                string
 		setupPlanningEngine bool
 		setupWorkflowEngine bool
 		setupPlanService    bool
+		headers             map[string]string
 		requestBody         string
 		expectedStatus      int
 	}{
@@ -1687,21 +1701,85 @@ func TestPlanRequestHandler(t *testing.T) {
 			requestBody:         `{invalid json}`,
 			expectedStatus:      http.StatusBadRequest,
 		},
+		// INVERTED BY #3152. This case used to send `{"query":"test query"}`
+		// with stamped tenancy and expect 401, pinning the body-borne
+		// `user.id != 0` gate as a requirement. That gate authenticated
+		// nothing: /api/v1/plan is reached through the agent's reverse proxy,
+		// which forwards the caller's body byte for byte, so `"id":1`
+		// satisfied it — and the same integer then became plans.user_id.
+		//
+		// The gate is gone, so an authenticated request is no longer refused
+		// for omitting a JSON integer. An empty query is used here so the case
+		// proves the request got PAST the old 401 and was refused for a real
+		// reason, without depending on a fully constructed planning engine.
+		// The property the old case gestured at — a caller with no
+		// authenticated scope is refused — is covered by the four C3-6 cases
+		// below, which hold regardless of what `user.id` says.
 		{
-			name:                "Error - missing user authentication",
+			name:                "#3152 - a body-borne user.id no longer gates an authenticated request",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
 			setupPlanService:    true,
-			requestBody:         `{"query":"test query"}`,
-			expectedStatus:      http.StatusUnauthorized,
+			headers:             stamped,
+			requestBody:         `{"query":"","user":{"id":0}}`,
+			expectedStatus:      http.StatusBadRequest,
 		},
 		{
 			name:                "Error - empty query",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
 			setupPlanService:    true,
+			headers:             stamped,
 			requestBody:         `{"query":"","user":{"id":1,"email":"test@example.com"}}`,
 			expectedStatus:      http.StatusBadRequest,
+		},
+		// #3066 C3-6 — the fix. A well-formed, fully authenticated-looking
+		// body with NO gateway-stamped tenancy used to be planned and STORED,
+		// with plans.org_id / plans.tenant_id taken from the body (or left
+		// empty when the body was silent too).
+		{
+			name:                "C3-6 - no stamped tenancy is refused, not planned",
+			setupPlanningEngine: true,
+			setupWorkflowEngine: true,
+			setupPlanService:    true,
+			requestBody:         `{"query":"real query","user":{"id":1,"email":"test@example.com"},"client":{"org_id":"victim-org","tenant_id":"victim-tenant"}}`,
+			expectedStatus:      http.StatusUnauthorized,
+		},
+		{
+			name:                "C3-6 - half-stamped tenancy is refused",
+			setupPlanningEngine: true,
+			setupWorkflowEngine: true,
+			setupPlanService:    true,
+			headers:             map[string]string{"X-Tenant-ID": hdrTenant},
+			requestBody:         `{"query":"real query","user":{"id":1,"email":"test@example.com"}}`,
+			expectedStatus:      http.StatusUnauthorized,
+		},
+		{
+			name:                "C3-6 - whitespace-only tenancy is refused",
+			setupPlanningEngine: true,
+			setupWorkflowEngine: true,
+			setupPlanService:    true,
+			headers:             map[string]string{"X-Org-ID": "  ", "X-Tenant-ID": "  "},
+			requestBody:         `{"query":"real query","user":{"id":1,"email":"test@example.com"}}`,
+			expectedStatus:      http.StatusUnauthorized,
+		},
+		{
+			name:                "C3-6 - body naming a foreign tenant is 403, not coerced",
+			setupPlanningEngine: true,
+			setupWorkflowEngine: true,
+			setupPlanService:    true,
+			headers:             stamped,
+			requestBody:         `{"query":"real query","user":{"id":1,"email":"test@example.com"},"client":{"tenant_id":"victim-tenant"}}`,
+			expectedStatus:      http.StatusForbidden,
+		},
+		{
+			name:                "C3-6 - body naming a foreign org is 403, not coerced",
+			setupPlanningEngine: true,
+			setupWorkflowEngine: true,
+			setupPlanService:    true,
+			headers:             stamped,
+			requestBody:         `{"query":"real query","user":{"id":1,"email":"test@example.com"},"client":{"org_id":"victim-org"}}`,
+			expectedStatus:      http.StatusForbidden,
 		},
 	}
 
@@ -1727,12 +1805,15 @@ func TestPlanRequestHandler(t *testing.T) {
 
 			req := httptest.NewRequest("POST", "/plan", strings.NewReader(tt.requestBody))
 			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
 			w := httptest.NewRecorder()
 
 			planRequestHandler(w, req)
 
 			if w.Code != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+				t.Errorf("Expected status %d, got %d (body=%s)", tt.expectedStatus, w.Code, w.Body.String())
 			}
 		})
 	}
@@ -2534,6 +2615,8 @@ func TestExecutePlanHandler_NilService(t *testing.T) {
 	planService = nil
 
 	req := httptest.NewRequest("POST", "/api/v1/plans/test-plan/execute", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req = mux.SetURLVars(req, map[string]string{"plan_id": "test-plan"})
 	w := httptest.NewRecorder()
 
@@ -2835,6 +2918,7 @@ func TestGetPlanStatusHandler(t *testing.T) {
 			planID:       "plan_pending",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:  "tenant_1",
 				PlanID:    "plan_pending",
 				Status:    planning.PlanStatusPending,
 				StepCount: 5,
@@ -2866,6 +2950,7 @@ func TestGetPlanStatusHandler(t *testing.T) {
 			planID:       "plan_completed",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:  "tenant_1",
 				PlanID:    "plan_completed",
 				Status:    planning.PlanStatusCompleted,
 				StepCount: 3,
@@ -2893,6 +2978,8 @@ func TestGetPlanStatusHandler(t *testing.T) {
 			planID:       "plan_executing",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				OrgID:     "org_1",
+				TenantID:  "tenant_1",
 				PlanID:    "plan_executing",
 				Status:    planning.PlanStatusExecuting,
 				StepCount: 4,
@@ -2921,6 +3008,8 @@ func TestGetPlanStatusHandler(t *testing.T) {
 			planID:       "plan_failed",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				OrgID:        "org_1",
+				TenantID:     "tenant_1",
 				PlanID:       "plan_failed",
 				Status:       planning.PlanStatusFailed,
 				StepCount:    2,
@@ -2949,6 +3038,7 @@ func TestGetPlanStatusHandler(t *testing.T) {
 			planID:       "plan_full",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:   "tenant_1",
 				PlanID:     "plan_full",
 				Status:     planning.PlanStatusPending,
 				StepCount:  1,
@@ -2998,6 +3088,15 @@ func TestGetPlanStatusHandler(t *testing.T) {
 			path := "/api/v1/plan/" + tt.planID
 			req := httptest.NewRequest("GET", path, nil)
 			req.Header.Set("Content-Type", "application/json")
+			// #3065: the by-id plan routes require an authenticated tenancy.
+			// Each fixture's own org is used so the positive cases stay
+			// positive; the denial cases have their own tests.
+			callerOrg := "org_1"
+			if tt.setupPlan != nil && tt.setupPlan.OrgID != "" {
+				callerOrg = tt.setupPlan.OrgID
+			}
+			req.Header.Set("X-Org-ID", callerOrg)
+			req.Header.Set("X-Tenant-ID", "tenant_1")
 
 			// Use gorilla/mux to properly parse path variables
 			w := httptest.NewRecorder()
@@ -3031,6 +3130,7 @@ func TestGetPlanStatusHandler_ResponseFormat(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_sdk_test",
 		Status:             planning.PlanStatusCompleted,
 		StepCount:          7,
@@ -3047,6 +3147,8 @@ func TestGetPlanStatusHandler_ResponseFormat(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/plan_sdk_test", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -3124,6 +3226,10 @@ func (m *mockPolicyEngineForMAP) ListActivePolicies() []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 
+func (m *mockPolicyEngineForMAP) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+	return []DynamicPolicy{}
+}
+
 func (m *mockPolicyEngineForMAP) IsHealthy() bool {
 	return true
 }
@@ -3145,6 +3251,7 @@ func TestExecutePlanHandler_PolicyBlocked(t *testing.T) {
 	// Setup mock services
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_blocked_test",
 		Status:             planning.PlanStatusPending,
 		StepCount:          3,
@@ -3184,6 +3291,8 @@ func TestExecutePlanHandler_PolicyBlocked(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -3237,6 +3346,7 @@ func TestExecutePlanHandler_PolicyAllowed(t *testing.T) {
 	// Setup mock services
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_allowed_test",
 		Status:             planning.PlanStatusPending,
 		StepCount:          1,
@@ -3277,6 +3387,8 @@ func TestExecutePlanHandler_PolicyAllowed(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -3315,6 +3427,17 @@ func TestExecutePlanHandler_PolicyAllowed(t *testing.T) {
 // and the policy-evaluation path (which builds policyClient from req.Client)
 // would run under "evil" while replay tracking (which reads req.User.OrgID)
 // would run under "real". Regression test for the post-#1741 review finding.
+//
+// #3066 C3-6 INVERTED THE FIRST HALF OF THIS TEST, deliberately. The original
+// asserted that a body naming `evil-org` was silently COERCED to the header's
+// org and that evaluation then proceeded — i.e. it pinned "silently accept a
+// cross-tenant assertion" as a requirement. Under the new contract that body
+// is an explicit authorization failure: 403, and the plan is never looked up
+// or evaluated at all. The property the test was actually written to protect —
+// that the header, not the body, is what both surfaces end up carrying — is
+// preserved below in the second sub-test, where the body is silent about
+// tenancy and the engine must still see the header's values on all four
+// fields.
 func TestExecutePlanHandler_HeaderOrgWinsOverBody(t *testing.T) {
 	oldPlanService := planService
 	oldPolicyEngine := dynamicPolicyEngine
@@ -3334,20 +3457,27 @@ func TestExecutePlanHandler_HeaderOrgWinsOverBody(t *testing.T) {
 
 	// Plan is owned by the real org (matches the header). The body's evil-org
 	// must NOT be used as the lookup key — if it were, the lookup would 404.
+	// One plan PER sub-test. Sharing a single plan id coupled the two: the
+	// refusal sub-test leaves it unexecuted only BECAUSE the fix works, so on
+	// a regression the second sub-test would fail with "already executed"
+	// rather than with the property it is meant to prove.
 	mockRepo := planning.NewMockRepository()
-	testPlan := &planning.Plan{
-		PlanID:             "plan_hdr_wins",
-		Status:             planning.PlanStatusPending,
-		StepCount:          1,
-		Query:              "harmless query",
-		Domain:             "generic",
-		OrgID:              realOrg,
-		WorkflowDefinition: json.RawMessage(`{"metadata":{"name":"test"},"spec":{"steps":[]}}`),
-		ExpiresAt:          time.Now().Add(time.Hour),
-		CreatedAt:          time.Now(),
-	}
-	if err := mockRepo.SavePlan(context.Background(), testPlan); err != nil {
-		t.Fatalf("save plan: %v", err)
+	newPlan := func(t *testing.T, id string) {
+		t.Helper()
+		if err := mockRepo.SavePlan(context.Background(), &planning.Plan{
+			TenantID:           realTenant,
+			PlanID:             id,
+			Status:             planning.PlanStatusPending,
+			StepCount:          1,
+			Query:              "harmless query",
+			Domain:             "generic",
+			OrgID:              realOrg,
+			WorkflowDefinition: json.RawMessage(`{"metadata":{"name":"test"},"spec":{"steps":[]}}`),
+			ExpiresAt:          time.Now().Add(time.Hour),
+			CreatedAt:          time.Now(),
+		}); err != nil {
+			t.Fatalf("save plan: %v", err)
+		}
 	}
 	planService = planning.NewService(mockRepo)
 
@@ -3363,55 +3493,96 @@ func TestExecutePlanHandler_HeaderOrgWinsOverBody(t *testing.T) {
 	workflowEngine = NewWorkflowEngine()
 	auditLogger = NewAuditLogger("")
 
-	// Body claims evil-org and evil-tenant; headers say real-org / real-tenant.
-	reqBody := PlanRequest{
-		Query: "test",
-		User: UserContext{
-			ID:       1,
-			Email:    "user@example.com",
-			TenantID: evilTenant,
-			OrgID:    evilOrg,
-		},
-		Client: map[string]interface{}{
-			"id":        "evil-client",
-			"org_id":    evilOrg,
-			"tenant_id": evilTenant,
-		},
-		Context: map[string]interface{}{
-			"plan_id": "plan_hdr_wins",
-		},
-	}
-	body, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Org-ID", realOrg)
-	req.Header.Set("X-Tenant-ID", realTenant)
-	w := httptest.NewRecorder()
+	// #3066 C3-6: a body naming a DIFFERENT tenancy is refused outright, and
+	// nothing downstream of the refusal runs.
+	t.Run("body names a foreign tenancy → 403, nothing evaluated", func(t *testing.T) {
+		capturingEngine.captured = nil
+		newPlan(t, "plan_hdr_wins_refused")
 
-	executePlanHandler(w, req)
+		reqBody := PlanRequest{
+			Query: "test",
+			User: UserContext{
+				ID:       1,
+				Email:    "user@example.com",
+				TenantID: evilTenant,
+				OrgID:    evilOrg,
+			},
+			Client: map[string]interface{}{
+				"id":        "evil-client",
+				"org_id":    evilOrg,
+				"tenant_id": evilTenant,
+			},
+			Context: map[string]interface{}{
+				"plan_id": "plan_hdr_wins_refused",
+			},
+		}
+		body, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Org-ID", realOrg)
+		req.Header.Set("X-Tenant-ID", realTenant)
+		w := httptest.NewRecorder()
 
-	// Plan must have been resolved under realOrg — if the handler had used
-	// the body's evil-org as the lookup key the response would be 404 plan
-	// not found, never reaching policy evaluation.
-	if len(capturingEngine.captured) == 0 {
-		t.Fatalf("policy engine was not called — plan lookup likely used the wrong org (status=%d, body=%s)", w.Code, w.Body.String())
-	}
-	got := capturingEngine.captured[0]
+		executePlanHandler(w, req)
 
-	if got.Client.OrgID != realOrg {
-		t.Errorf("policy evaluation saw Client.OrgID=%q, want %q (body claimed %q; header said %q)",
-			got.Client.OrgID, realOrg, evilOrg, realOrg)
-	}
-	if got.Client.TenantID != realTenant {
-		t.Errorf("policy evaluation saw Client.TenantID=%q, want %q (body claimed %q; header said %q)",
-			got.Client.TenantID, realTenant, evilTenant, realTenant)
-	}
-	if got.User.OrgID != realOrg {
-		t.Errorf("policy evaluation saw User.OrgID=%q, want %q", got.User.OrgID, realOrg)
-	}
-	if got.User.TenantID != realTenant {
-		t.Errorf("policy evaluation saw User.TenantID=%q, want %q", got.User.TenantID, realTenant)
-	}
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("body claiming a foreign tenancy: status = %d, want 403 (body=%s)", w.Code, w.Body.String())
+		}
+		if len(capturingEngine.captured) != 0 {
+			t.Errorf("policy engine was called for a refused cross-tenant request — the refusal must precede every downstream effect")
+		}
+		if strings.Contains(w.Body.String(), realOrg) || strings.Contains(w.Body.String(), realTenant) {
+			t.Errorf("refusal body names the authenticated tenancy, making it an enumeration oracle: %s", w.Body.String())
+		}
+	})
+
+	// The original property, preserved: with the body silent about tenancy,
+	// BOTH surfaces the handler reads identity from must carry the header
+	// values by the time policy evaluation sees them.
+	t.Run("body silent → both surfaces carry the header tenancy", func(t *testing.T) {
+		capturingEngine.captured = nil
+		newPlan(t, "plan_hdr_wins_bound")
+
+		reqBody := PlanRequest{
+			Query: "test",
+			User: UserContext{
+				ID:    1,
+				Email: "user@example.com",
+			},
+			Client: map[string]interface{}{
+				"id": "some-client",
+			},
+			Context: map[string]interface{}{
+				"plan_id": "plan_hdr_wins_bound",
+			},
+		}
+		body, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Org-ID", realOrg)
+		req.Header.Set("X-Tenant-ID", realTenant)
+		w := httptest.NewRecorder()
+
+		executePlanHandler(w, req)
+
+		if len(capturingEngine.captured) == 0 {
+			t.Fatalf("policy engine was not called — plan lookup likely used the wrong org (status=%d, body=%s)", w.Code, w.Body.String())
+		}
+		got := capturingEngine.captured[0]
+
+		if got.Client.OrgID != realOrg {
+			t.Errorf("policy evaluation saw Client.OrgID=%q, want %q", got.Client.OrgID, realOrg)
+		}
+		if got.Client.TenantID != realTenant {
+			t.Errorf("policy evaluation saw Client.TenantID=%q, want %q", got.Client.TenantID, realTenant)
+		}
+		if got.User.OrgID != realOrg {
+			t.Errorf("policy evaluation saw User.OrgID=%q, want %q", got.User.OrgID, realOrg)
+		}
+		if got.User.TenantID != realTenant {
+			t.Errorf("policy evaluation saw User.TenantID=%q, want %q", got.User.TenantID, realTenant)
+		}
+	})
 }
 
 // TestExecutePlanHandler_PolicyEvaluationMetrics tests that policy evaluation is logged
@@ -3431,6 +3602,7 @@ func TestExecutePlanHandler_PolicyBlocked_ResponseFields(t *testing.T) {
 	// Setup mock services
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_response_test",
 		Status:             planning.PlanStatusPending,
 		StepCount:          1,
@@ -3470,6 +3642,8 @@ func TestExecutePlanHandler_PolicyBlocked_ResponseFields(t *testing.T) {
 	}
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 

@@ -37,6 +37,7 @@ func TestStepGate_ProxyAuthRequired(t *testing.T) {
 		body, _ := json.Marshal(StepGateRequest{StepName: "s", StepType: StepTypeLLMCall})
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+wf.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "step-1"})
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -81,6 +82,7 @@ func TestStepGate_NoProxyAuthCheck_Unenforced(t *testing.T) {
 	body, _ := json.Marshal(StepGateRequest{StepName: "s", StepType: StepTypeLLMCall})
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/workflows/"+wf.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
 	req = mux.SetURLVars(req, map[string]string{"id": wf.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -134,6 +136,7 @@ func TestCheckpointResume_ProxyAuthRequired(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name+" direct access (no token) → 403", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
 			req = mux.SetURLVars(req, tc.vars)
 			req.Header.Set("X-Tenant-ID", "tenant-1")
 			req.Header.Set("X-User-Id", "victim@corp.example") // forged actor identity
@@ -145,6 +148,8 @@ func TestCheckpointResume_ProxyAuthRequired(t *testing.T) {
 		})
 		t.Run(tc.name+" forged token → 403", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			req = mux.SetURLVars(req, tc.vars)
 			req.Header.Set("X-Axonflow-Proxy-Auth", "forged")
 			rr := httptest.NewRecorder()
@@ -155,6 +160,7 @@ func TestCheckpointResume_ProxyAuthRequired(t *testing.T) {
 		})
 		t.Run(tc.name+" valid token → past the gate (not 403)", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
 			req = mux.SetURLVars(req, tc.vars)
 			req.Header.Set("X-Axonflow-Proxy-Auth", "valid-token")
 			req.Header.Set("X-Tenant-ID", "tenant-1")

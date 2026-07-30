@@ -15,6 +15,7 @@ import (
 // setupPendingPlan inserts a pending plan into the mock repository and returns it.
 func setupPendingPlan(repo *MockRepository) *Plan {
 	plan := &Plan{
+		TenantID:           "tenant-1",
 		PlanID:             "test-plan-123",
 		Query:              "test query",
 		Domain:             "test",
@@ -199,10 +200,11 @@ func TestService_UpdatePlan_CommunityLimits_MaxPlans(t *testing.T) {
 	// Create 2 plans that already have versioning (version > 1)
 	for i := 0; i < 2; i++ {
 		repo.plans[string(rune('A'+i))] = &Plan{
-			PlanID:  string(rune('A' + i)),
-			OrgID:   "org-1",
-			Status:  PlanStatusPending,
-			Version: 2, // Already versioned
+			PlanID:   string(rune('A' + i)),
+			OrgID:    "org-1",
+			TenantID: "tenant-1",
+			Status:   PlanStatusPending,
+			Version:  2, // Already versioned
 		}
 	}
 
@@ -714,11 +716,23 @@ func TestService_GetPlanVersions_CrossTenantBlocked(t *testing.T) {
 	}
 }
 
-func TestService_GetPlanVersions_EmptyOrgID(t *testing.T) {
+// TestService_GetPlanVersions_EmptyOrgIDDenied is the INVERSION of a test that
+// used to assert the vulnerability.
+//
+// It read: "Empty orgID should skip authorization check (community mode)" and
+// asserted that an unscoped caller received the plan's version history. That
+// is #3065 F2 stated as a requirement — and it is why the vulnerability
+// survived review: the test suite certified it. Community mode does not
+// produce an empty org (the agent stamps ORG_ID, default "local-dev-org", in
+// every deployment mode), so nothing legitimate ever depended on the bypass.
+//
+// An unscoped caller is now denied, and the denial is ErrPlanNotFound so it
+// cannot be used to probe which plan ids exist.
+func TestService_GetPlanVersions_EmptyOrgIDDenied(t *testing.T) {
 	repo := NewMockRepository()
 	plan := setupPendingPlan(repo)
+	plan.OrgID = "org-1"
 
-	// Add a version so we can verify retrieval
 	repo.versions[plan.PlanID] = []PlanVersion{
 		{
 			ID:         "v-1",
@@ -731,13 +745,34 @@ func TestService_GetPlanVersions_EmptyOrgID(t *testing.T) {
 
 	svc := NewService(repo)
 
-	// Empty orgID should skip authorization check (community mode)
 	versions, err := svc.GetPlanVersions(context.Background(), plan.PlanID, "")
+	if !errors.Is(err, ErrPlanNotFound) {
+		t.Fatalf("an unscoped caller must be denied with ErrPlanNotFound, got err=%v versions=%d", err, len(versions))
+	}
+	if len(versions) != 0 {
+		t.Errorf("a denied caller must receive no versions, got %d", len(versions))
+	}
+
+	// Positive control: the owning org still gets its history.
+	versions, err = svc.GetPlanVersions(context.Background(), plan.PlanID, "org-1")
 	if err != nil {
-		t.Fatalf("expected no error with empty orgID, got %v", err)
+		t.Fatalf("the owning org must still read its own versions: %v", err)
 	}
 	if len(versions) != 1 {
-		t.Errorf("expected 1 version, got %d", len(versions))
+		t.Errorf("expected 1 version for the owning org, got %d", len(versions))
+	}
+}
+
+// TestService_GetPlanVersions_UnownedPlanDenied covers the row side: a plan
+// row that carries no org key belongs to nobody, not to everybody.
+func TestService_GetPlanVersions_UnownedPlanDenied(t *testing.T) {
+	repo := NewMockRepository()
+	plan := setupPendingPlan(repo)
+	plan.OrgID = ""
+	svc := NewService(repo)
+
+	if _, err := svc.GetPlanVersions(context.Background(), plan.PlanID, "org-1"); !errors.Is(err, ErrPlanNotFound) {
+		t.Fatalf("a plan with no org key must be unreachable, got %v", err)
 	}
 }
 
@@ -749,6 +784,7 @@ func TestRollbackPlan_Success(t *testing.T) {
 
 	// Create a plan at version 2 (updated once from version 1)
 	plan := &Plan{
+		TenantID:           "tenant-1",
 		PlanID:             "plan-rollback-ok",
 		Query:              "test query",
 		Domain:             "travel",
@@ -817,6 +853,7 @@ func TestRollbackPlan_VersionConflict(t *testing.T) {
 	svc := NewService(repo)
 
 	plan := &Plan{
+		TenantID:           "tenant-1",
 		PlanID:             "plan-rollback-conflict",
 		Status:             PlanStatusPending,
 		Version:            3,
@@ -867,6 +904,7 @@ func TestRollbackPlan_NonPendingPlan(t *testing.T) {
 		Status:    PlanStatusCompleted,
 		Version:   2,
 		OrgID:     "org-1",
+		TenantID:  "tenant-1",
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 		CreatedAt: time.Now(),
 	}
@@ -894,6 +932,7 @@ func TestRollbackPlan_VersionNotFound(t *testing.T) {
 		Status:    PlanStatusPending,
 		Version:   2,
 		OrgID:     "org-1",
+		TenantID:  "tenant-1",
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 		CreatedAt: time.Now(),
 	}
@@ -918,6 +957,7 @@ func TestRollbackPlan_CrossTenantRejected(t *testing.T) {
 		Status:    PlanStatusPending,
 		Version:   2,
 		OrgID:     "org-owner",
+		TenantID:  "tenant-1",
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 		CreatedAt: time.Now(),
 	}
@@ -942,6 +982,7 @@ func TestRollbackPlan_CannotRollbackToCurrentVersion(t *testing.T) {
 		Status:    PlanStatusPending,
 		Version:   2,
 		OrgID:     "org-1",
+		TenantID:  "tenant-1",
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 		CreatedAt: time.Now(),
 	}
@@ -1000,6 +1041,7 @@ func TestRollbackPlan_MaxVersionsEnforced(t *testing.T) {
 	plan := &Plan{
 		PlanID:             "plan-rollback-limit",
 		OrgID:              "org-1",
+		TenantID:           "tenant-1",
 		Status:             PlanStatusPending,
 		Version:            4,
 		ExecutionMode:      "parallel",
@@ -1051,6 +1093,7 @@ func TestRollbackPlan_WithinVersionLimit(t *testing.T) {
 	plan := &Plan{
 		PlanID:             "plan-rollback-ok",
 		OrgID:              "org-1",
+		TenantID:           "tenant-1",
 		Status:             PlanStatusPending,
 		Version:            3,
 		ExecutionMode:      "parallel",
@@ -1159,10 +1202,11 @@ func TestService_UpdatePlan_EvaluationLimits_MaxPlans(t *testing.T) {
 	// Create 3 plans that already have versioning
 	for i := 0; i < 3; i++ {
 		repo.plans[string(rune('A'+i))] = &Plan{
-			PlanID:  string(rune('A' + i)),
-			OrgID:   "org-1",
-			Status:  PlanStatusPending,
-			Version: 2,
+			PlanID:   string(rune('A' + i)),
+			OrgID:    "org-1",
+			TenantID: "tenant-1",
+			Status:   PlanStatusPending,
+			Version:  2,
 		}
 	}
 

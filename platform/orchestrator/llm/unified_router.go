@@ -201,7 +201,7 @@ func (u *UnifiedRouter) SetDefaultProvider(provider string) {
 
 // IsHealthy returns true if at least one provider is healthy.
 func (u *UnifiedRouter) IsHealthy() bool {
-	healthy := u.router.Registry().GetHealthyProviders()
+	healthy := u.router.Registry().GetHealthyProviders(GlobalTenant)
 	return len(healthy) > 0
 }
 
@@ -227,30 +227,30 @@ func (u *UnifiedRouter) RegisterProvider(config ProviderConfig) error {
 
 // EnableProvider enables a provider for routing.
 func (u *UnifiedRouter) EnableProvider(name string) error {
-	return u.router.Registry().Enable(name)
+	return u.router.Registry().Enable(GlobalTenant, name)
 }
 
 // DisableProvider disables a provider (removes from routing).
 func (u *UnifiedRouter) DisableProvider(name string) error {
-	return u.router.Registry().Disable(name)
+	return u.router.Registry().Disable(GlobalTenant, name)
 }
 
 // GetProvider returns a provider by name.
 func (u *UnifiedRouter) GetProvider(ctx context.Context, name string) (Provider, error) {
-	return u.router.Registry().Get(ctx, name)
+	return u.router.Registry().Get(ctx, GlobalTenant, name)
 }
 
 // ListProviders returns all registered provider names.
 func (u *UnifiedRouter) ListProviders() []string {
-	return u.router.Registry().List()
+	return u.router.Registry().List(GlobalTenant)
 }
 
 // ListEnabledProviders returns names of enabled providers.
 func (u *UnifiedRouter) ListEnabledProviders() []string {
-	return u.router.Registry().ListEnabled()
+	return u.router.Registry().ListEnabled(GlobalTenant)
 }
 
 // ListHealthyProviders returns names of healthy providers.
 func (u *UnifiedRouter) ListHealthyProviders() []string {
-	return u.router.Registry().GetHealthyProviders()
+	return u.router.Registry().GetHealthyProviders(GlobalTenant)
 }

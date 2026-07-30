@@ -90,9 +90,14 @@ func (h *Handler) ListExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get tenant/org context
-	opts.TenantID = h.getTenantID(r)
-	opts.OrgID = h.getOrgID(r)
+	// #3065: the listing scope is mandatory. An empty value used to disable
+	// the SQL predicate, so an unscoped call listed every tenant's executions.
+	listScope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+	opts.TenantID = listScope.TenantID
+	opts.OrgID = listScope.OrgID
 
 	executions, total, err := h.service.ListExecutions(r.Context(), opts)
 	if err != nil {
@@ -118,13 +123,18 @@ func (h *Handler) GetExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	requestID := mux.Vars(r)["id"]
 	if requestID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Execution ID is required")
 		return
 	}
 
-	exec, err := h.service.GetExecution(r.Context(), requestID, h.callerScope(r))
+	exec, err := h.service.GetExecution(r.Context(), requestID, scope)
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -145,13 +155,18 @@ func (h *Handler) GetSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	requestID := mux.Vars(r)["id"]
 	if requestID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Execution ID is required")
 		return
 	}
 
-	steps, err := h.service.GetSteps(r.Context(), requestID, h.callerScope(r))
+	steps, err := h.service.GetSteps(r.Context(), requestID, scope)
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -172,6 +187,11 @@ func (h *Handler) GetStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	requestID := vars["id"]
 	stepIndexStr := vars["stepIndex"]
@@ -187,7 +207,7 @@ func (h *Handler) GetStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	step, err := h.service.GetStep(r.Context(), requestID, stepIndex, h.callerScope(r))
+	step, err := h.service.GetStep(r.Context(), requestID, stepIndex, scope)
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
@@ -208,13 +228,18 @@ func (h *Handler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	requestID := mux.Vars(r)["id"]
 	if requestID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Execution ID is required")
 		return
 	}
 
-	timeline, err := h.service.GetTimeline(r.Context(), requestID, h.callerScope(r))
+	timeline, err := h.service.GetTimeline(r.Context(), requestID, scope)
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -232,6 +257,11 @@ func (h *Handler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ExportExecution(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
+		return
+	}
+
+	scope, ok := h.requireScope(w, r)
+	if !ok {
 		return
 	}
 
@@ -262,7 +292,7 @@ func (h *Handler) ExportExecution(w http.ResponseWriter, r *http.Request) {
 		opts.IncludePolicies = false
 	}
 
-	data, err := h.service.ExportExecution(r.Context(), requestID, opts, h.callerScope(r))
+	data, err := h.service.ExportExecution(r.Context(), requestID, opts, scope)
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -289,13 +319,18 @@ func (h *Handler) DeleteExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	requestID := mux.Vars(r)["id"]
 	if requestID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Execution ID is required")
 		return
 	}
 
-	err := h.service.DeleteExecution(r.Context(), requestID, h.callerScope(r))
+	err := h.service.DeleteExecution(r.Context(), requestID, scope)
 	if err != nil {
 		if err == ErrNotFound {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
@@ -339,17 +374,22 @@ func (h *Handler) getTenantID(r *http.Request) string {
 	return ""
 }
 
-// callerScope builds the caller's org/tenant read scope for the by-id
-// routes (#2934). Behind the agent gateway X-Org-ID / X-Tenant-ID are Set
-// (not Add) from the cryptographically validated license, so a governed
-// caller cannot pick another org; empty values (single-tenant Community,
-// in-VPC direct callers) leave that dimension unfiltered, matching
-// ListExecutions' existing filter semantics.
-func (h *Handler) callerScope(r *http.Request) AccessScope {
-	return AccessScope{
-		OrgID:    h.getOrgID(r),
-		TenantID: h.getTenantID(r),
+// requireScope resolves the caller's authenticated org/tenant read scope,
+// writing a 401 and returning ok=false when the request carries none.
+//
+// #3065: callerScope used to hand through whatever the headers held —
+// including nothing, which the repository read as "leave that dimension
+// unfiltered". A caller who omitted X-Org-ID could read, export and DELETE
+// any tenant's execution trail by request id. Binding up front means an
+// unauthenticated request is refused before any id is looked up, so the
+// refusal cannot double as an existence oracle.
+func (h *Handler) requireScope(w http.ResponseWriter, r *http.Request) (AccessScope, bool) {
+	scope := AccessScope{OrgID: h.getOrgID(r), TenantID: h.getTenantID(r)}
+	if err := scope.Validate(); err != nil {
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
+		return AccessScope{}, false
 	}
+	return scope, true
 }
 
 // getOrgID extracts org ID from request

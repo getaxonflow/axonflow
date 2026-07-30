@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -154,4 +155,147 @@ const mcpClientPseudoIdentityPrefix = sharedidentity.ClientPseudoIdentityPrefix
 // local-dev community synthetic (a real single user by construction).
 func isClientSharedPseudoIdentity(email string) bool {
 	return sharedidentity.IsSharedSyntheticIdentity(email, isCommunityMode())
+}
+
+// mcpIdentityInputs records the identity-resolution INPUTS of ONE request:
+// what the caller presented, and what this agent's trust gate was, at the
+// moment an attributed identity was derived from them (#3077).
+//
+// It exists because the MCP-server plane's refusal is raised on a LATER request
+// than the one that decided the identity. An MCP-protocol session resolves its
+// identity once, at session create, and userEmail is immutable afterwards
+// (resolveMCPSession's cache-hit branch deliberately mutates nothing but
+// lastUsed). Reading X-User-Email off the tools/call that trips the refusal
+// would therefore report header state from a request that had no bearing on the
+// attributed identity — a fresh instance of the confidently-wrong diagnosis
+// #3062/#3069 removed, dressed as a fix for it. Record the inputs, not an
+// answer recomputed later from the wrong ones.
+//
+// Diagnostic ONLY. Nothing here may influence a verdict, an authz decision,
+// attribution, or tenant/org resolution; the sole permitted effect is which
+// human-readable sentence a refusal carries. Note in particular that these
+// fields describe headers this agent may have DISCARDED — they must never be
+// read back as an identity.
+type mcpIdentityInputs struct {
+	// headerPresented: the resolving request carried a non-blank X-User-Email
+	// or X-User-ID. Read BEFORE the trust gate, so it stays true even when the
+	// gate discarded the value — that is the whole point of recording it.
+	headerPresented bool
+
+	// presentedIsReserved: the value presented, AFTER sanitization, is one of
+	// the platform's reserved shared spellings. Separates "your value did not
+	// survive sanitization" from "your value names a credential, not a person".
+	presentedIsReserved bool
+
+	// presentedSurvivedSanitization: something usable remained after the
+	// printable-only, length-bounded sanitizer. Both this and presentedIsReserved
+	// are gate-INDEPENDENT causes: if they hold, turning the trust gate on
+	// honors the value and refuses it again, so the refusal must not offer the
+	// gate as a remedy.
+	presentedSurvivedSanitization bool
+
+	// trustGateOn: this agent's AXONFLOW_TRUST_IDENTITY_HEADERS at resolve
+	// time. Captured rather than re-read at refusal time so every clause of the
+	// message describes one and the same request.
+	trustGateOn bool
+
+	// tokenResolvedIdentity: a validated per-user token supplied this session's
+	// identity, so NONE of the three header fields above had any bearing on it.
+	//
+	// This is the field captureMCPIdentityInputs cannot compute (#3077 R3).
+	// authenticateMCPSession resolves a per-user token under AuthKindEnterprise
+	// and RETURNS from the vid != nil branch before it reads X-User-Email /
+	// X-User-ID at all — so only the resolver, at that branch, can observe which
+	// channel won. Nothing on that path censuses the token's subject: the portal
+	// mint() validates only that the address is non-empty and contains "@", and
+	// ResolveToken applies no census either, so a token minted for e.g.
+	// "svc@axonflow.local" validates and resolves to a SHARED synthetic that
+	// trips the override refusal.
+	//
+	// Without this field the refusal routed such a caller on header state that
+	// had no bearing on the outcome: gate off + a perfectly good X-User-Email
+	// produced "this agent removed it — set AXONFLOW_TRUST_IDENTITY_HEADERS=true",
+	// which relaxes the identity-trust posture on every proxied route while the
+	// call still fails. That is #3062 exactly, inside the change that closes
+	// #3062's class, which is why it is tested FIRST in the refusal switch.
+	tokenResolvedIdentity bool
+}
+
+// captureMCPIdentityInputs snapshots the HEADER half of the identity-resolution
+// inputs of r. It is called from authenticateMCPSession, which owns the
+// resolution, and which sets tokenResolvedIdentity on the returned value at the
+// one point that fact is observable. It deliberately does NOT try to work out
+// whether a token won: that would be re-deriving an answer from inputs the
+// resolver never consulted, which is the defect shape this whole file removes.
+func captureMCPIdentityInputs(r *http.Request) mcpIdentityInputs {
+	rawEmail := strings.TrimSpace(r.Header.Get(identityHeaderUserEmail))
+	rawUserID := strings.TrimSpace(r.Header.Get(identityHeaderUserID))
+
+	// headerPresented is read on the RAW value, before the gate and before
+	// sanitization, because its job is to separate "you sent nothing" from "we
+	// removed what you sent". A blank-after-trim header is nothing.
+	headerPresented := rawEmail != "" || rawUserID != ""
+
+	// presentedIsReserved must be computed on the value that would ACTUALLY
+	// have become the identity, which means mirroring authenticateMCPServerRequest's
+	// sanitize-then-fall-back precedence exactly: boundedAuditString on
+	// X-User-Email first, then on X-User-ID.
+	//
+	// Computing it on the raw header instead was wrong in a way that produced a
+	// FALSE sentence, which is the one outcome this file exists to prevent. With
+	// the gate on and X-User-Email: "mcp\x7f-client:acme", boundedAuditString
+	// drops the DEL rune and the identity resolves to the reserved spelling
+	// "mcp-client:acme" — while a raw-value census sees a non-reserved string and
+	// sends the refusal down the "did not survive sanitization" branch. The value
+	// survived perfectly; it simply named a credential. Verified by execution
+	// before and after.
+	//
+	// With the mirror in place that branch is true by construction: gate on plus
+	// a presented value that sanitizes to something non-reserved resolves to a
+	// non-shared identity and never reaches a refusal at all, so the only way to
+	// arrive there is a value that sanitized to empty.
+	sanitized := boundedAuditString(rawEmail, maxAttributedEmailLen)
+	if sanitized == "" {
+		sanitized = boundedAuditString(rawUserID, maxAttributedUserIDLen)
+	}
+
+	return mcpIdentityInputs{
+		headerPresented: headerPresented,
+		// The census predicate, not a second copy of the list — the
+		// isClientSharedPseudoIdentity wrapper carries the community-mode
+		// posture with it.
+		presentedIsReserved:           sanitized != "" && isClientSharedPseudoIdentity(sharedidentity.CanonicalEmail(sanitized)),
+		presentedSurvivedSanitization: sanitized != "",
+		trustGateOn:                   trustIdentityHeaders(),
+	}
+}
+
+// errSharedIdentityRefusal builds the MCP-server plane's refusal for a session
+// attributed to a shared platform synthetic, through the choke point shared
+// with the orchestrator's two causes (#3077).
+//
+// It reports only what this process observed about the session-create request,
+// and it names the trust gate as part of a remedy ONLY when the gate is off. A
+// deployment that already set the gate and simply received no header lands here
+// too, and telling it to set an already-true flag is the confidently-wrong
+// diagnosis #3062 was filed about — with the added cost that acting on the
+// advice is a security-posture relaxation that changes nothing.
+//
+// Per-user tokens are offered only when this session's auth kind can resolve
+// one: authenticateMCPSession runs token resolution under AuthKindEnterprise
+// exclusively, so on a community / community-saas / internal-service session
+// X-User-Token is not a remedy the caller could act on — and when a token
+// ALREADY supplied this session's (shared) identity it is not a remedy either,
+// it is the cause. TokenResolvedIdentity carries that distinction through.
+func errSharedIdentityRefusal(session *mcpSession, feature string) error {
+	return fmt.Errorf("%s", sharedidentity.SharedIdentityRefusalMessage(sharedidentity.SharedIdentityRefusal{
+		Feature:                               feature,
+		ResolvedIdentity:                      session.userEmail,
+		IdentityHeaderPresented:               session.identityInputs.headerPresented,
+		PresentedIdentityIsReserved:           session.identityInputs.presentedIsReserved,
+		PresentedIdentitySurvivedSanitization: session.identityInputs.presentedSurvivedSanitization,
+		TrustGateOn:                           session.identityInputs.trustGateOn,
+		TokenResolvedIdentity:                 session.identityInputs.tokenResolvedIdentity,
+		PerUserTokenResolvable:                session.authKind == AuthKindEnterprise,
+	}))
 }

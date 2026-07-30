@@ -287,28 +287,21 @@ func lookupActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, 
 
 	var id string
 	if scopeOrg == "" {
-		err := db.QueryRowContext(ctx, `
-			SELECT po.id
-			FROM policy_overrides po
-			WHERE po.policy_id = (
-			        SELECT sp.id FROM static_policies sp
-			        WHERE sp.policy_id = $1
-			        LIMIT 1
-			      )
-			  AND po.created_by = $2
-			  AND (po.tenant_id = $3 OR po.tenant_id IS NULL)
-			  AND po.revoked_at IS NULL
-			  AND (po.expires_at IS NULL OR po.expires_at > NOW())
-			ORDER BY po.created_at DESC
-			LIMIT 1
-		`, policySlugOrUUID, userEmail, tenantID).Scan(&id)
-		if err == sql.ErrNoRows {
-			return "", false, nil
-		}
-		if err != nil {
-			return "", false, err
-		}
-		return id, true, nil
+		// #3065 (R3 round 2): this branch used to run a BARE read — no
+		// WithOrgScope wrap and no org predicate — with
+		// `(po.tenant_id = $3 OR po.tenant_id IS NULL)` and $3 empty. On an
+		// owner-pool deployment (AXONFLOW_DB_USE_APP_ROLE unset, the
+		// docker-compose default) RLS is bypassed, so that resolved ANY org's
+		// org-scoped override for the given created_by. It is the same
+		// "unknown caller org falls back to a bare read" fallback that
+		// PolicyOverrideRepository.GetByID carried until this change removed
+		// it one file over.
+		//
+		// Fail closed instead: with no org to authorize against there is no
+		// override to apply, so the ADR-044 allow-flip does not fire and the
+		// underlying deny stands. That is the safe direction — the override
+		// exists only to RELAX a decision.
+		return "", false, nil
 	}
 
 	const resolveQuery = `

@@ -15,7 +15,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3103. Migration 301 switches RLS on for all seven rbi_* tables with a
+// `FOR ALL USING (org_id = get_current_org_id())` policy, but this package
+// never set app.current_org_id — so on an axonflow_app_role pool every read
+// here returned SILENT ZERO ROWS and every write was refused. Every statement
+// below therefore runs inside rls.WithOrgScope, which opens a transaction and
+// SET LOCALs the GUC the policy reads. The hand-written `WHERE org_id = $n`
+// predicates are KEPT: the wrap is a backstop, not a replacement.
 
 // ErrBoardReportNotFound is returned when a board report is not found.
 var ErrBoardReportNotFound = errors.New("board report not found")
@@ -122,50 +132,53 @@ func (r *PostgresBoardReportRepository) Create(ctx context.Context, report *Boar
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		report.ID,
-		report.OrgID,
-		string(report.ReportType),
-		nullTime(report.ReportPeriodStart),
-		nullTime(report.ReportPeriodEnd),
-		nullString(report.ReportQuarter),
-		report.TotalAISystems,
-		systemsByRiskJSON,
-		systemsByStatusJSON,
-		report.NewSystemsDeployed,
-		report.SystemsDeprecated,
-		report.TotalValidations,
-		validationsByTypeJSON,
-		validationsByRecommendationJSON,
-		report.OverdueValidations,
-		report.TotalIncidents,
-		incidentsBySeverityJSON,
-		incidentsByTypeJSON,
-		report.IncidentsResolved,
-		report.IncidentsOpen,
-		report.AverageResolutionTimeHours,
-		keyMetricsJSON,
-		report.ComplianceScore,
-		complianceIssuesJSON,
-		correctiveActionsJSON,
-		report.KillSwitchActivations,
-		killSwitchDetailsJSON,
-		nullString(report.GeneratedBy),
-		nullString(report.GeneratedByEmail),
-		report.GeneratedAt,
-		nullString(report.GenerationMethod),
-		string(report.ApprovalStatus),
-		nullString(report.ApprovedBy),
-		nullString(report.ApprovedByEmail),
-		nullTime(report.ApprovedAt),
-		nullString(report.ApprovalNotes),
-		nullString(report.FilePath),
-		nullString(report.FileFormat),
-		report.FileSizeBytes,
-		nullString(report.FileChecksum),
-		report.CreatedAt,
-		report.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, report.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			report.ID,
+			report.OrgID,
+			string(report.ReportType),
+			nullTime(report.ReportPeriodStart),
+			nullTime(report.ReportPeriodEnd),
+			nullString(report.ReportQuarter),
+			report.TotalAISystems,
+			systemsByRiskJSON,
+			systemsByStatusJSON,
+			report.NewSystemsDeployed,
+			report.SystemsDeprecated,
+			report.TotalValidations,
+			validationsByTypeJSON,
+			validationsByRecommendationJSON,
+			report.OverdueValidations,
+			report.TotalIncidents,
+			incidentsBySeverityJSON,
+			incidentsByTypeJSON,
+			report.IncidentsResolved,
+			report.IncidentsOpen,
+			report.AverageResolutionTimeHours,
+			keyMetricsJSON,
+			report.ComplianceScore,
+			complianceIssuesJSON,
+			correctiveActionsJSON,
+			report.KillSwitchActivations,
+			killSwitchDetailsJSON,
+			nullString(report.GeneratedBy),
+			nullString(report.GeneratedByEmail),
+			report.GeneratedAt,
+			nullString(report.GenerationMethod),
+			string(report.ApprovalStatus),
+			nullString(report.ApprovedBy),
+			nullString(report.ApprovedByEmail),
+			nullTime(report.ApprovedAt),
+			nullString(report.ApprovalNotes),
+			nullString(report.FilePath),
+			nullString(report.FileFormat),
+			report.FileSizeBytes,
+			nullString(report.FileChecksum),
+			report.CreatedAt,
+			report.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create board report: %w", err)
 	}
@@ -190,7 +203,15 @@ func (r *PostgresBoardReportRepository) Get(ctx context.Context, orgID, id strin
 		FROM rbi_board_reports
 		WHERE id = $1 AND org_id = $2
 	`
-	return r.scanBoardReport(r.db.QueryRowContext(ctx, query, id, orgID))
+	var report *BoardReport
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		report, scanErr = r.scanBoardReport(tx.QueryRowContext(ctx, query, id, orgID))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return report, nil
 }
 
 // List retrieves board reports with optional filtering.
@@ -240,10 +261,6 @@ func (r *PostgresBoardReportRepository) List(ctx context.Context, orgID string, 
 
 	// Count total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM rbi_board_reports WHERE %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count board reports: %w", err)
-	}
 
 	// Fetch records
 	query := fmt.Sprintf(`
@@ -263,24 +280,39 @@ func (r *PostgresBoardReportRepository) List(ctx context.Context, orgID string, 
 		ORDER BY generated_at DESC
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argIdx, argIdx+1)
-	args = append(args, params.Limit, params.Offset)
+	countArgs := args
+	args = append(append([]interface{}{}, args...), params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list board reports: %w", err)
-	}
-	defer rows.Close()
-
+	// One wrap for BOTH statements: the count and the page are separate call
+	// sites and each had to be scoped, and sharing the transaction also makes
+	// total and rows a consistent snapshot.
 	var reports []*BoardReport
-	for rows.Next() {
-		report, err := r.scanBoardReportRows(rows)
-		if err != nil {
-			return nil, 0, err
+	var total int
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count board reports: %w", err)
 		}
-		reports = append(reports, report)
+
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list board reports: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			report, scanErr := r.scanBoardReportRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			reports = append(reports, report)
+		}
+
+		return rows.Err()
+	}); err != nil {
+		return nil, 0, err
 	}
 
-	return reports, total, rows.Err()
+	return reports, total, nil
 }
 
 // ListByQuarter retrieves board reports for a specific quarter.
@@ -302,22 +334,28 @@ func (r *PostgresBoardReportRepository) ListByQuarter(ctx context.Context, orgID
 		ORDER BY generated_at DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID, quarter)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list board reports by quarter: %w", err)
-	}
-	defer rows.Close()
-
 	var reports []*BoardReport
-	for rows.Next() {
-		report, err := r.scanBoardReportRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID, quarter)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to list board reports by quarter: %w", err)
 		}
-		reports = append(reports, report)
+		defer rows.Close()
+
+		for rows.Next() {
+			report, scanErr := r.scanBoardReportRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			reports = append(reports, report)
+		}
+
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return reports, rows.Err()
+	return reports, nil
 }
 
 // Update updates an existing board report.
@@ -353,45 +391,50 @@ func (r *PostgresBoardReportRepository) Update(ctx context.Context, report *Boar
 		WHERE id = $1 AND org_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		report.ID,
-		report.OrgID,
-		string(report.ReportType),
-		nullTime(report.ReportPeriodStart),
-		nullTime(report.ReportPeriodEnd),
-		nullString(report.ReportQuarter),
-		report.TotalAISystems,
-		systemsByRiskJSON,
-		systemsByStatusJSON,
-		report.NewSystemsDeployed,
-		report.SystemsDeprecated,
-		report.TotalValidations,
-		validationsByTypeJSON,
-		validationsByRecommendationJSON,
-		report.OverdueValidations,
-		report.TotalIncidents,
-		incidentsBySeverityJSON,
-		incidentsByTypeJSON,
-		report.IncidentsResolved,
-		report.IncidentsOpen,
-		report.AverageResolutionTimeHours,
-		keyMetricsJSON,
-		report.ComplianceScore,
-		complianceIssuesJSON,
-		correctiveActionsJSON,
-		report.KillSwitchActivations,
-		killSwitchDetailsJSON,
-		string(report.ApprovalStatus),
-		nullString(report.ApprovedBy),
-		nullString(report.ApprovedByEmail),
-		nullTime(report.ApprovedAt),
-		nullString(report.ApprovalNotes),
-		nullString(report.FilePath),
-		nullString(report.FileFormat),
-		report.FileSizeBytes,
-		nullString(report.FileChecksum),
-		report.UpdatedAt,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, report.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			report.ID,
+			report.OrgID,
+			string(report.ReportType),
+			nullTime(report.ReportPeriodStart),
+			nullTime(report.ReportPeriodEnd),
+			nullString(report.ReportQuarter),
+			report.TotalAISystems,
+			systemsByRiskJSON,
+			systemsByStatusJSON,
+			report.NewSystemsDeployed,
+			report.SystemsDeprecated,
+			report.TotalValidations,
+			validationsByTypeJSON,
+			validationsByRecommendationJSON,
+			report.OverdueValidations,
+			report.TotalIncidents,
+			incidentsBySeverityJSON,
+			incidentsByTypeJSON,
+			report.IncidentsResolved,
+			report.IncidentsOpen,
+			report.AverageResolutionTimeHours,
+			keyMetricsJSON,
+			report.ComplianceScore,
+			complianceIssuesJSON,
+			correctiveActionsJSON,
+			report.KillSwitchActivations,
+			killSwitchDetailsJSON,
+			string(report.ApprovalStatus),
+			nullString(report.ApprovedBy),
+			nullString(report.ApprovedByEmail),
+			nullTime(report.ApprovedAt),
+			nullString(report.ApprovalNotes),
+			nullString(report.FilePath),
+			nullString(report.FileFormat),
+			report.FileSizeBytes,
+			nullString(report.FileChecksum),
+			report.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update board report: %w", err)
 	}
@@ -406,10 +449,15 @@ func (r *PostgresBoardReportRepository) Update(ctx context.Context, report *Boar
 
 // Delete removes a board report.
 func (r *PostgresBoardReportRepository) Delete(ctx context.Context, orgID, id string) error {
-	result, err := r.db.ExecContext(ctx,
-		"DELETE FROM rbi_board_reports WHERE id = $1 AND org_id = $2",
-		id, orgID,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx,
+			"DELETE FROM rbi_board_reports WHERE id = $1 AND org_id = $2",
+			id, orgID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete board report: %w", err)
 	}
@@ -441,7 +489,15 @@ func (r *PostgresBoardReportRepository) GetLatest(ctx context.Context, orgID str
 		ORDER BY generated_at DESC
 		LIMIT 1
 	`
-	return r.scanBoardReport(r.db.QueryRowContext(ctx, query, orgID, string(reportType)))
+	var report *BoardReport
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		report, scanErr = r.scanBoardReport(tx.QueryRowContext(ctx, query, orgID, string(reportType)))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return report, nil
 }
 
 // GetPendingApproval retrieves board reports pending approval.
@@ -463,22 +519,28 @@ func (r *PostgresBoardReportRepository) GetPendingApproval(ctx context.Context, 
 		ORDER BY generated_at DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending approval reports: %w", err)
-	}
-	defer rows.Close()
-
 	var reports []*BoardReport
-	for rows.Next() {
-		report, err := r.scanBoardReportRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to get pending approval reports: %w", err)
 		}
-		reports = append(reports, report)
+		defer rows.Close()
+
+		for rows.Next() {
+			report, scanErr := r.scanBoardReportRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			reports = append(reports, report)
+		}
+
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return reports, rows.Err()
+	return reports, nil
 }
 
 // scanBoardReport scans a single row into a BoardReport.

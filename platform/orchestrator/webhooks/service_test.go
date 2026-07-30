@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // mockRepository is a simple in-memory mock for testing.
@@ -30,11 +32,21 @@ func (m *mockRepository) CreateSubscription(_ context.Context, sub *Subscription
 	return nil
 }
 
-func (m *mockRepository) GetSubscription(_ context.Context, id string) (*Subscription, error) {
+// #3065 (F6): the mock mirrors the fixed repository contract — the by-id read
+// is tenancy-bound in SQL, so the mock refuses an unbound caller and refuses a
+// row whose tenancy does not match. A mock that returned the row regardless
+// would let a unit test certify the very fail-open the fix removes.
+func (m *mockRepository) GetSubscription(_ context.Context, id, tenantID, orgID string) (*Subscription, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if err := tenantscope.ValidateRowKeys(orgID, tenantID); err != nil {
+		return nil, fmt.Errorf("webhook subscription not found: %s", id)
+	}
 	sub, ok := m.subscriptions[id]
 	if !ok {
+		return nil, fmt.Errorf("webhook subscription not found: %s", id)
+	}
+	if (tenantscope.Scope{OrgID: orgID, TenantID: tenantID}).Authorize(sub.OrgID, sub.TenantID) != nil {
 		return nil, fmt.Errorf("webhook subscription not found: %s", id)
 	}
 	return sub, nil

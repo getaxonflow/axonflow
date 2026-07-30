@@ -40,6 +40,7 @@ func TestCancelPlanHandler(t *testing.T) {
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cancel_pending",
 				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusPending,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -57,6 +58,7 @@ func TestCancelPlanHandler(t *testing.T) {
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cancel_executing",
 				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusExecuting,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -68,12 +70,13 @@ func TestCancelPlanHandler(t *testing.T) {
 		{
 			name:         "cancel with no body defaults reason",
 			planID:       "plan_cancel_no_body",
-			orgID:        "",
+			orgID:        "org_1",
 			body:         nil,
 			setupService: true,
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cancel_no_body",
-				OrgID:              "",
+				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusPending,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -85,12 +88,13 @@ func TestCancelPlanHandler(t *testing.T) {
 		{
 			name:         "cancel with empty reason defaults to API message",
 			planID:       "plan_cancel_empty_reason",
-			orgID:        "",
+			orgID:        "org_1",
 			body:         map[string]string{"reason": ""},
 			setupService: true,
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cancel_empty_reason",
-				OrgID:              "",
+				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusPending,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -120,6 +124,7 @@ func TestCancelPlanHandler(t *testing.T) {
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cancel_completed",
 				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusCompleted,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -138,6 +143,7 @@ func TestCancelPlanHandler(t *testing.T) {
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cancel_failed",
 				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusFailed,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -156,6 +162,7 @@ func TestCancelPlanHandler(t *testing.T) {
 			setupPlan: &planning.Plan{
 				PlanID:             "plan_cross_tenant",
 				OrgID:              "org_owner",
+				TenantID:           "tenant_1",
 				Status:             planning.PlanStatusPending,
 				WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
@@ -227,6 +234,7 @@ func TestCancelPlanHandler(t *testing.T) {
 			}
 
 			req := httptest.NewRequest("POST", "/api/v1/plan/"+tt.planID+"/cancel", bodyReader)
+			req.Header.Set("X-Tenant-ID", "tenant_1")
 			req.Header.Set("Content-Type", "application/json")
 			if tt.orgID != "" {
 				req.Header.Set("X-Org-ID", tt.orgID)
@@ -297,6 +305,7 @@ func TestCancelPlanHandler_SuccessResponseFields(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_fields_test",
 		OrgID:              "org_1",
 		Status:             planning.PlanStatusPending,
@@ -311,6 +320,7 @@ func TestCancelPlanHandler_SuccessResponseFields(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"reason": "user cancelled"})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_fields_test/cancel", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_fields_test"})
@@ -355,6 +365,8 @@ func TestCancelPlanHandler_DefaultReason(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_default_reason",
 		Status:             planning.PlanStatusPending,
 		WorkflowDefinition: json.RawMessage(`{"steps":[]}`),
@@ -368,6 +380,8 @@ func TestCancelPlanHandler_DefaultReason(t *testing.T) {
 
 	// Send request with no body
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_default_reason/cancel", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_default_reason"})
 
 	w := httptest.NewRecorder()
@@ -401,6 +415,7 @@ func TestCancelPlanHandler_PlanStateAfterCancel(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_state_check",
 		OrgID:              "org_1",
 		Status:             planning.PlanStatusPending,
@@ -415,6 +430,7 @@ func TestCancelPlanHandler_PlanStateAfterCancel(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"reason": "state check test"})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_state_check/cancel", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_state_check"})
@@ -452,6 +468,7 @@ func TestCancelPlanHandler_CancelAlreadyCancelledPlan(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_already_cancelled",
 		OrgID:              "org_1",
 		Status:             planning.PlanStatusCancelled,
@@ -467,6 +484,7 @@ func TestCancelPlanHandler_CancelAlreadyCancelledPlan(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"reason": "cancel again"})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_already_cancelled/cancel", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_already_cancelled"})
@@ -500,6 +518,7 @@ func TestCancelPlanHandler_OrgIDFromHeader(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_org_header",
 		OrgID:              "org_correct",
 		Status:             planning.PlanStatusPending,
@@ -516,6 +535,7 @@ func TestCancelPlanHandler_OrgIDFromHeader(t *testing.T) {
 	t.Run("correct org succeeds", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"reason": "org test"})
 		req := httptest.NewRequest("POST", "/api/v1/plan/plan_org_header/cancel", bytes.NewReader(body))
+		req.Header.Set("X-Tenant-ID", "tenant_1")
 		req.Header.Set("X-Org-ID", "org_correct")
 		req = mux.SetURLVars(req, map[string]string{"id": "plan_org_header"})
 
@@ -536,6 +556,7 @@ func TestCancelPlanHandler_OrgIDFromHeader(t *testing.T) {
 	t.Run("wrong org rejected", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"reason": "org test"})
 		req := httptest.NewRequest("POST", "/api/v1/plan/plan_org_header/cancel", bytes.NewReader(body))
+		req.Header.Set("X-Tenant-ID", "tenant_1")
 		req.Header.Set("X-Org-ID", "org_wrong")
 		req = mux.SetURLVars(req, map[string]string{"id": "plan_org_header"})
 
@@ -548,22 +569,37 @@ func TestCancelPlanHandler_OrgIDFromHeader(t *testing.T) {
 		}
 	})
 
-	// No org header should succeed (community mode)
+	// #3065 (F2): this sub-test used to be "no org header passes (community
+	// mode)" and required that a caller who omitted X-Org-ID could cancel the
+	// plan. Omitting the header IS the exploit — the route had no proxy-auth
+	// gate, so "community mode" was indistinguishable from an attacker. The
+	// agent stamps ORG_ID (default "local-dev-org") in community mode too, so
+	// nothing legitimate ever sent no org.
 	testPlan.Status = planning.PlanStatusPending
 	testPlan.ErrorMessage = ""
 	_ = mockRepo.SavePlan(context.Background(), testPlan)
 
-	t.Run("no org header passes (community mode)", func(t *testing.T) {
-		body, _ := json.Marshal(map[string]string{"reason": "community"})
+	t.Run("no org header is denied", func(t *testing.T) {
+		body, _ := json.Marshal(map[string]string{"reason": "unscoped"})
 		req := httptest.NewRequest("POST", "/api/v1/plan/plan_org_header/cancel", bytes.NewReader(body))
-		// No X-Org-ID header set
+		req.Header.Set("X-Tenant-ID", "tenant_1")
+		// Deliberately NO X-Org-ID header.
 		req = mux.SetURLVars(req, map[string]string{"id": "plan_org_header"})
 
 		w := httptest.NewRecorder()
 		cancelPlanHandler(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Errorf("status code = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+		if w.Code != http.StatusNotFound {
+			t.Errorf("status code = %d, want %d; body: %s", w.Code, http.StatusNotFound, w.Body.String())
+		}
+
+		// And the plan must be untouched.
+		after, err := mockRepo.GetPlan(context.Background(), "plan_org_header")
+		if err != nil {
+			t.Fatalf("GetPlan: %v", err)
+		}
+		if after.Status != planning.PlanStatusPending {
+			t.Errorf("an unscoped cancel changed the plan status to %s", after.Status)
 		}
 	})
 }

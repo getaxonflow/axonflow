@@ -61,6 +61,7 @@ import (
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
+	"axonflow/platform/shared/tenantscope"
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -87,7 +88,11 @@ const (
 var (
 	dynamicPolicyEngine interface {
 		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
+		// ListActivePolicies is the raw DEPLOYMENT-WIDE cache dump (every
+		// tenant's policies). Internal consumers only — HTTP handlers MUST
+		// use ListActivePoliciesForTenant.
 		ListActivePolicies() []DynamicPolicy
+		ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
 		IsHealthy() bool
 	}
 	// Note: Legacy llmRouter *LLMRouter removed in v2.3.0.
@@ -560,13 +565,10 @@ func Run() {
 	// non-admin callers (it is the budget-enforcement decision plane).
 	r.Use(enforceDomainReadAuthority)
 
-	// CORS middleware
-	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"}, // Configure for production
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"*"},
-		AllowCredentials: true,
-	})
+	// CORS middleware.
+	// #3096: the origin policy is resolved from configuration rather than
+	// hardcoded to `"*"` + AllowCredentials. See resolveCORSOptions (cors.go).
+	c := cors.New(resolveCORSOptions())
 
 	// Health check
 	r.HandleFunc("/health", healthHandler).Methods("GET")
@@ -589,6 +591,14 @@ func Run() {
 	// Metrics and monitoring
 	r.HandleFunc("/api/v1/metrics", metricsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/search", auditSearchHandler).Methods("POST")
+	// #3060: audit search is POST-only (its criteria are a JSON body). Without
+	// this explicit GET/HEAD variant the request fell through to the greedy
+	// GET /api/v1/audit/{id} below with id="search" and auditGetByIDHandler
+	// answered "audit record not found" — a 404 that lies about the resource
+	// and sends anyone probing the API hunting for a data problem that does
+	// not exist. Registered adjacent to the POST (and before {id}) so the
+	// literal path wins for both methods.
+	r.HandleFunc("/api/v1/audit/search", auditSearchMethodNotAllowedHandler).Methods("GET", "HEAD")
 	// Operational log export (#2756) is owned by WS-2 #2767 (richer implementation
 	// in this same package). WS-10 no longer registers it here to avoid a
 	// duplicate-symbol collision; the WS-10 export tests target #2767's endpoint.
@@ -843,7 +853,8 @@ func Run() {
 	// once /health would 200." Now the bind happens first; only on
 	// success does the telemetry goroutine spawn.
 	port := getEnv("PORT", "8081")
-	handler := c.Handler(r)
+
+	handler := buildOrchestratorHandler(c, r)
 
 	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
@@ -1039,6 +1050,10 @@ func initializeComponents() {
 	// 24h-bounded.
 	if usageDB != nil {
 		idempAdminDB, idempAdminErr := agent.OpenPlatformAdminConnection(context.Background(), 3)
+		// #3159: unset DSN keeps the documented nil-tolerant fallback;
+		// configured-but-unusable is a misconfiguration that silently stops the
+		// sweep.
+		agent.RequirePlatformAdminPoolOrFatal("Idempotency", idempAdminDB, idempAdminErr)
 		if idempAdminErr != nil {
 			log.Printf("[Idempotency] admin pool unavailable, sweep disabled: %v", idempAdminErr)
 			idempAdminDB = nil
@@ -1105,7 +1120,12 @@ func initializeComponents() {
 				agent.RequirePlatformAdminOrFatal("NodeMonitor")
 				alerter := node_enforcement.NewMultiChannelAlerter()
 				monitorDB := usageDB
-				if adminDB, adminErr := agent.OpenPlatformAdminConnection(ctx, 3); adminErr != nil {
+				adminDB, adminErr := agent.OpenPlatformAdminConnection(ctx, 3)
+				// #3159: a configured-but-unusable admin DSN previously fell
+				// through to usageDB, where per-org node counts read 0 and
+				// license-limit violations never fire.
+				agent.RequirePlatformAdminPoolOrFatal("NodeMonitor", adminDB, adminErr)
+				if adminErr != nil {
 					log.Printf("[NodeMonitor] failed to open admin connection (%v); falling back to usageDB", adminErr)
 				} else if adminDB != nil {
 					log.Println("[NodeMonitor] using axonflow_platform_admin (BYPASSRLS) connection for cross-org node counts")
@@ -1327,7 +1347,12 @@ func initializeComponents() {
 		// configured; mirror the NodeMonitor fallback + warning otherwise.
 		retentionEnforce := auditRetentionEnforceEnabled()
 		auditCleanupService.SetRetentionEnforce(retentionEnforce)
-		if adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil {
+		adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3)
+		// #3159: a configured-but-unusable admin DSN previously fell through to
+		// usageDB, where the retention executor sees no cross-org rows and
+		// deletion obligations silently go unmet.
+		agent.RequirePlatformAdminPoolOrFatal("AuditRetention", adminDB, adminErr)
+		if adminErr != nil {
 			log.Printf("[AuditRetention] failed to open admin connection (%v); falling back to usageDB", adminErr)
 		} else if adminDB != nil {
 			auditCleanupService.SetRetentionAdminDB(adminDB)
@@ -1468,7 +1493,12 @@ func initializeComponents() {
 		// as NodeMonitor and the idempotency sweep; nil-with-nil-err means
 		// the admin DSN is unset (documented fallback contract).
 		var rls3039AdminDB *sql.DB
-		if adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil || adminDB == nil {
+		adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3)
+		// #3159: `adminErr != nil || adminDB == nil` conflates "the operator
+		// deliberately runs single-role" with "the configured DSN gave us
+		// nothing". Only the second is a misconfiguration, and it is fatal.
+		agent.RequirePlatformAdminPoolOrFatal("RLS-3039-ReadPool", adminDB, adminErr)
+		if adminErr != nil || adminDB == nil {
 			log.Printf("⚠️  #3039 cross-org read pool: platform-admin pool unavailable (err=%v) — policy counts / execution lookups fall back to the main pool (under app-role RLS they read 0 rows / 404)", adminErr)
 		} else {
 			adminDB.SetMaxOpenConns(4)
@@ -1835,6 +1865,292 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// =============================================================================
+// #3066 C3-5 / C3-6 — governed request-plane tenancy binding
+// =============================================================================
+//
+// Four handlers in this file used to resolve the tenancy they evaluate, store
+// and audit under with the shape
+//
+//	if hdr := r.Header.Get("X-Tenant-ID"); hdr != "" { req.…TenantID = hdr }
+//
+// — an overlay with NO else branch. When the header was absent the body's
+// tenancy simply survived, so the client chose the scope. That is C3-5 on
+// /api/v1/process (a bisection oracle over another tenant's policy conditions
+// through applied_policies_detail[], plus policy_metrics rows written under
+// the victim's org) and C3-6 on /api/v1/workflows/execute and /api/v1/plan
+// (writes whose org_id/tenant_id came from the body, or from nothing at all —
+// the unstamped rows #3065's fail-open predicates then exposed to everyone).
+//
+// The helpers below are the single place those four handlers now resolve
+// tenancy. Nothing about a request body may influence WHICH tenancy is used;
+// the body may only agree with it or be refused.
+
+// tenancyDimension names which half of an authenticated scope a body-borne
+// tenancy claim is measured against. Org and tenant are independent keys —
+// under a single enterprise license they routinely hold different values — so
+// a claim must never be checked against "either one".
+type tenancyDimension int
+
+const (
+	tenancyDimTenant tenancyDimension = iota
+	tenancyDimOrg
+)
+
+// bodyTenancyClaim is one client-supplied tenancy value found in a request
+// body, paired with the dimension of the authenticated scope it asserts.
+type bodyTenancyClaim struct {
+	field string // dotted JSON path, echoed back in the refusal
+	dim   tenancyDimension
+	value string
+}
+
+// resolveGovernedScope returns the tenancy a governed request may run as, or
+// an HTTP status plus message to write. It never consults the request body.
+//
+// # Why this is a hard 401 and not a plane split
+//
+// #3066 C3-4 (POST /api/v1/mcp/evaluate-policies) deliberately did NOT fail a
+// header-less caller closed, because that route has a real internal-service
+// plane — shared/policy.DynamicPolicyEvaluator calls it with the HMAC token,
+// no tenancy headers and its own validated tenant in the body — and
+// EvaluateWithGracefulDegradation refuses to absorb a 401/403, so a blanket
+// refusal there would have hard-blocked every governed MCP tool call.
+//
+// The four handlers here have no such caller. The census (see the PR body):
+//
+//   - platform/agent/proxy.go proxyAuthMiddleware Sets — never Adds — both
+//     X-Tenant-ID and X-Org-ID from the validated credential on every proxied
+//     route, and all four of these routes are proxied (/api/v1/process:659,
+//     /api/v1/plan:675, /api/v1/workflows:726). That a client-supplied value
+//     is OVERWRITTEN rather than appended is the load-bearing half, and it is
+//     pinned on the agent side by TestSpoofing_ProxyHeadersOverwrittenByAuth
+//     (platform/agent/auth_spoofing_test.go), which drives proxyAuthMiddleware
+//     with a hostile X-Org-ID/X-Tenant-ID/X-Client-ID and asserts none of the
+//     three survives.
+//   - platform/agent/run.go forwardToOrchestrator, the agent's own governed
+//     forward to /api/v1/process, /api/v1/plan and /api/v1/plan/execute,
+//     stamps X-Tenant-ID from user.TenantID (falling back to
+//     client.TenantID) and X-Org-ID from client.OrgID. Every auth kind
+//     resolves a non-empty tenant — community uses the client id, community-
+//     SaaS and enterprise the credential's, internal-service the HMAC hint —
+//     so this hop always stamps a tenant, and clientRequestHandler has
+//     already refused the request unless user.TenantID == client.TenantID.
+//   - the customer portal's orchestrator proxy Sets both from the session
+//     (ee/platform/customer-portal/api/orchestrator_proxy.go:199-200).
+//
+// No fourth caller exists in the tree. A request that reaches these handlers
+// without a bindable scope therefore did not traverse an authenticating hop,
+// and the only safe answer is to refuse it.
+//
+// carriesStampedTenancy (mcp_dynamic_policy_handler.go, #3066 C3-4) is reused
+// here for LOG FIDELITY ONLY, not to select a plane: both branches return the
+// same 401. The distinction is worth keeping in the log because the two causes
+// need different operator responses — "nothing stamped this request" points at
+// a caller that bypassed the gateway, while "stamped but not bindable" points
+// at an authenticating hop that resolved an empty or whitespace-only tenancy,
+// which is a credential-provisioning bug. It tests PRESENCE, not emptiness,
+// precisely so the second case cannot be mistaken for the first.
+func resolveGovernedScope(r *http.Request, endpoint string) (tenantscope.Scope, int, string) {
+	const refusal = "Unauthorized: an authenticated tenant scope is required. " +
+		"X-Org-ID and X-Tenant-ID are set by the AxonFlow Agent gateway (or the customer portal proxy) " +
+		"from the validated credential; they are not client-assertable."
+
+	if !carriesStampedTenancy(r) {
+		log.Printf("[%s] REFUSED: no gateway-stamped tenancy on this request — neither %s nor %s is present, "+
+			"so it did not traverse an authenticating hop", endpoint, tenantscope.HeaderOrgID, tenantscope.HeaderTenantID)
+		return tenantscope.Scope{}, http.StatusUnauthorized, refusal
+	}
+
+	scope, err := tenantscope.Bind(r)
+	if err != nil {
+		log.Printf("[%s] REFUSED: request carries stamped tenancy headers but no usable scope: %v", endpoint, err)
+		return tenantscope.Scope{}, http.StatusUnauthorized, refusal
+	}
+	return scope, 0, ""
+}
+
+// authorizeBodyTenancy refuses a body-borne tenancy that names a DIFFERENT
+// tenancy than the authenticated one, rather than silently coercing it. A
+// caller that asked to run as another tenant is told no; it is not handed its
+// own answer under a name it did not ask for, which would make a cross-tenant
+// attempt indistinguishable from a correct request in both the response and
+// the audit trail.
+//
+// An absent (or whitespace-only) claim asserts nothing and is accepted; the
+// caller overwrites it from the authenticated scope regardless. Returns
+// (0, "") when every claim is authorized.
+//
+// # What is deliberately NOT passed in here
+//
+// user.org_id. On the agent's governed forward that field is DERIVED, not
+// asserted: platform/agent/run.go validateUserToken fills it from the JWT's
+// org_id claim and falls back to the JWT's tenant_id, while the X-Org-ID
+// header comes from the LICENSE (client.OrgID). Those are independent sources
+// that legitimately diverge on an enterprise deployment, so authorizing one
+// against the other would 403 every governed enterprise request. The field is
+// still overwritten from the authenticated scope at every call site — the
+// value is bound either way; what this function decides is only whether the
+// caller is told about the disagreement.
+func authorizeBodyTenancy(scope tenantscope.Scope, endpoint string, claims ...bodyTenancyClaim) (int, string) {
+	for _, c := range claims {
+		claimed := strings.TrimSpace(c.value)
+		if claimed == "" {
+			continue
+		}
+		authenticated := scope.TenantID
+		if c.dim == tenancyDimOrg {
+			authenticated = scope.OrgID
+		}
+		if claimed == authenticated {
+			continue
+		}
+		// Sanitized: both values are attacker-influenced strings reaching a
+		// log line. Logged because a cross-tenant attempt is exactly the event
+		// a SIEM wants; the RESPONSE names the offending body field but not
+		// the authenticated tenancy, so it is not an enumeration oracle.
+		log.Printf("[%s] REFUSED cross-tenant request: body %s=%s does not match the authenticated tenancy %s",
+			endpoint, c.field, logutil.Sanitize(claimed), logutil.Sanitize(authenticated))
+		return http.StatusForbidden, "Forbidden: " + c.field + " does not name the authenticated tenancy"
+	}
+	return 0, ""
+}
+
+// requireStampedRowKeys is the WRITE-side half of #3066 C3-6: it refuses to
+// let a handler persist a row whose org_id or tenant_id is empty, whitespace
+// or the migration core/156 "owned by nobody" sentinel.
+//
+// This is defense in depth and is unreachable on today's code paths — every
+// call site runs resolveGovernedScope first, and tenantscope.Bind already
+// guarantees both dimensions are present and usable. It is here because the
+// values that reach a row are not always the ones Bind produced: planRequest-
+// Handler re-extracts them from the req.Client map with a `.(string)` type
+// assertion, which yields "" for any non-string JSON value, and that
+// re-extraction is what CreatePlanRequest.OrgID is built from. Unstamped rows
+// are the class #3065's fail-open predicates then made readable and writable
+// by every tenant, so the invariant is asserted at the boundary that creates
+// them rather than only at the one that authenticates the caller.
+//
+// TestRequireStampedRowKeys drives this directly, so it is not a dead branch
+// that nothing exercises.
+func requireStampedRowKeys(endpoint, orgID, tenantID string) (int, string) {
+	if err := tenantscope.ValidateRowKeys(orgID, tenantID); err != nil {
+		log.Printf("[%s] REFUSED write: refusing to persist a row with an unstamped tenancy (org=%q tenant=%q): %v",
+			endpoint, logutil.Sanitize(orgID), logutil.Sanitize(tenantID), err)
+		return http.StatusUnauthorized, "Unauthorized: refusing to persist a row without an authenticated org_id and tenant_id"
+	}
+	return 0, ""
+}
+
+// logDeploymentOrgDrift reports an authenticated org that differs from the
+// deployment's own ORG_ID.
+//
+// This stays a LOG and is deliberately not escalated to a refusal, even though
+// #3066 lists "an X-Org-ID mismatch merely logs" among the C3-5 evidence. The
+// evidence was that nothing else enforced anything — which resolveGovernedScope
+// now fixes. The comparison itself cannot become an authorization decision: on
+// Community-SaaS every customer's org is its own cs_<uuid> (auth.go:467) while
+// ORG_ID is the deployment's, so a mismatch is the NORMAL case there and a 403
+// would take try.getaxonflow.com down. On a single-org enterprise stack a
+// mismatch really does mean agent/orchestrator config drift, and that is what
+// this line is for.
+func logDeploymentOrgDrift(orgID string) {
+	expectedOrgID := os.Getenv("ORG_ID")
+	if expectedOrgID == "" {
+		expectedOrgID = "local-dev-org"
+	}
+	if orgID != expectedOrgID {
+		log.Printf("[SECURITY] X-Org-ID differs from the deployment ORG_ID: received %q, deployment is %q. "+
+			"Expected on a multi-org deployment (Community-SaaS); on a single-org stack it indicates agent/orchestrator config drift.",
+			logutil.Sanitize(orgID), logutil.Sanitize(expectedOrgID))
+	}
+}
+
+// applyAuthoritativePrincipal binds the ACTOR half of a governed request —
+// who is making it — to the request's authenticated channels, discarding
+// whatever the body said. It is the actor sibling of resolveGovernedScope /
+// authorizeBodyTenancy above, which bind the TENANCY half.
+//
+// # The defect (#3152)
+//
+// #3066 C3-5/C3-6 bound tenancy on /api/v1/process and /api/v1/workflows/execute
+// and left every other field of the decoded UserContext verbatim from the body.
+// That is worse than not binding at all, because the handler then LOOKS bound: a
+// reader seeing resolveGovernedScope at the top would reasonably assume the whole
+// User struct is trustworthy. It is not. executeWorkflowHandler's own comment even
+// claimed the header re-read stopped a direct caller "claim[ing] a different
+// identity than the agent authenticated" — true of the tenancy, false of the actor.
+//
+// The body is a channel the client controls on these routes. Both are registered
+// on the agent's REVERSE PROXY (platform/agent/proxy.go RegisterProxyRoutes —
+// /api/v1/process and the /api/v1/workflows prefix), which validates the caller's
+// credential, stamps the tenancy headers and then forwards the caller's body
+// BYTE FOR BYTE. So req.User.{Email,Role,ID,Region,Permissions} were chosen by
+// the caller, and:
+//
+//   - req.User.Role is resolved as the policy-condition field "user.role" /
+//     "user_role" by BOTH dynamic-policy engines (db_dynamic_policies.go
+//     getFieldValue, dynamic_policy_engine.go). A tenant policy of the shape
+//     {user.role not_equals "admin"} → block/redact — the shape shipped as a
+//     built-in HIPAA template (migrations/enterprise/109) and offered in the
+//     portal's policy builder (POLICY_FIELDS) — was therefore evadable by
+//     asserting "user":{"role":"admin"} in the request body. That is access
+//     control, not attribution.
+//   - req.User.Email / .ID become audit_logs.user_email / user_id on every
+//     verdict this plane records (audit_logger.go LogSuccessfulRequest,
+//     LogBlockedRequest, LogBlockedResponse, LogBlockedMedia, LogFailedRequest).
+//
+// # Where each field now comes from
+//
+// Email — the trust-gated X-User-Email header, EXACTLY as applyAuthoritativeIdentity
+// has bound it on the MAP planes since #2896 WS1c. The agent's proxy strips this
+// header unless AXONFLOW_TRUST_IDENTITY_HEADERS is on, and re-sets it only from a
+// cryptographically VALIDATED per-user token (proxy.go gateProxyIdentityHeaders,
+// then the vid != nil branch), so what arrives here is never client-asserted.
+// Absent header ⇒ empty actor, never a body-chosen one.
+//
+// Role — sharedidentity.HeaderUserRole (X-Axonflow-User-Role). This is the
+// platform's ONLY authenticated role channel: the agent Del()s any inbound value
+// unconditionally and re-Sets it solely from a validated per-user token's role
+// claim, which is itself normalised to the known vocabulary or dropped
+// (identity.NormalizeRole). Absent ⇒ empty.
+//
+// Deliberately NOT the trust-gated identity headers: the package contract in
+// platform/shared/identity states that a trusted identity header may set audit
+// ATTRIBUTION fields only and "must never influence a verdict, an authz decision,
+// policy selection, or tenant/org resolution". user.role IS a verdict input, so it
+// may only come from a validated token, never from a header a deployment merely
+// declared trustworthy.
+//
+// ID, Region, Permissions — cleared. No authenticated source for any of them
+// exists on this plane: the numeric id is whatever integer the body typed,
+// user.region steers geo-routing policy conditions, and permissions ride into
+// llm.RequestContext. Carrying a caller-chosen value forward under a name that
+// reads as authenticated is the defect, so they are zeroed rather than kept.
+//
+// # What this function is NOT
+//
+// It is not an authorization check and it never refuses a request. Refusing here
+// would break the plane it is meant to protect: the agent's own governed forward
+// (platform/agent/run.go forwardToOrchestrator) reaches /api/v1/process carrying
+// NO per-user identity headers at all — it builds a fresh request stamping only
+// Content-Type, X-Axonflow-Proxy-Auth and the tenancy trio — and the same is true
+// of every runtime-e2e harness and of the customer-portal proxy on routes where a
+// session has no user email. A blanket 401 on "no actor" would take all of them
+// down, the same reasoning that made a blanket refusal wrong on #3066 C3-4.
+// An empty actor is a truthful answer, and it is the fail-closed one: an empty
+// role satisfies no allowlist.
+func applyAuthoritativePrincipal(r *http.Request, u *UserContext) {
+	if u == nil {
+		return
+	}
+	u.Email = r.Header.Get("X-User-Email")
+	u.Role = r.Header.Get(sharedidentity.HeaderUserRole)
+	u.ID = 0
+	u.Region = ""
+	u.Permissions = nil
+}
+
 func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
@@ -1849,31 +2165,54 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		req.RequestID = generateRequestID()
 	}
 
-	// Identity from headers (set by the agent) takes precedence over JSON body.
-	// This ensures tenant_id and org_id are server-derived from auth, not client-supplied.
-	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
-		req.User.TenantID = tenantID
-		req.Client.TenantID = tenantID
+	// #3066 C3-5: bind the tenancy this request is evaluated under BEFORE any
+	// policy is loaded, any metric row is written or any policy name is echoed
+	// back. Authorization precedes the rest of the handler on purpose: a
+	// cross-tenant attempt must be refused identically whether or not the rest
+	// of the body is well formed, so downstream 4xx/5xx cannot be used to
+	// probe which shapes reach the evaluator.
+	//
+	// Pre-fix, the three header overlays here were each guarded by
+	// `if header != ""` with no else, so a caller reaching the orchestrator
+	// without them kept the body's client.tenant_id — and that value keys the
+	// dynamic-policy set that EvaluateDynamicPolicies loads, the
+	// applied_policies_detail[] array returned to the caller, and the org_id
+	// on the policy_metrics row the evaluation writes. Bisecting a victim's
+	// policy conditions was a matter of varying the query and watching which
+	// of the victim's policies appeared.
+	//
+	// #3152: bind the ACTOR before the tenancy work below, and before anything
+	// reads req.User. Both binders must run on every exit path of this handler,
+	// so the actor is bound first — a refusal further down cannot then leave a
+	// body-chosen principal in the struct for an audit writer to pick up.
+	applyAuthoritativePrincipal(r, &req.User)
+
+	scope, status, msg := resolveGovernedScope(r, "process")
+	if status != 0 {
+		sendErrorResponse(w, msg, status)
+		return
 	}
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		req.Client.OrgID = orgID
-		req.User.OrgID = orgID
-		// Defense-in-depth: warn if incoming org_id doesn't match deployment ORG_ID.
-		// The agent should always send the deployment ORG_ID (validated at startup).
-		// A mismatch here means either a misconfigured agent or direct orchestrator access.
-		expectedOrgID := os.Getenv("ORG_ID")
-		if expectedOrgID == "" {
-			expectedOrgID = "local-dev-org"
-		}
-		if orgID != expectedOrgID {
-			log.Printf("[SECURITY] X-Org-ID mismatch: received %q but deployment ORG_ID is %q. "+
-				"This may indicate misconfigured agent or direct orchestrator access bypassing the agent.",
-				logutil.Sanitize(orgID), logutil.Sanitize(expectedOrgID))
-		}
+	if status, msg := authorizeBodyTenancy(scope, "process",
+		bodyTenancyClaim{field: "user.tenant_id", dim: tenancyDimTenant, value: req.User.TenantID},
+		bodyTenancyClaim{field: "client.tenant_id", dim: tenancyDimTenant, value: req.Client.TenantID},
+		bodyTenancyClaim{field: "client.org_id", dim: tenancyDimOrg, value: req.Client.OrgID},
+	); status != 0 {
+		sendErrorResponse(w, msg, status)
+		return
 	}
-	if clientID := r.Header.Get("X-Tenant-ID"); clientID != "" {
-		req.Client.ID = clientID
-	}
+
+	// Overwrite unconditionally — including user.org_id, which is not
+	// authorized above (see authorizeBodyTenancy) but is still bound here so a
+	// JWT-derived org can never outrank the licensed one. req.Client.ID has
+	// carried the tenant since long before this change; it is preserved
+	// verbatim so audit client_id attribution does not shift.
+	req.User.TenantID = scope.TenantID
+	req.Client.TenantID = scope.TenantID
+	req.Client.ID = scope.TenantID
+	req.User.OrgID = scope.OrgID
+	req.Client.OrgID = scope.OrgID
+
+	logDeploymentOrgDrift(scope.OrgID)
 
 	// Create processing context
 	ctx := context.WithValue(r.Context(), ctxKeyRequestID, req.RequestID)
@@ -2316,7 +2655,43 @@ func validateProviderWeights(weights map[string]float64) error {
 }
 
 func listDynamicPoliciesHandler(w http.ResponseWriter, r *http.Request) {
-	policies := dynamicPolicyEngine.ListActivePolicies()
+	// TENANT-SCOPED, FAIL CLOSED. This handler used to dump the raw
+	// deployment-wide policy cache (ListActivePolicies) to any authenticated
+	// tenant — every tenant's policy names, regex conditions, actions and
+	// owning tenant_id, cross-tenant information disclosure. It now serves
+	// only what the resolved tenant is allowed to see, and returns 401
+	// rather than falling back to the unscoped list when no tenant resolves.
+	//
+	// SCOPE OF THE GUARANTEE — read before relying on this. When the request
+	// arrives through the Agent, X-Tenant-ID is Set (not Add) from the
+	// VALIDATED credential, overwriting anything the client sent
+	// (proxyAuthMiddleware, platform/agent/proxy.go — the route is registered
+	// with that wrapper; apiAuthMiddleware does the same on the agent's own
+	// API surface). On that path the caller cannot choose the scope.
+	//
+	// STALE-COMMENT CORRECTION (#3152). This block used to read "The
+	// orchestrator itself installs NO authentication middleware on this route
+	// … Tracked as #3064 / #3068". That has been FALSE since #3068 shipped:
+	// buildOrchestratorHandler wraps the WHOLE mux in requireInternalProxyAuth
+	// (authn_middleware.go), inside the CORS handler and ahead of routing, with
+	// no mode or environment carve-out and only /health, /metrics and
+	// /prometheus exempt. Every route in this file, including this one, is
+	// behind that gate; an unauthenticated caller gets a 403 before the handler
+	// runs. The stale text was not harmless — it fed the automated principal
+	// sweep for #3135, which reported roughly fifteen handlers as unguarded on
+	// the strength of a comment rather than the code.
+	//
+	// What still holds: reaching this handler proves the caller holds the
+	// internal-service HMAC secret, not that it is a particular tenant, so the
+	// tenant-scoping below is still the boundary that matters. What this
+	// handler removed was the far worse primitive: one request returning EVERY
+	// tenant's policies. The blast radius is one named tenant per request.
+	tenantID := resolveTenantOrFail(w, r, "policies/dynamic")
+	if tenantID == "" {
+		return // resolveTenantOrFail already wrote a 401
+	}
+
+	policies := dynamicPolicyEngine.ListActivePoliciesForTenant(tenantID)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(policies); err != nil {
@@ -2352,6 +2727,17 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 	// when the body left it empty, so the body won — and was corrected in the
 	// same change. Everything else about the sample request stays
 	// caller-supplied; that is the point of a dry-run.
+	//
+	// #3152 DELIBERATE EXEMPTION — this handler does NOT call
+	// applyAuthoritativePrincipal, and that is the intended behaviour, not an
+	// oversight. A policy simulator whose job is "what would happen for a user
+	// with role X" must be able to take a hypothetical actor. The exemption is
+	// safe because the verdict is advisory: it is returned to the caller and
+	// governs nothing, no request is allowed or blocked by it, and no actor
+	// column is persisted from it. The one side effect — the policy_metrics row
+	// — is scoped by the tenant resolved above, not by the sample actor. If a
+	// future change makes this verdict authoritative for anything, the actor
+	// must be bound here first.
 	scopedTenant := resolveTenantOrFail(w, r, "policy/test")
 	if scopedTenant == "" {
 		return
@@ -2855,7 +3241,12 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 	// #2922 role-scoped reads — same enforcement as auditSearchHandler: this
 	// GET endpoint returns raw tenant rows, so a non-tenant-wide caller is
 	// scoped to their own user_email (empty identity ⇒ empty page).
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	//
+	// #3060 (#2991 coverage gap): auditSearchHandler already stamps the scope
+	// header; this sibling — same data, same fail-closed empty page — did not.
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			writeEmptyAuditSearchResponse(w, limit, 0)
 			return
@@ -3258,14 +3649,35 @@ func mapMaxTimeoutFromEnv() time.Duration {
 	return mapMaxTimeoutCached
 }
 
-// isCommunityMode returns true when running in Community mode.
-// Community mode: DEPLOYMENT_MODE == "community" or unset (empty string).
-// This gates feature access (enterprise-only routes, execution modes).
+// isCommunityMode reports whether this process runs the Community posture.
+//
+// This gates feature access (enterprise-only routes, execution modes) AND, more
+// importantly, authority: resolveCallerReadScope (read_scope.go:192) returns
+// {TenantWide: true, AdminAuthority: true} for community mode BEFORE any token
+// or role check, and verifyAgentProxyAuth (agent_proxy_guard.go:32) lets a
+// request through when no proxy-token validator is configured.
+//
+// #3096: `mode == ""` used to be in the true set, so an orchestrator that
+// simply never had DEPLOYMENT_MODE set granted tenant-wide read authority to
+// every caller — the fail-open-on-unset shape #2287/#3068 fixed in the portal's
+// isAdminAuthRequired, whose default now denies. The permissive posture must
+// now be asked for by name.
+//
+//	| DEPLOYMENT_MODE        | Community posture? |
+//	|------------------------|--------------------|
+//	| "community"            | YES                |
+//	| "" (unset)             | no  (was YES)      |
+//	| any other known mode   | no                 |
+//	| unrecognised / typo    | no                 |
+//
 // Evaluation tier elevates resource limits via LicenseChecker, not feature access —
 // evaluation users run the community binary with higher limits, not enterprise features.
+//
+// Sibling: platform/agent/run.go carries the same helper with the same
+// contract, including the deliberate absence of trimming/case-folding; see the
+// rationale there.
 func isCommunityMode() bool {
-	mode := os.Getenv("DEPLOYMENT_MODE")
-	return mode == "community" || mode == ""
+	return os.Getenv("DEPLOYMENT_MODE") == "community"
 }
 
 // isCommunitySaasMode returns true when running as the shared community SaaS
@@ -3461,21 +3873,45 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Identity from agent-set headers takes precedence over the JSON body.
-	// req.User.OrgID specifically: the agent's User struct (platform/agent/run.go)
-	// has TenantID but NOT OrgID, so even when the agent forwards the body it
-	// can't carry the org. Without this header read, the workflow engine's
-	// replay recorder writes execution rows with org_id="" while the read-side
-	// /api/v1/executions endpoint filters by the agent's X-Org-ID — producing
-	// zero matches. TenantID is already in the body but we re-derive from the
-	// header for defense-in-depth so direct-orchestrator callers can't claim a
-	// different identity than the agent authenticated.
-	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
-		req.User.TenantID = tenantID
+	// #3066 C3-6: the identity every row this handler creates is stamped with.
+	//
+	// Pre-fix these two overlays were guarded by `if header != ""` with no
+	// else, so a caller that reached the orchestrator without them kept the
+	// body's user.tenant_id / user.org_id — and req.User is what the workflow
+	// engine's replay recorder writes onto execution rows, what
+	// executionTenantID (mcp_connector_processor.go) resolves connectors
+	// under, and what normalizeHITLScope (hitl_execution.go) keys the paused-
+	// execution store on. A body-chosen identity therefore produced either a
+	// row attributed to another tenant or, when the body was silent too, the
+	// unstamped rows #3065's fail-open predicates exposed to everyone.
+	//
+	// Both of those files carry comments describing the old conditional
+	// overlay and explicitly declining to rely on it. They are now stricter
+	// than those comments claim — the overlay is unconditional and the
+	// header-less caller is refused — which is the safe direction of drift.
+	//
+	// #3152: the comment this handler used to carry said the header re-read
+	// existed "so direct-orchestrator callers can't claim a different identity
+	// than the agent authenticated". That was true of the tenancy and false of
+	// the ACTOR — req.User.Email/.Role/.ID stayed exactly as the body typed
+	// them, and req.User is what the workflow engine stamps onto every
+	// execution and step-gate audit row (hitl_execution.go auditStepGate:
+	// UserEmail: user.Email, UserRole: user.Role). Bound below.
+	applyAuthoritativePrincipal(r, &req.User)
+
+	scope, status, msg := resolveGovernedScope(r, "workflows/execute")
+	if status != 0 {
+		sendErrorResponse(w, msg, status)
+		return
 	}
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		req.User.OrgID = orgID
+	if status, msg := authorizeBodyTenancy(scope, "workflows/execute",
+		bodyTenancyClaim{field: "user.tenant_id", dim: tenancyDimTenant, value: req.User.TenantID},
+	); status != 0 {
+		sendErrorResponse(w, msg, status)
+		return
 	}
+	req.User.TenantID = scope.TenantID
+	req.User.OrgID = scope.OrgID
 
 	// Validate workflow definition
 	if req.Workflow.Metadata.Name == "" {
@@ -3485,6 +3921,15 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 
 	if len(req.Workflow.Spec.Steps) == 0 {
 		sendErrorResponse(w, "Workflow must have at least one step", http.StatusBadRequest)
+		return
+	}
+
+	// #3066 C3-6 write-side guard. req.User is about to become the tenancy on
+	// every execution / workflow_step / checkpoint row this call creates, so
+	// assert at the boundary that creates them, not only at the one that
+	// authenticated the caller.
+	if status, msg := requireStampedRowKeys("workflows/execute", req.User.OrgID, req.User.TenantID); status != 0 {
+		sendErrorResponse(w, msg, status)
 		return
 	}
 
@@ -3542,7 +3987,13 @@ func getHITLExecutionStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := hitlWorkflowEngine.GetExecutionStatus(r.Context(), executionID)
+	// #3067: bind the lookup to the caller's org. The unscoped variant
+	// resolved an execution id across every tenancy, so a caller who knew (or
+	// guessed) an id read another org's approval state. The scope comes from
+	// the identity headers the agent's auth chain stamps, the same source the
+	// MAP approve/reject handlers use.
+	status, err := hitlWorkflowEngine.GetExecutionStatusForScope(
+		r.Context(), normalizeHITLScope(r.Header.Get("X-Org-ID"), r.Header.Get("X-Tenant-ID")), executionID)
 	if err != nil {
 		if err == ErrExecutionNotFound {
 			sendErrorResponse(w, "Execution not found", http.StatusNotFound)
@@ -3578,15 +4029,20 @@ func getWorkflowExecutionHandler(w http.ResponseWriter, r *http.Request) {
 	// gate) cannot read another tenant's Input/Output by guessing the id. An
 	// execution with no tenant stamp is treated as owned-by-no-one (404),
 	// mirroring the unified handler's checkTenantOwnership.
-	callerTenant := r.Header.Get("X-Tenant-ID")
-	callerOrg := r.Header.Get("X-Org-ID")
-	if callerTenant == "" && callerOrg == "" {
+	//
+	// #3065 (R3 round 1): the precondition required only ONE dimension
+	// (`callerTenant == "" && callerOrg == ""`), and each comparison was then
+	// skipped when its own value was blank. Sending X-Org-ID alone therefore
+	// skipped the TENANT compare entirely — and under a single enterprise
+	// license every tenant shares one org_id (#3071), so that was a
+	// cross-tenant read of another tenant's execution Input/Output by id.
+	// Both dimensions are now mandatory, on both sides.
+	scope, scopeErr := tenantscope.Bind(r)
+	if scopeErr != nil {
 		sendErrorResponse(w, "Missing tenant identity", http.StatusUnauthorized)
 		return
 	}
-	if (callerTenant != "" && execution.UserContext.TenantID != callerTenant) ||
-		(callerOrg != "" && execution.UserContext.OrgID != callerOrg) ||
-		(execution.UserContext.TenantID == "" && execution.UserContext.OrgID == "") {
+	if err := scope.Authorize(execution.UserContext.OrgID, execution.UserContext.TenantID); err != nil {
 		sendErrorResponse(w, "Execution not found", http.StatusNotFound)
 		return
 	}
@@ -3634,29 +4090,44 @@ type PlanRequest struct {
 	Context       map[string]interface{} `json:"context"`
 }
 
-// applyAuthoritativeIdentity overlays X-Org-ID / X-Tenant-ID headers (set by the
-// agent's auth chain) onto a PlanRequest's User and Client surfaces.
+// applyAuthoritativeIdentity binds a PlanRequest's User and Client surfaces to
+// the caller's authenticated tenancy, or returns an HTTP status plus message
+// the calling handler must write and early-return on. (0, "") means bound.
 //
 // Why both surfaces: the same handler reads identity from req.User.{OrgID,
 // TenantID} for some downstream consumers (replay tracking, plan storage) and
 // from req.Client["org_id"] / ["tenant_id"] for others (policy evaluation,
-// audit logging). Without normalizing both, a direct-orchestrator caller that
-// bypasses the agent could supply a body `client.org_id` that disagrees with
-// the header — and policy evaluation would run under the body value while
-// replay tracking ran under the header value. The agent's auth chain is the
-// only signed source of truth, so headers always win when present.
+// audit logging, and the GetPlanForExecution authorization key). Leaving them
+// out of sync would let a caller execute under one org for tracking purposes
+// and have policies evaluated under another.
 //
-// Org/Tenant headers are applied only when non-empty; missing ones leave the
-// body values intact (the agent always sets both). The actor EMAIL is the
-// exception (#2896 WS1c): it is overwritten UNCONDITIONALLY from the
-// trust-gated X-User-Email header — empty when the header is absent — because
-// it becomes a resumable checkpoint's actor identity that keys an override
-// apply, and the request body is a forgeable channel the identity gate does
-// not cover.
-func applyAuthoritativeIdentity(r *http.Request, req *PlanRequest) {
-	orgID := r.Header.Get("X-Org-ID")
-	tenantID := r.Header.Get("X-Tenant-ID")
-
+// # The defect (#3066 C3-6)
+//
+// This function used to overlay the headers CONDITIONALLY — `if orgID == "" &&
+// tenantID == "" { return }`, then `if orgID != ""`, then `if tenantID != ""`.
+// A caller that reached the orchestrator with neither header kept the body's
+// client.org_id and client.tenant_id verbatim, and planRequestHandler builds
+// CreatePlanRequest.{OrgID,TenantID} out of exactly those map entries. So the
+// body chose the tenancy the `plans` row was stamped with — including choosing
+// nothing at all, which is how the unstamped rows that #3065's fail-open
+// `a != "" && b != "" && a != b` predicates then exposed to every tenant came
+// to exist. The half-stamped forms were worse: one header present and the
+// other absent produced a row with one dimension from the credential and the
+// other from the body.
+//
+// Now: no bindable scope is a 401 (see resolveGovernedScope for the caller
+// census behind that being safe here), a body value naming a different tenancy
+// is a 403 rather than a silent coercion, and both surfaces are overwritten
+// unconditionally.
+//
+// The ACTOR is handled before any of that (#2896 WS1c, widened to the whole
+// principal surface by #3152): it is overwritten UNCONDITIONALLY from the
+// request's authenticated channels — empty when they are absent — because it
+// becomes a resumable checkpoint's actor identity that keys an override apply,
+// and the request body is a forgeable channel the identity gate does not cover.
+// It is deliberately applied even on the refusal paths so that a partially
+// initialised PlanRequest can never carry a body-supplied actor forward.
+func applyAuthoritativeIdentity(r *http.Request, req *PlanRequest, endpoint string) (int, string) {
 	// #2896 WS1c: the actor EMAIL is authoritative from the trust-gated
 	// X-User-Email header, NEVER the request body. The MAP confirm-mode
 	// execute path (executePlanHandler → ExecuteWithConfirm) persists this
@@ -3667,23 +4138,47 @@ func applyAuthoritativeIdentity(r *http.Request, req *PlanRequest) {
 	// identity into the checkpoint. The agent trust-gates this header
 	// (stripped when untrusted → empty here → no override lookup); overwrite
 	// unconditionally so the forgeable body value can never become the actor.
-	req.User.Email = r.Header.Get("X-User-Email")
+	//
+	// #3152 routes that line through the shared actor binder so the MAP planes
+	// and the /api/v1/process + /api/v1/workflows/execute planes cannot drift:
+	// the email was already bound here, but req.User.{Role,ID,Region,
+	// Permissions} were not, and plans.user_id was built out of that body
+	// integer (CreatePlanRequest.UserID below).
+	applyAuthoritativePrincipal(r, &req.User)
 
-	if orgID == "" && tenantID == "" {
-		return
+	scope, status, msg := resolveGovernedScope(r, endpoint)
+	if status != 0 {
+		return status, msg
 	}
+
+	bodyOrg, bodyTenant := "", ""
+	if req.Client != nil {
+		if v, ok := req.Client["org_id"].(string); ok {
+			bodyOrg = v
+		}
+		if v, ok := req.Client["tenant_id"].(string); ok {
+			bodyTenant = v
+		}
+	}
+	if status, msg := authorizeBodyTenancy(scope, endpoint,
+		bodyTenancyClaim{field: "user.tenant_id", dim: tenancyDimTenant, value: req.User.TenantID},
+		bodyTenancyClaim{field: "client.tenant_id", dim: tenancyDimTenant, value: bodyTenant},
+		bodyTenancyClaim{field: "client.org_id", dim: tenancyDimOrg, value: bodyOrg},
+	); status != 0 {
+		return status, msg
+	}
+
 	if req.Client == nil {
 		req.Client = map[string]interface{}{}
 	}
-
-	if orgID != "" {
-		req.User.OrgID = orgID
-		req.Client["org_id"] = orgID
-	}
-	if tenantID != "" {
-		req.User.TenantID = tenantID
-		req.Client["tenant_id"] = tenantID
-	}
+	// Overwrite unconditionally. user.org_id is not authorized above (see
+	// authorizeBodyTenancy) but is bound here all the same, so a JWT-derived
+	// org can never outrank the licensed one on the plan-storage surface.
+	req.User.OrgID = scope.OrgID
+	req.User.TenantID = scope.TenantID
+	req.Client["org_id"] = scope.OrgID
+	req.Client["tenant_id"] = scope.TenantID
+	return 0, ""
 }
 
 // ResponsePlanStep represents a step in the generated plan (matches SDK PlanStep)
@@ -3753,18 +4248,29 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// === GOVERNANCE: Validate Authentication (from Agent) ===
 	// All planning requests MUST come through AxonFlow Agent
 	// Direct access to /api/v1/plan is not supported for governance compliance
-
-	if req.User.ID == 0 {
-		log.Printf("[GeneratePlan] BLOCKED: Missing user authentication (request must come through Agent)")
-		sendErrorResponse(w, "Authentication required: requests must be routed through AxonFlow Agent", http.StatusUnauthorized)
+	//
+	// #3066 C3-6: the TENANCY binding runs first, ahead of the body-borne
+	// user.id check and ahead of every input validation below. Authorization
+	// precedes input validation so a cross-tenant attempt is refused
+	// identically whether or not the rest of the body is well formed —
+	// otherwise the 400s become a probe for which request shapes reach the
+	// planner.
+	//
+	// #3152: the body-borne `user.id != 0` gate that used to follow this call
+	// is GONE. Its comment claimed it proved "a distinct property (an
+	// agent-resolved user was present)" — it proved nothing of the sort. The
+	// field is a plain JSON integer on a route the agent reverse-proxies
+	// byte-for-byte, so `"user":{"id":1}` satisfied it, and the same integer
+	// then became plans.user_id. applyAuthoritativeIdentity is the gate that
+	// actually authenticates (401 with no bindable scope, 403 on a body value
+	// naming another tenancy) and it now zeroes user.id, so keeping the check
+	// would 401 every request. Removing it removes a null check, not a
+	// control: nothing that could satisfy it can no longer reach the planner
+	// except a caller who omitted a field the SDKs all send.
+	if status, msg := applyAuthoritativeIdentity(r, &req, "GeneratePlan"); status != 0 {
+		sendErrorResponse(w, msg, status)
 		return
 	}
-
-	// Header-derived identity from the agent's auth chain wins over any body
-	// values for org/tenant. Without this, a direct-orchestrator caller could
-	// have the plan stored under a different org than the agent authenticated
-	// (createReq.OrgID below reads from req.Client["org_id"]).
-	applyAuthoritativeIdentity(r, &req)
 
 	// Extract client info for audit logging and multi-tenant logging
 	clientName := "unknown"
@@ -3853,6 +4359,15 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[GeneratePlan] Failed to marshal workflow: %v", err)
 		sendErrorResponse(w, "Failed to store plan", http.StatusInternalServerError)
+		return
+	}
+
+	// #3066 C3-6 write-side guard. orgID/tenantID above were re-extracted from
+	// the req.Client map with `.(string)` assertions, a separate code path
+	// from the bind that authenticated the caller — assert the row keys at the
+	// boundary that stamps the `plans` row.
+	if status, msg := requireStampedRowKeys("GeneratePlan", orgID, tenantID); status != 0 {
+		sendErrorResponse(w, msg, status)
 		return
 	}
 
@@ -3945,12 +4460,13 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// === GOVERNANCE: Validate Authentication (from Agent) ===
-	if req.User.ID == 0 {
-		log.Printf("[ExecutePlan] BLOCKED: Missing user authentication (request must come through Agent)")
-		sendErrorResponse(w, "Authentication required: requests must be routed through AxonFlow Agent", http.StatusUnauthorized)
-		return
-	}
-
+	//
+	// #3152: the `user.id != 0` check that used to sit here is GONE, for the
+	// reason spelled out at the GeneratePlan call site — it authenticated a
+	// body-typed integer on a reverse-proxied route. The real gate is
+	// applyAuthoritativeIdentity below; nothing between here and that call
+	// reads the actor.
+	//
 	// Extract plan_id from context (SDK sends it here)
 	planID := ""
 	if req.Context != nil {
@@ -3965,14 +4481,23 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Header-derived identity from the agent's auth chain wins over any body
-	// values for org/tenant on both User and Client surfaces. Downstream
-	// consumers in this handler read from both surfaces — replay tracking
-	// uses req.User.OrgID; policy evaluation builds policyClient from
-	// req.Client["org_id"] further down — so leaving them out of sync would
-	// let a direct-orchestrator caller execute under one org for tracking
+	// Header-derived identity from the agent's auth chain is the ONLY source
+	// for org/tenant on both User and Client surfaces. Downstream consumers in
+	// this handler read from both — replay tracking uses req.User.OrgID;
+	// policy evaluation builds policyClient from req.Client["org_id"] further
+	// down; GetPlanForExecution authorizes on the extracted orgID — so leaving
+	// them out of sync would let a caller execute under one org for tracking
 	// purposes and have policies evaluated under another.
-	applyAuthoritativeIdentity(r, &req)
+	//
+	// #3066 C3-6: this is the same shared binder planRequestHandler uses, and
+	// it now fails closed. /api/v1/plan/execute was not named in the issue,
+	// but it shares the helper AND the two ingress hops, so it is bound by
+	// construction; leaving it on the old conditional overlay would have left
+	// the body choosing the tenancy the checkpoint rows are stamped with.
+	if status, msg := applyAuthoritativeIdentity(r, &req, "ExecutePlan"); status != 0 {
+		sendErrorResponse(w, msg, status)
+		return
+	}
 
 	// Extract orgID for plan retrieval (GetPlanForExecution authz check).
 	// Read from req.Client now that headers have overlaid it.
@@ -4352,6 +4877,15 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 // SDK calls: GET /api/v1/plan/{id}
 // Updated in #1075 to use unified execution tracking with step-level details
 func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
+
+	// #3065 (F2/F3): every plan route addressed by id now runs the same
+	// proxy-auth gate ExecutePlan and ResumePlan already carried, so the
+	// X-Org-ID the authorization keys on was set by an authenticating hop
+	// rather than typed by the caller.
+	if ok, msg := verifyAgentProxyAuth(r, "GetPlanStatus"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
 	log.Println("[GetPlanStatus] Received get plan status request")
 
 	// Check if plan service is available
@@ -4368,18 +4902,15 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract orgID for tenant isolation (consistent with cancelPlanHandler, updatePlanHandler, rollbackPlanHandler)
-	orgID := r.Header.Get("X-Org-ID")
-
-	// Always verify tenant ownership via the plan service before returning any data
-	plan, err := planService.GetPlan(r.Context(), planID)
+	// #3065 (F3): tenant ownership is verified inside GetPlan, which fails
+	// closed when the caller org or the plan's org is empty. The post-fetch
+	// compare that used to live here (`orgID != "" && plan.OrgID != "" &&
+	// plan.OrgID != orgID`) let a caller who simply omitted X-Org-ID read any
+	// tenant's plan status — query text, workflow definition and execution
+	// result included.
+	plan, err := planService.GetPlan(r.Context(), planID, r.Header.Get("X-Org-ID"))
 	if err != nil {
 		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", logutil.Sanitize(planID), err)
-		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
-		return
-	}
-	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
-		log.Printf("[GetPlanStatus] Authorization failed: plan %s belongs to org %s, requested by org %s", logutil.Sanitize(planID), logutil.Sanitize(plan.OrgID), logutil.Sanitize(orgID))
 		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
 		return
 	}
@@ -4542,6 +5073,16 @@ func buildUnifiedStatusResponse(exec *execution.ExecutionStatus) map[string]inte
 func cancelPlanHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("[CancelPlan] Received cancel plan request")
 
+	// #3065 (F2): cancel is a cross-tenant WRITE — it terminates a plan by id
+	// — yet it was the only plan mutation without the proxy-auth gate its
+	// siblings ExecutePlan and ResumePlan already carried. Without it the org
+	// the cancel authorizes against is whatever the caller typed into
+	// X-Org-ID, or nothing at all.
+	if ok, msg := verifyAgentProxyAuth(r, "CancelPlan"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
+
 	if planService == nil {
 		sendErrorResponse(w, "Plan storage not available", http.StatusServiceUnavailable)
 		return
@@ -4596,6 +5137,15 @@ func cancelPlanHandler(w http.ResponseWriter, r *http.Request) {
 // updatePlanHandler updates a plan with optimistic locking (version conflict detection)
 // SDK calls: PUT /api/v1/plan/{id}
 func updatePlanHandler(w http.ResponseWriter, r *http.Request) {
+
+	// #3065 (F2/F3): every plan route addressed by id now runs the same
+	// proxy-auth gate ExecutePlan and ResumePlan already carried, so the
+	// X-Org-ID the authorization keys on was set by an authenticating hop
+	// rather than typed by the caller.
+	if ok, msg := verifyAgentProxyAuth(r, "UpdatePlan"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
 	log.Println("[UpdatePlan] Received update plan request")
 
 	if planService == nil {
@@ -4667,6 +5217,15 @@ func updatePlanHandler(w http.ResponseWriter, r *http.Request) {
 // getPlanVersionsHandler retrieves version history for a plan
 // SDK calls: GET /api/v1/plan/{id}/versions
 func getPlanVersionsHandler(w http.ResponseWriter, r *http.Request) {
+
+	// #3065 (F2/F3): every plan route addressed by id now runs the same
+	// proxy-auth gate ExecutePlan and ResumePlan already carried, so the
+	// X-Org-ID the authorization keys on was set by an authenticating hop
+	// rather than typed by the caller.
+	if ok, msg := verifyAgentProxyAuth(r, "GetPlanVersions"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
 	log.Println("[GetPlanVersions] Received get plan versions request")
 
 	if planService == nil {
@@ -4757,8 +5316,11 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the plan — must be in "executing" status (set during ExecutePlan)
-	plan, err := planService.GetPlan(r.Context(), planID)
+	// Get the plan — must be in "executing" status (set during ExecutePlan).
+	// #3065 (F2): this lookup had NO org check whatsoever, so a caller could
+	// drive another tenant's executing plan through resume/reject. GetPlan is
+	// now org-scoped and fails closed on an empty value either side.
+	plan, err := planService.GetPlan(r.Context(), planID, r.Header.Get("X-Org-ID"))
 	if err != nil {
 		log.Printf("[ResumePlan] Plan %s not found: %v", logutil.Sanitize(planID), err)
 		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
@@ -4940,6 +5502,15 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 // Community edition is subject to plan/version limits enforced by the planning service.
 // SDK calls: POST /api/v1/plan/{id}/rollback/{version}
 func rollbackPlanHandler(w http.ResponseWriter, r *http.Request) {
+
+	// #3065 (F2/F3): every plan route addressed by id now runs the same
+	// proxy-auth gate ExecutePlan and ResumePlan already carried, so the
+	// X-Org-ID the authorization keys on was set by an authenticating hop
+	// rather than typed by the caller.
+	if ok, msg := verifyAgentProxyAuth(r, "RollbackPlan"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
 	log.Println("[RollbackPlan] Received rollback plan request")
 
 	// Enterprise only — rollback requires version history which is an Enterprise feature

@@ -473,7 +473,11 @@ func TestGetProxyConfig(t *testing.T) {
 }
 
 func TestProxyAuthMiddleware_CommunityModePassesThrough(t *testing.T) {
-	// In community mode (DEPLOYMENT_MODE="" which is the test default), auth is skipped
+	// #3096: this used to rely on DEPLOYMENT_MODE="" being the community
+	// default. Unset now means the enterprise posture, so the mode the test is
+	// actually about has to be named.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	called := false
 	handler := proxyAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -494,8 +498,13 @@ func TestProxyAuthMiddleware_CommunityModePassesThrough(t *testing.T) {
 	}
 }
 
-func TestProxyAuthMiddleware_OptionsPassesThrough(t *testing.T) {
-	// OPTIONS (CORS preflight) should always pass without auth
+// TestProxyAuthMiddleware_OptionsIsTerminatedNotForwarded replaces
+// TestProxyAuthMiddleware_OptionsPassesThrough, which asserted that OPTIONS
+// "should always pass without auth" — the #3092 defect stated as a
+// requirement. An unauthenticated preflight is now answered at the auth
+// boundary; it is never handed to the proxy, which would append a valid
+// internal HMAC to it.
+func TestProxyAuthMiddleware_OptionsIsTerminatedNotForwarded(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "production")
 
 	called := false
@@ -509,8 +518,11 @@ func TestProxyAuthMiddleware_OptionsPassesThrough(t *testing.T) {
 
 	handler(w, req)
 
-	if !called {
-		t.Error("Expected handler to be called for OPTIONS")
+	if called {
+		t.Error("OPTIONS must not be forwarded to the proxy handler (#3092)")
+	}
+	if w.Code != http.StatusNoContent {
+		t.Errorf("Expected 204 for OPTIONS, got %d", w.Code)
 	}
 }
 

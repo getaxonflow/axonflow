@@ -17,6 +17,10 @@ import { execSync } from 'node:child_process';
 const ORCH = 'http://localhost:8081';
 const AUTH = 'Basic ' + Buffer.from('demo-client:demo-secret').toString('base64');
 const TENANT = 'tenant-e2e';
+// #3065: the WCP routes bind on BOTH tenancy dimensions and refuse a request
+// that carries only one. This client talks to the orchestrator directly, so it
+// has to present what an authenticating hop would have stamped.
+const ORG = process.env.ORG_ID || 'local-dev-org';
 const USER = `e2e-cache-${Date.now()}@example.com`;
 
 const POLICY_UUID = execSync(
@@ -33,6 +37,7 @@ function hdr() {
     'Content-Type': 'application/json',
     'Authorization': AUTH,
     'X-Tenant-ID': TENANT,
+    'X-Org-ID': ORG,
     'X-User-Email': USER,
   };
 }

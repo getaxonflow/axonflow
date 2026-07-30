@@ -44,6 +44,7 @@ func TestUpdatePlanHandler(t *testing.T) {
 			},
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_update_ok",
 				OrgID:              "org_1",
 				Status:             planning.PlanStatusPending,
@@ -66,6 +67,7 @@ func TestUpdatePlanHandler(t *testing.T) {
 			},
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_update_conflict",
 				OrgID:              "org_1",
 				Status:             planning.PlanStatusPending,
@@ -122,6 +124,7 @@ func TestUpdatePlanHandler(t *testing.T) {
 			},
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_update_completed",
 				OrgID:              "org_1",
 				Status:             planning.PlanStatusCompleted,
@@ -186,6 +189,7 @@ func TestUpdatePlanHandler(t *testing.T) {
 			}
 
 			req := httptest.NewRequest("PUT", "/api/v1/plan/"+tt.planID, bodyReader)
+			req.Header.Set("X-Tenant-ID", "tenant_1")
 			req.Header.Set("Content-Type", "application/json")
 			if tt.orgID != "" {
 				req.Header.Set("X-Org-ID", tt.orgID)
@@ -240,6 +244,7 @@ func TestUpdatePlanHandler_SuccessResponseFields(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_update_fields",
 		OrgID:              "org_1",
 		Status:             planning.PlanStatusPending,
@@ -260,6 +265,7 @@ func TestUpdatePlanHandler_SuccessResponseFields(t *testing.T) {
 		"execution_mode": "parallel",
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/plan/plan_update_fields", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_update_fields"})
@@ -300,6 +306,7 @@ func TestUpdatePlanHandler_InvalidExecutionMode(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_bad_mode",
 		OrgID:              "org_1",
 		Status:             planning.PlanStatusPending,
@@ -325,6 +332,7 @@ func TestUpdatePlanHandler_InvalidExecutionMode(t *testing.T) {
 		"execution_mode": "invalid_mode",
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/plan/plan_bad_mode", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_bad_mode"})
@@ -354,6 +362,7 @@ func TestUpdatePlanHandler_CrossTenantRejected(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_cross_tenant_update",
 		OrgID:              "org_owner",
 		Status:             planning.PlanStatusPending,
@@ -374,6 +383,7 @@ func TestUpdatePlanHandler_CrossTenantRejected(t *testing.T) {
 		"domain":  "travel",
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/plan/plan_cross_tenant_update", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org_attacker")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_cross_tenant_update"})
@@ -406,6 +416,7 @@ func TestGetPlanVersionsHandler(t *testing.T) {
 			orgID:        "org_1",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_versions_ok",
 				OrgID:              "org_1",
 				Status:             planning.PlanStatusPending,
@@ -451,6 +462,7 @@ func TestGetPlanVersionsHandler(t *testing.T) {
 			orgID:        "org_1",
 			setupService: true,
 			setupPlan: &planning.Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_no_versions",
 				OrgID:              "org_1",
 				Status:             planning.PlanStatusPending,
@@ -500,6 +512,7 @@ func TestGetPlanVersionsHandler(t *testing.T) {
 			}
 
 			req := httptest.NewRequest("GET", "/api/v1/plan/"+tt.planID+"/versions", nil)
+			req.Header.Set("X-Tenant-ID", "tenant_1")
 			if tt.orgID != "" {
 				req.Header.Set("X-Org-ID", tt.orgID)
 			}
@@ -554,6 +567,7 @@ func TestGetPlanVersionsHandler_SuccessResponseFields(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_versions_fields",
 		OrgID:              "org_1",
 		Status:             planning.PlanStatusPending,
@@ -582,6 +596,7 @@ func TestGetPlanVersionsHandler_SuccessResponseFields(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/plan_versions_fields/versions", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-Org-ID", "org_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_versions_fields"})
 
@@ -618,6 +633,7 @@ func TestGetPlanVersionsHandler_CrossTenantRejected(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_versions_cross_tenant",
 		OrgID:              "org_owner",
 		Status:             planning.PlanStatusPending,
@@ -633,6 +649,7 @@ func TestGetPlanVersionsHandler_CrossTenantRejected(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/plan_versions_cross_tenant/versions", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-Org-ID", "org_attacker")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_versions_cross_tenant"})
 
@@ -669,14 +686,26 @@ func TestResumePlanHandler(t *testing.T) {
 			wantErrContain: "Enterprise",
 		},
 		{
-			name:           "empty deployment mode (community default) returns 403",
+			// #3096: an unset DEPLOYMENT_MODE used to mean community, so this
+			// case asserted a 403 "Enterprise" from the community feature gate.
+			// Unset now takes the ENTERPRISE path, and the first thing that
+			// path enforces is the one this issue is really about:
+			// verifyAgentProxyAuth (agent_proxy_guard.go) used to let a request
+			// through when no proxy-token validator was configured, but only
+			// *because* isCommunityMode() was true. With unset no longer
+			// meaning community, the same request is refused for want of
+			// internal-service auth instead of being waved through.
+			//
+			// Keeping the case rather than deleting it makes the behaviour
+			// change visible in the suite rather than merely absent from it.
+			name:           "empty deployment mode no longer fails open on proxy auth",
 			planID:         "plan_resume_empty_mode",
 			orgID:          "org_1",
-			deploymentMode: "", // empty = community
+			deploymentMode: "", // unset — no longer community
 			setupService:   true,
 			body:           map[string]interface{}{"approved": true},
 			wantStatus:     http.StatusForbidden,
-			wantErrContain: "Enterprise",
+			wantErrContain: "internal-service auth not configured",
 		},
 		{
 			name:           "enterprise mode: missing plan ID returns 400",
@@ -761,6 +790,7 @@ func TestResumePlanHandler(t *testing.T) {
 			}
 
 			req := httptest.NewRequest("POST", "/api/v1/plan/"+tt.planID+"/resume", bodyReader)
+			req.Header.Set("X-Tenant-ID", "tenant_1")
 			req.Header.Set("Content-Type", "application/json")
 			if tt.orgID != "" {
 				req.Header.Set("X-Org-ID", tt.orgID)
@@ -837,6 +867,8 @@ func setupResumeTestWCP(t *testing.T, planID string, executionMode string) func(
 
 	workflowDef := `{"apiVersion":"v1","kind":"Workflow","metadata":{"name":"test"},"spec":{"steps":[{"name":"step1","type":"llm-call"},{"name":"step2","type":"tool-call"}]}}`
 	plan := &planning.Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             planID,
 		Query:              "test query",
 		Domain:             "generic",
@@ -860,6 +892,8 @@ func setupResumeTestWCP(t *testing.T, planID string, executionMode string) func(
 	wcpWorkflowName := "map-" + executionMode + "-" + planID
 	pending := workflow_control.ApprovalStatusPending
 	wcpWorkflow := &workflow_control.Workflow{
+		OrgID:            "org_1",
+		TenantID:         "tenant_1",
 		WorkflowID:       "wf-" + planID,
 		WorkflowName:     wcpWorkflowName,
 		Source:           workflow_control.WorkflowSource("map"),
@@ -926,8 +960,10 @@ func TestResumePlanHandler_PlanNotExecuting(t *testing.T) {
 
 	// Create plan in pending state (not executing)
 	plan := &planning.Plan{
-		PlanID: "plan_not_executing",
-		Status: planning.PlanStatusPending,
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "plan_not_executing",
+		Status:   planning.PlanStatusPending,
 	}
 	_ = planRepo.SavePlan(context.Background(), plan)
 
@@ -938,6 +974,8 @@ func TestResumePlanHandler_PlanNotExecuting(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"approved": true})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_not_executing/resume", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_not_executing"})
 	// #2896 WS1c: enterprise resume requires the Agent proxy token.
@@ -961,6 +999,8 @@ func TestResumePlanHandler_ApproveStep(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"approved": true})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_approve_step/resume", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", "test-user")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_approve_step"})
@@ -1007,6 +1047,8 @@ func TestResumePlanHandler_RejectStep(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"approved": false})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_reject_step/resume", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_reject_step"})
 	// #2896 WS1c: enterprise resume requires the Agent proxy token.
@@ -1044,6 +1086,8 @@ func TestResumePlanHandler_DefaultApproved(t *testing.T) {
 
 	// Send request with empty body — approved defaults to true
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_default_approved/resume", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-User-ID", "test-user")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_default_approved"})
 	// #2896 WS1c: enterprise resume requires the Agent proxy token.
@@ -1087,6 +1131,7 @@ func TestGetPlanStatusHandler_LegacyPathReturnsUnifiedFields(t *testing.T) {
 	mockRepo := planning.NewMockRepository()
 	now := time.Now()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_status_unified",
 		OrgID:              "org_1",
 		Query:              "analyze travel data",
@@ -1108,6 +1153,8 @@ func TestGetPlanStatusHandler_LegacyPathReturnsUnifiedFields(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/plan_status_unified", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_status_unified"})
 
 	w := httptest.NewRecorder()
@@ -1181,6 +1228,7 @@ func TestGetPlanStatusHandler_PendingPlanFields(t *testing.T) {
 	mockRepo := planning.NewMockRepository()
 	now := time.Now()
 	testPlan := &planning.Plan{
+		TenantID:  "tenant_1",
 		PlanID:    "plan_status_pending",
 		OrgID:     "org_1",
 		Query:     "test query",
@@ -1198,6 +1246,8 @@ func TestGetPlanStatusHandler_PendingPlanFields(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/plan_status_pending", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_status_pending"})
 
 	w := httptest.NewRecorder()
@@ -1237,6 +1287,8 @@ func TestGetPlanStatusHandler_NotFound(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "nonexistent"})
 
 	w := httptest.NewRecorder()
@@ -1260,6 +1312,8 @@ func TestGetPlanStatusHandler_NilService(t *testing.T) {
 	mapExecutionTracker = nil
 
 	req := httptest.NewRequest("GET", "/api/v1/plan/any", nil)
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req = mux.SetURLVars(req, map[string]string{"id": "any"})
 
 	w := httptest.NewRecorder()
@@ -1298,8 +1352,10 @@ func TestResumePlanHandler_NoWorkflow(t *testing.T) {
 
 	// Create plan in executing state but no matching WCP workflow
 	plan := &planning.Plan{
-		PlanID: "plan_no_workflow",
-		Status: planning.PlanStatusExecuting,
+		OrgID:    "org_1",
+		TenantID: "tenant_1",
+		PlanID:   "plan_no_workflow",
+		Status:   planning.PlanStatusExecuting,
 	}
 	_ = planRepo.SavePlan(context.Background(), plan)
 	_ = planRepo.UpdatePlanStatus(context.Background(), "plan_no_workflow", planning.PlanStatusExecuting, nil, "")
@@ -1311,6 +1367,8 @@ func TestResumePlanHandler_NoWorkflow(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]interface{}{"approved": true})
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan_no_workflow/resume", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("Content-Type", "application/json")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan_no_workflow"})
 	// #2896 WS1c: enterprise resume requires the Agent proxy token.
@@ -1345,6 +1403,7 @@ func TestRollbackPlanHandler_CommunityBlocked(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan-community-rollback",
 		OrgID:              "org-1",
 		Status:             planning.PlanStatusPending,
@@ -1368,6 +1427,7 @@ func TestRollbackPlanHandler_CommunityBlocked(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan-community-rollback/rollback/1", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-User-ID", "user-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan-community-rollback", "version": "1"})
@@ -1407,6 +1467,7 @@ func TestRollbackPlanHandler_CommunityVersionLimit(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan-version-limit",
 		OrgID:              "org-1",
 		Status:             planning.PlanStatusPending,
@@ -1437,6 +1498,7 @@ func TestRollbackPlanHandler_CommunityVersionLimit(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan-version-limit/rollback/1", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-User-ID", "user-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan-version-limit", "version": "1"})
@@ -1466,6 +1528,7 @@ func TestRollbackPlanHandler_EnterpriseSuccess(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan-rollback-handler",
 		OrgID:              "org-1",
 		Status:             planning.PlanStatusPending,
@@ -1490,9 +1553,14 @@ func TestRollbackPlanHandler_EnterpriseSuccess(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan-rollback-handler/rollback/1", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-User-ID", "user-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan-rollback-handler", "version": "1"})
+	// #3065: rollback is a plan mutation, so it now runs the same
+	// proxy-auth gate ExecutePlan and ResumePlan already carried.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	rollbackPlanHandler(w, req)
@@ -1539,6 +1607,7 @@ func TestRollbackPlanHandler_VersionNotFound(t *testing.T) {
 
 	mockRepo := planning.NewMockRepository()
 	testPlan := &planning.Plan{
+		TenantID:  "tenant_1",
 		PlanID:    "plan-rollback-no-ver",
 		OrgID:     "org-1",
 		Status:    planning.PlanStatusPending,
@@ -1553,8 +1622,13 @@ func TestRollbackPlanHandler_VersionNotFound(t *testing.T) {
 	planService = planning.NewService(mockRepo)
 
 	req := httptest.NewRequest("POST", "/api/v1/plan/plan-rollback-no-ver/rollback/1", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_1")
 	req.Header.Set("X-Org-ID", "org-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "plan-rollback-no-ver", "version": "1"})
+	// #3065: rollback is a plan mutation, so it now runs the same
+	// proxy-auth gate ExecutePlan and ResumePlan already carried.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 
 	w := httptest.NewRecorder()
 	rollbackPlanHandler(w, req)

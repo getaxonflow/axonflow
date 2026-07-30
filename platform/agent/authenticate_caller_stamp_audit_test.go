@@ -30,11 +30,15 @@ import (
 // Allowlisted exceptions (these do not stamp + the rationale is captured
 // in code/comments):
 //   - authenticator.go: defines Authenticate itself — no caller to stamp.
-//   - mcp_server_handler.go::authenticateMCPServerRequest: internal helper
-//     that wraps Authenticate and returns *AuthResult (post-#2328 refactor)
-//     for its callers to stamp. The helper itself does not serve a request.
+//   - mcp_server_handler.go::authenticateMCPSession: internal helper that
+//     wraps Authenticate and returns *AuthResult (post-#2328 refactor) for
+//     its callers to stamp. The helper itself does not serve a request.
 //     Its 3 production callers (deleteMCPSession path, handleMCPInitialize)
 //     stamp via stampAuthContext using the returned *AuthResult.
+//     #3077 R3 renamed the body from authenticateMCPServerRequest, which is
+//     now the 9-return convenience wrapper around it and calls Authenticate
+//     only transitively — the allowlist follows the Authenticate call site,
+//     not the old name, so the guard's coverage is unchanged.
 //   - *_test.go files: tests drive Authenticate directly without serving
 //     real downstream code; assertions on stamping live in dedicated tests.
 //
@@ -66,7 +70,7 @@ func TestEveryAuthenticateCallerStampsContext(t *testing.T) {
 		// requires extending mcpSession to carry *Client + AuthKind so
 		// cache-hit replay can re-stamp without re-authenticating. Filed
 		// for a paired follow-up sub-session.
-		"mcp_server_handler.go::authenticateMCPServerRequest": "internal helper — wraps Authenticate and returns *AuthResult; not all callers stamp yet (resolveMCPSession fallback path is a known gap)",
+		"mcp_server_handler.go::authenticateMCPSession": "internal helper — wraps Authenticate and returns *AuthResult; not all callers stamp yet (resolveMCPSession fallback path is a known gap). #3077 R3: this is the renamed body of authenticateMCPServerRequest, which is now a wrapper that does not call Authenticate directly and so is not scanned.",
 	}
 
 	dir := "."

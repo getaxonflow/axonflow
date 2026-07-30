@@ -232,8 +232,16 @@ func listDecisionsHandler(w http.ResponseWriter, r *http.Request) {
 	// path). There is deliberately NO user_email query parameter on this
 	// endpoint, so there is nothing a caller could widen; the scope is purely
 	// server-derived. Empty identity ⇒ empty list (fail-closed).
+	//
+	// #3060: applyReadScopeHeader closes this endpoint's half of the #2991
+	// coverage gap — the scoped-to-empty arm below used to return a bare 200
+	// {"decisions":[]} with no X-Axonflow-Read-Scope header and no log line,
+	// which is indistinguishable from "the tenant genuinely has no decisions"
+	// and is precisely why the community-saas zero-read went unnoticed.
 	scopeUserEmail := ""
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(DecisionListResponse{Decisions: []DecisionListItem{}})

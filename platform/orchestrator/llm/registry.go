@@ -17,11 +17,53 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	logutil "axonflow/platform/shared/logger"
 )
+
+// GlobalTenant is the tenancy sentinel for deployment-level providers — the
+// ones the bootstrap registers from environment/config (ANTHROPIC_API_KEY,
+// OPENAI_API_KEY, …). They carry no ProviderConfig.TenantID and are the pool
+// the deployment router selects from for every tenant's traffic. Tenants may
+// READ them (they are the deployment's own, not another customer's) but may
+// not update or delete them, which is exactly the check the PUT/DELETE
+// handlers already enforced by comparing TenantID.
+const GlobalTenant = "*"
+
+// tenantSep separates the tenancy scope from the provider name in the
+// registry's map keys. NUL appears in neither component.
+const tenantSep = "\x00"
+
+// normalizeTenant collapses the empty tenancy onto GlobalTenant.
+func normalizeTenant(tenantID string) string {
+	if tenantID == "" {
+		return GlobalTenant
+	}
+	return tenantID
+}
+
+// scopeKey builds the composite registry key for a (tenant, provider) pair.
+func scopeKey(tenantID, name string) string {
+	return normalizeTenant(tenantID) + tenantSep + name
+}
+
+// splitScopeKey reverses scopeKey.
+func splitScopeKey(key string) (tenantID, name string, ok bool) {
+	idx := strings.Index(key, tenantSep)
+	if idx < 0 {
+		return "", "", false
+	}
+	return key[:idx], key[idx+len(tenantSep):], true
+}
+
+// readableBy reports whether an entry scoped to keyTenant may be READ by a
+// caller authenticated as tenantID: its own providers plus the deployment's.
+func readableBy(keyTenant, tenantID string) bool {
+	return keyTenant == normalizeTenant(tenantID) || keyTenant == GlobalTenant
+}
 
 // Registry manages LLM provider instances with lazy loading and health monitoring.
 // It is thread-safe for concurrent access.
@@ -29,9 +71,18 @@ import (
 // The registry supports two modes:
 //   - In-memory only: Providers are registered programmatically
 //   - With storage: Providers are persisted to PostgreSQL and synced across replicas
+//
+// #3067 (S-2/S-3): providers, configs and healthResults are keyed by
+// `tenantID + NUL + name`, NOT by name alone. ProviderConfig.TenantID has
+// always existed but was not the key, so the read/test/routing handlers —
+// unlike their PUT/DELETE siblings, which did compare TenantID — served and
+// mutated other tenants' providers by name. Most severely, POST
+// /api/v1/llm-providers/{name}/test ran a completion through another tenant's
+// provider, spending and billing that tenant's API key. Keying removes the
+// class rather than adding another check a caller must remember.
 type Registry struct {
-	providers    map[string]Provider        // Active provider instances
-	configs      map[string]*ProviderConfig // Provider configurations (may not be instantiated yet)
+	providers    map[string]Provider        // Active provider instances, keyed tenant+name
+	configs      map[string]*ProviderConfig // Provider configurations, keyed tenant+name
 	storage      Storage                    // Optional persistent storage
 	factory      *FactoryManager            // Factory for creating providers
 	validator    LicenseValidator           // License validator for provider access control
@@ -39,7 +90,7 @@ type Registry struct {
 	logger       *log.Logger
 	mu           sync.RWMutex
 
-	// Health monitoring
+	// Health monitoring, keyed tenant+name
 	healthResults map[string]*HealthCheckResult
 	healthMu      sync.RWMutex
 }
@@ -132,9 +183,12 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 	return r
 }
 
-// Register adds a provider configuration to the registry.
+// Register adds a provider configuration to the registry under the tenancy
+// carried by config.TenantID (empty => GlobalTenant, i.e. a deployment
+// provider registered by the bootstrap).
 // The provider will be instantiated lazily on first use.
-// If a provider with the same name exists, it returns an error.
+// If the SAME tenant already has a provider with that name, it returns an
+// error — the duplicate check is no longer a cross-tenant existence oracle.
 func (r *Registry) Register(ctx context.Context, config *ProviderConfig) error {
 	if config == nil {
 		return &RegistryError{Code: ErrRegistryInvalidConfig, Message: "config cannot be nil"}
@@ -169,12 +223,18 @@ func (r *Registry) Register(ctx context.Context, config *ProviderConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Check provider count limit (tier enforcement)
+	key := scopeKey(config.TenantID, config.Name)
+
+	// Check provider count limit (tier enforcement). This stays DEPLOYMENT-wide
+	// on purpose: maxProviders comes from the deployment's license tier
+	// (tierChecker.MaxLLMProviders), so scoping it per tenant would multiply
+	// the licensed ceiling by the tenant count. It exposes only the
+	// deployment's own configured limit, never another tenant's data.
 	if r.maxProviders > 0 {
 		currentCount := len(r.configs) + len(r.providers)
 		// Deduplicate: don't double-count providers that also have configs
-		for name := range r.providers {
-			if _, hasConfig := r.configs[name]; hasConfig {
+		for k := range r.providers {
+			if _, hasConfig := r.configs[k]; hasConfig {
 				currentCount--
 			}
 		}
@@ -188,8 +248,8 @@ func (r *Registry) Register(ctx context.Context, config *ProviderConfig) error {
 		}
 	}
 
-	// Check for duplicate
-	if _, exists := r.configs[config.Name]; exists {
+	// Check for duplicate within this tenancy
+	if _, exists := r.configs[key]; exists {
 		return &RegistryError{
 			ProviderName: config.Name,
 			Code:         ErrRegistryDuplicate,
@@ -199,13 +259,13 @@ func (r *Registry) Register(ctx context.Context, config *ProviderConfig) error {
 
 	// Store config (provider will be created lazily)
 	configCopy := *config
-	r.configs[config.Name] = &configCopy
+	r.configs[key] = &configCopy
 
 	// Persist to storage if available
 	if r.storage != nil {
 		if err := r.storage.SaveProvider(ctx, &configCopy); err != nil {
 			// Rollback in-memory registration
-			delete(r.configs, config.Name)
+			delete(r.configs, key)
 			return &RegistryError{
 				ProviderName: config.Name,
 				Code:         ErrRegistryStorageError,
@@ -215,12 +275,13 @@ func (r *Registry) Register(ctx context.Context, config *ProviderConfig) error {
 		}
 	}
 
-	r.logger.Printf("Registered provider config: %s (type: %s)", config.Name, config.Type)
+	r.logger.Printf("Registered provider config: %s (type: %s, tenant: %s)", config.Name, config.Type, normalizeTenant(config.TenantID))
 	return nil
 }
 
 // RegisterProvider adds a pre-instantiated provider to the registry.
-// Use this when you have an already-created provider instance.
+// Use this when you have an already-created provider instance. The tenancy
+// comes from config.TenantID; a nil config registers a deployment provider.
 func (r *Registry) RegisterProvider(name string, provider Provider, config *ProviderConfig) error {
 	if provider == nil {
 		return &RegistryError{Code: ErrRegistryInvalidConfig, Message: "provider cannot be nil"}
@@ -230,10 +291,16 @@ func (r *Registry) RegisterProvider(name string, provider Provider, config *Prov
 		return &RegistryError{Code: ErrRegistryInvalidConfig, Message: "provider name is required"}
 	}
 
+	tenantID := ""
+	if config != nil {
+		tenantID = config.TenantID
+	}
+	key := scopeKey(tenantID, name)
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.providers[name]; exists {
+	if _, exists := r.providers[key]; exists {
 		return &RegistryError{
 			ProviderName: name,
 			Code:         ErrRegistryDuplicate,
@@ -241,22 +308,56 @@ func (r *Registry) RegisterProvider(name string, provider Provider, config *Prov
 		}
 	}
 
-	r.providers[name] = provider
+	r.providers[key] = provider
 	if config != nil {
 		configCopy := *config
-		r.configs[name] = &configCopy
+		r.configs[key] = &configCopy
 	}
 
-	r.logger.Printf("Registered provider instance: %s (type: %s)", name, provider.Type())
+	r.logger.Printf("Registered provider instance: %s (type: %s, tenant: %s)", name, provider.Type(), normalizeTenant(tenantID))
 	return nil
 }
 
-// Enable enables a provider for routing.
-func (r *Registry) Enable(name string) error {
+// ownKey returns the composite key for a provider the caller OWNS. Mutations
+// resolve through this — never through readKey — so a tenant cannot enable,
+// disable, update or delete a deployment provider or another tenant's.
+func ownKey(tenantID, name string) string {
+	return scopeKey(tenantID, name)
+}
+
+// readKeyLocked resolves a (tenant, name) pair for a READ, preferring the
+// caller's own provider over the deployment-level one of the same name.
+// Returns false when neither exists — which is also the answer for another
+// tenant's provider, by construction.
+//
+// Callers must hold at least a read lock.
+func (r *Registry) readKeyLocked(tenantID, name string) (string, bool) {
+	own := scopeKey(tenantID, name)
+	if _, ok := r.configs[own]; ok {
+		return own, true
+	}
+	if _, ok := r.providers[own]; ok {
+		return own, true
+	}
+	global := scopeKey(GlobalTenant, name)
+	if global == own {
+		return "", false
+	}
+	if _, ok := r.configs[global]; ok {
+		return global, true
+	}
+	if _, ok := r.providers[global]; ok {
+		return global, true
+	}
+	return "", false
+}
+
+// Enable enables one of the caller's own providers for routing.
+func (r *Registry) Enable(tenantID, name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	config, exists := r.configs[name]
+	config, exists := r.configs[ownKey(tenantID, name)]
 	if !exists {
 		return &RegistryError{
 			ProviderName: name,
@@ -266,16 +367,16 @@ func (r *Registry) Enable(name string) error {
 	}
 
 	config.Enabled = true
-	r.logger.Printf("Enabled provider: %s", name)
+	r.logger.Printf("Enabled provider: %s (tenant: %s)", name, normalizeTenant(tenantID))
 	return nil
 }
 
-// Disable disables a provider (removes from routing).
-func (r *Registry) Disable(name string) error {
+// Disable disables one of the caller's own providers (removes from routing).
+func (r *Registry) Disable(tenantID, name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	config, exists := r.configs[name]
+	config, exists := r.configs[ownKey(tenantID, name)]
 	if !exists {
 		return &RegistryError{
 			ProviderName: name,
@@ -285,11 +386,15 @@ func (r *Registry) Disable(name string) error {
 	}
 
 	config.Enabled = false
-	r.logger.Printf("Disabled provider: %s", name)
+	r.logger.Printf("Disabled provider: %s (tenant: %s)", name, normalizeTenant(tenantID))
 	return nil
 }
 
-// Update atomically replaces a provider's configuration.
+// Update atomically replaces a provider's configuration within the tenancy
+// carried by config.TenantID. It resolves the OWN key only, so it can never
+// overwrite a deployment provider or another tenant's row (#3067 S-3: PUT
+// /routing used to persist weights onto another tenant's provider, silently
+// disabling their LLM routing).
 // The old provider instance is removed and will be re-instantiated lazily on next use.
 // This is atomic — there is no window where the provider is missing from the registry.
 func (r *Registry) Update(ctx context.Context, config *ProviderConfig) error {
@@ -325,9 +430,11 @@ func (r *Registry) Update(ctx context.Context, config *ProviderConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Verify provider exists
-	if _, exists := r.configs[config.Name]; !exists {
-		if _, exists := r.providers[config.Name]; !exists {
+	key := ownKey(config.TenantID, config.Name)
+
+	// Verify provider exists in the caller's own tenancy
+	if _, exists := r.configs[key]; !exists {
+		if _, exists := r.providers[key]; !exists {
 			return &RegistryError{
 				ProviderName: config.Name,
 				Code:         ErrRegistryNotFound,
@@ -337,21 +444,21 @@ func (r *Registry) Update(ctx context.Context, config *ProviderConfig) error {
 	}
 
 	// Save old state for rollback
-	oldConfig := r.configs[config.Name]
-	oldProvider := r.providers[config.Name]
+	oldConfig := r.configs[key]
+	oldProvider := r.providers[key]
 
 	// Atomically replace: remove old instance, store new config
-	delete(r.providers, config.Name)
+	delete(r.providers, key)
 	configCopy := *config
-	r.configs[config.Name] = &configCopy
+	r.configs[key] = &configCopy
 
 	// Persist to storage if available — rollback in-memory on failure
 	if r.storage != nil {
 		if err := r.storage.SaveProvider(ctx, &configCopy); err != nil {
 			// Rollback in-memory change to maintain consistency with storage
-			r.configs[config.Name] = oldConfig
+			r.configs[key] = oldConfig
 			if oldProvider != nil {
-				r.providers[config.Name] = oldProvider
+				r.providers[key] = oldProvider
 			}
 			return &RegistryError{
 				ProviderName: config.Name,
@@ -364,21 +471,23 @@ func (r *Registry) Update(ctx context.Context, config *ProviderConfig) error {
 
 	// Clear stale health result
 	r.healthMu.Lock()
-	delete(r.healthResults, config.Name)
+	delete(r.healthResults, key)
 	r.healthMu.Unlock()
 
-	r.logger.Printf("Updated provider: %s (type: %s)", config.Name, config.Type)
+	r.logger.Printf("Updated provider: %s (type: %s, tenant: %s)", config.Name, config.Type, normalizeTenant(config.TenantID))
 	return nil
 }
 
-// Unregister removes a provider from the registry.
-func (r *Registry) Unregister(ctx context.Context, name string) error {
+// Unregister removes one of the caller's own providers from the registry.
+func (r *Registry) Unregister(ctx context.Context, tenantID, name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cfg, hasCfg := r.configs[name]
+	key := ownKey(tenantID, name)
+
+	cfg, hasCfg := r.configs[key]
 	if !hasCfg {
-		if _, exists := r.providers[name]; !exists {
+		if _, exists := r.providers[key]; !exists {
 			return &RegistryError{
 				ProviderName: name,
 				Code:         ErrRegistryNotFound,
@@ -404,24 +513,39 @@ func (r *Registry) Unregister(ctx context.Context, name string) error {
 		}
 	}
 
-	delete(r.providers, name)
-	delete(r.configs, name)
+	delete(r.providers, key)
+	delete(r.configs, key)
 
 	// Clean up health results
 	r.healthMu.Lock()
-	delete(r.healthResults, name)
+	delete(r.healthResults, key)
 	r.healthMu.Unlock()
 
-	r.logger.Printf("Unregistered provider: %s", name)
+	r.logger.Printf("Unregistered provider: %s (tenant: %s)", name, normalizeTenant(tenantID))
 	return nil
 }
 
-// Get retrieves a provider by name, instantiating it lazily if needed.
-func (r *Registry) Get(ctx context.Context, name string) (Provider, error) {
+// Get retrieves a provider visible to tenantID by name, instantiating it
+// lazily if needed.
+//
+// #3067 (S-2, CRITICAL): this used to be Get(ctx, name) over a flat map. The
+// /test endpoint fed it a caller-supplied path segment and then ran a
+// completion — spending and billing the named tenant's API key and returning
+// the completion to the attacker.
+func (r *Registry) Get(ctx context.Context, tenantID, name string) (Provider, error) {
 	// Fast path: check if provider is already instantiated
 	r.mu.RLock()
-	provider, exists := r.providers[name]
-	config, hasConfig := r.configs[name]
+	key, resolved := r.readKeyLocked(tenantID, name)
+	var (
+		provider  Provider
+		config    *ProviderConfig
+		exists    bool
+		hasConfig bool
+	)
+	if resolved {
+		provider, exists = r.providers[key]
+		config, hasConfig = r.configs[key]
+	}
 	r.mu.RUnlock()
 
 	if exists {
@@ -430,7 +554,7 @@ func (r *Registry) Get(ctx context.Context, name string) (Provider, error) {
 
 	// Lazy instantiation if we have a config
 	if hasConfig {
-		return r.lazyInstantiate(ctx, name, config)
+		return r.lazyInstantiate(ctx, key, name, config)
 	}
 
 	return nil, &RegistryError{
@@ -440,13 +564,14 @@ func (r *Registry) Get(ctx context.Context, name string) (Provider, error) {
 	}
 }
 
-// lazyInstantiate creates a provider instance from its config.
-func (r *Registry) lazyInstantiate(ctx context.Context, name string, config *ProviderConfig) (Provider, error) {
+// lazyInstantiate creates a provider instance from its config. key is the
+// already-resolved composite key; name is carried for log/error text only.
+func (r *Registry) lazyInstantiate(ctx context.Context, key, name string, config *ProviderConfig) (Provider, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// Double-check: another goroutine may have created it
-	if provider, exists := r.providers[name]; exists {
+	if provider, exists := r.providers[key]; exists {
 		return provider, nil
 	}
 
@@ -463,18 +588,26 @@ func (r *Registry) lazyInstantiate(ctx context.Context, name string, config *Pro
 		}
 	}
 
-	r.providers[name] = provider
+	r.providers[key] = provider
 	r.logger.Printf("Successfully instantiated provider: %s", name)
 
 	return provider, nil
 }
 
-// GetConfig returns the configuration for a provider.
-func (r *Registry) GetConfig(name string) (*ProviderConfig, error) {
+// GetConfig returns the configuration for a provider visible to tenantID.
+func (r *Registry) GetConfig(tenantID, name string) (*ProviderConfig, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	config, exists := r.configs[name]
+	key, ok := r.readKeyLocked(tenantID, name)
+	if !ok {
+		return nil, &RegistryError{
+			ProviderName: name,
+			Code:         ErrRegistryNotFound,
+			Message:      fmt.Sprintf("config for provider %q not found", name),
+		}
+	}
+	config, exists := r.configs[key]
 	if !exists {
 		return nil, &RegistryError{
 			ProviderName: name,
@@ -488,18 +621,36 @@ func (r *Registry) GetConfig(name string) (*ProviderConfig, error) {
 	return &configCopy, nil
 }
 
-// List returns all registered provider names.
-func (r *Registry) List() []string {
+// OwnsProvider reports whether tenantID is the OWNER of a provider with this
+// name — i.e. whether it may mutate it. Deployment providers and other
+// tenants' providers both answer false.
+func (r *Registry) OwnsProvider(tenantID, name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	key := ownKey(tenantID, name)
+	_, hasConfig := r.configs[key]
+	_, hasProvider := r.providers[key]
+	return hasConfig || hasProvider
+}
+
+// List returns the provider names visible to tenantID (its own plus the
+// deployment's).
+func (r *Registry) List(tenantID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Collect names from both configs and providers
 	nameSet := make(map[string]bool)
-	for name := range r.configs {
-		nameSet[name] = true
+	collect := func(key string) {
+		keyTenant, name, ok := splitScopeKey(key)
+		if ok && readableBy(keyTenant, tenantID) {
+			nameSet[name] = true
+		}
 	}
-	for name := range r.providers {
-		nameSet[name] = true
+	for key := range r.configs {
+		collect(key)
+	}
+	for key := range r.providers {
+		collect(key)
 	}
 
 	names := make([]string, 0, len(nameSet))
@@ -510,83 +661,103 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// ListEnabled returns names of enabled providers.
-func (r *Registry) ListEnabled() []string {
+// ListEnabled returns names of enabled providers visible to tenantID.
+func (r *Registry) ListEnabled(tenantID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var names []string
-	for name, config := range r.configs {
-		if config.Enabled {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	return names
-}
-
-// ListByType returns provider names of a specific type.
-func (r *Registry) ListByType(providerType ProviderType) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	var names []string
-	for name, config := range r.configs {
-		if config.Type == providerType {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	return names
-}
-
-// Count returns the total number of registered providers.
-// This includes both providers with configs and pre-instantiated providers.
-func (r *Registry) Count() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Count unique names from both configs and providers
 	nameSet := make(map[string]bool)
-	for name := range r.configs {
-		nameSet[name] = true
+	for key, config := range r.configs {
+		keyTenant, name, ok := splitScopeKey(key)
+		if ok && readableBy(keyTenant, tenantID) && config.Enabled {
+			nameSet[name] = true
+		}
 	}
-	for name := range r.providers {
-		nameSet[name] = true
+	names := make([]string, 0, len(nameSet))
+	for name := range nameSet {
+		names = append(names, name)
 	}
-	return len(nameSet)
+	sort.Strings(names)
+	return names
 }
 
-// CountInstantiated returns the number of instantiated providers.
+// ListByType returns provider names of a specific type visible to tenantID.
+func (r *Registry) ListByType(tenantID string, providerType ProviderType) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	nameSet := make(map[string]bool)
+	for key, config := range r.configs {
+		keyTenant, name, ok := splitScopeKey(key)
+		if ok && readableBy(keyTenant, tenantID) && config.Type == providerType {
+			nameSet[name] = true
+		}
+	}
+	names := make([]string, 0, len(nameSet))
+	for name := range nameSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Count returns the number of providers visible to tenantID.
+// This includes both providers with configs and pre-instantiated providers.
+func (r *Registry) Count(tenantID string) int {
+	return len(r.List(tenantID))
+}
+
+// CountInstantiated returns the number of instantiated providers across the
+// whole deployment. Operator diagnostics only — never served to a tenant.
 func (r *Registry) CountInstantiated() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.providers)
 }
 
-// Has returns true if a provider is registered.
-func (r *Registry) Has(name string) bool {
+// Has returns true if a provider by this name is visible to tenantID.
+func (r *Registry) Has(tenantID, name string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, hasConfig := r.configs[name]
-	_, hasProvider := r.providers[name]
-	return hasConfig || hasProvider
+	_, ok := r.readKeyLocked(tenantID, name)
+	return ok
 }
 
-// HealthCheck performs health checks on all instantiated providers.
-func (r *Registry) HealthCheck(ctx context.Context) map[string]*HealthCheckResult {
+// HealthCheck performs health checks on the instantiated providers OWNED by
+// tenantID and returns the results by provider name.
+//
+// #3067 (R3): ownership, not visibility. A health check is an outbound call on
+// the provider's credential AND it writes the cached health result the router
+// selects on (GetHealthyProviders). Sweeping merely-visible providers would let
+// any tenant spend the deployment's own API key in a loop and, once the
+// provider rate-limits, cache the failure under the DEPLOYMENT key — evicting
+// it from the routing pool for every tenant. Pass GlobalTenant explicitly (as
+// the periodic sweep and the router do) to check the deployment's own pool.
+func (r *Registry) HealthCheck(ctx context.Context, tenantID string) map[string]*HealthCheckResult {
+	type target struct {
+		key      string
+		name     string
+		provider Provider
+	}
+
+	owner := normalizeTenant(tenantID)
+
 	r.mu.RLock()
-	providers := make(map[string]Provider, len(r.providers))
-	for name, p := range r.providers {
-		providers[name] = p
+	targets := make([]target, 0, len(r.providers))
+	for key, p := range r.providers {
+		keyTenant, name, ok := splitScopeKey(key)
+		if !ok || keyTenant != owner {
+			continue
+		}
+		targets = append(targets, target{key: key, name: name, provider: p})
 	}
 	r.mu.RUnlock()
 
-	results := make(map[string]*HealthCheckResult, len(providers))
+	results := make(map[string]*HealthCheckResult, len(targets))
 
-	for name, provider := range providers {
+	for _, t := range targets {
 		start := time.Now()
-		result, err := provider.HealthCheck(ctx)
+		result, err := t.provider.HealthCheck(ctx)
 		if err != nil {
 			result = &HealthCheckResult{
 				Status:      HealthStatusUnhealthy,
@@ -598,20 +769,39 @@ func (r *Registry) HealthCheck(ctx context.Context) map[string]*HealthCheckResul
 		if result.LastChecked.IsZero() {
 			result.LastChecked = time.Now()
 		}
-		results[name] = result
+		results[t.name] = result
 
 		// Update cached results
 		r.healthMu.Lock()
-		r.healthResults[name] = result
+		r.healthResults[t.key] = result
 		r.healthMu.Unlock()
 	}
 
 	return results
 }
 
-// HealthCheckSingle performs a health check on a specific provider.
-func (r *Registry) HealthCheckSingle(ctx context.Context, name string) (*HealthCheckResult, error) {
-	provider, err := r.Get(ctx, name)
+// HealthCheckSingle performs a health check on a provider OWNED by tenantID.
+//
+// #3067 (R3): same reasoning as HealthCheck — this spends the credential and
+// writes the cached health result the router reads, so it resolves the OWN key
+// only. A tenant naming the deployment's provider gets ErrRegistryNotFound
+// rather than a free outbound call on the operator's key.
+func (r *Registry) HealthCheckSingle(ctx context.Context, tenantID, name string) (*HealthCheckResult, error) {
+	key := ownKey(tenantID, name)
+
+	r.mu.RLock()
+	_, hasProvider := r.providers[key]
+	_, hasConfig := r.configs[key]
+	r.mu.RUnlock()
+	if !hasProvider && !hasConfig {
+		return nil, &RegistryError{
+			ProviderName: name,
+			Code:         ErrRegistryNotFound,
+			Message:      fmt.Sprintf("provider %q not found", name),
+		}
+	}
+
+	provider, err := r.Get(ctx, tenantID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -632,29 +822,45 @@ func (r *Registry) HealthCheckSingle(ctx context.Context, name string) (*HealthC
 
 	// Update cached result
 	r.healthMu.Lock()
-	r.healthResults[name] = result
+	r.healthResults[key] = result
 	r.healthMu.Unlock()
 
 	return result, nil
 }
 
-// GetHealthResult returns the cached health result for a provider.
-func (r *Registry) GetHealthResult(name string) *HealthCheckResult {
+// GetHealthResult returns the cached health result for a provider visible to
+// tenantID.
+func (r *Registry) GetHealthResult(tenantID, name string) *HealthCheckResult {
+	r.mu.RLock()
+	key, ok := r.readKeyLocked(tenantID, name)
+	r.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
 	r.healthMu.RLock()
 	defer r.healthMu.RUnlock()
-	return r.healthResults[name]
+	return r.healthResults[key]
 }
 
-// GetHealthyProviders returns names of healthy providers.
-func (r *Registry) GetHealthyProviders() []string {
+// GetHealthyProviders returns names of healthy providers visible to tenantID.
+func (r *Registry) GetHealthyProviders(tenantID string) []string {
 	r.healthMu.RLock()
-	defer r.healthMu.RUnlock()
-
-	var names []string
-	for name, result := range r.healthResults {
-		if result != nil && result.Status == HealthStatusHealthy {
-			names = append(names, name)
+	healthy := make(map[string]bool, len(r.healthResults))
+	for key, result := range r.healthResults {
+		if result == nil || result.Status != HealthStatusHealthy {
+			continue
 		}
+		keyTenant, name, ok := splitScopeKey(key)
+		if ok && readableBy(keyTenant, tenantID) {
+			healthy[name] = true
+		}
+	}
+	r.healthMu.RUnlock()
+
+	names := make([]string, 0, len(healthy))
+	for name := range healthy {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
@@ -681,20 +887,34 @@ func (r *Registry) ReloadFromStorage(ctx context.Context) error {
 
 	newCount := 0
 	for _, name := range names {
-		// Skip if already loaded
-		if _, exists := r.configs[name]; exists {
-			continue
-		}
-
 		config, err := r.storage.GetProvider(ctx, name)
 		if err != nil {
 			r.logger.Printf("Warning: failed to load provider %s from storage: %v", name, err)
 			continue
 		}
 
-		r.configs[name] = config
+		// #3067 (R3 BLOCKER): refuse to key a row whose tenancy did not
+		// arrive. normalizeTenant would otherwise map "" onto GlobalTenant,
+		// silently promoting one tenant's provider into the deployment pool
+		// the router selects from for EVERY tenant's traffic — the S-2
+		// defect, reintroduced through the reload path.
+		if config.TenantID == "" {
+			r.logger.Printf("Warning: provider %s loaded from storage with no tenant_id — refusing to register it (it would otherwise be keyed deployment-global)", logutil.Sanitize(name))
+			continue
+		}
+
+		// Skip if already loaded. The check runs AFTER the fetch because only
+		// the fetched row carries the tenancy that forms the key (#3067);
+		// llm_providers is keyed by name in storage, so a name identifies at
+		// most one row and the extra fetch is bounded by the provider count.
+		key := scopeKey(config.TenantID, name)
+		if _, exists := r.configs[key]; exists {
+			continue
+		}
+
+		r.configs[key] = config
 		newCount++
-		r.logger.Printf("Loaded provider config from storage: %s (type: %s)", name, config.Type)
+		r.logger.Printf("Loaded provider config from storage: %s (type: %s, tenant: %s)", name, config.Type, normalizeTenant(config.TenantID))
 	}
 
 	if newCount > 0 {
@@ -745,7 +965,8 @@ func (r *Registry) StartPeriodicHealthCheck(ctx context.Context, interval time.D
 				r.logger.Println("Stopping periodic health check")
 				return
 			case <-ticker.C:
-				results := r.HealthCheck(ctx)
+				// Deployment-level pool only — see GlobalTenant (#3067).
+				results := r.HealthCheck(ctx, GlobalTenant)
 				healthy := 0
 				unhealthy := 0
 				for _, result := range results {

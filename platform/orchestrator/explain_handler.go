@@ -122,6 +122,15 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3060 (#2991 coverage gap): resolve + stamp the read scope BEFORE the
+	// lookup so the header goes out on EVERY 404 this handler can produce —
+	// "no such decision in your tenant" and "scoped out of your own tenant"
+	// are deliberately the same non-oracle body, and the header is what tells
+	// an operator which one they hit. "explain fails on a decision the
+	// platform produced seconds earlier" was the reported symptom.
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+
 	// Look up the audit entry by (decision_id, tenant_id). Filtering tenant in
 	// the SELECT makes cross-tenant reads structurally impossible — earlier
 	// the WHERE was decision_id only and authorization was a post-fetch
@@ -183,7 +192,7 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 	// "no such decision" — the same posture as the cross-tenant branch above.
 	// Rows without per-user attribution (NULL/blank user_email) are hidden
 	// from non-admins (fail-closed).
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	if !scope.TenantWide {
 		rowEmail := ""
 		if entryUserEmail.Valid {
 			rowEmail = sharedidentity.CanonicalEmail(entryUserEmail.String)

@@ -1,12 +1,14 @@
-package com.axonflow.examples;
+package com.getaxonflow.examples;
 
-import com.axonflow.sdk.AxonFlowClient;
-import com.axonflow.sdk.AxonFlowConfig;
-import com.axonflow.sdk.BudgetInfo;
-import com.axonflow.sdk.BudgetStatus;
-import com.axonflow.sdk.CreateBudgetRequest;
-import com.axonflow.sdk.LLMResponse;
-import com.axonflow.sdk.ProxyLLMCallRequest;
+import com.getaxonflow.sdk.AxonFlow;
+import com.getaxonflow.sdk.AxonFlowConfig;
+import com.getaxonflow.sdk.types.ClientRequest;
+import com.getaxonflow.sdk.types.RequestType;
+import com.getaxonflow.sdk.types.costcontrols.CostControlTypes.BudgetOnExceed;
+import com.getaxonflow.sdk.types.costcontrols.CostControlTypes.BudgetPeriod;
+import com.getaxonflow.sdk.types.costcontrols.CostControlTypes.BudgetScope;
+import com.getaxonflow.sdk.types.costcontrols.CostControlTypes.BudgetStatus;
+import com.getaxonflow.sdk.types.costcontrols.CostControlTypes.CreateBudgetRequest;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,7 +21,10 @@ import java.util.Map;
  * 1. Create a budget with a low limit ($0.01) and on_exceed=block
  * 2. Make LLM requests until the budget is exceeded
  * 3. Verify that subsequent requests are blocked with HTTP 402
- * 4. Verify that BudgetInfo is included in the response
+ * 4. Verify that the budget's own status reports exceeded/blocked
+ *
+ * The Go and Python siblings additionally assert on the BudgetInfo carried in the blocked
+ * response. That is not portable to Java SDK 9.0.0 — see makeRequestsUntilBlocked below.
  *
  * This addresses Issue #1082 - testing actual functionality, not just API availability.
  *
@@ -34,14 +39,16 @@ import java.util.Map;
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class EnforcementExample {
+    private static final String CLIENT_ID = "cost-controls-enforcement-example";
     private static final List<String> failures = new ArrayList<>();
+
     private final String budgetId;
-    private final AxonFlowClient client;
+    private final AxonFlow client;
     private final String userToken;
 
     public EnforcementExample() {
         this.budgetId = "enforcement-test-" + System.currentTimeMillis();
-        this.client = new AxonFlowClient(AxonFlowConfig.builder()
+        this.client = AxonFlow.create(AxonFlowConfig.builder()
                 .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
                 .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo-client"))
                 .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"))
@@ -72,8 +79,8 @@ public class EnforcementExample {
 
         try {
             createBudget();
-            LLMResponse blockedResponse = makeRequestsUntilBlocked();
-            verifyEnforcement(blockedResponse);
+            BlockOutcome outcome = makeRequestsUntilBlocked();
+            verifyEnforcement(outcome);
         } finally {
             cleanup();
         }
@@ -89,11 +96,11 @@ public class EnforcementExample {
             client.createBudget(CreateBudgetRequest.builder()
                     .id(budgetId)
                     .name("Enforcement Test Budget")
-                    .scope("organization")
+                    .scope(BudgetScope.ORGANIZATION)
                     .scopeId("demo-org")
                     .limitUsd(0.01) // $0.01 - will be exceeded by first request
-                    .period("daily")
-                    .onExceed("block") // Key: requests should be BLOCKED when exceeded
+                    .period(BudgetPeriod.DAILY)
+                    .onExceed(BudgetOnExceed.BLOCK) // Key: requests should be BLOCKED when exceeded
                     .alertThresholds(List.of(50, 80, 100))
                     .build());
             System.out.println("   Created budget: " + budgetId + " (limit: $0.01, action: block)");
@@ -107,81 +114,87 @@ public class EnforcementExample {
         }
     }
 
-    private LLMResponse makeRequestsUntilBlocked() {
+    /**
+     * Whether the request loop terminated in a budget block.
+     *
+     * <p>There is deliberately no {@code ClientResponse} carried alongside. The platform DOES send a
+     * populated {@code budget_info} on the 402 (agent {@code run.go}, budget-block branch), and
+     * the Go sibling of this example asserts on it — but the Java SDK 9.0.0 raises every 402 as
+     * a {@link com.getaxonflow.sdk.exceptions.PolicyViolationException} from
+     * {@code handleErrorResponse} before the body is deserialised, and it throws on
+     * {@code blocked=true} before returning a {@code ClientResponse} too. So no path through
+     * this SDK version can hand the example a {@code BudgetInfo}, and the four assertions the
+     * Go and Python siblings make on it are not portable here. Tracked in #3192 — do not
+     * "restore" them against a fabricated response object, which is what the pre-9.0.0 version
+     * of this file did.
+     */
+    private enum BlockOutcome {
+        BLOCKED,
+        NOT_BLOCKED
+    }
+
+    private BlockOutcome makeRequestsUntilBlocked() {
         System.out.println("Step 2: Make LLM requests until blocked");
         System.out.println("-".repeat(40));
 
-        LLMResponse blockedResponse = null;
         int maxRequests = 10; // Safety limit
 
         for (int i = 1; i <= maxRequests; i++) {
             System.out.print("   Request " + i + ": ");
 
             try {
-                // Use ProxyLLMCall
-                LLMResponse response = client.proxyLLMCall(ProxyLLMCallRequest.builder()
+                client.proxyLLMCall(ClientRequest.builder()
                         .userToken(userToken)
+                        .clientId(CLIENT_ID)
                         .query("Say hello in one word")
-                        .requestType("chat")
-                        .options(Map.of("provider", "openai"))
+                        .requestType(RequestType.CHAT)
+                        // Provider goes in the CONTEXT: the builder's llmProvider() field
+                        // serialises as llm_provider, which the agent's request struct does
+                        // not carry and nothing reads. See #3192.
+                        .context(Map.of("provider", "openai"))
                         .build());
-
-                if (response.isBlocked() && response.getBlockReason() != null) {
-                    System.out.println("BLOCKED - " + response.getBlockReason() + " ✓");
-                    blockedResponse = response;
-                    break;
-                }
 
                 System.out.println("OK (tokens used)");
             } catch (Exception e) {
-                String errorStr = e.getMessage().toLowerCase();
-                // Check if this is a budget block error (HTTP 402)
-                if (errorStr.contains("402") || errorStr.contains("payment required") ||
-                    errorStr.contains("budget") || errorStr.contains("exceeded")) {
+                String errorStr = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+                // A budget block arrives as an exception, not as a returned response:
+                // proxyLLMCall throws PolicyViolationException on both blocked=true and
+                // HTTP 402.
+                if (errorStr.contains("402") || errorStr.contains("payment required")
+                        || errorStr.contains("budget") || errorStr.contains("exceeded")) {
                     System.out.println("BLOCKED (budget exceeded) ✓");
-                    blockedResponse = LLMResponse.builder().blocked(true).build();
-                    break;
+                    return BlockOutcome.BLOCKED;
                 }
                 System.out.println("ERROR: " + e.getMessage());
-                failCount++;
+                assertCheck(false, "Request " + i + " failed for a non-budget reason: " + e.getMessage());
             }
         }
 
         System.out.println();
-        return blockedResponse;
+        return BlockOutcome.NOT_BLOCKED;
     }
 
-    private void verifyEnforcement(LLMResponse blockedResponse) {
+    private void verifyEnforcement(BlockOutcome outcome) {
         System.out.println("Step 3: Verify enforcement");
         System.out.println("-".repeat(27));
 
         // Test 1: Request was blocked
-        assertCheck(blockedResponse != null, "Request was blocked when budget exceeded");
-        if (blockedResponse == null) {
-            return;
-        }
+        assertCheck(outcome == BlockOutcome.BLOCKED, "Request was blocked when budget exceeded");
 
-        // Test 2: BudgetInfo is present in response
-        BudgetInfo budgetInfo = blockedResponse.getBudgetInfo();
-        assertCheck(budgetInfo != null, "BudgetInfo is included in blocked response");
-        if (budgetInfo != null) {
-            // Test 3: BudgetInfo shows exceeded status
-            assertCheck(budgetInfo.isExceeded(), "BudgetInfo.exceeded is true");
-
-            // Test 4: Percentage >= 100
-            double percentage = budgetInfo.getPercentage();
-            assertCheck(percentage >= 100, String.format("BudgetInfo.percentage is %.1f%% (>= 100%%)", percentage));
-
-            // Test 5: Action is "block"
-            String action = budgetInfo.getAction();
-            assertCheck("block".equals(action), "BudgetInfo.action is 'block' (got: " + action + ")");
-        }
-
-        // Test 6: Verify budget status via API
+        // Test 2: the budget's own status confirms it, which is the assertion that
+        // survives the SDK's discarding of the 402 body (see makeRequestsUntilBlocked).
         try {
             BudgetStatus status = client.getBudgetStatus(budgetId);
-            boolean statusConfirmed = status.isBlocked() || status.isExceeded();
+            boolean statusConfirmed = Boolean.TRUE.equals(status.isBlocked())
+                    || Boolean.TRUE.equals(status.isExceeded());
             assertCheck(statusConfirmed, "GetBudgetStatus confirms is_blocked or is_exceeded");
+
+            Double percentage = status.getPercentage();
+            assertCheck(percentage != null && percentage >= 100,
+                    String.format("BudgetStatus.percentage is %s (>= 100)", percentage));
+
+            assertCheck(status.getBudget() != null && "block".equals(status.getBudget().getOnExceed()),
+                    "Budget on_exceed is 'block'");
         } catch (Exception e) {
             assertCheck(false, "Could not get budget status: " + e.getMessage());
         }

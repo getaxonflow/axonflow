@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // MockRepository implements Repository for testing.
@@ -32,6 +34,12 @@ func (m *MockRepository) SavePlan(ctx context.Context, plan *Plan) error {
 	}
 	if plan == nil || plan.PlanID == "" {
 		return ErrInvalidPlanID
+	}
+	// #3065: the mock mirrors the fixed Postgres write contract. Without this
+	// a test could seed an org-less plan — the exact row that used to belong
+	// to every tenant — and then "prove" the by-id routes work on it.
+	if err := tenantscope.ValidateRowKeys(plan.OrgID, plan.TenantID); err != nil {
+		return err
 	}
 	m.plans[plan.PlanID] = plan
 	return nil

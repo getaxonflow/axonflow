@@ -92,6 +92,42 @@ func (h *LLMProviderAPIHandler) RegisterRoutesWithMux(r *mux.Router) {
 	r.HandleFunc("/api/v1/llm-providers/{name}/test", h.handleTestProvider).Methods("POST", "OPTIONS")
 }
 
+// callerTenantID resolves the tenancy of an LLM-provider API request.
+//
+// X-Tenant-ID / X-Org-ID are set authoritatively by the agent's auth chain
+// (apiAuthMiddleware does `r.Header.Set`, overwriting anything the client
+// sent) before the request is proxied to the orchestrator — the same source
+// the create/update/delete handlers have used since #2384. The empty string
+// means "no tenancy asserted"; every caller of this helper refuses the
+// request rather than falling back to a deployment-wide view (#3067).
+func callerTenantID(r *http.Request) string {
+	// The GlobalTenant sentinel is never a legitimate caller identity: it is
+	// the registry's internal scope for the deployment's own providers, so a
+	// caller asserting it would own the entire deployment pool (R3).
+	pick := func(v string) string {
+		if v == llm.GlobalTenant {
+			return ""
+		}
+		return v
+	}
+	if tenantID := pick(r.Header.Get("X-Tenant-ID")); tenantID != "" {
+		return tenantID
+	}
+	return pick(r.Header.Get("X-Org-ID"))
+}
+
+// requireTenantID resolves the caller's tenancy or writes the 400 and returns
+// false. Read handlers use it for the same reason the write handlers do: an
+// unscoped read of this registry is a cross-tenant disclosure (#3067 S-3).
+func (h *LLMProviderAPIHandler) requireTenantID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	tenantID := callerTenantID(r)
+	if tenantID == "" {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+		return "", false
+	}
+	return tenantID, true
+}
+
 // handleListOrCreate handles GET (list) and POST (create) for /api/v1/llm-providers.
 func (h *LLMProviderAPIHandler) handleListOrCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
@@ -135,6 +171,11 @@ func (h *LLMProviderAPIHandler) handleGetUpdateDelete(w http.ResponseWriter, r *
 
 // handleListProvidersMux handles GET /api/v1/llm-providers.
 func (h *LLMProviderAPIHandler) handleListProvidersMux(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
+	}
+
 	params := LLMProviderListParams{
 		Page:     1,
 		PageSize: 20,
@@ -161,13 +202,16 @@ func (h *LLMProviderAPIHandler) handleListProvidersMux(w http.ResponseWriter, r 
 		params.Enabled = &enabled
 	}
 
-	// Get all provider names from registry
-	names := h.registry.List()
+	// Provider names visible to this tenant (its own + the deployment's).
+	// #3067 (S-3): this used to list EVERY tenant's providers, disclosing
+	// name/type/endpoint/model/region/priority/weight/rate_limit/settings/
+	// has_api_key/health for all of them.
+	names := h.registry.List(tenantID)
 
 	// Apply filters and build response
 	providers := make([]LLMProviderResource, 0, len(names))
 	for _, name := range names {
-		provider, err := h.registry.Get(r.Context(), name)
+		provider, err := h.registry.Get(r.Context(), tenantID, name)
 		if err != nil {
 			continue
 		}
@@ -178,7 +222,7 @@ func (h *LLMProviderAPIHandler) handleListProvidersMux(w http.ResponseWriter, r 
 		}
 
 		// Get config from registry
-		config, err := h.registry.GetConfig(name)
+		config, err := h.registry.GetConfig(tenantID, name)
 		if err != nil || config == nil {
 			continue
 		}
@@ -188,7 +232,7 @@ func (h *LLMProviderAPIHandler) handleListProvidersMux(w http.ResponseWriter, r 
 			continue
 		}
 
-		healthResult := h.registry.GetHealthResult(name)
+		healthResult := h.registry.GetHealthResult(tenantID, name)
 		providers = append(providers, toProviderResource(config, healthResult))
 	}
 
@@ -245,21 +289,19 @@ func (h *LLMProviderAPIHandler) handleCreateProviderMux(w http.ResponseWriter, r
 		return
 	}
 
-	// Check if provider already exists
-	if h.registry.Has(req.Name) {
-		h.writeError(w, http.StatusConflict, "CONFLICT", "provider with this name already exists")
-		return
-	}
-
 	// v9 Phase 8 PR-C2 (#2384): the LLM-provider storage layer wraps INSERTs
 	// in WithOrgScope using config.TenantID. The handler is the only place
 	// with the per-request identity in scope — propagate it.
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = r.Header.Get("X-Org-ID")
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
 	}
-	if tenantID == "" {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+
+	// Check if THIS tenant already has a provider by that name. #3067: the
+	// deployment-wide check was an existence oracle — a 409 told the caller
+	// that some other tenant had registered that provider name.
+	if h.registry.OwnsProvider(tenantID, req.Name) {
+		h.writeError(w, http.StatusConflict, "CONFLICT", "provider with this name already exists")
 		return
 	}
 
@@ -297,7 +339,7 @@ func (h *LLMProviderAPIHandler) handleCreateProviderMux(w http.ResponseWriter, r
 
 	h.logger.Printf("[LLMProviderAPI] Created provider: %s (type: %s)", req.Name, req.Type)
 
-	healthResult := h.registry.GetHealthResult(req.Name)
+	healthResult := h.registry.GetHealthResult(tenantID, req.Name)
 	resource := toProviderResource(config, healthResult)
 
 	h.writeJSON(w, http.StatusCreated, LLMProviderResponse{Provider: &resource})
@@ -305,18 +347,21 @@ func (h *LLMProviderAPIHandler) handleCreateProviderMux(w http.ResponseWriter, r
 
 // handleGetProviderMux handles GET /api/v1/llm-providers/{name}.
 func (h *LLMProviderAPIHandler) handleGetProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
-	if !h.registry.Has(providerName) {
-		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
 		return
 	}
 
-	config, err := h.registry.GetConfig(providerName)
+	// #3067 (S-3): naming another tenant's provider now yields the same 404 as
+	// a nonexistent one, matching the disclosure posture the PUT/DELETE
+	// siblings already had.
+	config, err := h.registry.GetConfig(tenantID, providerName)
 	if err != nil || config == nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
 
-	healthResult := h.registry.GetHealthResult(providerName)
+	healthResult := h.registry.GetHealthResult(tenantID, providerName)
 	resource := toProviderResource(config, healthResult)
 
 	h.writeJSON(w, http.StatusOK, LLMProviderResponse{Provider: &resource})
@@ -330,16 +375,14 @@ func (h *LLMProviderAPIHandler) handleGetProviderMux(w http.ResponseWriter, r *h
 func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = r.Header.Get("X-Org-ID")
-	}
-	if tenantID == "" {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
 		return
 	}
 
-	if !h.registry.Has(providerName) {
+	// Mutation: the caller must OWN the provider. Deployment-level providers
+	// and other tenants' both answer false, and both surface as 404.
+	if !h.registry.OwnsProvider(tenantID, providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
@@ -350,14 +393,16 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 		return
 	}
 
-	// Get existing config
-	config, err := h.registry.GetConfig(providerName)
+	// Get existing config. OwnsProvider already proved the tenancy, so this
+	// resolves the caller's own entry.
+	config, err := h.registry.GetConfig(tenantID, providerName)
 	if err != nil || config == nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
 	if config.TenantID != tenantID {
-		// Cross-tenant access attempt — surface as 404 to avoid disclosure.
+		// Defence in depth: a config whose stored TenantID disagrees with the
+		// key it was found under must never be updated under this tenancy.
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
@@ -406,7 +451,7 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 
 	h.logger.Printf("[LLMProviderAPI] Updated provider: %s", providerName)
 
-	healthResult := h.registry.GetHealthResult(providerName)
+	healthResult := h.registry.GetHealthResult(tenantID, providerName)
 	resource := toProviderResource(config, healthResult)
 
 	h.writeJSON(w, http.StatusOK, LLMProviderResponse{Provider: &resource})
@@ -421,21 +466,17 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 // scope to it, succeeding cross-tenant. Returns 404 (not 403) on mismatch
 // to avoid enumeration disclosure of which providers exist in which tenants.
 func (h *LLMProviderAPIHandler) handleDeleteProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = r.Header.Get("X-Org-ID")
-	}
-	if tenantID == "" {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
 		return
 	}
 
-	if !h.registry.Has(providerName) {
+	if !h.registry.OwnsProvider(tenantID, providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
 
-	cfg, getErr := h.registry.GetConfig(providerName)
+	cfg, getErr := h.registry.GetConfig(tenantID, providerName)
 	if getErr != nil || cfg == nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
@@ -446,7 +487,7 @@ func (h *LLMProviderAPIHandler) handleDeleteProviderMux(w http.ResponseWriter, r
 		return
 	}
 
-	if err := h.registry.Unregister(r.Context(), providerName); err != nil {
+	if err := h.registry.Unregister(r.Context(), tenantID, providerName); err != nil {
 		h.logger.Printf("[LLMProviderAPI] delete error provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete provider")
 		return
@@ -467,12 +508,22 @@ func (h *LLMProviderAPIHandler) handleProviderHealthMux(w http.ResponseWriter, r
 	vars := mux.Vars(r)
 	providerName := vars["name"]
 
-	if !h.registry.Has(providerName) {
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	// Ownership, not visibility (R3): a health check is an outbound call on the
+	// provider's credential and it writes the cached result the deployment
+	// router selects on. Letting a tenant health-check the deployment's own
+	// provider is both unmetered spend of the operator's key and a lever to
+	// evict that provider from the routing pool for everyone.
+	if !h.registry.OwnsProvider(tenantID, providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
 
-	result, err := h.registry.HealthCheckSingle(r.Context(), providerName)
+	result, err := h.registry.HealthCheckSingle(r.Context(), tenantID, providerName)
 	if err != nil {
 		h.logger.Printf("[LLMProviderAPI] health check error provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to perform health check")
@@ -495,7 +546,29 @@ func (h *LLMProviderAPIHandler) handleTestProvider(w http.ResponseWriter, r *htt
 	vars := mux.Vars(r)
 	providerName := vars["name"]
 
-	provider, err := h.registry.Get(r.Context(), providerName)
+	// #3067 (S-2, CRITICAL): authorize BEFORE resolving the provider, and
+	// therefore before any upstream call. This endpoint used to look the
+	// provider up by name in a flat map and run a completion through it —
+	// spending and billing ANOTHER tenant's API key and returning them the
+	// completion.
+	//
+	// Ownership, not mere visibility, is the gate here (R3): SPENDING a key is
+	// mutation-grade, so unlike the read handlers this one does NOT fall back
+	// to the deployment-global pool. Otherwise any tenant could run arbitrary
+	// prompts through the operator's bootstrap provider — an ungoverned LLM
+	// egress path on the deployment's own key. No credential is touched on
+	// the refusal path.
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	if !h.registry.OwnsProvider(tenantID, providerName) {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
+		return
+	}
+
+	provider, err := h.registry.Get(r.Context(), tenantID, providerName)
 	if err != nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
@@ -557,10 +630,23 @@ func (h *LLMProviderAPIHandler) handleRoutingMux(w http.ResponseWriter, r *http.
 
 // getRoutingConfigMux handles GET /api/v1/llm-providers/routing.
 func (h *LLMProviderAPIHandler) getRoutingConfigMux(w http.ResponseWriter, r *http.Request) {
-	// Build weights from provider configs
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	// Build weights from the providers this tenant OWNS (#3067 S-3).
+	//
+	// This must list exactly the set updateRoutingConfigMux accepts (R3):
+	// listing deployment-level providers here while the PUT gates on
+	// ownership breaks read-modify-write — a client echoing back what it
+	// just read would get 400 "provider not found".
 	weights := make(map[string]int)
-	for _, name := range h.registry.List() {
-		config, err := h.registry.GetConfig(name)
+	for _, name := range h.registry.List(tenantID) {
+		if !h.registry.OwnsProvider(tenantID, name) {
+			continue
+		}
+		config, err := h.registry.GetConfig(tenantID, name)
 		if err == nil && config != nil {
 			weights[name] = config.Weight
 		}
@@ -575,20 +661,28 @@ func (h *LLMProviderAPIHandler) getRoutingConfigMux(w http.ResponseWriter, r *ht
 func (h *LLMProviderAPIHandler) updateRoutingConfigMux(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
+	}
+
 	var req UpdateLLMRoutingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid JSON body")
 		return
 	}
 
-	// Update weights for each provider
+	// Update weights for each provider the caller OWNS. #3067 (S-3): PUT
+	// /routing used to write straight through to another tenant's row via
+	// Registry.Update -> storage.SaveProvider, silently disabling their LLM
+	// routing. Deployment-level providers are equally off-limits here.
 	for name, weight := range req.Weights {
-		if !h.registry.Has(name) {
-			h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "provider not found: "+name)
+		if !h.registry.OwnsProvider(tenantID, name) {
+			h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "provider not found: "+logutil.Sanitize(name))
 			return
 		}
 
-		config, err := h.registry.GetConfig(name)
+		config, err := h.registry.GetConfig(tenantID, name)
 		if err != nil {
 			h.logger.Printf("[LLMProviderAPI] get config error provider %s: %v", name, err)
 			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get provider config")
@@ -617,13 +711,20 @@ func (h *LLMProviderAPIHandler) handleAllProvidersStatusMux(w http.ResponseWrite
 		return
 	}
 
-	// Perform health check on all providers
-	h.registry.HealthCheck(r.Context())
+	tenantID, ok := h.requireTenantID(w, r)
+	if !ok {
+		return
+	}
+
+	// Perform health check on the providers this tenant can see (#3067 S-3):
+	// this used to health-check every tenant's provider and return every
+	// result keyed by name.
+	h.registry.HealthCheck(r.Context(), tenantID)
 
 	// Collect results
 	results := make(map[string]*llm.HealthCheckResult)
-	for _, name := range h.registry.List() {
-		results[name] = h.registry.GetHealthResult(name)
+	for _, name := range h.registry.List(tenantID) {
+		results[name] = h.registry.GetHealthResult(tenantID, name)
 	}
 
 	h.writeJSON(w, http.StatusOK, LLMProviderHealthAllResponse{

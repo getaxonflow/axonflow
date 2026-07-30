@@ -2,11 +2,14 @@ name: Guardrail Stale Model IDs
 
 on:
   pull_request:
+    # The denylist patterns are inline in this file, so weakening them is a
+    # change to the guard itself and must re-run it (#3089).
     paths:
       - 'docs/**/*.md'
       - 'docs/**/*.mdx'
       - 'technical-docs/**/*.md'
       - 'technical-docs/**/*.mdx'
+      - '.github/workflows/guardrail-stale-model-ids.yml'
   push:
     branches:
       - main
@@ -15,7 +18,13 @@ on:
       - 'docs/**/*.mdx'
       - 'technical-docs/**/*.md'
       - 'technical-docs/**/*.mdx'
+      - '.github/workflows/guardrail-stale-model-ids.yml'
   workflow_dispatch:
+
+# Greps markdown for stale model ids; nothing is written back to the repository
+# (#3089).
+permissions:
+  contents: read
 
 jobs:
   stale-model-id-guardrail:

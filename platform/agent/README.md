@@ -183,7 +183,13 @@ For detailed testing documentation, see: `technical-docs/TESTING_GUIDE.md`
 docker build -t axonflow-agent .
 
 # Run container
+#
+# DEPLOYMENT_MODE selects the runtime security posture AND which database
+# migrations are applied. It has no baked-in default in the image on purpose —
+# see scripts/lint-deployment-mode.sh. An unset value resolves to the enterprise
+# posture; an unrecognised one is a hard boot failure.
 docker run -p 8080:8080 \
+  -e DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-community} \
   -e JWT_SECRET=your-secret \
   -e ORCHESTRATOR_URL=http://orchestrator:8081 \
   axonflow-agent

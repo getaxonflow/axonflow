@@ -132,6 +132,29 @@ func (l *AuditLogger) GetAuditLogByID(id, tenantID string) (*AuditEntry, error) 
 	return entry, nil
 }
 
+// auditSearchMethodNotAllowedHandler serves GET/HEAD /api/v1/audit/search.
+//
+// #3060: audit search takes its criteria as a JSON request body, so it is
+// POST-only. Before this handler existed a GET fell through to the greedy
+// GET /api/v1/audit/{id} route with id="search" and came back 404 "audit
+// record not found" — a status and a message that both describe the wrong
+// thing, pointing an operator at a missing-data theory instead of at their
+// HTTP method. 405 + a populated Allow header is the honest answer, and it
+// keeps the endpoint self-describing for anyone probing the API by hand.
+//
+// Deliberately NOT a working GET variant: a query-string mirror of the search
+// criteria would be a second, silently-diverging spelling of a contract the
+// SDKs and plugins already drive over POST (see axonflow-client.ts
+// searchAuditEvents / searchAuditEventsStrict). One shape, one code path.
+func auditSearchMethodNotAllowedHandler(w http.ResponseWriter, r *http.Request) {
+	// Set before sendErrorResponse — it writes the status line, after which
+	// header mutations are silently dropped.
+	w.Header().Set("Allow", "POST, OPTIONS")
+	sendErrorResponse(w,
+		"audit search requires POST /api/v1/audit/search with a JSON criteria body (start_time, end_time, limit, …); GET is not supported on this endpoint",
+		http.StatusMethodNotAllowed)
+}
+
 // auditGetByIDHandler serves GET /api/v1/audit/{id}.
 func auditGetByIDHandler(w http.ResponseWriter, r *http.Request) {
 	tenantID := r.Header.Get("X-Tenant-ID")
@@ -152,6 +175,15 @@ func auditGetByIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3060 (#2991 coverage gap): resolve + stamp the read scope BEFORE the
+	// lookup so the header and the fail-closed log line go out on EVERY
+	// outcome — including the 404 a scoped-out caller receives, which is by
+	// design indistinguishable in the BODY from "no such record" (non-oracle).
+	// The header is the operator-side channel that tells the two apart; the
+	// client-visible body is unchanged, and nothing keys authorization off it.
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+
 	entry, err := auditLogger.GetAuditLogByID(id, tenantID)
 	if errors.Is(err, ErrAuditLogNotFound) {
 		sendErrorResponse(w, "audit record not found", http.StatusNotFound)
@@ -169,7 +201,7 @@ func auditGetByIDHandler(w http.ResponseWriter, r *http.Request) {
 	// cross-user existence oracle (mirrors the cross-tenant posture above).
 	// Rows written without per-user attribution (blank user_email) are hidden
 	// from non-admins by the same comparison (fail-closed).
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	if !scope.TenantWide {
 		if scope.UserEmail == "" ||
 			sharedidentity.CanonicalEmail(entry.UserEmail) != scope.UserEmail {
 			sendErrorResponse(w, "audit record not found", http.StatusNotFound)

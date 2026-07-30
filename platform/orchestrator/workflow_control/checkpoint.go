@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // CheckpointType classifies how the checkpoint was created.
@@ -42,17 +44,17 @@ type Checkpoint struct {
 	StepInput         json.RawMessage `json:"step_input,omitempty" db:"step_input"`
 	// ToolContext is the serialized tool-level context for per-tool governance.
 	// Stored as JSON so resume can reconstruct the full gate request.
-	ToolContext json.RawMessage `json:"tool_context,omitempty" db:"tool_context"`
-	Model       string          `json:"model,omitempty" db:"model"`
-	Provider    string          `json:"provider,omitempty" db:"provider"`
-	IsResumable bool            `json:"is_resumable" db:"is_resumable"`
-	ResumeCount int             `json:"resume_count" db:"resume_count"`
-	LastResumedAt *time.Time    `json:"last_resumed_at,omitempty" db:"last_resumed_at"`
-	OrgID       string          `json:"org_id,omitempty" db:"org_id"`
-	TenantID    string          `json:"tenant_id,omitempty" db:"tenant_id"`
-	UserID      string          `json:"user_id,omitempty" db:"user_id"`
-	ClientID    string          `json:"client_id,omitempty" db:"client_id"`
-	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
+	ToolContext   json.RawMessage `json:"tool_context,omitempty" db:"tool_context"`
+	Model         string          `json:"model,omitempty" db:"model"`
+	Provider      string          `json:"provider,omitempty" db:"provider"`
+	IsResumable   bool            `json:"is_resumable" db:"is_resumable"`
+	ResumeCount   int             `json:"resume_count" db:"resume_count"`
+	LastResumedAt *time.Time      `json:"last_resumed_at,omitempty" db:"last_resumed_at"`
+	OrgID         string          `json:"org_id,omitempty" db:"org_id"`
+	TenantID      string          `json:"tenant_id,omitempty" db:"tenant_id"`
+	UserID        string          `json:"user_id,omitempty" db:"user_id"`
+	ClientID      string          `json:"client_id,omitempty" db:"client_id"`
+	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 }
 
 // CheckpointListResponse is the API response for listing checkpoints.
@@ -77,6 +79,19 @@ type ResumeFromCheckpointResponse struct {
 // CreateCheckpoint inserts or updates a checkpoint for a step-gate boundary.
 // Uses upsert so re-evaluations (retry_policy=reevaluate) update the existing checkpoint.
 func (r *PostgresRepository) CreateCheckpoint(ctx context.Context, cp *Checkpoint) error {
+	// #3065 (R3 round 1): ResumeFromCheckpoint now authorizes the checkpoint
+	// row on its own keys, so a checkpoint written without them would be
+	// permanently non-resumable. workflow_checkpoints is covered by migration
+	// core/156 alongside the tables it gates; this is the application half, so
+	// the refusal names the cause instead of surfacing a constraint violation.
+	// The upsert below also refreshes org_id/tenant_id on conflict, so a row
+	// written before this guard is repaired on its next gate rather than
+	// staying stuck.
+	if err := tenantscope.ValidateRowKeys(cp.OrgID, cp.TenantID); err != nil {
+		return fmt.Errorf("refusing to persist checkpoint for workflow %s step %s with no org/tenant key: %w",
+			cp.WorkflowID, cp.StepID, err)
+	}
+
 	query := `
 		INSERT INTO workflow_checkpoints (
 			workflow_id, step_id, step_index, step_type, step_name, checkpoint_type,
@@ -97,6 +112,8 @@ func (r *PostgresRepository) CreateCheckpoint(ctx context.Context, cp *Checkpoin
 			model = EXCLUDED.model,
 			provider = EXCLUDED.provider,
 			is_resumable = EXCLUDED.is_resumable,
+			org_id = EXCLUDED.org_id,
+			tenant_id = EXCLUDED.tenant_id,
 			user_id = EXCLUDED.user_id,
 			client_id = EXCLUDED.client_id
 		RETURNING id, created_at

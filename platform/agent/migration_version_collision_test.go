@@ -203,14 +203,14 @@ func TestCoreMigrationDir_HasNoUnresolvableCollisions(t *testing.T) {
 	// Categories the runner can include for any DEPLOYMENT_MODE. We walk
 	// every one — same-key collisions across categories silently dedup
 	// too (the composite key is per-file, not per-directory).
-	categories := []string{
-		"core",
-		"enterprise",
-		"community-saas",
-		filepath.Join("industry", "healthcare"),
-		filepath.Join("industry", "banking"),
-		filepath.Join("industry", "travel"),
-	}
+	// Every category that exists under migrations/, selected by a deployment
+	// mode or not. Derived from allMigrationCategories() rather than
+	// hand-listed: this list used to be a literal, and a new directory added to
+	// migrations/ would have escaped the walk silently. migrations/internal/ is
+	// included precisely because it is selected by no mode — its version
+	// numbers are still consumed on every stack that applied them before the
+	// #3168 relocation, so reusing one in enterprise/ would collide.
+	categories := allMigrationCategories()
 
 	type origin struct {
 		category string
@@ -311,14 +311,14 @@ func TestCoreMigrationDir_HasNoVersionDuplicates(t *testing.T) {
 	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 	migrationsRoot := filepath.Join(repoRoot, "migrations")
 
-	categories := []string{
-		"core",
-		"enterprise",
-		"community-saas",
-		filepath.Join("industry", "healthcare"),
-		filepath.Join("industry", "banking"),
-		filepath.Join("industry", "travel"),
-	}
+	// Every category that exists under migrations/, selected by a deployment
+	// mode or not. Derived from allMigrationCategories() rather than
+	// hand-listed: this list used to be a literal, and a new directory added to
+	// migrations/ would have escaped the walk silently. migrations/internal/ is
+	// included precisely because it is selected by no mode — its version
+	// numbers are still consumed on every stack that applied them before the
+	// #3168 relocation, so reusing one in enterprise/ would collide.
+	categories := allMigrationCategories()
 
 	totalFiles := 0
 	for _, cat := range categories {

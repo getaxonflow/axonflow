@@ -104,8 +104,15 @@ func TestBoardReportRepository_Create_Success(t *testing.T) {
 		GeneratedAt:       time.Now().UTC(),
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_board_reports`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, report)
 	assert.NoError(t, err)
@@ -130,8 +137,15 @@ func TestBoardReportRepository_Create_PresetID(t *testing.T) {
 		GeneratedAt:    time.Now().UTC(),
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_board_reports`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, report)
 	assert.NoError(t, err)
@@ -154,8 +168,16 @@ func TestBoardReportRepository_Create_DBError(t *testing.T) {
 		GeneratedAt:    time.Now().UTC(),
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_board_reports`)).
 		WillReturnError(fmt.Errorf("connection refused"))
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, report)
 	assert.Error(t, err)
@@ -174,9 +196,16 @@ func TestBoardReportRepository_Get_Success(t *testing.T) {
 	rows := sqlmock.NewRows(boardReportColumns).
 		AddRow(sampleBoardReportRow("report-001", "org-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE id = $1 AND org_id = $2`)).
 		WithArgs("report-001", "org-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	report, err := repo.Get(ctx, "org-001", "report-001")
 	require.NoError(t, err)
@@ -210,9 +239,17 @@ func TestBoardReportRepository_Get_NotFound(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE id = $1 AND org_id = $2`)).
 		WithArgs("nonexistent", "org-001").
 		WillReturnError(sql.ErrNoRows)
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	report, err := repo.Get(ctx, "org-001", "nonexistent")
 	assert.Nil(t, report)
@@ -230,6 +267,12 @@ func TestBoardReportRepository_List_Success(t *testing.T) {
 
 	params := &ListBoardReportsParams{Limit: 10, Offset: 0}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -241,6 +284,7 @@ func TestBoardReportRepository_List_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	reports, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -264,6 +308,12 @@ func TestBoardReportRepository_List_WithFilters(t *testing.T) {
 		Limit:          20,
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001", "quarterly", "Q4-2025", "approved").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -274,6 +324,7 @@ func TestBoardReportRepository_List_WithFilters(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", "quarterly", "Q4-2025", "approved", 20, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	reports, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -290,6 +341,12 @@ func TestBoardReportRepository_List_NilParams(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -297,6 +354,7 @@ func TestBoardReportRepository_List_NilParams(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 50, 0).
 		WillReturnRows(sqlmock.NewRows(boardReportColumns))
+	mock.ExpectCommit()
 
 	reports, total, err := repo.List(ctx, "org-001", nil)
 	require.NoError(t, err)
@@ -315,6 +373,12 @@ func TestBoardReportRepository_List_LimitCapping(t *testing.T) {
 
 	params := &ListBoardReportsParams{Limit: 500}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -322,6 +386,7 @@ func TestBoardReportRepository_List_LimitCapping(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 100, 0).
 		WillReturnRows(sqlmock.NewRows(boardReportColumns))
+	mock.ExpectCommit()
 
 	_, _, err = repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -339,9 +404,16 @@ func TestBoardReportRepository_ListByQuarter_Success(t *testing.T) {
 	dataRows := sqlmock.NewRows(boardReportColumns).
 		AddRow(sampleBoardReportRow("report-001", "org-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND report_quarter = $2`)).
 		WithArgs("org-001", "Q4-2025").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	reports, err := repo.ListByQuarter(ctx, "org-001", "Q4-2025")
 	require.NoError(t, err)
@@ -357,9 +429,16 @@ func TestBoardReportRepository_ListByQuarter_Empty(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND report_quarter = $2`)).
 		WithArgs("org-001", "Q1-2026").
 		WillReturnRows(sqlmock.NewRows(boardReportColumns))
+	mock.ExpectCommit()
 
 	reports, err := repo.ListByQuarter(ctx, "org-001", "Q1-2026")
 	require.NoError(t, err)
@@ -387,8 +466,15 @@ func TestBoardReportRepository_Update_Success(t *testing.T) {
 		GeneratedAt:     time.Now().UTC(),
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_board_reports SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, report)
 	assert.NoError(t, err)
@@ -411,8 +497,17 @@ func TestBoardReportRepository_Update_NotFound(t *testing.T) {
 		GeneratedAt:    time.Now().UTC(),
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_board_reports SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	// RowsAffected() == 0 is not a statement error: the wrap COMMITs and the
+	// not-found verdict is decided above the transaction.
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, report)
 	assert.ErrorIs(t, err, ErrBoardReportNotFound)
@@ -427,9 +522,16 @@ func TestBoardReportRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_board_reports WHERE id = $1 AND org_id = $2`)).
 		WithArgs("report-001", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "report-001")
 	assert.NoError(t, err)
@@ -444,9 +546,18 @@ func TestBoardReportRepository_Delete_NotFound(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_board_reports WHERE id = $1 AND org_id = $2`)).
 		WithArgs("nonexistent", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	// RowsAffected() == 0 is not a statement error: the wrap COMMITs and the
+	// not-found verdict is decided above the transaction.
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "nonexistent")
 	assert.ErrorIs(t, err, ErrBoardReportNotFound)
@@ -464,9 +575,16 @@ func TestBoardReportRepository_GetLatest_Success(t *testing.T) {
 	rows := sqlmock.NewRows(boardReportColumns).
 		AddRow(sampleBoardReportRow("report-latest", "org-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND report_type = $2`)).
 		WithArgs("org-001", string(ReportTypeQuarterly)).
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	report, err := repo.GetLatest(ctx, "org-001", ReportTypeQuarterly)
 	require.NoError(t, err)
@@ -482,9 +600,17 @@ func TestBoardReportRepository_GetLatest_NotFound(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND report_type = $2`)).
 		WithArgs("org-001", string(ReportTypeAnnual)).
 		WillReturnError(sql.ErrNoRows)
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	report, err := repo.GetLatest(ctx, "org-001", ReportTypeAnnual)
 	assert.Nil(t, report)
@@ -504,9 +630,16 @@ func TestBoardReportRepository_GetPendingApproval_Success(t *testing.T) {
 		AddRow(sampleBoardReportRow("report-001", "org-001")...).
 		AddRow(sampleBoardReportRow("report-002", "org-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`approval_status = 'pending_review'`)).
 		WithArgs("org-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	reports, err := repo.GetPendingApproval(ctx, "org-001")
 	require.NoError(t, err)
@@ -522,9 +655,16 @@ func TestBoardReportRepository_GetPendingApproval_Empty(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`approval_status = 'pending_review'`)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows(boardReportColumns))
+	mock.ExpectCommit()
 
 	reports, err := repo.GetPendingApproval(ctx, "org-001")
 	require.NoError(t, err)
@@ -540,9 +680,17 @@ func TestBoardReportRepository_Get_ScanError(t *testing.T) {
 	repo := NewPostgresBoardReportRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE id = $1 AND org_id = $2`)).
 		WithArgs("report-001", "org-001").
 		WillReturnError(fmt.Errorf("connection dropped"))
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	report, err := repo.Get(ctx, "org-001", "report-001")
 	assert.Nil(t, report)

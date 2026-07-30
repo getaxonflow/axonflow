@@ -104,7 +104,22 @@ func initializeConnectorRegistry() {
 			// connector_configs (mig 107) gate this code path.
 			registry.WithAppRoleOpener(agent.OpenAppRoleConnection),
 		}
-		if adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil || adminDB == nil {
+		// #3159 R3: NO RequirePlatformAdminPoolOrFatal here, deliberately.
+		//
+		// The orchestrator is designed to boot with an unreachable database —
+		// run.go degrades usageDB to nil and continues. Its four sibling
+		// admin-pool sites all sit inside `if usageDB != nil` and are simply
+		// skipped in that state; this one does not, because it gates on
+		// DATABASE_URL being SET rather than on the pool being usable. A fatal
+		// here would therefore turn "boots degraded during an RDS failover"
+		// into an orchestrator crash-loop — and zero orchestrator tasks is
+		// itself the #3048/#3049 fail-open shape, so it would trade a
+		// degraded-but-running governance plane for none at all.
+		//
+		// The residual gap is real and accepted: a configured-but-unusable
+		// admin DSN still degrades the connector registry silently here.
+		adminDB, adminErr := agent.OpenPlatformAdminConnection(context.Background(), 3)
+		if adminErr != nil || adminDB == nil {
 			log.Printf("⚠️  connector-registry cross-org read pool: platform-admin pool unavailable (err=%v) — registry sync reads fall back to the runtime pool (under app-role RLS they read 0 rows)", adminErr)
 		} else {
 			adminDB.SetMaxOpenConns(2)
@@ -145,8 +160,15 @@ func getConnectorMetadata() []ConnectorMetadata {
 func listConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 	metadata := getConnectorMetadata()
 
+	// #3067 (S-1 family): `installed` was computed from the flat, deployment-wide
+	// registry, so the marketplace told every tenant which connectors ANY tenant
+	// had installed — and then health-checked them with the owner's credentials.
+	// Scope to the caller's tenant (header is overlaid authoritatively by the
+	// agent's auth chain before the request reaches the orchestrator).
+	tenantID := resolveTenantID(r, "")
+
 	// Add installation status for each connector
-	installedConnectors := connectorRegistry.ListWithTypes()
+	installedConnectors := connectorRegistry.ListWithTypes(tenantID)
 
 	for i := range metadata {
 		_, installed := installedConnectors[metadata[i].ID]
@@ -155,7 +177,7 @@ func listConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 		if installed {
 			// Get health status
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			status, err := connectorRegistry.HealthCheckSingle(ctx, metadata[i].ID)
+			status, err := connectorRegistry.HealthCheckSingle(ctx, tenantID, metadata[i].ID)
 			cancel()
 			if err == nil && status != nil {
 				metadata[i].Healthy = status.Healthy
@@ -193,8 +215,9 @@ func getConnectorDetailsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add installation status
-	installedConnectors := connectorRegistry.ListWithTypes()
+	// Add installation status, scoped to the caller's tenant (#3067).
+	tenantID := resolveTenantID(r, "")
+	installedConnectors := connectorRegistry.ListWithTypes(tenantID)
 	_, installed := installedConnectors[connectorID]
 	found.Installed = installed
 
@@ -203,7 +226,7 @@ func getConnectorDetailsHandler(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		status, err := connectorRegistry.HealthCheckSingle(ctx, connectorID)
+		status, err := connectorRegistry.HealthCheckSingle(ctx, tenantID, connectorID)
 		if err == nil && status != nil {
 			found.Healthy = status.Healthy
 			found.LastCheck = status.Timestamp.Format(time.RFC3339)
@@ -304,9 +327,12 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	connectorID := vars["id"]
 
+	// #3067: with no caller tenancy the GetConfig lookup resolves the
+	// deployment-shared scope only — it can no longer reach into another
+	// tenant's entry and adopt its TenantID as the delete scope.
 	tenantID := resolveTenantID(r, "")
 	if tenantID == "" && connectorRegistry != nil {
-		if cfg, err := connectorRegistry.GetConfig(connectorID); err == nil {
+		if cfg, err := connectorRegistry.GetConfig(tenantID, connectorID); err == nil {
 			tenantID = cfg.TenantID
 		}
 	}
@@ -316,7 +342,7 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// Unregister from memory first — if this fails, the DB record is still intact
 	// and the connector remains consistently registered in both places.
-	if err := connectorRegistry.Unregister(connectorID); err != nil {
+	if err := connectorRegistry.Unregister(tenantID, connectorID); err != nil {
 		http.Error(w, "Failed to uninstall connector: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -340,14 +366,27 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// resolveTenantID resolves the tenancy of a marketplace request.
+//
+// #3067 (R3): the AUTHENTICATED header wins over the request body. The header
+// is stamped by the agent's auth chain (apiAuthMiddleware / proxyAuthMiddleware
+// `Set`, overwriting anything the client sent) before the request is proxied
+// here; `tenant_id` in the body is caller-controlled. This ordering used to be
+// reversed, which mattered little when the registry was a flat map — but
+// config.TenantID is now the AUTHORIZATION KEY for every connector lookup, so
+// a body-controlled writer would get to decide who may resolve a connector.
+// A keyed registry is only as strong as its weakest writer.
 func resolveTenantID(r *http.Request, requested string) string {
-	if requested != "" && requested != "*" {
-		return requested
-	}
-	if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
+	if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" && headerTenant != registry.SharedTenant {
 		return headerTenant
 	}
-	return requested
+	if orgTenant := r.Header.Get("X-Org-ID"); orgTenant != "" && orgTenant != registry.SharedTenant {
+		return orgTenant
+	}
+	if requested != "" && requested != registry.SharedTenant {
+		return requested
+	}
+	return ""
 }
 
 func upsertConnectorConfig(ctx context.Context, connectorID, connectorType, tenantID string, req *ConnectorInstallRequest, config *base.ConnectorConfig) error {
@@ -510,10 +549,15 @@ func connectorHealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	connectorID := vars["id"]
 
+	// #3067: health-check only what the caller's tenant may reach — this
+	// endpoint otherwise opened a live connection with another tenant's
+	// decrypted credentials and returned the raw driver error.
+	tenantID := resolveTenantID(r, "")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	status, err := connectorRegistry.HealthCheckSingle(ctx, connectorID)
+	status, err := connectorRegistry.HealthCheckSingle(ctx, tenantID, connectorID)
 	if err != nil {
 		http.Error(w, "Health check failed: "+err.Error(), http.StatusInternalServerError)
 		return

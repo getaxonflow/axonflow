@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/shared/egress"
 
 	_ "golang.org/x/image/webp"
 )
@@ -240,18 +241,40 @@ func (m *MediaContent) GetRawData() ([]byte, error) {
 	}
 }
 
-// isPrivateIP returns true if the IP is loopback, private, link-local, or unspecified.
-// Used to block SSRF attacks when fetching user-supplied URLs.
+// isPrivateIP binds the socket-level guard to egress.CallbackEgress — the
+// same policy the pre-flight validateURLForSSRF applies via base.ValidateURL
+// (#3104).
+//
+// The two layers used to disagree, and in the dangerous direction: the
+// pre-flight refused 100.64.0.1 while this socket check accepted it. The
+// socket layer exists precisely to catch what the pre-flight cannot — a
+// hostname that resolves public at validation time and into a reserved range
+// at dial time, or a redirect to one — so a backstop weaker than the check it
+// backstops left that path open. They are now the same policy by construction.
 func isPrivateIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	return egress.CallbackEgress.Blocks(ip)
 }
 
 // validateURLForSSRF is the pre-flight SSRF validation function.
 // It is a variable so that tests can override it when using loopback test servers.
 var validateURLForSSRF = func(rawURL string) error {
-	return base.ValidateURL(rawURL, base.DefaultURLValidationOptions())
+	opts := base.DefaultURLValidationOptions()
+	opts.EgressPolicy = &mediaEgressPolicy
+	return base.ValidateURL(rawURL, opts)
 }
+
+// mediaEgressPolicy is an addressable copy of egress.CallbackEgress, NOT
+// ConnectorEgress (#3104 R3 round 2, finding 4). It is a var only because
+// base.URLValidationOptions.EgressPolicy is a pointer.
+//
+// ConnectorEgress exists to exempt 198.18.0.0/15 for a connector test harness
+// (runtime-e2e/3067). A media URL is not operator-configured infrastructure: it
+// arrives per request in the governance API body as `media[].url`
+// (orchestrator/run.go MediaContentRequest, agent/run.go), so it is the one
+// place that exemption would have met untrusted caller input. It gets the
+// posture with no exemptions instead, on BOTH the pre-flight and the socket
+// layer so the two state the same thing.
+var mediaEgressPolicy = egress.CallbackEgress
 
 // ssrfSafeClient is an HTTP client that blocks connections to private/internal IP ranges.
 // The net.Dialer.Control callback inspects the resolved IP at the socket level,
@@ -412,12 +435,12 @@ type MediaAnalysisResult struct {
 
 // FaceDetection represents a detected face in an image.
 type FaceDetection struct {
-	Confidence     float64 `json:"confidence"`
-	BoundingBox    *Box    `json:"bounding_box,omitempty"`
-	IsBiometric    bool    `json:"is_biometric"`
-	AgeRange       string  `json:"age_range,omitempty"`
-	HasSunglasses  bool    `json:"has_sunglasses,omitempty"`
-	HasEyeglasses  bool    `json:"has_eyeglasses,omitempty"`
+	Confidence    float64 `json:"confidence"`
+	BoundingBox   *Box    `json:"bounding_box,omitempty"`
+	IsBiometric   bool    `json:"is_biometric"`
+	AgeRange      string  `json:"age_range,omitempty"`
+	HasSunglasses bool    `json:"has_sunglasses,omitempty"`
+	HasEyeglasses bool    `json:"has_eyeglasses,omitempty"`
 }
 
 // Box represents a bounding box.
@@ -446,16 +469,16 @@ type DocumentClassification struct {
 
 // Sensitive document types.
 var SensitiveDocumentTypes = map[string]bool{
-	"id_card":            true,
-	"passport":           true,
-	"drivers_license":    true,
-	"bank_statement":     true,
-	"tax_document":       true,
-	"medical_record":     true,
-	"insurance_card":     true,
-	"credit_card":        true,
-	"social_security":    true,
-	"birth_certificate":  true,
+	"id_card":           true,
+	"passport":          true,
+	"drivers_license":   true,
+	"bank_statement":    true,
+	"tax_document":      true,
+	"medical_record":    true,
+	"insurance_card":    true,
+	"credit_card":       true,
+	"social_security":   true,
+	"birth_certificate": true,
 }
 
 // ContentLabel is a detected label/tag for the image content.
@@ -573,8 +596,8 @@ const (
 	ErrMediaDownloadFailed    = "media_download_failed"
 	ErrMediaPolicyViolation   = "media_policy_violation"
 	ErrMediaAnalyzerLimit     = "media_analyzer_limit"
-	ErrMediaAnalyzerNotFound      = "media_analyzer_not_found"
-	ErrMediaDecompressionBomb     = "media_decompression_bomb"
+	ErrMediaAnalyzerNotFound  = "media_analyzer_not_found"
+	ErrMediaDecompressionBomb = "media_decompression_bomb"
 )
 
 // Warning codes for non-fatal media analysis issues.
