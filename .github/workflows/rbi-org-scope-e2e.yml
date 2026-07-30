@@ -1,0 +1,65 @@
+name: RBI Org-Scope E2E (#3066)
+
+# Executes runtime-e2e/3066_rbi_org_scope — the cross-tenant proof for the RBI
+# compliance routes (#3066 C3-3, epic #3071).
+#
+# This suite is SELF-BOOTING: it runs its own `docker compose up` and tears down
+# with `down -v`. That is exactly why it gets a dedicated workflow instead of a
+# line in scripts/e2e/production_posture_registry.txt — the shared posture stack
+# pins container_name on every service, so a second compose project collides,
+# and this suite's `down -v` would delete the shared stack out from under every
+# later registry entry.
+#
+# Epic #3071 Tier 5: a guard that is never executed is not a guard. 183 of the
+# 185 runtime-e2e suites in this repo are referenced by nothing; this one is not
+# allowed to join them.
+
+on:
+  pull_request:
+    paths:
+      - 'ee/platform/orchestrator/rbi/**'
+      - 'platform/orchestrator/rbi/**'
+      - 'migrations/industry/banking/**'
+      - 'runtime-e2e/3066_rbi_org_scope/**'
+      - '.github/workflows/rbi-org-scope-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ee/platform/orchestrator/rbi/**'
+      - 'platform/orchestrator/rbi/**'
+      - 'migrations/industry/banking/**'
+      - 'runtime-e2e/3066_rbi_org_scope/**'
+  workflow_dispatch:
+
+concurrency:
+  group: rbi-org-scope-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rbi-org-scope:
+    name: RBI cross-tenant scope (self-booting stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run runtime-e2e/3066_rbi_org_scope
+        env:
+          AXONFLOW_TELEMETRY: 'off'
+          CI: 'true'
+        # No `continue-on-error`, no soft skip: the suite exits non-zero on any
+        # failed assertion AND on a short assertion count, and this step is the
+        # job's verdict.
+        run: bash runtime-e2e/3066_rbi_org_scope/test.sh
+
+      - name: Collect stack logs on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=af3066-"); do
+            echo "───── $c ─────"
+            docker logs --tail 200 "$c" 2>&1 || true
+          done

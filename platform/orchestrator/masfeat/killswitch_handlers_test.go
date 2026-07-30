@@ -64,7 +64,9 @@ func (m *MockKillSwitchRepository) Update(ctx context.Context, ks *KillSwitch) e
 	return nil
 }
 
-func (m *MockKillSwitchRepository) RecordHistory(ctx context.Context, h *KillSwitchHistory) error {
+func (m *MockKillSwitchRepository) RecordHistory(ctx context.Context, orgID string, h *KillSwitchHistory) error {
+	// #3133: mas_kill_switch_history has no org_id column, so the caller's org
+	// is an explicit parameter — the RLS wrap has nothing else to key on.
 	if m.recordHistErr != nil {
 		return m.recordHistErr
 	}

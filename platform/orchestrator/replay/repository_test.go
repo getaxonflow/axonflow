@@ -297,6 +297,8 @@ func TestMockRepository_SaveAndGetSummary(t *testing.T) {
 	ctx := context.Background()
 
 	summary := &ExecutionSummary{
+		OrgID:        "org-1",
+		TenantID:     "tenant-1",
 		RequestID:    "req-123",
 		WorkflowName: "test-workflow",
 		Status:       ExecutionStatusRunning,
@@ -337,6 +339,8 @@ func TestMockRepository_UpdateSummary(t *testing.T) {
 
 	// Save initial
 	summary := &ExecutionSummary{
+		OrgID:     "org-1",
+		TenantID:  "tenant-1",
 		RequestID: "req-123",
 		Status:    ExecutionStatusRunning,
 	}
@@ -363,12 +367,14 @@ func TestMockRepository_ListSummaries(t *testing.T) {
 	// Add summaries
 	for i := 0; i < 5; i++ {
 		repo.AddSummary(&ExecutionSummary{
+			OrgID:     "org-1",
+			TenantID:  "tenant-1",
 			RequestID: string(rune('a'+i)) + "-req",
 			Status:    ExecutionStatusCompleted,
 		})
 	}
 
-	summaries, total, err := repo.ListSummaries(ctx, ListOptions{Limit: 10})
+	summaries, total, err := repo.ListSummaries(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Limit: 10})
 	if err != nil {
 		t.Fatalf("ListSummaries failed: %v", err)
 	}
@@ -385,23 +391,31 @@ func TestMockRepository_ListSummaries_WithFilters(t *testing.T) {
 	ctx := context.Background()
 
 	// Add summaries with different statuses
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-1", Status: ExecutionStatusCompleted, OrgID: "org-1"})
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-2", Status: ExecutionStatusFailed, OrgID: "org-1"})
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-3", Status: ExecutionStatusCompleted, OrgID: "org-2"})
+	repo.AddSummary(&ExecutionSummary{TenantID: "tenant-1", RequestID: "req-1", Status: ExecutionStatusCompleted, OrgID: "org-1"})
+	repo.AddSummary(&ExecutionSummary{TenantID: "tenant-1", RequestID: "req-2", Status: ExecutionStatusFailed, OrgID: "org-1"})
+	repo.AddSummary(&ExecutionSummary{TenantID: "tenant-other", RequestID: "req-3", Status: ExecutionStatusCompleted, OrgID: "org-2"})
 
 	// Filter by status
-	summaries, total, _ := repo.ListSummaries(ctx, ListOptions{Status: "completed", Limit: 10})
-	if total != 2 {
-		t.Errorf("expected 2 completed, got %d", total)
+	summaries, total, _ := repo.ListSummaries(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Status: "completed", Limit: 10})
+	if total != 1 {
+		t.Errorf("expected 1 completed within org-1, got %d", total)
 	}
 
-	// Filter by org
-	summaries, total, _ = repo.ListSummaries(ctx, ListOptions{OrgID: "org-1", Limit: 10})
+	// #3065: the org/tenant filter is the caller's own identity, and another
+	// tenant's row (req-3, org-2) is invisible no matter what is asked for.
+	summaries, total, _ = repo.ListSummaries(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Limit: 10})
 	if total != 2 {
 		t.Errorf("expected 2 for org-1, got %d", total)
 	}
-	if len(summaries) != 2 {
-		t.Errorf("expected 2 summaries, got %d", len(summaries))
+	for _, sum := range summaries {
+		if sum.RequestID == "req-3" {
+			t.Error("org-2's execution req-3 leaked into org-1's listing")
+		}
+	}
+
+	// An unscoped listing returns nothing rather than everything.
+	if _, total, _ := repo.ListSummaries(ctx, ListOptions{Limit: 10}); total != 0 {
+		t.Errorf("unscoped listing must return no rows, got %d", total)
 	}
 }
 
@@ -412,13 +426,15 @@ func TestMockRepository_ListSummaries_Pagination(t *testing.T) {
 	// Add summaries
 	for i := 0; i < 10; i++ {
 		repo.AddSummary(&ExecutionSummary{
+			OrgID:     "org-1",
+			TenantID:  "tenant-1",
 			RequestID: string(rune('a'+i)) + "-req",
 			Status:    ExecutionStatusCompleted,
 		})
 	}
 
 	// Test offset
-	summaries, total, _ := repo.ListSummaries(ctx, ListOptions{Limit: 3, Offset: 5})
+	summaries, total, _ := repo.ListSummaries(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Limit: 3, Offset: 5})
 	if total != 10 {
 		t.Errorf("expected total 10, got %d", total)
 	}
@@ -427,7 +443,7 @@ func TestMockRepository_ListSummaries_Pagination(t *testing.T) {
 	}
 
 	// Test offset beyond range
-	summaries, total, _ = repo.ListSummaries(ctx, ListOptions{Limit: 10, Offset: 15})
+	summaries, total, _ = repo.ListSummaries(ctx, ListOptions{OrgID: "org-1", TenantID: "tenant-1", Limit: 10, Offset: 15})
 	if len(summaries) != 0 {
 		t.Errorf("expected 0 summaries (offset 15), got %d", len(summaries))
 	}
@@ -438,7 +454,7 @@ func TestMockRepository_DeleteSummary(t *testing.T) {
 	ctx := context.Background()
 
 	// Add summary
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123"})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123"})
 
 	// Delete
 	err := repo.DeleteSummary(ctx, "req-123")
@@ -458,6 +474,8 @@ func TestMockRepository_GetExecution(t *testing.T) {
 
 	// Add summary and snapshots
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusCompleted,
 		TotalSteps: 2,
@@ -493,7 +511,7 @@ func TestMockRepository_DeleteExecution(t *testing.T) {
 	ctx := context.Background()
 
 	// Add summary and snapshots
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123"})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123"})
 	repo.AddSnapshot(&ExecutionSnapshot{RequestID: "req-123", StepIndex: 0})
 
 	// Delete
@@ -607,9 +625,9 @@ func TestMockRepository_HelperMethods(t *testing.T) {
 	}
 
 	// Test AddSummary
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-1"})
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-2"})
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-3"})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-1"})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-2"})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-3"})
 
 	if repo.GetSummaryCount() != 3 {
 		t.Errorf("expected 3 summaries, got %d", repo.GetSummaryCount())

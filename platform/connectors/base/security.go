@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"axonflow/platform/shared/egress"
 )
 
 // URLValidationOptions configures URL validation behavior
@@ -32,6 +34,14 @@ type URLValidationOptions struct {
 	AllowedHosts []string
 	// BlockedHosts explicitly blocks certain hostnames
 	BlockedHosts []string
+	// EgressPolicy selects which shared egress posture the private-IP check
+	// applies. nil means egress.ConnectorEgress, which is what every connector
+	// wants. Surfaces whose URL is caller-supplied per request rather than
+	// operator-configured infrastructure — the orchestrator media fetcher, the
+	// SAML metadata fetch — pass egress.CallbackEgress so that their pre-flight
+	// and their socket-level guard state the SAME posture. A backstop that
+	// disagrees with the check it backstops is how #3104 found this class.
+	EgressPolicy *egress.Policy
 }
 
 // DefaultURLValidationOptions returns secure defaults for URL validation
@@ -84,7 +94,11 @@ func ValidateURL(rawURL string, opts URLValidationOptions) error {
 
 	// SSRF protection: validate resolved IPs
 	if !opts.AllowPrivateIPs {
-		if err := validateHostNotPrivate(hostname); err != nil {
+		policy := egress.ConnectorEgress
+		if opts.EgressPolicy != nil {
+			policy = *opts.EgressPolicy
+		}
+		if err := validateHostNotPrivate(hostname, policy); err != nil {
 			return err
 		}
 	}
@@ -108,8 +122,9 @@ func validateScheme(scheme string, allowedSchemes []string) error {
 	return fmt.Errorf("URL scheme %q is not allowed; permitted schemes: %v", scheme, allowedSchemes)
 }
 
-// validateHostNotPrivate resolves the hostname and checks for private IPs
-func validateHostNotPrivate(hostname string) error {
+// validateHostNotPrivate resolves the hostname and checks the answers against
+// the caller's egress policy.
+func validateHostNotPrivate(hostname string, policy egress.Policy) error {
 	// Resolve hostname to IP addresses
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
@@ -117,81 +132,33 @@ func validateHostNotPrivate(hostname string) error {
 	}
 
 	for _, ip := range ips {
-		if isPrivateIP(ip) {
-			return fmt.Errorf("connection to private/internal IP %s is not allowed (hostname: %s)", ip, hostname)
+		if policy.Blocks(ip) {
+			return fmt.Errorf("connection to private/internal IP %s is not allowed (hostname: %s; %s)", ip, hostname, policy.Reason(ip))
 		}
 	}
 
 	return nil
 }
 
-// isPrivateIP checks if an IP address is private, loopback, or otherwise internal
-func isPrivateIP(ip net.IP) bool {
-	// Check for loopback (127.0.0.0/8, ::1)
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// Check for link-local addresses (169.254.0.0/16, fe80::/10)
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	// Check for private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7)
-	if ip.IsPrivate() {
-		return true
-	}
-
-	// Check for unspecified addresses (0.0.0.0, ::)
-	if ip.IsUnspecified() {
-		return true
-	}
-
-	// Additional IPv4 checks
-	if ip4 := ip.To4(); ip4 != nil {
-		// 169.254.0.0/16 (link-local, may not be caught by IsLinkLocalUnicast)
-		if ip4[0] == 169 && ip4[1] == 254 {
-			return true
-		}
-		// 127.0.0.0/8 (loopback range)
-		if ip4[0] == 127 {
-			return true
-		}
-		// 0.0.0.0/8 (current network)
-		if ip4[0] == 0 {
-			return true
-		}
-		// 100.64.0.0/10 (Carrier-grade NAT)
-		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
-			return true
-		}
-		// 192.0.0.0/24 (IETF Protocol Assignments)
-		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 {
-			return true
-		}
-		// 192.0.2.0/24 (TEST-NET-1)
-		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2 {
-			return true
-		}
-		// 198.51.100.0/24 (TEST-NET-2)
-		if ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100 {
-			return true
-		}
-		// 203.0.113.0/24 (TEST-NET-3)
-		if ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113 {
-			return true
-		}
-		// 224.0.0.0/4 (Multicast)
-		if ip4[0] >= 224 && ip4[0] <= 239 {
-			return true
-		}
-		// 240.0.0.0/4 (Reserved)
-		if ip4[0] >= 240 {
-			return true
-		}
-	}
-
-	return false
+// IsPrivateIP reports whether an IP address is private, loopback, or otherwise
+// internal/reserved and therefore must not be dialled by a connector.
+//
+// This is the connector layer's binding to the canonical egress policy. The
+// range table itself lives in platform/shared/egress and is shared with every
+// other surface that dials a configured URL; see #3104, which found nine
+// independent classifiers with five distinct behaviours. Connectors MUST call
+// this rather than keeping a local copy: two predicates drift, and the weaker
+// one becomes the exploitable path (#3095).
+//
+// The posture is egress.ConnectorEgress, which permits exactly one reserved
+// range — 198.18.0.0/15 (RFC 2544 / RFC 6815 benchmarking) — because
+// runtime-e2e suites carve sentinel networks out of it. Every other named
+// range in the table is refused. Callback surfaces use egress.CallbackEgress,
+// which permits nothing.
+//
+// Fail-closed: a nil or malformed net.IP is reported as private.
+func IsPrivateIP(ip net.IP) bool {
+	return egress.ConnectorEgress.Blocks(ip)
 }
 
 // isHostBlocked checks if a hostname is in the blocked list

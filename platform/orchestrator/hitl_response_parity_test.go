@@ -51,6 +51,11 @@ func setupHITLParityEnv(t *testing.T, caseName string) *hitlParityTestEnv {
 	origDeployment := os.Getenv("DEPLOYMENT_MODE")
 	os.Setenv("DEPLOYMENT_MODE", "enterprise")
 
+	// #3135: the MAP handlers now run verifyAgentProxyAuth, so the requests
+	// below arrive over an authenticated hop (parity is the property under
+	// test here, not authentication).
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+
 	origWCP := workflowControlService
 	origEngine := hitlWorkflowEngine
 	origEnabled := hitlEnabled
@@ -277,6 +282,7 @@ func callMAPHandler(t *testing.T, verb, body, caseName string) map[string]json.R
 	req.Header.Set("X-User-ID", "u@example.com")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 
 	rr := httptest.NewRecorder()
 	if verb == "approve" {
@@ -328,6 +334,7 @@ func TestMAPApprove_WCPBackedSurfacesRealErrors(t *testing.T) {
 	first.Header.Set("X-User-ID", "approver@example.com")
 	first.Header.Set("X-Tenant-ID", "tenant-1")
 	first.Header.Set("X-Org-ID", "org-1")
+	first.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	firstRR := httptest.NewRecorder()
 	mapStepApproveHandler(firstRR, first)
 	if firstRR.Code != http.StatusOK {
@@ -343,6 +350,7 @@ func TestMAPApprove_WCPBackedSurfacesRealErrors(t *testing.T) {
 	second.Header.Set("X-User-ID", "approver@example.com")
 	second.Header.Set("X-Tenant-ID", "tenant-1")
 	second.Header.Set("X-Org-ID", "org-1")
+	second.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	secondRR := httptest.NewRecorder()
 	mapStepApproveHandler(secondRR, second)
 

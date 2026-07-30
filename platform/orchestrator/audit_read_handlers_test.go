@@ -223,6 +223,17 @@ func TestAuditExportHandler_BadFormat_400(t *testing.T) {
 }
 
 func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
+	// #3096: auditExportHandler resolves its read scope via
+	// resolveCallerReadScope, which grants {TenantWide, AdminAuthority}
+	// unconditionally in community mode. These tests cover the export
+	// PAYLOAD (CSV header/disposition, JSON body, filters), not read
+	// authority, and used to reach the tenant-wide path via an unset
+	// DEPLOYMENT_MODE. Unset is now the enterprise posture — which scopes a
+	// caller with no identity down to zero rows — so the mode is named.
+	// Enterprise read-scoping itself is covered by read_scope_test.go and
+	// audit_read_handlers_integration_test.go, which set the mode explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	ts := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
@@ -281,6 +292,17 @@ func TestAuditExportHandler_CSV_HeaderAndDisposition(t *testing.T) {
 }
 
 func TestAuditExportHandler_JSON_Body(t *testing.T) {
+	// #3096: auditExportHandler resolves its read scope via
+	// resolveCallerReadScope, which grants {TenantWide, AdminAuthority}
+	// unconditionally in community mode. These tests cover the export
+	// PAYLOAD (CSV header/disposition, JSON body, filters), not read
+	// authority, and used to reach the tenant-wide path via an unset
+	// DEPLOYMENT_MODE. Unset is now the enterprise posture — which scopes a
+	// caller with no identity down to zero rows — so the mode is named.
+	// Enterprise read-scoping itself is covered by read_scope_test.go and
+	// audit_read_handlers_integration_test.go, which set the mode explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	ts := time.Now().UTC()
@@ -322,6 +344,17 @@ func TestAuditExportHandler_JSON_Body(t *testing.T) {
 // This bug class is invisible to ExportAuditLogs-level tests (the criteria
 // struct already had the field), so it is pinned at the handler.
 func TestAuditExportHandler_SessionIDFilter(t *testing.T) {
+	// #3096: auditExportHandler resolves its read scope via
+	// resolveCallerReadScope, which grants {TenantWide, AdminAuthority}
+	// unconditionally in community mode. These tests cover the export
+	// PAYLOAD (CSV header/disposition, JSON body, filters), not read
+	// authority, and used to reach the tenant-wide path via an unset
+	// DEPLOYMENT_MODE. Unset is now the enterprise posture — which scopes a
+	// caller with no identity down to zero rows — so the mode is named.
+	// Enterprise read-scoping itself is covered by read_scope_test.go and
+	// audit_read_handlers_integration_test.go, which set the mode explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	ts := time.Now().UTC()
@@ -366,6 +399,17 @@ func TestAuditExportHandler_SessionIDFilter(t *testing.T) {
 // session_id). WithArgs is the real assertion — it fails unless the handler
 // actually forwards the value into the query.
 func TestAuditExportHandler_PluginBatch1Filters(t *testing.T) {
+	// #3096: auditExportHandler resolves its read scope via
+	// resolveCallerReadScope, which grants {TenantWide, AdminAuthority}
+	// unconditionally in community mode. These tests cover the export
+	// PAYLOAD (CSV header/disposition, JSON body, filters), not read
+	// authority, and used to reach the tenant-wide path via an unset
+	// DEPLOYMENT_MODE. Unset is now the enterprise posture — which scopes a
+	// caller with no identity down to zero rows — so the mode is named.
+	// Enterprise read-scoping itself is covered by read_scope_test.go and
+	// audit_read_handlers_integration_test.go, which set the mode explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	ts := time.Now().UTC()
 	cases := []struct {
 		name    string
@@ -409,6 +453,17 @@ func TestAuditExportHandler_PluginBatch1Filters(t *testing.T) {
 // TestAuditExportHandler_CSV_SessionColumn pins session_id as the last CSV
 // column so a session-filtered export identifies its rows' session membership.
 func TestAuditExportHandler_CSV_SessionColumn(t *testing.T) {
+	// #3096: auditExportHandler resolves its read scope via
+	// resolveCallerReadScope, which grants {TenantWide, AdminAuthority}
+	// unconditionally in community mode. These tests cover the export
+	// PAYLOAD (CSV header/disposition, JSON body, filters), not read
+	// authority, and used to reach the tenant-wide path via an unset
+	// DEPLOYMENT_MODE. Unset is now the enterprise posture — which scopes a
+	// caller with no identity down to zero rows — so the mode is named.
+	// Enterprise read-scoping itself is covered by read_scope_test.go and
+	// audit_read_handlers_integration_test.go, which set the mode explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	ts := time.Now().UTC()
@@ -525,6 +580,11 @@ func TestAuditReportHandler_BadDateRange_400(t *testing.T) {
 }
 
 func TestAuditReportHandler_Success_200(t *testing.T) {
+	// #3096: see the note on TestAuditExportHandler_JSON_Body — this covers
+	// handler behaviour, not read authority, and needs the community posture
+	// named now that an unset DEPLOYMENT_MODE no longer confers it.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	mock.ExpectQuery("GROUP BY policy_decision").
@@ -553,6 +613,11 @@ func TestAuditReportHandler_Success_200(t *testing.T) {
 // --- additional coverage: handler success + validation + filter branches ----
 
 func TestAuditGetByIDHandler_Success_200(t *testing.T) {
+	// #3096: see the note on TestAuditExportHandler_JSON_Body — this covers
+	// handler behaviour, not read authority, and needs the community posture
+	// named now that an unset DEPLOYMENT_MODE no longer confers it.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	ts := time.Now().UTC()
@@ -776,6 +841,11 @@ func TestAuditExportHandler_NoTruncationHeaderOnSmallResult(t *testing.T) {
 }
 
 func TestAuditExportHandler_DBError_500(t *testing.T) {
+	// #3096: see the note on TestAuditExportHandler_JSON_Body — this covers
+	// handler behaviour, not read authority, and needs the community posture
+	// named now that an unset DEPLOYMENT_MODE no longer confers it.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	mock.ExpectQuery("SELECT id, request_id, timestamp").WithArgs("acme").
@@ -822,6 +892,11 @@ func TestCSVFormulaSafe(t *testing.T) {
 }
 
 func TestAuditExportHandler_CSV_NeutralizesFormula(t *testing.T) {
+	// #3096: see the note on TestAuditExportHandler_JSON_Body — this covers
+	// handler behaviour, not read authority, and needs the community posture
+	// named now that an unset DEPLOYMENT_MODE no longer confers it.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	ts := time.Now().UTC()

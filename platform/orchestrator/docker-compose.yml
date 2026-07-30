@@ -13,7 +13,13 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      # #3097: loopback-bound. This is a standalone developer stack (ENV=development
+      # below); the orchestrator reaches this database as `postgres:5432` over the
+      # compose network, and no consumer of THIS stack dials 5433 on a host
+      # interface (nothing in the repo references that port at all outside this
+      # file). NB the password on this instance is hardcoded a few lines up, so a
+      # non-loopback publish put a credentialled database on the local network.
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow_orchestrator"]
       interval: 5s
@@ -26,7 +32,10 @@ services:
     container_name: axonflow-orchestrator-redis
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      # #3097: loopback-bound. Reached as `redis:6379` over the compose network
+      # (REDIS_URL below); no consumer of THIS stack dials 6380 on a host
+      # interface, and nothing in the repo references that port outside this file.
+      - "127.0.0.1:6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -41,6 +50,14 @@ services:
     container_name: axonflow-orchestrator
     restart: unless-stopped
     environment:
+      - AXONFLOW_INTERNAL_SERVICE_SECRET=${AXONFLOW_INTERNAL_SERVICE_SECRET:-localdev-internal-service-secret-change-me}
+      # #3096: an UNSET DEPLOYMENT_MODE is no longer treated as Community, and
+      # `ENV=development` below is a different variable that nothing in the
+      # orchestrator reads as a posture. Without this line the orchestrator's
+      # read-scope resolver stops granting {TenantWide, AdminAuthority} and this
+      # single-service dev stack answers 403 / zero rows on audit, decisions,
+      # cost and replay reads while still passing its health check.
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-community}
       - DATABASE_URL=postgres://axonflow:orchestrator123@postgres:5432/axonflow_orchestrator?sslmode=disable
       - PORT=8081
       - ENV=development
@@ -59,7 +76,11 @@ services:
       # Redis for distributed rate limiting and budget tracking
       - REDIS_URL=redis://redis:6379
     ports:
-      - "8081:8081"
+      # #3097 (deferred from #3068/#3073): loopback-bound. The orchestrator is
+      # an INTERNAL service (ADR-026) and this is a developer stack; a developer
+      # reaching it does so from the same host. The container healthcheck below
+      # runs on the container's own loopback and is unaffected.
+      - "127.0.0.1:8081:8081"
     depends_on:
       postgres:
         condition: service_healthy

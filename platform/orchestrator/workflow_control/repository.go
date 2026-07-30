@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // Repository defines the interface for workflow persistence
@@ -400,6 +402,17 @@ func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason
 
 // List retrieves workflows with optional filters
 func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([]Workflow, int, error) {
+	// #3065 (R3 round 2): the tenancy conditions below are appended only when
+	// non-empty, so an unscoped call built `SELECT ... FROM workflows` with no
+	// WHERE at all — every tenant's rows. Service.ListWorkflows refuses first,
+	// but relying on that leaves the mock STRICTER than production: a future
+	// second caller reaching this method directly would be denied in
+	// mock-based tests and served tenant-wide in production. Guard the
+	// invariant here too, where the SQL is built.
+	if err := tenantscope.ValidateRowKeys(opts.OrgID, opts.TenantID); err != nil {
+		return nil, 0, fmt.Errorf("cannot list workflows without an authenticated org and tenant: %w", err)
+	}
+
 	// Build query with filters
 	var conditions []string
 	var args []interface{}

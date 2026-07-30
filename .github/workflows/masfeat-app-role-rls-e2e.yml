@@ -1,0 +1,83 @@
+name: MAS FEAT App-Role RLS E2E (#3133)
+
+# Executes runtime-e2e/3133_masfeat_app_role_rls — the app-role posture proof
+# for the MAS FEAT compliance module (epic #3071).
+#
+# Migration 400 enables RLS on all five mas_* tables but the masfeat package
+# never set app.current_org_id, so on an axonflow_app_role pool every MAS FEAT
+# read returned silent zero rows and every MAS FEAT write was refused. The
+# posture assertion this suite carries is the one whose absence made "RLS is on"
+# and "reads return nothing" indistinguishable from green — the #3039/#3048
+# lesson — and the safety-critical case is the kill switch: a zero-row read is
+# spelled "no kill switch is active", so it silently un-trips a tripped one.
+#
+# This suite is SELF-BOOTING: it runs its own `docker compose up` on probed
+# ports under a project-scoped name and tears itself down. That is why it gets a
+# dedicated workflow instead of a line in
+# scripts/e2e/production_posture_registry.txt — the shared posture stack pins
+# container_name on every service, so a second compose project collides, and
+# this suite's teardown would remove the shared stack out from under every later
+# registry entry. Independently: the posture stack boots in-vpc-enterprise mode,
+# which never runs migrations/industry/banking, so the mas_* tables do not exist
+# there and a registry entry could only ever be vacuous.
+#
+# Epic #3071 Tier 5: a guard that is never executed is not a guard.
+
+on:
+  pull_request:
+    paths:
+      - 'ee/platform/orchestrator/masfeat/**'
+      - 'platform/orchestrator/masfeat/**'
+      - 'platform/agent/rls/**'
+      - 'migrations/industry/banking/**'
+      - 'runtime-e2e/3133_masfeat_app_role_rls/**'
+      - 'runtime-e2e/lib/proxy_auth.sh'
+      - '.github/workflows/masfeat-app-role-rls-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ee/platform/orchestrator/masfeat/**'
+      - 'platform/orchestrator/masfeat/**'
+      - 'platform/agent/rls/**'
+      - 'migrations/industry/banking/**'
+      - 'runtime-e2e/3133_masfeat_app_role_rls/**'
+      - 'runtime-e2e/lib/proxy_auth.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: masfeat-app-role-rls-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  masfeat-app-role-rls:
+    name: MAS FEAT reads/writes under axonflow_app_role (self-booting stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run runtime-e2e/3133_masfeat_app_role_rls
+        env:
+          AXONFLOW_TELEMETRY: 'off'
+          CI: 'true'
+        # No `continue-on-error`, no soft skip: the suite exits non-zero on any
+        # failed assertion AND on a short assertion count, and this step is the
+        # job's verdict.
+        run: bash runtime-e2e/3133_masfeat_app_role_rls/test.sh
+
+      # The suite dumps its own stack logs BEFORE tearing down — see
+      # dump_stack_logs() in test.sh. This step cannot do it: the script's EXIT
+      # trap runs `docker compose down -v` on the way out, so by the time a
+      # `if: failure()` step executes there are no containers left. The first CI
+      # failure of this suite arrived with an empty `docker ps -a` for exactly
+      # that reason. Kept only as a last-resort check that nothing was orphaned
+      # by a teardown that itself failed.
+      - name: Check for orphaned containers after teardown
+        if: failure()
+        run: |
+          echo "Any af3133-* containers listed below survived the suite's own teardown."
+          echo "Service logs for the failure itself are dumped INSIDE test.sh, above."
+          docker ps -a --filter "name=af3133-" || true

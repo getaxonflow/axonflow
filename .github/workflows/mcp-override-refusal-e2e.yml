@@ -1,0 +1,100 @@
+name: MCP Override-Refusal Diagnostic E2E
+
+# Executes runtime-e2e/3077_mcp_override_refusal_diagnostic/ (#3077).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# every entry in that registry is AMBIENT — it curls an already-booted shared
+# stack that the runner brings up ONCE, under a fixed environment. This suite
+# cannot use it: the variable under test (AXONFLOW_TRUST_IDENTITY_HEADERS) is
+# process-level, so proving the message tracks it requires recreating the agent
+# container mid-run in a second posture. A registry entry cannot do that, and
+# doing it to the shared stack would corrupt every other suite in the job.
+#
+# So this suite is SELF-BOOTING: `docker compose -p rte3077_$$ up -d --build`
+# over its own isolation overlay, torn down with `down -v --remove-orphans`.
+# The house rule on this repo is: ambient suite -> posture registry;
+# self-booting suite -> dedicated workflow, however well isolated. Same shape as
+# mcp-tenant-policy-e2e.yml, override-identity-gate-e2e.yml and
+# cross-system-hitl-e2e.yml.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3077_mcp_override_refusal_diagnostic/**'
+
+      # The refusal bodies. This is the deliverable — four host plugins render
+      # this text — so any edit to it must re-run the suite.
+      - 'platform/shared/identity/identity_required.go'
+
+      # The facts the message asserts: the trust-gate parse contract, the
+      # shared-synthetic census that decides whether a refusal happens at all,
+      # and the capture of the identity-resolution inputs.
+      - 'platform/shared/identity/trust.go'
+      - 'platform/shared/identity/readscope.go'
+      - 'platform/agent/identity_trust.go'
+
+      # The plane under test: session construction (where the inputs are
+      # captured), the two override tools, and the tools/call dispatch that
+      # renders a tool error into the JSON-RPC envelope the suite parses.
+      - 'platform/agent/mcp_server_handler.go'
+
+      # The orchestrator side of the remedy control (assertion 11 asserts the
+      # call reaches policy lookup and gets "Policy not found"), plus the
+      # identity-required choke point the orchestrator plane still routes
+      # through.
+      - 'platform/orchestrator/overrides_handler.go'
+      - 'platform/orchestrator/identity_required_error.go'
+
+      # The stack the suite boots.
+      - 'docker-compose.yml'
+      - 'platform/agent/Dockerfile'
+      - 'platform/orchestrator/Dockerfile'
+
+      - '.github/workflows/mcp-override-refusal-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-override-refusal-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  mcp-override-refusal-e2e:
+    name: Override refusal names only observable causes
+    runs-on: ubuntu-latest
+    # Builds the agent + orchestrator images, boots postgres + both services,
+    # waits for migrations, runs phase A, recreates the agent in the opposite
+    # trust-gate posture, runs phase B. 12 assertions.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No LLM keys, no license, no AWS secrets: the suite runs in community
+      # mode and boots a local compose stack, so it works on a fork PR too.
+      - name: Run runtime-e2e 3077 — MCP override refusal diagnostic
+        shell: bash
+        run: ./runtime-e2e/3077_mcp_override_refusal_diagnostic/test.sh
+
+      - name: Dump agent + orchestrator logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=rte3077"); do
+            echo "── logs: $c ──"
+            docker logs --tail 150 "$c" 2>&1 || true
+          done

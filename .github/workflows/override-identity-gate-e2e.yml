@@ -1,0 +1,108 @@
+name: Override Identity-Gate E2E
+
+# Executes runtime-e2e/3062_override_identity_gate/ (#3062).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# that registry's runner drives an ALREADY-BOOTED shared stack (agent :8080,
+# orchestrator :8081, portal :8082) — every entry there is ambient, e.g.
+# runtime-e2e/3039_rls_blind_reads/test.sh only curls $AGENT_URL. This suite is
+# self-booting by necessity: proving the contract requires restarting the agent
+# with AXONFLOW_TRUST_IDENTITY_HEADERS flipped, which mutates deployment state
+# every later entry would inherit, and its teardown is `docker compose down -v`.
+# Registered there it would collide on docker-compose.yml's pinned
+# container_name values, leave the shared agent trusting forgeable identity
+# headers, and then delete the stack mid-suite. So it runs isolated here, which
+# is the same shape cross-system-hitl-e2e.yml uses for a self-booting suite.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    # A `paths:` filter is a guard, so it must list every file the suite's
+    # CORRECTNESS depends on — not just the files that express the contract.
+    # Anything the suite greps, curls, boots or reads back out of a container
+    # belongs here; omit one and the guard silently stops guarding, because the
+    # PR that breaks the suite is exactly the PR that never runs it (#3089).
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3062_override_identity_gate/**'
+      # The agent side of the contract: the trust gate and the advisory
+      # gated-identity marker it stamps.
+      - 'platform/agent/proxy.go'
+      - 'platform/agent/identity_trust.go'
+      - 'platform/shared/identity/trust.go'
+      # The orchestrator side: the refusal and its message.
+      - 'platform/orchestrator/identity_required_error.go'
+      - 'platform/orchestrator/overrides_handler.go'
+      # Readiness + routing, which the suite depends on as literally as it
+      # depends on the contract files above:
+      #   platform/agent/run.go owns the "Reverse proxy initialized" log line
+      #     that wait_agent_ready() greps, and the boot ordering (/health
+      #     registered early, RegisterProxyRoutes late) that made that wait
+      #     necessary. Reword the line and the suite hard-times-out at 240s.
+      #   platform/orchestrator/run.go registers POST/DELETE /api/v1/overrides
+      #     and the proxy-auth middleware in front of them; unregister either
+      #     and the 401 under proof becomes a 404 or a different 401.
+      - 'platform/agent/run.go'
+      - 'platform/orchestrator/run.go'
+      # The stack the suite boots. docker-compose.yml pins the container_name
+      # values it addresses, publishes the 8080 it curls, defines the build
+      # contexts, and carries the AXONFLOW_TRUST_IDENTITY_HEADERS passthrough
+      # that assertion B0 reads back out of the running agent container.
+      - 'docker-compose.yml'
+      - 'platform/agent/Dockerfile'
+      - 'platform/orchestrator/Dockerfile'
+      # Phase B needs the seeded policy the suite names (sys_pii_email) to
+      # exist before a 201 is possible. This matches the file that seeds it;
+      # a FUTURE migration that drops or renames the row would still slip
+      # through, which is the residual gap of pinning migrations by filename.
+      - 'migrations/core/031_seed_system_policies.sql'
+      - '.github/workflows/override-identity-gate-e2e.yml'
+
+concurrency:
+  group: override-identity-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+# The job only checks out and runs a local compose stack; it uses no secrets
+# and writes nothing back to the repo. Declaring the minimum explicitly rather
+# than inheriting the repo default is defence in depth (#3089).
+permissions:
+  contents: read
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  override-identity-gate-e2e:
+    name: Override 401 names the identity-trust gate
+    runs-on: ubuntu-latest
+    # Builds the agent + orchestrator images, boots postgres + both services,
+    # then restarts the agent once with the gate flipped.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No LLM keys, no license, no AWS secrets: the suite runs in community
+      # mode against a local compose stack, so it works on a fork PR too.
+      - name: Run runtime-e2e 3062 — override identity gate
+        shell: bash
+        run: ./runtime-e2e/3062_override_identity_gate/test.sh
+
+      - name: Dump agent + orchestrator logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=axonflow-agent" --filter "name=axonflow-orchestrator"); do
+            echo "── logs: $c ──"
+            docker logs --tail 120 "$c" 2>&1 || true
+          done

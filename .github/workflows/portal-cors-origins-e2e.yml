@@ -1,0 +1,85 @@
+name: Portal CORS Origins E2E
+
+# Executes runtime-e2e/3161_portal_cors_origins/ (#3161, consolidated on #3183,
+# epic #3071).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# that registry's runner drives an ALREADY-BOOTED shared stack (agent :8080,
+# orchestrator :8081, portal :8082) — every entry there is ambient. This suite
+# is self-booting by necessity: it recreates the customer-portal THREE times
+# with a different DEPLOYMENT_MODE / AXONFLOW_CORS_ALLOWED_ORIGINS pair each
+# time, because those two variables are the entire configuration axis under
+# test and no single stack can hold all three values at once. Registered in the
+# posture registry it would collide on docker-compose.yml's pinned
+# container_name values and `down -v` the shared stack mid-suite. Same shape as
+# portal-admin-org-scope-e2e.yml and override-identity-gate-e2e.yml.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3161_portal_cors_origins/**'
+      # The portal's policy and the resolver behind it.
+      - 'ee/platform/customer-portal/cors.go'
+      - 'ee/platform/customer-portal/main.go'
+      - 'platform/shared/corspolicy/**'
+      # The agent and orchestrator read the same resolver. A change there that
+      # altered the shared branches would change the portal's answers too, and
+      # this suite is the only place that observes all three postures on a live
+      # process.
+      - 'platform/agent/cors.go'
+      - 'platform/orchestrator/cors.go'
+      # The compose files the suite boots. docker-compose.enterprise.yml also
+      # supplies the portal's AXONFLOW_CORS_ALLOWED_ORIGINS default, so an edit
+      # there can silently change which posture each phase actually runs.
+      - 'docker-compose.yml'
+      - 'docker-compose.enterprise.yml'
+      # The suite builds this image. A Dockerfile change (a different EDITION
+      # arg, a changed entrypoint) can break every assertion without touching a
+      # single .go file.
+      - 'ee/platform/customer-portal/Dockerfile'
+      - '.github/workflows/portal-cors-origins-e2e.yml'
+
+concurrency:
+  group: portal-cors-origins-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  portal-cors-origins-e2e:
+    name: The portal advertises only the origins its operator configured
+    runs-on: ubuntu-latest
+    # Builds the customer-portal image and boots the enterprise stack once,
+    # then recreates one container twice.
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No LLM keys, no license, no AWS secrets: the suite sends preflights to a
+      # local compose stack, so it works on a fork PR too.
+      - name: Run runtime-e2e 3161 — portal CORS origins
+        shell: bash
+        run: ./runtime-e2e/3161_portal_cors_origins/test.sh
+
+      - name: Dump portal logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=af3161-"); do
+            echo "── logs: $c ──"
+            docker logs --tail 150 "$c" 2>&1 || true
+          done

@@ -93,6 +93,63 @@ A `create_override` attempt under any of these fails with an actionable error
 naming the trust gate; blocked responses under them carry no override
 affordance.
 
+### Overrides with the gate off: what the caller sees
+
+Policy overrides are scoped to (tenant, **user**, policy), so the override
+endpoints refuse to act without a per-user identity. With the gate **off** —
+the default — the agent has already stripped `X-User-Email`, so on a default
+deployment `POST /api/v1/overrides` and `DELETE /api/v1/overrides/{id}` return:
+
+```
+401 — Authenticated user identity required: policy overrides are scoped to an
+individual user. Your client DID send a per-user identity header and the
+AxonFlow Agent removed it, because this deployment has not declared its
+identity source trusted (AXONFLOW_TRUST_IDENTITY_HEADERS is not "true" — the
+default since 9.9.0). …
+```
+
+The refusal is intended; only the message changed (#3062). Previously it read
+`Authenticated user identity required (X-User-Email header)`, which sent users
+to re-send a header they had already sent and gave no way to discover that a
+server-side flag governed the feature.
+
+To enable the override tools, pick one:
+
+| Remedy | When it applies |
+|---|---|
+| `AXONFLOW_TRUST_IDENTITY_HEADERS=true` on the agent | Every hop that can reach the agent asserts end-user identity from a validated source — see [When To Turn It On](#when-to-turn-it-on) |
+| A validated per-user token (`X-User-Token`) | Enterprise deployments; the identity is non-forgeable, so no trust declaration is needed |
+
+To let the platform tell those two situations apart, the agent stamps an
+advisory request header, `X-Axonflow-Identity-Gated: true`, on a proxied
+request whose identity headers it actually dropped. It distinguishes "the
+caller sent no identity" from "the caller sent one and we removed it" — the
+two need opposite fixes. It is stamped only for the headers that name a
+**principal** (`X-User-Email`, `X-User-ID`) — never for `X-Session-Id`, which
+names a conversation and is not what an identity-required endpoint reads, so
+dropping it is never why one refused.
+
+It is **diagnostic only**: it selects which sentence a 4xx carries and nothing
+else, and never influences a verdict, authz decision, attribution or tenant
+resolution.
+
+On the agent-proxied path a governed caller cannot assert it: the agent deletes
+any inbound value before setting its own. It is also **bound to the
+`X-Axonflow-Proxy-Auth` channel** — the orchestrator honors it only on a request
+carrying a valid agent proxy token (or, in Community mode, where no
+internal-service secret exists to mint one). A marker set by a caller reaching an
+orchestrator port directly is ignored and the generic message is used, which is
+the safe default. That binding buys no authorization property, because the marker
+never had one: the status, the authorization outcome and the true gate state were
+already identical either way, and neither message reveals anything non-public. It
+exists so that a header which today only selects a sentence cannot quietly acquire
+meaning later — the same rule the agent's own ingress strip is written to.
+
+The agent also clears the marker when a validated per-user token
+(`X-User-Token`) restores an identity the gate had just dropped: at that point
+the request carries a per-user identity, so the marker's claim that its identity
+was removed is no longer true.
+
 ### Direct orchestrator access cannot forge the override identity
 
 Every orchestrator ingress that keys an ADR-044 override apply on a per-user
@@ -101,6 +158,9 @@ identity requires the AxonFlow Agent's HMAC proxy token
 
 - `POST /api/v1/overrides` — override create (the identity becomes the
   override's owner);
+- `DELETE /api/v1/overrides/{id}` — override revoke (the identity is recorded as
+  `revoked_by`, and decides whether a non-admin caller may revoke this override
+  at all);
 - the Workflow Control Plane step-gate — the identity keys the override apply;
 - `POST /api/v1/plan/execute` and `POST /api/v1/plan/{id}/resume` — the MAP
   confirm-mode execute and plan-resume paths persist the actor identity into

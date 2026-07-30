@@ -58,6 +58,8 @@ func TestCreateWebhookHandler_InvalidBody(t *testing.T) {
 	handler, _ := setupTestHandler()
 
 	req := httptest.NewRequest("POST", "/api/v1/webhooks", bytes.NewReader([]byte("invalid")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()

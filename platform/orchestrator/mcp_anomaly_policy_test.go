@@ -299,7 +299,7 @@ func TestGetPoliciesForMCP_IncludesAnomalyAndTimeAccess(t *testing.T) {
 	policies := []DynamicPolicy{
 		{ID: "a", Type: "anomaly", Enabled: true, TenantID: "acme-ops"},
 		{ID: "t", Type: "time-access", Enabled: true, TenantID: "acme-ops"},
-		{ID: "x", Type: "content", Enabled: true, TenantID: "acme-ops"}, // not MCP-related
+		{ID: "x", Type: "content", Enabled: true, TenantID: "acme-ops"}, // #3061: now MCP-related
 		{ID: "other", Type: "anomaly", Enabled: true, TenantID: "different-tenant"},
 	}
 	engine := newTestEngine(policies)
@@ -317,9 +317,16 @@ func TestGetPoliciesForMCP_IncludesAnomalyAndTimeAccess(t *testing.T) {
 	if !ids["a"] || !ids["t"] {
 		t.Errorf("expected anomaly + time-access policies included, got %v", ids)
 	}
-	if ids["x"] {
-		t.Error("content policy should be excluded from MCP path")
+	// #3061 CONTRACT CHANGE (deliberate): this assertion was inverted. It
+	// pinned the defect — "content" is the type axonflow_create_tenant_policy
+	// writes and the type POST /api/v1/policies defaults to, so excluding it
+	// meant every user-authored tenant policy was dropped before evaluation
+	// and could never enforce on the MCP tool-governance plane, while the tool
+	// promised "It will apply to subsequent governed calls."
+	if !ids["x"] {
+		t.Error("content policy must be included on the MCP path (#3061)")
 	}
+	// The TENANT filter is untouched by that change and must still isolate.
 	if ids["other"] {
 		t.Error("policy for a different tenant should be excluded")
 	}

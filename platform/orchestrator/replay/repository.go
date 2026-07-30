@@ -5,17 +5,51 @@ package replay
 
 import (
 	"context"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // AccessScope is the caller's org/tenant read scope for the by-id execution
-// routes (#2934). Empty values leave that dimension unfiltered (single-tenant
-// Community deployments and the internal write path); non-empty values are
-// enforced in the SQL WHERE clause, never as a post-fetch comparison. Behind
-// the agent gateway both values come from the cryptographically validated
-// license headers, so a governed caller cannot pick another org.
+// routes (#2934). Behind the agent gateway both values come from the
+// cryptographically validated license headers, so a governed caller cannot
+// pick another org.
+//
+// #3065: an empty value used to leave that dimension UNFILTERED — the
+// docstring called it "single-tenant Community deployments and the internal
+// write path", but in practice it meant a caller who omitted X-Org-ID read,
+// exported and DELETED any tenant's execution trail. Both dimensions are now
+// mandatory and enforced against the shared choke point; the SQL predicate is
+// strict equality.
 type AccessScope struct {
 	OrgID    string
 	TenantID string
+}
+
+// scope converts an AccessScope to the shared fail-closed authorization
+// primitive (#3065). Keeping AccessScope as the package's public shape avoids
+// churning every handler signature while routing the actual decision through
+// the single choke point.
+func (a AccessScope) scope() tenantscope.Scope {
+	return tenantscope.Scope{OrgID: a.OrgID, TenantID: a.TenantID}
+}
+
+// Validate reports whether the scope is usable for a by-id read or write.
+// An unbound scope is a denial, surfaced as ErrNotFound so the by-id routes
+// never become a cross-tenant existence oracle.
+func (a AccessScope) Validate() error {
+	if !a.scope().Bound() {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Authorize is the fail-closed row check: both the caller's and the row's
+// org/tenant must be present and equal.
+func (a AccessScope) Authorize(rowOrg, rowTenant string) error {
+	if a.scope().Authorize(rowOrg, rowTenant) != nil {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // Repository defines the interface for execution replay data persistence

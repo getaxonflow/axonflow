@@ -2,8 +2,9 @@ package com.getaxonflow.examples;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
+import com.getaxonflow.sdk.types.ConnectorInfo;
+import com.getaxonflow.sdk.types.ConnectorQuery;
 import com.getaxonflow.sdk.types.ConnectorResponse;
-import com.getaxonflow.sdk.types.ConnectorMetadata;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -51,6 +52,46 @@ public class CloudStorageExample {
         return rows;
     }
 
+    /**
+     * Runs a parameterised connector operation.
+     *
+     * <p>Java SDK 9.0.0 has no overload of {@code mcpExecute} that carries parameters —
+     * {@code mcpExecute(connector, statement)} is a two-argument alias for {@code mcpQuery}.
+     * {@code mcpQuery(connector, statement, options)} does take a third argument, but
+     * serialises it under the JSON key {@code "options"}, and the agent's request struct has
+     * no such field — only {@code "parameters"}. So {@code queryConnector(ConnectorQuery)} is
+     * the only call on this client that actually DELIVERS parameters to a connector; it is the
+     * shape the Python sibling of this example uses for every one of its steps.
+     *
+     * <p><b>Two known limitations, both tracked in #3192.</b>
+     *
+     * <p>First: the {@code mcpQuery} calls below (Tests 3, 4, 5 and 7) have the same
+     * {@code "options"} problem, so their bucket and key do not reach the connector. They are
+     * left on {@code mcpQuery} rather than converted because {@code queryConnector} is not a
+     * drop-in substitute for a read — it returns the router's envelope shape rather than a row
+     * array, so {@code dataToRows} would yield nothing, and it hardcodes {@code policyInfo} to
+     * null, so the policy-info assertion in Test 3 would flip to FAIL. Converting them is part
+     * of the SDK fix, not a local edit.
+     *
+     * <p>Second: even with parameters delivered, the Java, Python and TypeScript SDKs all reach
+     * the agent's {@code /mcp/resources/query} route, which dispatches to the connector's
+     * read-side {@code Query}. S3 write actions ({@code put_object}, {@code delete_object})
+     * live on the connector's {@code Execute} side behind {@code /mcp/tools/execute}, which
+     * only the Go SDK and the {@code http/} sibling of this example call.
+     *
+     * <p>This example therefore compiles and runs, but its S3 assertions cannot pass against a
+     * real MinIO backend until #3192 lands. The Go and {@code http/} siblings are the ones to
+     * follow for a working cloud-storage walkthrough today.
+     */
+    private static ConnectorResponse runOperation(AxonFlow client, String connectorId,
+                                                  String operation, Map<String, Object> params) {
+        return client.queryConnector(ConnectorQuery.builder()
+            .connectorId(connectorId)
+            .operation(operation)
+            .parameters(params)
+            .build());
+    }
+
     public static void main(String[] args) {
         String endpoint = System.getenv().getOrDefault("AXONFLOW_ENDPOINT", "http://localhost:8080");
         String clientId = System.getenv().getOrDefault("AXONFLOW_CLIENT_ID", "test-client");
@@ -80,7 +121,7 @@ public class CloudStorageExample {
         System.out.println("----------------------------------------------");
 
         try {
-            List<ConnectorMetadata> connectors = client.listConnectors();
+            List<ConnectorInfo> connectors = client.listConnectors();
             boolean hasS3 = connectors.stream().anyMatch(c -> "s3".equals(c.getType()));
             assertCheck(hasS3, "S3 connector is registered");
         } catch (Exception e) {
@@ -100,7 +141,7 @@ public class CloudStorageExample {
             putParams.put("content", testContent);
             putParams.put("content_type", "text/plain");
 
-            ConnectorResponse putResp = client.mcpExecute("s3", "put_object", putParams);
+            ConnectorResponse putResp = runOperation(client, "s3", "put_object", putParams);
             assertCheck(putResp.isSuccess(), "Put object succeeded");
         } catch (Exception e) {
             System.out.println("  Error: " + e.getMessage());
@@ -191,7 +232,7 @@ public class CloudStorageExample {
             delParams.put("bucket", bucket);
             delParams.put("key", testKey);
 
-            ConnectorResponse delResp = client.mcpExecute("s3", "delete_object", delParams);
+            ConnectorResponse delResp = runOperation(client, "s3", "delete_object", delParams);
             assertCheck(delResp.isSuccess(), "Delete object succeeded");
         } catch (Exception e) {
             System.out.println("  Error: " + e.getMessage());

@@ -1,0 +1,85 @@
+name: RBI App-Role RLS E2E (#3103)
+
+# Executes runtime-e2e/3103_rbi_app_role_rls — the app-role posture proof for
+# the RBI compliance module (epic #3071).
+#
+# Migration 301 enables RLS on all seven rbi_* tables but the package never set
+# app.current_org_id, so on an axonflow_app_role pool every RBI read returned
+# silent zero rows and every RBI write was refused. The posture assertion this
+# suite carries is the one whose absence made "RLS is on" and "reads return
+# nothing" indistinguishable from green — the #3039/#3048 lesson.
+#
+# This suite is SELF-BOOTING: it runs its own `docker compose up` on probed
+# ports and tears down with `down -v`. That is why it gets a dedicated workflow
+# instead of a line in scripts/e2e/production_posture_registry.txt — the shared
+# posture stack pins container_name on every service, so a second compose
+# project collides, and this suite's `down -v` would delete the shared stack out
+# from under every later registry entry. That reason stands on its own.
+#
+# CORRECTION (#3153): a second reason used to be given here — "the posture stack
+# boots in-vpc-enterprise mode, which never runs migrations/industry/banking, so
+# the rbi_* tables do not exist on it and a registry entry could only be
+# vacuous". It was false. setup-e2e-testing.sh writes DEPLOYMENT_MODE=enterprise,
+# which was not a recognised case and fell through to the SaaS set, so the
+# banking tables DID exist and a registry entry would have COLLIDED rather than
+# passed vacuously. #3167 made `enterprise` an alias for in-vpc-enterprise, so
+# the claim is now true for a different reason; it is not restored because it
+# depends on another harness's migration selection and goes stale silently.
+#
+# Epic #3071 Tier 5: a guard that is never executed is not a guard.
+
+on:
+  pull_request:
+    paths:
+      - 'ee/platform/orchestrator/rbi/**'
+      - 'platform/orchestrator/rbi/**'
+      - 'ee/platform/agent/rbi/**'
+      - 'platform/agent/rbi/**'
+      - 'platform/agent/rls/**'
+      - 'migrations/industry/banking/**'
+      - 'runtime-e2e/3103_rbi_app_role_rls/**'
+      - '.github/workflows/rbi-app-role-rls-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ee/platform/orchestrator/rbi/**'
+      - 'platform/orchestrator/rbi/**'
+      - 'ee/platform/agent/rbi/**'
+      - 'platform/agent/rbi/**'
+      - 'platform/agent/rls/**'
+      - 'migrations/industry/banking/**'
+      - 'runtime-e2e/3103_rbi_app_role_rls/**'
+  workflow_dispatch:
+
+concurrency:
+  group: rbi-app-role-rls-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rbi-app-role-rls:
+    name: RBI reads/writes under axonflow_app_role (self-booting stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run runtime-e2e/3103_rbi_app_role_rls
+        env:
+          AXONFLOW_TELEMETRY: 'off'
+          CI: 'true'
+        # No `continue-on-error`, no soft skip: the suite exits non-zero on any
+        # failed assertion AND on a short assertion count, and this step is the
+        # job's verdict.
+        run: bash runtime-e2e/3103_rbi_app_role_rls/test.sh
+
+      - name: Collect stack logs on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=af3103-"); do
+            echo "───── $c ─────"
+            docker logs --tail 200 "$c" 2>&1 || true
+          done

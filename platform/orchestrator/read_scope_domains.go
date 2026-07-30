@@ -100,15 +100,22 @@ func enforceDomainReadAuthority(next http.Handler) http.Handler {
 			return
 		}
 
+		// #3060: both decisions below gate on AdminAuthority, NOT TenantWide.
+		// This family is an AUTHORIZATION question — spend figures, budget
+		// governance and execution input/output are administrator data with no
+		// own-rows form. The two axes diverge for Community-SaaS: a
+		// single-operator evaluator reads its own audit trail tenant-wide, and
+		// must still be denied here (and still receive REDACTED spend on
+		// budgets/check). See callerReadScope's two-axes note.
 		if r.URL.Path == budgetCheckPath {
-			if scope := resolveCallerReadScope(r); !scope.TenantWide {
+			if scope := resolveCallerReadScope(r); !scope.AdminAuthority {
 				r = r.WithContext(cost.WithSpendRedaction(r.Context()))
 			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if scope := resolveCallerReadScope(r); !scope.TenantWide {
+		if scope := resolveCallerReadScope(r); !scope.AdminAuthority {
 			log.Printf("[domain-read-scope] BLOCKED: caller lacks tenant-wide read authority for %s %s", r.Method, r.URL.Path)
 			sendErrorResponse(w, "cost/usage and execution APIs require an admin/owner role", http.StatusForbidden)
 			return

@@ -13,9 +13,11 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -169,6 +171,21 @@ func TestIntegration_EndToEndFlow(t *testing.T) {
 
 // TestIntegration_RefreshAPIEndToEnd tests the refresh API endpoints
 func TestIntegration_RefreshAPIEndToEnd(t *testing.T) {
+	// #3067: the refresh routes are behind apiAuthMiddleware and bound to the
+	// authenticated tenant. Run in community mode and present a Basic
+	// credential whose client id IS "test-tenant", so the middleware derives
+	// the same tenancy the URL paths below name.
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	_ = os.Setenv("DEPLOYMENT_MODE", "community")
+	t.Cleanup(func() {
+		if origMode != "" {
+			_ = os.Setenv("DEPLOYMENT_MODE", origMode)
+		} else {
+			_ = os.Unsetenv("DEPLOYMENT_MODE")
+		}
+	})
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("test-tenant:"))
+
 	// Setup
 	mockConfigSvc := config.NewRuntimeConfigService(config.RuntimeConfigServiceOptions{})
 	factory := func(connectorType string) (base.Connector, error) {
@@ -184,6 +201,7 @@ func TestIntegration_RefreshAPIEndToEnd(t *testing.T) {
 	// Test refresh all endpoint
 	t.Run("refresh all", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/connectors/refresh", nil)
+		req.Header.Set("Authorization", basic)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -207,6 +225,7 @@ func TestIntegration_RefreshAPIEndToEnd(t *testing.T) {
 	// Test cache stats endpoint
 	t.Run("cache stats", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/v1/connectors/cache/stats", nil)
+		req.Header.Set("Authorization", basic)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -227,6 +246,7 @@ func TestIntegration_RefreshAPIEndToEnd(t *testing.T) {
 	// Test tenant refresh endpoint
 	t.Run("refresh tenant", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/connectors/refresh/test-tenant", nil)
+		req.Header.Set("Authorization", basic)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -235,9 +255,37 @@ func TestIntegration_RefreshAPIEndToEnd(t *testing.T) {
 		}
 	})
 
+	// #3067 (S-6): the {tenant_id} path segment is validated against the
+	// credential, so naming somebody else's tenancy is refused end-to-end.
+	t.Run("refresh another tenant is refused", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/v1/connectors/refresh/victim-tenant", nil)
+		req.Header.Set("Authorization", basic)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("Expected status 403 for a foreign tenant_id, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated refresh is refused", func(t *testing.T) {
+		origMode := os.Getenv("DEPLOYMENT_MODE")
+		_ = os.Setenv("DEPLOYMENT_MODE", "enterprise")
+		defer func() { _ = os.Setenv("DEPLOYMENT_MODE", origMode) }()
+
+		req := httptest.NewRequest("POST", "/api/v1/connectors/refresh", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("Expected status 401 without credentials, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
 	// Test specific connector refresh endpoint
 	t.Run("refresh connector", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/connectors/refresh/test-tenant/test-connector", nil)
+		req.Header.Set("Authorization", basic)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 

@@ -153,7 +153,7 @@ func TestRegistry_Register(t *testing.T) {
 			t.Fatalf("Register error = %v", err)
 		}
 
-		if !r.Has("test-provider") {
+		if !r.Has(GlobalTenant, "test-provider") {
 			t.Error("provider should be registered")
 		}
 	})
@@ -249,7 +249,7 @@ func TestRegistry_Register(t *testing.T) {
 		}
 
 		// Should not be registered in memory
-		if r.Has("test-provider") {
+		if r.Has(GlobalTenant, "test-provider") {
 			t.Error("provider should not be registered after storage error")
 		}
 	})
@@ -371,7 +371,7 @@ func TestRegistry_RegisterProvider(t *testing.T) {
 			t.Fatalf("RegisterProvider error = %v", err)
 		}
 
-		if !r.Has("test-provider") {
+		if !r.Has(GlobalTenant, "test-provider") {
 			t.Error("provider should be registered")
 		}
 	})
@@ -402,7 +402,7 @@ func TestRegistry_Get(t *testing.T) {
 		provider := NewMockProvider("test-provider", ProviderTypeOpenAI)
 		_ = r.RegisterProvider("test-provider", provider, nil)
 
-		got, err := r.Get(ctx, "test-provider")
+		got, err := r.Get(ctx, GlobalTenant, "test-provider")
 		if err != nil {
 			t.Fatalf("Get error = %v", err)
 		}
@@ -424,7 +424,7 @@ func TestRegistry_Get(t *testing.T) {
 			t.Error("provider should not be instantiated before Get")
 		}
 
-		provider, err := r.Get(ctx, "lazy-provider")
+		provider, err := r.Get(ctx, GlobalTenant, "lazy-provider")
 		if err != nil {
 			t.Fatalf("Get error = %v", err)
 		}
@@ -440,7 +440,7 @@ func TestRegistry_Get(t *testing.T) {
 
 	t.Run("provider not found", func(t *testing.T) {
 		r := setupTestRegistry(t)
-		_, err := r.Get(ctx, "non-existent")
+		_, err := r.Get(ctx, GlobalTenant, "non-existent")
 		if err == nil {
 			t.Fatal("Get should error for non-existent provider")
 		}
@@ -466,19 +466,19 @@ func TestRegistry_Unregister(t *testing.T) {
 		}
 		_ = r.Register(ctx, config)
 
-		err := r.Unregister(ctx, "test-provider")
+		err := r.Unregister(ctx, GlobalTenant, "test-provider")
 		if err != nil {
 			t.Fatalf("Unregister error = %v", err)
 		}
 
-		if r.Has("test-provider") {
+		if r.Has(GlobalTenant, "test-provider") {
 			t.Error("provider should not exist after unregister")
 		}
 	})
 
 	t.Run("unregister non-existent", func(t *testing.T) {
 		r := setupTestRegistry(t)
-		err := r.Unregister(ctx, "non-existent")
+		err := r.Unregister(ctx, GlobalTenant, "non-existent")
 		if err == nil {
 			t.Fatal("Unregister should error for non-existent provider")
 		}
@@ -497,13 +497,13 @@ func TestRegistry_Enable(t *testing.T) {
 		}
 		_ = r.Register(ctx, config)
 
-		err := r.Enable("test-provider")
+		err := r.Enable(GlobalTenant, "test-provider")
 		if err != nil {
 			t.Fatalf("Enable error = %v", err)
 		}
 
 		// Verify provider is now enabled
-		enabledList := r.ListEnabled()
+		enabledList := r.ListEnabled(GlobalTenant)
 		found := false
 		for _, name := range enabledList {
 			if name == "test-provider" {
@@ -518,7 +518,7 @@ func TestRegistry_Enable(t *testing.T) {
 
 	t.Run("enable non-existent provider", func(t *testing.T) {
 		r := setupTestRegistry(t)
-		err := r.Enable("non-existent")
+		err := r.Enable(GlobalTenant, "non-existent")
 		if err == nil {
 			t.Fatal("Enable should error for non-existent provider")
 		}
@@ -545,18 +545,18 @@ func TestRegistry_Disable(t *testing.T) {
 		_ = r.Register(ctx, config)
 
 		// Verify provider is initially enabled
-		enabledList := r.ListEnabled()
+		enabledList := r.ListEnabled(GlobalTenant)
 		if len(enabledList) != 1 {
 			t.Fatalf("expected 1 enabled provider, got %d", len(enabledList))
 		}
 
-		err := r.Disable("test-provider")
+		err := r.Disable(GlobalTenant, "test-provider")
 		if err != nil {
 			t.Fatalf("Disable error = %v", err)
 		}
 
 		// Verify provider is now disabled
-		enabledList = r.ListEnabled()
+		enabledList = r.ListEnabled(GlobalTenant)
 		if len(enabledList) != 0 {
 			t.Errorf("expected 0 enabled providers after Disable(), got %d", len(enabledList))
 		}
@@ -564,7 +564,7 @@ func TestRegistry_Disable(t *testing.T) {
 
 	t.Run("disable non-existent provider", func(t *testing.T) {
 		r := setupTestRegistry(t)
-		err := r.Disable("non-existent")
+		err := r.Disable(GlobalTenant, "non-existent")
 		if err == nil {
 			t.Fatal("Disable should error for non-existent provider")
 		}
@@ -587,7 +587,7 @@ func TestRegistry_List(t *testing.T) {
 	_ = r.Register(ctx, &ProviderConfig{Name: "provider-b", Type: ProviderTypeOllama})
 	_ = r.Register(ctx, &ProviderConfig{Name: "provider-c", Type: ProviderTypeOllama})
 
-	names := r.List()
+	names := r.List(GlobalTenant)
 	if len(names) != 3 {
 		t.Errorf("List() length = %d, want 3", len(names))
 	}
@@ -606,7 +606,7 @@ func TestRegistry_ListEnabled(t *testing.T) {
 	_ = r.Register(ctx, &ProviderConfig{Name: "disabled", Type: ProviderTypeOllama, Enabled: false})
 	_ = r.Register(ctx, &ProviderConfig{Name: "enabled-2", Type: ProviderTypeOllama, Enabled: true})
 
-	names := r.ListEnabled()
+	names := r.ListEnabled(GlobalTenant)
 	if len(names) != 2 {
 		t.Errorf("ListEnabled() length = %d, want 2", len(names))
 	}
@@ -620,12 +620,12 @@ func TestRegistry_ListByType(t *testing.T) {
 	_ = r.Register(ctx, &ProviderConfig{Name: "ollama-1", Type: ProviderTypeOllama})
 	_ = r.Register(ctx, &ProviderConfig{Name: "openai-2", Type: ProviderTypeOpenAI, APIKey: "key"})
 
-	openaiProviders := r.ListByType(ProviderTypeOpenAI)
+	openaiProviders := r.ListByType(GlobalTenant, ProviderTypeOpenAI)
 	if len(openaiProviders) != 2 {
 		t.Errorf("ListByType(OpenAI) length = %d, want 2", len(openaiProviders))
 	}
 
-	ollamaProviders := r.ListByType(ProviderTypeOllama)
+	ollamaProviders := r.ListByType(GlobalTenant, ProviderTypeOllama)
 	if len(ollamaProviders) != 1 {
 		t.Errorf("ListByType(Ollama) length = %d, want 1", len(ollamaProviders))
 	}
@@ -635,15 +635,15 @@ func TestRegistry_Count(t *testing.T) {
 	ctx := context.Background()
 	r := setupTestRegistry(t)
 
-	if r.Count() != 0 {
-		t.Errorf("Count() = %d, want 0", r.Count())
+	if r.Count(GlobalTenant) != 0 {
+		t.Errorf("Count() = %d, want 0", r.Count(GlobalTenant))
 	}
 
 	_ = r.Register(ctx, &ProviderConfig{Name: "provider-1", Type: ProviderTypeOllama})
 	_ = r.Register(ctx, &ProviderConfig{Name: "provider-2", Type: ProviderTypeOllama})
 
-	if r.Count() != 2 {
-		t.Errorf("Count() = %d, want 2", r.Count())
+	if r.Count(GlobalTenant) != 2 {
+		t.Errorf("Count() = %d, want 2", r.Count(GlobalTenant))
 	}
 }
 
@@ -660,7 +660,7 @@ func TestRegistry_GetConfig(t *testing.T) {
 	_ = r.Register(ctx, config)
 
 	t.Run("get existing config", func(t *testing.T) {
-		got, err := r.GetConfig("test-provider")
+		got, err := r.GetConfig(GlobalTenant, "test-provider")
 		if err != nil {
 			t.Fatalf("GetConfig error = %v", err)
 		}
@@ -673,7 +673,7 @@ func TestRegistry_GetConfig(t *testing.T) {
 	})
 
 	t.Run("get non-existent config", func(t *testing.T) {
-		_, err := r.GetConfig("non-existent")
+		_, err := r.GetConfig(GlobalTenant, "non-existent")
 		if err == nil {
 			t.Fatal("GetConfig should error for non-existent provider")
 		}
@@ -693,7 +693,7 @@ func TestRegistry_HealthCheck(t *testing.T) {
 	provider2.healthStatus = HealthStatusUnhealthy
 	_ = r.RegisterProvider("provider-2", provider2, nil)
 
-	results := r.HealthCheck(ctx)
+	results := r.HealthCheck(ctx, GlobalTenant)
 	if len(results) != 2 {
 		t.Fatalf("HealthCheck returned %d results, want 2", len(results))
 	}
@@ -724,9 +724,9 @@ func TestRegistry_GetHealthyProviders(t *testing.T) {
 	_ = r.RegisterProvider("healthy-2", provider3, nil)
 
 	// Run health check to populate results
-	r.HealthCheck(ctx)
+	r.HealthCheck(ctx, GlobalTenant)
 
-	healthy := r.GetHealthyProviders()
+	healthy := r.GetHealthyProviders(GlobalTenant)
 	if len(healthy) != 2 {
 		t.Errorf("GetHealthyProviders() length = %d, want 2", len(healthy))
 	}
@@ -737,9 +737,11 @@ func TestRegistry_ReloadFromStorage(t *testing.T) {
 
 	t.Run("reload new providers", func(t *testing.T) {
 		storage := newMockStorage()
-		// Pre-populate storage
-		storage.providers["provider-1"] = &ProviderConfig{Name: "provider-1", Type: ProviderTypeOllama}
-		storage.providers["provider-2"] = &ProviderConfig{Name: "provider-2", Type: ProviderTypeOllama}
+		// Pre-populate storage. #3067: rows carry their tenancy, which is what
+		// the registry keys on — PostgresStorage.GetProvider SELECTs tenant_id
+		// for exactly this reason.
+		storage.providers["provider-1"] = &ProviderConfig{Name: "provider-1", Type: ProviderTypeOllama, TenantID: "org-1"}
+		storage.providers["provider-2"] = &ProviderConfig{Name: "provider-2", Type: ProviderTypeOllama, TenantID: "org-2"}
 
 		fm := NewFactoryManager()
 		fm.Register(ProviderTypeOllama, func(config ProviderConfig) (Provider, error) {
@@ -753,8 +755,42 @@ func TestRegistry_ReloadFromStorage(t *testing.T) {
 			t.Fatalf("ReloadFromStorage error = %v", err)
 		}
 
-		if r.Count() != 2 {
-			t.Errorf("Count() = %d, want 2", r.Count())
+		// Each row lands in ITS OWN tenancy, not a shared pool.
+		if got := r.Count("org-1"); got != 1 {
+			t.Errorf("Count(org-1) = %d, want 1", got)
+		}
+		if got := r.Count("org-2"); got != 1 {
+			t.Errorf("Count(org-2) = %d, want 1", got)
+		}
+		if names := r.List("org-1"); len(names) != 1 || names[0] != "provider-1" {
+			t.Errorf("org-1 must see only its own provider, got %v", names)
+		}
+		// The deployment pool the router selects from stays EMPTY — a reloaded
+		// tenant provider must never be promoted into it.
+		if got := r.Count(GlobalTenant); got != 0 {
+			t.Errorf("Count(GlobalTenant) = %d, want 0 — tenant providers must not enter the deployment routing pool", got)
+		}
+	})
+
+	// #3067 (R3 BLOCKER): a storage row that arrives with no tenancy must be
+	// REFUSED, not keyed under GlobalTenant. normalizeTenant would otherwise
+	// promote one tenant's provider into the pool the deployment router
+	// selects from for every tenant's traffic — the S-2 defect, reintroduced
+	// through the reload path.
+	t.Run("refuses a row with no tenancy", func(t *testing.T) {
+		storage := newMockStorage()
+		storage.providers["untenanted"] = &ProviderConfig{Name: "untenanted", Type: ProviderTypeOllama}
+
+		r := NewRegistry(WithStorage(storage))
+		if err := r.ReloadFromStorage(ctx); err != nil {
+			t.Fatalf("ReloadFromStorage error = %v", err)
+		}
+
+		if r.Has(GlobalTenant, "untenanted") {
+			t.Fatal("a provider with no tenant_id was keyed into the deployment pool")
+		}
+		if r.Has("any-tenant", "untenanted") {
+			t.Fatal("a provider with no tenant_id became visible to a tenant")
 		}
 	})
 
@@ -779,8 +815,8 @@ func TestRegistry_Close(t *testing.T) {
 		t.Fatalf("Close error = %v", err)
 	}
 
-	if r.Count() != 0 {
-		t.Errorf("Count() after Close() = %d, want 0", r.Count())
+	if r.Count(GlobalTenant) != 0 {
+		t.Errorf("Count() after Close() = %d, want 0", r.Count(GlobalTenant))
 	}
 }
 
@@ -808,16 +844,16 @@ func TestRegistry_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = r.List()
-			_ = r.Count()
-			_ = r.ListEnabled()
+			_ = r.List(GlobalTenant)
+			_ = r.Count(GlobalTenant)
+			_ = r.ListEnabled(GlobalTenant)
 		}()
 	}
 
 	wg.Wait()
 
 	// Should have registered some providers
-	if r.Count() == 0 {
+	if r.Count(GlobalTenant) == 0 {
 		t.Error("some providers should be registered")
 	}
 }
@@ -871,7 +907,7 @@ func TestRegistry_HealthCheckSingle(t *testing.T) {
 		provider.healthStatus = HealthStatusHealthy
 		_ = r.RegisterProvider("test-provider", provider, nil)
 
-		result, err := r.HealthCheckSingle(ctx, "test-provider")
+		result, err := r.HealthCheckSingle(ctx, GlobalTenant, "test-provider")
 		if err != nil {
 			t.Fatalf("HealthCheckSingle error = %v", err)
 		}
@@ -881,7 +917,7 @@ func TestRegistry_HealthCheckSingle(t *testing.T) {
 	})
 
 	t.Run("non-existent provider", func(t *testing.T) {
-		_, err := r.HealthCheckSingle(ctx, "non-existent")
+		_, err := r.HealthCheckSingle(ctx, GlobalTenant, "non-existent")
 		if err == nil {
 			t.Fatal("HealthCheckSingle should error for non-existent provider")
 		}
@@ -897,15 +933,15 @@ func TestRegistry_GetHealthResult(t *testing.T) {
 	_ = r.RegisterProvider("test-provider", provider, nil)
 
 	t.Run("no cached result", func(t *testing.T) {
-		result := r.GetHealthResult("test-provider")
+		result := r.GetHealthResult(GlobalTenant, "test-provider")
 		if result != nil {
 			t.Error("expected nil for uncached result")
 		}
 	})
 
 	t.Run("after health check", func(t *testing.T) {
-		r.HealthCheck(ctx)
-		result := r.GetHealthResult("test-provider")
+		r.HealthCheck(ctx, GlobalTenant)
+		result := r.GetHealthResult(GlobalTenant, "test-provider")
 		if result == nil {
 			t.Fatal("expected cached result after health check")
 		}
@@ -922,8 +958,8 @@ func TestRegistry_CountWithPreInstantiatedProvider(t *testing.T) {
 	provider := NewMockProvider("no-config-provider", ProviderTypeOpenAI)
 	_ = r.RegisterProvider("no-config-provider", provider, nil)
 
-	if r.Count() != 1 {
-		t.Errorf("Count() = %d, want 1 for pre-instantiated provider without config", r.Count())
+	if r.Count(GlobalTenant) != 1 {
+		t.Errorf("Count() = %d, want 1 for pre-instantiated provider without config", r.Count(GlobalTenant))
 	}
 }
 
@@ -946,7 +982,7 @@ func TestRegistry_HealthCheckWithError(t *testing.T) {
 	provider.healthCheckErr = errors.New("health check failed")
 	_ = r.RegisterProvider("error-provider", provider, nil)
 
-	results := r.HealthCheck(ctx)
+	results := r.HealthCheck(ctx, GlobalTenant)
 	result := results["error-provider"]
 	if result == nil {
 		t.Fatal("expected result even for error")
@@ -976,7 +1012,7 @@ func TestRegistry_FactoryCreationError(t *testing.T) {
 	_ = r.Register(ctx, config)
 
 	// Get should fail when factory fails
-	_, err := r.Get(ctx, "fail-provider")
+	_, err := r.Get(ctx, GlobalTenant, "fail-provider")
 	if err == nil {
 		t.Fatal("Get should error when factory fails")
 	}

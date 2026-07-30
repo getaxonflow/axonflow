@@ -57,6 +57,8 @@ func TestRegisterRoutes(t *testing.T) {
 
 	for _, route := range routes {
 		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		match := &mux.RouteMatch{}
 		if !r.Match(req, match) {
 			t.Errorf("route %s %s not registered", route.method, route.path)
@@ -79,6 +81,7 @@ func TestCreateBudgetHandler(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/api/v1/budgets", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org-1")
 
@@ -103,6 +106,8 @@ func TestCreateBudgetHandlerInvalidBody(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("POST", "/api/v1/budgets", bytes.NewReader([]byte("invalid json")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -129,6 +134,8 @@ func TestCreateBudgetHandlerDuplicate(t *testing.T) {
 
 	// First request
 	req := httptest.NewRequest("POST", "/api/v1/budgets", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -139,6 +146,8 @@ func TestCreateBudgetHandlerDuplicate(t *testing.T) {
 
 	// Second request (duplicate)
 	req = httptest.NewRequest("POST", "/api/v1/budgets", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 	rr = httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -158,6 +167,8 @@ func TestListBudgetsHandler(t *testing.T) {
 	repo.budgets["b2"] = &Budget{ID: "b2", Name: "Budget 2", OrgID: "org-1", Scope: ScopeOrganization, LimitUSD: 200, Period: PeriodMonthly}
 
 	req := httptest.NewRequest("GET", "/api/v1/budgets?org_id=org-1", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -199,10 +210,13 @@ func TestListBudgetsHandler_WithQueryParams(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// #3065: both tenancy headers are required on every budget
+			// route. The `?org_id=` query parameter in these fixtures is now
+			// inert — it used to be a fallback a direct caller could use to
+			// name someone else's org.
 			req := httptest.NewRequest("GET", tt.query, nil)
-			if tt.name == "with tenant header" {
-				req.Header.Set("X-Tenant-ID", "tenant-1")
-			}
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			rr := httptest.NewRecorder()
 			r.ServeHTTP(rr, req)
 
@@ -219,6 +233,8 @@ func TestListBudgetsHandler_CORS(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -235,6 +251,8 @@ func TestGetBudgetHandler(t *testing.T) {
 	repo.budgets["get-test"] = &Budget{ID: "get-test", Name: "Get Test", Scope: ScopeOrganization, LimitUSD: 100, Period: PeriodMonthly}
 
 	req := httptest.NewRequest("GET", "/api/v1/budgets/get-test", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -256,6 +274,8 @@ func TestGetBudgetHandlerNotFound(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/budgets/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -275,6 +295,8 @@ func TestUpdateBudgetHandler(t *testing.T) {
 	bodyBytes, _ := json.Marshal(update)
 
 	req := httptest.NewRequest("PUT", "/api/v1/budgets/update-test", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", "user-1")
 
@@ -295,6 +317,8 @@ func TestUpdateBudgetHandlerNotFound(t *testing.T) {
 	bodyBytes, _ := json.Marshal(update)
 
 	req := httptest.NewRequest("PUT", "/api/v1/budgets/nonexistent", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -313,6 +337,8 @@ func TestUpdateBudgetHandler_InvalidJSON(t *testing.T) {
 	repo.budgets["update-test"] = &Budget{ID: "update-test", Name: "Original", Scope: ScopeOrganization, LimitUSD: 100, Period: PeriodMonthly}
 
 	req := httptest.NewRequest("PUT", "/api/v1/budgets/update-test", bytes.NewReader([]byte("invalid json")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -345,6 +371,8 @@ func TestUpdateBudgetHandler_AllFields(t *testing.T) {
 	bodyBytes, _ := json.Marshal(update)
 
 	req := httptest.NewRequest("PUT", "/api/v1/budgets/update-all", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", "test-user")
 
@@ -362,6 +390,8 @@ func TestUpdateBudgetHandler_CORS(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets/any-id", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -376,6 +406,8 @@ func TestDeleteBudgetHandler_CORS(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets/any-id", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -390,6 +422,8 @@ func TestGetBudgetHandler_CORS(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets/any-id", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -406,6 +440,8 @@ func TestDeleteBudgetHandler(t *testing.T) {
 	repo.budgets["delete-test"] = &Budget{ID: "delete-test", Name: "To Delete", Scope: ScopeOrganization, LimitUSD: 100, Period: PeriodMonthly}
 
 	req := httptest.NewRequest("DELETE", "/api/v1/budgets/delete-test", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -420,6 +456,8 @@ func TestDeleteBudgetHandlerNotFound(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/budgets/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -446,6 +484,8 @@ func TestGetBudgetStatusHandler(t *testing.T) {
 	repo.SetUsageForScope(ScopeOrganization, "org-1", "org-1", 50.0)
 
 	req := httptest.NewRequest("GET", "/api/v1/budgets/status-test/status", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -473,6 +513,8 @@ func TestGetBudgetAlertsHandler(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/budgets/alerts-test/alerts", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -494,6 +536,7 @@ func TestGetUsageSummaryHandler(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/usage?org_id=org-1&period=monthly", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -509,6 +552,8 @@ func TestGetUsageBreakdownHandler(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/usage/breakdown?group_by=provider&period=monthly", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -523,6 +568,8 @@ func TestGetUsageBreakdownHandlerInvalidGroupBy(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/usage/breakdown?group_by=invalid", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -537,6 +584,8 @@ func TestListUsageRecordsHandler(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/usage/records?org_id=org-1", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -551,6 +600,8 @@ func TestGetPricingHandler(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/pricing", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -572,6 +623,8 @@ func TestGetPricingHandlerByProvider(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/pricing?provider=anthropic", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -586,6 +639,8 @@ func TestGetPricingHandlerByModel(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/pricing?provider=anthropic&model=claude-sonnet-4", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -600,6 +655,8 @@ func TestGetPricingHandlerUnknownModel(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/pricing?provider=unknown&model=unknown", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -631,6 +688,8 @@ func TestCheckBudgetHandler(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/api/v1/budgets/check", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -672,6 +731,8 @@ func TestCheckBudgetHandlerBlocked(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	req := httptest.NewRequest("POST", "/api/v1/budgets/check", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -695,6 +756,8 @@ func TestCheckBudgetHandlerInvalidBody(t *testing.T) {
 	handler.RegisterRoutes(r)
 
 	req := httptest.NewRequest("POST", "/api/v1/budgets/check", bytes.NewReader([]byte("invalid")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -720,6 +783,8 @@ func TestCORSPreflight(t *testing.T) {
 
 	for _, endpoint := range endpoints {
 		req := httptest.NewRequest("OPTIONS", endpoint, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 
@@ -748,6 +813,8 @@ func TestRegisterCommunityRoutes(t *testing.T) {
 
 	for _, route := range communityRoutes {
 		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		match := &mux.RouteMatch{}
 		if !r.Match(req, match) {
 			t.Errorf("community route %s %s not registered", route.method, route.path)
@@ -773,6 +840,8 @@ func TestRegisterCommunityRoutes(t *testing.T) {
 
 	for _, route := range enterpriseRoutes {
 		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		match := &mux.RouteMatch{}
 		if r.Match(req, match) {
 			t.Errorf("enterprise route %s %s should NOT be registered in community mode", route.method, route.path)
@@ -805,6 +874,8 @@ func TestRegisterEnterpriseRoutes(t *testing.T) {
 
 	for _, route := range enterpriseRoutes {
 		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		match := &mux.RouteMatch{}
 		if !r.Match(req, match) {
 			t.Errorf("enterprise route %s %s not registered", route.method, route.path)
@@ -839,6 +910,8 @@ func TestRegisterRoutes_BackwardCompatibility(t *testing.T) {
 
 	for _, route := range allRoutes {
 		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		match := &mux.RouteMatch{}
 		if !r.Match(req, match) {
 			t.Errorf("route %s %s not registered by RegisterRoutes()", route.method, route.path)
@@ -854,6 +927,8 @@ func TestCommunityOnlyRoutes_PricingWorks(t *testing.T) {
 	handler.RegisterCommunityRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/pricing", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -870,6 +945,7 @@ func TestCommunityOnlyRoutes_UsageSummaryWorks(t *testing.T) {
 	handler.RegisterCommunityRoutes(r)
 
 	req := httptest.NewRequest("GET", "/api/v1/usage?org_id=org-1&period=monthly", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-1")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -896,27 +972,5 @@ func TestCommunityOnlyRoutes_BudgetReturns404(t *testing.T) {
 	// or 404 if no path matches at all
 	if rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("budget POST in community mode = %v, want 404 or 405", rr.Code)
-	}
-}
-
-func TestFirstOrDefault(t *testing.T) {
-	tests := []struct {
-		name   string
-		values []string
-		want   string
-	}{
-		{"first non-empty", []string{"first", "second"}, "first"},
-		{"second non-empty", []string{"", "second"}, "second"},
-		{"all empty", []string{"", ""}, ""},
-		{"no values", []string{}, ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := firstOrDefault(tt.values...)
-			if got != tt.want {
-				t.Errorf("firstOrDefault() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }

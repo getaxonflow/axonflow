@@ -28,7 +28,10 @@ import (
 func TestAuthenticateMCPServerRequest_PrefersRealUserEmail(t *testing.T) {
 	// Community mode lets Authenticate succeed without a DB, matching the
 	// existing authenticateMCPServerRequest test corpus.
-	t.Setenv("AXONFLOW_MODE", "community")
+	// #3096: this said AXONFLOW_MODE, which nothing reads. The tests passed
+	// only because DEPLOYMENT_MODE was unset and unset meant community — the
+	// fail-open default was masking a dead env var. Name the real one.
+	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("AXONFLOW_TRUST_IDENTITY_HEADERS", "true") // #2896: header identity requires the trust gate
 
 	req := httptest.NewRequest("POST", "/", nil)
@@ -47,7 +50,10 @@ func TestAuthenticateMCPServerRequest_PrefersRealUserEmail(t *testing.T) {
 }
 
 func TestAuthenticateMCPServerRequest_SyntheticFallbackRetained(t *testing.T) {
-	t.Setenv("AXONFLOW_MODE", "community")
+	// #3096: this said AXONFLOW_MODE, which nothing reads. The tests passed
+	// only because DEPLOYMENT_MODE was unset and unset meant community — the
+	// fail-open default was masking a dead env var. Name the real one.
+	t.Setenv("DEPLOYMENT_MODE", "community")
 
 	// No X-User-Email and no X-User-ID → the synthetic client-scoped identity
 	// must still be produced (never empty/NULL).
@@ -74,7 +80,10 @@ func TestAuthenticateMCPServerRequest_SyntheticFallbackRetained(t *testing.T) {
 // tier of the precedence: X-User-ID is used when X-User-Email is absent, still
 // ahead of the synthetic id.
 func TestAuthenticateMCPServerRequest_UserIDFallbackBeforeSynthetic(t *testing.T) {
-	t.Setenv("AXONFLOW_MODE", "community")
+	// #3096: this said AXONFLOW_MODE, which nothing reads. The tests passed
+	// only because DEPLOYMENT_MODE was unset and unset meant community — the
+	// fail-open default was masking a dead env var. Name the real one.
+	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("AXONFLOW_TRUST_IDENTITY_HEADERS", "true") // #2896: header identity requires the trust gate
 
 	req := httptest.NewRequest("POST", "/", nil)

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,10 +25,168 @@ var ErrExecutionNotFound = errors.New("execution not found")
 
 // executionStore provides thread-safe in-memory storage for HITL executions.
 // For production, replace with database-backed storage.
+//
+// #3067 (S-4): entries are keyed by `orgScope + NUL + executionID`, not by
+// execution id alone. The MAP approve/reject handlers used to SCAN this flat
+// map matching on plan id only and then flip ApprovalStatus to approved —
+// letting any tenant release another tenant's paused, human-gated workflow.
+// That is the in-memory twin of the #3049 R3 blocker (HITL approve forgery
+// via a BYPASSRLS lookup); it was invisible to that census because this
+// store issues no SQL. Keying by the owning org means a scan cannot reach
+// outside the caller's scope even when the caller knows the plan id.
 var (
 	executionStore      = make(map[string]*HITLWorkflowExecution)
 	executionStoreMutex sync.RWMutex
 )
+
+// hitlScopeSep separates the org scope from the execution id in the store's
+// composite keys. NUL appears in neither component.
+const hitlScopeSep = "\x00"
+
+// normalizeHITLScope reduces an (orgID, tenantID) pair to the single canonical
+// scope used as the store's key prefix.
+//
+// Both sides of every comparison are produced by this one function from the
+// same pair of headers: executeWorkflowHandler re-derives
+// User.OrgID/User.TenantID from X-Org-ID/X-Tenant-ID and executePlanHandler
+// calls applyAuthoritativeIdentity, while the approve/reject handlers read
+// those headers directly. OrgID wins because org_id is the canonical tenancy
+// identifier post-Phase-6; TenantID is the pre-org fallback still used in
+// community mode.
+//
+// Both writer-side overlays are CONDITIONAL on the header being non-empty —
+// run.go guards each with `if header != ""`, and applyAuthoritativeIdentity
+// returns early when both are empty — and `req.User` is itself a JSON body
+// field. So the headers are authoritative only for a caller that carries them;
+// a caller reaching the orchestrator directly with none still picks its own
+// scope out of the body. That is not a regression (pre-#3066-C3-1 the body was
+// preferred OVER the header, so the agent-proxied path is now strictly
+// closed), and it is not closed here: the router-level gate in #3073
+// (#3064/#3068) is what guarantees a caller cannot reach the orchestrator
+// without an authenticated identity. Read this comment as "the store keys
+// consistently off whatever scope was resolved", not as proof that the scope
+// is always agent-authenticated.
+func normalizeHITLScope(orgID, tenantID string) string {
+	if orgID != "" {
+		return orgID
+	}
+	return tenantID
+}
+
+// executionScope returns the canonical scope that owns an execution.
+// It reads UserContext only — never execution.Input, which is the
+// client-supplied request body.
+func executionScope(exec *HITLWorkflowExecution) string {
+	if exec == nil || exec.WorkflowExecution == nil {
+		return ""
+	}
+	return normalizeHITLScope(exec.UserContext.OrgID, exec.UserContext.TenantID)
+}
+
+// hitlStoreKey builds the composite store key.
+func hitlStoreKey(scope, executionID string) string {
+	return scope + hitlScopeSep + executionID
+}
+
+// saveHITLExecution stores an execution under its owning scope. An execution
+// with no resolvable scope is stored under the empty scope, which no
+// authenticated caller can ever match (every accessor refuses an empty
+// caller scope) — fail-closed rather than globally visible.
+func saveHITLExecution(exec *HITLWorkflowExecution) {
+	if exec == nil || exec.WorkflowExecution == nil {
+		return
+	}
+	executionStoreMutex.Lock()
+	defer executionStoreMutex.Unlock()
+	executionStore[hitlStoreKey(executionScope(exec), exec.ID)] = exec
+}
+
+// lookupHITLExecution returns the execution with this id IF it belongs to the
+// caller's scope. An empty scope never matches.
+func lookupHITLExecution(scope, executionID string) (*HITLWorkflowExecution, bool) {
+	if scope == "" {
+		return nil, false
+	}
+	executionStoreMutex.RLock()
+	defer executionStoreMutex.RUnlock()
+	exec, ok := executionStore[hitlStoreKey(scope, executionID)]
+	return exec, ok
+}
+
+// findPausedHITLExecutionForPlan returns the paused execution belonging to
+// scope that corresponds to planID, or nil. The plan-id predicate is
+// unchanged from the legacy handler; what changed is that the iteration only
+// ever considers entries whose key carries the caller's own scope.
+//
+// The caller must hold executionStoreMutex (read or write) — the approve path
+// needs the write lock across find-and-mutate, so the locking cannot live in
+// here.
+func findPausedHITLExecutionForPlan(scope, planID string) *HITLWorkflowExecution {
+	if scope == "" || planID == "" {
+		return nil
+	}
+	prefix := scope + hitlScopeSep
+	for key, exec := range executionStore {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if exec == nil || exec.WorkflowExecution == nil || exec.Status != StatusPaused {
+			continue
+		}
+		if exec.WorkflowName == "plan-"+planID ||
+			exec.ID == planID ||
+			(exec.Input != nil && exec.Input["plan_id"] == planID) {
+			return exec
+		}
+	}
+	return nil
+}
+
+// findHITLExecutionByApproval returns the execution in scope carrying this
+// approval id, or nil.
+//
+// The caller must hold executionStoreMutex (read or write).
+func findHITLExecutionByApproval(scope string, approvalID uuid.UUID) *HITLWorkflowExecution {
+	if scope == "" || approvalID == uuid.Nil {
+		return nil
+	}
+	prefix := scope + hitlScopeSep
+	for key, exec := range executionStore {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if exec != nil && exec.ApprovalID == approvalID {
+			return exec
+		}
+	}
+	return nil
+}
+
+// hitlScopeCtxKey carries the caller's HITL scope through a context so the
+// HITLApprovalService implementations (whose interface signature is fixed by
+// HITLApprovalService and shared with the WCP-backed path) can bind their
+// store scans without a signature change.
+type hitlScopeCtxKey struct{}
+
+// WithHITLScope returns a context carrying the caller's HITL org scope.
+func WithHITLScope(ctx context.Context, scope string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, hitlScopeCtxKey{}, scope)
+}
+
+// hitlScopeFromContext reads the caller's HITL org scope. The empty string
+// means "not asserted", and every consumer treats that as no-match.
+func hitlScopeFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if scope, ok := ctx.Value(hitlScopeCtxKey{}).(string); ok {
+		return scope
+	}
+	return ""
+}
 
 // HITL execution status constants
 const (
@@ -466,29 +625,32 @@ func (e *HITLWorkflowEngine) executeStep(ctx context.Context, step WorkflowStep,
 	return &stepExec, nil
 }
 
-// SaveExecution stores an execution in the execution store.
+// SaveExecution stores an execution in the execution store under the org that
+// owns it (#3067).
 // For production, replace with database-backed storage.
 func (e *HITLWorkflowEngine) SaveExecution(exec *HITLWorkflowExecution) {
-	if exec == nil || exec.WorkflowExecution == nil {
-		return
-	}
-	executionStoreMutex.Lock()
-	defer executionStoreMutex.Unlock()
-	executionStore[exec.ID] = exec
+	saveHITLExecution(exec)
 }
 
-// GetExecutionStatus returns the current status of an execution including HITL state.
-// Looks up execution by ID from in-memory storage.
-// For production, replace with database-backed storage.
-func (e *HITLWorkflowEngine) GetExecutionStatus(ctx context.Context, executionID string) (*HITLExecutionStatus, error) {
-	executionStoreMutex.RLock()
-	defer executionStoreMutex.RUnlock()
-
-	exec, exists := executionStore[executionID]
+// GetExecutionStatusForScope returns the current status of an execution
+// including HITL state, bound to the caller's org scope. An execution owned by
+// another org is ErrExecutionNotFound, indistinguishable from one that does
+// not exist.
+//
+// #3067: this is the ONLY status accessor. The by-id-across-all-scopes variant
+// it replaced let a caller who knew an execution id read another org's status,
+// approval id and paused reason; it was removed rather than deprecated so no
+// new caller can reach for it.
+func (e *HITLWorkflowEngine) GetExecutionStatusForScope(ctx context.Context, scope, executionID string) (*HITLExecutionStatus, error) {
+	exec, exists := lookupHITLExecution(scope, executionID)
 	if !exists {
 		return nil, ErrExecutionNotFound
 	}
+	return projectHITLExecutionStatus(executionID, exec), nil
+}
 
+// projectHITLExecutionStatus builds the wire status for an execution.
+func projectHITLExecutionStatus(executionID string, exec *HITLWorkflowExecution) *HITLExecutionStatus {
 	return &HITLExecutionStatus{
 		ExecutionID:    executionID,
 		Status:         exec.Status,
@@ -496,7 +658,7 @@ func (e *HITLWorkflowEngine) GetExecutionStatus(ctx context.Context, executionID
 		ApprovalStatus: exec.ApprovalStatus,
 		PausedAtStep:   exec.PausedAtStep,
 		PausedReason:   exec.PausedReason,
-	}, nil
+	}
 }
 
 // HITLExecutionStatus represents the current status of an HITL execution.

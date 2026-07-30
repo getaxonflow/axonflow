@@ -421,7 +421,7 @@ func TestRegistry_Integration_ReloadFromStorage(t *testing.T) {
 	}
 
 	// Verify config was loaded
-	loadedConfig, err := registry.GetConfig(connectorID)
+	loadedConfig, err := registry.GetConfig(tenantID, connectorID)
 	if err != nil {
 		t.Logf("GetConfig result: %v (may need factory for full test)", err)
 	} else if loadedConfig != nil {

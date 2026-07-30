@@ -39,20 +39,32 @@ type CreateKillSwitchRequest struct {
 
 // ActivateKillSwitchRequest is the request to activate a kill switch.
 type ActivateKillSwitchRequest struct {
-	ActorID     string `json:"actor_id" validate:"required"`
-	ActorEmail  string `json:"actor_email,omitempty"`
-	ActorRole   string `json:"actor_role,omitempty"`
-	ActorIP     string `json:"actor_ip,omitempty"`
-	Reason      string `json:"reason" validate:"required"`
+	Reason string `json:"reason" validate:"required"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	ActorID    string `json:"-"`
+	ActorEmail string `json:"-"`
+	ActorRole  string `json:"-"`
+	ActorIP    string `json:"-"`
 }
 
 // DeactivateKillSwitchRequest is the request to deactivate a kill switch.
 type DeactivateKillSwitchRequest struct {
-	ActorID    string `json:"actor_id" validate:"required"`
-	ActorEmail string `json:"actor_email,omitempty"`
-	ActorRole  string `json:"actor_role,omitempty"`
-	ActorIP    string `json:"actor_ip,omitempty"`
-	Reason     string `json:"reason" validate:"required"`
+	Reason string `json:"reason" validate:"required"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	ActorID    string `json:"-"`
+	ActorEmail string `json:"-"`
+	ActorRole  string `json:"-"`
+	ActorIP    string `json:"-"`
 }
 
 // KillSwitchCheckResult represents the result of a kill switch check.

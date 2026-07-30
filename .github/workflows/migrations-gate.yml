@@ -105,11 +105,20 @@ jobs:
       - name: Assert every migration-chain test is wired into this gate
         run: |
           missing=0
-          for t in $(grep -o 'func Test[A-Za-z0-9_]*' platform/agent/migration_chain_realpg_test.go | sed 's/func //'); do
-            if ! grep -q "$t" .github/workflows/migrations-gate.yml; then
-              echo "::error::$t is defined in platform/agent/migration_chain_realpg_test.go but is not in this workflow's -run filter or its PASS-assertion list, so it never runs."
-              missing=1
-            fi
+          # Scan every real-PG migration proof, not just the chain file. A proof
+          # placed in its own file -- or in platform/orchestrator/ rather than
+          # platform/agent/ -- was invisible to this check, which is how
+          # migration 156's proof shipped unpinned while 155's was listed.
+          for f in platform/agent/migration_chain_realpg_test.go \
+                   platform/agent/migration_*_realpg_test.go \
+                   platform/orchestrator/migration_*_realpg_test.go; do
+            [ -f "$f" ] || continue
+            for t in $(grep -o 'func Test[A-Za-z0-9_]*' "$f" | sed 's/func //'); do
+              if ! grep -q "$t" .github/workflows/migrations-gate.yml; then
+                echo "::error::$t is defined in $f but is not in this workflow's -run filter or its PASS-assertion list, so it never runs."
+                missing=1
+              fi
+            done
           done
           [ "$missing" -eq 0 ] && echo "All migration-chain tests are wired into the gate."
           exit $missing
@@ -119,8 +128,35 @@ jobs:
         run: |
           set -o pipefail
           go test ./agent/ \
-            -run 'TestMigrationChainAppliesCleanly_RealPostgres|TestMigrationChainAppliesOnSeededLegacyData_RealPostgres|TestMigrationChainIsIdempotent_RealPostgres|TestOwnerMigrationsAreReRunnable_RealPostgres|TestMigration149RerunDoesNotStripGuard_RealPostgres|TestMigrationChainReplaysWithFunctionsPresent_RealPostgres|TestContactEmailDriftTriggerStaysDropped_RealPostgres|TestExpiredOwnerRowIsRevivedOnlyByIntentionalCallers_RealPostgres|TestMigration149ToleratesCollapsedOrgLoginQualifier_RealPostgres|TestMigration149StillCatchesGenuineEscalation_RealPostgres|TestMigration150CollapseTransfersProvenance_RealPostgres|TestMigration149RLSCanaryDiscriminates_RealPostgres|TestMigrationNoticesReachTheLog_RealPostgres|TestMigration149EmitsItsRLSCanary_RealPostgres|TestMigrationRunnerUsesTheNoticeHandlingOpener' \
+            -run 'TestMigrationChainAppliesCleanly_RealPostgres|TestMigrationChainAppliesOnSeededLegacyData_RealPostgres|TestMigrationChainIsIdempotent_RealPostgres|TestOwnerMigrationsAreReRunnable_RealPostgres|TestMigration149RerunDoesNotStripGuard_RealPostgres|TestMigrationChainReplaysWithFunctionsPresent_RealPostgres|TestContactEmailDriftTriggerStaysDropped_RealPostgres|TestExpiredOwnerRowIsRevivedOnlyByIntentionalCallers_RealPostgres|TestMigration149ToleratesCollapsedOrgLoginQualifier_RealPostgres|TestMigration149StillCatchesGenuineEscalation_RealPostgres|TestMigration150CollapseTransfersProvenance_RealPostgres|TestMigration149RLSCanaryDiscriminates_RealPostgres|TestMigrationNoticesReachTheLog_RealPostgres|TestMigration149EmitsItsRLSCanary_RealPostgres|TestMigrationRunnerUsesTheNoticeHandlingOpener|TestMigration155NormalizesEmptyTenantPolicies_RealPostgres' \
             -count=1 -v -timeout 20m 2>&1 | tee /tmp/migrations.log
+
+      # Migration 156's proof lives in platform/orchestrator/, which the
+      # ./agent/ run above cannot reach. Separate leg, same PASS assertion.
+      - name: Apply migration 156 (tenancy keys NOT NULL) — orchestrator package
+        working-directory: platform
+        run: |
+          set -o pipefail
+          # -tags enterprise is REQUIRED: the proof carries //go:build enterprise,
+          # so without it the package builds with the test excluded and go test
+          # reports "ok ... [no tests to run]" and exits 0. The PASS assertion
+          # below is what turns that silent no-op into a failure.
+          go test -tags enterprise ./orchestrator/ \
+            -run 'TestMigration156_BackfillsOrphansAndConstrains_RealPostgres|TestMigration156_ToleratesAbsentTables_RealPostgres' \
+            -count=1 -v -timeout 20m 2>&1 | tee /tmp/migrations-156.log
+
+      - name: Assert the migration 156 tests actually ran (not skipped)
+        if: always()
+        run: |
+          for want in \
+            TestMigration156_BackfillsOrphansAndConstrains_RealPostgres \
+            TestMigration156_ToleratesAbsentTables_RealPostgres
+          do
+            if ! grep -q "^--- PASS: ${want}" /tmp/migrations-156.log; then
+              echo "::error::${want} did not PASS — it was skipped or never ran. Migration 156 constrains five tables; an unproven repair is how 150 boot-looped."
+              exit 1
+            fi
+          done
 
       # A `go test` run in which every test SKIPPED still exits 0. That would
       # make this gate vacuously green — the same class of false assurance
@@ -149,7 +185,8 @@ jobs:
             TestMigration149RLSCanaryDiscriminates_RealPostgres \
             TestMigrationNoticesReachTheLog_RealPostgres \
             TestMigration149EmitsItsRLSCanary_RealPostgres \
-            TestMigrationRunnerUsesTheNoticeHandlingOpener
+            TestMigrationRunnerUsesTheNoticeHandlingOpener \
+            TestMigration155NormalizesEmptyTenantPolicies_RealPostgres
           do
             if ! grep -q "^--- PASS: ${want}" /tmp/migrations.log; then
               echo "::error::${want} did not PASS — it was skipped or never ran. This gate is only meaningful if the chain is actually applied."

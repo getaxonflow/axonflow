@@ -19,13 +19,17 @@ on:
     branches:
       - main
       - develop
+    # This list gates whether the workflow runs AT ALL on main — including the
+    # mandatory e2e-production-posture job, which has no dorny gate of its own.
+    # The dorny/paths-filter list in detect-changes below is narrower on
+    # purpose: it gates only the SDK smoke-tests job. Keep the two in sync
+    # except where noted.
     paths:
-      - 'platform/agent/**'
-      - 'platform/orchestrator/**'
-      - 'platform/connectors/**'
+      - 'platform/**'
       - 'ee/platform/agent/**'
       - 'ee/platform/orchestrator/**'
       - 'ee/platform/connectors/**'
+      - 'ee/platform/customer-portal/**'
       - 'examples/demo/**'
       - 'docker-compose.yml'
       - 'docker-compose.enterprise.yml'
@@ -33,6 +37,15 @@ on:
       - 'scripts/e2e/**'
       - 'scripts/setup-e2e-testing.sh'
       - 'scripts/operators/provision-app-role.sh'
+      # The e2e-production-posture job runs the suites named in
+      # scripts/e2e/production_posture_registry.txt. scripts/e2e/** covered the
+      # registry and the runner but NOT the suite bodies it invokes, so a
+      # direct push to main touching only runtime-e2e/3039_rls_blind_reads/
+      # (or runtime-e2e/lib/) skipped the job that consumes them (#3089).
+      # push-only: the pull_request trigger has no paths filter, so the posture
+      # job already runs on every enterprise PR; adding this to the dorny list
+      # below would only make the unrelated SDK smoke-tests job run too.
+      - 'runtime-e2e/**'
       - '.github/workflows/sdk-smoke-tests.yml'
   workflow_dispatch:
 
@@ -74,14 +87,17 @@ jobs:
         uses: dorny/paths-filter@v4
         id: filter
         with:
+          # Gates the smoke-tests job only. Mirrors the `push:` paths list at
+          # the top of this file, minus 'runtime-e2e/**' (see the note there).
+          # platform/** rather than the three service subtrees: the stack this
+          # job boots is built with `COPY platform/ .` (#3089).
           filters: |
             sdk-relevant:
-              - 'platform/agent/**'
-              - 'platform/orchestrator/**'
-              - 'platform/connectors/**'
+              - 'platform/**'
               - 'ee/platform/agent/**'
               - 'ee/platform/orchestrator/**'
               - 'ee/platform/connectors/**'
+              - 'ee/platform/customer-portal/**'
               - 'examples/demo/**'
               - 'docker-compose.yml'
               - 'docker-compose.enterprise.yml'
@@ -297,6 +313,24 @@ jobs:
     # 'skipped'; same precedent as cross-system-hitl-e2e).
     if: github.repository == 'getaxonflow/axonflow-enterprise' && github.actor != 'dependabot[bot]'
 
+    # #3105 — credentials the runtime-e2e/3068_orchestrator_authn registry entry
+    # needs. These two are the docker-compose defaults verbatim, pinned here so
+    # the value the containers boot with and the value the suite presents cannot
+    # drift; both are well-known local-dev strings, safe only because this stack
+    # binds to loopback on a throwaway runner, and overridden in every real
+    # deployment (CFN injects secrets).
+    #
+    # ADMIN_API_KEY is deliberately NOT here — it is set on the 3068 registry
+    # entry alone. Setting it job-wide flips runtime-e2e/3039 and /3065 onto a
+    # different fixture path: both branch on `if [ -n "${ADMIN_API_KEY:-}" ]`
+    # and would onboard their orgs through the portal admin API instead of
+    # seeding the row with psql. That path cannot work on this stack (the portal
+    # container holds no Ed25519 licence-signing key, so `onboard-customer`
+    # cannot mint one) and it is not what those suites are testing. See #3160.
+    env:
+      AXONFLOW_PORTAL_ADMIN_PASSWORD: localdev-portal-admin
+      AXONFLOW_INTERNAL_SERVICE_SECRET: localdev-internal-service-secret-change-me
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -360,7 +394,46 @@ jobs:
           echo "::add-mask::$POSTURE_AUTH"
           echo "AXONFLOW_AUTH=$POSTURE_AUTH" >> "$GITHUB_ENV"
           echo "AXONFLOW_CLIENT_ID=local-dev-org" >> "$GITHUB_ENV"
+          # #3105: runtime-e2e/3068_orchestrator_authn authenticates to the agent
+          # with `curl -u "$AXONFLOW_CLIENT_ID:$AXONFLOW_CLIENT_SECRET"` — it
+          # needs the RAW key, not the pre-encoded AXONFLOW_AUTH above. Same
+          # masked value, exported under the name that suite reads; without it
+          # leg 6 hard-fails under REQUIRE_STACK=1 (which is the correct
+          # behaviour, and the reason the entry and this export land together).
+          echo "AXONFLOW_CLIENT_SECRET=$LICENSE_KEY" >> "$GITHUB_ENV"
           echo "License minted (Enterprise tier, 1 day, org local-dev-org — the compose ORG_ID default; the agent refuses a mismatched license org)"
+
+          # #3059: the cross-tenant disclosure suite needs TWO separately
+          # licensed tenants — the agent derives the tenant from the VALIDATED
+          # credential, so a second tenant is a second license, not a second
+          # header. Mint both HERE, in the only step that holds the signing
+          # keys, and export just the Basic credentials. The keys never widen
+          # beyond this step, and the suite has no way to mint on its own.
+          E2E_3059_ORG_A=e2e-3059-tenant-a
+          E2E_3059_ORG_B=e2e-3059-tenant-b
+          cd ee/platform/agent/license/cmd/keygen
+          for pair in "A:$E2E_3059_ORG_A" "B:$E2E_3059_ORG_B"; do
+            slot="${pair%%:*}"
+            org="${pair#*:}"
+            key=$(AXONFLOW_EVAL_SIGNING_KEY="$EVAL_KEY" AXONFLOW_ENT_SIGNING_KEY="$ENT_KEY" \
+              go run -tags enterprise . \
+                -tier Enterprise \
+                -org "$org" \
+                -days 1 \
+                -permissions "mcp:*:*,llm:*:*,policies:*:*,hitl:*:*" \
+                -quiet)
+            if [ -z "$key" ]; then
+              echo "::error::#3059 license generation returned an empty key for $org"
+              exit 1
+            fi
+            echo "::add-mask::$key"
+            auth=$(printf '%s:%s' "$org" "$key" | base64 -w0)
+            echo "::add-mask::$auth"
+            echo "E2E_3059_ORG_${slot}=$org" >> "$GITHUB_ENV"
+            echo "E2E_3059_AUTH_${slot}=$auth" >> "$GITHUB_ENV"
+          done
+          cd "$GITHUB_WORKSPACE"
+          echo "#3059 two-tenant credentials minted for $E2E_3059_ORG_A and $E2E_3059_ORG_B"
 
       - name: Install postgresql-client (psql)
         run: |

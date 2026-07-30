@@ -12,6 +12,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // Repository defines the interface for plan storage
@@ -76,6 +78,15 @@ func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 func (r *PostgresRepository) SavePlan(ctx context.Context, plan *Plan) error {
 	if plan == nil || plan.PlanID == "" {
 		return ErrInvalidPlanID
+	}
+
+	// #3065 (F2): refuse to persist a plan with no tenancy key. The columns
+	// below go through nullString(), which silently turns an absent header
+	// into a permanent NULL — and `plans` has no RLS, so that NULL was the
+	// whole story. Service.StorePlan validates too; this is the layer a
+	// future caller cannot skip.
+	if err := tenantscope.ValidateRowKeys(plan.OrgID, plan.TenantID); err != nil {
+		return fmt.Errorf("refusing to persist plan %s with no org/tenant key: %w", plan.PlanID, err)
 	}
 
 	query := `
@@ -375,7 +386,6 @@ func (r *PostgresRepository) CountVersions(ctx context.Context, planID string) (
 	}
 	return count, nil
 }
-
 
 // GetPlanVersion retrieves a specific version snapshot for a plan
 func (r *PostgresRepository) GetPlanVersion(ctx context.Context, planID string, version int) (*PlanVersion, error) {

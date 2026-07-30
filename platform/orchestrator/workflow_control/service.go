@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 )
 
 // PolicyEvaluator interface for evaluating step policies
@@ -242,6 +244,15 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		return nil, fmt.Errorf("trace_id exceeds maximum length of 255 characters")
 	}
 
+	// #3065: make the empty state unrepresentable. A workflow persisted with
+	// no org/tenant key is owned by nobody and can never be authorized again
+	// (workflowBelongsTo denies an empty row key), so accepting the write
+	// would only manufacture orphans — and, pre-fix, rows any tenant could
+	// reach. Migration core/156 enforces the same invariant in the database.
+	if err := tenantscope.ValidateRowKeys(orgID, tenantID); err != nil {
+		return nil, fmt.Errorf("cannot create workflow without an authenticated org and tenant: %w", err)
+	}
+
 	// Determine source
 	source := req.Source
 	if source == "" {
@@ -333,23 +344,43 @@ func (s *Service) GetWorkflow(ctx context.Context, workflowID, tenantID, orgID s
 	return workflow, nil
 }
 
-// workflowBelongsTo returns true if the workflow is owned by the given tenant+org.
-// Multi-tenant isolation: a workflow created under (tenant_id=A, org_id=X) must
-// not be returned to a caller authenticated as any other (tenant_id, org_id) pair.
-// Community mode and internal-service callers pass empty strings to bypass the
-// check — but the handler layer must only do that for trusted code paths.
+// GetWorkflowUnscoped fetches a workflow WITHOUT any tenancy authorization.
+//
+// #3065: this is the named replacement for the old
+// `GetWorkflow(ctx, id, "", "")` empty-string bypass. It exists for exactly
+// one class of caller — in-process reconciliation that holds no request scope
+// and whose result is authorized downstream by the HTTP layer before any byte
+// reaches a client (WCPExecutionTracker.GetStatus, whose output passes through
+// UnifiedExecutionHandler.checkTenantOwnership).
+//
+// Never call this from a request handler. The name is the guard: an unscoped
+// read that must look like one.
+func (s *Service) GetWorkflowUnscoped(ctx context.Context, workflowID string) (*Workflow, error) {
+	return s.repo.GetByID(ctx, workflowID)
+}
+
+// workflowBelongsTo returns true if the workflow is owned by the given
+// tenant+org. Multi-tenant isolation: a workflow created under
+// (tenant_id=A, org_id=X) must not be returned to a caller authenticated as
+// any other (tenant_id, org_id) pair.
+//
+// #3065 (F1): this used to return TRUE when tenantID and orgID were both
+// empty ("bypass — trusted caller"), and to skip whichever dimension the
+// caller left blank. Nine of the fourteen WCP routes had no proxy-auth gate,
+// so the caller chose those values by simply omitting X-Tenant-ID / X-Org-ID
+// — which made every workflow lifecycle transition (abort / complete / fail /
+// resume / step-complete) and every step approve/reject reachable across
+// tenants by anyone who knew a workflow id. It now delegates to the single
+// fail-closed choke point: empty on EITHER side, on EITHER dimension, denies.
+//
+// There is no trusted-caller bypass left. In-process callers that legitimately
+// hold no request scope use GetWorkflowUnscoped, which names what it does.
 func workflowBelongsTo(workflow *Workflow, tenantID, orgID string) bool {
-	if tenantID == "" && orgID == "" {
-		// Bypass — trusted caller (community, internal service, migration)
-		return true
-	}
-	if tenantID != "" && workflow.TenantID != tenantID {
+	if workflow == nil {
 		return false
 	}
-	if orgID != "" && workflow.OrgID != orgID {
-		return false
-	}
-	return true
+	scope := tenantscope.Scope{OrgID: orgID, TenantID: tenantID}
+	return scope.Authorize(workflow.OrgID, workflow.TenantID) == nil
 }
 
 // buildRetryContext computes the retry_context response block from a persisted
@@ -841,7 +872,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		"policies_evaluated": len(evaluation.PoliciesEvaluated),
 		"policies_matched":   len(evaluation.PoliciesMatched),
 		// Issue #1673: retry_context fields on audit trail.
-		"gate_count":      step.GateCount,
+		"gate_count":       step.GateCount,
 		"completion_count": step.CompletionCount,
 	}
 	if req.ToolContext != nil {
@@ -1287,8 +1318,19 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID, reason, tenantID
 	return nil
 }
 
-// ListWorkflows lists workflows with optional filters
+// ListWorkflows lists workflows with optional filters.
+//
+// #3065: the tenancy filters are NOT optional. Both the Postgres repository
+// (repository.go List — `if opts.TenantID != "" { conditions = append(...) }`)
+// and the mock (mock_repository.go List) omit the predicate entirely when the
+// value is empty, so an unscoped call returned every tenant's workflows. The
+// same fail-open shape as the by-id compare, one layer down. Refuse the call
+// instead of narrowing it silently: a caller with no tenancy has no listing.
 func (s *Service) ListWorkflows(ctx context.Context, opts ListWorkflowsOptions) (*ListWorkflowsResponse, error) {
+	if err := tenantscope.ValidateRowKeys(opts.OrgID, opts.TenantID); err != nil {
+		return nil, fmt.Errorf("cannot list workflows without an authenticated org and tenant: %w", err)
+	}
+
 	workflows, total, err := s.repo.List(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflows: %w", err)
@@ -1316,26 +1358,51 @@ func (s *Service) ListWorkflows(ctx context.Context, opts ListWorkflowsOptions) 
 	}, nil
 }
 
-// GetPendingApprovals returns steps awaiting approval for a tenant
+// GetPendingApprovals returns steps awaiting approval for a tenant.
+// #3065: an empty tenant is a denial, never a tenant-wide listing.
 func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error) {
+	if err := requireTenant(tenantID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetPendingApprovals(ctx, tenantID, limit)
 }
 
 // CountPendingApprovals returns the total number of pending approvals for a tenant
 func (s *Service) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
+	if err := requireTenant(tenantID); err != nil {
+		return 0, err
+	}
 	return s.repo.CountPendingApprovals(ctx, tenantID)
+}
+
+// requireTenant is the fail-closed guard for the tenant-scoped listing
+// surfaces in this package (#3065). They take a bare tenant id rather than a
+// full scope because their SQL keys on tenant_id alone; the empty value used
+// to disable the predicate and return every tenant's rows.
+func requireTenant(tenantID string) error {
+	trimmed := strings.TrimSpace(tenantID)
+	if trimmed == "" || trimmed == tenantscope.UnownedOrgSentinel {
+		return fmt.Errorf("cannot list approvals without an authenticated tenant: %w", tenantscope.ErrNoCallerScope)
+	}
+	return nil
 }
 
 // GetPendingPlanApprovals returns MAP-backed pending approvals for a tenant,
 // optionally scoped to a specific plan_id. Each entry has PlanID populated.
 // Issue #1680 — the MAP-plane counterpart to GetPendingApprovals.
 func (s *Service) GetPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string, limit int) ([]PendingApprovalResponse, error) {
+	if err := requireTenant(tenantID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetPendingPlanApprovals(ctx, tenantID, planIDFilter, limit)
 }
 
 // CountPendingPlanApprovals returns the count of MAP-backed pending approvals
 // for a tenant, optionally scoped to a specific plan_id.
 func (s *Service) CountPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string) (int, error) {
+	if err := requireTenant(tenantID); err != nil {
+		return 0, err
+	}
 	return s.repo.CountPendingPlanApprovals(ctx, tenantID, planIDFilter)
 }
 
@@ -1489,6 +1556,14 @@ func (s *Service) ResumeFromCheckpoint(ctx context.Context, workflowID string, c
 	}
 	if cp.WorkflowID != workflowID {
 		return nil, fmt.Errorf("checkpoint %d does not belong to workflow %s", checkpointID, workflowID)
+	}
+	// #3065 (F9): GetCheckpointByID is a bare `WHERE id = $1` on a SEQUENTIAL
+	// int64 — there is no unguessability margin, and the row carries its own
+	// org/tenant keys. Authorize the checkpoint row itself rather than relying
+	// solely on the workflow_id cross-check above, so the by-id read is safe
+	// on its own terms if a second caller is ever added.
+	if err := (tenantscope.Scope{OrgID: orgID, TenantID: tenantID}).Authorize(cp.OrgID, cp.TenantID); err != nil {
+		return nil, fmt.Errorf("checkpoint %d not found", checkpointID)
 	}
 	if !cp.IsResumable {
 		return nil, fmt.Errorf("checkpoint %d is not resumable (step was blocked)", checkpointID)

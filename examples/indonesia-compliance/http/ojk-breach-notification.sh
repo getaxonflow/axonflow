@@ -15,6 +15,56 @@
 
 set -euo pipefail
 
+
+# --- internal-service proxy auth (#3068) ------------------------------------
+# The orchestrator requires an HMAC-signed X-Axonflow-Proxy-Auth token on every
+# non-exempt route. This minter is INLINE on purpose: this example ships to
+# users who do not have the enterprise repo checked out (release tarball,
+# community distribution), so it must not depend on `git rev-parse` succeeding
+# or on any file outside this directory.
+#
+# Token format is fixed by platform/shared/serviceauth/serviceauth.go:
+#   AXON-INTERNAL-<unix_ts>-<first 16 hex chars of
+#                            HMAC-SHA256(secret, "orchestrator-internal:<unix_ts>")>
+# A token is valid for 5 minutes (serviceauth.DefaultClockSkew), so mint one
+# per request rather than once at the top of a long-running script.
+axonflow_proxy_token() {
+  local secret="${AXONFLOW_INTERNAL_SERVICE_SECRET:-}"
+  if [ -z "$secret" ]; then
+    # The docker compose quickstart in the Prerequisites above starts the
+    # orchestrator with this default. Against any other deployment you must
+    # export the real secret or every call below returns 403.
+    secret="localdev-internal-service-secret-change-me"
+  fi
+  local ts sig
+  ts=$(date +%s)
+  # openssl prints "SHA2-256(stdin)= <hex>" or "(stdin)= <hex>" depending on
+  # version; take the last field either way. printf (not echo) so that no
+  # trailing newline enters the MAC.
+  sig=$(printf 'orchestrator-internal:%s' "$ts" \
+        | openssl dgst -sha256 -hmac "$secret" -hex \
+        | awk '{print $NF}' \
+        | cut -c1-16)
+  printf 'AXON-INTERNAL-%s-%s' "$ts" "$sig"
+}
+
+# orch_curl runs curl with a freshly-minted proxy-auth header prepended.
+# All arguments are passed through to curl unchanged.
+orch_curl() {
+  local token
+  token=$(axonflow_proxy_token) || return 1
+  curl -H "X-Axonflow-Proxy-Auth: ${token}" "$@"
+}
+
+# Announced once here rather than on every call: if the deployment you are
+# pointing at was started with a different secret, every request below returns
+# 403 and this is the first place to look.
+if [ -z "${AXONFLOW_INTERNAL_SERVICE_SECRET:-}" ]; then
+  echo "[axonflow] AXONFLOW_INTERNAL_SERVICE_SECRET is unset — using the docker compose default." >&2
+  echo "[axonflow] Export the secret your deployment was started with, or these calls will return 403." >&2
+fi
+# ----------------------------------------------------------------------------
+
 ORCH_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:?must be set}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:?must be set}"
@@ -24,7 +74,7 @@ echo "=== UU PDP Art. 46 Breach Notification ==="
 echo
 
 echo "[1/2] Submit breach notification"
-curl -s --max-time 10 -X POST "${ORCH_URL}/api/v1/ojk/breach/notify" \
+orch_curl -s --max-time 10 -X POST "${ORCH_URL}/api/v1/ojk/breach/notify" \
   -H "Authorization: ${AUTH}" \
   -H "Content-Type: application/json" \
   -H "X-Tenant-ID: ${CLIENT_ID}" \
@@ -66,7 +116,7 @@ print('  PASS — All Art. 46 required fields present')
 
 echo
 echo "[2/2] Verify retention compliance"
-curl -s --max-time 10 -X GET "${ORCH_URL}/api/v1/ojk/audit/retention" \
+orch_curl -s --max-time 10 -X GET "${ORCH_URL}/api/v1/ojk/audit/retention" \
   -H "Authorization: ${AUTH}" \
   -H "X-Tenant-ID: ${CLIENT_ID}" | python3 -c "
 import json,sys

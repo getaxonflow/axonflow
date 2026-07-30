@@ -80,6 +80,28 @@ func (m *mockPolicyEngineForSim) ListActivePolicies() []DynamicPolicy {
 	return m.activePolicies
 }
 
+// ListActivePoliciesForTenant is a STAND-IN, not a copy of either engine's
+// scoping rule — the real predicates live in memPolicyAppliesToTenant and
+// dbCachedPolicyAppliesToTenant and are pinned by their own tests
+// (dynamic_policy_list_tenant_scope_test.go and the real-Postgres parity test
+// in db_policy_engine_integration_test.go).
+//
+// What the simulate tests below verify is narrower and is all they should
+// claim: that SimulatePolicies asks the engine for the CALLER's tenant and
+// reports that number, rather than counting the deployment-wide cache. The
+// mock therefore just needs a scope-sensitive answer; it deliberately uses a
+// simple own-plus-global rule so a wrong tenant argument produces a wrong
+// count.
+func (m *mockPolicyEngineForSim) ListActivePoliciesForTenant(tenantID string) []DynamicPolicy {
+	var scoped []DynamicPolicy
+	for _, p := range m.activePolicies {
+		if p.TenantID == "" || p.TenantID == tenantID || p.TenantID == "global" {
+			scoped = append(scoped, p)
+		}
+	}
+	return scoped
+}
+
 // TestSimulatePolicies_IgnoresBodyTenant is the mirror of
 // TestTestPolicyHandlerIgnoresBodyTenant, and it exists because the two halves
 // of that fix must not diverge — this one shipped unpinned once already.

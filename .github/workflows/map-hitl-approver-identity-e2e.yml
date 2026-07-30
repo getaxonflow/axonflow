@@ -1,0 +1,160 @@
+name: MAP HITL Approver Identity E2E
+
+# Executes runtime-e2e/3135_map_hitl_approver_identity/ (#3135).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# that registry's runner drives an ALREADY-BOOTED shared stack (agent :8080,
+# orchestrator :8081, portal :8082) and every entry there is ambient — e.g.
+# runtime-e2e/3039_rls_blind_reads/test.sh only curls $AGENT_URL. This suite
+# boots its own stack by necessity: it needs DEPLOYMENT_MODE=enterprise (to get
+# past the MAP approve/reject tier gate) and AXONFLOW_TRUST_IDENTITY_HEADERS=true
+# (so the per-user header survives the agent hop and "header, not body" is a
+# distinguishable outcome rather than collapsing to "system" either way), and
+# its teardown is `docker compose down -v`. Registered in that registry it would
+# collide on docker-compose.yml's pinned container_name values, leave the shared
+# agent trusting forgeable identity headers for every later entry, and then
+# delete the stack mid-suite. Same shape as override-identity-gate-e2e.yml.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    # A `paths:` filter is a guard, so it must list every file the suite's
+    # CORRECTNESS depends on — not only the files that express the contract.
+    # Omit one and the guard silently stops guarding, because the PR that
+    # breaks the suite is exactly the PR that never runs it (#3089).
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3135_map_hitl_approver_identity/**'
+      # The contract: the handlers, their actor resolver, and the proxy-auth
+      # gate whose refusal phase C asserts.
+      - 'platform/orchestrator/map_hitl_adapter.go'
+      - 'platform/orchestrator/agent_proxy_guard.go'
+      - 'platform/orchestrator/authn_middleware.go'
+      # The persistence the assertions read back: the WCP service passes the
+      # resolved approver to UpdateStepApproval and to the audit entry.
+      - 'platform/orchestrator/workflow_control/service.go'
+      - 'platform/orchestrator/workflow_control/repository.go'
+      - 'platform/orchestrator/workflow_control/handlers.go'
+      # The agent side: proxy.go owns the /api/v1/plans and /api/v1/workflows
+      # prefixes the suite curls and the identity trust gate that decides
+      # whether X-User-Email reaches the orchestrator at all; identity_trust.go
+      # and shared/identity own that decision's shared contract.
+      - 'platform/agent/proxy.go'
+      - 'platform/agent/identity_trust.go'
+      - 'platform/shared/identity/trust.go'
+      # Readiness + routing, which the suite depends on as literally as it
+      # depends on the contract files above:
+      #   platform/agent/run.go owns the "Reverse proxy initialized" log line
+      #     the readiness wait greps, and the boot ordering (/health early,
+      #     RegisterProxyRoutes late) that made that wait necessary.
+      #   platform/orchestrator/run.go registers the two MAP routes and wraps
+      #     the mux in requireInternalProxyAuth; change either and phase C's
+      #     403 becomes a 404 or a 200.
+      - 'platform/agent/run.go'
+      - 'platform/orchestrator/run.go'
+      # The stack the suite boots and the schema it reads back.
+      - 'docker-compose.yml'
+      - 'platform/agent/Dockerfile'
+      - 'platform/orchestrator/Dockerfile'
+      - 'migrations/core/041_workflows.sql'
+      - '.github/workflows/map-hitl-approver-identity-e2e.yml'
+
+concurrency:
+  group: map-hitl-approver-identity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  map-hitl-approver-identity-e2e:
+    name: MAP HITL approver is the authenticated identity
+    # Needs the license-signing secrets, so it cannot run on a fork PR. Skip it
+    # there rather than fail with an unactionable credentials error; push:main
+    # retains full coverage.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: Configure AWS credentials (license signing keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: us-east-1
+
+      # Same recipe as cross-system-hitl-e2e.yml: an Evaluation tier is enough,
+      # and a 1-day life means a leaked value is worthless by the next run.
+      - name: Fetch signing keys + generate Evaluation license
+        id: license
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVAL_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id axonflow/license-signing/evaluation-private-key \
+            --region us-east-1 --query SecretString --output text)
+          ENT_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id axonflow/license-signing/enterprise-private-key \
+            --region us-east-1 --query SecretString --output text)
+
+          if [ -z "$EVAL_KEY" ] || [ -z "$ENT_KEY" ]; then
+            echo "::error::Failed to fetch signing keys from AWS Secrets Manager"
+            exit 1
+          fi
+          echo "::add-mask::$EVAL_KEY"
+          echo "::add-mask::$ENT_KEY"
+
+          cd ee/platform/agent/license/cmd/keygen
+          LICENSE_KEY=$(AXONFLOW_EVAL_SIGNING_KEY="$EVAL_KEY" AXONFLOW_ENT_SIGNING_KEY="$ENT_KEY" \
+            go run -tags enterprise . \
+              -tier Evaluation \
+              -org e2e-test-org \
+              -days 1 \
+              -permissions "mcp:*:*,llm:*:*,hitl:*:*" \
+              -quiet)
+
+          if [ -z "$LICENSE_KEY" ]; then
+            echo "::error::License generation returned empty key"
+            exit 1
+          fi
+          echo "::add-mask::$LICENSE_KEY"
+          echo "secret=$LICENSE_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Run runtime-e2e 3135 — MAP HITL approver identity
+        shell: bash
+        env:
+          AXONFLOW_CLIENT_ID: e2e-test-org
+          AXONFLOW_CLIENT_SECRET: ${{ steps.license.outputs.secret }}
+          ORG_ID: e2e-test-org
+        run: ./runtime-e2e/3135_map_hitl_approver_identity/test.sh
+
+      - name: Dump agent + orchestrator logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=axonflow-agent" --filter "name=axonflow-orchestrator"); do
+            echo "── logs: $c ──"
+            docker logs --tail 120 "$c" 2>&1 || true
+          done

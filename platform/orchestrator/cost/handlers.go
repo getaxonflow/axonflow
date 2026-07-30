@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // Handler provides HTTP handlers for cost management APIs
@@ -73,6 +75,11 @@ func (h *Handler) CreateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	var req CreateBudgetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, "Invalid request body", http.StatusBadRequest)
@@ -90,9 +97,11 @@ func (h *Handler) CreateBudget(w http.ResponseWriter, r *http.Request) {
 		OnExceed:        req.OnExceed,
 		AlertThresholds: req.AlertThresholds,
 		Enabled:         true,
-		OrgID:           r.Header.Get("X-Org-ID"),
-		TenantID:        r.Header.Get("X-Tenant-ID"),
-		CreatedBy:       r.Header.Get("X-User-ID"),
+		// #3065: stamped from the bound scope, so a budget can never be
+		// persisted with the empty org that made it everyone's row.
+		OrgID:     scope.OrgID,
+		TenantID:  scope.TenantID,
+		CreatedBy: r.Header.Get("X-User-ID"),
 	}
 
 	// Set defaults
@@ -130,9 +139,18 @@ func (h *Handler) ListBudgets(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query()
 
+	// #3065: the listing scope is the AUTHENTICATED scope. It used to fall
+	// back to `?org_id=` / `?tenant_id=`, and an omitted value disabled the
+	// SQL predicate entirely — so an unscoped call listed every tenant's
+	// budgets.
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	opts := ListBudgetsOptions{
-		OrgID:    firstOrDefault(r.Header.Get("X-Org-ID"), query.Get("org_id")),
-		TenantID: firstOrDefault(r.Header.Get("X-Tenant-ID"), query.Get("tenant_id")),
+		OrgID:    scope.OrgID,
+		TenantID: scope.TenantID,
 		Scope:    BudgetScope(query.Get("scope")),
 		ScopeID:  query.Get("scope_id"),
 	}
@@ -177,6 +195,11 @@ func (h *Handler) GetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	budgetID := vars["id"]
 	if budgetID == "" {
@@ -184,7 +207,7 @@ func (h *Handler) GetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	budget, err := h.service.GetBudgetScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r))
+	budget, err := h.service.GetBudgetScoped(r.Context(), budgetID, scope.OrgID, scope.TenantID)
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -207,6 +230,11 @@ func (h *Handler) UpdateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	budgetID := vars["id"]
 	if budgetID == "" {
@@ -216,7 +244,7 @@ func (h *Handler) UpdateBudget(w http.ResponseWriter, r *http.Request) {
 
 	// First, fetch the existing budget — org/tenant-scoped, so a cross-org
 	// id is a 404 before any mutation (#2934)
-	existing, err := h.service.GetBudgetScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r))
+	existing, err := h.service.GetBudgetScoped(r.Context(), budgetID, scope.OrgID, scope.TenantID)
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -269,6 +297,11 @@ func (h *Handler) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	budgetID := vars["id"]
 	if budgetID == "" {
@@ -276,7 +309,7 @@ func (h *Handler) DeleteBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.DeleteBudgetScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r)); err != nil {
+	if err := h.service.DeleteBudgetScoped(r.Context(), budgetID, scope.OrgID, scope.TenantID); err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
 			return
@@ -296,6 +329,11 @@ func (h *Handler) GetBudgetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	budgetID := vars["id"]
 	if budgetID == "" {
@@ -303,7 +341,7 @@ func (h *Handler) GetBudgetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := h.service.GetBudgetStatusScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r))
+	status, err := h.service.GetBudgetStatusScoped(r.Context(), budgetID, scope.OrgID, scope.TenantID)
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -325,6 +363,11 @@ func (h *Handler) GetBudgetAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	budgetID := vars["id"]
 	if budgetID == "" {
@@ -337,7 +380,7 @@ func (h *Handler) GetBudgetAlerts(w http.ResponseWriter, r *http.Request) {
 		limit, _ = strconv.Atoi(l)
 	}
 
-	alerts, err := h.service.GetRecentAlertsScoped(r.Context(), budgetID, h.callerOrgID(r), h.callerTenantID(r), limit)
+	alerts, err := h.service.GetRecentAlertsScoped(r.Context(), budgetID, scope.OrgID, scope.TenantID, limit)
 	if err != nil {
 		if err == ErrBudgetNotFound {
 			h.writeError(w, "Budget not found", http.StatusNotFound)
@@ -362,11 +405,18 @@ func (h *Handler) GetUsageSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	query := r.URL.Query()
 
 	opts := UsageQueryOptions{
-		OrgID:    firstOrDefault(r.Header.Get("X-Org-ID"), query.Get("org_id")),
-		TenantID: firstOrDefault(r.Header.Get("X-Tenant-ID"), query.Get("tenant_id")),
+		// #3065: authenticated scope only — the `?org_id=` / `?tenant_id=`
+		// fallback let a direct caller name the tenancy it wanted to read.
+		OrgID:    scope.OrgID,
+		TenantID: scope.TenantID,
 		TeamID:   query.Get("team_id"),
 		AgentID:  query.Get("agent_id"),
 		Provider: query.Get("provider"),
@@ -409,6 +459,11 @@ func (h *Handler) GetUsageBreakdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	query := r.URL.Query()
 
 	groupBy := query.Get("group_by")
@@ -417,8 +472,10 @@ func (h *Handler) GetUsageBreakdown(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := UsageQueryOptions{
-		OrgID:    firstOrDefault(r.Header.Get("X-Org-ID"), query.Get("org_id")),
-		TenantID: firstOrDefault(r.Header.Get("X-Tenant-ID"), query.Get("tenant_id")),
+		// #3065: authenticated scope only — the `?org_id=` / `?tenant_id=`
+		// fallback let a direct caller name the tenancy it wanted to read.
+		OrgID:    scope.OrgID,
+		TenantID: scope.TenantID,
 		Period:   query.Get("period"),
 	}
 
@@ -461,11 +518,18 @@ func (h *Handler) ListUsageRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	query := r.URL.Query()
 
 	opts := UsageQueryOptions{
-		OrgID:    firstOrDefault(r.Header.Get("X-Org-ID"), query.Get("org_id")),
-		TenantID: firstOrDefault(r.Header.Get("X-Tenant-ID"), query.Get("tenant_id")),
+		// #3065: authenticated scope only — the `?org_id=` / `?tenant_id=`
+		// fallback let a direct caller name the tenancy it wanted to read.
+		OrgID:    scope.OrgID,
+		TenantID: scope.TenantID,
 		TeamID:   query.Get("team_id"),
 		AgentID:  query.Get("agent_id"),
 		Provider: query.Get("provider"),
@@ -590,36 +654,31 @@ func (h *Handler) CheckBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #2934 established that the body org_id/tenant_id are a forgeable channel
+	// on this endpoint — a caller could POST another org's id and, even with
+	// spend figures redacted, learn its budget name + exceeded status. Its fix
+	// pinned the check to the authenticated headers ONLY when
+	// SpendRedactionRequested(ctx) was true, i.e. only for callers the
+	// read-authority middleware had already marked as non-tenant-wide.
+	//
+	// #3065 (R3 round 1): that flag defaults to FALSE. A tenant-wide caller —
+	// or any request that reaches this handler without that middleware — still
+	// selected its own scope from the request body and received another org's
+	// budget_name / limit_usd / used_usd / percentage UNREDACTED. Body-
+	// selectable tenancy is this issue's own class, so the scope is now the
+	// authenticated scope, unconditionally. The body fields are ignored.
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	var req CheckBudgetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	// Use headers as defaults
-	if req.OrgID == "" {
-		req.OrgID = r.Header.Get("X-Org-ID")
-	}
-	if req.TenantID == "" {
-		req.TenantID = r.Header.Get("X-Tenant-ID")
-	}
-
-	// #2934: a non-tenant-wide caller reaches this endpoint (it is the
-	// deliberate enforcement-plane exemption), so the body org_id/tenant_id
-	// are a forgeable channel — a fleet developer could POST another org's id
-	// and, even with spend figures redacted, learn its budget name +
-	// exceeded status. For a redacted (non-tenant-wide) caller, pin the check
-	// to the authenticated identity the agent stamped, ignoring any body
-	// override. Tenant-wide (admin) callers keep the body-driven cross-scope
-	// check they use for oversight.
-	if SpendRedactionRequested(r.Context()) {
-		if hdrOrg := r.Header.Get("X-Org-ID"); hdrOrg != "" {
-			req.OrgID = hdrOrg
-		}
-		if hdrTenant := r.Header.Get("X-Tenant-ID"); hdrTenant != "" {
-			req.TenantID = hdrTenant
-		}
-	}
+	req.OrgID = scope.OrgID
+	req.TenantID = scope.TenantID
 
 	decision, err := h.service.CheckBudget(r.Context(), req.OrgID, req.TeamID, req.AgentID, req.UserID, req.TenantID)
 	if err != nil {
@@ -640,17 +699,28 @@ func (h *Handler) CheckBudget(w http.ResponseWriter, r *http.Request) {
 
 // Helper functions
 
-// callerOrgID / callerTenantID resolve the caller's org/tenant scope for the
-// by-id budget routes (#2934). Behind the agent gateway the headers are Set
-// (not Add) from the cryptographically validated license, so a governed
-// caller cannot pick another org; the query-param fallback matches
-// ListBudgets' existing semantics for direct in-VPC callers.
-func (h *Handler) callerOrgID(r *http.Request) string {
-	return firstOrDefault(r.Header.Get("X-Org-ID"), r.URL.Query().Get("org_id"))
-}
-
-func (h *Handler) callerTenantID(r *http.Request) string {
-	return firstOrDefault(r.Header.Get("X-Tenant-ID"), r.URL.Query().Get("tenant_id"))
+// requireScope resolves the caller's authenticated org/tenant for the by-id
+// budget routes, writing a 401 and returning ok=false when there is none.
+//
+// #3065 (F4): this replaces callerOrgID / callerTenantID, which read
+//
+//	firstOrDefault(r.Header.Get("X-Org-ID"), r.URL.Query().Get("org_id"))
+//
+// — a QUERY PARAMETER fallback. Combined with the fail-open SQL predicate
+// that used to sit in budgetOrgScopeSQL, a caller who supplied neither the
+// header nor the parameter matched every budget row: `DELETE
+// /api/v1/budgets/{id}` deleted another tenant's budget. Behind the agent
+// gateway (and the customer portal proxy) both headers are Set from a
+// validated credential on every request, so nothing legitimate depended on
+// the parameter; only a direct in-VPC caller could reach it, which is exactly
+// the caller that must not choose its own org.
+func (h *Handler) requireScope(w http.ResponseWriter, r *http.Request) (tenantscope.Scope, bool) {
+	scope, err := tenantscope.Bind(r)
+	if err != nil {
+		h.writeError(w, "Missing tenant or org identity", http.StatusUnauthorized)
+		return tenantscope.Scope{}, false
+	}
+	return scope, true
 }
 
 // setCORSHeaders sets CORS headers on all responses (not just OPTIONS)
@@ -667,13 +737,4 @@ func (h *Handler) writeError(w http.ResponseWriter, message string, status int) 
 		"error":   http.StatusText(status),
 		"message": message,
 	})
-}
-
-func firstOrDefault(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

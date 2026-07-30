@@ -4,6 +4,7 @@ package orchestrator
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -93,14 +94,20 @@ func BenchmarkNewPolicyCache(b *testing.B) {
 	}
 }
 
-// BenchmarkPolicyCache_Get benchmarks policy cache retrieval
+// BenchmarkPolicyCache_Get benchmarks policy cache retrieval.
+//
+// #3142: these two benchmarks used to store a *DynamicPolicy — a policy
+// DEFINITION — into a cache that only ever holds evaluation VERDICTS, which
+// the old interface{}-typed API accepted silently. The concrete signature
+// rejects it at compile time.
 func BenchmarkPolicyCache_Get(b *testing.B) {
 	cache := NewPolicyCache(5 * time.Minute)
 	defer cache.Close()
-	cache.Set("test-policy", &DynamicPolicy{ID: "test", Name: "Test"})
+	key := verdictCacheKey{OrgID: "bench-org", TenantID: "bench-tenant", Request: "test-policy"}
+	cache.Set(key, &PolicyEvaluationResult{Allowed: true, AppliedPolicies: []string{"test"}})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = cache.Get("test-policy")
+		_, _ = cache.Get(key)
 	}
 }
 
@@ -109,7 +116,11 @@ func BenchmarkPolicyCache_Set(b *testing.B) {
 	cache := NewPolicyCache(5 * time.Minute)
 	defer cache.Close()
 	for i := 0; i < b.N; i++ {
-		cache.Set("policy-"+string(rune(i%100)), &DynamicPolicy{ID: "test"})
+		cache.Set(verdictCacheKey{
+			OrgID:    "bench-org",
+			TenantID: "bench-tenant",
+			Request:  "policy-" + strconv.Itoa(i%100),
+		}, &PolicyEvaluationResult{Allowed: true})
 	}
 }
 

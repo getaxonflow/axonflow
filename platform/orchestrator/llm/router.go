@@ -261,6 +261,13 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 // selectProvider selects the best provider for a request.
 func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts *routeOptions) (Provider, error) {
 	// If a specific provider was requested, use it (but verify it's allowed)
+	// #3067: the deployment router selects from the DEPLOYMENT provider pool
+	// (GlobalTenant) — the providers the bootstrap registers from environment
+	// and config. A provider a tenant registered through
+	// POST /api/v1/llm-providers with its own X-Tenant-ID is NOT routable
+	// deployment-wide: routing to it would spend that tenant's API key on
+	// another tenant's traffic, which is the same defect as S-2 one layer down.
+	// Per-tenant provider management is served by the tenant-scoped API.
 	if opts.preferredProvider != "" {
 		// Check if preferred provider is in allowed list (if restrictions apply)
 		if len(opts.allowedProviders) > 0 {
@@ -275,14 +282,14 @@ func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts
 				r.logger.Printf("Preferred provider %q not in allowed list %v", opts.preferredProvider, opts.allowedProviders)
 				// Fall through to select from allowed providers
 			} else {
-				provider, err := r.registry.Get(ctx, opts.preferredProvider)
+				provider, err := r.registry.Get(ctx, GlobalTenant, opts.preferredProvider)
 				if err == nil {
 					return provider, nil
 				}
 				r.logger.Printf("Requested provider %q not available: %v", opts.preferredProvider, err)
 			}
 		} else {
-			provider, err := r.registry.Get(ctx, opts.preferredProvider)
+			provider, err := r.registry.Get(ctx, GlobalTenant, opts.preferredProvider)
 			if err == nil {
 				return provider, nil
 			}
@@ -291,10 +298,10 @@ func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts
 	}
 
 	// Get healthy providers
-	healthyNames := r.registry.GetHealthyProviders()
+	healthyNames := r.registry.GetHealthyProviders(GlobalTenant)
 	if len(healthyNames) == 0 {
 		// Fall back to all enabled providers
-		healthyNames = r.registry.ListEnabled()
+		healthyNames = r.registry.ListEnabled(GlobalTenant)
 	}
 
 	// Filter by allowed providers if compliance restrictions apply
@@ -334,7 +341,7 @@ func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts
 		return nil, fmt.Errorf("provider selection failed")
 	}
 
-	return r.registry.Get(ctx, selected)
+	return r.registry.Get(ctx, GlobalTenant, selected)
 }
 
 // getWeights returns weights for the given providers.
@@ -381,7 +388,7 @@ func (r *Router) getWeights(providers []string, overrides map[string]float64) ma
 // If allowedProviders is empty, any healthy provider can be used.
 // If allowedProviders is set, only providers in that list can be used for failover.
 func (r *Router) getFallbackProvider(ctx context.Context, failedProvider string, allowedProviders []string) (Provider, error) {
-	healthyNames := r.registry.GetHealthyProviders()
+	healthyNames := r.registry.GetHealthyProviders(GlobalTenant)
 
 	// Helper to check if provider is in allowed list
 	isAllowed := func(name string) bool {
@@ -398,7 +405,7 @@ func (r *Router) getFallbackProvider(ctx context.Context, failedProvider string,
 
 	for _, name := range healthyNames {
 		if name != failedProvider && isAllowed(name) {
-			return r.registry.Get(ctx, name)
+			return r.registry.Get(ctx, GlobalTenant, name)
 		}
 	}
 
@@ -420,25 +427,25 @@ func (r *Router) GetProviderStatus(ctx context.Context) map[string]*ProviderStat
 	status := make(map[string]*ProviderStatus)
 
 	// Get all provider names
-	names := r.registry.List()
+	names := r.registry.List(GlobalTenant)
 
 	for _, name := range names {
-		config, err := r.registry.GetConfig(name)
+		config, err := r.registry.GetConfig(GlobalTenant, name)
 		if err != nil {
 			continue
 		}
 
-		healthResult := r.registry.GetHealthResult(name)
+		healthResult := r.registry.GetHealthResult(GlobalTenant, name)
 		metrics := r.metricsTracker.getMetrics(name)
 
 		ps := &ProviderStatus{
-			Name:       name,
-			Type:       config.Type,
-			Enabled:    config.Enabled,
-			Priority:   config.Priority,
-			Weight:     config.Weight,
-			RateLimit:  config.RateLimit,
-			Metrics:    metrics,
+			Name:      name,
+			Type:      config.Type,
+			Enabled:   config.Enabled,
+			Priority:  config.Priority,
+			Weight:    config.Weight,
+			RateLimit: config.RateLimit,
+			Metrics:   metrics,
 		}
 
 		if healthResult != nil {

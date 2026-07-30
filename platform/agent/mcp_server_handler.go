@@ -204,6 +204,13 @@ type mcpSession struct {
 	// path was identified as not stamping.
 	client   *Client
 	authKind AuthKind
+
+	// identityInputs records WHY userEmail resolved the way it did, captured
+	// from the SAME request that resolved it (#3077). Diagnostic only — read
+	// exclusively by the shared-identity refusal, never by anything that
+	// decides a verdict, an authz outcome, or attribution. Immutable after
+	// create, exactly like userEmail itself.
+	identityInputs mcpIdentityInputs
 }
 
 var (
@@ -611,12 +618,22 @@ func mcpOAuthDiscoveryHandler(w http.ResponseWriter, r *http.Request) {
 // --- Main Handler ---
 
 func mcpServerHandler(w http.ResponseWriter, r *http.Request) {
-	// CORS preflight
+	// CORS preflight.
+	//
+	// #3117 M4: this used to reflect r.Header.Get("Origin") into
+	// Access-Control-Allow-Origin UNCONDITIONALLY — a second origin policy that
+	// bypassed resolveCORSOptions() entirely and kept echoing attacker origins
+	// after #3096 made the default deny-all. It answers through the shared
+	// policy now (cors.go), so the origin allowlist has one definition.
+	//
+	// This handler still answers OPTIONS itself rather than delegating: rs/cors
+	// only handles a preflight that carries Access-Control-Request-Method, so a
+	// plain OPTIONS reaches here, and terminating it here is what keeps it from
+	// falling through to dispatch.
 	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Mcp-Session-Id, MCP-Protocol-Version")
-		w.Header().Set("Vary", "Origin")
+		applyCORSPreflightHeaders(w, r.Header.Get("Origin"),
+			"POST, GET, DELETE, OPTIONS",
+			"Content-Type, Authorization, Accept, Mcp-Session-Id, MCP-Protocol-Version")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -746,7 +763,7 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 // --- Method Handlers ---
 
 func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, err := authenticateMCPServerRequest(r)
+	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, idInputs, err := authenticateMCPSession(r)
 	if err != nil {
 		writeJSONRPCAuthError(w, req.ID, err.Error())
 		return
@@ -785,6 +802,12 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		client:          sessClient,
 		authKind:        sessAuthKind,
 		clientSessionID: attributedSessionID(r), // #2753; trust-gated per #2896
+		// #3077: the identity-resolution inputs are captured INSIDE
+		// authenticateMCPSession, beside the resolution itself, because the
+		// refusal that reads them fires on a later request against an immutable
+		// session — and because only the resolver can see whether a validated
+		// per-user token, rather than a header, supplied the identity.
+		identityInputs: idInputs,
 	}
 
 	mcpSessionsMu.Lock()
@@ -1182,7 +1205,16 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 	return session, r
 }
 
-// authenticateMCPServerRequest validates request credentials using the unified
+// authenticateMCPServerRequest is the 9-return convenience form of
+// authenticateMCPSession, for callers that do not build an mcpSession and so do
+// not need the identity-resolution inputs. Every semantic below is
+// authenticateMCPSession's; this wrapper only drops one return value.
+func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, userEmail, userRole, clientID, tier string, auth *AuthResult, err error) {
+	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, _, err = authenticateMCPSession(r)
+	return
+}
+
+// authenticateMCPSession validates request credentials using the unified
 // Authenticate() function. Supports all 4 deployment modes.
 // Note: previously only called validateClientCredentials (whitelist) — now uses
 // Authenticate() which also checks authDB (DB-backed), fixing a latent bug
@@ -1201,10 +1233,25 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 // production callers + 4 test callers — the new *AuthResult is APPENDED at
 // position 8 (before err) so signature changes are additive. Callers that
 // don't need to stamp ignore via `_`.
-func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, userEmail, userRole, clientID, tier string, auth *AuthResult, err error) {
+//
+// #3077 R3: the identity-resolution INPUTS (mcpIdentityInputs) are captured
+// HERE, inside the function that decides the identity, and returned at position
+// 9. Only this function can see WHICH channel supplied the identity — a
+// validated per-user token short-circuits below and returns before the header
+// reads ever happen — and a caller that re-derived that fact from the request
+// afterwards would be recomputing an answer from inputs the resolver never
+// consulted, which is the defect shape #3077 exists to remove. Callers that
+// build an mcpSession must therefore use this function, not the wrapper above.
+func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail, userRole, clientID, tier string, auth *AuthResult, idInputs mcpIdentityInputs, err error) {
+	// Snapshot what the caller presented BEFORE any resolution: these fields
+	// describe the request, not the outcome, and every branch below returns
+	// them unchanged except tokenResolvedIdentity, which only the token branch
+	// can set.
+	idInputs = captureMCPIdentityInputs(r)
+
 	authResult, authErr := Authenticate(r, nil)
 	if authErr != nil {
-		return "", "", "", "", "", "", "", nil, fmt.Errorf("%s", authErr.Message)
+		return "", "", "", "", "", "", "", nil, idInputs, fmt.Errorf("%s", authErr.Message)
 	}
 	auth = authResult
 	// Populate telemetry identity for community-saas tracking
@@ -1246,7 +1293,7 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 			// downgrade to least-privilege — presenting a bad token is an
 			// access attempt, not a legacy caller. Mirrors /decide's
 			// user_token_rejected posture (decision_handler.go).
-			return "", "", "", "", "", "", "", nil, fmt.Errorf("invalid user token: %v", resolveErr)
+			return "", "", "", "", "", "", "", nil, idInputs, fmt.Errorf("invalid user token: %v", resolveErr)
 		}
 		if vid != nil {
 			// Validated per-user identity. vid.Email is already the canonical
@@ -1255,7 +1302,17 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 			// claim; Path B: SCIM directory) — "" means least-privilege.
 			// ValidatedIdentity carries no separate user id, so userID mirrors
 			// the canonical email for stable per-user attribution.
-			return auth.TenantID, auth.OrgID, vid.Email, vid.Email, vid.Role, auth.ClientID, resolvedTier, auth, nil
+			//
+			// #3077 R3: record that the TOKEN supplied this identity. This is
+			// the only place the fact is observable — the function returns
+			// here, before the X-User-Email / X-User-ID reads below, so from
+			// this point on the header state says nothing about how the
+			// identity was decided. Nothing validates a minted or OIDC subject
+			// against the shared-synthetic census (mint() checks only for an
+			// "@"; ResolveToken checks nothing), so vid.Email CAN be a reserved
+			// spelling and CAN reach the shared-identity refusal.
+			idInputs.tokenResolvedIdentity = true
+			return auth.TenantID, auth.OrgID, vid.Email, vid.Email, vid.Role, auth.ClientID, resolvedTier, auth, idInputs, nil
 		}
 	}
 
@@ -1297,7 +1354,7 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, use
 	if resolvedUserID == "" {
 		resolvedUserID = resolvedEmail
 	}
-	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "", auth.ClientID, resolvedTier, auth, nil
+	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "", auth.ClientID, resolvedTier, auth, idInputs, nil
 }
 
 // clientSessionIDCtxKey carries the AI-tool session id (X-Session-Id) down the
@@ -1385,7 +1442,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 	// surfaced. The cache-miss session now stashes *Client + AuthKind so
 	// requireMCPAuth's caller can stamp r.Context() via stampAuthContext
 	// before invoking downstream handlers.
-	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, err := authenticateMCPServerRequest(r)
+	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, idInputs, err := authenticateMCPSession(r)
 	if err != nil {
 		return nil
 	}
@@ -1406,6 +1463,12 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		client:          sessClient,
 		authKind:        sessAuthKind,
 		clientSessionID: attributedSessionID(r), // #2753; trust-gated per #2896
+		// #3077: the identity-resolution inputs are captured INSIDE
+		// authenticateMCPSession, beside the resolution itself, because the
+		// refusal that reads them fires on a later request against an immutable
+		// session — and because only the resolver can see whether a validated
+		// per-user token, rather than a header, supplied the identity.
+		identityInputs: idInputs,
 	}
 }
 
@@ -2211,8 +2274,16 @@ func mcpToolCreateOverride(session *mcpSession, args map[string]interface{}) (in
 	// check planes key on a different identity) or applies to every caller
 	// on the client. This happens when the caller sent no per-user identity,
 	// or the deployment has not opted in to trusting identity headers.
+	//
+	// #3077: the refusal itself is unchanged; the MESSAGE now comes from the
+	// shared choke point so this plane stops carrying its own copy. The old
+	// text unconditionally told the caller to "set
+	// AXONFLOW_TRUST_IDENTITY_HEADERS=true", which is the wrong remedy on the
+	// commonest path into here — a deployment that has ALREADY enabled the gate
+	// and simply received no header still lands on this branch, and flipping an
+	// already-true flag cannot help it.
 	if isClientSharedPseudoIdentity(session.userEmail) {
-		return nil, fmt.Errorf("per-user session overrides require a trusted per-user identity; this session is attributed to the client-scoped id %q — supply X-User-Email and set AXONFLOW_TRUST_IDENTITY_HEADERS=true on the agent if your identity source is trusted", session.userEmail)
+		return nil, errSharedIdentityRefusal(session, "per-user session overrides")
 	}
 
 	body := map[string]interface{}{
@@ -2240,6 +2311,29 @@ func mcpToolDeleteOverride(session *mcpSession, args map[string]interface{}) (in
 	if overrideID == "" {
 		return nil, fmt.Errorf("override_id is required")
 	}
+	// #3077: revoke deliberately does NOT carry the create path's shared-identity
+	// guard, and the asymmetry is load-bearing rather than an oversight.
+	//
+	// The first draft of this fix added one, reasoning that a shared identity
+	// cannot own an override so the orchestrator would refuse anyway. That is
+	// true in enterprise mode and FALSE in the two modes this plane is most used
+	// in. resolveCallerReadScope (read_scope.go) returns
+	// {TenantWide, AdminAuthority} as its FIRST statement in community mode, and
+	// {TenantWide} for community-saas over a validated proxy token, which
+	// mcpProxyToOrchestrator presents whenever a token generator is wired,
+	// alongside a non-blank X-Tenant-ID. With TenantWide set, revokeOverrideHandler skips the
+	// `createdBy == scope.UserEmail` ownership check entirely and the revoke
+	// SUCCEEDS. Guarding here would have broken revoking an override created out
+	// of band (the customer portal, the REST API, an SDK) on every community and
+	// community-saas deployment — and since create is already refused in those
+	// modes, revoke is the only half of the lifecycle that works there.
+	//
+	// So a refusal that "cannot change the outcome" was not that at all. The
+	// remaining defect is cosmetic and pre-existing: when the orchestrator DOES
+	// refuse (enterprise, own-rows scope), it answers "Override not found or
+	// already revoked" — a correct non-oracle that names the wrong thing for a
+	// caller whose id was fine. Tracked separately rather than fixed by breaking
+	// two modes.
 	path := "/api/v1/overrides/" + url.PathEscape(overrideID)
 	resp, err := mcpProxyToOrchestrator(session, "DELETE", path, nil)
 	if err != nil {

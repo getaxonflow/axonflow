@@ -107,21 +107,74 @@ func (a *MAPHITLApprovalAdapter) CreateApproval(ctx context.Context, req *HITLAp
 }
 
 // GetApproval retrieves the status of an HITL approval request.
+//
+// #3067 (S-4): the scan is bound to the caller's org scope, carried on the
+// context by WithHITLScope. The HITLApprovalService interface signature is
+// shared with the WCP-backed implementations, so the scope travels on ctx
+// rather than as a parameter. A context with no scope asserted matches
+// nothing — fail-closed, same shape as the store accessors.
 func (a *MAPHITLApprovalAdapter) GetApproval(ctx context.Context, approvalID uuid.UUID) (*HITLApprovalResponse, error) {
-	// Check the execution store for the approval status
 	executionStoreMutex.RLock()
 	defer executionStoreMutex.RUnlock()
 
-	for _, exec := range executionStore {
-		if exec.ApprovalID == approvalID {
-			return &HITLApprovalResponse{
-				ApprovalID: approvalID,
-				Status:     exec.ApprovalStatus,
-			}, nil
-		}
+	if exec := findHITLExecutionByApproval(hitlScopeFromContext(ctx), approvalID); exec != nil {
+		return &HITLApprovalResponse{
+			ApprovalID: approvalID,
+			Status:     exec.ApprovalStatus,
+		}, nil
 	}
 
 	return nil, fmt.Errorf("approval %s not found", approvalID)
+}
+
+// mapHITLCallerScope resolves the org scope of a MAP plan approve/reject
+// request from the identity headers the agent's auth chain stamps
+// authoritatively (apiAuthMiddleware does `r.Header.Set` on X-Tenant-ID and
+// X-Org-ID, overwriting anything the client sent) — the same source
+// tryApproveViaWCP has always used for its tenantID/orgID arguments. An empty
+// result is refused by every consumer rather than matching everything.
+func mapHITLCallerScope(r *http.Request) string {
+	return normalizeHITLScope(r.Header.Get("X-Org-ID"), r.Header.Get("X-Tenant-ID"))
+}
+
+// mapHITLActorIdentity resolves WHO is approving or rejecting a MAP plan step.
+//
+// #3135: this used to prefer a body field (`approved_by` / `rejected_by`) and
+// fall back to the header, which is the exact inverse of
+// applyAuthoritativeIdentity ("the actor EMAIL is authoritative from the
+// trust-gated header, NEVER the request body"). The value lands in
+// workflow_steps.approved_by and, via WorkflowAuditEntry.UserEmail, in
+// audit_logs.user_email — so a caller who was already authenticated could name
+// any approver they liked and that name is what the HITL audit trail recorded.
+// That defeats attribution and non-repudiation on an approval, which is the
+// entire point of the trail (ADR-044). It is not a tenancy hole: the caller
+// still cannot reach another tenant's step (#3067 S-4 binds the in-memory scan,
+// workflowBelongsTo binds the WCP path).
+//
+// The body is no longer consulted at all — not even as a fallback, because a
+// fallback is still a channel the caller controls. The header set and the
+// precedence deliberately mirror workflow_control.Handler.getUserID, the
+// guarded WCP sibling of this operation, so the same human approving on either
+// plane is stamped with the same identity string. getUserID's third source (a
+// "user_id" context value) has no writer on this route, so it is omitted rather
+// than copied as dead code.
+//
+// Returns "" when the request carries no identity; callers substitute "system",
+// which is the honest record of an unattributable approval — and is what the
+// portal's own proxy comment already assumes happens when it forwards no
+// X-User-ID (orchestrator_proxy.go). Note the identity headers are trust-gated
+// at the agent (AXONFLOW_TRUST_IDENTITY_HEADERS, #2896 WS1): when the gate is
+// off they are stripped before the orchestrator sees them, so approvals record
+// "system" rather than an unverified name. Failing to "system" rather than to a
+// forgeable value is the fail-safe direction for an audit column.
+func mapHITLActorIdentity(r *http.Request) string {
+	if userID := strings.TrimSpace(r.Header.Get("X-User-ID")); userID != "" {
+		return userID
+	}
+	if email := strings.TrimSpace(r.Header.Get("X-User-Email")); email != "" {
+		return email
+	}
+	return ""
 }
 
 // mapStepApproveHandler handles POST /api/v1/plans/{id}/steps/{step_id}/approve
@@ -142,6 +195,23 @@ func (a *MAPHITLApprovalAdapter) GetApproval(ctx context.Context, approvalID uui
 // Both paths return StepGateHTTPResponse so clients don't have to branch on
 // which mode the plan ran in.
 func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
+	// #3135: the approver identity this handler stamps is only as good as the
+	// hop that set the header, so require the same agent proxy-auth gate the
+	// WCP siblings run (workflow_control.Handler.requireProxyAuth on
+	// ApproveStep/RejectStep). Placed first, matching those siblings.
+	//
+	// Scope note, so nobody reads more into this than it does: since #3068 the
+	// whole orchestrator mux is already behind requireInternalProxyAuth, which
+	// is strictly stronger (it has no Community carve-out). So on a running
+	// server this gate refuses nothing that would otherwise be served, and adding
+	// it cannot break a caller — it is defense in depth and plane parity, and it
+	// makes the handler's trust assumption checkable where the handler is used
+	// directly. The load-bearing part of #3135 is mapHITLActorIdentity.
+	if ok, msg := verifyAgentProxyAuth(r, "MAP-HITL-Approve"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
+
 	// Tier gating matches WCP /approve (Evaluation+ via tier checker, Enterprise via
 	// DEPLOYMENT_MODE). Prior to v7.4.0 this was blanket-blocked in community mode
 	// even when an Evaluation license was present — a pre-existing inconsistency
@@ -165,23 +235,26 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional body for approver identity / comment. Comment validation
+	// Parse the optional body for the approval comment. Comment validation
 	// mirrors WCP /approve (min 10 chars) only when WCP-backed path is taken;
 	// legacy in-memory path accepts empty body for back-compat.
+	//
+	// #3135: `approved_by` is deliberately NOT a field here. The struct is the
+	// enforcement — an identity the caller can type cannot be read back out by
+	// accident. Clients that still send it (the field was accepted before
+	// v9.13.0) are unaffected: encoding/json ignores unknown keys, so the
+	// request still succeeds, it is just no longer the caller who decides whose
+	// name goes in the audit trail.
 	var body struct {
-		ApprovedBy string `json:"approved_by"`
-		Comment    string `json:"comment"`
+		Comment string `json:"comment"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	body.ApprovedBy = strings.TrimSpace(body.ApprovedBy)
 	body.Comment = strings.TrimSpace(body.Comment)
 
-	approvedBy := body.ApprovedBy
-	if approvedBy == "" {
-		approvedBy = r.Header.Get("X-User-ID")
-	}
+	// #3135: header-authoritative, body ignored — see mapHITLActorIdentity.
+	approvedBy := mapHITLActorIdentity(r)
 	if approvedBy == "" {
 		approvedBy = "system"
 	}
@@ -210,18 +283,18 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 	// approved, and project a best-effort StepGateHTTPResponse. No WCP step
 	// row exists, so retry_context stays zero-valued; ApprovalID is surfaced
 	// from the execution record when available.
+	//
+	// #3067 (S-4, CRITICAL): this scan matched on plan id ALONE across a
+	// process-global store and then flipped ApprovalStatus to approved and
+	// Status to running — so any tenant could release another tenant's
+	// paused, human-gated workflow. A foreign plan reliably reached this path
+	// because path 1 (GetWorkflowByPlanID) returns not-found under the
+	// caller's own tenancy. The lookup is now bound to the caller's org
+	// scope; a caller that asserts no scope matches nothing.
+	callerScope := mapHITLCallerScope(r)
+
 	executionStoreMutex.Lock()
-	var targetExec *HITLWorkflowExecution
-	for _, exec := range executionStore {
-		if exec.Status == StatusPaused && exec.WorkflowExecution != nil {
-			if exec.WorkflowName == "plan-"+planID ||
-				exec.ID == planID ||
-				(exec.Input != nil && exec.Input["plan_id"] == planID) {
-				targetExec = exec
-				break
-			}
-		}
-	}
+	targetExec := findPausedHITLExecutionForPlan(callerScope, planID)
 	if targetExec != nil {
 		targetExec.ApprovalStatus = StatusApproved
 		targetExec.Status = "running"
@@ -330,6 +403,14 @@ func tryApproveViaWCP(
 // Symmetric to mapStepApproveHandler — two paths (WCP-backed, legacy in-memory)
 // that share the same StepGateHTTPResponse shape (Issue #1677).
 func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
+	// #3135: same agent proxy-auth gate as the approve path — see
+	// mapStepApproveHandler for why it is here and what it is (and is not)
+	// load-bearing for.
+	if ok, msg := verifyAgentProxyAuth(r, "MAP-HITL-Reject"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
+
 	// Tier gating matches WCP /reject — see mapStepApproveHandler for the context.
 	if isCommunityMode() && (tierChecker == nil || !tierChecker.IsHITLApprovalEnabled()) {
 		sendErrorResponse(w, "MAP step rejection requires Evaluation or Enterprise license", http.StatusForbidden)
@@ -350,20 +431,18 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3135: `rejected_by` is deliberately NOT a field here — see the approve
+	// handler's body struct for why, and mapHITLActorIdentity for the contract.
 	var body struct {
-		RejectedBy string `json:"rejected_by"`
-		Reason     string `json:"reason"`
+		Reason string `json:"reason"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	body.RejectedBy = strings.TrimSpace(body.RejectedBy)
 	body.Reason = strings.TrimSpace(body.Reason)
 
-	rejectedBy := body.RejectedBy
-	if rejectedBy == "" {
-		rejectedBy = r.Header.Get("X-User-ID")
-	}
+	// #3135: header-authoritative, body ignored — see mapHITLActorIdentity.
+	rejectedBy := mapHITLActorIdentity(r)
 	if rejectedBy == "" {
 		rejectedBy = "system"
 	}
@@ -386,19 +465,13 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Path 2 — legacy in-memory flow.
+	// Path 2 — legacy in-memory flow. Bound to the caller's org scope for the
+	// same reason as the approve path (#3067 S-4): rejecting another tenant's
+	// paused execution aborts their workflow.
+	callerScope := mapHITLCallerScope(r)
+
 	executionStoreMutex.Lock()
-	var targetExec *HITLWorkflowExecution
-	for _, exec := range executionStore {
-		if exec.Status == StatusPaused && exec.WorkflowExecution != nil {
-			if exec.WorkflowName == "plan-"+planID ||
-				exec.ID == planID ||
-				(exec.Input != nil && exec.Input["plan_id"] == planID) {
-				targetExec = exec
-				break
-			}
-		}
-	}
+	targetExec := findPausedHITLExecutionForPlan(callerScope, planID)
 	executionStoreMutex.Unlock()
 
 	if targetExec == nil {
@@ -410,7 +483,9 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "Step rejected"
 	}
-	_, _ = hitlWorkflowEngine.AbortExecution(r.Context(), targetExec, reason)
+	// Carry the caller's scope so the approval-status lookup AbortExecution
+	// performs is bound too.
+	_, _ = hitlWorkflowEngine.AbortExecution(WithHITLScope(r.Context(), callerScope), targetExec, reason)
 
 	resp := workflow_control.ProjectStepGateToHTTP(
 		"", planID, nil,

@@ -103,7 +103,7 @@ func (s *KillSwitchService) ConfigureKillSwitch(ctx context.Context, orgID, syst
 	}
 
 	// Record history (log but don't fail on error)
-	if err := s.repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := s.repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "configured",
 		PreviousStatus: previousStatus,
@@ -145,7 +145,7 @@ func (s *KillSwitchService) TriggerKillSwitch(ctx context.Context, orgID, system
 	}
 
 	// Record history (log but don't fail on error)
-	if err := s.repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := s.repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "triggered",
 		PreviousStatus: previousStatus,
@@ -190,7 +190,7 @@ func (s *KillSwitchService) RestoreKillSwitch(ctx context.Context, orgID, system
 	}
 
 	// Record history (log but don't fail on error)
-	if err := s.repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := s.repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "restored",
 		PreviousStatus: previousStatus,
@@ -226,7 +226,7 @@ func (s *KillSwitchService) DisableKillSwitch(ctx context.Context, orgID, system
 	}
 
 	// Record history (log but don't fail on error)
-	if err := s.repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := s.repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "disabled",
 		PreviousStatus: previousStatus,
@@ -262,7 +262,7 @@ func (s *KillSwitchService) EnableKillSwitch(ctx context.Context, orgID, systemI
 	}
 
 	// Record history (log but don't fail on error)
-	if err := s.repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := s.repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "enabled",
 		PreviousStatus: previousStatus,

@@ -18,7 +18,10 @@ import (
 // caller mint tenant-wide read authority. The strip is unconditional (every
 // proxied route, every mode) per the #2896 census lesson.
 func TestProxyAuthMiddleware_StripsForgedRoleAndScopeHeaders(t *testing.T) {
-	// Community mode (test default) so Authenticate passes with no credentials.
+	// Community mode so Authenticate passes with no credentials. #3096: this
+	// used to lean on unset being the community default; it is now named.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	var seenRole, seenScope string
 	handler := proxyAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		seenRole = r.Header.Get(sharedidentity.HeaderUserRole)

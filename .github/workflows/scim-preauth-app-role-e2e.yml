@@ -1,0 +1,75 @@
+name: SCIM Pre-Auth App-Role E2E (#3134)
+
+# Executes runtime-e2e/3134_scim_preauth_app_role — the app-role posture proof
+# for the SCIM bearer-token plane (epic #3071).
+#
+# validateToken is the PRE-AUTHENTICATION lookup: it discovers which tenant owns
+# a presented bearer token, so it cannot set app.current_org_id — which is
+# exactly what the scim_tokens RLS policy (migrations/enterprise/117) tests. On
+# a portal connecting as axonflow_app_role the predicate is never true, the
+# lookup returns zero rows, and every valid SCIM token is rejected as invalid.
+#
+# The posture preamble this suite carries is the load-bearing part: scim_tokens
+# is ENABLE, not FORCE, so a suite whose portal connects as the table owner
+# would report the defect ABSENT. It asserts the boot role, rolbypassrls=false
+# and the table's RLS posture before making any behavioural claim, and aborts
+# rather than passing vacuously — the #3039/#3048 lesson.
+#
+# This suite is SELF-BOOTING: it runs its own `docker compose up` on probed
+# ports and tears down with `down -v`. That is why it gets a dedicated workflow
+# instead of a line in scripts/e2e/production_posture_registry.txt — the shared
+# posture stack pins container_name on every service, so a second compose
+# project collides, and this suite's `down -v` would delete the shared stack out
+# from under every later registry entry.
+#
+# Epic #3071 Tier 5: a guard that is never executed is not a guard.
+
+on:
+  pull_request:
+    paths:
+      - 'ee/platform/customer-portal/scim/**'
+      - 'ee/platform/customer-portal/main.go'
+      - 'migrations/enterprise/117_scim_provisioning.sql'
+      - 'runtime-e2e/3134_scim_preauth_app_role/**'
+      - '.github/workflows/scim-preauth-app-role-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ee/platform/customer-portal/scim/**'
+      - 'ee/platform/customer-portal/main.go'
+      - 'migrations/enterprise/117_scim_provisioning.sql'
+      - 'runtime-e2e/3134_scim_preauth_app_role/**'
+  workflow_dispatch:
+
+concurrency:
+  group: scim-preauth-app-role-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scim-preauth-app-role:
+    name: SCIM bearer auth under axonflow_app_role (self-booting stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run runtime-e2e/3134_scim_preauth_app_role
+        env:
+          AXONFLOW_TELEMETRY: 'off'
+          CI: 'true'
+        # No `continue-on-error`, no soft skip: the suite exits non-zero on any
+        # failed assertion AND on a short assertion count, and this step is the
+        # job's verdict.
+        run: bash runtime-e2e/3134_scim_preauth_app_role/test.sh
+
+      - name: Collect stack logs on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=af3134-"); do
+            echo "───── $c ─────"
+            docker logs --tail 200 "$c" 2>&1 || true
+          done

@@ -1,0 +1,121 @@
+name: Governed Request Plane Tenant Scope E2E
+
+# Executes runtime-e2e/3066_governed_plane_tenant_scope/ (#3066 C3-5 + C3-6).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# every entry in that registry is AMBIENT — it curls an already-booted shared
+# stack (agent :8080, orchestrator :8081, portal :8082). This suite is
+# SELF-BOOTING: it runs `docker compose -p rte3066gp_$$ up -d --build` over its
+# own isolation overlay in DEPLOYMENT_MODE=community and tears down with
+# `down -v --remove-orphans`, because it needs a community-mode agent (where
+# the Basic-auth username IS the tenant, so two tenancies cost no licenses).
+# The settled house rule on this repo is: ambient suite -> posture registry;
+# self-booting suite -> dedicated workflow, however well isolated. Same shape
+# as mcp-evaluate-policies-scope-e2e.yml, mcp-tenant-policy-e2e.yml,
+# override-identity-gate-e2e.yml and cross-system-hitl-e2e.yml.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    # A `paths:` filter is a guard, so it must list every file the suite's
+    # CORRECTNESS depends on — not just the files that express the contract.
+    # Anything the suite greps, curls, boots or reads back out of a container
+    # belongs here; omit one and the guard silently stops guarding, because the
+    # PR that breaks the suite is exactly the PR that never runs it (#3089).
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3066_governed_plane_tenant_scope/**'
+      # The token minter every direct-to-orchestrator assertion depends on.
+      - 'runtime-e2e/lib/proxy_auth.sh'
+
+      # The defect under test: processRequestHandler, executeWorkflowHandler
+      # and the shared binder all live here.
+      - 'platform/orchestrator/run.go'
+
+      # The fail-closed scope contract the binder delegates to. Bind() decides
+      # assertions 2-5 and 8, and a change to what counts as a usable dimension
+      # changes them silently.
+      - 'platform/shared/tenantscope/tenantscope.go'
+
+      # The trust root. Assertions 11 and 12 exist to prove proxyAuthMiddleware
+      # Sets (never Adds) X-Tenant-ID/X-Org-ID from the validated credential on
+      # these routes; auth.go/authenticator.go resolve the community-mode
+      # Basic-auth username into that tenant, which is how the suite obtains
+      # two tenancies without licenses.
+      - 'platform/agent/proxy.go'
+      - 'platform/agent/auth.go'
+      - 'platform/agent/authenticator.go'
+
+      # Assertion 13's gate, and the reason header trust is load-bearing at all.
+      - 'platform/orchestrator/authn_middleware.go'
+
+      # Assertions 10 and 11 read the tenancy off the EXECUTED row, which is
+      # WorkflowExecution.UserContext as the engine records and echoes it.
+      - 'platform/orchestrator/workflow_engine.go'
+
+      # Readiness, which the suite depends on as literally as it depends on the
+      # contract files above: platform/agent/run.go owns the "Reverse proxy
+      # initialized" log line wait_agent_ready() greps, and the boot ordering
+      # (/health registered early, RegisterProxyRoutes late) that made that
+      # wait necessary. Reword the line and every gateway assertion times out.
+      - 'platform/agent/run.go'
+
+      # The stack the suite boots. It uses the BASE compose file only
+      # (community mode) plus its own isolation overlay; a change to the base
+      # file or to either image build changes what is under test.
+      - 'docker-compose.yml'
+      - 'platform/agent/Dockerfile'
+      - 'platform/orchestrator/Dockerfile'
+
+      - '.github/workflows/governed-plane-scope-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: governed-plane-scope-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+# The job only checks out and runs a local compose stack; it uses no secrets
+# and writes nothing back to the repo. Declaring the minimum explicitly rather
+# than inheriting the repo default is defence in depth (#3089).
+permissions:
+  contents: read
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  governed-plane-scope-e2e:
+    name: Governed request plane binds to the authenticated tenancy
+    runs-on: ubuntu-latest
+    # Builds the agent + orchestrator images, boots postgres + both services,
+    # waits for migrations and the proxy routes to settle, then drives 13
+    # assertions.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No LLM keys, no license, no AWS secrets: community mode plus the
+      # suite's own exported internal-service secret, so it works on a fork PR.
+      - name: Run runtime-e2e 3066 — governed request plane tenant scope
+        shell: bash
+        run: ./runtime-e2e/3066_governed_plane_tenant_scope/test.sh
+
+      - name: Dump agent + orchestrator logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=rte3066gp"); do
+            echo "── logs: $c ──"
+            docker logs --tail 150 "$c" 2>&1 || true
+          done

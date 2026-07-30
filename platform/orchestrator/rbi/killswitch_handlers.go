@@ -136,7 +136,7 @@ func (h *KillSwitchHandler) handleKillSwitchRoutes(w http.ResponseWriter, r *htt
 
 // createKillSwitch handles POST /api/v1/rbi/killswitches
 func (h *KillSwitchHandler) createKillSwitch(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -160,7 +160,7 @@ func (h *KillSwitchHandler) createKillSwitch(w http.ResponseWriter, r *http.Requ
 
 // listKillSwitches handles GET /api/v1/rbi/killswitches
 func (h *KillSwitchHandler) listKillSwitches(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -204,7 +204,7 @@ func (h *KillSwitchHandler) listKillSwitches(w http.ResponseWriter, r *http.Requ
 
 // listActiveKillSwitches handles GET /api/v1/rbi/killswitches/active
 func (h *KillSwitchHandler) listActiveKillSwitches(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -224,7 +224,7 @@ func (h *KillSwitchHandler) listActiveKillSwitches(w http.ResponseWriter, r *htt
 
 // checkKillSwitch handles GET /api/v1/rbi/killswitches/check
 func (h *KillSwitchHandler) checkKillSwitch(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -250,7 +250,7 @@ func (h *KillSwitchHandler) checkKillSwitch(w http.ResponseWriter, r *http.Reque
 
 // getKillSwitch handles GET /api/v1/rbi/killswitches/{id}
 func (h *KillSwitchHandler) getKillSwitch(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -267,7 +267,7 @@ func (h *KillSwitchHandler) getKillSwitch(w http.ResponseWriter, r *http.Request
 
 // deleteKillSwitch handles DELETE /api/v1/rbi/killswitches/{id}
 func (h *KillSwitchHandler) deleteKillSwitch(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -283,7 +283,7 @@ func (h *KillSwitchHandler) deleteKillSwitch(w http.ResponseWriter, r *http.Requ
 
 // activateKillSwitch handles POST /api/v1/rbi/killswitches/{id}/activate
 func (h *KillSwitchHandler) activateKillSwitch(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -296,6 +296,18 @@ func (h *KillSwitchHandler) activateKillSwitch(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// #3150: actor_id / actor_email / actor_role / actor_ip are persisted on
+	// rbi_kill_switches and on every rbi_kill_switch_history row. Arming a
+	// kill switch is an Article-14-grade oversight action; who did it must not
+	// be a string the doer typed. actor_role now says HOW the caller
+	// authenticated (user | service), which is the only role claim this plane
+	// can make honestly.
+	actor := resolveActor(r)
+	req.ActorID = actor.ID
+	req.ActorEmail = actor.Email
+	req.ActorRole = actor.Role
+	req.ActorIP = actor.IP
+
 	ks, err := h.service.Activate(r.Context(), orgID, id, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -307,7 +319,7 @@ func (h *KillSwitchHandler) activateKillSwitch(w http.ResponseWriter, r *http.Re
 
 // deactivateKillSwitch handles POST /api/v1/rbi/killswitches/{id}/deactivate
 func (h *KillSwitchHandler) deactivateKillSwitch(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -320,6 +332,15 @@ func (h *KillSwitchHandler) deactivateKillSwitch(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// #3150: same as activateKillSwitch. Releasing a kill switch — turning
+	// governance back on for a system that was stopped — is the more
+	// sensitive half of the pair.
+	actor := resolveActor(r)
+	req.ActorID = actor.ID
+	req.ActorEmail = actor.Email
+	req.ActorRole = actor.Role
+	req.ActorIP = actor.IP
+
 	ks, err := h.service.Deactivate(r.Context(), orgID, id, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -331,7 +352,7 @@ func (h *KillSwitchHandler) deactivateKillSwitch(w http.ResponseWriter, r *http.
 
 // getHistory handles GET /api/v1/rbi/killswitches/{id}/history
 func (h *KillSwitchHandler) getHistory(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -354,14 +375,6 @@ func (h *KillSwitchHandler) getHistory(w http.ResponseWriter, r *http.Request, i
 		"history": history,
 		"total":   len(history),
 	})
-}
-
-// getOrgID extracts the organization ID from the request.
-func (h *KillSwitchHandler) getOrgID(r *http.Request) string {
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		return orgID
-	}
-	return r.URL.Query().Get("org_id")
 }
 
 // handleCORS handles OPTIONS requests.

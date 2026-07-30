@@ -37,6 +37,7 @@ const (
 	MaxEvaluationPlans           = 100
 	MaxEvaluationVersionsPerPlan = 25
 )
+
 // Common errors
 var (
 	ErrPlanNotFound    = errors.New("plan not found")

@@ -1,6 +1,8 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
 
+//go:build enterprise
+
 /*
 Package hitl provides Human-in-the-Loop (HITL) queue management
 for EU AI Act Article 14 compliance (Human Oversight).
@@ -83,6 +85,5 @@ including the ability to:
 
 See the EU AI Act compliance documentation for more details.
 */
-//go:build enterprise
 
 package hitl

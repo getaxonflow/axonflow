@@ -19,56 +19,58 @@ import (
 	"github.com/lib/pq"
 
 	"axonflow/platform/agent/rls"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // ApprovalRequest represents a pending approval request in the HITL queue.
 type ApprovalRequest struct {
-	ID                  int64                  `json:"id"`
-	RequestID           uuid.UUID              `json:"request_id"`
-	OrgID               string                 `json:"org_id"`
-	TenantID            string                 `json:"tenant_id"`
-	ClientID            string                 `json:"client_id"`
-	UserID              string                 `json:"user_id,omitempty"`
-	OriginalQuery       string                 `json:"original_query"`
-	RequestType         string                 `json:"request_type"`
-	RequestContext      map[string]interface{} `json:"request_context,omitempty"`
-	TriggeredPolicyID   string                 `json:"triggered_policy_id"`
-	TriggeredPolicyName string                 `json:"triggered_policy_name"`
-	TriggerReason       string                 `json:"trigger_reason"`
-	Severity            string                 `json:"severity"`
-	EUAIActArticle      string                 `json:"eu_ai_act_article,omitempty"`
-	ComplianceFramework string                 `json:"compliance_framework,omitempty"`
-	RiskClassification  string                 `json:"risk_classification,omitempty"`
-	Status              string                 `json:"status"`
-	ReviewerID          string                 `json:"reviewer_id,omitempty"`
-	ReviewerEmail       string                 `json:"reviewer_email,omitempty"`
-	ReviewerRole        string                 `json:"reviewer_role,omitempty"`
-	ReviewComment       string                 `json:"review_comment,omitempty"`
-	ReviewedAt          *time.Time             `json:"reviewed_at,omitempty"`
-	OverrideJustify     string                 `json:"override_justification,omitempty"`
-	OverrideAuthorizedBy string               `json:"override_authorized_by,omitempty"`
-	NotifyURL           string                 `json:"notify_url,omitempty"`
-	ExpiresAt           time.Time              `json:"expires_at"`
-	CreatedAt           time.Time              `json:"created_at"`
-	UpdatedAt           time.Time              `json:"updated_at"`
+	ID                   int64                  `json:"id"`
+	RequestID            uuid.UUID              `json:"request_id"`
+	OrgID                string                 `json:"org_id"`
+	TenantID             string                 `json:"tenant_id"`
+	ClientID             string                 `json:"client_id"`
+	UserID               string                 `json:"user_id,omitempty"`
+	OriginalQuery        string                 `json:"original_query"`
+	RequestType          string                 `json:"request_type"`
+	RequestContext       map[string]interface{} `json:"request_context,omitempty"`
+	TriggeredPolicyID    string                 `json:"triggered_policy_id"`
+	TriggeredPolicyName  string                 `json:"triggered_policy_name"`
+	TriggerReason        string                 `json:"trigger_reason"`
+	Severity             string                 `json:"severity"`
+	EUAIActArticle       string                 `json:"eu_ai_act_article,omitempty"`
+	ComplianceFramework  string                 `json:"compliance_framework,omitempty"`
+	RiskClassification   string                 `json:"risk_classification,omitempty"`
+	Status               string                 `json:"status"`
+	ReviewerID           string                 `json:"reviewer_id,omitempty"`
+	ReviewerEmail        string                 `json:"reviewer_email,omitempty"`
+	ReviewerRole         string                 `json:"reviewer_role,omitempty"`
+	ReviewComment        string                 `json:"review_comment,omitempty"`
+	ReviewedAt           *time.Time             `json:"reviewed_at,omitempty"`
+	OverrideJustify      string                 `json:"override_justification,omitempty"`
+	OverrideAuthorizedBy string                 `json:"override_authorized_by,omitempty"`
+	NotifyURL            string                 `json:"notify_url,omitempty"`
+	ExpiresAt            time.Time              `json:"expires_at"`
+	CreatedAt            time.Time              `json:"created_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
 }
 
 // ApprovalHistory represents an immutable audit trail entry.
 type ApprovalHistory struct {
-	ID             int64      `json:"id"`
-	RequestID      uuid.UUID  `json:"request_id"`
-	OrgID          string     `json:"org_id"`
-	TenantID       string     `json:"tenant_id"`
-	Action         string     `json:"action"`
-	ActorID        string     `json:"actor_id,omitempty"`
-	ActorEmail     string     `json:"actor_email,omitempty"`
-	ActorRole      string     `json:"actor_role,omitempty"`
-	ActorIP        string     `json:"actor_ip,omitempty"`
-	Comment        string     `json:"comment,omitempty"`
-	Justification  string     `json:"justification,omitempty"`
-	PreviousStatus string     `json:"previous_status,omitempty"`
-	NewStatus      string     `json:"new_status,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
+	ID             int64     `json:"id"`
+	RequestID      uuid.UUID `json:"request_id"`
+	OrgID          string    `json:"org_id"`
+	TenantID       string    `json:"tenant_id"`
+	Action         string    `json:"action"`
+	ActorID        string    `json:"actor_id,omitempty"`
+	ActorEmail     string    `json:"actor_email,omitempty"`
+	ActorRole      string    `json:"actor_role,omitempty"`
+	ActorIP        string    `json:"actor_ip,omitempty"`
+	Comment        string    `json:"comment,omitempty"`
+	Justification  string    `json:"justification,omitempty"`
+	PreviousStatus string    `json:"previous_status,omitempty"`
+	NewStatus      string    `json:"new_status,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // PendingStats represents dashboard metrics for pending approvals.
@@ -279,14 +281,21 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 		args = append(args, filter.UserID)
 		argIdx++
 	}
-	if filter.OrgID != "" {
-		// #3048 R3 BLOCKER-2: org isolation. List runs on the BYPASSRLS
-		// lookup pool, so this SQL predicate is the tenancy boundary on
-		// every posture.
-		where += fmt.Sprintf(" AND org_id = $%d", argIdx)
-		args = append(args, filter.OrgID)
-		argIdx++
+	// #3048 R3 BLOCKER-2: org isolation. List runs on the BYPASSRLS lookup
+	// pool, so this SQL predicate is the tenancy boundary on every posture.
+	//
+	// #3065 (R3 round 1): the predicate was appended only when filter.OrgID
+	// was non-empty — so an empty org left it off entirely and the query
+	// became a deployment-wide `WHERE 1=1`, listing every org's approval
+	// queue including original_query, the governed prompt. That is the same
+	// fail-open shape #3065 closed on the by-id path (rejectCrossOrg) two
+	// files over, one layer down. It is now mandatory: no org, no listing.
+	if err := tenantscope.ValidateOrgKey(filter.OrgID); err != nil {
+		return nil, 0, fmt.Errorf("cannot list approval requests without an authenticated org: %w", err)
 	}
+	where += fmt.Sprintf(" AND org_id = $%d", argIdx)
+	args = append(args, filter.OrgID)
+	argIdx++
 
 	// Count total. ListFilter has no tenant dimension — this is the
 	// deployment-wide queue view — so the read runs on the lookup pool
@@ -737,4 +746,3 @@ func nullString(s string) sql.NullString {
 	}
 	return sql.NullString{String: s, Valid: true}
 }
-

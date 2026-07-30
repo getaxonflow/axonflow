@@ -53,19 +53,18 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// Every canonical DEPLOYMENT_MODE (see getMigrationPaths). "" is included
-// because an unset value defaults to community, and the unknown-mode default
-// (saas) is covered by "saas" itself.
-var migrationChainModes = []string{
-	"",
-	"community",
-	"evaluation",
-	"community-saas",
-	"in-vpc-enterprise",
-	"in-vpc-healthcare",
-	"in-vpc-banking",
-	"in-vpc-travel",
-	"saas",
+// Every RECOGNISED DEPLOYMENT_MODE spelling — canonical names plus the
+// `enterprise` / `invpc` aliases — with "" for unset (which still resolves to
+// community here; see #3128 and getMigrationPaths).
+//
+// Derived from recognisedDeploymentModes() rather than hand-listed. The literal
+// this replaced predated #3167 and therefore omitted `enterprise`, which is the
+// value our own docker-compose.enterprise.yml has always defaulted to: the one
+// mode string most likely to reach a customer's database was the one this
+// chain never applied. Since an unrecognised value is now refused outright,
+// there is no longer an "unknown mode" set to cover separately.
+func migrationChainModes() []string {
+	return append([]string{""}, recognisedDeploymentModes()...)
 }
 
 func TestMigrationChainAppliesCleanly_RealPostgres(t *testing.T) {
@@ -79,10 +78,10 @@ func TestMigrationChainAppliesCleanly_RealPostgres(t *testing.T) {
 		t.Fatalf("migrations directory not found at %s: %v", migrationsPath, err)
 	}
 
-	for _, mode := range migrationChainModes {
+	for _, mode := range migrationChainModes() {
 		label := mode
 		if label == "" {
-			label = "unset(defaults-to-community)"
+			label = "unset(resolves-to-community — see #3128)"
 		}
 		t.Run(label, func(t *testing.T) {
 			// A FRESH database per mode. The bug class this guards is

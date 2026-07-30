@@ -52,6 +52,7 @@ func TestHandlerCreateWorkflow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+			req.Header.Set("X-Org-ID", "org-1")
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Tenant-ID", "tenant-1")
 
@@ -104,6 +105,8 @@ func TestHandlerGetWorkflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/"+tt.workflowID, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			req = mux.SetURLVars(req, map[string]string{"id": tt.workflowID})
 
 			rr := httptest.NewRecorder()
@@ -128,6 +131,7 @@ func TestHandlerListWorkflows(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows?limit=10", nil)
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
 	rr := httptest.NewRecorder()
@@ -157,11 +161,11 @@ func TestHandlerStepGate(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	tests := []struct {
-		name       string
-		workflowID string
-		stepID     string
-		body       StepGateRequest
-		wantStatus int
+		name         string
+		workflowID   string
+		stepID       string
+		body         StepGateRequest
+		wantStatus   int
 		wantDecision GateDecision
 	}{
 		{
@@ -202,6 +206,7 @@ func TestHandlerStepGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			body, _ := json.Marshal(tt.body)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+tt.workflowID+"/steps/"+tt.stepID+"/gate", bytes.NewReader(body))
+			req.Header.Set("X-Org-ID", "org-1")
 			req = mux.SetURLVars(req, map[string]string{"id": tt.workflowID, "step_id": tt.stepID})
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -236,6 +241,8 @@ func TestHandlerCompleteWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -269,6 +276,8 @@ func TestHandlerAbortWorkflow(t *testing.T) {
 	body, _ := json.Marshal(abortReq)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/abort", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -280,7 +289,7 @@ func TestHandlerAbortWorkflow(t *testing.T) {
 	}
 
 	// Verify the workflow was aborted
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.Status != WorkflowStatusAborted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusAborted)
 	}
@@ -296,6 +305,8 @@ func TestHandlerResumeWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/resume", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -323,6 +334,8 @@ func TestHandlerMarkStepCompleted(t *testing.T) {
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()
@@ -359,6 +372,8 @@ func TestHandlerMarkStepCompletedWithMetrics(t *testing.T) {
 	body, _ := json.Marshal(metricsBody)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/complete", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -404,6 +419,8 @@ func TestHandlerApproveStep(t *testing.T) {
 
 	body := strings.NewReader(`{"comment": "Reviewed and approved for production"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "approver@example.com")
 
@@ -433,6 +450,8 @@ func TestHandlerApproveStepMissingComment(t *testing.T) {
 
 	// No body — should be rejected
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "approver@example.com")
 
@@ -463,6 +482,8 @@ func TestHandlerApproveStepShortComment(t *testing.T) {
 	// Too short — should be rejected
 	body := strings.NewReader(`{"comment": "ok"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "approver@example.com")
 
@@ -494,6 +515,8 @@ func TestHandlerRejectStep(t *testing.T) {
 
 	body := strings.NewReader(`{"reason": "Contains prohibited content, rejecting"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "rejecter@example.com")
 
@@ -505,7 +528,7 @@ func TestHandlerRejectStep(t *testing.T) {
 	}
 
 	// Verify workflow was aborted
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 	if updated.Status != WorkflowStatusAborted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusAborted)
 	}
@@ -532,6 +555,7 @@ func TestHandlerGetPendingApprovals(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/approvals/pending?limit=10", nil)
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
 	rr := httptest.NewRecorder()
@@ -556,6 +580,8 @@ func TestHandlerCORS(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/workflows", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Origin", "http://localhost:3000")
 
 	rr := httptest.NewRecorder()
@@ -599,6 +625,8 @@ func TestHandlerRouteRegistration(t *testing.T) {
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			match := &mux.RouteMatch{}
 			if !router.Match(req, match) {
 				t.Errorf("route not registered: %s %s", route.method, route.path)
@@ -631,6 +659,8 @@ func TestHandlerCoreRouteRegistration(t *testing.T) {
 	for _, route := range coreRoutes {
 		t.Run("core_"+route.method+" "+route.path, func(t *testing.T) {
 			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			match := &mux.RouteMatch{}
 			if !router.Match(req, match) {
 				t.Errorf("core route not registered: %s %s", route.method, route.path)
@@ -651,6 +681,8 @@ func TestHandlerCoreRouteRegistration(t *testing.T) {
 	for _, route := range enterpriseRoutes {
 		t.Run("enterprise_not_registered_"+route.method+" "+route.path, func(t *testing.T) {
 			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			match := &mux.RouteMatch{}
 			if router.Match(req, match) {
 				t.Errorf("enterprise route should NOT be registered in community mode: %s %s", route.method, route.path)
@@ -679,6 +711,8 @@ func TestHandlerEnterpriseRouteRegistration(t *testing.T) {
 	for _, route := range enterpriseRoutes {
 		t.Run("enterprise_"+route.method+" "+route.path, func(t *testing.T) {
 			req := httptest.NewRequest(route.method, route.path, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			match := &mux.RouteMatch{}
 			if !router.Match(req, match) {
 				t.Errorf("enterprise route not registered: %s %s", route.method, route.path)
@@ -709,6 +743,8 @@ func TestHandlerCreateWorkflowInvalidJSON(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader([]byte("invalid json")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
@@ -723,6 +759,8 @@ func TestHandlerGetWorkflowMissingID(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": ""})
 
 	rr := httptest.NewRecorder()
@@ -767,6 +805,8 @@ func TestHandlerStepGateMissingWorkflowID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//steps/step-1/gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "", "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -792,6 +832,8 @@ func TestHandlerStepGateMissingStepID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps//gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": ""})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -812,6 +854,8 @@ func TestHandlerStepGateInvalidJSON(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/gate", bytes.NewReader([]byte("invalid json")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -832,7 +876,7 @@ func TestHandlerStepGateTerminalWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete the workflow first
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 
 	body, _ := json.Marshal(StepGateRequest{
 		StepName: "test",
@@ -840,6 +884,8 @@ func TestHandlerStepGateTerminalWorkflow(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -874,6 +920,8 @@ func TestHandlerStepGatePendingApproval(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-2/gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-2"})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -889,6 +937,8 @@ func TestHandlerMarkStepCompletedMissingIDs(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//steps//complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "", "step_id": ""})
 
 	rr := httptest.NewRecorder()
@@ -908,6 +958,8 @@ func TestHandlerMarkStepCompletedNotFound(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -935,6 +987,8 @@ func TestHandlerMarkStepCompletedMalformedBody(t *testing.T) {
 	// Send malformed JSON body
 	body := bytes.NewReader([]byte(`{invalid json`))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/complete", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -950,6 +1004,8 @@ func TestHandlerCompleteWorkflowMissingID(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": ""})
 
 	rr := httptest.NewRecorder()
@@ -964,6 +1020,8 @@ func TestHandlerCompleteWorkflowNotFound(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/non-existent/complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -991,6 +1049,8 @@ func TestHandlerCompleteWorkflowWithPendingApproval(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/complete", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1005,6 +1065,8 @@ func TestHandlerAbortWorkflowMissingID(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//abort", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": ""})
 
 	rr := httptest.NewRecorder()
@@ -1019,6 +1081,8 @@ func TestHandlerAbortWorkflowNotFound(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/non-existent/abort", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -1039,6 +1103,8 @@ func TestHandlerAbortWorkflowEmptyBody(t *testing.T) {
 
 	// Empty body should use default reason
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/abort", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1058,10 +1124,12 @@ func TestHandlerAbortWorkflowTerminal(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete the workflow
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 
 	body, _ := json.Marshal(AbortWorkflowRequest{Reason: "test"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/abort", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1076,6 +1144,8 @@ func TestHandlerResumeWorkflowMissingID(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//resume", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": ""})
 
 	rr := httptest.NewRecorder()
@@ -1090,6 +1160,8 @@ func TestHandlerResumeWorkflowNotFound(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/non-existent/resume", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -1109,9 +1181,11 @@ func TestHandlerResumeWorkflowTerminal(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete the workflow
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "tenant-1", "org-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/resume", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1139,6 +1213,8 @@ func TestHandlerResumeWorkflowWithPendingApproval(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/resume", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1175,9 +1251,11 @@ func TestHandlerResumeWorkflowRejected(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "", "", "user@test.com", "")
+	svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "tenant-1", "org-1", "user@test.com", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow2.WorkflowID+"/resume", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow2.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1193,6 +1271,8 @@ func TestHandlerApproveStepMissingIDs(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//steps//approve", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "", "step_id": ""})
 
 	rr := httptest.NewRecorder()
@@ -1213,6 +1293,8 @@ func TestHandlerApproveStepNotFound(t *testing.T) {
 
 	body := strings.NewReader(`{"comment": "Reviewed and approved for production"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/approve", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -1239,6 +1321,8 @@ func TestHandlerApproveStepNoApprovalNeeded(t *testing.T) {
 
 	body := strings.NewReader(`{"comment": "Reviewed and approved for production"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()
@@ -1265,11 +1349,13 @@ func TestHandlerApproveStepNotPending(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step first (via service directly, bypasses handler validation)
-	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "", "", "approver@test.com", "Initial approval for testing")
+	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "tenant-1", "org-1", "approver@test.com", "Initial approval for testing")
 
 	// Try to approve again via handler
 	body := strings.NewReader(`{"comment": "Attempting second approval"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()
@@ -1297,6 +1383,8 @@ func TestHandlerRejectStepMissingReason(t *testing.T) {
 
 	// No body — should be rejected
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "rejecter@example.com")
 
@@ -1326,6 +1414,8 @@ func TestHandlerRejectStepShortReason(t *testing.T) {
 	// Too short — should be rejected
 	body := strings.NewReader(`{"reason": "no"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "rejecter@example.com")
 
@@ -1341,6 +1431,8 @@ func TestHandlerRejectStepMissingIDs(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows//steps//reject", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": "", "step_id": ""})
 
 	rr := httptest.NewRecorder()
@@ -1361,6 +1453,8 @@ func TestHandlerRejectStepNotFound(t *testing.T) {
 
 	body := strings.NewReader(`{"reason": "Rejecting due to policy violation"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/reject", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -1387,6 +1481,8 @@ func TestHandlerRejectStepNoApprovalNeeded(t *testing.T) {
 
 	body := strings.NewReader(`{"reason": "Rejecting due to policy violation"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()
@@ -1401,13 +1497,18 @@ func TestHandlerGetPendingApprovalsMissingTenant(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/approvals/pending", nil)
-	// No X-Tenant-ID header
+	// No tenancy headers at all — the whole point is the absence.
 
 	rr := httptest.NewRecorder()
 	handler.GetPendingApprovals(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	// #3065 (R3 round 1): 401, not the old 400. A missing authenticated
+	// tenancy is an authentication failure, and every converted sibling says
+	// so with the same code — a listing route answering 400 while its by-id
+	// siblings answer 401 is how a reader concludes the listing route is
+	// merely validating input rather than authorizing.
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -1430,6 +1531,7 @@ func TestHandlerGetPendingApprovalsWithLimit(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/approvals/pending?limit=2", nil)
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
 	rr := httptest.NewRecorder()
@@ -1469,6 +1571,8 @@ func TestHandlerContextExtraction(t *testing.T) {
 		WorkflowName: "test-workflow",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -1484,6 +1588,8 @@ func TestHandlerCORSDisallowedOrigin(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/workflows", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Origin", "http://malicious.com")
 
 	rr := httptest.NewRecorder()
@@ -1512,6 +1618,7 @@ func TestHandlerCreateWorkflowWithTraceID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
@@ -1543,6 +1650,8 @@ func TestHandlerGetWorkflowReturnsTraceID(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/"+workflow.WorkflowID, nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
 
 	rr := httptest.NewRecorder()
@@ -1582,6 +1691,7 @@ func TestHandlerListWorkflowsTraceIDFilter(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows?trace_id=shared-trace-001", nil)
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
 	rr := httptest.NewRecorder()
@@ -1615,6 +1725,7 @@ func TestHandlerCreateWorkflowWithoutTraceID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
@@ -1701,6 +1812,7 @@ func TestHandlerCreateWorkflowTraceIDTooLong(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
 
@@ -1744,6 +1856,7 @@ func TestHandlerStepGateWithToolContext(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -1774,6 +1887,7 @@ func TestHandlerStepGateToolContextEmptyToolName(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -1805,6 +1919,7 @@ func TestHandlerGetPendingApprovalsEmptyListSerialisesAsArray(t *testing.T) {
 	handler, _, _ := setupTestHandler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/approvals/pending", nil)
+	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-empty")
 	rr := httptest.NewRecorder()
 	handler.GetPendingApprovals(rr, req)

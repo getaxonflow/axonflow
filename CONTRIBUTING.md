@@ -588,10 +588,53 @@ A small set of changes legitimately can't be tested at the layer that failed:
 - Documentation-only fixes that happen to match the `fix(docs):` Conventional
   Commits prefix
 
-Apply the `regression-test-exempt` label and **justify in the PR body under
-the "If exempt" section** of the PR template. Reviewers must confirm the
-exemption is genuine; an exemption is not a license to skip writing a test
-that *could* exist.
+Claiming the exemption takes **two** things, and the label alone is not enough:
+
+1. Apply the `regression-test-exempt` label, **and**
+2. Add a `## Regression-test-exempt justification` section to the PR body with
+   the rationale in it. An empty heading, or a heading followed only by an
+   HTML comment, does not count.
+
+If the label is present without that section, the gate **fails**. This mirrors
+the `[skip-runtime-e2e]` / `## Skip-runtime-e2e justification` convention used
+by the Definition-of-Done gate (see "Runtime-E2E-per-user-facing-change" below),
+so there is one shape to learn rather than two. Until #3144 the two only shared
+a heading *name* — the Definition-of-Done gate accepted a heading with nothing
+under it. Both now require content.
+
+Reviewers must confirm the exemption is genuine; an exemption is not a license
+to skip writing a test that *could* exist.
+
+**Why the justification lives in the PR body (#3120):** labels are not part of
+a PR's durable state. On PR #3119 the exempt label was applied at 06:57:06 and
+removed at 06:57:16; the gate ran at 06:57:28, reported "Skip — exempt label
+applied", and went green. The head SHA never changed, so nothing re-evaluated,
+and afterwards the PR showed a green required check with no label, no test, and
+no trace of why. The gate now (a) triggers on `unlabeled` as well as `labeled`
+and (b) reads the PR's **current** title, body and labels from the API at
+evaluation time rather than from the triggering event's payload — so the label
+snapshot at trigger time can no longer decide anything. Putting the rationale in
+the body means removing the label cannot silently orphan the justification.
+
+**The tests are executed, not just counted (#3121)**
+
+`Check Regression Test Present` is a **presence** gate: it proves a test file
+appears in the diff, not that it runs or passes. A companion job,
+`Run regression-test suite`, executes every script in
+`tests/regression-test-required/` on every PR to `main`:
+
+```bash
+# same entry point CI uses
+bash tests/regression-test-required/run-all.sh
+```
+
+The runner fails on a failing test, on an empty suite directory, and on a
+missing one — discovering nothing is never reported as a pass. Its behaviour is
+pinned by `tests/regression-test-required/regression_suite_runner_test.sh`.
+
+Note the boundary: this executes the shell regression tests in that one
+directory. Regression tests added elsewhere (`*_test.go`, Playwright specs, …)
+are executed by their own language's CI job, not by this runner.
 
 **Why this rule exists**
 
@@ -600,6 +643,58 @@ caught in the next release cycle by a test that we hadn't written yet. Forcing
 the test into the same PR as the fix is the cheapest place to catch the next
 recurrence. See `axonflow-internal-docs/engineering/QUALITY_FREEZE_EPIC_2026-04-24.md`
 for the full motivation.
+
+### Runtime-E2E-per-user-facing-change
+
+`.github/workflows/definition-of-done.yml` enforces CLAUDE.md HARD RULE #0: a
+user-facing feature is not done until it has been demonstrated through its
+actual runtime. The `Runtime E2E required for user-facing changes` job is a
+**required** status check on `main`.
+
+The gate applies when a PR changes a non-test, non-`.md`/`.yaml`/`.yml`/`.json`
+file under `platform/agent/`, `platform/orchestrator/`, `platform/connectors/`,
+`platform/shared/`, `ee/platform/…`, `migrations/` or `docs/api/` **and** the
+same PR adds or updates nothing under `runtime-e2e/`.
+
+**Escape hatch: `[skip-runtime-e2e]`**
+
+Claiming it takes **two** things, and the title marker alone is not enough:
+
+1. Put `[skip-runtime-e2e]` in the PR **title**, **and**
+2. Add a `## Skip-runtime-e2e justification` section to the PR **body** with
+   the rationale in it.
+
+If the marker is present without that section, the gate **fails**. None of the
+following counts as a rationale:
+
+| Body shape under the heading            | Accepted? |
+|-----------------------------------------|-----------|
+| Real prose                              | yes       |
+| Nothing at all                          | no        |
+| Only an HTML comment (the template's placeholder) | no |
+| Only a horizontal rule (`---`)          | no        |
+| Nothing, with the next heading following | no — content is not borrowed from the next section |
+| The heading written as a single `#`     | no — `##` or deeper |
+
+Per **CLAUDE.md HARD RULE #9** the escape hatch also requires explicit operator
+approval. Name the approver in the justification; a gate that a blank heading
+could waive could not enforce that requirement at all, which is what #3144 was.
+
+**Why the gate reads the API rather than the event payload (#3144):** the
+previous version took the title and body from
+`github.event.pull_request.title` / `.body` — their values *when the triggering
+event fired*, not when the run executed. That is the #3120 class, and it was
+mitigated here only incidentally, by `edited` happening to be in the trigger
+list. The gate now reads the PR's current title and body from the REST API at
+evaluation time and **fails the job if that read cannot complete** — a gate
+that cannot determine whether it applies must not report success. This mirrors
+the `regression-test-exempt` mechanism above; the two conventions are
+deliberately the same shape.
+
+Both behaviours are pinned by
+`tests/regression-test-required/dod_gate_state_test.sh`, which executes the
+workflow's real steps — including feeding the real
+`.github/pull_request_template.md` through the real parser in both directions.
 
 ## Code Style
 

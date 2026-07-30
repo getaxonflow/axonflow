@@ -95,7 +95,7 @@ func (h *ModelValidationHandler) handleValidationByID(w http.ResponseWriter, r *
 
 // createValidation handles POST /api/v1/rbi/validations
 func (h *ModelValidationHandler) createValidation(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -119,7 +119,7 @@ func (h *ModelValidationHandler) createValidation(w http.ResponseWriter, r *http
 
 // listValidations handles GET /api/v1/rbi/validations
 func (h *ModelValidationHandler) listValidations(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -171,7 +171,7 @@ func (h *ModelValidationHandler) listValidations(w http.ResponseWriter, r *http.
 
 // getValidation handles GET /api/v1/rbi/validations/{id}
 func (h *ModelValidationHandler) getValidation(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -188,7 +188,7 @@ func (h *ModelValidationHandler) getValidation(w http.ResponseWriter, r *http.Re
 
 // updateValidation handles PATCH /api/v1/rbi/validations/{id}
 func (h *ModelValidationHandler) updateValidation(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -212,7 +212,7 @@ func (h *ModelValidationHandler) updateValidation(w http.ResponseWriter, r *http
 
 // deleteValidation handles DELETE /api/v1/rbi/validations/{id}
 func (h *ModelValidationHandler) deleteValidation(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -228,7 +228,7 @@ func (h *ModelValidationHandler) deleteValidation(w http.ResponseWriter, r *http
 
 // addFinding handles POST /api/v1/rbi/validations/{id}/findings
 func (h *ModelValidationHandler) addFinding(w http.ResponseWriter, r *http.Request, validationID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -248,14 +248,6 @@ func (h *ModelValidationHandler) addFinding(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.writeJSON(w, http.StatusOK, validation)
-}
-
-// getOrgID extracts the organization ID from the request.
-func (h *ModelValidationHandler) getOrgID(r *http.Request) string {
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		return orgID
-	}
-	return r.URL.Query().Get("org_id")
 }
 
 // handleCORS handles OPTIONS requests.

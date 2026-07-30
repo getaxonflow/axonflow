@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/shared/egress"
 )
 
 // WebhookSigningKeyEnv is the env var the dispatcher reads to obtain the
@@ -68,10 +70,13 @@ var retryDelays = []time.Duration{
 	5 * time.Minute,
 }
 
-// allowPrivateOnce caches the env-gate decision once at dispatcher
-// construction so tests can flip the env between dispatcher instances.
+// allowPrivateRanges reads the env-gate once at dispatcher construction so
+// tests can flip the env between dispatcher instances. It delegates to
+// egress.AllowPrivateFromEnv, which WARN-logs the bypass and names every range
+// it re-permits — the hatch used to engage silently, and a quiet escape hatch
+// becomes a permanent one.
 var allowPrivateRanges = func() bool {
-	return strings.EqualFold(os.Getenv(WebhookAllowPrivateEnv), "true")
+	return egress.AllowPrivateFromEnv(WebhookAllowPrivateEnv, "HITL notify_url callbacks", egress.CallbackEgress)
 }
 
 // ssrfSafeDialer rejects connections to private/reserved IP ranges so a
@@ -84,53 +89,34 @@ func newSSRFSafeDialer(allowPrivate bool) func(ctx context.Context, network, add
 	if allowPrivate {
 		return base.DialContext
 	}
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid address: %w", err)
-		}
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, fmt.Errorf("DNS lookup failed: %w", err)
-		}
-		for _, ip := range ips {
-			if isPrivateIP(ip.IP) {
-				return nil, fmt.Errorf("SSRF guard: connection to private/reserved IP %s blocked (set %s=true to allow for local-dev)", ip.IP, WebhookAllowPrivateEnv)
-			}
-		}
-		return base.DialContext(ctx, network, addr)
-	}
+	// egress.NewSafeDialContext dials the addresses it validated, by literal.
+	// The previous implementation here resolved, checked the answer, then
+	// handed the untouched hostname back to net.Dialer — which resolved a
+	// SECOND time, so a rebinding resolver could return a public address to
+	// the check and 169.254.169.254 to the dial. notify_url is tenant-supplied
+	// (#3104 R3 F1).
+	return egress.NewSafeDialContext(egress.CallbackEgress, base, nil, func(ip net.IP) error {
+		return fmt.Errorf("SSRF guard: connection to private/reserved IP %s blocked (%s; set %s=true to allow for local-dev)",
+			ip, egress.CallbackEgress.Reason(ip), WebhookAllowPrivateEnv)
+	})
 }
 
-// isPrivateIP checks RFC 1918 + loopback + link-local + ULA + AWS IMDS +
-// the unspecified / CGNAT / broadcast / multicast / benchmark / TEST-NET
-// ranges. Crucially includes 0.0.0.0/8 because `http://0/` and
-// `http://0.0.0.0/` both DNS-resolve + dial-routed to loopback on Linux +
-// macOS — a tenant-supplied notify_url of that shape would otherwise reach
-// the agent's own admin port through the bypass surfaced in R3 R2 HIGH-2.
+// isPrivateIP binds this surface to egress.CallbackEgress, the shared policy
+// for operator- and tenant-supplied callback URLs (#3104). The range table
+// lives in platform/shared/egress; this file no longer keeps a copy, because
+// seven copies drifted into five distinct behaviours.
+//
+// CallbackEgress exempts nothing, so it is a strict superset of the local list
+// it replaces. It keeps 0.0.0.0/8 blocked — `http://0/` and `http://0.0.0.0/`
+// both DNS-resolve + dial-routed to loopback on Linux + macOS, so a
+// tenant-supplied notify_url of that shape would otherwise reach the agent's
+// own admin port (the bypass surfaced in R3 R2 HIGH-2) — and it keeps
+// 198.18.0.0/15 blocked, which connector egress deliberately permits. It
+// additionally blocks IPv6 link-local multicast, the TEST-NET and IETF
+// protocol-assignment ranges, and the wrapped-IPv4 encodings, none of which
+// the local list covered.
 func isPrivateIP(ip net.IP) bool {
-	for _, cidr := range []string{
-		// RFC 1918
-		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-		// Loopback + unspecified (R3 R2 HIGH-2)
-		"127.0.0.0/8", "0.0.0.0/8",
-		// Link-local + AWS IMDSv1
-		"169.254.0.0/16",
-		// CGNAT
-		"100.64.0.0/10",
-		// Benchmark + multicast + reserved-future
-		"198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
-		// Broadcast
-		"255.255.255.255/32",
-		// IPv6 loopback + ULA + link-local + unspecified
-		"::1/128", "fc00::/7", "fe80::/10", "::/128",
-	} {
-		_, network, _ := net.ParseCIDR(cidr)
-		if network != nil && network.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return egress.CallbackEgress.Blocks(ip)
 }
 
 // WebhookEnvelope is the JSON body POSTed to notify_url. Field order is

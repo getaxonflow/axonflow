@@ -1,0 +1,93 @@
+name: Portal Admin Org-Scope E2E
+
+# Executes runtime-e2e/3108_portal_admin_org_scope/ (#3108, epic #3071,
+# umbrella #3066).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# that registry's runner drives an ALREADY-BOOTED shared stack (agent :8080,
+# orchestrator :8081, portal :8082) — every entry there is ambient. This suite
+# is self-booting by necessity, and it boots the customer-portal TWICE:
+#
+#   posture 1  DEPLOYMENT_MODE=in-vpc-enterprise, ENVIRONMENT=development,
+#              ADMIN_API_KEY UNSET — the residual anonymous window left after
+#              #3068 (which now requires the key whenever ENVIRONMENT=production
+#              in any mode, or whenever ADMIN_API_KEY is configured in any mode).
+#              This is where an unauthenticated caller could choose the RLS
+#              scope, so it is where the anonymous assertions must run.
+#   posture 2  the same stack with ADMIN_API_KEY configured, so an authenticated
+#              admin exists at all — auth.Authenticated can never become true
+#              without a non-empty configured key.
+#
+# Only the portal container is recreated between them, so postgres and the
+# seeded orgs persist. Teardown is `docker compose down -v`. Registered in the
+# posture registry it would collide on docker-compose.yml's pinned
+# container_name values and delete the shared stack mid-suite. Same shape as
+# override-identity-gate-e2e.yml and cross-system-hitl-e2e.yml.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3108_portal_admin_org_scope/**'
+      # The choke point and the handler it guards.
+      - 'ee/platform/customer-portal/api/org_scope.go'
+      - 'ee/platform/customer-portal/api/nodes.go'
+      - 'ee/platform/customer-portal/api/rls_session.go'
+      # The middleware whose residual optional-auth window the fix compensates
+      # for: isAdminAuthRequired decides whether posture 1 is anonymous at all.
+      - 'ee/platform/customer-portal/middleware/admin_auth.go'
+      # The other half of the reachability argument: LoadDeploymentConfig is
+      # what sets ShowNodeUsage, and ShowNodeUsage is what enables this
+      # endpoint. Adding a DEPLOYMENT_MODE to its in-vpc case widens the
+      # residual anonymous window, and the suite's own `mode=invpc` preflight
+      # depends on it — a change here can silently turn every assertion into a
+      # 403 that proves nothing.
+      - 'ee/platform/customer-portal/config/deployment.go'
+      # The compose files the suite boots.
+      - 'docker-compose.yml'
+      - 'docker-compose.enterprise.yml'
+      - '.github/workflows/portal-admin-org-scope-e2e.yml'
+
+concurrency:
+  group: portal-admin-org-scope-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  portal-admin-org-scope-e2e:
+    name: Anonymous callers cannot choose the portal's RLS scope
+    runs-on: ubuntu-latest
+    # Builds the agent + orchestrator + customer-portal images and boots the
+    # enterprise stack once.
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No LLM keys, no license, no AWS secrets: the suite drives the portal's
+      # admin API against a local compose stack, so it works on a fork PR too.
+      - name: Run runtime-e2e 3108 — portal admin org scope
+        shell: bash
+        run: ./runtime-e2e/3108_portal_admin_org_scope/test.sh
+
+      - name: Dump portal + agent logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=af3108-"); do
+            echo "── logs: $c ──"
+            docker logs --tail 150 "$c" 2>&1 || true
+          done

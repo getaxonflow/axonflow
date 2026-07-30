@@ -17,10 +17,12 @@ on:
   push:
     branches:
       - main
+    # 'go.mod'/'go.sum' matched nothing — there is no root Go module (#3089).
     paths:
       - 'platform/**/*.go'
-      - 'go.mod'
-      - 'go.sum'
+      - 'platform/go.mod'
+      - 'platform/go.sum'
+      - 'migrations/**'
       - '.github/workflows/test-community.yml'
   merge_group:
     branches:

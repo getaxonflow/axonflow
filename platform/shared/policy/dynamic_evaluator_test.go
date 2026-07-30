@@ -4,8 +4,10 @@
 package policy
 
 import (
+	"axonflow/platform/shared/serviceauth"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -262,6 +264,14 @@ func TestDynamicPolicyEvaluator_EvaluateWithGracefulDegradation_Allowed(t *testi
 }
 
 func TestDynamicPolicyEvaluator_EvaluateWithGracefulDegradation_ErrorGraceful(t *testing.T) {
+	// #3068: this test covers the TRANSIENT-outage case — orchestrator
+	// unreachable, graceful degradation absorbs it. A configured
+	// internal-service secret is required for that path, because a MISSING
+	// secret is a permanent misconfiguration that now deliberately fails
+	// closed regardless of GracefulDegradation (see
+	// TestDynamicPolicyEvaluator_MissingSecretFailsClosed).
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "graceful-degradation-test-secret-32chars")
+
 	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
 		Enabled:              true,
 		OrchestratorEndpoint: "http://localhost:99999",
@@ -835,13 +845,13 @@ func TestValidateCustomPolicyConnectorLimit_CommunityMode(t *testing.T) {
 	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
 
 	tests := []struct {
-		name           string
-		deploymentMode string
-		licenseKey     string
-		connectors     []string
-		maxConnectors  int
+		name              string
+		deploymentMode    string
+		licenseKey        string
+		connectors        []string
+		maxConnectors     int
 		maxConnectorsEval int
-		wantErr        bool
+		wantErr           bool
 	}{
 		{
 			name:           "community tier (no license) with 2 connectors (at limit)",
@@ -900,31 +910,31 @@ func TestValidateCustomPolicyConnectorLimit_CommunityMode(t *testing.T) {
 			wantErr:        false,
 		},
 		{
-			name:           "evaluation tier (has license) with 5 connectors (at eval limit)",
-			deploymentMode: "community",
-			licenseKey:     "AXON-test-evaluation-key",
-			connectors:     []string{"postgres", "mysql", "redis", "mongo", "s3"},
-			maxConnectors:  2,
+			name:              "evaluation tier (has license) with 5 connectors (at eval limit)",
+			deploymentMode:    "community",
+			licenseKey:        "AXON-test-evaluation-key",
+			connectors:        []string{"postgres", "mysql", "redis", "mongo", "s3"},
+			maxConnectors:     2,
 			maxConnectorsEval: 5,
-			wantErr:        false,
+			wantErr:           false,
 		},
 		{
-			name:           "evaluation tier (has license) with 6 connectors (over eval limit)",
-			deploymentMode: "community",
-			licenseKey:     "AXON-test-evaluation-key",
-			connectors:     []string{"pg", "mysql", "redis", "mongo", "s3", "http"},
-			maxConnectors:  2,
+			name:              "evaluation tier (has license) with 6 connectors (over eval limit)",
+			deploymentMode:    "community",
+			licenseKey:        "AXON-test-evaluation-key",
+			connectors:        []string{"pg", "mysql", "redis", "mongo", "s3", "http"},
+			maxConnectors:     2,
 			maxConnectorsEval: 5,
-			wantErr:        true,
+			wantErr:           true,
 		},
 		{
-			name:           "evaluation tier (has license, empty mode) with 3 connectors (under eval limit)",
-			deploymentMode: "",
-			licenseKey:     "AXON-test-evaluation-key",
-			connectors:     []string{"postgres", "mysql", "redis"},
-			maxConnectors:  2,
+			name:              "evaluation tier (has license, empty mode) with 3 connectors (under eval limit)",
+			deploymentMode:    "",
+			licenseKey:        "AXON-test-evaluation-key",
+			connectors:        []string{"postgres", "mysql", "redis"},
+			maxConnectors:     2,
 			maxConnectorsEval: 5,
-			wantErr:        false,
+			wantErr:           false,
 		},
 	}
 
@@ -942,7 +952,7 @@ func TestValidateCustomPolicyConnectorLimit_CommunityMode(t *testing.T) {
 			}
 
 			config := DynamicPolicyConfig{
-				EnabledConnectors:                  tt.connectors,
+				EnabledConnectors:                   tt.connectors,
 				MaxCustomPolicyConnectorsCommunity:  tt.maxConnectors,
 				MaxCustomPolicyConnectorsEvaluation: tt.maxConnectorsEval,
 			}
@@ -1060,7 +1070,7 @@ func TestEnforceCustomPolicyConnectorLimit(t *testing.T) {
 			}
 
 			config := DynamicPolicyConfig{
-				EnabledConnectors:                  tt.connectors,
+				EnabledConnectors:                   tt.connectors,
 				MaxCustomPolicyConnectorsCommunity:  tt.maxConnectors,
 				MaxCustomPolicyConnectorsEvaluation: tt.maxConnectorsEval,
 			}
@@ -1140,10 +1150,10 @@ func TestUpdateConfig_ConnectorLimitEnforced(t *testing.T) {
 
 	// Should fail with 3 connectors in community tier
 	err := evaluator.UpdateConfig(DynamicPolicyConfig{
-		Enabled:                  true,
-		OrchestratorEndpoint:     "http://test:8081",
-		Timeout:                  5 * time.Second,
-		EnabledConnectors:        []string{"postgres", "mysql", "redis"},
+		Enabled:                            true,
+		OrchestratorEndpoint:               "http://test:8081",
+		Timeout:                            5 * time.Second,
+		EnabledConnectors:                  []string{"postgres", "mysql", "redis"},
 		MaxCustomPolicyConnectorsCommunity: 2,
 	})
 
@@ -1153,10 +1163,10 @@ func TestUpdateConfig_ConnectorLimitEnforced(t *testing.T) {
 
 	// Should succeed with 2 connectors
 	err = evaluator.UpdateConfig(DynamicPolicyConfig{
-		Enabled:                  true,
-		OrchestratorEndpoint:     "http://test:8081",
-		Timeout:                  5 * time.Second,
-		EnabledConnectors:        []string{"postgres", "mysql"},
+		Enabled:                            true,
+		OrchestratorEndpoint:               "http://test:8081",
+		Timeout:                            5 * time.Second,
+		EnabledConnectors:                  []string{"postgres", "mysql"},
 		MaxCustomPolicyConnectorsCommunity: 2,
 	})
 
@@ -1182,10 +1192,10 @@ func TestUpdateConfig_EvaluationTierLimit(t *testing.T) {
 
 	// Should succeed with 5 connectors (evaluation limit)
 	err := evaluator.UpdateConfig(DynamicPolicyConfig{
-		Enabled:                            true,
-		OrchestratorEndpoint:               "http://test:8081",
-		Timeout:                            5 * time.Second,
-		EnabledConnectors:                  []string{"pg", "mysql", "redis", "mongo", "s3"},
+		Enabled:                             true,
+		OrchestratorEndpoint:                "http://test:8081",
+		Timeout:                             5 * time.Second,
+		EnabledConnectors:                   []string{"pg", "mysql", "redis", "mongo", "s3"},
 		MaxCustomPolicyConnectorsCommunity:  2,
 		MaxCustomPolicyConnectorsEvaluation: 5,
 	})
@@ -1196,10 +1206,10 @@ func TestUpdateConfig_EvaluationTierLimit(t *testing.T) {
 
 	// Should fail with 6 connectors (over evaluation limit)
 	err = evaluator.UpdateConfig(DynamicPolicyConfig{
-		Enabled:                            true,
-		OrchestratorEndpoint:               "http://test:8081",
-		Timeout:                            5 * time.Second,
-		EnabledConnectors:                  []string{"pg", "mysql", "redis", "mongo", "s3", "http"},
+		Enabled:                             true,
+		OrchestratorEndpoint:                "http://test:8081",
+		Timeout:                             5 * time.Second,
+		EnabledConnectors:                   []string{"pg", "mysql", "redis", "mongo", "s3", "http"},
 		MaxCustomPolicyConnectorsCommunity:  2,
 		MaxCustomPolicyConnectorsEvaluation: 5,
 	})
@@ -1225,10 +1235,10 @@ func TestUpdateConfig_EnterpriseUnlimited(t *testing.T) {
 
 	// Should succeed with 5 connectors in enterprise deployment
 	err := evaluator.UpdateConfig(DynamicPolicyConfig{
-		Enabled:                  true,
-		OrchestratorEndpoint:     "http://test:8081",
-		Timeout:                  5 * time.Second,
-		EnabledConnectors:        []string{"postgres", "mysql", "redis", "mongo", "s3"},
+		Enabled:                            true,
+		OrchestratorEndpoint:               "http://test:8081",
+		Timeout:                            5 * time.Second,
+		EnabledConnectors:                  []string{"postgres", "mysql", "redis", "mongo", "s3"},
 		MaxCustomPolicyConnectorsCommunity: 2,
 	})
 
@@ -1236,3 +1246,253 @@ func TestUpdateConfig_EnterpriseUnlimited(t *testing.T) {
 		t.Errorf("unexpected error in enterprise deployment: %v", err)
 	}
 }
+
+// TestDynamicPolicyEvaluator_MissingSecretFailsClosed pins the #3068 rule that
+// a MISSING AXONFLOW_INTERNAL_SERVICE_SECRET must NOT be absorbed by graceful
+// degradation.
+//
+// Why this matters more than it looks: the orchestrator now refuses every
+// token-less call, so without a secret this evaluator gets a deterministic 403
+// on every request forever. If graceful degradation swallowed that, MCP
+// connector policy enforcement would silently become allow-all with
+// policies_evaluated: 0 — strictly worse than the bug #3068 fixes, and the
+// exact failure shape of #3048/#3049. Fail closed instead.
+func TestDynamicPolicyEvaluator_MissingSecretFailsClosed(t *testing.T) {
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "")
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: "http://localhost:99999",
+		Timeout:              1 * time.Second,
+		GracefulDegradation:  true, // explicitly on — must still NOT mask this
+	})
+
+	resp, info, err := evaluator.EvaluateWithGracefulDegradation(
+		context.Background(), DynamicPolicyRequest{TenantID: "tenant-1"})
+
+	if err == nil {
+		t.Fatal("missing internal-service secret was absorbed by graceful degradation — " +
+			"connector policy enforcement would silently allow everything")
+	}
+	if resp != nil && resp.Allowed {
+		t.Error("returned Allowed=true despite being unable to authenticate to the orchestrator")
+	}
+	if info == nil {
+		t.Fatal("expected non-nil info")
+	}
+	if info.OrchestratorReachable {
+		t.Error("expected OrchestratorReachable=false")
+	}
+}
+
+// TestDynamicPolicyEvaluator_SecretConfiguredStampsToken proves the evaluator
+// actually sends the header when a secret IS configured — the positive control
+// for the fail-closed test above, and for the fail-open the gate would
+// otherwise cause.
+func TestDynamicPolicyEvaluator_SecretConfiguredStampsToken(t *testing.T) {
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "evaluator-token-test-secret-at-least-32c")
+
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("X-Axonflow-Proxy-Auth")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"allowed":true,"policies_evaluated":3}`))
+	}))
+	defer srv.Close()
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: srv.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  true,
+	})
+
+	if _, err := evaluator.Evaluate(context.Background(), DynamicPolicyRequest{TenantID: "t"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotToken == "" {
+		t.Fatal("evaluator sent NO X-Axonflow-Proxy-Auth header — the orchestrator would 403 this")
+	}
+	valid, _, err := serviceauth.NewTokenValidator(
+		"evaluator-token-test-secret-at-least-32c", nil, serviceauth.DefaultClockSkew).ValidateToken(gotToken)
+	if !valid {
+		t.Errorf("evaluator sent a token the real validator rejects: %q (%v)", gotToken, err)
+	}
+}
+
+// TestDynamicPolicyEvaluator_AuthRejectionFailsClosed is the #3068 B-1 pin.
+//
+// TestDynamicPolicyEvaluator_MissingSecretFailsClosed above covers only the
+// tokenGen == nil spelling. A secret that is PRESENT but not accepted by the
+// orchestrator produces a permanent deterministic 401/403, which graceful
+// degradation (default true) used to absorb into
+// {Allowed: true, PoliciesEvaluated: 0} — MCP connector enforcement silently
+// off, the #3048/#3049 shape.
+//
+// This needs no operator error to reach: the proxy-auth token is
+// timestamp-signed with serviceauth.DefaultClockSkew, so NTP failure on either
+// host, a rotation skew, or two drifted task definitions all land here.
+func TestDynamicPolicyEvaluator_AuthRejectionFailsClosed(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			// Secret IS configured — this is NOT the missing-secret case.
+			t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "agent-side-secret-that-is-at-least-32-chars")
+
+			var sawToken bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sawToken = r.Header.Get("X-Axonflow-Proxy-Auth") != ""
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"Unauthorized: request must be routed through AxonFlow Agent"}`))
+			}))
+			defer srv.Close()
+
+			evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+				Enabled:              true,
+				OrchestratorEndpoint: srv.URL,
+				Timeout:              5 * time.Second,
+				GracefulDegradation:  true, // explicitly ON — must NOT mask an auth rejection
+			})
+
+			resp, info, err := evaluator.EvaluateWithGracefulDegradation(
+				context.Background(), DynamicPolicyRequest{TenantID: "tenant-1", ConnectorName: "postgres"})
+
+			if !sawToken {
+				t.Fatal("evaluator sent no proxy-auth token; this test must exercise the " +
+					"present-but-rejected credential path, not the missing-secret path")
+			}
+			if err == nil {
+				t.Fatalf("status %d was absorbed by graceful degradation — connector policy "+
+					"enforcement silently degraded to allow-all", status)
+			}
+			if !errors.Is(err, ErrOrchestratorAuthRejected) {
+				t.Errorf("error does not carry the auth-rejection sentinel through errors.Is: %v", err)
+			}
+			if resp != nil && resp.Allowed {
+				t.Errorf("returned Allowed=true (policies_evaluated=%d) despite an orchestrator "+
+					"auth rejection", resp.PoliciesEvaluated)
+			}
+			if info == nil {
+				t.Fatal("expected non-nil info")
+			}
+			if info.OrchestratorReachable {
+				t.Error("expected OrchestratorReachable=false")
+			}
+		})
+	}
+}
+
+// TestDynamicPolicyEvaluator_ClockSkewFailsClosed reproduces the specific
+// no-misconfiguration route into B-1: both sides hold the SAME secret, but the
+// orchestrator's clock disagrees far enough that the real validator rejects a
+// freshly minted token. The result must be a refusal, not allow-all.
+func TestDynamicPolicyEvaluator_ClockSkewFailsClosed(t *testing.T) {
+	const sharedSecret = "identical-on-both-sides-at-least-32-chars"
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", sharedSecret)
+
+	// Real validator with the real DefaultClockSkew window, but reading a clock
+	// one hour ahead — i.e. the orchestrator host's NTP has drifted. Nothing is
+	// misconfigured: same secret, same code, same window.
+	validator := serviceauth.NewTokenValidator(
+		sharedSecret, skewedClock{offset: time.Hour}, serviceauth.DefaultClockSkew)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		valid, _, _ := validator.ValidateToken(r.Header.Get("X-Axonflow-Proxy-Auth"))
+		if !valid {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"Unauthorized: request must be routed through AxonFlow Agent"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"allowed":true,"policies_evaluated":7}`))
+	}))
+	defer srv.Close()
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: srv.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  true,
+	})
+
+	resp, _, err := evaluator.EvaluateWithGracefulDegradation(
+		context.Background(), DynamicPolicyRequest{TenantID: "tenant-1"})
+
+	if err == nil {
+		t.Fatal("clock drift past the signing window degraded enforcement to allow-all instead of failing closed")
+	}
+	if !errors.Is(err, ErrOrchestratorAuthRejected) {
+		t.Errorf("clock-skew 403 not classified as an auth rejection: %v", err)
+	}
+	if resp != nil && resp.Allowed {
+		t.Error("returned Allowed=true under clock skew")
+	}
+}
+
+// TestDynamicPolicyEvaluator_TransientErrorStillDegrades is the positive
+// control for the two tests above: graceful degradation must still absorb the
+// TRANSIENT conditions it exists for. Without this, a fix that simply disabled
+// graceful degradation everywhere would pass.
+func TestDynamicPolicyEvaluator_TransientErrorStillDegrades(t *testing.T) {
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "agent-side-secret-that-is-at-least-32-chars")
+
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+				Enabled:              true,
+				OrchestratorEndpoint: srv.URL,
+				Timeout:              5 * time.Second,
+				GracefulDegradation:  true,
+			})
+
+			resp, _, err := evaluator.EvaluateWithGracefulDegradation(
+				context.Background(), DynamicPolicyRequest{TenantID: "tenant-1"})
+			if err != nil {
+				t.Fatalf("a transient %d must still be absorbed by graceful degradation, got %v", status, err)
+			}
+			if resp == nil || !resp.Allowed {
+				t.Fatalf("expected the degraded allow for a transient %d, got %+v", status, resp)
+			}
+			if errors.Is(err, ErrOrchestratorAuthRejected) {
+				t.Errorf("a %d must not be classified as an auth rejection", status)
+			}
+		})
+	}
+}
+
+// TestDynamicPolicyEvaluator_AuthRejectionStrictModeUnchanged pins that the
+// sentinel does not alter behaviour when graceful degradation is already off:
+// still an error, and still carrying the sentinel for callers that branch on it.
+func TestDynamicPolicyEvaluator_AuthRejectionStrictModeUnchanged(t *testing.T) {
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "agent-side-secret-that-is-at-least-32-chars")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: srv.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  false,
+	})
+
+	_, _, err := evaluator.EvaluateWithGracefulDegradation(
+		context.Background(), DynamicPolicyRequest{TenantID: "tenant-1"})
+	if err == nil {
+		t.Fatal("expected an error with graceful degradation off")
+	}
+	if !errors.Is(err, ErrOrchestratorAuthRejected) {
+		t.Errorf("sentinel lost in strict mode: %v", err)
+	}
+}
+
+// skewedClock is a serviceauth.Clock whose notion of "now" is offset, standing
+// in for a host whose NTP has failed.
+type skewedClock struct{ offset time.Duration }
+
+func (c skewedClock) Now() time.Time { return time.Now().Add(c.offset) }

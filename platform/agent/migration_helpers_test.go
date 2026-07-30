@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -453,28 +455,46 @@ func TestGetMigrationPaths(t *testing.T) {
 			},
 		},
 		{
-			name:       "Unknown mode defaults to saas",
-			deployMode: "unknown",
+			// #3167. This is the value docker-compose.enterprise.yml,
+			// docker-compose.test.yml, docker/docker-compose.base.yaml and
+			// scripts/setup-e2e-testing.sh all use. It was NOT a case, so it hit
+			// the default arm and every self-hosted enterprise stack applied the
+			// SaaS set — enterprise/ plus all three industry verticals.
+			name:       "enterprise aliases in-vpc-enterprise (#3167)",
+			deployMode: "enterprise",
 			expectedPaths: []string{
 				"/test/migrations/core",
 				"/test/migrations/enterprise",
-				"/test/migrations/industry/healthcare",
-				"/test/migrations/industry/banking",
-				"/test/migrations/industry/travel",
+			},
+		},
+		{
+			name:       "Evaluation mode",
+			deployMode: "evaluation",
+			expectedPaths: []string{
+				"/test/migrations/core",
+			},
+		},
+		{
+			name:       "Community-SaaS mode",
+			deployMode: "community-saas",
+			expectedPaths: []string{
+				"/test/migrations/core",
+				"/test/migrations/community-saas",
 			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variable
-			os.Setenv("DEPLOYMENT_MODE", tt.deployMode)
-			defer os.Unsetenv("DEPLOYMENT_MODE")
+			t.Setenv("DEPLOYMENT_MODE", tt.deployMode)
 
-			paths := getMigrationPaths(basePath)
+			paths, err := getMigrationPaths(basePath)
+			if err != nil {
+				t.Fatalf("getMigrationPaths(%q) error = %v, want nil", tt.deployMode, err)
+			}
 
 			if len(paths) != len(tt.expectedPaths) {
-				t.Errorf("Expected %d paths, got %d", len(tt.expectedPaths), len(paths))
+				t.Errorf("Expected %d paths, got %d (%v)", len(tt.expectedPaths), len(paths), paths)
 				return
 			}
 
@@ -487,23 +507,476 @@ func TestGetMigrationPaths(t *testing.T) {
 	}
 }
 
-// TestGetMigrationPaths_DefaultMode tests default deployment mode
+// TestGetMigrationPaths_DefaultMode characterizes the #3128 asymmetry rather
+// than merely restating the default.
+//
+// Since #3117 an unset DEPLOYMENT_MODE means the ENTERPRISE posture at runtime
+// (isCommunityMode fails closed) while it still means COMMUNITY here. The two
+// halves of one variable disagree, and this test is the tripwire: a future edit
+// that flips the selector to match will turn it red, which is the point. Read
+// technical-docs/DEPLOYMENT_MODE_MIGRATION_SELECTOR_DECISION.md before changing
+// it — the flip was measured against a real database and is a 45-table schema
+// event with four RLS-blind tables, not a consistency edit.
+//
+// The pairing with isCommunityMode() is asserted directly so the disagreement
+// cannot be half-resolved: changing either side alone fails here.
+//
+// #3167 kept this contract deliberately. What it changed is the OTHER half of
+// the same variable: an unrecognised value no longer falls through to the
+// widest set, so the population that reaches this asymmetry is now exactly
+// "unset" rather than "unset or mistyped". `unsetDeploymentMode` is asserted
+// below so the constant cannot be repointed without turning this red.
 func TestGetMigrationPaths_DefaultMode(t *testing.T) {
-	// Clear any existing DEPLOYMENT_MODE
-	os.Unsetenv("DEPLOYMENT_MODE")
+	t.Setenv("DEPLOYMENT_MODE", "")
 
 	basePath := "/test/migrations"
-	paths := getMigrationPaths(basePath)
+	paths, err := getMigrationPaths(basePath)
+	if err != nil {
+		t.Fatalf("getMigrationPaths() with an unset mode error = %v, want nil — unset must NOT be fatal (#3167); "+
+			"it is the state of the in-repo docker run launchers including the Marketplace deploy path", err)
+	}
 
 	// Should default to community mode (core only) for docker-compose and Community users
 	expectedCount := 1 // core only
 	if len(paths) != expectedCount {
-		t.Errorf("Expected %d paths for default mode (community), got %d", expectedCount, len(paths))
+		t.Errorf("Expected %d paths for default mode (community), got %d (%v)", expectedCount, len(paths), paths)
 	}
 
 	// First path should be core
 	if len(paths) > 0 && !strings.Contains(paths[0], "core") {
 		t.Errorf("First path should be core, got %s", paths[0])
+	}
+
+	if unsetDeploymentMode != "community" {
+		t.Errorf("unsetDeploymentMode = %q, want \"community\". Repointing it at an enterprise mode was MEASURED "+
+			"to leave connector_configs with no org_id, RLS off and zero policies, and three sso_* tables "+
+			"unforced, because core/106, core/107 and core/138 have already run and no-op'd. "+
+			"See technical-docs/DEPLOYMENT_MODE_MIGRATION_SELECTOR_DECISION.md and #3128.", unsetDeploymentMode)
+	}
+
+	// #3128: the runtime half of the same variable already reads unset as NOT
+	// community. Pin both readings in one place so the divergence is visible at
+	// the point a reader is most likely to try to close it.
+	if isCommunityMode() {
+		t.Error("isCommunityMode() must fail closed on unset (#3117/#3096) — if this is now true, #3128 was resolved by relaxing the runtime half, which is the wrong direction")
+	}
+}
+
+// TestGetMigrationPaths_UnrecognisedModeIsRefused is the inversion of the
+// former "Unknown mode defaults to saas" case (#3167).
+//
+// The old default arm logged a warning and applied core + enterprise +
+// industry/healthcare + industry/banking + industry/travel. That is how the
+// `enterprise` spelling put eight industry migrations onto every self-hosted
+// enterprise stack without anyone misconfiguring anything: the widest set is
+// what you got for a value the selector did not understand.
+//
+// A selector that widens on unrecognised input cannot distinguish "the operator
+// asked for the SaaS schema" from "the operator typed something we have never
+// heard of". It must refuse.
+func TestGetMigrationPaths_UnrecognisedModeIsRefused(t *testing.T) {
+	// Values that must NOT be accepted. The whitespace and case variants are
+	// here because resolveDeploymentMode deliberately does not trim or
+	// case-fold, matching isCommunityMode()'s contract.
+	for _, mode := range []string{
+		"unknown",
+		"Enterprise",
+		" enterprise",
+		"enterprise ",
+		"in-vpc",
+		"prod",
+		"in-vpc-fintech",
+		"COMMUNITY",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", mode)
+
+			paths, err := getMigrationPaths("/test/migrations")
+			if err == nil {
+				t.Fatalf("getMigrationPaths() with DEPLOYMENT_MODE=%q returned %v and no error — "+
+					"an unrecognised mode must refuse, not select a migration set", mode, paths)
+			}
+			if paths != nil {
+				t.Errorf("getMigrationPaths() returned %v alongside the error — want nil", paths)
+			}
+			// The operator has to be able to act on this. Name the bad value
+			// and list the accepted ones.
+			if !strings.Contains(err.Error(), mode) {
+				t.Errorf("error %q does not name the rejected value %q", err, mode)
+			}
+			for _, accepted := range recognisedDeploymentModes() {
+				if !strings.Contains(err.Error(), accepted) {
+					t.Errorf("error %q does not list the accepted mode %q", err, accepted)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveDeploymentMode_AliasesAreRecognisedAndCanonical pins the alias
+// table itself: every alias must resolve to a mode that canonicalDeploymentModes
+// actually has categories for. An alias pointing at a typo would resolve
+// "successfully" to an empty category list and silently run ZERO migrations.
+func TestResolveDeploymentMode_AliasesAreRecognisedAndCanonical(t *testing.T) {
+	for alias, canonical := range deploymentModeAliases {
+		if _, ok := canonicalDeploymentModes[canonical]; !ok {
+			t.Errorf("alias %q resolves to %q, which is not a canonical mode", alias, canonical)
+		}
+		if _, ok := canonicalDeploymentModes[alias]; ok {
+			t.Errorf("%q is both an alias and a canonical mode — the alias is dead code", alias)
+		}
+		got, err := resolveDeploymentMode(alias)
+		if err != nil {
+			t.Errorf("resolveDeploymentMode(%q) error = %v, want nil", alias, err)
+			continue
+		}
+		if got != canonical {
+			t.Errorf("resolveDeploymentMode(%q) = %q, want %q", alias, got, canonical)
+		}
+	}
+
+	// Every canonical mode must select at least core/. A mode with an empty
+	// list would apply nothing and boot on an unmigrated database.
+	for mode, categories := range canonicalDeploymentModes {
+		if len(categories) == 0 {
+			t.Errorf("mode %q selects no categories", mode)
+			continue
+		}
+		if categories[0] != "core" {
+			t.Errorf("mode %q selects %v — core/ must be first and always present", mode, categories)
+		}
+	}
+}
+
+// TestMigrationCategories_InternalIsSelectedByNoMode is the guard on the #3168
+// relocation. migrations/internal/ holds AxonFlow's own E2E fixtures and demo
+// tenants; if any mode ever selects it they land in a customer's portal again.
+func TestMigrationCategories_InternalIsSelectedByNoMode(t *testing.T) {
+	for _, never := range neverSelectedMigrationCategories {
+		for mode, categories := range canonicalDeploymentModes {
+			for _, c := range categories {
+				if c == never {
+					t.Errorf("DEPLOYMENT_MODE=%q selects migrations/%s/, which no deployment may load", mode, never)
+				}
+			}
+		}
+
+		// Belt and braces: drive the real selector for every recognised
+		// spelling, including the aliases and unset, and assert the path never
+		// appears.
+		modes := append(recognisedDeploymentModes(), "")
+		for _, mode := range modes {
+			t.Run(never+"/"+mode, func(t *testing.T) {
+				t.Setenv("DEPLOYMENT_MODE", mode)
+				paths, err := getMigrationPaths("/test/migrations")
+				if err != nil {
+					t.Fatalf("getMigrationPaths(%q): %v", mode, err)
+				}
+				for _, p := range paths {
+					if p == "/test/migrations/"+never {
+						t.Errorf("DEPLOYMENT_MODE=%q selected %s", mode, p)
+					}
+				}
+			})
+		}
+	}
+}
+
+// axonflowInternalTenantMarkers are identifiers that belong to AxonFlow's own
+// hosted environments. A migration that seeds one of them into a customer's
+// database puts our test data in the customer's portal (#3168).
+var axonflowInternalTenantMarkers = []string{
+	"e2e-test-saas",     // migrations/internal/115 — our portal-UI E2E tenant
+	"travel-us",         // migrations/internal/125 — our demo org
+	"ecommerce-prod-us", // migrations/internal/125 — our demo org
+}
+
+// TestNoDeploymentModeLoadsAxonFlowInternalSeeds is the property behind the
+// #3168 relocation, stated over the REAL migrations tree rather than over the
+// category list.
+//
+// It runs the production selector for every recognised DEPLOYMENT_MODE and for
+// unset, collects the files that selector actually returns, and reads them. A
+// customer deployment must not apply a migration that names an AxonFlow tenant.
+//
+// Stated this way it also catches the NEXT one: a seed added to enterprise/
+// tomorrow for our own staging convenience fails here, where a test that merely
+// asserted "internal/ is not selected" would not.
+func TestNoDeploymentModeLoadsAxonFlowInternalSeeds(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	migrationsRoot := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+
+	modes := append(recognisedDeploymentModes(), "")
+	for _, mode := range modes {
+		label := mode
+		if label == "" {
+			label = "unset"
+		}
+		t.Run(label, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", mode)
+
+			migrations, err := collectMigrations(migrationsRoot)
+			if err != nil {
+				t.Fatalf("collectMigrations: %v", err)
+			}
+			if len(migrations) == 0 {
+				t.Fatalf("mode %q selected ZERO migrations — the walk is broken, not the tree", label)
+			}
+
+			for _, m := range migrations {
+				content, err := os.ReadFile(m.Path)
+				if err != nil {
+					t.Fatalf("read %s: %v", m.Path, err)
+				}
+				for _, marker := range axonflowInternalTenantMarkers {
+					if strings.Contains(string(content), marker) {
+						rel, _ := filepath.Rel(migrationsRoot, m.Path)
+						t.Errorf("DEPLOYMENT_MODE=%q applies migrations/%s, which names the AxonFlow-internal tenant %q. "+
+							"A customer deployment must not seed our data into tables their own portal renders (#3168). "+
+							"Move it to migrations/internal/.", label, rel, marker)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestShellCopiesOfRecognisedModesMatchGo pins EVERY shell-side copy of the
+// recognised DEPLOYMENT_MODE set to recognisedDeploymentModes().
+//
+// Three of them are pinned here: `scripts/lint-deployment-mode.sh` runs in CI
+// with no Go toolchain, and the two deploy scripts run over SSM on a remote host
+// with no repository checked out, so none can import the Go map.
+//
+// They are not the only lists of mode strings in the repository, and this test
+// does not claim otherwise. Two more exist and are deliberately NOT pinned:
+// `scripts/deployment/deploy-cloudformation.sh` mirrors the CloudFormation
+// template's `AllowedValues` and is legitimately a narrower SUBSET, and
+// `scripts/lib/validate-migrations.sh` groups modes by which tables it expects
+// rather than by which are recognised (it gained a fail-closed `*)` arm in the
+// same change, so an unrecognised mode no longer passes its verification
+// vacuously).
+//
+// What this test guards is drift in one direction: a shell copy that still
+// ACCEPTS a value the platform now refuses lets a deploy proceed to a container
+// that will not boot. `enterprise` spent the entire life of the previous lint in
+// exactly that state.
+//
+// An earlier revision of this test pinned only the lint, while the same commit
+// introduced the two `case` lists — taking the number of unpinned copies from
+// one to two while claiming the map was "the ONLY definition of recognised".
+func TestShellCopiesOfRecognisedModesMatchGo(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	want := recognisedDeploymentModes()
+
+	// Each entry names a file, the marker that opens its mode list, and how the
+	// list is spelled. Adding a fourth copy without adding it here is the gap
+	// this test is guarding, so keep the list with the code that produces it.
+	//
+	// `esacGuard` is the SECOND half, and it is the one that matters. An earlier
+	// revision parsed only from the begin marker to the end marker, which pinned
+	// the wrong direction: deleting a mode from inside the block turned it red,
+	// but ADDING a `case` arm below the end marker left the extracted list
+	// byte-identical while the shell accepted more values than Go — exactly the
+	// direction this test's own doc comment calls dangerous. The block is now
+	// read to `esac`, and any pattern token outside the pinned list is a
+	// failure.
+	sources := []struct {
+		path      string
+		open      string
+		close     string
+		separator string // "" = one per line, otherwise a delimiter
+		esacGuard bool   // also assert no case arm outside the pinned block
+	}{
+		{filepath.Join("scripts", "lint-deployment-mode.sh"), "RECOGNISED_MODES=(", ")", "", false},
+		{filepath.Join("scripts", "marketplace", "deploy-with-metering.sh"), "# axonflow-modes: begin\n", "# axonflow-modes: end", "|", true},
+		{filepath.Join("scripts", "utilities", "rolling-deployment.sh"), "# axonflow-modes: begin\n", "# axonflow-modes: end", "|", true},
+	}
+
+	for _, src := range sources {
+		t.Run(src.path, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(repoRoot, src.path))
+			if err != nil {
+				t.Fatalf("read %s: %v", src.path, err)
+			}
+			body := string(data)
+
+			start := strings.Index(body, src.open)
+			if start < 0 {
+				t.Fatalf("%s has no %q marker — the mode list moved or changed shape, and this test "+
+					"would otherwise check nothing and report success", src.path, src.open)
+			}
+			rest := body[start+len(src.open):]
+			end := strings.Index(rest, src.close)
+			if end < 0 {
+				t.Fatalf("%s: %q is never closed by %q", src.path, src.open, src.close)
+			}
+			raw := rest[:end]
+
+			var got []string
+			if src.separator == "" {
+				for _, line := range strings.Split(raw, "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					got = append(got, line)
+				}
+			} else {
+				// A `case` pattern list: strip comments and shell punctuation,
+				// then split on the alternation separator.
+				var cleaned []string
+				for _, line := range strings.Split(raw, "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					line = strings.TrimSuffix(line, ")")
+					cleaned = append(cleaned, line)
+				}
+				for _, tok := range strings.Split(strings.Join(cleaned, src.separator), src.separator) {
+					tok = strings.TrimSpace(tok)
+					if tok != "" {
+						got = append(got, tok)
+					}
+				}
+			}
+
+			if len(got) == 0 {
+				t.Fatalf("parsed ZERO modes out of %s — the parse is broken, not the script", src.path)
+			}
+			sort.Strings(got)
+			if len(got) != len(want) {
+				t.Fatalf("%s declares %d modes %v, Go recognises %d %v", src.path, len(got), got, len(want), want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("%s mode[%d] = %q, Go has %q", src.path, i, got[i], want[i])
+				}
+			}
+
+			if !src.esacGuard {
+				return
+			}
+
+			// Everything between the end marker and `esac` may contain only the
+			// catch-all `*)` arm and its body. Any other pattern arm widens the
+			// shell's accepting set without touching the pinned block.
+			tail := rest[end+len(src.close):]
+			esac := strings.Index(tail, "esac")
+			if esac < 0 {
+				t.Fatalf("%s: no `esac` after the pinned mode block — the case statement this test "+
+					"guards is not shaped the way it assumes, and the guard is meaningless", src.path)
+			}
+			accepted := map[string]bool{"*": true}
+			for _, mode := range want {
+				accepted[mode] = true
+			}
+			for lineNo, line := range strings.Split(tail[:esac], "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				// A case arm is `<patterns>)` as the whole statement. Anything
+				// else on these lines is arm BODY, which is not our business.
+				if !strings.HasSuffix(trimmed, ")") || strings.Contains(trimmed, "(") {
+					continue
+				}
+				for _, pat := range strings.Split(strings.TrimSuffix(trimmed, ")"), "|") {
+					pat = strings.TrimSpace(pat)
+					if pat == "" {
+						continue
+					}
+					if !accepted[pat] {
+						t.Errorf("%s:+%d declares the case arm %q OUTSIDE the pinned "+
+							"`# axonflow-modes` block. The shell would accept it; Go does not. "+
+							"Put every accepted mode inside the block, or remove the arm.",
+							src.path, lineNo, pat)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestMigrationCategories_MatchDisk asserts the declared category set is
+// exactly what is on disk. A new directory under migrations/ that nobody added
+// to canonicalDeploymentModes or neverSelectedMigrationCategories would be
+// applied by nothing AND walked by none of the collision guards — invisible in
+// both directions.
+func TestMigrationCategories_MatchDisk(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	root := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(thisFile))), "migrations")
+
+	declared := map[string]bool{}
+	for _, c := range allMigrationCategories() {
+		declared[c] = true
+	}
+
+	onDisk := map[string]bool{}
+	// Two levels: migrations/<cat>/ and migrations/industry/<vertical>/.
+	top, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", root, err)
+	}
+	for _, e := range top {
+		if !e.IsDir() {
+			continue
+		}
+		if e.Name() == "industry" {
+			sub, err := os.ReadDir(filepath.Join(root, "industry"))
+			if err != nil {
+				t.Fatalf("ReadDir(industry): %v", err)
+			}
+			for _, s := range sub {
+				if s.IsDir() {
+					onDisk["industry/"+s.Name()] = true
+				}
+			}
+			continue
+		}
+		// v9_tests/ is a psql test harness, not a migration category.
+		if e.Name() == "v9_tests" {
+			continue
+		}
+		onDisk[e.Name()] = true
+	}
+
+	if len(onDisk) == 0 {
+		t.Fatalf("found no directories under %s — path resolution broken", root)
+	}
+
+	for c := range onDisk {
+		if !declared[c] {
+			t.Errorf("migrations/%s/ exists on disk but is in neither canonicalDeploymentModes nor "+
+				"neverSelectedMigrationCategories — it is applied by nothing and walked by no guard", c)
+		}
+	}
+	// The other direction is NOT an error. industry/healthcare is a declared
+	// placeholder with no directory yet, and collectMigrations explicitly
+	// tolerates a missing category ("Migration directory not found … skipping").
+	// Logged so the drift is visible rather than assumed.
+	for c := range declared {
+		if !onDisk[c] {
+			t.Logf("category %q is declared but has no directory under migrations/ yet (tolerated: collectMigrations skips missing paths)", c)
+		}
+	}
+
+	// #3128: the runtime half of the same variable already reads unset as NOT
+	// community. Pin both readings in one place so the divergence is visible at
+	// the point a reader is most likely to try to close it.
+	if isCommunityMode() {
+		t.Error("isCommunityMode() must fail closed on unset (#3117/#3096) — if this is now true, #3128 was resolved by relaxing the runtime half, which is the wrong direction")
 	}
 }
 

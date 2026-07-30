@@ -30,6 +30,43 @@ The scope is derived from the role and applied **in the SQL `WHERE` clause**,
 not as a post-fetch filter — a non-admin's query never selects another user's
 rows in the first place.
 
+### Single-operator deployments read tenant-wide
+
+The table above describes a **fleet**: many developers behind one tenant
+credential. Two deployment modes are not fleets, and both read tenant-wide:
+
+| Mode | Read scope | Admin-gated surfaces | Why |
+|---|---|---|---|
+| `DEPLOYMENT_MODE=community` (or unset) | Tenant-wide | Allowed | A local single-operator instance. There is no per-user token machinery (validators are Enterprise-only) and no fleet to protect from itself; scoping to own-rows would permanently blind the operator to the non-attributed rows their own SDK traffic writes. The operator is also the administrator. |
+| `DEPLOYMENT_MODE=community-saas` | Tenant-wide, **over the agent gateway only** | **Denied (403)** | Registration mints one `cs_<uuid>` that is simultaneously the organization, the tenant and the credential, so "tenant-wide" is exactly that one evaluator's own data. It is still a self-registered free evaluation account, so it does not acquire administrator surfaces. |
+
+### Read scope and admin authority are separate axes
+
+"How wide may this caller see within its own tenant?" and "is this caller an
+administrator of the tenant?" are different questions, and the answers can
+differ. A Community-SaaS evaluator reads its whole tenant — because its tenant
+is itself — and is still **denied** every surface in the two admin-gated
+families below: the whole-tenant compliance/evidence exports, and the
+cost/usage/execution family including its mutations (budget create/update/delete,
+execution cancel/delete). `POST /api/v1/budgets/check` stays reachable, with the
+absolute spend figures redacted exactly as they are for any other non-admin.
+
+For a fleet deployment the two axes coincide — `admin`/`owner`/`policy_admin`
+carry both — so nothing in the role table above changes.
+
+The Community-SaaS grant carries one extra condition that Community's does not:
+it applies **only to requests that arrived through the agent gateway**, proven
+by the internal HMAC proxy-auth token. On this plane the tenant boundary is a
+SQL `tenant_id` predicate sourced from `X-Tenant-ID`, and that header is
+trustworthy only because the agent overwrites it with the authenticated
+credential's tenant. A request that reaches the orchestrator directly asserts
+`X-Tenant-ID` for itself, so it stays least-privilege and reads zero rows —
+Community-SaaS is a shared multi-tenant deployment, and tenant-wide authority is
+granted only over the channel that makes the tenant identity non-forgeable.
+
+Neither carve-out changes anything for Enterprise or in-VPC Enterprise
+deployments, which follow the role table above.
+
 ## Enforcement properties (all fail-closed)
 
 - **Endpoint-level, not tool-level.** The scope applies at the API, so a direct
@@ -43,6 +80,14 @@ rows in the first place.
   developer always sees the complete set of their *own* history.
 - **No identity ⇒ no rows.** A caller with no resolvable per-user identity
   receives an **empty** result set, never the tenant trail.
+- **The empty result says so.** Every scoped read echoes an
+  `X-Axonflow-Read-Scope` response header — `tenant`, `own-rows`, or `none` —
+  and the fail-closed `none` path logs one diagnostic line server-side. The
+  response *body* is unchanged (an empty page stays an empty page, and a
+  scoped-out record still returns the same non-oracle 404 as a missing one), so
+  the header is how an operator tells "your authority hid it" from "the data
+  isn't there" without turning the endpoint into an existence oracle. Nothing
+  keys authorization off this response header.
 - **Reject, don't downgrade.** A per-user token that is presented but invalid
   (tampered, expired, revoked, or minted for another org) is **rejected (401)** —
   never silently downgraded to a shared-credential read.

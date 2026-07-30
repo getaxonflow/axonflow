@@ -27,6 +27,7 @@ import (
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/sdk"
+	"axonflow/platform/shared/egress"
 )
 
 const (
@@ -199,16 +200,38 @@ func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 		c.Log("WARNING: TLS verification disabled for %s", config.Name)
 	}
 
-	// Create HTTP transport with connection pooling
+	// Create HTTP transport with connection pooling.
+	//
+	// The dialer is egress-guarded, not bare (#3104 R3 round 2, finding 1).
+	// validateHost above runs ONCE, inside Connect. Every request after that
+	// re-resolves base_url's host, and until now nothing checked the answer —
+	// so a host that resolved public at Connect and into a reserved range
+	// afterwards was dialled. That is the same DNS-rebinding shape #3104 closed
+	// on the three callback dialers, sitting on the surface this file's own
+	// comment calls "the weakest and most general-purpose egress path in the
+	// codebase". egress.NewSafeDialContext resolves once per dial, refuses if
+	// any answer is blocked, and connects to the literal it validated.
+	//
+	// allow_private_ips bypasses it exactly as it bypasses validateHost, so the
+	// documented escape hatch keeps its existing meaning.
+	baseDialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	dialContext := baseDialer.DialContext
+	if !c.allowPrivateIPs {
+		dialContext = egress.NewSafeDialContext(egress.ConnectorEgress, baseDialer, nil, func(ip net.IP) error {
+			return fmt.Errorf("SSRF protection: connection to private IP %s is not allowed (%s; set allow_private_ips=true on this connector to permit it)",
+				ip, egress.ConnectorEgress.Reason(ip))
+		})
+	}
+
 	transport := &http.Transport{
 		TLSClientConfig: tlsConfig,
 		MaxIdleConns:    100,
 		MaxConnsPerHost: 10,
 		IdleConnTimeout: 90 * time.Second,
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext:     dialContext,
 	}
 
 	// Create HTTP client
@@ -240,49 +263,17 @@ func (c *HTTPConnector) validateHost(host string) error {
 	}
 
 	for _, ip := range ips {
-		if c.isPrivateIP(ip) {
+		// Use the canonical connector egress classifier. This connector
+		// deliberately does NOT keep a local copy: it previously did, that copy
+		// was a strict subset of base.IsPrivateIP, and since the HTTP connector
+		// takes an arbitrary operator-supplied base_url it was the weakest and
+		// most general-purpose egress path in the codebase (#3095).
+		if base.IsPrivateIP(ip) {
 			return fmt.Errorf("connection to private IP %s is not allowed (host: %s)", ip, host)
 		}
 	}
 
 	return nil
-}
-
-// isPrivateIP checks if an IP address is private/reserved
-func (c *HTTPConnector) isPrivateIP(ip net.IP) bool {
-	// Check for loopback
-	if ip.IsLoopback() {
-		return true
-	}
-
-	// Check for link-local
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	// Check for private ranges
-	if ip.IsPrivate() {
-		return true
-	}
-
-	// Check for unspecified (0.0.0.0, ::)
-	if ip.IsUnspecified() {
-		return true
-	}
-
-	// Additional checks for IPv4
-	if ip4 := ip.To4(); ip4 != nil {
-		// 169.254.0.0/16 (link-local)
-		if ip4[0] == 169 && ip4[1] == 254 {
-			return true
-		}
-		// 127.0.0.0/8 (loopback)
-		if ip4[0] == 127 {
-			return true
-		}
-	}
-
-	return false
 }
 
 // Disconnect closes the connection (cleans up transport)

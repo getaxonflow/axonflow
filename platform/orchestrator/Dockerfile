@@ -11,7 +11,7 @@ ARG EDITION=community
 # — the SAME source as the io.opencontainer.image.version label below, so the
 # baked binary version and the image label never drift. Re-declared here in the
 # builder stage (ARG scope is per-stage); the final stage declares it again.
-ARG AXONFLOW_VERSION=9.12.2
+ARG AXONFLOW_VERSION=9.13.0
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -149,7 +149,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=9.12.2
+ARG AXONFLOW_VERSION=9.13.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

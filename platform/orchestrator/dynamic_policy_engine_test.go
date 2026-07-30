@@ -635,33 +635,58 @@ func TestCalculateRiskScore(t *testing.T) {
 	}
 }
 
-// TestPolicyCache tests cache operations
+// TestPolicyCache tests cache operations.
+//
+// #3142 inverted one assertion here. This test used to require
+// `retrieved == testValue` — pointer identity between the stored and the
+// returned verdict — which is precisely the property that let
+// ApplyOverrideToResult write one tenant's session override into the shared
+// cache entry every later caller reads. The requirement is now the opposite:
+// equal by value, distinct by pointer.
 func TestPolicyCache(t *testing.T) {
 	cache := NewPolicyCache(5 * time.Minute)
 	defer cache.Close()
 
 	// Test Set and Get
-	testKey := "test-key"
+	testKey := verdictCacheKey{OrgID: "org-a", TenantID: "tenant-a", Request: "test-key"}
 	testValue := &PolicyEvaluationResult{
-		Allowed:   false,
-		RiskScore: 0.9,
+		Allowed:         false,
+		RiskScore:       0.9,
+		AppliedPolicies: []string{"policy-1"},
 	}
 
 	cache.Set(testKey, testValue)
 
 	retrieved, found := cache.Get(testKey)
 	if !found {
-		t.Error("Expected to find cached value")
+		t.Fatal("Expected to find cached value")
 	}
 
-	if retrieved != testValue {
-		t.Error("Retrieved value does not match stored value")
+	if retrieved == testValue {
+		t.Error("Get returned the caller's own pointer — a caller mutating the result would mutate the cache entry")
+	}
+	if retrieved.Allowed != testValue.Allowed || retrieved.RiskScore != testValue.RiskScore {
+		t.Errorf("Retrieved value does not match stored value: got %+v, want %+v", retrieved, testValue)
+	}
+	if len(retrieved.AppliedPolicies) != 1 || retrieved.AppliedPolicies[0] != "policy-1" {
+		t.Errorf("AppliedPolicies not preserved through the copy: %v", retrieved.AppliedPolicies)
+	}
+	if &retrieved.AppliedPolicies[0] == &testValue.AppliedPolicies[0] {
+		t.Error("AppliedPolicies shares its backing array with the stored value — the copy is shallow")
 	}
 
 	// Test Get non-existent key
-	_, found = cache.Get("non-existent-key")
+	_, found = cache.Get(verdictCacheKey{OrgID: "org-a", TenantID: "tenant-a", Request: "non-existent-key"})
 	if found {
 		t.Error("Should not find non-existent key")
+	}
+
+	// A key differing ONLY in tenancy must be a different entry.
+	if _, found := cache.Get(verdictCacheKey{OrgID: "org-a", TenantID: "tenant-b", Request: "test-key"}); found {
+		t.Error("a different tenant hit tenant-a's cached verdict")
+	}
+	if _, found := cache.Get(verdictCacheKey{OrgID: "org-b", TenantID: "tenant-a", Request: "test-key"}); found {
+		t.Error("a different org hit org-a's cached verdict")
 	}
 }
 

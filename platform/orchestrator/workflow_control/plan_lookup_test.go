@@ -78,8 +78,8 @@ func TestMockRepository_GetByPlanID_MetadataWithoutPlanID(t *testing.T) {
 	ctx := context.Background()
 
 	wf := &Workflow{
-		WorkflowID:   "wf",
-		Metadata:     json.RawMessage(`{"some_other_key": "value"}`),
+		WorkflowID: "wf",
+		Metadata:   json.RawMessage(`{"some_other_key": "value"}`),
 	}
 	if err := repo.Create(ctx, wf); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -137,13 +137,28 @@ func TestService_GetWorkflowByPlanID(t *testing.T) {
 		t.Errorf("foreign tenant: err = %v, want ErrWorkflowNotFound", err)
 	}
 
-	// Community mode / internal service callers pass empty strings → bypass.
-	got, err = svc.GetWorkflowByPlanID(ctx, "plan-tenant", "", "")
-	if err != nil {
-		t.Fatalf("empty-tenant bypass: %v", err)
+	// #3065 (F1): this assertion used to read "Community mode / internal
+	// service callers pass empty strings → bypass" and required that an
+	// unscoped caller received the workflow. That bypass IS the
+	// vulnerability — the WCP routes are reachable directly, so omitting
+	// X-Tenant-ID / X-Org-ID was how a caller selected it. Community mode
+	// never produces an empty scope (the agent stamps ORG_ID, default
+	// "local-dev-org", and the client id as the tenant, in every deployment
+	// mode), and genuine in-process callers now use the explicitly named
+	// GetWorkflowUnscoped. An unscoped request-path caller is denied.
+	_, err = svc.GetWorkflowByPlanID(ctx, "plan-tenant", "", "")
+	if !errors.Is(err, ErrWorkflowNotFound) {
+		t.Errorf("unscoped caller: err = %v, want ErrWorkflowNotFound", err)
 	}
-	if got == nil {
-		t.Error("empty-tenant bypass should return workflow, got nil")
+
+	// The named unscoped accessor still serves the in-process callers that
+	// legitimately hold no request scope.
+	unscoped, err := svc.GetWorkflowUnscoped(ctx, "wf")
+	if err != nil {
+		t.Fatalf("GetWorkflowUnscoped: %v", err)
+	}
+	if unscoped == nil || unscoped.WorkflowID != "wf" {
+		t.Errorf("GetWorkflowUnscoped returned %+v, want wf", unscoped)
 	}
 }
 

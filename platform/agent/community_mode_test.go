@@ -26,8 +26,10 @@ func TestCommunityMode_BypassesAuthentication(t *testing.T) {
 	}{
 		{"community mode with empty token", "community", "", "test-tenant"},
 		{"community mode with any token", "community", "any-token-works", "test-tenant"},
-		{"empty mode (default) with empty token", "", "", "test-tenant"},
-		{"empty mode (default) with any token", "", "any-token-works", "test-tenant"},
+		// #3096: the two "empty mode (default)" rows were removed. An unset
+		// DEPLOYMENT_MODE no longer bypasses authentication — that is now
+		// covered by TestUnsetDeploymentMode_DoesNotBypassAuthentication below,
+		// which asserts the opposite outcome.
 	}
 
 	for _, tt := range tests {
@@ -63,10 +65,15 @@ func TestCommunityMode_IsCommunityModeFunction(t *testing.T) {
 		expected bool
 	}{
 		{"community mode", "community", true},
-		{"empty mode (default)", "", true},
+		// #3096: unset is no longer the community default — it fails closed to
+		// the enterprise posture, so forgetting to configure a mode cannot
+		// disable authentication.
+		{"empty mode (unset) is not community", "", false},
 		{"enterprise mode", "enterprise", false},
 		{"saas mode", "saas", false},
 		{"in-vpc-enterprise mode", "in-vpc-enterprise", false},
+		{"community-saas is its own mode", "community-saas", false},
+		{"unrecognised mode fails closed", "not-a-real-mode", false},
 	}
 
 	for _, tt := range tests {
@@ -77,6 +84,36 @@ func TestCommunityMode_IsCommunityModeFunction(t *testing.T) {
 
 			if result != tt.expected {
 				t.Errorf("isCommunityMode() = %v, want %v for DEPLOYMENT_MODE=%q", result, tt.expected, tt.mode)
+			}
+		})
+	}
+}
+
+// TestUnsetDeploymentMode_DoesNotBypassAuthentication is the #3096 regression
+// test: the rows it replaces in TestCommunityMode_BypassesAuthentication used
+// to assert that an unset DEPLOYMENT_MODE handed out a synthetic admin user
+// for any token, or none at all.
+//
+// validateUserToken (run.go) returns `local-dev@axonflow.local` with role
+// admin and the query/llm/mcp_query/admin permission set when isCommunityMode()
+// is true. Reaching that on an unset mode meant an operator who never
+// configured DEPLOYMENT_MODE was serving admin authority to unauthenticated
+// callers.
+func TestUnsetDeploymentMode_DoesNotBypassAuthentication(t *testing.T) {
+	for _, token := range []string{"", "any-token-works"} {
+		name := "empty token"
+		if token != "" {
+			name = "arbitrary token"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", "")
+
+			user, err := validateUserToken(token, "test-tenant")
+			if err == nil {
+				t.Fatalf("unset DEPLOYMENT_MODE must not bypass authentication; got user %+v", user)
+			}
+			if user != nil {
+				t.Errorf("no user must be minted on the failure path, got %+v", user)
 			}
 		})
 	}

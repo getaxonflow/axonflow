@@ -11,6 +11,26 @@ If user-facing, the wiring PR for every relevant runtime must land with this PR 
 
 See [`runtime-e2e/README.md`](../runtime-e2e/README.md) for the convention. The cross-plugin coverage matrix lives at `axonflow-internal-docs/engineering/FEATURE_RUNTIME_COVERAGE.md` (private; engineering team only).
 
+The `Runtime E2E required for user-facing changes` gate is a **required** check.
+A PR that touches `platform/`, `ee/platform/`, `migrations/` or `docs/api/`
+without adding or updating a `runtime-e2e/` test fails it, unless the escape
+hatch below is claimed — which takes **both** `[skip-runtime-e2e]` in the PR
+title **and** the filled-in section below. Per CLAUDE.md HARD RULE #9 the
+escape hatch also requires explicit operator approval; name it in the section.
+
+## Skip-runtime-e2e justification
+
+<!-- Not claiming the escape hatch? Leave this section as-is or delete it.
+
+     Claiming it? REPLACE this comment with the reason, and name the operator
+     who approved it. The gate reads this heading by name and requires real
+     text under it — a heading followed only by this comment does not count,
+     nor does an empty one, nor one followed only by a horizontal rule (#3144).
+
+     e.g. "Build-only change to the Dockerfile base image; no shipped runtime
+     surface. Exemption approved by <operator>."
+     See CONTRIBUTING.md ("Runtime-E2E-per-user-facing-change"). -->
+
 ---
 
 ## Description
@@ -148,12 +168,21 @@ For PRs whose title starts with `fix(` or that carry the `bug` label, the
 least one test file at the layer that failed.
 
 - [ ] Bug-fix PR includes a regression test that would have caught the bug
-- [ ] OR the `regression-test-exempt` label is applied with a justification below
+- [ ] OR the `regression-test-exempt` label is applied **and** the section
+      below is filled in. The label on its own is not an exemption and will
+      fail the gate (#3120).
 
-**If exempt, why a regression test is impractical:**
-<!-- e.g. "infra-only change to CFN template", "generated artifact regen",
-"test harness wiring with no executable behaviour change". See CONTRIBUTING.md
-("Regression-test-per-bug") for accepted patterns. -->
+### Regression-test-exempt justification
+
+<!-- Not claiming the exemption? Leave this section as-is or delete it.
+
+     Claiming it? REPLACE this comment with the reason. The gate reads this
+     heading by name and requires real text under it — a heading followed only
+     by this comment does not count, and neither does an empty one.
+
+     e.g. "infra-only change to CFN template", "generated artifact regen",
+     "test harness wiring with no executable behaviour change".
+     See CONTRIBUTING.md ("Regression-test-per-bug") for accepted patterns. -->
 
 ### Cross-plane parity (ADR-046)
 - [ ] If this PR extends `StepGateResponse`, `StepGateHTTPResponse`, or any

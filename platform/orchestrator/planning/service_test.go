@@ -38,6 +38,7 @@ func TestService_StorePlan(t *testing.T) {
 				ExecutionMode:      "auto",
 				WorkflowDefinition: validWorkflowJSON(),
 				StepCount:          1,
+				TenantID:           "tenant_1",
 				OrgID:              "org_1",
 			},
 			wantErr: nil,
@@ -45,6 +46,8 @@ func TestService_StorePlan(t *testing.T) {
 		{
 			name: "empty plan ID",
 			req: &CreatePlanRequest{
+				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				PlanID:             "",
 				Query:              "Test query",
 				WorkflowDefinition: validWorkflowJSON(),
@@ -54,6 +57,8 @@ func TestService_StorePlan(t *testing.T) {
 		{
 			name: "empty workflow definition",
 			req: &CreatePlanRequest{
+				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				PlanID:             "plan_123",
 				Query:              "Test query",
 				WorkflowDefinition: nil,
@@ -63,6 +68,8 @@ func TestService_StorePlan(t *testing.T) {
 		{
 			name: "repository error",
 			req: &CreatePlanRequest{
+				OrgID:              "org_1",
+				TenantID:           "tenant_1",
 				PlanID:             "plan_123",
 				Query:              "Test query",
 				WorkflowDefinition: validWorkflowJSON(),
@@ -120,6 +127,7 @@ func TestService_GetPlanForExecution(t *testing.T) {
 			planID: "plan_123",
 			orgID:  "org_1",
 			setupPlan: &Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_123",
 				OrgID:              "org_1",
 				Status:             PlanStatusPending,
@@ -128,18 +136,40 @@ func TestService_GetPlanForExecution(t *testing.T) {
 			},
 			wantErr: nil,
 		},
+		// #3065 (F2): this case used to read "successful retrieval - empty
+		// orgID (community mode)" and assert that an unscoped caller could
+		// EXECUTE an unowned plan. That is the vulnerability written down as
+		// a requirement — and community mode never produces an empty org (the
+		// agent stamps ORG_ID, default "local-dev-org", in every deployment
+		// mode), so nothing legitimate depended on it. Both halves are now
+		// denials.
 		{
-			name:   "successful retrieval - empty orgID (community mode)",
-			planID: "plan_community",
-			orgID:  "", // No org restriction in community mode
+			name:   "caller omits org is denied",
+			planID: "plan_unowned",
+			orgID:  "",
 			setupPlan: &Plan{
-				PlanID:             "plan_community",
-				OrgID:              "", // No org set
+				TenantID:           "tenant_1",
+				PlanID:             "plan_unowned",
+				OrgID:              "org_1",
 				Status:             PlanStatusPending,
 				WorkflowDefinition: validWorkflowJSON(),
 				ExpiresAt:          time.Now().Add(1 * time.Hour),
 			},
-			wantErr: nil,
+			wantErr: ErrPlanNotFound,
+		},
+		{
+			name:   "plan with no org key is reachable by nobody",
+			planID: "plan_community",
+			orgID:  "org_1",
+			setupPlan: &Plan{
+				TenantID:           "tenant_1",
+				PlanID:             "plan_community",
+				OrgID:              "",
+				Status:             PlanStatusPending,
+				WorkflowDefinition: validWorkflowJSON(),
+				ExpiresAt:          time.Now().Add(1 * time.Hour),
+			},
+			wantErr: ErrPlanNotFound,
 		},
 		{
 			name:    "plan not found",
@@ -152,6 +182,7 @@ func TestService_GetPlanForExecution(t *testing.T) {
 			planID: "plan_expired",
 			orgID:  "org_1",
 			setupPlan: &Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_expired",
 				OrgID:              "org_1",
 				Status:             PlanStatusPending,
@@ -165,6 +196,7 @@ func TestService_GetPlanForExecution(t *testing.T) {
 			planID: "plan_completed",
 			orgID:  "org_1",
 			setupPlan: &Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_completed",
 				OrgID:              "org_1",
 				Status:             PlanStatusCompleted,
@@ -178,6 +210,7 @@ func TestService_GetPlanForExecution(t *testing.T) {
 			planID: "plan_cancelled",
 			orgID:  "org_1",
 			setupPlan: &Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_cancelled",
 				OrgID:              "org_1",
 				Status:             PlanStatusCancelled,
@@ -191,6 +224,7 @@ func TestService_GetPlanForExecution(t *testing.T) {
 			planID: "plan_other_org",
 			orgID:  "org_2", // Different org trying to execute
 			setupPlan: &Plan{
+				TenantID:           "tenant_1",
 				PlanID:             "plan_other_org",
 				OrgID:              "org_1", // Plan belongs to org_1
 				Status:             PlanStatusPending,
@@ -240,6 +274,8 @@ func TestService_GetPlanForExecution(t *testing.T) {
 func TestService_MarkPlanCompleted(t *testing.T) {
 	repo := NewMockRepository()
 	repo.plans["plan_123"] = &Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_123",
 		Status:             PlanStatusExecuting,
 		WorkflowDefinition: validWorkflowJSON(),
@@ -266,6 +302,8 @@ func TestService_MarkPlanCompleted(t *testing.T) {
 func TestService_MarkPlanFailed(t *testing.T) {
 	repo := NewMockRepository()
 	repo.plans["plan_123"] = &Plan{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_123",
 		Status:             PlanStatusExecuting,
 		WorkflowDefinition: validWorkflowJSON(),
@@ -293,6 +331,8 @@ func TestService_CleanupExpiredPlans(t *testing.T) {
 
 	// Add expired pending plan (should be cleaned)
 	repo.plans["expired_pending"] = &Plan{
+		OrgID:     "org_1",
+		TenantID:  "tenant_1",
 		PlanID:    "expired_pending",
 		Status:    PlanStatusPending,
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -300,6 +340,8 @@ func TestService_CleanupExpiredPlans(t *testing.T) {
 
 	// Add expired completed plan (should NOT be cleaned - already executed)
 	repo.plans["expired_completed"] = &Plan{
+		OrgID:     "org_1",
+		TenantID:  "tenant_1",
 		PlanID:    "expired_completed",
 		Status:    PlanStatusCompleted,
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -307,6 +349,8 @@ func TestService_CleanupExpiredPlans(t *testing.T) {
 
 	// Add valid pending plan (should NOT be cleaned)
 	repo.plans["valid_pending"] = &Plan{
+		OrgID:     "org_1",
+		TenantID:  "tenant_1",
 		PlanID:    "valid_pending",
 		Status:    PlanStatusPending,
 		ExpiresAt: time.Now().Add(1 * time.Hour),
@@ -377,6 +421,8 @@ func TestPlan_CanExecute(t *testing.T) {
 		{
 			name: "can execute - pending and not expired",
 			plan: &Plan{
+				OrgID:     "org_1",
+				TenantID:  "tenant_1",
 				Status:    PlanStatusPending,
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 			},
@@ -385,6 +431,8 @@ func TestPlan_CanExecute(t *testing.T) {
 		{
 			name: "cannot execute - already completed",
 			plan: &Plan{
+				OrgID:     "org_1",
+				TenantID:  "tenant_1",
 				Status:    PlanStatusCompleted,
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 			},
@@ -393,6 +441,8 @@ func TestPlan_CanExecute(t *testing.T) {
 		{
 			name: "cannot execute - expired",
 			plan: &Plan{
+				OrgID:     "org_1",
+				TenantID:  "tenant_1",
 				Status:    PlanStatusPending,
 				ExpiresAt: time.Now().Add(-1 * time.Hour),
 			},
@@ -401,6 +451,8 @@ func TestPlan_CanExecute(t *testing.T) {
 		{
 			name: "cannot execute - executing",
 			plan: &Plan{
+				OrgID:     "org_1",
+				TenantID:  "tenant_1",
 				Status:    PlanStatusExecuting,
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 			},
@@ -424,13 +476,15 @@ func TestService_GetPlan(t *testing.T) {
 		Status:             PlanStatusPending,
 		Query:              "test query",
 		Domain:             "generic",
+		OrgID:              "org-a",
+		TenantID:           "tenant-a",
 		WorkflowDefinition: validWorkflowJSON(),
 		ExpiresAt:          time.Now().Add(1 * time.Hour),
 	}
 	svc := NewService(repo)
 
 	t.Run("successful retrieval", func(t *testing.T) {
-		plan, err := svc.GetPlan(context.Background(), "plan_123")
+		plan, err := svc.GetPlan(context.Background(), "plan_123", "org-a")
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -440,9 +494,24 @@ func TestService_GetPlan(t *testing.T) {
 	})
 
 	t.Run("plan not found", func(t *testing.T) {
-		_, err := svc.GetPlan(context.Background(), "nonexistent")
+		_, err := svc.GetPlan(context.Background(), "nonexistent", "org-a")
 		if !errors.Is(err, ErrPlanNotFound) {
 			t.Errorf("expected ErrPlanNotFound, got %v", err)
+		}
+	})
+
+	// #3065 (F3): GetPlan had no authorization check at all.
+	t.Run("caller omits org is denied", func(t *testing.T) {
+		_, err := svc.GetPlan(context.Background(), "plan_123", "")
+		if !errors.Is(err, ErrPlanNotFound) {
+			t.Errorf("an unscoped caller must be denied, got %v", err)
+		}
+	})
+
+	t.Run("cross-org caller is denied", func(t *testing.T) {
+		_, err := svc.GetPlan(context.Background(), "plan_123", "org-b")
+		if !errors.Is(err, ErrPlanNotFound) {
+			t.Errorf("a cross-org caller must be denied, got %v", err)
 		}
 	})
 }
@@ -453,6 +522,8 @@ func TestService_StorePlan_WithCustomTTL(t *testing.T) {
 
 	customTTL := 30 * time.Minute
 	req := &CreatePlanRequest{
+		OrgID:              "org_1",
+		TenantID:           "tenant_1",
 		PlanID:             "plan_custom_ttl",
 		Query:              "Test query",
 		Domain:             "generic",
@@ -477,6 +548,7 @@ func TestService_StorePlan_WithCustomTTL(t *testing.T) {
 func TestService_GetPlanForExecution_FailedPlan(t *testing.T) {
 	repo := NewMockRepository()
 	repo.plans["plan_failed"] = &Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_failed",
 		OrgID:              "org_1",
 		Status:             PlanStatusFailed,
@@ -494,6 +566,7 @@ func TestService_GetPlanForExecution_FailedPlan(t *testing.T) {
 func TestService_GetPlanForExecution_ExecutingPlan(t *testing.T) {
 	repo := NewMockRepository()
 	repo.plans["plan_executing"] = &Plan{
+		TenantID:           "tenant_1",
 		PlanID:             "plan_executing",
 		OrgID:              "org_1",
 		Status:             PlanStatusExecuting,
@@ -555,6 +628,8 @@ func TestService_StartCleanupWorker(t *testing.T) {
 
 	// Add an expired plan
 	repo.plans["expired"] = &Plan{
+		OrgID:     "org_1",
+		TenantID:  "tenant_1",
 		PlanID:    "expired",
 		Status:    PlanStatusPending,
 		ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -749,6 +824,8 @@ func TestService_CancelPlan(t *testing.T) {
 
 		// Store a plan
 		plan, err := svc.StorePlan(context.Background(), &CreatePlanRequest{
+			OrgID:              "org_1",
+			TenantID:           "tenant_1",
 			PlanID:             "plan_cancel_1",
 			Query:              "Test query",
 			Domain:             "generic",
@@ -763,13 +840,13 @@ func TestService_CancelPlan(t *testing.T) {
 		}
 
 		// Cancel it
-		err = svc.CancelPlan(context.Background(), "plan_cancel_1", "", "user requested")
+		err = svc.CancelPlan(context.Background(), "plan_cancel_1", "org_1", "user requested")
 		if err != nil {
 			t.Fatalf("CancelPlan failed: %v", err)
 		}
 
 		// Verify cancelled
-		got, err := svc.GetPlan(context.Background(), "plan_cancel_1")
+		got, err := svc.GetPlan(context.Background(), "plan_cancel_1", "org_1")
 		if err != nil {
 			t.Fatalf("GetPlan failed: %v", err)
 		}
@@ -787,21 +864,23 @@ func TestService_CancelPlan(t *testing.T) {
 
 		// Store and start executing
 		_, _ = svc.StorePlan(context.Background(), &CreatePlanRequest{
+			OrgID:              "org_1",
+			TenantID:           "tenant_1",
 			PlanID:             "plan_cancel_2",
 			Query:              "Test query",
 			Domain:             "generic",
 			WorkflowDefinition: validWorkflowJSON(),
 			StepCount:          1,
 		})
-		_, _ = svc.GetPlanForExecution(context.Background(), "plan_cancel_2", "")
+		_, _ = svc.GetPlanForExecution(context.Background(), "plan_cancel_2", "org_1")
 
 		// Cancel it
-		err := svc.CancelPlan(context.Background(), "plan_cancel_2", "", "timeout")
+		err := svc.CancelPlan(context.Background(), "plan_cancel_2", "org_1", "timeout")
 		if err != nil {
 			t.Fatalf("CancelPlan failed: %v", err)
 		}
 
-		got, _ := svc.GetPlan(context.Background(), "plan_cancel_2")
+		got, _ := svc.GetPlan(context.Background(), "plan_cancel_2", "org_1")
 		if got.Status != PlanStatusCancelled {
 			t.Errorf("Status = %s, want cancelled", got.Status)
 		}
@@ -812,6 +891,8 @@ func TestService_CancelPlan(t *testing.T) {
 		svc := NewService(repo)
 
 		_, _ = svc.StorePlan(context.Background(), &CreatePlanRequest{
+			OrgID:              "org_1",
+			TenantID:           "tenant_1",
 			PlanID:             "plan_cancel_3",
 			Query:              "Test query",
 			Domain:             "generic",
@@ -820,7 +901,7 @@ func TestService_CancelPlan(t *testing.T) {
 		})
 		_ = svc.MarkPlanCompleted(context.Background(), "plan_cancel_3", nil)
 
-		err := svc.CancelPlan(context.Background(), "plan_cancel_3", "", "too late")
+		err := svc.CancelPlan(context.Background(), "plan_cancel_3", "org_1", "too late")
 		if err == nil {
 			t.Error("CancelPlan should fail for completed plan")
 		}
@@ -831,15 +912,17 @@ func TestService_CancelPlan(t *testing.T) {
 		svc := NewService(repo)
 
 		_, _ = svc.StorePlan(context.Background(), &CreatePlanRequest{
+			OrgID:              "org_1",
+			TenantID:           "tenant_1",
 			PlanID:             "plan_cancel_4",
 			Query:              "Test query",
 			Domain:             "generic",
 			WorkflowDefinition: validWorkflowJSON(),
 			StepCount:          1,
 		})
-		_ = svc.CancelPlan(context.Background(), "plan_cancel_4", "", "first cancel")
+		_ = svc.CancelPlan(context.Background(), "plan_cancel_4", "org_1", "first cancel")
 
-		err := svc.CancelPlan(context.Background(), "plan_cancel_4", "", "second cancel")
+		err := svc.CancelPlan(context.Background(), "plan_cancel_4", "org_1", "second cancel")
 		if err == nil {
 			t.Error("CancelPlan should fail for already cancelled plan")
 		}
@@ -902,5 +985,79 @@ func TestNoOpRepository_CleanupExpiredPlans(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected 0 count, got %d", count)
+	}
+}
+
+// TestService_GetPlanUnscoped_IsTheNamedInternalAccessor covers #3065's
+// replacement for the old empty-string bypass. It authorizes nothing by
+// design — the one legitimate caller (MAPExecutionTracker.GetPlanStatus)
+// holds no request scope and its result is authorized by the HTTP layer
+// before it reaches a client. The name is the guard.
+func TestService_GetPlanUnscoped_IsTheNamedInternalAccessor(t *testing.T) {
+	repo := NewMockRepository()
+	repo.plans["plan_unscoped"] = &Plan{
+		PlanID:             "plan_unscoped",
+		OrgID:              "org-a",
+		TenantID:           "tenant-a",
+		Status:             PlanStatusPending,
+		WorkflowDefinition: validWorkflowJSON(),
+		ExpiresAt:          time.Now().Add(time.Hour),
+	}
+	svc := NewService(repo)
+
+	got, err := svc.GetPlanUnscoped(context.Background(), "plan_unscoped")
+	if err != nil {
+		t.Fatalf("GetPlanUnscoped: %v", err)
+	}
+	if got.PlanID != "plan_unscoped" {
+		t.Errorf("plan id = %q", got.PlanID)
+	}
+
+	// The scoped sibling denies the same caller, which is what makes the
+	// unscoped accessor a deliberate, greppable act rather than a default.
+	if _, err := svc.GetPlan(context.Background(), "plan_unscoped", ""); !errors.Is(err, ErrPlanNotFound) {
+		t.Errorf("the scoped accessor must deny an unbound caller, got %v", err)
+	}
+}
+
+// TestAuthorizePlan_NilPlanIsADenial pins the nil branch: a nil plan must
+// never authorize, whatever the caller org.
+func TestAuthorizePlan_NilPlanIsADenial(t *testing.T) {
+	if err := authorizePlan(nil, "org-a"); !errors.Is(err, ErrPlanNotFound) {
+		t.Fatalf("a nil plan must be ErrPlanNotFound, got %v", err)
+	}
+}
+
+// TestService_StorePlan_RefusesUnownedRow: make the empty state
+// unrepresentable at the write path. `plans` has no RLS, so a NULL-org row was
+// permanently reachable by every tenant.
+func TestService_StorePlan_RefusesUnownedRow(t *testing.T) {
+	svc := NewService(NewMockRepository())
+	for _, tc := range []struct{ name, org, tenant string }{
+		{"no tenancy at all", "", ""},
+		{"org missing", "", "tenant-a"},
+		{"tenant missing", "org-a", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.StorePlan(context.Background(), &CreatePlanRequest{
+				PlanID:             "p1",
+				OrgID:              tc.org,
+				TenantID:           tc.tenant,
+				WorkflowDefinition: validWorkflowJSON(),
+			})
+			if err == nil {
+				t.Fatal("persisting a plan with no tenancy key manufactures a row every tenant can cancel")
+			}
+		})
+	}
+
+	// Positive control.
+	if _, err := svc.StorePlan(context.Background(), &CreatePlanRequest{
+		PlanID:             "p-ok",
+		OrgID:              "org-a",
+		TenantID:           "tenant-a",
+		WorkflowDefinition: validWorkflowJSON(),
+	}); err != nil {
+		t.Fatalf("a fully-scoped store must still succeed: %v", err)
 	}
 }

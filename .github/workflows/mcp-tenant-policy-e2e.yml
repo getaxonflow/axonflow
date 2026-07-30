@@ -1,0 +1,109 @@
+name: MCP Tenant-Policy E2E
+
+# Executes runtime-e2e/3061_mcp_tenant_policy_enforcement/ (#3061).
+#
+# WHY A DEDICATED WORKFLOW RATHER THAN A production_posture_registry.txt ENTRY:
+# every entry in that registry is AMBIENT — it curls an already-booted shared
+# stack (agent :8080, orchestrator :8081, portal :8082) that the runner brings
+# up once under AXONFLOW_DB_USE_APP_ROLE=true. This suite is SELF-BOOTING: it
+# runs `docker compose -p rte3061_$$ up -d --build` over its own isolation
+# overlay and tears down with `down -v --remove-orphans`, because the plane
+# under test only exists when MCP_DYNAMIC_POLICIES_ENABLED=true, which the
+# posture stack does not set.
+#
+# Registered there it would be wrong in three ways even though its isolation is
+# collision-proof: every PR would pay its full build-and-boot runtime; it would
+# pin AXONFLOW_DB_USE_APP_ROLE="false" inside a job named `axonflow_app_role`,
+# misrepresenting what ran to anyone reading the job name; and its `down -v`
+# belongs to a lifecycle the shared runner does not own. The settled house rule
+# on this repo is: ambient suite -> posture registry; self-booting suite ->
+# dedicated workflow, however well isolated. This is the same shape
+# override-identity-gate-e2e.yml and cross-system-hitl-e2e.yml use.
+#
+# The `Runtime E2E required for user-facing changes` check in
+# definition-of-done.yml is a PRESENCE gate (it greps changed filenames); it
+# does not run anything. This workflow is what actually executes the suite.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      # The suite itself.
+      - 'runtime-e2e/3061_mcp_tenant_policy_enforcement/**'
+
+      # The defect under test: the MCP evaluator's type admission, its
+      # condition/operator vocabulary, and its tenant-scope routing.
+      - 'platform/orchestrator/mcp_dynamic_policy_handler.go'
+
+      # The engines that decide tenant scope. The whole point of the fix is
+      # that the handler no longer reimplements the predicate but routes to
+      # dbCachedPolicyAppliesToTenant / memPolicyAppliesToTenant, so a change
+      # to either engine can silently re-diverge the planes.
+      - 'platform/orchestrator/db_dynamic_policies.go'
+      - 'platform/orchestrator/dynamic_policy_engine.go'
+      - 'platform/shared/policy/dynamic_evaluator.go'
+
+      # Route registration for POST /api/v1/mcp/evaluate-policies, and the
+      # agent surface the suite actually drives: POST /api/v1/mcp/check-input
+      # plus the agent -> orchestrator hop that carries it.
+      - 'platform/orchestrator/run.go'
+      - 'platform/agent/mcp_handler.go'
+      - 'platform/agent/proxy.go'
+
+      # The stack the suite boots. It composes docker-compose.yml with the
+      # enterprise overlay and its own isolation overlay; a change to either
+      # base file (or to an image build) changes what is under test.
+      - 'docker-compose.yml'
+      - 'docker-compose.enterprise.yml'
+      - 'platform/agent/Dockerfile'
+      - 'platform/orchestrator/Dockerfile'
+
+      # Stored-shape assumptions the sentinel assertions depend on: core/154
+      # supplies the global org_id default the seeds rely on, and core/155 is
+      # the CHECK that makes tenant_id='' unrepresentable — which is why the
+      # suite asserts only the 'global' / NULL / real-tenant shapes.
+      - 'migrations/core/154_global_policy_org_id_default.sql'
+      - 'migrations/core/155_policy_tenant_id_no_empty_string.sql'
+
+      - '.github/workflows/mcp-tenant-policy-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-tenant-policy-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AXONFLOW_TELEMETRY: "off"
+  CI: "true"
+
+jobs:
+  mcp-tenant-policy-e2e:
+    name: Tenant content policies enforce on the MCP plane
+    runs-on: ubuntu-latest
+    # Builds the agent + orchestrator images, boots postgres + both services,
+    # waits for migrations to settle, then seeds and drives 11 assertions.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No LLM keys, no license, no AWS secrets: the suite exports its own
+      # defaults (MCP_DYNAMIC_POLICIES_ENABLED, AXONFLOW_INTERNAL_SERVICE_SECRET)
+      # and boots a local compose stack, so it works on a fork PR too.
+      - name: Run runtime-e2e 3061 — MCP tenant policy enforcement
+        shell: bash
+        run: ./runtime-e2e/3061_mcp_tenant_policy_enforcement/test.sh
+
+      - name: Dump agent + orchestrator logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "── containers ──"
+          docker ps -a || true
+          for c in $(docker ps -aq --filter "name=rte3061"); do
+            echo "── logs: $c ──"
+            docker logs --tail 150 "$c" 2>&1 || true
+          done

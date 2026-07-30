@@ -71,7 +71,10 @@ func TestCreateApprovalRequest_Validation(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	tests := []struct {
 		name    string
@@ -195,7 +198,10 @@ func TestCreateApprovalRequest_Success(t *testing.T) {
 	svc := newEvalTierService(t, repo, ServiceConfig{
 		DefaultExpiry: 24 * time.Hour,
 	})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
 	mock.ExpectBegin()
@@ -259,7 +265,10 @@ func TestCreateApprovalRequest_DefaultSeverity(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
 	mock.ExpectBegin()
@@ -315,7 +324,10 @@ func TestCreateApprovalRequest_ExpiryLimiting(t *testing.T) {
 		DefaultExpiry: 24 * time.Hour,
 		MaxExpiry:     48 * time.Hour,
 	})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
 	mock.ExpectBegin()
@@ -370,7 +382,10 @@ func TestApproveRequest_InvalidStatus(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -418,7 +433,10 @@ func TestApproveRequest_Expired(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -467,7 +485,10 @@ func TestOverrideRequest_RequiresJustification(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -495,7 +516,10 @@ func TestOverrideRequest_RequiresAuthorizedBy(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -527,7 +551,10 @@ func TestOverrideRequest_Success(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -593,7 +620,10 @@ func TestOverrideRequest_NonPendingStatus(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -641,7 +671,10 @@ func TestRejectRequest_Success(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -707,7 +740,10 @@ func TestRejectRequest_NotFoundService(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -735,7 +771,10 @@ func TestApproveRequest_Success(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -801,7 +840,10 @@ func TestApproveRequest_NotFoundService(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -829,7 +871,10 @@ func TestGetApprovalRequest_NotFound(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -863,7 +908,10 @@ func TestListApprovalRequests(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -889,6 +937,7 @@ func TestListApprovalRequests(t *testing.T) {
 		))
 
 	filter := ListFilter{
+		OrgID:  "org-1",
 		Status: []string{"pending"},
 		Limit:  10,
 	}
@@ -919,7 +968,10 @@ func TestGetPendingStats(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	// #3048: GetPendingStats runs org-scoped.
 	mock.ExpectBegin()
@@ -954,7 +1006,10 @@ func TestGetRequestHistoryService(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	requestID := uuid.New()
 
@@ -999,7 +1054,10 @@ func TestExpireStaleRequests(t *testing.T) {
 
 	repo := NewRepository(db)
 	svc := newEvalTierService(t, repo, ServiceConfig{})
-	ctx := context.Background()
+	// #3065 (F5): rejectCrossOrg fails closed on an empty caller org, so
+	// the service context must carry the authenticated org — the same
+	// value the handler passes via WithCallerOrg(r.Context(), X-Org-ID).
+	ctx := WithCallerOrg(context.Background(), "org-1")
 
 	mock.ExpectQuery("SELECT expire_hitl_requests").
 		WillReturnRows(sqlmock.NewRows([]string{"expire_hitl_requests"}).AddRow(5))
@@ -1221,4 +1279,3 @@ func TestCreateApprovalRequest_NilTierProviderFallsThrough(t *testing.T) {
 		t.Errorf("Mock expectations not met: %v", err)
 	}
 }
-

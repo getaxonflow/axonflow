@@ -8,46 +8,155 @@ name: Regression Test Required
 #     "fix:", "fix(scope):", "fix!:" (breaking), or "fix(scope)!:" — OR
 #   * it carries the "bug" label
 #
-# Escape hatch: the "regression-test-exempt" label skips the gate. Use only
-# when a regression test is genuinely impractical (e.g. infra-only fix, build
-# config, generated artifact) and justify in the PR body.
+# Escape hatch: the "regression-test-exempt" label skips the presence gate,
+# BUT ONLY when the PR body also carries a
+# "## Regression-test-exempt justification" section with content in it. Label
+# without justification is a hard failure. See #3120 and the note below.
 #
 # See CONTRIBUTING.md ("Regression-test-per-bug") for the full rationale and
 # accepted test-file patterns.
+#
+# ───────────────────────────────────────────────────────────────────────────
+# #3120 — WHY THIS WORKFLOW NEVER READS LABELS FROM THE EVENT PAYLOAD
+# ───────────────────────────────────────────────────────────────────────────
+# The previous version classified from `github.event.pull_request.labels.*.name`,
+# i.e. the labels as captured WHEN THE EVENT FIRED, and triggered on
+# [opened, synchronize, labeled] only. Observed on PR #3119:
+#
+#     06:57:06Z  labeled    regression-test-exempt
+#     06:57:16Z  unlabeled  regression-test-exempt
+#     06:57:28Z  run reports "Skip — exempt label applied"  → green
+#
+# The head SHA never changed, `unlabeled` was not a trigger, so nothing
+# re-evaluated. The result was a green required check with no exemption label,
+# no regression test, and no trace of any of it in the PR's current state.
+#
+# Two independent repairs, both present below:
+#   1. `unlabeled` (and `edited`, `reopened`) added to `types`, so removal of
+#      the label re-fires the gate. Necessary, but on its own it only closes
+#      the events we thought of.
+#   2. The durable half: the classifier reads the PR's CURRENT title, body and
+#      labels from the API at evaluation time. State, not state-at-trigger.
+#      With that, even a trigger set that misses an event cannot leave a stale
+#      green behind — every run reflects the PR as it stands when the run
+#      executes, not as it stood when something happened to fire.
+#
+# The API read fails the job if it cannot complete. A gate that cannot
+# determine whether it applies must not report success.
+#
+# ───────────────────────────────────────────────────────────────────────────
+# #3121 — THE PRESENCE GATE IS NOT THE ONLY JOB HERE ANY MORE
+# ───────────────────────────────────────────────────────────────────────────
+# `check-regression-test` verifies a test file APPEARS in the diff. It does not
+# and cannot verify the test works. `run-regression-suite` below executes every
+# script in tests/regression-test-required/ on every PR, so a committed
+# regression test that starts failing is caught rather than merely present.
+#
+# ───────────────────────────────────────────────────────────────────────────
+# #3124 — REQUIREDNESS
+# ───────────────────────────────────────────────────────────────────────────
+# Neither job is currently in the `Main Branch Protection` ruleset's required
+# status checks. Requiredness is a repository ruleset setting and cannot be
+# changed from a PR. Both jobs below emit a check-run on `merge_group` as well
+# as `pull_request` specifically so that an operator CAN make them required
+# without merge-queue entries sitting in AWAITING_CHECKS until the ruleset's
+# 60-minute `check_response_timeout_minutes` ejects them.
 
 on:
   pull_request:
     branches: [main]
-    # Limited to events that materially change diff content or gating eligibility:
+    # Every event that can change either the diff or the gating inputs:
     #   opened       — first eval
+    #   reopened     — re-eval after close (labels/body may have moved since)
     #   synchronize  — new commits pushed
-    #   labeled      — `bug` / `regression-test-exempt` toggles classification
-    # Dropped (no diff change): edited (title/body), unlabeled, reopened.
-    types: [opened, synchronize, labeled]
+    #   edited       — title (classification) or body (exempt justification)
+    #   labeled      — `bug` / `regression-test-exempt` applied
+    #   unlabeled    — `bug` / `regression-test-exempt` REMOVED. Dropped in the
+    #                  previous version on the grounds that it produces "no diff
+    #                  change". True, and beside the point: `labeled` is in this
+    #                  list precisely because it changes gating eligibility, and
+    #                  `unlabeled` changes it identically — in the direction that
+    #                  REINSTATES the gate. That asymmetry was the #3120 bypass.
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+  # Required-check compatibility with the merge queue: see the #3124 note above.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
+  # Needed to read the PR's current title/body/labels via the REST API.
+  pull-requests: read
 
 jobs:
   check-regression-test:
     name: Check Regression Test Present
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
+      - name: Pass on merge_group (PR gate already enforced)
+        if: github.event_name == 'merge_group'
+        run: |
+          echo "merge_group event — the regression-test gate already ran at the pull_request stage."
+          echo "Queue branch contents == PR head commit, so re-deriving classification here is redundant."
+
       - name: Checkout PR head with merge-base history
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Determine if PR is a bug fix
-        id: classify
+      - name: Read the PR's CURRENT title, body and labels from the API
+        id: state
+        if: github.event_name == 'pull_request'
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+
+          # Deliberately NOT github.event.pull_request.* — see the #3120 note
+          # at the top of this file. This is a live read of current state.
+          pr_json="$RUNNER_TEMP/pr.json"
+
+          if [[ -z "${PR_NUMBER:-}" ]]; then
+            echo "::error::No PR number available on a pull_request event. Refusing to report success."
+            exit 1
+          fi
+
+          if ! gh api "repos/${REPO}/pulls/${PR_NUMBER}" > "$pr_json"; then
+            echo "::error::Could not read the current state of PR #${PR_NUMBER} from the API."
+            echo "A gate that cannot determine whether it applies must not pass. Re-run the job."
+            exit 1
+          fi
+
+          if ! jq -e 'has("number")' "$pr_json" >/dev/null; then
+            echo "::error::API response for PR #${PR_NUMBER} is not a pull request object. Refusing to report success."
+            exit 1
+          fi
+
+          echo "pr_json=$pr_json" >> "$GITHUB_OUTPUT"
+          echo "Read live state for PR #${PR_NUMBER}."
+
+      - name: Determine if PR is a bug fix
+        id: classify
+        if: github.event_name == 'pull_request'
+        env:
+          PR_JSON: ${{ steps.state.outputs.pr_json }}
+        run: |
+          set -euo pipefail
+
+          PR_TITLE="$(jq -r '.title // ""' "$PR_JSON")"
+          jq -r '.body // ""' "$PR_JSON" > "$RUNNER_TEMP/pr-body.txt"
+
+          # Exact label matching. The previous `grep -q '"bug"'` over a JSON
+          # blob was a substring test over a rendered array, which is not the
+          # same question as "does this PR carry the label `bug`".
+          mapfile -t LABELS < <(jq -r '.labels[].name' "$PR_JSON")
+
           echo "PR title: $PR_TITLE"
-          echo "Labels: $LABELS_JSON"
+          echo "Current labels: ${LABELS[*]:-(none)}"
 
           is_bug_fix=false
           has_exempt=false
@@ -56,37 +165,112 @@ jobs:
           # variants without scope ("fix!:") that the previous glob check missed.
           # Pattern must live in a variable: an inline regex with parentheses
           # in `[[ =~ ... ]]` triggers a bash parser error on unescaped ')'.
+          # Pinned byte-for-byte by tests/regression-test-required/title_regex_test.sh.
           fix_title_regex='^fix(\([^)]*\))?!?:'
           if [[ "$PR_TITLE" =~ $fix_title_regex ]]; then
             is_bug_fix=true
           fi
 
-          if echo "$LABELS_JSON" | grep -q '"bug"'; then
-            is_bug_fix=true
+          for label in "${LABELS[@]:-}"; do
+            case "$label" in
+              bug)                     is_bug_fix=true ;;
+              regression-test-exempt)  has_exempt=true ;;
+            esac
+          done
+
+          # Machine-checkable exemption rationale (#3120, point 3).
+          #
+          # The label alone leaves no trace once removed, and nothing ever
+          # required the author to say WHY. The justification now lives in the
+          # PR body, which is part of the PR's durable, reviewable state — so
+          # removing the label cannot silently orphan the rationale, and a
+          # reviewer looking at the PR sees the exemption without digging
+          # through workflow-run logs.
+          #
+          # Convention deliberately matches the sibling gate in
+          # .github/workflows/definition-of-done.yml, which already uses a
+          # "## Skip-runtime-e2e justification" body section. Same shape, so
+          # contributors learn one rule rather than three.
+          has_justification=false
+          justification="$(awk '
+            BEGIN { inside = 0; incomment = 0 }
+            {
+              line = $0
+              sub(/\r$/, "", line)
+              if (tolower(line) ~ /^##+[ \t]*regression-test-exempt justification[ \t]*$/) {
+                inside = 1
+                next
+              }
+              if (inside && line ~ /^#+[ \t]/) { inside = 0 }
+              if (!inside) { next }
+              # Drop HTML comment spans so a template placeholder does not
+              # count as a rationale.
+              while (match(line, /<!--.*-->/)) {
+                line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
+              }
+              if (incomment) {
+                if (match(line, /-->/)) { line = substr(line, RSTART + RLENGTH); incomment = 0 }
+                else { next }
+              }
+              if (match(line, /<!--/)) {
+                line = substr(line, 1, RSTART - 1)
+                incomment = 1
+              }
+              print line
+            }
+          ' "$RUNNER_TEMP/pr-body.txt" | sed -e 's/[[:space:]]*$//' -e '/^$/d')"
+
+          if [[ -n "$justification" ]]; then
+            has_justification=true
+            printf '%s\n' "$justification" > "$RUNNER_TEMP/justification.txt"
           fi
 
-          if echo "$LABELS_JSON" | grep -q '"regression-test-exempt"'; then
-            has_exempt=true
-          fi
-
-          echo "is_bug_fix=$is_bug_fix" >> "$GITHUB_OUTPUT"
-          echo "has_exempt=$has_exempt" >> "$GITHUB_OUTPUT"
+          {
+            echo "is_bug_fix=$is_bug_fix"
+            echo "has_exempt=$has_exempt"
+            echo "has_justification=$has_justification"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Skip — not a bug fix
-        if: steps.classify.outputs.is_bug_fix != 'true'
+        if: github.event_name == 'pull_request' && steps.classify.outputs.is_bug_fix != 'true'
         run: |
           echo "PR is not classified as a bug fix (title does not match a Conventional Commits 'fix' type, and 'bug' label not applied)."
           echo "Regression-test-per-bug gate does not apply."
 
-      - name: Skip — exempt label applied
-        if: steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt == 'true'
+      - name: Reject — exempt label without a justification section
+        if: github.event_name == 'pull_request' && steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt == 'true' && steps.classify.outputs.has_justification != 'true'
         run: |
-          echo "::warning::PR carries 'regression-test-exempt' label — regression-test-per-bug gate skipped."
-          echo "Reviewers: confirm the PR body justifies why a regression test is impractical."
-          echo "See CONTRIBUTING.md ('Regression-test-per-bug') for accepted exemption rationales."
+          cat <<'EOF' >&2
+          ::error::PR carries the 'regression-test-exempt' label but the body has no '## Regression-test-exempt justification' section with content in it.
+
+          The label on its own is not an exemption. It leaves nothing behind in the
+          PR's reviewable state — remove it later and the record of why the gate was
+          waived disappears with it (#3120).
+
+          To resolve, add to the PR body:
+
+            ## Regression-test-exempt justification
+
+            <one or two sentences: why a regression test is genuinely impractical
+            here — infra-only fix, build config, generated artifact, etc.>
+
+          An empty heading, or a heading followed only by an HTML comment, does not
+          count. Accepted rationales: see CONTRIBUTING.md ("Regression-test-per-bug").
+          EOF
+          exit 1
+
+      - name: Skip — exempt label applied with justification
+        if: github.event_name == 'pull_request' && steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt == 'true' && steps.classify.outputs.has_justification == 'true'
+        run: |
+          echo "::warning::PR carries 'regression-test-exempt' — regression-test-per-bug presence gate skipped."
+          echo "Stated justification (from the PR body):"
+          sed 's/^/  /' "$RUNNER_TEMP/justification.txt"
+          echo
+          echo "Reviewers: confirm this rationale is one of the accepted ones."
+          echo "See CONTRIBUTING.md ('Regression-test-per-bug')."
 
       - name: Verify a test file is present in the diff
-        if: steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt != 'true'
+        if: github.event_name == 'pull_request' && steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -143,6 +327,7 @@ jobs:
           # under tests/. The naming-convention branches (foo_test.go, FooTest.java,
           # *.test.tsx, etc.) already imply code; only the directory fallback
           # needed narrowing.
+          # Pinned byte-for-byte by tests/regression-test-required/path_pattern_test.sh.
           test_pattern='(_test\.go$|_test\.py$|\.test\.tsx?$|\.spec\.tsx?$|Test\.java$|Tests\.java$|IT\.java$|(^|/)tests?/.*\.(go|py|tsx?|java|sh|rb|rs|kt)$)'
 
           matched=()
@@ -157,6 +342,10 @@ jobs:
             printf '  %s\n' "${matched[@]}"
             echo
             echo "Regression-test-per-bug gate: PASS"
+            echo
+            echo "NOTE: this gate proves PRESENCE only. Whether a test actually runs and"
+            echo "passes is the 'Run regression-test suite' job's question — and that job"
+            echo "covers tests/regression-test-required/ only (#3121)."
             exit 0
           fi
 
@@ -211,8 +400,129 @@ jobs:
           echo
           echo "If a regression test is genuinely impractical (infra-only fix,"
           echo "build config, generated artifact, etc.), apply the"
-          echo "'regression-test-exempt' label and justify in the PR body."
+          echo "'regression-test-exempt' label AND add a"
+          echo "'## Regression-test-exempt justification' section to the PR body."
+          echo "The label alone is not enough — see #3120."
           echo
           echo "See CONTRIBUTING.md ('Regression-test-per-bug') for the full guidance."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # #3121 — actually execute the regression tests.
+  #
+  # No `paths:` filter and no event guard, on purpose. This job runs on every PR
+  # to main and on every merge-queue branch, which means:
+  #   * it runs on the PR that changes tests/regression-test-required/**;
+  #   * it runs on the PR that changes THIS workflow file (several of the tests
+  #     assert against this file's contents, so that matters);
+  #   * it cannot be dodged by a paths filter that failed to list something —
+  #     the #3089 failure mode.
+  # The whole suite is a few seconds of shell with no stack dependency, so the
+  # broadest possible trigger costs nothing worth optimising.
+  # ───────────────────────────────────────────────────────────────────────────
+  run-regression-suite:
+    name: Run regression-test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Enterprise repo only, same precedent and same reason as
+    # e2e-production-posture in sdk-smoke-tests.yml: the community sync excludes
+    # /scripts/*, so on a mirror checkout portable_sed_inplace_test.sh and
+    # posture_runner_dispatch_truncation_test.sh have no subject to assert
+    # against and fail for a reason that is not a regression. Verified by
+    # running the suite against a mirror-shaped tree: 7 pass, those 2 fail.
+    # Development happens in this repo (CLAUDE.md, "Repository Structure"), so
+    # this is where the guard has to hold. Making the mirror's copy of the suite
+    # self-contained means adding those two files to sync-community-repo.yml's
+    # exclude list — a change in another workflow, tracked separately.
+    if: github.repository == 'getaxonflow/axonflow-enterprise'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Several of the suite's tests need tools the runner image does not ship.
+      # Every install is unconditional and fails the job if it fails: a test
+      # that cannot run must not be reported as having passed.
+      - name: Ensure PyYAML (workflows_yaml_parse_test.sh dependency)
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+
+      - name: Ensure yq (saas_perf_testing_env_config_test.sh dependency)
+        env:
+          # Pinned rather than `latest` — this workflow is a guard, and a guard
+          # that pulls an unpinned binary from the internet on every run is not
+          # one. Other workflows in this repo still use `latest`; that is a
+          # separate cleanup.
+          YQ_VERSION: v4.53.3
+        run: |
+          set -euo pipefail
+          if ! command -v yq >/dev/null 2>&1; then
+            sudo wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O /usr/bin/yq
+            sudo chmod +x /usr/bin/yq
+          fi
+          yq --version
+
+      # #3140 — openapi_validator_synthetic_failure_test.sh used to `exit 0`
+      # with "skip: swagger-cli not installed locally" and to wrap its spectral
+      # section in `if command -v spectral`. Neither tool is on the
+      # GitHub-hosted runner image and this job installed neither, so the entire
+      # synthetic-failure half of that test — the part that proves the OpenAPI
+      # gate would REJECT a broken spec — silently did not run, on exactly the
+      # platform it was written for. The test now hard-fails when either tool is
+      # absent; these installs are what make it actually assert instead.
+      - name: Setup Node.js (swagger-cli + spectral)
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '20'
+
+      - name: Ensure swagger-cli and spectral (openapi_validator_synthetic_failure_test.sh)
+        env:
+          # Pinned for the same reason yq is: a guard that pulls an unpinned
+          # binary from the internet on every run is not one.
+          SWAGGER_CLI_VERSION: 4.0.4
+          SPECTRAL_CLI_VERSION: 6.15.1
+        run: |
+          set -euo pipefail
+          npm install -g "@apidevtools/swagger-cli@${SWAGGER_CLI_VERSION}"
+
+          # Spectral needs its whole transitive tree pinned, not just the CLI.
+          # 6.15.1 caret-ranges @stoplight/spectral-core and >=1 for the
+          # rulesets, which resolve today to 1.23.x / 1.22.x — a combination
+          # this repo already knows is broken: it emits a JSONPath expression
+          # that crashes nimma 0.2.3 with `Cannot read properties of null
+          # (reading 'enum')` on docs/api/orchestrator-api.yaml. A crash is a
+          # non-zero exit, which is what most of the synthetic-failure
+          # assertions look for, so installing the broken tree would let them
+          # pass for the wrong reason. This is the same pinned-overrides install
+          # .github/workflows/validate-openapi.yml uses, and for the same
+          # reason; `npm install -g` does not honour `overrides`, hence the
+          # local package.json. Bump both together when upstream ships a fix.
+          mkdir -p "$RUNNER_TEMP/spectral-ci"
+          cat > "$RUNNER_TEMP/spectral-ci/package.json" << PKGEOF
+          {
+            "name": "spectral-ci-pinned",
+            "version": "1.0.0",
+            "dependencies": {
+              "@stoplight/spectral-cli": "${SPECTRAL_CLI_VERSION}"
+            },
+            "overrides": {
+              "@stoplight/spectral-core": "1.22.0",
+              "@stoplight/spectral-rulesets": "1.22.1"
+            }
+          }
+          PKGEOF
+          (cd "$RUNNER_TEMP/spectral-ci" && npm install --silent)
+          echo "$RUNNER_TEMP/spectral-ci/node_modules/.bin" >> "$GITHUB_PATH"
+
+          swagger-cli --version
+
+      - name: Execute tests/regression-test-required/*.sh
+        run: |
+          set -euo pipefail
+          # No `if [ -x ... ]` guard. A missing runner is a broken repo, not a
+          # reason to report success — `bash` on a missing path exits non-zero
+          # and that is the correct outcome.
+          bash tests/regression-test-required/run-all.sh

@@ -198,6 +198,11 @@ func TestPostgresRepository_UpdateBudget(t *testing.T) {
 			AlertThresholds: []int{75, 90},
 			Enabled:         true,
 			UpdatedBy:       "user-789",
+			// #3065: the UPDATE is now tenancy-bound in SQL, so the row's
+			// keys are arguments to the statement rather than something the
+			// handler is trusted to have checked beforehand.
+			OrgID:    "org-123",
+			TenantID: "tenant-123",
 		}
 
 		mock.ExpectExec("UPDATE budgets SET").
@@ -205,6 +210,7 @@ func TestPostgresRepository_UpdateBudget(t *testing.T) {
 				budget.ID, budget.Name, budget.Description, budget.Scope, budget.ScopeID,
 				budget.LimitUSD, budget.Period, budget.OnExceed, sqlmock.AnyArg(),
 				budget.Enabled, sqlmock.AnyArg(), sqlmock.AnyArg(),
+				budget.OrgID, budget.TenantID,
 			).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -432,7 +438,6 @@ func TestNullString(t *testing.T) {
 	})
 }
 
-
 func TestPostgresRepository_SaveAlert(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -495,7 +500,6 @@ func TestPostgresRepository_GetRecentAlerts(t *testing.T) {
 		}
 	})
 }
-
 
 func TestPostgresRepository_GetUnacknowledgedAlerts(t *testing.T) {
 	db, mock, err := sqlmock.New()

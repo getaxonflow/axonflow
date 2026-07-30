@@ -128,10 +128,10 @@ const (
 
 // ExportOptions provides options for exporting execution data
 type ExportOptions struct {
-	Format         ExportFormat `json:"format"`
-	IncludeInput   bool         `json:"include_input"`
-	IncludeOutput  bool         `json:"include_output"`
-	IncludePolicies bool        `json:"include_policies"`
+	Format          ExportFormat `json:"format"`
+	IncludeInput    bool         `json:"include_input"`
+	IncludeOutput   bool         `json:"include_output"`
+	IncludePolicies bool         `json:"include_policies"`
 }
 
 // TimelineEntry represents a single entry in the execution timeline

@@ -130,9 +130,9 @@ func TestRouter_RouteRequest(t *testing.T) {
 	})
 
 	// Trigger lazy instantiation and health check
-	_, _ = router.registry.Get(ctx, "openai-test")
-	_, _ = router.registry.Get(ctx, "anthropic-test")
-	router.registry.HealthCheck(ctx)
+	_, _ = router.registry.Get(ctx, GlobalTenant, "openai-test")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "anthropic-test")
+	router.registry.HealthCheck(ctx, GlobalTenant)
 
 	t.Run("basic routing", func(t *testing.T) {
 		req := CompletionRequest{
@@ -224,8 +224,8 @@ func TestRouter_GetProviderStatus(t *testing.T) {
 	})
 
 	// Get and check health
-	_, _ = router.registry.Get(ctx, "test-provider")
-	router.registry.HealthCheck(ctx)
+	_, _ = router.registry.Get(ctx, GlobalTenant, "test-provider")
+	router.registry.HealthCheck(ctx, GlobalTenant)
 
 	status := router.GetProviderStatus(ctx)
 	if len(status) != 1 {
@@ -415,10 +415,10 @@ func TestRouter_AllowedProviders_SelectProvider(t *testing.T) {
 	})
 
 	// Trigger lazy instantiation and health check
-	_, _ = router.registry.Get(ctx, "openai-test")
-	_, _ = router.registry.Get(ctx, "anthropic-test")
-	_, _ = router.registry.Get(ctx, "ollama-test")
-	router.registry.HealthCheck(ctx)
+	_, _ = router.registry.Get(ctx, GlobalTenant, "openai-test")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "anthropic-test")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "ollama-test")
+	router.registry.HealthCheck(ctx, GlobalTenant)
 
 	t.Run("routes only to allowed providers", func(t *testing.T) {
 		req := CompletionRequest{
@@ -498,8 +498,8 @@ func TestRouter_AllowedProviders_NoCompliantProviders(t *testing.T) {
 		APIKey:  "test",
 		Enabled: true,
 	})
-	_, _ = router.registry.Get(ctx, "openai-only")
-	router.registry.HealthCheck(ctx)
+	_, _ = router.registry.Get(ctx, GlobalTenant, "openai-only")
+	router.registry.HealthCheck(ctx, GlobalTenant)
 
 	t.Run("fails when no compliant providers available", func(t *testing.T) {
 		req := CompletionRequest{
@@ -567,10 +567,10 @@ func TestRouter_AllowedProviders_Failover(t *testing.T) {
 		Enabled: true,
 	})
 
-	_, _ = router.registry.Get(ctx, "failing-provider")
-	_, _ = router.registry.Get(ctx, "anthropic-backup")
-	_, _ = router.registry.Get(ctx, "ollama-compliant")
-	router.registry.HealthCheck(ctx)
+	_, _ = router.registry.Get(ctx, GlobalTenant, "failing-provider")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "anthropic-backup")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "ollama-compliant")
+	router.registry.HealthCheck(ctx, GlobalTenant)
 
 	t.Run("failover respects allowed providers", func(t *testing.T) {
 		req := CompletionRequest{
@@ -640,10 +640,10 @@ func TestRouter_GetFallbackProvider(t *testing.T) {
 		Enabled: true,
 	})
 
-	_, _ = router.registry.Get(ctx, "provider-a")
-	_, _ = router.registry.Get(ctx, "provider-b")
-	_, _ = router.registry.Get(ctx, "provider-c")
-	router.registry.HealthCheck(ctx)
+	_, _ = router.registry.Get(ctx, GlobalTenant, "provider-a")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "provider-b")
+	_, _ = router.registry.Get(ctx, GlobalTenant, "provider-c")
+	router.registry.HealthCheck(ctx, GlobalTenant)
 
 	t.Run("returns fallback excluding failed provider", func(t *testing.T) {
 		fallback, err := router.getFallbackProvider(ctx, "provider-a", nil)

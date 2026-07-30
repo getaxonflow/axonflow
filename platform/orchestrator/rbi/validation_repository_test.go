@@ -90,8 +90,15 @@ func TestValidationRepository_Create_Success(t *testing.T) {
 		AccuracyMetrics: map[string]float64{"accuracy": 0.95},
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_model_validations`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, validation)
 	assert.NoError(t, err)
@@ -120,8 +127,15 @@ func TestValidationRepository_Create_PresetID(t *testing.T) {
 		CreatedAt:      time.Now().UTC(),
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_model_validations`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, validation)
 	assert.NoError(t, err)
@@ -147,8 +161,16 @@ func TestValidationRepository_Create_DBError(t *testing.T) {
 		Recommendation: ValidationRecommendationApprove,
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_model_validations`)).
 		WillReturnError(fmt.Errorf("duplicate key"))
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, validation)
 	assert.Error(t, err)
@@ -167,9 +189,16 @@ func TestValidationRepository_Get_Success(t *testing.T) {
 	rows := sqlmock.NewRows(validationColumns).
 		AddRow(sampleValidationRow("val-001", "org-001", "sys-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "val-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	v, err := repo.Get(ctx, "org-001", "val-001")
 	require.NoError(t, err)
@@ -202,9 +231,17 @@ func TestValidationRepository_Get_NotFound(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "nonexistent").
 		WillReturnError(sql.ErrNoRows)
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	v, err := repo.Get(ctx, "org-001", "nonexistent")
 	assert.Nil(t, v)
@@ -220,9 +257,17 @@ func TestValidationRepository_Get_ScanError(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "val-001").
 		WillReturnError(fmt.Errorf("connection reset"))
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	v, err := repo.Get(ctx, "org-001", "val-001")
 	assert.Nil(t, v)
@@ -244,6 +289,12 @@ func TestValidationRepository_List_Success(t *testing.T) {
 		Offset: 0,
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -255,6 +306,7 @@ func TestValidationRepository_List_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	validations, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -280,6 +332,12 @@ func TestValidationRepository_List_WithFilters(t *testing.T) {
 		Offset:         5,
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001", "sys-001", "independent", "external_auditor", "approve").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -290,6 +348,7 @@ func TestValidationRepository_List_WithFilters(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", "sys-001", "independent", "external_auditor", "approve", 20, 5).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	validations, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -306,6 +365,12 @@ func TestValidationRepository_List_NilParams(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -313,6 +378,7 @@ func TestValidationRepository_List_NilParams(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 20, 0).
 		WillReturnRows(sqlmock.NewRows(validationColumns))
+	mock.ExpectCommit()
 
 	validations, total, err := repo.List(ctx, "org-001", nil)
 	require.NoError(t, err)
@@ -331,6 +397,12 @@ func TestValidationRepository_List_LimitCapping(t *testing.T) {
 
 	params := &ListValidationsParams{Limit: 500}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -338,6 +410,7 @@ func TestValidationRepository_List_LimitCapping(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 100, 0).
 		WillReturnRows(sqlmock.NewRows(validationColumns))
+	mock.ExpectCommit()
 
 	_, _, err = repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -352,9 +425,17 @@ func TestValidationRepository_List_CountError(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnError(fmt.Errorf("table not found"))
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	_, _, err = repo.List(ctx, "org-001", nil)
 	assert.Error(t, err)
@@ -371,6 +452,12 @@ func TestValidationRepository_ListBySystem_Success(t *testing.T) {
 	ctx := context.Background()
 
 	// ListBySystem calls List internally
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001", "sys-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -381,6 +468,7 @@ func TestValidationRepository_ListBySystem_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", "sys-001", 100, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	validations, err := repo.ListBySystem(ctx, "org-001", "sys-001")
 	require.NoError(t, err)
@@ -407,8 +495,15 @@ func TestValidationRepository_Update_Success(t *testing.T) {
 		Recommendation: ValidationRecommendationConditional,
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_model_validations SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, validation)
 	assert.NoError(t, err)
@@ -434,8 +529,17 @@ func TestValidationRepository_Update_NotFound(t *testing.T) {
 		Recommendation: ValidationRecommendationApprove,
 	}
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_model_validations SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	// RowsAffected() == 0 is not a statement error: the wrap COMMITs and the
+	// not-found verdict is decided above the transaction.
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, validation)
 	assert.ErrorIs(t, err, ErrValidationNotFound)
@@ -450,9 +554,16 @@ func TestValidationRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_model_validations WHERE org_id = $1 AND id = $2`)).
 		WithArgs("org-001", "val-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "val-001")
 	assert.NoError(t, err)
@@ -467,9 +578,18 @@ func TestValidationRepository_Delete_NotFound(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_model_validations WHERE org_id = $1 AND id = $2`)).
 		WithArgs("org-001", "nonexistent").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	// RowsAffected() == 0 is not a statement error: the wrap COMMITs and the
+	// not-found verdict is decided above the transaction.
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "nonexistent")
 	assert.ErrorIs(t, err, ErrValidationNotFound)
@@ -487,9 +607,16 @@ func TestValidationRepository_GetLatestBySystem_Success(t *testing.T) {
 	rows := sqlmock.NewRows(validationColumns).
 		AddRow(sampleValidationRow("val-latest", "org-001", "sys-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "sys-001", string(ValidationTypeIndependent)).
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	v, err := repo.GetLatestBySystem(ctx, "org-001", "sys-001", ValidationTypeIndependent)
 	require.NoError(t, err)
@@ -508,9 +635,16 @@ func TestValidationRepository_GetLatestBySystem_EmptyType(t *testing.T) {
 	rows := sqlmock.NewRows(validationColumns).
 		AddRow(sampleValidationRow("val-latest", "org-001", "sys-001")...)
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "sys-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	v, err := repo.GetLatestBySystem(ctx, "org-001", "sys-001", "")
 	require.NoError(t, err)
@@ -526,9 +660,17 @@ func TestValidationRepository_GetLatestBySystem_NotFound(t *testing.T) {
 	repo := NewPostgresModelValidationRepository(db)
 	ctx := context.Background()
 
+	// #3103: the statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "sys-001", string(ValidationTypeStressTest)).
 		WillReturnError(sql.ErrNoRows)
+	// The statement errors out of the closure, so the wrap ROLLBACKs.
+	mock.ExpectRollback()
 
 	v, err := repo.GetLatestBySystem(ctx, "org-001", "sys-001", ValidationTypeStressTest)
 	assert.Nil(t, v)

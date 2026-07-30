@@ -67,13 +67,30 @@ func TestService_ScopedReads_CrossOrgIsNotFound(t *testing.T) {
 		t.Fatal("cross-org delete must not remove the execution")
 	}
 
+	// #3065: an EMPTY scope used to be "unfiltered (single-tenant
+	// Community)" and read any org's execution. That is the vulnerability:
+	// the caller selects "empty" by omitting X-Org-ID. Community mode never
+	// produces an empty scope (the agent stamps ORG_ID, default
+	// "local-dev-org"), so nothing legitimate depended on it.
+	if _, err := service.GetExecution(ctx, "req-a", AccessScope{}); err != ErrNotFound {
+		t.Fatalf("unscoped GetExecution must be denied, got %v", err)
+	}
+	if err := service.DeleteExecution(ctx, "req-a", AccessScope{}); err != ErrNotFound {
+		t.Fatalf("unscoped DeleteExecution must be denied, got %v", err)
+	}
+	if repo.GetSummaryCount() != 1 {
+		t.Fatal("an unscoped delete must not remove the execution")
+	}
+
+	// A partially-bound scope is still unbound: half an identity is not an
+	// identity.
+	if _, err := service.GetExecution(ctx, "req-a", AccessScope{OrgID: "org-a"}); err != ErrNotFound {
+		t.Fatalf("org-only scope must be denied, got %v", err)
+	}
+
 	// Controls (non-vacuous): the owning org reads and deletes normally.
 	if _, err := service.GetExecution(ctx, "req-a", own); err != nil {
 		t.Fatalf("same-org GetExecution must succeed: %v", err)
-	}
-	// Empty scope (single-tenant Community) is unfiltered.
-	if _, err := service.GetExecution(ctx, "req-a", AccessScope{}); err != nil {
-		t.Fatalf("empty-scope GetExecution must succeed: %v", err)
 	}
 	if err := service.DeleteExecution(ctx, "req-a", own); err != nil {
 		t.Fatalf("same-org DeleteExecution must succeed: %v", err)
@@ -101,6 +118,7 @@ func TestHandler_ByIDRoutes_CrossOrgIsNotFound(t *testing.T) {
 
 	for _, p := range paths {
 		req := httptest.NewRequest(p.method, p.path, nil)
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.Header.Set("X-Org-ID", "org-b")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -135,7 +153,11 @@ func TestPostgresRepository_GetSummaryScoped_SQL(t *testing.T) {
 	defer db.Close()
 	repo := NewPostgresRepository(db)
 
-	mock.ExpectQuery(`FROM execution_summaries\s+WHERE request_id = \$1\s+AND \(\$2 = '' OR org_id IS NULL OR org_id = '' OR org_id = \$2\)\s+AND \(\$3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = \$3\)`).
+	// #3065: strict equality, not the fail-open disjunction this test used to
+	// pin. The old expectation was
+	//   AND ($2 = <empty> OR org_id IS NULL OR org_id = <empty> OR org_id = $2)
+	// which admitted every row when the caller supplied nothing.
+	mock.ExpectQuery(`FROM execution_summaries\s+WHERE request_id = \$1\s+AND org_id = \$2\s+AND tenant_id = \$3`).
 		WithArgs("req-a", "org-b", "tenant-b").
 		WillReturnRows(sqlmock.NewRows([]string{"request_id"}))
 
@@ -203,15 +225,30 @@ func TestPostgresRepository_DeleteExecutionScoped_CrossOrgRollsBack(t *testing.T
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
-		WithArgs("req-a", "org-b", "").
+		WithArgs("req-a", "org-b", "tenant-b").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
-	if err := repo.DeleteExecutionScoped(context.Background(), "req-a", AccessScope{OrgID: "org-b"}); err != ErrNotFound {
+	if err := repo.DeleteExecutionScoped(context.Background(), "req-a", AccessScope{OrgID: "org-b", TenantID: "tenant-b"}); err != ErrNotFound {
 		t.Fatalf("cross-org scoped delete must be ErrNotFound, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations (snapshots must NOT be deleted): %v", err)
+	}
+
+	// #3065: an unbound scope never reaches the database at all — no
+	// transaction is opened, so there is no window in which a DELETE could
+	// run without a tenancy predicate.
+	db2, mock2, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock: %v", err)
+	}
+	defer db2.Close()
+	if err := NewPostgresRepository(db2).DeleteExecutionScoped(context.Background(), "req-a", AccessScope{}); err != ErrNotFound {
+		t.Fatalf("unscoped delete must be ErrNotFound, got %v", err)
+	}
+	if err := mock2.ExpectationsWereMet(); err != nil {
+		t.Fatalf("an unscoped delete must issue no SQL: %v", err)
 	}
 }
 
@@ -225,14 +262,14 @@ func TestPostgresRepository_DeleteExecutionScoped_SnapshotDeleteFailureRollsBack
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
-		WithArgs("req-a", "org-a", "").
+		WithArgs("req-a", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM execution_snapshots WHERE request_id = \$1`).
 		WithArgs("req-a").
 		WillReturnError(context.DeadlineExceeded)
 	mock.ExpectRollback()
 
-	if err := repo.DeleteExecutionScoped(context.Background(), "req-a", AccessScope{OrgID: "org-a"}); err == nil {
+	if err := repo.DeleteExecutionScoped(context.Background(), "req-a", AccessScope{OrgID: "org-a", TenantID: "tenant-a"}); err == nil {
 		t.Fatal("snapshot-delete failure must surface an error (and roll back the summary delete)")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -250,14 +287,14 @@ func TestPostgresRepository_DeleteExecutionScoped_CommitFailureSurfaces(t *testi
 
 	mock.ExpectBegin()
 	mock.ExpectExec(`DELETE FROM execution_summaries WHERE request_id = \$1`).
-		WithArgs("req-a", "", "").
+		WithArgs("req-a", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`DELETE FROM execution_snapshots WHERE request_id = \$1`).
 		WithArgs("req-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(context.DeadlineExceeded)
 
-	if err := repo.DeleteExecutionScoped(context.Background(), "req-a", AccessScope{}); err == nil {
+	if err := repo.DeleteExecutionScoped(context.Background(), "req-a", AccessScope{OrgID: "org-a", TenantID: "tenant-a"}); err == nil {
 		t.Fatal("commit failure must surface an error")
 	}
 }
@@ -284,5 +321,36 @@ func TestPostgresRepository_DeleteExecutionScoped_SameOrgDeletesBoth(t *testing.
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestHandler_ByIDRoutes_UnboundCallerIs401 pins the handler-level denial for
+// #3065: an unauthenticated request is refused before any request id is
+// looked up, so the refusal cannot double as an existence oracle.
+func TestHandler_ByIDRoutes_UnboundCallerIs401(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+	seedOrgExecution(repo, "req-a", "org-a")
+
+	paths := []struct{ method, path string }{
+		{"GET", "/api/v1/executions"},
+		{"GET", "/api/v1/executions/req-a"},
+		{"GET", "/api/v1/executions/req-a/steps"},
+		{"GET", "/api/v1/executions/req-a/steps/0"},
+		{"GET", "/api/v1/executions/req-a/timeline"},
+		{"GET", "/api/v1/executions/req-a/export"},
+		{"DELETE", "/api/v1/executions/req-a"},
+	}
+	for _, p := range paths {
+		req := httptest.NewRequest(p.method, p.path, nil)
+		// Deliberately no tenancy headers — this WAS the exploit.
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("unscoped %s %s must be 401, got %d", p.method, p.path, w.Code)
+		}
+	}
+	if repo.GetSummaryCount() != 1 {
+		t.Fatal("an unscoped DELETE must not remove the execution")
 	}
 }

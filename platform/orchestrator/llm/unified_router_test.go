@@ -438,7 +438,7 @@ func TestUnifiedRouter_StrictProviderSemantics(t *testing.T) {
 	}
 
 	// Seed healthy provider cache used by fallback selection.
-	registry.HealthCheck(ctx)
+	registry.HealthCheck(ctx, GlobalTenant)
 
 	router := NewUnifiedRouter(UnifiedRouterConfig{
 		Registry: registry,

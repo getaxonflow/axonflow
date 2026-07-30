@@ -20,6 +20,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -147,10 +148,127 @@ type RiskCalculator struct {
 
 // PolicyCache caches policy evaluation results to improve performance.
 // Cache entries expire based on TTL and are periodically cleaned up.
+//
+// The cache is a single process-global structure shared by every tenant in the
+// deployment, so the ONLY thing keeping one tenant's verdict away from another
+// is the key — see verdictCacheKey.
 type PolicyCache struct {
 	cache  sync.Map
 	ttl    time.Duration
 	stopCh chan struct{}
+}
+
+// verdictCacheKey identifies one cached policy verdict.
+//
+// #3142. This is a STRUCT rather than a formatted string, and PolicyCache
+// accepts nothing else, for two reasons:
+//
+//  1. The tenancy cannot be left out. There is no accessor that takes a bare
+//     request-shaped key any more, so the compiler enumerates the call sites
+//     instead of a reviewer having to remember a filter. That is the same
+//     shape #3078 gave the connector and LLM registries, and for the same
+//     reason: "a filter someone must remember to call is the thing that
+//     failed here".
+//  2. Field boundaries are structural. A struct key cannot be forged by
+//     embedding a delimiter in a field value, so there is no escaping scheme
+//     to get right between the tenancy and the request.
+//
+// Before this, the key was `email:role:request_type:query[:context]` with no
+// tenancy at all. `User.Email` is empty on the agent's governed forward for
+// every non-per-user-token caller and `User.Role` is frequently empty too, so
+// in practice it collapsed to `::<request_type>:<query>` — deployment-wide.
+// Two tenants issuing the same query shared one verdict, which leaked the
+// first tenant's applied_policies_detail to the second AND skipped the
+// second's own blocking policies entirely.
+type verdictCacheKey struct {
+	// OrgID is req.User.OrgID verbatim — the field the evaluation itself
+	// reads, in getTenantSpecificPolicies. Not Client.OrgID, and not a
+	// normalized variant: a key that resolves tenancy differently from the
+	// code that USES it can still collide across tenancies.
+	//
+	// logPolicyHit is deliberately NOT cited here: its first parameter is
+	// named orgID but is fed req.User.TenantID at the call site, so it stamps
+	// policy_metrics.org_id with a tenant id wherever the two diverge. That is
+	// a pre-existing defect of the #2964 class, filed as #3180, and this key
+	// must not be argued from it.
+	//
+	// Note that Client.OrgID is carried in the Request half instead — see
+	// generateCacheKey. Keeping this field equal to User.OrgID is what makes
+	// "the resolver matches the writer" true; the WCP step-gate plane, which
+	// populates only Client.OrgID, is covered by the Request half.
+	OrgID string
+
+	// TenantID is effectiveTenantID(req) — the exact function
+	// getApplicablePolicies calls to choose which policies to evaluate. This
+	// is the load-bearing coupling: the key must be derived by the same
+	// resolver as the policy set it is caching the verdict of, or two requests
+	// that select DIFFERENT policy sets can still land on the same key.
+	// Keying on req.User.TenantID alone would do exactly that, because the
+	// selector falls back to req.Client.ID when User.TenantID is empty.
+	TenantID string
+
+	// Request is every remaining input the evaluator can read.
+	Request string
+}
+
+// effectiveTenantID resolves the tenancy a request is evaluated under ON THIS
+// ENGINE.
+//
+// Single choke point for the in-memory engine, shared by getApplicablePolicies
+// (which uses it to select the policy set) and generateCacheKey (which uses it
+// to key the cached verdict of that selection). Those two must not be able to
+// disagree — see the TenantID field comment on verdictCacheKey.
+//
+// Deliberately NOT shared with DatabaseDynamicPolicyEngine, which resolves
+// tenancy with the opposite precedence (Client.TenantID first, see
+// db_dynamic_policies.go). Unifying the two is a behaviour change to policy
+// selection, not a cache fix, and does not belong here — the same deliberate
+// asymmetry memPolicyAppliesToTenant documents for the tenant predicate.
+func effectiveTenantID(req OrchestratorRequest) string {
+	if req.User.TenantID != "" {
+		return req.User.TenantID
+	}
+	return req.Client.ID
+}
+
+// cloneEvaluationResult returns a deep copy of a verdict.
+//
+// #3142. The cache used to hand every caller the SAME pointer it stored, and
+// ApplyOverrideToResult (override_enforcement.go) mutates a result in place —
+// flipping Allowed from false to true and stamping OverrideID/OverrideReason.
+// One tenant's ADR-044 session override was therefore written INTO the shared
+// cache entry, and every later reader of that entry, in any tenancy, saw a
+// verdict that had been overridden for somebody else. Copy on the way in and
+// on the way out so a cached verdict is reachable only through the cache.
+//
+// Every slice is copied; AppliedPolicyDetail contains only value fields, so
+// copying the backing array is a full copy of the elements too.
+//
+// EMPTY IS NOT NIL. `append([]string(nil), src...)` with zero elements returns
+// nil, and EvaluateDynamicPolicies initialises AppliedPolicies and
+// RequiredActions to empty non-nil slices that carry no `omitempty`. Copying
+// with append would therefore have made the wire shape depend on cache state:
+// `"applied_policies":[]` on a miss and `"applied_policies":null` on a hit, for
+// the same request. make+copy preserves emptiness, and nil stays nil.
+func copySlice[T any](src []T) []T {
+	if src == nil {
+		return nil
+	}
+	dst := make([]T, len(src))
+	copy(dst, src)
+	return dst
+}
+
+func cloneEvaluationResult(src *PolicyEvaluationResult) *PolicyEvaluationResult {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	dst.AppliedPolicies = copySlice(src.AppliedPolicies)
+	dst.RequiredActions = copySlice(src.RequiredActions)
+	dst.AppliedPoliciesDetail = copySlice(src.AppliedPoliciesDetail)
+	dst.AllowedProviders = copySlice(src.AllowedProviders)
+	return &dst
 }
 
 // NewDynamicPolicyEngine creates a new dynamic policy engine with in-memory
@@ -200,7 +318,14 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 			// production boot path already refuses to start without the
 			// admin DSN under app-role (RequirePlatformAdminOrFatal in
 			// initializeComponents).
-			if adminDB, adminErr := agent.OpenPlatformAdminConnection(bootCtx, 3); adminErr != nil || adminDB == nil {
+			// #3159 R3: NO RequirePlatformAdminPoolOrFatal here. This engine is
+			// only constructed when the database-backed engine ALREADY failed
+			// to initialise, so the process is degraded by definition by the
+			// time this runs; a fatal would convert a partial degradation into
+			// a total outage. Same constructor-with-test-callers hazard as
+			// db_dynamic_policies.go.
+			adminDB, adminErr := agent.OpenPlatformAdminConnection(bootCtx, 3)
+			if adminErr != nil || adminDB == nil {
 				log.Printf("[dynamic-policy-fallback] ⚠️ platform-admin pool unavailable (err=%v) — policy reloads fall back to the main pool (under app-role RLS they read 0 rows)", adminErr)
 			} else {
 				adminDB.SetMaxOpenConns(2)
@@ -236,10 +361,12 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
 	startTime := time.Now()
 
-	// Check cache first
+	// Check cache first. The key carries the tenancy this request evaluates
+	// under, so a hit cannot be another tenant's verdict (#3142), and the
+	// cache returns a copy, so the caller cannot mutate the shared entry.
 	cacheKey := e.generateCacheKey(req)
 	if cached, found := e.cache.Get(cacheKey); found {
-		return cached.(*PolicyEvaluationResult)
+		return cached
 	}
 
 	result := &PolicyEvaluationResult{
@@ -612,21 +739,18 @@ func severityOrdinal(s string) int {
 func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest) []DynamicPolicy {
 	var applicable []DynamicPolicy
 
-	// Determine effective tenant ID from User.TenantID or Client.ID (SDK uses ClientID)
-	effectiveTenantID := req.User.TenantID
-	if effectiveTenantID == "" {
-		effectiveTenantID = req.Client.ID
-	}
+	// Determine effective tenant ID from User.TenantID or Client.ID (SDK uses
+	// ClientID). Shared with the verdict cache key — see effectiveTenantID.
+	callerTenant := effectiveTenantID(req)
 
 	for _, policy := range e.policies {
 		if !policy.Enabled {
 			continue
 		}
 
-		// Check tenant-specific policies
-		// Policies with empty TenantID apply to all requests (community mode)
-		// Policies with TenantID only apply if it matches User.TenantID or Client.ID
-		if policy.TenantID != "" && policy.TenantID != effectiveTenantID {
+		// Check tenant-specific policies. Shared choke point with
+		// ListActivePoliciesForTenant — see memPolicyAppliesToTenant.
+		if !memPolicyAppliesToTenant(policy.TenantID, callerTenant) {
 			continue
 		}
 
@@ -639,7 +763,15 @@ func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest) []D
 	return applicable
 }
 
-// ListActivePolicies returns all active policies
+// ListActivePolicies returns all active policies.
+//
+// SECURITY: this is the raw, DEPLOYMENT-WIDE view of the in-memory policy
+// cache — every tenant's policies, including their conditions (regex
+// patterns) and owning tenant_id. The cache is deliberately cross-tenant
+// (the evaluator enforces every tenant's policies in one process), but that
+// view must NEVER be returned to an HTTP caller. HTTP consumers use
+// ListActivePoliciesForTenant instead; this method has no HTTP-reachable
+// caller and must not grow one.
 func (e *DynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 	e.policyMutex.RLock()
 	defer e.policyMutex.RUnlock()
@@ -653,6 +785,48 @@ func (e *DynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 	return active
 }
 
+// memPolicyAppliesToTenant decides whether one in-memory policy applies to one
+// tenant. It is the SINGLE choke point for that decision on this engine: both
+// getApplicablePolicies (enforcement) and ListActivePoliciesForTenant
+// (disclosure) call it, so list and enforce cannot diverge by construction.
+//
+// The rule is this engine's long-standing one, unchanged: an empty TenantID
+// means "applies to every request" (community mode); anything else must match
+// the caller exactly.
+//
+// NOTE the deliberate asymmetry with the database engine, which additionally
+// treats "global" and "default" as apply-to-all sentinels. This engine does
+// NOT, and this function must not "helpfully" add them: a policy this engine
+// would not ENFORCE for a tenant must not be LISTED to that tenant. Each
+// engine's list predicate mirrors its OWN enforcement predicate, and there is
+// deliberately no single predicate shared across the two.
+func memPolicyAppliesToTenant(policyTenant, callerTenant string) bool {
+	return policyTenant == "" || policyTenant == callerTenant
+}
+
+// ListActivePoliciesForTenant returns the active policies visible to a single
+// tenant, gated by the same memPolicyAppliesToTenant that decides enforcement.
+// This is the ONLY list variant HTTP handlers may consume (GET
+// /api/v1/policies/dynamic used to return the whole deployment-wide cache —
+// every tenant's policy names, regex conditions and owning tenant_id — to any
+// authenticated tenant).
+func (e *DynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string) []DynamicPolicy {
+	e.policyMutex.RLock()
+	defer e.policyMutex.RUnlock()
+
+	var active []DynamicPolicy
+	for _, policy := range e.policies {
+		if !policy.Enabled {
+			continue
+		}
+		if !memPolicyAppliesToTenant(policy.TenantID, tenantID) {
+			continue
+		}
+		active = append(active, policy)
+	}
+	return active
+}
+
 // IsHealthy checks if the policy engine is healthy
 func (e *DynamicPolicyEngine) IsHealthy() bool {
 	e.policyMutex.RLock()
@@ -661,10 +835,56 @@ func (e *DynamicPolicyEngine) IsHealthy() bool {
 }
 
 // generateCacheKey creates a cache key for policy evaluation.
+//
+// The tenancy travels in dedicated struct fields (see verdictCacheKey); this
+// function's string half covers the request itself. Every field the evaluator
+// can read must appear in it, because a verdict cached under a key that omits
+// one of its own inputs is served to a request that would have evaluated
+// differently.
+//
+// getFieldValue reaches query, request_type, user.{role, email, region,
+// tenant_id, permissions}, client.{id, name}, risk_score and context.*.
+// risk_score is derived from Query and User.Role, both present.
+//
+// It also reaches MORE than that named list, and the extras are the subtle
+// part. Neither inner switch has a default: an unrecognised sub-field falls
+// through to `return req.User` / `return req.Client` — the WHOLE struct, which
+// evaluateCondition renders with fmt.Sprint. So a condition on `user.id`,
+// `client.org_id` or `client.tenant_id` (all real field names on the
+// database-backed engine) compares against a string containing UserContext.ID,
+// ClientContext.OrgID and ClientContext.TenantID. Those three are written here
+// too, or two requests differing only in one of them would share a verdict.
+//
+// Client.OrgID in particular is load-bearing for the WCP step-gate plane:
+// wcp_policy_adapter.convertToOrchestratorRequest populates Client.OrgID and
+// leaves User.OrgID empty, so the key's OrgID field — which is User.OrgID
+// verbatim, matching the writer — is empty for every step gate. Carrying
+// Client.OrgID in this half keeps two orgs from sharing an entry on that plane
+// without making the OrgID field disagree with the code that uses it.
+//
 // Uses length-prefixed encoding for context values to prevent collisions
 // where keys/values containing delimiters could produce identical serializations.
-func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest) string {
-	base := fmt.Sprintf("%s:%s:%s:%s", req.User.Email, req.User.Role, req.RequestType, req.Query)
+func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest) verdictCacheKey {
+	var sb strings.Builder
+	for _, part := range []string{
+		req.User.Email,
+		req.User.Role,
+		req.User.Region,
+		req.User.TenantID,
+		strconv.Itoa(req.User.ID),
+		strings.Join(req.User.Permissions, "\x1f"),
+		req.Client.ID,
+		req.Client.Name,
+		req.Client.OrgID,
+		req.Client.TenantID,
+		req.RequestType,
+		req.Query,
+	} {
+		// Length-prefix every part for the same reason the context entries are
+		// length-prefixed: a value containing the delimiter must not be able to
+		// impersonate a different split.
+		fmt.Fprintf(&sb, "%d:%s|", len(part), part)
+	}
 	if len(req.Context) > 0 {
 		// Include sorted context keys/values to ensure deterministic cache keys
 		keys := make([]string, 0, len(req.Context))
@@ -672,15 +892,17 @@ func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest) string {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		var sb strings.Builder
 		for _, k := range keys {
 			v := fmt.Sprint(req.Context[k])
 			// Length-prefix both key and value to prevent collisions
 			fmt.Fprintf(&sb, "%d:%s=%d:%s,", len(k), k, len(v), v)
 		}
-		base += ":" + sb.String()
 	}
-	return base
+	return verdictCacheKey{
+		OrgID:    req.User.OrgID,
+		TenantID: effectiveTenantID(req),
+		Request:  sb.String(),
+	}
 }
 
 // loadPoliciesFromDB loads dynamic policies from database
@@ -969,12 +1191,35 @@ func (c *PolicyCache) Close() {
 	}
 }
 
-func (c *PolicyCache) Get(key string) (interface{}, bool) {
-	return c.cache.Load(key)
+// Get returns a copy of the verdict cached under key, if any.
+//
+// The parameter is a verdictCacheKey, not a string: the tenancy is part of the
+// type, so there is no way to look up a verdict without naming the tenancy it
+// was computed under (#3142). The return type is concrete for the same reason
+// the key is — the caller no longer performs an unchecked type assertion on an
+// interface{} that used to be the only thing standing between this cache and a
+// panic.
+//
+// The returned value is a deep copy. Callers mutate verdicts in place
+// (ApplyOverrideToResult), and the cached entry must not be reachable from
+// anything a caller holds.
+func (c *PolicyCache) Get(key verdictCacheKey) (*PolicyEvaluationResult, bool) {
+	v, ok := c.cache.Load(key)
+	if !ok {
+		return nil, false
+	}
+	result, ok := v.(*PolicyEvaluationResult)
+	if !ok {
+		return nil, false
+	}
+	return cloneEvaluationResult(result), true
 }
 
-func (c *PolicyCache) Set(key string, value interface{}) {
-	c.cache.Store(key, value)
+// Set stores a copy of value under key. Copying on the way in matters as much
+// as copying on the way out: the caller keeps the original and goes on to hand
+// it to the override enforcer, which mutates it.
+func (c *PolicyCache) Set(key verdictCacheKey, value *PolicyEvaluationResult) {
+	c.cache.Store(key, cloneEvaluationResult(value))
 }
 
 func (c *PolicyCache) cleanupRoutine() {

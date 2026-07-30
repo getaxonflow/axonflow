@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
+import hmac
 import os
 import sys
 import time
@@ -83,6 +85,29 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
+def orchestrator_proxy_token() -> str:
+    """Mint the internal-service token the orchestrator requires (#3068).
+
+    The orchestrator gained a router-level authentication gate: every route
+    except /health, /metrics and /prometheus needs a valid HMAC-signed
+    X-Axonflow-Proxy-Auth header. This harness talks to port 8081 directly, so
+    it must sign its own requests.
+
+    Mirrors platform/shared/serviceauth/serviceauth.go exactly:
+        AXON-INTERNAL-<ts>-<first 16 hex of HMAC-SHA256(secret, "orchestrator-internal:<ts>")>
+
+    Returns "" when no secret is configured, in which case no header is added
+    and the orchestrator will (correctly) refuse the call.
+    """
+    secret = os.environ.get("AXONFLOW_INTERNAL_SERVICE_SECRET", "").strip()
+    if not secret:
+        return ""
+    ts = int(time.time())
+    msg = f"orchestrator-internal:{ts}".encode()
+    sig = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()[:16]
+    return f"AXON-INTERNAL-{ts}-{sig}"
+
+
 def build_url(port: int, path: str, agent_base: str, orch_base: str) -> str:
     base = agent_base if port == 8080 else orch_base if port == 8081 else None
     if base is None:
@@ -96,6 +121,20 @@ def merged_headers(defaults: dict[str, Any], row: dict[str, Any]) -> dict[str, s
     headers: dict[str, str] = {}
     headers.update(defaults.get("headers") or {})
     headers.update(row.get("headers") or {})
+
+    # #3068: rows targeting the orchestrator (port 8081) must carry a valid
+    # internal-service token or the orchestrator's authentication gate refuses
+    # them with 403 before routing. Minted per row so it stays inside the
+    # 5-minute replay window on long runs. Never overrides an explicit header.
+    #
+    # A row sets `proxy_auth: false` when its ASSERTION IS the unauthenticated
+    # refusal — those rows must keep arriving without a token or they would stop
+    # testing the thing they exist to test.
+    want_proxy_auth = row.get("proxy_auth", defaults.get("proxy_auth", True))
+    if want_proxy_auth and int(row.get("port") or defaults.get("port") or 0) == 8081:
+        tok = orchestrator_proxy_token()
+        if tok:
+            headers.setdefault("X-Axonflow-Proxy-Auth", tok)
 
     client_id = os.environ.get("AXONFLOW_CLIENT_ID", "").strip()
     if client_id:
