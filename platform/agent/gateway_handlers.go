@@ -1246,8 +1246,11 @@ func fetchApprovedData(ctx context.Context, dataSources []string, query string, 
 			continue
 		}
 
-		// Get connector from registry
-		connector, err := mcpRegistry.Get(source)
+		// Get connector from registry, scoped to the authenticated user's
+		// tenant (#3067 S-1). A pre-check that named another tenant's data
+		// source previously resolved it and prefetched rows with the victim's
+		// decrypted credentials.
+		connector, err := mcpRegistry.Get(user.TenantID, source)
 		if err != nil {
 			log.Printf("⚠️ [Pre-check] Connector not found: %s - %v", source, err)
 			continue

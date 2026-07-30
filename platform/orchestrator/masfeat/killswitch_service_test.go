@@ -14,6 +14,9 @@ import (
 type mockKillSwitchRepository struct {
 	killSwitches map[string]*KillSwitch
 	history      []*KillSwitchHistory
+	// historyOrgIDs records the orgID RecordHistory was called with, in order
+	// (#3133).
+	historyOrgIDs []string
 }
 
 func newMockKillSwitchRepository() *mockKillSwitchRepository {
@@ -40,7 +43,12 @@ func (m *mockKillSwitchRepository) Update(ctx context.Context, ks *KillSwitch) e
 	return nil
 }
 
-func (m *mockKillSwitchRepository) RecordHistory(ctx context.Context, history *KillSwitchHistory) error {
+func (m *mockKillSwitchRepository) RecordHistory(ctx context.Context, orgID string, history *KillSwitchHistory) error {
+	// #3133: mas_kill_switch_history has no org_id column, so the caller's org
+	// is an explicit parameter — the RLS wrap has nothing else to key on.
+	// Recorded so TestKillSwitchService_RecordHistoryCarriesCallerOrg can prove
+	// the service actually threads it through rather than passing "".
+	m.historyOrgIDs = append(m.historyOrgIDs, orgID)
 	m.history = append(m.history, history)
 	return nil
 }
@@ -468,4 +476,59 @@ func TestKillSwitchService_GetKillSwitch_NotFound(t *testing.T) {
 // Helper function to create pointer to float64
 func ptrFloat64(v float64) *float64 {
 	return &v
+}
+
+// TestKillSwitchService_RecordHistoryCarriesCallerOrg pins the one thing the
+// #3133 signature change is FOR: mas_kill_switch_history has no org_id column,
+// so migration 400's policy resolves ownership through a subquery on
+// mas_kill_switches. If any service path called RecordHistory with "" — or with
+// some other org — rls.WithOrgScope would either reject the call outright or
+// pin the wrong GUC and the INSERT's WITH CHECK would refuse it on an app-role
+// pool. Compilation alone does not catch that: `""` is a valid string.
+//
+// Every state-changing service method is exercised, not a sample: the census is
+// the point. A method added later that records history without threading the
+// caller's org through will not be covered here, which is why the repository
+// method's doc comment states the contract too.
+func TestKillSwitchService_RecordHistoryCarriesCallerOrg(t *testing.T) {
+	const orgID = "org-history-scope"
+	ctx := context.Background()
+
+	repo := newMockKillSwitchRepository()
+	service := NewKillSwitchService(repo, 0.10)
+
+	if _, err := service.ConfigureKillSwitch(ctx, orgID, "sys-1", &ConfigureKillSwitchRequest{
+		AutoTriggerEnabled: true,
+		BiasThreshold:      ptrFloat64(0.2),
+	}, "admin"); err != nil {
+		t.Fatalf("ConfigureKillSwitch: %v", err)
+	}
+	if _, err := service.TriggerKillSwitch(ctx, orgID, "sys-1", &TriggerKillSwitchRequest{
+		Reason: "bias breach",
+	}, "admin"); err != nil {
+		t.Fatalf("TriggerKillSwitch: %v", err)
+	}
+	if _, err := service.RestoreKillSwitch(ctx, orgID, "sys-1", &RestoreKillSwitchRequest{
+		Reason: "model retrained",
+	}, "admin"); err != nil {
+		t.Fatalf("RestoreKillSwitch: %v", err)
+	}
+	if _, err := service.DisableKillSwitch(ctx, orgID, "sys-1", "admin"); err != nil {
+		t.Fatalf("DisableKillSwitch: %v", err)
+	}
+	if _, err := service.EnableKillSwitch(ctx, orgID, "sys-1", "admin"); err != nil {
+		t.Fatalf("EnableKillSwitch: %v", err)
+	}
+
+	if len(repo.historyOrgIDs) != 5 {
+		t.Fatalf("RecordHistory called %d times, want 5 (configure/trigger/restore/disable/enable) — "+
+			"a state change that records no history is a gap in this census", len(repo.historyOrgIDs))
+	}
+	for i, got := range repo.historyOrgIDs {
+		if got != orgID {
+			t.Errorf("RecordHistory call %d carried orgID %q, want %q — rls.WithOrgScope would pin the "+
+				"wrong app.current_org_id and migration 400's subquery WITH CHECK would refuse the "+
+				"INSERT on an app-role pool (#3133)", i, got, orgID)
+		}
+	}
 }

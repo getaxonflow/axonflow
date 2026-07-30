@@ -236,7 +236,7 @@ func TestEveryWriteIntoRLSTableIsWrapped(t *testing.T) {
 //
 // SQL argument resolution: if the call's SQL argument is a local
 // *ast.Ident whose binding in the same FuncDecl scope is a string
-// literal (`query := \`INSERT INTO ...\``), the binding's value is
+// literal (`query := \`INSERT INTO ...\“), the binding's value is
 // resolved transparently. Variable resolution is single-pass within
 // the FuncDecl — re-bindings + cross-function flow are not tracked
 // (documented limitation).
@@ -486,7 +486,7 @@ func callName(fn ast.Expr) string {
 //   - double-quoted (PG):        INSERT INTO "policy_overrides"
 //   - schema-qualified+quoted:   INSERT INTO public."policy_overrides"
 //   - mixed-case quoted:         INSERT INTO "PolicyOverrides"  (rejected;
-//                                tables in this tree are lowercase)
+//     tables in this tree are lowercase)
 //
 // The schema prefix is recognized but discarded — we always return
 // the bare table identifier. The audited table list is the canonical
@@ -563,6 +563,15 @@ func baseWrapVariantNames() map[string]bool {
 		// All defined with a lower-case name as in-package leaves.
 		"withOrgScope":        true,
 		"withRequestOrgScope": true,
+
+		// NOTE (#3156 R3 round 2): a "withDirectory" entry was added here and then
+		// DELETED, by the same standard that deleted the dead ValidateAPIKey entry
+		// below — auditFunc takes this map as `_ map[string]bool` and discards it,
+		// so every entry in it is inert. Removing "withDirectory" left both audits
+		// green, which is the definition of dead. The SCIM directory writes are
+		// recognised by isTxReceiver instead: withDirectory's callback is
+		// func(tx *sql.Tx), and the parameter is NAMED tx precisely so that
+		// detection fires. Rename it and the audit goes red loudly.
 
 		// Orchestrator sebi mirror — platform/orchestrator/sebi/rls_session.go.
 		// Same name as the customer-portal mirrors.
@@ -667,6 +676,54 @@ func rlsGatedTables() map[string]bool {
 		"connector_configs",
 		// 115 (idempotency_keys — FORCE RLS, tenant_id-keyed policy)
 		"idempotency_keys",
+		// industry/banking 301 (#3103) — the seven RBI tables, each ENABLEd
+		// with `FOR ALL USING (org_id = get_current_org_id())`. FOR ALL with no
+		// separate WITH CHECK means the same expression gates reads AND acts as
+		// the INSERT/UPDATE check, so both audits apply. They are listed here
+		// rather than only in rlsGatedReadTables() for exactly that reason.
+		//
+		// These are the first entries from migrations/industry/, which the
+		// exclusion note above deferred. They are added because #3103 confirmed
+		// the gap with a concrete blast radius, not speculatively: on an
+		// app-role pool every RBI read returned silent zero rows and every RBI
+		// write was refused. The remaining industry/ + enterprise/ tables in
+		// that gap are tracked by epic #3071.
+		"rbi_ai_system_registry", "rbi_model_validations", "rbi_ai_incidents",
+		"rbi_kill_switches", "rbi_kill_switch_history", "rbi_board_reports",
+		"rbi_audit_exports",
+		// industry/banking 400 (#3133) — the five MAS FEAT tables. Four carry
+		// `FOR ALL USING (org_id = get_current_org_id()) WITH CHECK (org_id =
+		// get_current_org_id())`; mas_kill_switch_history has no org_id column
+		// and resolves ownership through a subquery on mas_kill_switches. Both
+		// audits apply either way: with the GUC unset the read returns silent
+		// zero rows and the write is refused outright.
+		//
+		// Same class and same evidence standard as the rbi_* block above — the
+		// gap was confirmed on a real axonflow_app_role connection before this
+		// entry was added, not inferred from the migration. The remaining
+		// industry/ + enterprise/ tables in that gap (euaiact_*, ojk_*,
+		// user_token_revocations) are tracked by epic #3071. scim_* left this
+		// list when #3156 established its wrap surface — see below.
+		"mas_ai_system_registry", "mas_feat_assessments",
+		"mas_kill_switches", "mas_kill_switch_history", "mas_bias_metrics",
+		// enterprise/117 (ENABLE) — SCIM, named as pending in the note above
+		// and delivered by #3156. Same evidence standard as the rbi_* and
+		// mas_* blocks: the gap was confirmed on a real axonflow_app_role
+		// connection with rolbypassrls=false AND non-ownership asserted
+		// before these entries were added, not inferred from the migration.
+		//
+		// The three DIRECTORY tables key on tenant_id — the SCIM ADDRESSING
+		// TENANT, not the org — and wrap via withDirectory. scim_tokens and
+		// scim_audit_log wrap via withOrgScope (tokens.go / audit.go, #3134).
+		//
+		// Listing them is what makes the guarantee STANDING rather than
+		// one-time: the withDirectory refactor let the compiler enumerate the
+		// call sites that existed, but r.db remains a field on the repository
+		// — it has to, because the org-keyed methods legitimately use it — so
+		// nothing else stops a NEW method writing a bare r.db.QueryContext
+		// against scim_users. This audit does.
+		"scim_users", "scim_groups", "scim_group_members",
+		"scim_tokens", "scim_audit_log",
 	}
 	out := make(map[string]bool, len(tables))
 	for _, t := range tables {
@@ -683,7 +740,7 @@ func rlsGatedTables() map[string]bool {
 //
 //   - "<rel-path>::*"   — every FuncDecl in that file is admin-pool.
 //   - "<basename>::*"   — every FuncDecl in any file with that
-//                         basename is admin-pool. Used sparingly.
+//     basename is admin-pool. Used sparingly.
 //
 // Each entry MUST carry a one-line reason naming why the site is
 // cross-org. "Pre-existing legacy" is not a reason; either the site
@@ -831,9 +888,27 @@ func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// so the regression guard stays green; the runtime bug is
 		// real but bounded by the same admin-pool absence that #2403
 		// names. Remove these entries when #2403 ships.
-		"ee/platform/customer-portal/api/auth.go::HandleCheckSession":        "pre-auth lookup: tracked by #2403 (admin-pool routing or SECURITY DEFINER for user_sessions read/update/delete by session_id alone).",
-		"ee/platform/customer-portal/api/auth.go::HandleLogout":              "pre-auth lookup: tracked by #2403 (admin-pool routing or SECURITY DEFINER for user_sessions DELETE by session_id alone).",
-		"ee/platform/customer-portal/api/keys.go::ValidateAPIKey":            "pre-auth lookup: tracked by #2403 (admin-pool routing or SECURITY DEFINER for customer_portal_api_keys lookup by key_hash alone).",
+		"ee/platform/customer-portal/api/auth.go::HandleCheckSession": "pre-auth lookup: tracked by #2403 (admin-pool routing or SECURITY DEFINER for user_sessions read/update/delete by session_id alone).",
+		"ee/platform/customer-portal/api/auth.go::HandleLogout":       "pre-auth lookup: tracked by #2403 (admin-pool routing or SECURITY DEFINER for user_sessions DELETE by session_id alone).",
+		// #3163 R3: the pre-auth key entry that used to sit here is DELETED, not
+		// rewritten. Removing it and re-running this audit PASSES — the only
+		// write in that function is the last_used_at UPDATE, and it now runs
+		// inside withOrgScope, which the walker recognises. So the entry was
+		// dead, and a dead allowlist entry is not inert: it is the one thing
+		// standing between this guard and a revert of the very wrap #3163 added.
+		// The READ-side entry in rls_read_audit_test.go IS still required (the
+		// walker cannot tell preAuthDB() from db at the call site) and stays.
+		// #3156: surfaced by adding the scim_* tables to rlsGatedTables(),
+		// and NOT a defect — the un-scoped shape is deliberate and documented
+		// at the call site by #3134. CleanupExpiredTokens is a cross-tenant
+		// maintenance sweep with no tenant to scope by, it has NO CALLER
+		// anywhere in the tree, and under axonflow_app_role it therefore
+		// deletes nothing rather than another tenant's tokens — the safe
+		// direction for a sweep that is not wired up. If it is ever
+		// scheduled it belongs on the platform_admin pool with an explicit
+		// operator-lane owner, and this entry must be revisited then.
+		"ee/platform/customer-portal/scim/tokens.go::CleanupExpiredTokens": "deliberately un-scoped cross-tenant sweep with NO caller (#3134); under app-role it deletes nothing. Revisit if it is ever scheduled — it then belongs on the platform_admin pool.",
+
 		"ee/platform/customer-portal/middleware/dev_auth.go::AuthMiddleware": "pre-auth lookup: tracked by #2403. AuthMiddleware IS the session-resolution middleware; admin-pool routing is the only viable fix shape.",
 
 		// ee/platform/customer-portal/api/sso.go::DeleteSession is

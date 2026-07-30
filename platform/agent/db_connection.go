@@ -123,6 +123,12 @@ var fatalfFn = log.Fatalf
 //
 // Split out from RequirePlatformAdminOrFatal so the decision logic is unit
 // testable without subprocess gymnastics.
+//
+// SCOPE (#3159): this half tests only that the DSN is a non-blank STRING. It
+// deliberately says nothing about whether that string yields a usable pool —
+// that is platformAdminPoolGuardShouldFire's job, and it must be called too.
+// Neither half is sufficient alone: this one passes for a DSN pointing at the
+// wrong role, that one no-ops when the DSN is absent.
 func platformAdminGuardShouldFire(caller string) (bool, string) {
 	if !UseAppRoleEnabled() {
 		return false, ""
@@ -137,6 +143,116 @@ func platformAdminGuardShouldFire(caller string) (bool, string) {
 	msg := fmt.Sprintf("[%s] FATAL: %s is required when %s=true (silent fallback to a non-BYPASSRLS pool would defeat FORCE RLS — cross-org metering/sweep/recovery/monitoring would silently return 0 rows or undercount). Set %s to a DSN authenticating as axonflow_platform_admin, or set %s=false to opt out of the v9.0.0 default and run under the legacy v8.x posture.",
 		caller, EnvPlatformAdminURL, EnvUseAppRole, EnvPlatformAdminURL, EnvUseAppRole)
 	return true, msg
+}
+
+// platformAdminPoolGuardShouldFire is the SECOND half of the app-role admin-pool
+// boot guard, and it closes the hole platformAdminGuardShouldFire leaves open:
+// that one tests only that AXONFLOW_DB_PLATFORM_ADMIN_URL is a non-blank
+// STRING, never that a pool was actually obtained from it (#3159).
+//
+// The gap is not theoretical, and none of the ways in involve a forgotten
+// variable — the operator set it, so the first guard passes:
+//
+//   - the DSN authenticates as the master/owner role rather than
+//     axonflow_platform_admin. OpenPlatformAdminConnection's assertConnectedRole
+//     correctly refuses it, and the refusal is then swallowed by the caller's
+//     "log a WARNING and carry on with the RLS-blind pool" branch;
+//   - a brief database outage inside this three-attempt boot window, while the
+//     main pool's five attempts succeed;
+//   - a rotated password that has not propagated to this secret yet.
+//
+// In every one of them the process boots green and every cross-org / pre-auth
+// read it was supposed to route through BYPASSRLS silently runs on a
+// NOBYPASSRLS pool instead — returning zero rows rather than an error. That is
+// the same silent corruption RequirePlatformAdminOrFatal exists to prevent, so
+// it gets the same answer: refuse to boot.
+//
+// Returns (true, message) ONLY when all three hold:
+//
+//	AXONFLOW_DB_USE_APP_ROLE is on (the v9.0.0 default), AND
+//	AXONFLOW_DB_PLATFORM_ADMIN_URL is non-blank, AND
+//	no usable pool came back (adminErr != nil, or a nil pool).
+//
+// The non-blank DSN condition is what keeps this narrow. An UNSET DSN is a
+// deliberate posture, not a failure: OpenPlatformAdminConnection documents
+// (nil, nil) as "caller must fall back", a single-role dev portal and an
+// owner-connected deployment run that way on purpose, and unit tests build
+// engines under app-role fixtures with no admin DSN at all. That case is
+// untouched — owned by RequirePlatformAdminOrFatal at the sites that mandate
+// the DSN, and a warning everywhere else.
+//
+// WHERE THIS IS AND IS NOT CALLED, precisely. An earlier revision of this
+// comment claimed the guard "adds no new fatal to any topology that boots
+// today". That was too strong, and R3 falsified it: the orchestrator is
+// designed to boot with an unreachable database (run.go degrades usageDB to
+// nil and continues), so a fatal on a site reachable in that state converts an
+// RDS failover into a crash-loop — and zero orchestrator tasks is itself the
+// #3048/#3049 fail-open shape.
+//
+// So the guard is applied only where a failed admin pool cannot make things
+// worse than the process already is:
+//
+//   - the customer portal, which already log.Fatalf's if its MAIN pool fails;
+//   - the agent's worker pools, all of which sit past a log.Fatal that refuses
+//     to start without DATABASE_URL at all;
+//   - the four orchestrator sites inside `if usageDB != nil`, i.e. skipped
+//     entirely in the degraded-database state.
+//
+// It is deliberately NOT applied to initializeConnectorRegistry (gates on
+// DATABASE_URL being set rather than on the pool being usable, so it IS
+// reachable while degraded), nor to the two dynamic-policy engine
+// constructors, whose own comments forbid a fatal because their 16 test call
+// sites would os.Exit the test binary. Those residual gaps are stated at each
+// site rather than papered over.
+//
+// What remains true: this fires only where the operator asked for an admin
+// pool and did not get one.
+//
+// Split out from RequirePlatformAdminPoolOrFatal so the decision logic is unit
+// testable without subprocess gymnastics, mirroring platformAdminGuardShouldFire.
+func platformAdminPoolGuardShouldFire(caller string, adminDB *sql.DB, adminErr error) (bool, string) {
+	if !UseAppRoleEnabled() {
+		return false, ""
+	}
+	// An unset (or whitespace-only) DSN is the documented fall-back contract,
+	// not a failed pool. Same TrimSpace as the sibling guard so the two agree
+	// on what "configured" means and no DSN falls between them.
+	if strings.TrimSpace(os.Getenv(EnvPlatformAdminURL)) == "" {
+		return false, ""
+	}
+	if adminErr == nil && adminDB != nil {
+		return false, ""
+	}
+
+	// Report the observed failure and no more. This guard can see that the
+	// gate is on, that the DSN is non-blank, and what the opener returned; it
+	// cannot see WHICH of the causes above applies, so they are offered as
+	// candidates rather than asserted.
+	detail := "OpenPlatformAdminConnection returned a nil pool with no error"
+	if adminErr != nil {
+		detail = adminErr.Error()
+	}
+	msg := fmt.Sprintf("[%s] FATAL: %s is set but no usable axonflow_platform_admin pool was obtained (%s). Booting on would silently route cross-org and pre-auth reads through a NOBYPASSRLS pool, which returns 0 rows instead of an error. Check, in order: the DSN authenticates as axonflow_platform_admin (not the master/owner role); the database was reachable during startup; the credential in the secret is current. Set %s=false to opt out of the v9.0.0 app-role posture, or unset %s to run single-role deliberately.",
+		caller, EnvPlatformAdminURL, detail, EnvUseAppRole, EnvPlatformAdminURL)
+	return true, msg
+}
+
+// RequirePlatformAdminPoolOrFatal aborts boot when the configured admin DSN did
+// not yield a usable BYPASSRLS pool under the app-role posture (#3159).
+//
+// Call it immediately after OpenPlatformAdminConnection and BEFORE the caller's
+// own "fall back to the ordinary pool" branch — that branch is the defect, and
+// this makes it unreachable in the posture where it corrupts. caller is the
+// same human-readable worker name RequirePlatformAdminOrFatal takes, so a
+// single grep finds either half of the guard.
+//
+// No-op when the gate is off, when the DSN is unset, or when a pool was
+// obtained. See platformAdminPoolGuardShouldFire for why an unset DSN is
+// deliberately excluded.
+func RequirePlatformAdminPoolOrFatal(caller string, adminDB *sql.DB, adminErr error) {
+	if fire, msg := platformAdminPoolGuardShouldFire(caller, adminDB, adminErr); fire {
+		fatalfFn("%s", msg)
+	}
 }
 
 // RequirePlatformAdminOrFatal is the boot-time guard that closes the silent

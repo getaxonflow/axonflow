@@ -57,7 +57,7 @@ func TestHTTPConnector_Connect(t *testing.T) {
 			config: &base.ConnectorConfig{
 				Name: "test-http",
 				Options: map[string]interface{}{
-					"base_url":         server.URL,
+					"base_url":          server.URL,
 					"allow_private_ips": true, // Allow for testing with localhost
 				},
 			},
@@ -96,8 +96,8 @@ func TestHTTPConnector_Connect(t *testing.T) {
 			config: &base.ConnectorConfig{
 				Name: "test-http",
 				Options: map[string]interface{}{
-					"base_url":         server.URL,
-					"auth_type":        "bearer",
+					"base_url":          server.URL,
+					"auth_type":         "bearer",
 					"allow_private_ips": true,
 				},
 				Credentials: map[string]string{
@@ -111,7 +111,7 @@ func TestHTTPConnector_Connect(t *testing.T) {
 			config: &base.ConnectorConfig{
 				Name: "test-http",
 				Options: map[string]interface{}{
-					"base_url":         server.URL,
+					"base_url":          server.URL,
 					"allow_private_ips": true,
 					"headers": map[string]interface{}{
 						"X-Custom-Header": "custom-value",
@@ -172,7 +172,7 @@ func TestHTTPConnector_Query(t *testing.T) {
 	err := c.Connect(context.Background(), &base.ConnectorConfig{
 		Name: "test-http",
 		Options: map[string]interface{}{
-			"base_url":         server.URL,
+			"base_url":          server.URL,
 			"allow_private_ips": true,
 		},
 	})
@@ -182,10 +182,10 @@ func TestHTTPConnector_Query(t *testing.T) {
 	defer c.Disconnect(context.Background())
 
 	tests := []struct {
-		name       string
-		query      *base.Query
-		wantErr    bool
-		wantRows   int
+		name     string
+		query    *base.Query
+		wantErr  bool
+		wantRows int
 	}{
 		{
 			name: "query array response",
@@ -281,7 +281,7 @@ func TestHTTPConnector_Execute(t *testing.T) {
 	err := c.Connect(context.Background(), &base.ConnectorConfig{
 		Name: "test-http",
 		Options: map[string]interface{}{
-			"base_url":         server.URL,
+			"base_url":          server.URL,
 			"allow_private_ips": true,
 		},
 	})
@@ -392,7 +392,7 @@ func TestHTTPConnector_HealthCheck(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := NewHTTPConnector()
 			opts := map[string]interface{}{
-				"base_url":         server.URL,
+				"base_url":          server.URL,
 				"allow_private_ips": true,
 			}
 			if tt.healthPath != "" {
@@ -463,8 +463,8 @@ func TestHTTPConnector_Authentication(t *testing.T) {
 			err := c.Connect(context.Background(), &base.ConnectorConfig{
 				Name: "test-http",
 				Options: map[string]interface{}{
-					"base_url":         server.URL,
-					"auth_type":        tt.authType,
+					"base_url":          server.URL,
+					"auth_type":         tt.authType,
 					"allow_private_ips": true,
 				},
 				Credentials: tt.creds,
@@ -503,10 +503,10 @@ func TestHTTPConnector_Retry(t *testing.T) {
 	err := c.Connect(context.Background(), &base.ConnectorConfig{
 		Name: "test-http",
 		Options: map[string]interface{}{
-			"base_url":         server.URL,
+			"base_url":          server.URL,
 			"allow_private_ips": true,
-			"max_retries":      float64(3),
-			"retry_delay":      "10ms",
+			"max_retries":       float64(3),
+			"retry_delay":       "10ms",
 		},
 	})
 	if err != nil {
@@ -542,7 +542,7 @@ func TestHTTPConnector_ResponseSizeLimit(t *testing.T) {
 		Name: "test-http",
 		Options: map[string]interface{}{
 			"base_url":          server.URL,
-			"allow_private_ips":  true,
+			"allow_private_ips": true,
 			"max_response_size": float64(1024), // 1KB limit
 		},
 	})
@@ -572,9 +572,9 @@ func TestHTTPConnector_Timeout(t *testing.T) {
 		Name:    "test-http",
 		Timeout: 100 * time.Millisecond,
 		Options: map[string]interface{}{
-			"base_url":         server.URL,
+			"base_url":          server.URL,
 			"allow_private_ips": true,
-			"max_retries":      float64(0),
+			"max_retries":       float64(0),
 		},
 	})
 	if err != nil {
@@ -591,9 +591,9 @@ func TestHTTPConnector_Timeout(t *testing.T) {
 	}
 }
 
+// TestHTTPConnector_IsPrivateIP exercises the canonical classifier the HTTP
+// connector now delegates to. The connector no longer has a private copy.
 func TestHTTPConnector_IsPrivateIP(t *testing.T) {
-	c := NewHTTPConnector()
-
 	tests := []struct {
 		ip        string
 		isPrivate bool
@@ -616,11 +616,216 @@ func TestHTTPConnector_IsPrivateIP(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("failed to parse IP: %s", tt.ip)
 			}
-			result := c.isPrivateIP(ip)
+			result := base.IsPrivateIP(ip)
 			if result != tt.isPrivate {
-				t.Errorf("isPrivateIP(%s) = %v, want %v", tt.ip, result, tt.isPrivate)
+				t.Errorf("base.IsPrivateIP(%s) = %v, want %v", tt.ip, result, tt.isPrivate)
 			}
 		})
+	}
+}
+
+// reservedRangeCases is the shared table used to pin the SSRF classifier that
+// guards HTTP-connector egress. It covers every IANA special-purpose range the
+// canonical classifier rejects, the boundary addresses immediately outside each
+// one (so a range can never be silently widened or narrowed), and the IPv6
+// families the classifier handles.
+//
+// 198.18.0.0/15 (RFC 2544 / RFC 6815 inter-network benchmarking) is
+// deliberately NOT rejected and is pinned as permitted here: runtime-e2e suites
+// carve sentinel networks out of it precisely because it is reachable under the
+// egress guard. Changing that is a deliberate, breaking decision, not a drift.
+var reservedRangeCases = []struct {
+	ip      string
+	blocked bool
+	why     string
+}{
+	// Loopback / unspecified / link-local.
+	{"127.0.0.1", true, "loopback 127.0.0.0/8"},
+	{"127.255.255.255", true, "loopback 127.0.0.0/8 upper"},
+	{"0.0.0.0", true, "unspecified"},
+	{"0.1.2.3", true, "this-network 0.0.0.0/8"},
+	{"169.254.169.254", true, "link-local 169.254.0.0/16 (cloud IMDS)"},
+
+	// RFC 1918.
+	{"10.0.0.1", true, "RFC1918 10.0.0.0/8"},
+	{"172.16.0.1", true, "RFC1918 172.16.0.0/12"},
+	{"192.168.1.1", true, "RFC1918 192.168.0.0/16"},
+
+	// 100.64.0.0/10 carrier-grade NAT, plus both boundaries.
+	{"100.63.255.255", false, "just below CGNAT 100.64.0.0/10"},
+	{"100.64.0.0", true, "CGNAT 100.64.0.0/10 first address"},
+	{"100.64.0.1", true, "CGNAT 100.64.0.0/10"},
+	{"100.127.255.255", true, "CGNAT 100.64.0.0/10 last address"},
+	{"100.128.0.0", false, "just above CGNAT 100.64.0.0/10"},
+
+	// 192.0.0.0/24 IETF protocol assignments and 192.0.2.0/24 TEST-NET-1.
+	{"192.0.0.0", true, "IETF protocol assignments 192.0.0.0/24"},
+	{"192.0.0.255", true, "IETF protocol assignments 192.0.0.0/24 last"},
+	{"192.0.1.1", false, "192.0.1.0/24 is ordinary public space"},
+	{"192.0.2.0", true, "TEST-NET-1 192.0.2.0/24 first"},
+	{"192.0.2.255", true, "TEST-NET-1 192.0.2.0/24 last"},
+	{"192.0.3.1", false, "just above TEST-NET-1"},
+
+	// 198.51.100.0/24 TEST-NET-2.
+	{"198.51.99.255", false, "just below TEST-NET-2"},
+	{"198.51.100.0", true, "TEST-NET-2 198.51.100.0/24 first"},
+	{"198.51.100.255", true, "TEST-NET-2 198.51.100.0/24 last"},
+	{"198.51.101.0", false, "just above TEST-NET-2"},
+
+	// 203.0.113.0/24 TEST-NET-3.
+	{"203.0.112.255", false, "just below TEST-NET-3"},
+	{"203.0.113.0", true, "TEST-NET-3 203.0.113.0/24 first"},
+	{"203.0.113.255", true, "TEST-NET-3 203.0.113.0/24 last"},
+	{"203.0.114.0", false, "just above TEST-NET-3"},
+
+	// 224.0.0.0/4 multicast and 240.0.0.0/4 reserved, plus boundaries.
+	{"223.255.255.255", false, "just below multicast 224.0.0.0/4"},
+	{"224.0.0.0", true, "multicast 224.0.0.0/4 first"},
+	{"224.0.0.1", true, "multicast 224.0.0.0/4"},
+	{"239.255.255.255", true, "multicast 224.0.0.0/4 last"},
+	{"240.0.0.0", true, "reserved 240.0.0.0/4 first"},
+	{"255.255.255.255", true, "reserved 240.0.0.0/4 (broadcast)"},
+
+	// 198.18.0.0/15 must stay reachable — runtime-e2e sentinel backends live here.
+	{"198.17.255.255", false, "just below benchmarking 198.18.0.0/15"},
+	{"198.18.0.0", false, "benchmarking 198.18.0.0/15 first — must stay permitted"},
+	{"198.19.255.255", false, "benchmarking 198.18.0.0/15 last — must stay permitted"},
+	{"198.20.0.0", false, "just above benchmarking 198.18.0.0/15"},
+
+	// Ordinary public IPv4 — the vacuity control for the whole table.
+	{"8.8.8.8", false, "public"},
+	{"1.1.1.1", false, "public"},
+	{"52.94.76.1", false, "public"},
+
+	// IPv6 families the classifier handles today.
+	{"::1", true, "IPv6 loopback"},
+	{"::", true, "IPv6 unspecified"},
+	{"fe80::1", true, "IPv6 link-local unicast fe80::/10"},
+	{"ff02::1", true, "IPv6 link-local multicast"},
+	{"fc00::1", true, "IPv6 unique-local fc00::/7"},
+	{"fd00::1", true, "IPv6 unique-local fd00::/8"},
+	{"2001:4860:4860::8888", false, "public IPv6"},
+	// IPv4-mapped IPv6 must be classified on its embedded IPv4 address.
+	{"::ffff:100.64.0.1", true, "IPv4-mapped CGNAT"},
+	{"::ffff:198.18.0.1", false, "IPv4-mapped benchmarking — must stay permitted"},
+	// Closed deliberately in #3104: the IPv6 documentation range 2001:db8::/32
+	// was rejected by none of the nine pre-#3104 classifiers. It was pinned as
+	// permitted by #3101 so that closing it would be a visible edit — this is
+	// that edit.
+	{"2001:db8::1", true, "IPv6 documentation 2001:db8::/32 — closed in #3104"},
+	{"2001:db9::1", false, "immediately above 2001:db8::/32 — still public"},
+
+	// Also closed in #3104: four IPv6 encodings that carry an IPv4 address.
+	// Every pre-#3104 classifier called these public even though they encode
+	// 127.0.0.1. Classification happens on the address actually reached, so a
+	// wrapped public address stays permitted.
+	{"64:ff9b::7f00:1", true, "NAT64 well-known prefix wrapping 127.0.0.1"},
+	{"64:ff9b::808:808", false, "NAT64 wrapping 8.8.8.8 — still public"},
+	{"2002:7f00:1::", true, "6to4 wrapping 127.0.0.1"},
+	{"2002:808:808::", false, "6to4 wrapping 8.8.8.8 — still public"},
+	{"::7f00:1", true, "deprecated IPv4-compatible wrapping 127.0.0.1"},
+	{"::ffff:0:7f00:1", true, "deprecated IPv4-translated (RFC 2765) wrapping 127.0.0.1"},
+	{"::ffff:0:808:808", false, "IPv4-translated wrapping 8.8.8.8 — still public"},
+}
+
+// TestHTTPConnector_ValidateHost_ReservedRanges drives the real egress guard
+// (validateHost) rather than a helper, so it fails if the connector ever stops
+// consulting the canonical classifier. IP literals are resolved by the Go
+// resolver without any network I/O, so this test is hermetic.
+func TestHTTPConnector_ValidateHost_ReservedRanges(t *testing.T) {
+	c := NewHTTPConnector()
+
+	const minAssertions = 45
+	if len(reservedRangeCases) < minAssertions {
+		t.Fatalf("reservedRangeCases has %d entries, expected at least %d — the table was gutted",
+			len(reservedRangeCases), minAssertions)
+	}
+
+	asserted := 0
+	blockedSeen, allowedSeen := 0, 0
+	for _, tt := range reservedRangeCases {
+		t.Run(tt.ip, func(t *testing.T) {
+			err := c.validateHost(tt.ip)
+			if tt.blocked && err == nil {
+				t.Errorf("validateHost(%s) = nil, want error (%s)", tt.ip, tt.why)
+			}
+			if !tt.blocked && err != nil {
+				t.Errorf("validateHost(%s) = %v, want nil (%s)", tt.ip, err, tt.why)
+			}
+		})
+		asserted++
+		if tt.blocked {
+			blockedSeen++
+		} else {
+			allowedSeen++
+		}
+	}
+
+	if asserted != len(reservedRangeCases) {
+		t.Fatalf("asserted %d cases, table has %d", asserted, len(reservedRangeCases))
+	}
+	if blockedSeen == 0 || allowedSeen == 0 {
+		t.Fatalf("vacuity control failed: blocked=%d allowed=%d — the table must exercise both outcomes",
+			blockedSeen, allowedSeen)
+	}
+}
+
+// TestHTTPConnector_ClassifierIsCanonical asserts the HTTP connector's egress
+// guard and the canonical base classifier agree on every case in the shared
+// table. If someone reintroduces a connector-local copy of the predicate, this
+// fails the moment the two disagree.
+func TestHTTPConnector_ClassifierIsCanonical(t *testing.T) {
+	c := NewHTTPConnector()
+
+	for _, tt := range reservedRangeCases {
+		t.Run(tt.ip, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP: %s", tt.ip)
+			}
+			canonical := base.IsPrivateIP(ip)
+			viaConnector := c.validateHost(tt.ip) != nil
+			if canonical != viaConnector {
+				t.Errorf("classifier divergence for %s (%s): base.IsPrivateIP=%v, connector blocks=%v",
+					tt.ip, tt.why, canonical, viaConnector)
+			}
+		})
+	}
+}
+
+// TestHTTPConnector_AllowPrivateIPsEscapeHatchUnchanged pins the semantics of
+// the documented allow_private_ips option: when set, the SSRF guard is skipped
+// entirely; when unset, it runs. This change must not alter that.
+func TestHTTPConnector_AllowPrivateIPsEscapeHatchUnchanged(t *testing.T) {
+	ctx := context.Background()
+
+	c := NewHTTPConnector()
+	err := c.Connect(ctx, &base.ConnectorConfig{
+		Name: "escape-hatch-on",
+		Options: map[string]interface{}{
+			"base_url":          "http://100.64.0.1:8080",
+			"allow_private_ips": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("allow_private_ips=true should permit a CGNAT base_url, got: %v", err)
+	}
+	if !c.allowPrivateIPs {
+		t.Error("allowPrivateIPs should be true after opting in")
+	}
+
+	c2 := NewHTTPConnector()
+	err = c2.Connect(ctx, &base.ConnectorConfig{
+		Name: "escape-hatch-off",
+		Options: map[string]interface{}{
+			"base_url": "http://100.64.0.1:8080",
+		},
+	})
+	if err == nil {
+		t.Fatal("allow_private_ips unset should reject a CGNAT base_url, got nil error")
+	}
+	if !strings.Contains(err.Error(), "SSRF") {
+		t.Errorf("expected an SSRF protection error, got: %v", err)
 	}
 }
 
@@ -723,4 +928,76 @@ func TestHTTPConnector_IsRetryableStatusCode(t *testing.T) {
 			t.Errorf("expected %d to not be retryable", code)
 		}
 	}
+}
+
+// TestHTTPConnector_TransportDialerIsEgressGuarded pins the fix for the gap
+// R3 round 2 found: validateHost runs ONCE inside Connect, and the transport
+// dialer used to be a bare net.Dialer, so every request after Connect
+// re-resolved base_url's host with nothing checking the answer. A host that
+// resolved public at Connect and into a reserved range afterwards was dialled.
+//
+// It drives the REAL transport the connector built, so it fails if the wiring
+// is removed. No socket is opened: the guard refuses before any dial.
+func TestHTTPConnector_TransportDialerIsEgressGuarded(t *testing.T) {
+	dialerOf := func(t *testing.T, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
+		t.Helper()
+		c := NewHTTPConnector()
+		opts := map[string]interface{}{"base_url": "http://198.18.67.10:18967"}
+		if allowPrivate {
+			opts["allow_private_ips"] = true
+		}
+		if err := c.Connect(context.Background(), &base.ConnectorConfig{Name: "dialer-probe", Options: opts}); err != nil {
+			t.Fatalf("Connect failed: %v", err)
+		}
+		tr, ok := c.httpClient.Transport.(*http.Transport)
+		if !ok {
+			t.Fatal("transport is not *http.Transport")
+		}
+		if tr.DialContext == nil {
+			t.Fatal("transport has no DialContext; it would use the default bare dialer")
+		}
+		return tr.DialContext
+	}
+
+	t.Run("guarded by default", func(t *testing.T) {
+		dial := dialerOf(t, false)
+		for _, addr := range []string{
+			"169.254.169.254:80", // cloud instance metadata
+			"127.0.0.1:80",       // loopback
+			"10.0.0.1:80",        // RFC1918
+			"100.64.0.1:80",      // CGNAT
+			"0.0.0.0:80",         // dial-routed to loopback
+		} {
+			_, err := dial(context.Background(), "tcp", addr)
+			if err == nil {
+				t.Errorf("transport dialled %s; post-Connect dials must be egress-guarded", addr)
+				continue
+			}
+			if !strings.Contains(err.Error(), "SSRF protection") {
+				t.Errorf("dial(%s) failed with %v, want an SSRF refusal", addr, err)
+			}
+		}
+	})
+
+	t.Run("benchmarking range stays dialable for runtime-e2e/3067", func(t *testing.T) {
+		dial := dialerOf(t, false)
+		// Cancelled context: proves the guard let it through without opening a
+		// socket to the sentinel range from a unit test.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := dial(ctx, "tcp", "198.18.67.10:18967")
+		if err != nil && strings.Contains(err.Error(), "SSRF protection") {
+			t.Errorf("transport refused the runtime-e2e/3067 sentinel address: %v", err)
+		}
+	})
+
+	t.Run("allow_private_ips bypasses the dialer guard too", func(t *testing.T) {
+		dial := dialerOf(t, true)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := dial(ctx, "tcp", "169.254.169.254:80")
+		if err != nil && strings.Contains(err.Error(), "SSRF protection") {
+			t.Errorf("allow_private_ips=true but the dialer still refused on SSRF grounds: %v", err)
+		}
+	})
 }

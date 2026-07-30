@@ -22,12 +22,20 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// legacyHITLOrgID is the org the legacy in-memory HITL executions in this
+// suite belong to; every request below asserts it via X-Org-ID.
+const legacyHITLOrgID = "org-legacy-hitl"
+
 // withLegacyHITLEnv sets DEPLOYMENT_MODE=enterprise, enables HITL, and
 // installs a paused HITL execution in the in-memory store.
 func withLegacyHITLEnv(t *testing.T, planID string) (uuid.UUID, func()) {
 	t.Helper()
 	origDeployment := os.Getenv("DEPLOYMENT_MODE")
 	os.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	// #3135: the handlers now run verifyAgentProxyAuth; these are behavioural
+	// tests of the legacy projection, so they arrive over an authenticated hop.
+	installProxyTokenValidator(t, proxyGuardTestSecret)
 
 	origEnabled := hitlEnabled
 	origEngine := hitlWorkflowEngine
@@ -43,18 +51,22 @@ func withLegacyHITLEnv(t *testing.T, planID string) (uuid.UUID, func()) {
 			WorkflowName: "plan-" + planID,
 			Status:       StatusPaused,
 			Input:        map[string]interface{}{"plan_id": planID},
+			// #3067: the legacy in-memory path is bound to the caller's org
+			// scope, so the stored execution must carry the identity the
+			// request asserts via X-Org-ID.
+			UserContext: UserContext{OrgID: legacyHITLOrgID},
 		},
 		ApprovalID:     approvalID,
 		ApprovalStatus: "pending",
 		PausedAtStep:   0,
 	}
 	executionStoreMutex.Lock()
-	executionStore[exec.ID] = exec
+	executionStore[hitlStoreKey(legacyHITLOrgID, exec.ID)] = exec
 	executionStoreMutex.Unlock()
 
 	cleanup := func() {
 		executionStoreMutex.Lock()
-		delete(executionStore, exec.ID)
+		delete(executionStore, hitlStoreKey(legacyHITLOrgID, exec.ID))
 		executionStoreMutex.Unlock()
 
 		hitlEnabled = origEnabled
@@ -73,10 +85,16 @@ func TestMapStepApproveHandler_LegacyInMemoryPath(t *testing.T) {
 	approvalID, cleanup := withLegacyHITLEnv(t, "legacy-plan-1")
 	defer cleanup()
 
+	// #3135: this test used to source the expected approver from the BODY,
+	// which pinned the defect as a requirement. Inverted: the body now carries a
+	// DIFFERENT name from the header, and the header is what must be projected.
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/plans/legacy-plan-1/steps/step-x/approve",
-		bytes.NewBufferString(`{"approved_by":"ops@example.com"}`))
+		bytes.NewBufferString(`{"approved_by":"forged@attacker.example"}`))
 	req = mux.SetURLVars(req, map[string]string{"id": "legacy-plan-1", "step_id": "step-x"})
+	req.Header.Set("X-Org-ID", legacyHITLOrgID)
+	req.Header.Set("X-User-ID", "ops@example.com")
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	rr := httptest.NewRecorder()
 
 	mapStepApproveHandler(rr, req)
@@ -100,7 +118,7 @@ func TestMapStepApproveHandler_LegacyInMemoryPath(t *testing.T) {
 		t.Errorf("ApprovalID = %q, want %q", resp.ApprovalID, approvalID.String())
 	}
 	if resp.ApprovedBy != "ops@example.com" {
-		t.Errorf("ApprovedBy = %q, want ops@example.com", resp.ApprovedBy)
+		t.Errorf("ApprovedBy = %q, want ops@example.com (#3135: X-User-ID, never the body)", resp.ApprovedBy)
 	}
 	if resp.ApprovalStatus == nil || *resp.ApprovalStatus != workflow_control.ApprovalStatusApproved {
 		t.Errorf("ApprovalStatus = %v, want approved", resp.ApprovalStatus)
@@ -124,10 +142,15 @@ func TestMapStepRejectHandler_LegacyInMemoryPath(t *testing.T) {
 	approvalID, cleanup := withLegacyHITLEnv(t, "legacy-plan-2")
 	defer cleanup()
 
+	// #3135: same inversion as the approve case above — body name differs from
+	// the header, header must win.
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/plans/legacy-plan-2/steps/step-y/reject",
-		bytes.NewBufferString(`{"rejected_by":"ops@example.com","reason":"Flagged by eyes-on review"}`))
+		bytes.NewBufferString(`{"rejected_by":"forged@attacker.example","reason":"Flagged by eyes-on review"}`))
 	req = mux.SetURLVars(req, map[string]string{"id": "legacy-plan-2", "step_id": "step-y"})
+	req.Header.Set("X-Org-ID", legacyHITLOrgID)
+	req.Header.Set("X-User-ID", "ops@example.com")
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	rr := httptest.NewRecorder()
 
 	mapStepRejectHandler(rr, req)
@@ -151,7 +174,7 @@ func TestMapStepRejectHandler_LegacyInMemoryPath(t *testing.T) {
 		t.Errorf("ApprovalID = %q, want %q", resp.ApprovalID, approvalID.String())
 	}
 	if resp.RejectedBy != "ops@example.com" {
-		t.Errorf("RejectedBy = %q, want ops@example.com", resp.RejectedBy)
+		t.Errorf("RejectedBy = %q, want ops@example.com (#3135: X-User-ID, never the body)", resp.RejectedBy)
 	}
 	if resp.Reason != "Flagged by eyes-on review" {
 		t.Errorf("Reason = %q, want 'Flagged by eyes-on review'", resp.Reason)
@@ -174,6 +197,8 @@ func TestMapStepRejectHandler_DefaultReasonForEmptyBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/plans/legacy-plan-default/steps/step/reject", nil)
 	req = mux.SetURLVars(req, map[string]string{"id": "legacy-plan-default", "step_id": "step"})
+	req.Header.Set("X-Org-ID", legacyHITLOrgID)
+	req.Header.Set("X-Axonflow-Proxy-Auth", mapHITLTestProxyToken())
 	rr := httptest.NewRecorder()
 
 	mapStepRejectHandler(rr, req)

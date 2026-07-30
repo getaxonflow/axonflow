@@ -6,7 +6,19 @@
 # Tier matrix:
 #   community  — community-edition binary, no AXONFLOW_LICENSE_KEY,         DEPLOYMENT_MODE=community
 #   evaluation — community-edition binary, Evaluation-tier signed license,  DEPLOYMENT_MODE=evaluation
-#   enterprise — enterprise-edition binary, Enterprise-tier signed license, DEPLOYMENT_MODE=enterprise
+#   enterprise — enterprise-edition binary, Enterprise-tier signed license, DEPLOYMENT_MODE=saas
+#
+#   The "enterprise" tier name refers to the BUILD EDITION and the licence, not
+#   to the mode string. The stack boots DEPLOYMENT_MODE=saas because the mode
+#   selects the SCHEMA: the eight RBI / SEBI / MAS-FEAT / EU-AI-Act rows below
+#   expect 200 from handlers that read migrations/industry/ tables, and only
+#   `saas` creates all three verticals. It used to boot `enterprise` and get them
+#   by accident — `enterprise` was not a recognised mode and fell through the
+#   selector's default arm to the SaaS set. #3167 makes `enterprise` an alias for
+#   in-vpc-enterprise, which carries no vertical, so the job names `saas`
+#   explicitly and tests exactly what it tested before. Runtime posture is
+#   identical: isCommunityMode() is false for both and no agent or orchestrator
+#   code branches on saas-vs-enterprise.
 #
 # Status code conventions used in expected.<tier>.status:
 #   200 — request reaches handler, handler does not block on tier; success
@@ -79,20 +91,49 @@ endpoints:
       enterprise: {status: 200, reason: "same"}
 
   # ---------------------------------------------------------------------------
-  # Core MCP gateway — RegisterMCPHandlers (mcp_handler.go:524) registers these
-  # routes UNCONDITIONALLY. The community-mode gate (line 78) is for individual
-  # query *license* validation, not route registration. apiAuthMiddleware is
-  # only applied in licensed (eval/enterprise) builds — in community mode the
-  # listing/health endpoints are open and queries fall back to permissive auth.
+  # Core MCP gateway — RegisterMCPHandlers registers these routes
+  # UNCONDITIONALLY. The community-mode gate is for individual query *license*
+  # validation, not route registration.
+  #
+  # #3067: the connector inventory + per-connector health routes are now wrapped
+  # in apiAuthMiddleware and scoped to the authenticated tenant. They previously
+  # had NO middleware at all and served every tenant's connector name, type,
+  # version, capabilities, health and raw driver error strings (which routinely
+  # embed host/db/user) to an anonymous caller — and the /health variant opened
+  # a live connection using the victim's decrypted credentials. The pair of rows
+  # below pins BOTH halves of that contract: authenticated callers still get
+  # 200, and an anonymous caller is refused in every tier that has credentials
+  # to refuse (community auth is permissive by design, so it stays 200 there).
   # ---------------------------------------------------------------------------
   - id: agent-mcp-connectors-list
     method: GET
     port: 8080
     path: /mcp/connectors
+    auth: basic
     expected:
-      community:  {status: 200, reason: "RegisterMCPHandlers always registers; listing is open across all tiers"}
-      evaluation: {status: 200, reason: "same"}
+      community:  {status: 200, reason: "RegisterMCPHandlers always registers; community auth is permissive → 200"}
+      evaluation: {status: 200, reason: "Basic auth provided; handler returns the caller's connectors"}
       enterprise: {status: 200, reason: "same"}
+
+  - id: agent-mcp-connectors-list-unauthenticated
+    method: GET
+    port: 8080
+    path: /mcp/connectors
+    auth: none
+    expected:
+      community:  {status: 200, reason: "community mode requires no credentials (Authenticate() short-circuits) — the route is still registered"}
+      evaluation: {status: 401, reason: "#3067 S-5: apiAuthMiddleware refuses an anonymous caller rather than dumping every tenant's connector inventory"}
+      enterprise: {status: 401, reason: "same"}
+
+  - id: agent-mcp-connector-health-unauthenticated
+    method: GET
+    port: 8080
+    path: /mcp/connectors/tier-gate-absent-3067/health
+    auth: none
+    expected:
+      community:  {status: 404, reason: "community auth is permissive, so the request reaches the handler; no such connector → 404 (the sibling list row proves mcpRegistry is initialized, so this is not 503)"}
+      evaluation: {status: 401, reason: "#3067 S-5: refused before any connection is opened with the named connector's credentials"}
+      enterprise: {status: 401, reason: "same"}
 
   - id: agent-mcp-health
     method: GET
@@ -130,19 +171,30 @@ endpoints:
     method: POST
     port: 8081
     path: /api/v1/plan/test-plan-id/resume
+    # #3068: this row's assertion IS the unauthenticated refusal, so it opts out
+    # of the runner's proxy-auth token. With a token it would sail past both the
+    # router gate and verifyAgentProxyAuth and 404 on the nonexistent plan,
+    # silently retiring the coverage.
+    proxy_auth: false
     expected:
-      community:  {status: 403, reason: "isCommunityMode → 'requires Enterprise' → StatusForbidden (licensing gate runs before proxy-auth)"}
-      evaluation: {status: 403, reason: "#2896 WS1c: direct-to-orchestrator resume is rejected by verifyAgentProxyAuth (no X-Axonflow-Proxy-Auth) — 'must be routed through AxonFlow Agent'. Resume persists a checkpoint actor identity that keys an override apply, so it must arrive through the agent."}
-      enterprise: {status: 403, reason: "same — #2896 WS1c agent-proxy requirement"}
+      community:  {status: 403, reason: "#3068 requireInternalProxyAuth refuses the token-less request at the router, before any handler; previously isCommunityMode → 'requires Enterprise' produced the same status"}
+      evaluation: {status: 403, reason: "#3068 requireInternalProxyAuth refuses a direct-to-orchestrator call with no X-Axonflow-Proxy-Auth at the router, before routing — the same refusal #2896 WS1c's verifyAgentProxyAuth made in the handler, now made earlier and for every route. Resume persists a checkpoint actor identity that keys an override apply, so it must arrive through the agent."}
+      enterprise: {status: 403, reason: "same — #3068 router gate, with #2896 WS1c's handler check behind it"}
 
   - id: orchestrator-plan-rollback
     method: POST
     port: 8081
     path: /api/v1/plan/test-plan-id/rollback/1
+    # #3068 + #3065: same shape as orchestrator-plan-resume above. #3065 made
+    # rollback a plan MUTATION that runs verifyAgentProxyAuth BEFORE the plan
+    # lookup, so its assertion IS the unauthenticated refusal. With the runner's
+    # token it would sail past both the router gate and verifyAgentProxyAuth and
+    # 404 on the nonexistent plan, silently retiring the coverage.
+    proxy_auth: false
     expected:
       community:  {status: 403, reason: "run.go:4378 isCommunityMode → 'requires Enterprise'"}
-      evaluation: {status: 404, reason: "isCommunityMode=false bypasses; plan lookup miss returns 404"}
-      enterprise: {status: 404, reason: "same"}
+      evaluation: {status: 403, reason: "#3065: rollback is a plan MUTATION and now runs the same verifyAgentProxyAuth gate its sibling resume already did — a direct-to-orchestrator caller is refused BEFORE the plan lookup. It previously reached the lookup and answered 404, which leaked that the gate was absent: the org the authorization keys on was whatever the caller typed into X-Org-ID, or nothing at all."}
+      enterprise: {status: 403, reason: "same — #3065 agent-proxy requirement, matching orchestrator-plan-resume above"}
 
   - id: orchestrator-plan-step-approve
     method: POST

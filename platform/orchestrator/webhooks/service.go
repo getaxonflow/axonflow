@@ -21,18 +21,46 @@ import (
 
 	"github.com/google/uuid"
 
+	"axonflow/platform/shared/egress"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 )
 
 const (
-	maxRetries         = 3
-	initialBackoff     = 1 * time.Second
-	webhookTimeout     = 10 * time.Second
-	signatureHeader    = "X-AxonFlow-Signature-256"
-	eventHeader        = "X-AxonFlow-Event"
-	deliveryIDHeader   = "X-AxonFlow-Delivery"
-	timestampHeader    = "X-AxonFlow-Timestamp"
+	maxRetries       = 3
+	initialBackoff   = 1 * time.Second
+	webhookTimeout   = 10 * time.Second
+	signatureHeader  = "X-AxonFlow-Signature-256"
+	eventHeader      = "X-AxonFlow-Event"
+	deliveryIDHeader = "X-AxonFlow-Delivery"
+	timestampHeader  = "X-AxonFlow-Timestamp"
 )
+
+// WebhookAllowPrivateEnv unlocks webhook subscription URLs that resolve into a
+// reserved range, at BOTH the create/update validation and the delivery
+// dialer. Default behavior REJECTS them.
+//
+// This is a migration escape hatch for #3104, which moved this surface onto
+// egress.CallbackEgress. Before #3104 the local classifier covered only eight
+// CIDRs, so a subscription URL on carrier-grade NAT (100.64.0.0/10 — which is
+// ALSO Tailscale's address range, the most likely real-world breakage here),
+// on 0.0.0.0/8, on a TEST-NET or benchmarking range, on multicast, on
+// 240.0.0.0/4 or on the broadcast address was accepted. Those are now refused.
+//
+// It is deliberately separate from the circuit-breaker and HITL hatches: there
+// is no global egress bypass, because one flag serving several surfaces makes
+// re-permitting one of them re-permit all of them.
+//
+// Set to "true" (exactly; "1" and "yes" do not count) only while migrating
+// such a receiver onto a reachable address. Engaging it WARN-logs at service
+// construction and names every range it re-permits.
+const WebhookAllowPrivateEnv = "AXONFLOW_ORCH_WEBHOOK_ALLOW_PRIVATE"
+
+// allowPrivateRanges reads the escape hatch. It is a var so tests can flip the
+// env between service instances.
+var allowPrivateRanges = func() bool {
+	return egress.AllowPrivateFromEnv(WebhookAllowPrivateEnv, "orchestrator webhook subscriptions", egress.CallbackEgress)
+}
 
 // Service manages webhook subscriptions and delivery.
 type Service struct {
@@ -40,6 +68,9 @@ type Service struct {
 	client    *http.Client
 	logger    *log.Logger
 	encryptor SecretEncryptor
+	// allowPrivate is the WebhookAllowPrivateEnv escape hatch, read once at
+	// construction so the WARN fires per process rather than per request.
+	allowPrivate bool
 }
 
 // SecretEncryptor encrypts and decrypts webhook secrets at rest.
@@ -54,32 +85,32 @@ type SecretEncryptor interface {
 // The encryptor is used to encrypt/decrypt webhook secrets at rest.
 // Pass nil to disable encryption (not recommended for production).
 func NewService(repo Repository, encryptor SecretEncryptor) *Service {
-	// Custom transport that validates resolved IPs at connection time
-	// to prevent SSRF via DNS rebinding attacks.
+	// Read the escape hatch once, here, rather than per request. Engaging it
+	// WARN-logs and names every range it re-permits.
+	allowPrivate := allowPrivateRanges()
+
+	// Transport that validates resolved IPs at connection time and then dials
+	// the addresses it validated, by literal. Handing the hostname back to
+	// net.Dialer — as this did before #3104 — makes it resolve a SECOND time,
+	// which is precisely the DNS-rebinding window the check is meant to close
+	// (#3104 R3 F1).
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dialContext := dialer.DialContext
+	if !allowPrivate {
+		dialContext = egress.NewSafeDialContext(egress.CallbackEgress, dialer, nil, func(ip net.IP) error {
+			return fmt.Errorf("webhook delivery blocked: resolved to private IP %s (%s; set %s=true to allow while migrating)",
+				ip, egress.CallbackEgress.Reason(ip), WebhookAllowPrivateEnv)
+		})
+	}
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid address: %w", err)
-			}
-			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-			if err != nil {
-				return nil, fmt.Errorf("DNS lookup failed: %w", err)
-			}
-			for _, ip := range ips {
-				if isPrivateIP(ip.IP) {
-					return nil, fmt.Errorf("webhook delivery blocked: resolved to private IP %s", ip.IP)
-				}
-			}
-			dialer := &net.Dialer{Timeout: 10 * time.Second}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
-		},
+		DialContext:         dialContext,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
 	return &Service{
-		repo:      repo,
-		encryptor: encryptor,
+		repo:         repo,
+		encryptor:    encryptor,
+		allowPrivate: allowPrivate,
 		client: &http.Client{
 			Timeout:   webhookTimeout,
 			Transport: transport,
@@ -102,7 +133,7 @@ func (s *Service) Create(ctx context.Context, req *CreateSubscriptionRequest, te
 		}
 	}
 
-	if err := validateWebhookURL(req.URL); err != nil {
+	if err := validateWebhookURL(req.URL, s.allowPrivate); err != nil {
 		return nil, fmt.Errorf("invalid webhook URL: %w", err)
 	}
 
@@ -135,13 +166,20 @@ func (s *Service) Create(ctx context.Context, req *CreateSubscriptionRequest, te
 	return sub, nil
 }
 
-// Get retrieves a webhook subscription by ID.
+// Get retrieves a webhook subscription by ID, bound to the caller's tenancy.
+//
+// #3065 (F6): the repository read is now predicated in SQL; the post-fetch
+// compare below is kept as a second, independent statement of the same
+// invariant and is fail-closed on an empty value on either side (the old
+// `sub.TenantID != tenantID || sub.OrgID != orgID` was satisfied when BOTH
+// the caller's and the row's keys were empty — and webhook_subscriptions
+// defaults them to ”).
 func (s *Service) Get(ctx context.Context, id, tenantID, orgID string) (*Subscription, error) {
-	sub, err := s.repo.GetSubscription(ctx, id)
+	sub, err := s.repo.GetSubscription(ctx, id, tenantID, orgID)
 	if err != nil {
 		return nil, err
 	}
-	if sub.TenantID != tenantID || sub.OrgID != orgID {
+	if err := (tenantscope.Scope{OrgID: orgID, TenantID: tenantID}).Authorize(sub.OrgID, sub.TenantID); err != nil {
 		return nil, fmt.Errorf("webhook subscription not found: %s", id)
 	}
 	return sub, nil
@@ -155,7 +193,7 @@ func (s *Service) Update(ctx context.Context, id string, req *UpdateSubscription
 	}
 
 	if req.URL != nil {
-		if err := validateWebhookURL(*req.URL); err != nil {
+		if err := validateWebhookURL(*req.URL, s.allowPrivate); err != nil {
 			return nil, fmt.Errorf("invalid webhook URL: %w", err)
 		}
 		sub.URL = *req.URL
@@ -368,7 +406,7 @@ func signPayload(payload []byte, secret string) string {
 
 // validateWebhookURL checks that the URL is a valid HTTP(S) URL and does not
 // point to private/internal IP ranges (SSRF protection).
-func validateWebhookURL(rawURL string) error {
+func validateWebhookURL(rawURL string, allowPrivate bool) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -381,7 +419,9 @@ func validateWebhookURL(rawURL string) error {
 		return fmt.Errorf("webhook URL must have a host")
 	}
 
-	// Block localhost
+	// Block localhost. Deliberately OUTSIDE the escape hatch: the hatch
+	// re-permits reserved IP *ranges*, and an explicit `localhost` target is a
+	// misconfiguration in every deployment shape, hatch or not.
 	lower := strings.ToLower(host)
 	if lower == "localhost" || lower == "localhost." {
 		return fmt.Errorf("webhook URL must not target localhost")
@@ -390,49 +430,57 @@ func validateWebhookURL(rawURL string) error {
 	// Resolve and check IP ranges
 	ip := net.ParseIP(host)
 	if ip == nil {
-		// Hostname — resolve it
+		// Hostname — resolve it. The resolvability check is also OUTSIDE the
+		// hatch: a subscription whose host does not resolve can never deliver,
+		// and accepting one silently is a new failure mode, not a relaxed
+		// posture.
 		addrs, err := net.LookupHost(host)
 		if err != nil {
 			return fmt.Errorf("cannot resolve webhook URL host %q: %w", host, err)
 		}
+		// The escape hatch covers the IP posture and ONLY the IP posture. It has
+		// to cover this validation as well as the delivery dialer: refusing the
+		// subscription at create time would make the hatch unusable for the
+		// deployments it exists for.
+		if allowPrivate {
+			return nil
+		}
 		for _, addr := range addrs {
-			if isPrivateIP(net.ParseIP(addr)) {
-				return fmt.Errorf("webhook URL must not resolve to private IP address")
+			resolved := net.ParseIP(addr)
+			if isPrivateIP(resolved) {
+				return fmt.Errorf("webhook URL must not resolve to a reserved address: %s resolves to %s (%s; set %s=true to allow while migrating)",
+					host, addr, egress.CallbackEgress.Reason(resolved), WebhookAllowPrivateEnv)
 			}
 		}
 	} else {
+		if allowPrivate {
+			return nil
+		}
 		if isPrivateIP(ip) {
-			return fmt.Errorf("webhook URL must not target private IP address")
+			return fmt.Errorf("webhook URL must not target a reserved address: %s (set %s=true to allow while migrating)",
+				egress.CallbackEgress.Reason(ip), WebhookAllowPrivateEnv)
 		}
 	}
 
 	return nil
 }
 
-// isPrivateIP returns true if the IP is in a private, loopback, or link-local range.
+// isPrivateIP binds this surface to egress.CallbackEgress, the shared policy
+// for operator-supplied callback URLs (#3104). The range table lives in
+// platform/shared/egress.
+//
+// Two behaviour changes relative to the eight-CIDR list this replaces:
+//
+//   - It no longer returns false for a nil IP. validateWebhookURL calls this
+//     on net.ParseIP of each resolved address, so an address that failed to
+//     parse used to be treated as public. It is now refused.
+//   - It blocks 0.0.0.0/8 (dial-routed to loopback on Linux and macOS), CGNAT,
+//     the IETF protocol-assignment and TEST-NET ranges, the RFC 2544
+//     benchmarking range, multicast, 240.0.0.0/4, the broadcast address, the
+//     IPv6 documentation range and the wrapped-IPv4 encodings. See
+//     WebhookAllowPrivateEnv for the migration hatch.
 func isPrivateIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	privateRanges := []struct {
-		network string
-	}{
-		{"10.0.0.0/8"},
-		{"172.16.0.0/12"},
-		{"192.168.0.0/16"},
-		{"127.0.0.0/8"},
-		{"169.254.0.0/16"},
-		{"::1/128"},
-		{"fc00::/7"},
-		{"fe80::/10"},
-	}
-	for _, r := range privateRanges {
-		_, cidr, _ := net.ParseCIDR(r.network)
-		if cidr.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return egress.CallbackEgress.Blocks(ip)
 }
 
 func isValidEvent(event string) bool {

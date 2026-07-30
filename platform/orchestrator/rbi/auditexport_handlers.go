@@ -15,16 +15,6 @@ import (
 	"time"
 )
 
-// getOrgIDFromRequest extracts the org ID from query parameter or X-Org-ID header.
-// Returns empty string if not found.
-func getOrgIDFromRequest(r *http.Request) string {
-	orgID := r.URL.Query().Get("org_id")
-	if orgID == "" {
-		orgID = r.Header.Get("X-Org-ID")
-	}
-	return orgID
-}
-
 // AuditExportHandler handles HTTP requests for audit exports.
 type AuditExportHandler struct {
 	service *AuditExportService
@@ -50,16 +40,22 @@ func (h *AuditExportHandler) RegisterRoutes(mux *http.ServeMux) {
 
 // CreateAuditExportRequest is the request body for creating an audit export.
 type CreateAuditExportRequest struct {
-	ExportType       AuditExportType   `json:"export_type"`
-	Format           AuditExportFormat `json:"format"`
-	StartDate        *time.Time        `json:"start_date,omitempty"`
-	EndDate          *time.Time        `json:"end_date,omitempty"`
-	SystemIDs        []string          `json:"system_ids,omitempty"`
-	RiskCategories   []string          `json:"risk_categories,omitempty"`
-	IncludeArchived  bool              `json:"include_archived"`
-	RequestedBy      string            `json:"requested_by,omitempty"`
-	RequestedByEmail string            `json:"requested_by_email,omitempty"`
-	Purpose          string            `json:"purpose,omitempty"`
+	ExportType      AuditExportType   `json:"export_type"`
+	Format          AuditExportFormat `json:"format"`
+	StartDate       *time.Time        `json:"start_date,omitempty"`
+	EndDate         *time.Time        `json:"end_date,omitempty"`
+	SystemIDs       []string          `json:"system_ids,omitempty"`
+	RiskCategories  []string          `json:"risk_categories,omitempty"`
+	IncludeArchived bool              `json:"include_archived"`
+	Purpose         string            `json:"purpose,omitempty"`
+
+	// The acting principal is NOT accepted from the wire (#3150): these fields
+	// carry `json:"-"` so a caller-typed identity cannot be decoded into them,
+	// and the handler fills them from resolveActor(r). Deleting the field from
+	// the wire rather than merely ignoring it is deliberate — an identity a
+	// caller can type is an identity a future reader can wire back up.
+	RequestedBy      string `json:"-"`
+	RequestedByEmail string `json:"-"`
 }
 
 // AuditExportResponse is the response for audit export operations.
@@ -139,9 +135,9 @@ func (h *AuditExportHandler) handleExportRoutes(w http.ResponseWriter, r *http.R
 }
 
 func (h *AuditExportHandler) createExport(w http.ResponseWriter, r *http.Request) {
-	orgID := getOrgIDFromRequest(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
-		h.writeError(w, http.StatusBadRequest, "MISSING_ORG_ID", "org_id is required")
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
 	}
 
@@ -150,6 +146,14 @@ func (h *AuditExportHandler) createExport(w http.ResponseWriter, r *http.Request
 		h.writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body: "+err.Error())
 		return
 	}
+
+	// #3150: the requester of an audit export is the AUTHENTICATED caller.
+	// requested_by / requested_by_email used to be read from this body and
+	// persisted onto rbi_audit_exports as the requester of a regulator-facing
+	// evidence artefact.
+	actor := resolveActor(r)
+	req.RequestedBy = actor.ID
+	req.RequestedByEmail = actor.Email
 
 	export, err := h.service.CreateExport(r.Context(), &CreateExportRequest{
 		OrgID:            orgID,
@@ -173,9 +177,9 @@ func (h *AuditExportHandler) createExport(w http.ResponseWriter, r *http.Request
 }
 
 func (h *AuditExportHandler) listExports(w http.ResponseWriter, r *http.Request) {
-	orgID := getOrgIDFromRequest(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
-		h.writeError(w, http.StatusBadRequest, "MISSING_ORG_ID", "org_id is required")
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
 	}
 
@@ -224,9 +228,9 @@ func (h *AuditExportHandler) listExports(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *AuditExportHandler) getExport(w http.ResponseWriter, r *http.Request, exportID string) {
-	orgID := getOrgIDFromRequest(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
-		h.writeError(w, http.StatusBadRequest, "MISSING_ORG_ID", "org_id is required")
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
 	}
 
@@ -244,9 +248,9 @@ func (h *AuditExportHandler) getExport(w http.ResponseWriter, r *http.Request, e
 }
 
 func (h *AuditExportHandler) deleteExport(w http.ResponseWriter, r *http.Request, exportID string) {
-	orgID := getOrgIDFromRequest(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
-		h.writeError(w, http.StatusBadRequest, "MISSING_ORG_ID", "org_id is required")
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
 	}
 
@@ -264,9 +268,9 @@ func (h *AuditExportHandler) deleteExport(w http.ResponseWriter, r *http.Request
 }
 
 func (h *AuditExportHandler) downloadExport(w http.ResponseWriter, r *http.Request, exportID string) {
-	orgID := getOrgIDFromRequest(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
-		h.writeError(w, http.StatusBadRequest, "MISSING_ORG_ID", "org_id is required")
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
 	}
 
@@ -315,9 +319,9 @@ func (h *AuditExportHandler) downloadExport(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *AuditExportHandler) processExport(w http.ResponseWriter, r *http.Request, exportID string) {
-	orgID := getOrgIDFromRequest(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
-		h.writeError(w, http.StatusBadRequest, "MISSING_ORG_ID", "org_id is required")
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
 	}
 

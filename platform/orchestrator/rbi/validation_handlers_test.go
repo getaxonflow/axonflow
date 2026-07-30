@@ -11,18 +11,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 )
 
 // MockModelValidationService is a mock for testing handlers.
 type MockModelValidationService struct {
-	createFunc    func(ctx context.Context, orgID string, req *CreateValidationRequest) (*ModelValidation, error)
-	getFunc       func(ctx context.Context, orgID, id string) (*ModelValidation, error)
-	listFunc      func(ctx context.Context, orgID string, params *ListValidationsParams) ([]*ModelValidation, int, error)
-	updateFunc    func(ctx context.Context, orgID, id string, req *UpdateValidationRequest) (*ModelValidation, error)
-	deleteFunc    func(ctx context.Context, orgID, id string) error
-	getLatestFunc func(ctx context.Context, orgID, systemID string, validationType ValidationType) (*ModelValidation, error)
+	createFunc     func(ctx context.Context, orgID string, req *CreateValidationRequest) (*ModelValidation, error)
+	getFunc        func(ctx context.Context, orgID, id string) (*ModelValidation, error)
+	listFunc       func(ctx context.Context, orgID string, params *ListValidationsParams) ([]*ModelValidation, int, error)
+	updateFunc     func(ctx context.Context, orgID, id string, req *UpdateValidationRequest) (*ModelValidation, error)
+	deleteFunc     func(ctx context.Context, orgID, id string) error
+	getLatestFunc  func(ctx context.Context, orgID, systemID string, validationType ValidationType) (*ModelValidation, error)
 	addFindingFunc func(ctx context.Context, orgID, validationID string, finding *ValidationFinding) (*ModelValidation, error)
 }
 
@@ -81,7 +82,8 @@ func TestModelValidationHandler_CreateValidation(t *testing.T) {
 
 	t.Run("successful creation", func(t *testing.T) {
 		body := `{"system_id":"sys-1","validation_type":"development","validator_type":"internal","validator_name":"Team A","recommendation":"approve"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -107,7 +109,8 @@ func TestModelValidationHandler_CreateValidation(t *testing.T) {
 
 	t.Run("invalid JSON", func(t *testing.T) {
 		body := `{invalid}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -120,8 +123,15 @@ func TestModelValidationHandler_CreateValidation(t *testing.T) {
 }
 
 func TestModelValidationHandler_ListValidations(t *testing.T) {
+	// gotParams records what the handler actually parsed out of the query string.
+	// A w.Code == 200 assertion alone cannot tell "filters parsed" from "filters
+	// silently dropped" (a malformed URL such as `/api/v1/rbi/validations&system_id=sys-1`
+	// leaves RawQuery empty and still returns 200), which would make the date-filter
+	// subtest below exercise no date filter at all.
+	var gotParams *ListValidationsParams
 	mockService := &MockModelValidationService{
 		listFunc: func(ctx context.Context, orgID string, params *ListValidationsParams) ([]*ModelValidation, int, error) {
+			gotParams = params
 			return []*ModelValidation{
 				{ID: "val-1", OrgID: orgID, SystemID: "sys-1"},
 				{ID: "val-2", OrgID: orgID, SystemID: "sys-1"},
@@ -131,7 +141,8 @@ func TestModelValidationHandler_ListValidations(t *testing.T) {
 	handler := NewModelValidationHandler(mockService)
 
 	t.Run("list validations", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidations(w, req)
@@ -150,7 +161,10 @@ func TestModelValidationHandler_ListValidations(t *testing.T) {
 	})
 
 	t.Run("with filters", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations?org_id=org-1&system_id=sys-1&validation_type=development&limit=10", nil)
+		gotParams = nil
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/rbi/validations?system_id=sys-1&validation_type=development&validator_type=internal&recommendation=approve&limit=10&offset=5", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidations(w, req)
@@ -158,18 +172,59 @@ func TestModelValidationHandler_ListValidations(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 		}
+		if gotParams == nil {
+			t.Fatal("ListValidations was never invoked, so no filter was parsed")
+		}
+		if gotParams.SystemID != "sys-1" {
+			t.Errorf("SystemID = %q, want %q", gotParams.SystemID, "sys-1")
+		}
+		if gotParams.ValidationType != "development" {
+			t.Errorf("ValidationType = %q, want %q", gotParams.ValidationType, "development")
+		}
+		if gotParams.ValidatorType != "internal" {
+			t.Errorf("ValidatorType = %q, want %q", gotParams.ValidatorType, "internal")
+		}
+		if gotParams.Recommendation != "approve" {
+			t.Errorf("Recommendation = %q, want %q", gotParams.Recommendation, "approve")
+		}
+		if gotParams.Limit != 10 {
+			t.Errorf("Limit = %d, want 10", gotParams.Limit)
+		}
+		if gotParams.Offset != 5 {
+			t.Errorf("Offset = %d, want 5", gotParams.Offset)
+		}
 	})
 
 	t.Run("with date filters", func(t *testing.T) {
-		startDate := time.Now().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
-		endDate := time.Now().Format(time.RFC3339)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations?org_id=org-1&start_date="+startDate+"&end_date="+endDate, nil)
+		gotParams = nil
+		// UTC so RFC3339 renders a "Z" offset: a numeric "+05:30" offset would be
+		// decoded as a space by url.Values and never reach time.Parse.
+		startDate := time.Now().UTC().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+		endDate := time.Now().UTC().Format(time.RFC3339)
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/rbi/validations?start_date="+url.QueryEscape(startDate)+"&end_date="+url.QueryEscape(endDate), nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidations(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if gotParams == nil {
+			t.Fatal("ListValidations was never invoked, so no date filter was parsed")
+		}
+		if gotParams.StartDate == nil {
+			t.Fatalf("StartDate is nil, want %s parsed from the query string", startDate)
+		}
+		if got := gotParams.StartDate.UTC().Format(time.RFC3339); got != startDate {
+			t.Errorf("StartDate = %s, want %s", got, startDate)
+		}
+		if gotParams.EndDate == nil {
+			t.Fatalf("EndDate is nil, want %s parsed from the query string", endDate)
+		}
+		if got := gotParams.EndDate.UTC().Format(time.RFC3339); got != endDate {
+			t.Errorf("EndDate = %s, want %s", got, endDate)
 		}
 	})
 }
@@ -186,7 +241,8 @@ func TestModelValidationHandler_GetValidation(t *testing.T) {
 	handler := NewModelValidationHandler(mockService)
 
 	t.Run("get existing validation", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations/val-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations/val-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidationByID(w, req)
@@ -197,7 +253,8 @@ func TestModelValidationHandler_GetValidation(t *testing.T) {
 	})
 
 	t.Run("validation not found", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations/not-found?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations/not-found", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidationByID(w, req)
@@ -214,7 +271,8 @@ func TestModelValidationHandler_UpdateValidation(t *testing.T) {
 
 	t.Run("update validation", func(t *testing.T) {
 		body := `{"recommendation":"approve"}`
-		req := httptest.NewRequest(http.MethodPatch, "/api/v1/rbi/validations/val-123?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/rbi/validations/val-123", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -238,7 +296,8 @@ func TestModelValidationHandler_DeleteValidation(t *testing.T) {
 	handler := NewModelValidationHandler(mockService)
 
 	t.Run("delete existing validation", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/validations/val-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/validations/val-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidationByID(w, req)
@@ -249,7 +308,8 @@ func TestModelValidationHandler_DeleteValidation(t *testing.T) {
 	})
 
 	t.Run("delete non-existent validation", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/validations/not-found?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/validations/not-found", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidationByID(w, req)
@@ -274,7 +334,8 @@ func TestModelValidationHandler_AddFinding(t *testing.T) {
 
 	t.Run("add finding", func(t *testing.T) {
 		body := `{"category":"bias","severity":"high","title":"Gender bias","description":"Model shows gender bias"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations/val-123/findings?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations/val-123/findings", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -318,7 +379,8 @@ func TestModelValidationHandler_MethodNotAllowed(t *testing.T) {
 	handler := NewModelValidationHandler(mockService)
 
 	t.Run("PUT not allowed", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/rbi/validations?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/rbi/validations", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleValidations(w, req)
@@ -337,7 +399,8 @@ func TestModelValidationHandler_RegisterRoutes(t *testing.T) {
 	handler.RegisterRoutes(mux)
 
 	t.Run("routes are registered", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/validations", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 
@@ -357,7 +420,8 @@ func TestModelValidationHandler_ServiceErrors(t *testing.T) {
 		handler := NewModelValidationHandler(mockService)
 
 		body := `{"system_id":"sys-1","validation_type":"development","validator_type":"internal","validator_name":"Test","recommendation":"approve"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -377,7 +441,8 @@ func TestModelValidationHandler_ServiceErrors(t *testing.T) {
 		handler := NewModelValidationHandler(mockService)
 
 		body := `{"system_id":"sys-1"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/validations", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 

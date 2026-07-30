@@ -68,3 +68,42 @@ func TestFromEnv(t *testing.T) {
 		}
 	})
 }
+
+// TestIdentityWasGated pins the advisory marker's parse contract (#3062). It
+// deliberately mirrors Parse's exact-match posture: the marker decides which
+// remediation an error message recommends, so a value that does not parse must
+// degrade to "we don't know" rather than to a confident wrong diagnosis.
+func TestIdentityWasGated(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"true", true},
+		{" true ", true}, // trimmed, as Parse does
+		{"\ttrue\n", true},
+		{"TRUE", false}, // exact match only — no case folding
+		{"True", false},
+		{"1", false},
+		{"yes", false},
+		{"false", false},
+		{"", false},
+	} {
+		if got := IdentityWasGated(tc.raw); got != tc.want {
+			t.Errorf("IdentityWasGated(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// The marker must never collide with the trust-gate env var's own vocabulary
+// in a way that lets one be mistaken for the other: they are separate
+// channels (server config vs per-request advisory) that happen to share the
+// "exact true" convention.
+func TestIdentityGatedTrueMatchesParseVocabulary(t *testing.T) {
+	trusted, recognized := Parse(IdentityGatedTrue)
+	if !trusted || !recognized {
+		t.Fatalf("IdentityGatedTrue %q must be the same affirmative token Parse recognizes", IdentityGatedTrue)
+	}
+	if HeaderIdentityGated == EnvVar {
+		t.Fatal("the advisory header and the config env var must remain distinct names")
+	}
+}

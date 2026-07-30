@@ -104,10 +104,16 @@ func (s *PostgresStorage) SaveProvider(ctx context.Context, config *ProviderConf
 
 // GetProvider retrieves a provider configuration by name.
 func (s *PostgresStorage) GetProvider(ctx context.Context, name string) (*ProviderConfig, error) {
+	// #3067: tenant_id is SELECTed, not just filtered on. The registry keys
+	// its in-memory map by ProviderConfig.TenantID, so a row that arrives
+	// without its tenancy would be keyed under the deployment-global scope —
+	// making one tenant's provider readable, testable and ROUTABLE by every
+	// other tenant, which is the S-2 defect one layer down. The registry
+	// additionally refuses to load a row whose tenancy is empty.
 	query := `
 		SELECT name, type, api_key_encrypted, api_key_secret_arn,
 			   endpoint, model, region, enabled, priority, weight,
-			   rate_limit, timeout_seconds, settings
+			   rate_limit, timeout_seconds, settings, tenant_id
 		FROM llm_providers
 		WHERE name = $1
 		  AND tenant_id = current_setting('app.current_org_id', true)
@@ -131,6 +137,7 @@ func (s *PostgresStorage) GetProvider(ctx context.Context, name string) (*Provid
 		&config.RateLimit,
 		&config.TimeoutSeconds,
 		&settingsJSON,
+		&config.TenantID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

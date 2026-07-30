@@ -82,6 +82,8 @@ func TestHandler_RegisterRoutes(t *testing.T) {
 	for _, route := range routes {
 		match := &mux.RouteMatch{}
 		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		if !r.Match(req, match) {
 			t.Errorf("route %s %s not registered", route.method, route.path)
 		}
@@ -95,12 +97,16 @@ func TestHandler_ListExecutions(t *testing.T) {
 	// Add test data
 	now := time.Now()
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-1",
 		Status:     ExecutionStatusCompleted,
 		TotalSteps: 2,
 		StartedAt:  now,
 	})
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-2",
 		Status:     ExecutionStatusRunning,
 		TotalSteps: 3,
@@ -109,6 +115,8 @@ func TestHandler_ListExecutions(t *testing.T) {
 
 	// Make request
 	req := httptest.NewRequest("GET", "/api/v1/executions?limit=10", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -136,6 +144,8 @@ func TestHandler_ListExecutions_WithFilters(t *testing.T) {
 	// Add test data
 	now := time.Now()
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:        "org-1",
+		TenantID:     "tenant-1",
 		RequestID:    "req-1",
 		Status:       ExecutionStatusCompleted,
 		WorkflowName: "workflow-a",
@@ -143,6 +153,8 @@ func TestHandler_ListExecutions_WithFilters(t *testing.T) {
 		StartedAt:    now,
 	})
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:        "org-1",
+		TenantID:     "tenant-1",
 		RequestID:    "req-2",
 		Status:       ExecutionStatusFailed,
 		WorkflowName: "workflow-b",
@@ -152,6 +164,8 @@ func TestHandler_ListExecutions_WithFilters(t *testing.T) {
 
 	// Filter by status
 	req := httptest.NewRequest("GET", "/api/v1/executions?status=completed", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -164,6 +178,8 @@ func TestHandler_ListExecutions_WithFilters(t *testing.T) {
 
 	// Filter by workflow_id
 	req = httptest.NewRequest("GET", "/api/v1/executions?workflow_id=workflow-a", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -180,6 +196,8 @@ func TestHandler_ListExecutions_Pagination(t *testing.T) {
 	// Add test data
 	for i := 0; i < 10; i++ {
 		repo.AddSummary(&ExecutionSummary{
+			OrgID:      "org-1",
+			TenantID:   "tenant-1",
 			RequestID:  string(rune('a'+i)) + "-req",
 			Status:     ExecutionStatusCompleted,
 			TotalSteps: 1,
@@ -188,6 +206,8 @@ func TestHandler_ListExecutions_Pagination(t *testing.T) {
 
 	// Test limit and offset
 	req := httptest.NewRequest("GET", "/api/v1/executions?limit=3&offset=2", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -213,6 +233,8 @@ func TestHandler_ListExecutions_TimeFilter(t *testing.T) {
 	startTime := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
 	endTime := time.Now().Format(time.RFC3339)
 	req := httptest.NewRequest("GET", "/api/v1/executions?start_time="+startTime+"&end_time="+endTime, nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -226,6 +248,8 @@ func TestHandler_ListExecutions_CORS(t *testing.T) {
 	r := setupRouter(h)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/executions", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Origin", "https://app.getaxonflow.com")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -248,6 +272,8 @@ func TestHandler_ListExecutions_Error(t *testing.T) {
 	repo.ListSummariesErr = ErrInvalidInput
 
 	req := httptest.NewRequest("GET", "/api/v1/executions", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -262,6 +288,8 @@ func TestHandler_GetExecution(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusCompleted,
 		TotalSteps: 2,
@@ -275,6 +303,8 @@ func TestHandler_GetExecution(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -300,6 +330,8 @@ func TestHandler_GetExecution_NotFound(t *testing.T) {
 	r := setupRouter(h)
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -319,6 +351,8 @@ func TestHandler_GetExecution_CORS(t *testing.T) {
 	r := setupRouter(h)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/executions/req-123", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Origin", "http://localhost:3000")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -333,7 +367,7 @@ func TestHandler_GetSteps(t *testing.T) {
 	r := setupRouter(h)
 
 	// Add test data (summary anchors the #2934 scoped read)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -346,6 +380,8 @@ func TestHandler_GetSteps(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -367,10 +403,12 @@ func TestHandler_GetSteps_Error(t *testing.T) {
 	h, repo := newTestHandler()
 	r := setupRouter(h)
 
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotsErr = ErrInvalidInput
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -384,7 +422,7 @@ func TestHandler_GetStep(t *testing.T) {
 	r := setupRouter(h)
 
 	// Add test data (summary anchors the #2934 scoped read)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID: "req-123",
 		StepIndex: 0,
@@ -393,6 +431,8 @@ func TestHandler_GetStep(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps/0", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -415,6 +455,8 @@ func TestHandler_GetStep_NotFound(t *testing.T) {
 	r := setupRouter(h)
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps/0", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -428,6 +470,8 @@ func TestHandler_GetStep_InvalidIndex(t *testing.T) {
 	r := setupRouter(h)
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps/invalid", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -446,7 +490,7 @@ func TestHandler_GetTimeline(t *testing.T) {
 
 	// Add test data — the scoped reads (#2934) anchor on the summary row,
 	// mirroring the write path (StartExecution writes the summary first)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: now})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: now})
 	repo.AddSnapshot(&ExecutionSnapshot{
 		RequestID:   "req-123",
 		StepIndex:   0,
@@ -466,6 +510,8 @@ func TestHandler_GetTimeline(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/timeline", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -493,6 +539,8 @@ func TestHandler_GetTimeline_NotFound(t *testing.T) {
 	repo.GetSnapshotsErr = ErrNotFound
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/timeline", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -507,6 +555,8 @@ func TestHandler_ExportExecution(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusCompleted,
 		TotalSteps: 1,
@@ -520,6 +570,8 @@ func TestHandler_ExportExecution(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -542,6 +594,8 @@ func TestHandler_ExportExecution_WithOptions(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:         "org-1",
+		TenantID:      "tenant-1",
 		RequestID:     "req-123",
 		Status:        ExecutionStatusCompleted,
 		TotalSteps:    1,
@@ -561,6 +615,8 @@ func TestHandler_ExportExecution_WithOptions(t *testing.T) {
 
 	// Export without input/output
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export?include_input=false&include_output=false&include_policies=false", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -586,6 +642,8 @@ func TestHandler_ExportExecution_NotFound(t *testing.T) {
 	r := setupRouter(h)
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/nonexistent/export", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -600,11 +658,15 @@ func TestHandler_DeleteExecution(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:     "org-1",
+		TenantID:  "tenant-1",
 		RequestID: "req-123",
 		Status:    ExecutionStatusCompleted,
 	})
 
 	req := httptest.NewRequest("DELETE", "/api/v1/executions/req-123", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -625,6 +687,8 @@ func TestHandler_DeleteExecution_NotFound(t *testing.T) {
 	repo.DeleteErr = ErrNotFound
 
 	req := httptest.NewRequest("DELETE", "/api/v1/executions/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -686,6 +750,8 @@ func TestHandler_CORS_AllowedOrigins(t *testing.T) {
 
 	for _, origin := range allowedOrigins {
 		req := httptest.NewRequest("OPTIONS", "/api/v1/executions", nil)
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.Header.Set("Origin", origin)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -697,6 +763,8 @@ func TestHandler_CORS_AllowedOrigins(t *testing.T) {
 
 	// Test disallowed origin
 	req := httptest.NewRequest("OPTIONS", "/api/v1/executions", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("Origin", "https://malicious.com")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -754,10 +822,12 @@ func TestHandler_GetTimeline_InternalError(t *testing.T) {
 	r := setupRouter(h)
 
 	// Set up internal error (summary present so the #2934 scope anchor passes)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotsErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/timeline", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -775,6 +845,8 @@ func TestHandler_DeleteExecution_InternalError(t *testing.T) {
 	repo.DeleteErr = ErrInternal
 
 	req := httptest.NewRequest("DELETE", "/api/v1/executions/req-123", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -792,6 +864,8 @@ func TestHandler_GetExecution_InternalError(t *testing.T) {
 	repo.GetSummaryErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -806,10 +880,12 @@ func TestHandler_GetSteps_InternalError(t *testing.T) {
 	r := setupRouter(h)
 
 	// Set up internal error (summary present so the #2934 scope anchor passes)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotsErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -824,10 +900,12 @@ func TestHandler_GetStep_InternalError(t *testing.T) {
 	r := setupRouter(h)
 
 	// Set up internal error (summary present so the #2934 scope anchor passes)
-	repo.AddSummary(&ExecutionSummary{RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
+	repo.AddSummary(&ExecutionSummary{OrgID: "org-1", TenantID: "tenant-1", RequestID: "req-123", Status: ExecutionStatusRunning, StartedAt: time.Now()})
 	repo.GetSnapshotErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps/0", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -845,6 +923,8 @@ func TestHandler_ExportExecution_InternalError(t *testing.T) {
 	repo.GetSummaryErr = ErrInternal
 
 	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -860,6 +940,8 @@ func TestHandler_ExportExecution_QueryParams(t *testing.T) {
 
 	// Add test data
 	repo.AddSummary(&ExecutionSummary{
+		OrgID:      "org-1",
+		TenantID:   "tenant-1",
 		RequestID:  "req-123",
 		Status:     ExecutionStatusCompleted,
 		TotalSteps: 1,
@@ -887,6 +969,8 @@ func TestHandler_ExportExecution_QueryParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export"+tt.queryStr, nil)
+			req.Header.Set("X-Org-ID", "org-1")
+			req.Header.Set("X-Tenant-ID", "tenant-1")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 
@@ -913,6 +997,8 @@ func TestHandler_getTenantID_HeaderVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// No default headers here — these cases test the extractor's
+			// behaviour when the header is ABSENT.
 			req := httptest.NewRequest("GET", "/test", nil)
 			if tt.header != "" {
 				req.Header.Set(tt.header, tt.value)
@@ -942,6 +1028,8 @@ func TestHandler_getOrgID_HeaderVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// No default headers here — these cases test the extractor's
+			// behaviour when the header is ABSENT.
 			req := httptest.NewRequest("GET", "/test", nil)
 			if tt.header != "" {
 				req.Header.Set(tt.header, tt.value)

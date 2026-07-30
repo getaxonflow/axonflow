@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"axonflow/platform/shared/egress"
 )
 
 // ValidatedIdentity is the outcome of a successful token validation: a
@@ -229,9 +231,13 @@ func FleetRoleNames() []string {
 // oidc_jwks_uri at 169.254.169.254 (the cloud metadata service) or an
 // RFC-1918 host reaches inside the deployment's network.
 //
-// It blocks, when the host is an IP literal: link-local (incl. the
-// 169.254.169.254 metadata IP and IPv6 fe80::/10), RFC-1918 / IPv6 ULA
-// private ranges, unspecified, and multicast. When the host is a name, it
+// When the host is an IP literal it applies egress.OIDCLiteral — the shared
+// range table (#3104) — which blocks every named reserved range EXCEPT
+// loopback. That is more than the ranges this comment used to list: it also
+// covers 0.0.0.0/8, CGNAT, the IETF protocol-assignment and TEST-NET ranges,
+// RFC 2544 benchmarking, 240.0.0.0/4, the broadcast address, the IPv6
+// documentation range, and the four IPv6 encodings that wrap an IPv4 address.
+// See platform/shared/egress for the authoritative list. When the host is a name, it
 // blocks the internal service-discovery suffixes (.internal, .local) and the
 // literal metadata hostnames. Loopback is deliberately NOT blocked — it is
 // allowed elsewhere for local-dev issuers and blocking it here would diverge
@@ -253,16 +259,23 @@ func CheckOIDCEndpointSSRF(rawURL string) error {
 		return fmt.Errorf("URL %q has no host", rawURL)
 	}
 
+	// The IP-literal branch delegates to the shared egress table (#3104).
+	// egress.OIDCLiteral is the only policy that exempts a range, and the range
+	// it exempts is loopback — the local-dev allowance documented above. That
+	// exemption used to live only in this prose; it is now a named cell that
+	// TestPolicyMatrix and TestDeclaredDivergences read.
+	//
+	// Hardening relative to the switch this replaces: the old branch permitted
+	// 0.0.0.0/8 outside the single unspecified address, CGNAT (100.64.0.0/10),
+	// the IETF protocol-assignment and TEST-NET ranges, the RFC 2544
+	// benchmarking range, 240.0.0.0/4, the broadcast address, the IPv6
+	// documentation range, and the four IPv6 encodings that wrap an IPv4
+	// address. An OIDC issuer or JWKS URI on any of those is now refused at the
+	// configuration-write path.
 	if ip := net.ParseIP(host); ip != nil {
-		switch {
-		case ip.IsLoopback():
-			return nil // allowed (parity with the http-loopback exemption)
-		case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
-			return fmt.Errorf("URL host %q is a link-local / metadata address", host)
-		case ip.IsPrivate():
-			return fmt.Errorf("URL host %q is a private (RFC-1918 / ULA) address", host)
-		case ip.IsUnspecified() || ip.IsMulticast():
-			return fmt.Errorf("URL host %q is a non-routable address", host)
+		if egress.OIDCLiteral.Blocks(ip) {
+			return fmt.Errorf("URL host %q is not a permitted egress target: %s",
+				host, egress.OIDCLiteral.Reason(ip))
 		}
 		return nil
 	}

@@ -97,6 +97,7 @@ func TestPostgresRepository_Integration_ListBudgets(t *testing.T) {
 
 	t.Run("list all budgets for tenant", func(t *testing.T) {
 		opts := ListBudgetsOptions{
+			OrgID:    "org-123",
 			TenantID: tenantID,
 			Limit:    50,
 		}
@@ -115,6 +116,7 @@ func TestPostgresRepository_Integration_ListBudgets(t *testing.T) {
 	t.Run("list with enabled filter", func(t *testing.T) {
 		enabled := true
 		opts := ListBudgetsOptions{
+			OrgID:    "org-123",
 			TenantID: tenantID,
 			Enabled:  &enabled,
 			Limit:    50,
@@ -133,6 +135,7 @@ func TestPostgresRepository_Integration_ListBudgets(t *testing.T) {
 
 	t.Run("list with pagination", func(t *testing.T) {
 		opts := ListBudgetsOptions{
+			OrgID:    "org-123",
 			TenantID: tenantID,
 			Limit:    2,
 			Offset:   0,
@@ -151,6 +154,7 @@ func TestPostgresRepository_Integration_ListBudgets(t *testing.T) {
 
 	t.Run("list with scope filter", func(t *testing.T) {
 		opts := ListBudgetsOptions{
+			OrgID:    "org-123",
 			TenantID: tenantID,
 			Scope:    ScopeOrganization,
 			Limit:    50,

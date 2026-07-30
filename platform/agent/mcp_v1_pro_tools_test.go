@@ -703,13 +703,24 @@ func TestMCPToolCreateTenantPolicy_HappyPath(t *testing.T) {
 	if capturedBody["type"] != "content" {
 		t.Errorf("body.type = %v, want content", capturedBody["type"])
 	}
+	// #3061: exactly ONE condition — the pattern. A {field:"connector"}
+	// condition is deliberately NOT emitted: the orchestrator content engine
+	// that governs the LLM/MAP/WCP planes cannot resolve `connector`, so adding
+	// it would make the whole policy skip there (all conditions must match) and
+	// trade enforcement where it already works for enforcement on the MCP
+	// plane. See buildTenantPolicyConditions.
 	conds, _ := capturedBody["conditions"].([]interface{})
 	if len(conds) != 1 {
-		t.Fatalf("conditions len = %d, want 1", len(conds))
+		t.Fatalf("conditions len = %d, want 1 (pattern only)", len(conds))
 	}
 	cond0, _ := conds[0].(map[string]interface{})
 	if cond0["field"] != "query" || cond0["operator"] != "regex" || cond0["value"] != ".*~/\\.ssh/.*" {
-		t.Errorf("condition shape drift: %v", cond0)
+		t.Errorf("pattern condition shape drift: %v", cond0)
+	}
+	for _, c := range conds {
+		if m, _ := c.(map[string]interface{}); m["field"] == "connector" {
+			t.Errorf("a connector condition breaks LLM/MAP/WCP enforcement (#3061): %v", m)
+		}
 	}
 	actions, _ := capturedBody["actions"].([]interface{})
 	if len(actions) != 1 {

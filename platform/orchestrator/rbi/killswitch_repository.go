@@ -15,7 +15,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3103. Migration 301 switches RLS on for all seven rbi_* tables with a
+// `FOR ALL USING (org_id = get_current_org_id())` policy, but this package
+// never set app.current_org_id — so on an axonflow_app_role pool every read
+// here returned SILENT ZERO ROWS and every write failed closed. For a kill
+// switch that is the worst possible failure mode: CheckActive would report
+// "no kill switch active" for an org that had one engaged. Every statement
+// below therefore runs inside rls.WithOrgScope, which opens a transaction and
+// SET LOCALs the GUC the policy reads. The hand-written `WHERE org_id = $n`
+// predicates are KEPT: the wrap is a backstop, not a replacement. See the
+// fuller note in auditexport_repository.go.
 
 // ErrKillSwitchNotFound is returned when a kill switch is not found.
 var ErrKillSwitchNotFound = errors.New("kill switch not found")
@@ -86,29 +99,32 @@ func (r *PostgresKillSwitchRepository) Create(ctx context.Context, ks *KillSwitc
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		ks.ID,
-		ks.OrgID,
-		string(ks.Scope),
-		nullString(ks.SystemID),
-		nullString(ks.TargetIdentifier),
-		ks.IsActive,
-		nullString(ks.ActivatedBy),
-		nullString(ks.ActivatedByEmail),
-		nullTime(ks.ActivatedAt),
-		nullString(ks.ActivationReason),
-		ks.AutoTriggered,
-		nullString(ks.TriggerCondition),
-		triggerThresholdJSON,
-		string(ks.FallbackBehavior),
-		fallbackConfigJSON,
-		nullString(ks.DeactivatedBy),
-		nullString(ks.DeactivatedByEmail),
-		nullTime(ks.DeactivatedAt),
-		nullString(ks.DeactivationReason),
-		ks.CreatedAt,
-		ks.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, ks.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			ks.ID,
+			ks.OrgID,
+			string(ks.Scope),
+			nullString(ks.SystemID),
+			nullString(ks.TargetIdentifier),
+			ks.IsActive,
+			nullString(ks.ActivatedBy),
+			nullString(ks.ActivatedByEmail),
+			nullTime(ks.ActivatedAt),
+			nullString(ks.ActivationReason),
+			ks.AutoTriggered,
+			nullString(ks.TriggerCondition),
+			triggerThresholdJSON,
+			string(ks.FallbackBehavior),
+			fallbackConfigJSON,
+			nullString(ks.DeactivatedBy),
+			nullString(ks.DeactivatedByEmail),
+			nullTime(ks.DeactivatedAt),
+			nullString(ks.DeactivationReason),
+			ks.CreatedAt,
+			ks.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create kill switch: %w", err)
 	}
@@ -129,7 +145,15 @@ func (r *PostgresKillSwitchRepository) Get(ctx context.Context, orgID, id string
 		FROM rbi_kill_switches
 		WHERE id = $1 AND org_id = $2
 	`
-	return r.scanKillSwitch(r.db.QueryRowContext(ctx, query, id, orgID))
+	var ks *KillSwitch
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		ks, scanErr = r.scanKillSwitch(tx.QueryRowContext(ctx, query, id, orgID))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return ks, nil
 }
 
 // GetByScope retrieves a kill switch by scope and target.
@@ -178,7 +202,15 @@ func (r *PostgresKillSwitchRepository) GetByScope(ctx context.Context, orgID str
 		args = []interface{}{orgID, string(scope), systemID, targetID}
 	}
 
-	return r.scanKillSwitch(r.db.QueryRowContext(ctx, query, args...))
+	var ks *KillSwitch
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		ks, scanErr = r.scanKillSwitch(tx.QueryRowContext(ctx, query, args...))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return ks, nil
 }
 
 // List retrieves kill switches with optional filtering.
@@ -218,10 +250,6 @@ func (r *PostgresKillSwitchRepository) List(ctx context.Context, orgID string, p
 
 	// Count total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM rbi_kill_switches WHERE %s", whereClause)
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("failed to count kill switches: %w", err)
-	}
 
 	// Fetch records
 	query := fmt.Sprintf(`
@@ -237,24 +265,41 @@ func (r *PostgresKillSwitchRepository) List(ctx context.Context, orgID string, p
 		ORDER BY created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argIdx, argIdx+1)
-	args = append(args, params.Limit, params.Offset)
+	// countArgs must be captured BEFORE the LIMIT/OFFSET append, and the append
+	// must not write through the shared backing array — otherwise the count
+	// would run with the page args spliced in.
+	countArgs := args
+	args = append(append([]interface{}{}, args...), params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list kill switches: %w", err)
-	}
-	defer rows.Close()
-
+	// One wrap for BOTH statements: the count and the page are separate call
+	// sites and each had to be scoped, and sharing the transaction also makes
+	// total and rows a consistent snapshot.
 	var switches []*KillSwitch
-	for rows.Next() {
-		ks, err := r.scanKillSwitchRows(rows)
-		if err != nil {
-			return nil, 0, err
+	var total int
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("failed to count kill switches: %w", err)
 		}
-		switches = append(switches, ks)
+
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to list kill switches: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			ks, scanErr := r.scanKillSwitchRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			switches = append(switches, ks)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, 0, err
 	}
 
-	return switches, total, rows.Err()
+	return switches, total, nil
 }
 
 // ListActive retrieves all active kill switches.
@@ -272,22 +317,27 @@ func (r *PostgresKillSwitchRepository) ListActive(ctx context.Context, orgID str
 		ORDER BY scope, system_id
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list active kill switches: %w", err)
-	}
-	defer rows.Close()
-
 	var switches []*KillSwitch
-	for rows.Next() {
-		ks, err := r.scanKillSwitchRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to list active kill switches: %w", err)
 		}
-		switches = append(switches, ks)
+		defer rows.Close()
+
+		for rows.Next() {
+			ks, scanErr := r.scanKillSwitchRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			switches = append(switches, ks)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return switches, rows.Err()
+	return switches, nil
 }
 
 // ListBySystem retrieves all kill switches for a specific system.
@@ -305,22 +355,27 @@ func (r *PostgresKillSwitchRepository) ListBySystem(ctx context.Context, orgID, 
 		ORDER BY scope, created_at DESC
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID, systemID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list kill switches by system: %w", err)
-	}
-	defer rows.Close()
-
 	var switches []*KillSwitch
-	for rows.Next() {
-		ks, err := r.scanKillSwitchRows(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID, systemID)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to list kill switches by system: %w", err)
 		}
-		switches = append(switches, ks)
+		defer rows.Close()
+
+		for rows.Next() {
+			ks, scanErr := r.scanKillSwitchRows(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			switches = append(switches, ks)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return switches, rows.Err()
+	return switches, nil
 }
 
 // Update updates an existing kill switch.
@@ -350,28 +405,33 @@ func (r *PostgresKillSwitchRepository) Update(ctx context.Context, ks *KillSwitc
 		WHERE id = $1 AND org_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		ks.ID,
-		ks.OrgID,
-		string(ks.Scope),
-		nullString(ks.SystemID),
-		nullString(ks.TargetIdentifier),
-		ks.IsActive,
-		nullString(ks.ActivatedBy),
-		nullString(ks.ActivatedByEmail),
-		nullTime(ks.ActivatedAt),
-		nullString(ks.ActivationReason),
-		ks.AutoTriggered,
-		nullString(ks.TriggerCondition),
-		triggerThresholdJSON,
-		string(ks.FallbackBehavior),
-		fallbackConfigJSON,
-		nullString(ks.DeactivatedBy),
-		nullString(ks.DeactivatedByEmail),
-		nullTime(ks.DeactivatedAt),
-		nullString(ks.DeactivationReason),
-		ks.UpdatedAt,
-	)
+	var result sql.Result
+	err = rls.WithOrgScope(ctx, r.db, ks.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			ks.ID,
+			ks.OrgID,
+			string(ks.Scope),
+			nullString(ks.SystemID),
+			nullString(ks.TargetIdentifier),
+			ks.IsActive,
+			nullString(ks.ActivatedBy),
+			nullString(ks.ActivatedByEmail),
+			nullTime(ks.ActivatedAt),
+			nullString(ks.ActivationReason),
+			ks.AutoTriggered,
+			nullString(ks.TriggerCondition),
+			triggerThresholdJSON,
+			string(ks.FallbackBehavior),
+			fallbackConfigJSON,
+			nullString(ks.DeactivatedBy),
+			nullString(ks.DeactivatedByEmail),
+			nullTime(ks.DeactivatedAt),
+			nullString(ks.DeactivationReason),
+			ks.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update kill switch: %w", err)
 	}
@@ -386,10 +446,15 @@ func (r *PostgresKillSwitchRepository) Update(ctx context.Context, ks *KillSwitc
 
 // Delete removes a kill switch.
 func (r *PostgresKillSwitchRepository) Delete(ctx context.Context, orgID, id string) error {
-	result, err := r.db.ExecContext(ctx,
-		"DELETE FROM rbi_kill_switches WHERE id = $1 AND org_id = $2",
-		id, orgID,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx,
+			"DELETE FROM rbi_kill_switches WHERE id = $1 AND org_id = $2",
+			id, orgID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete kill switch: %w", err)
 	}
@@ -427,20 +492,24 @@ func (r *PostgresKillSwitchRepository) AddHistoryEntry(ctx context.Context, entr
 		RETURNING id
 	`
 
-	err = r.db.QueryRowContext(ctx, query,
-		entry.OrgID,
-		entry.KillSwitchID,
-		string(entry.Action),
-		entry.ActorID,
-		nullString(entry.ActorEmail),
-		nullString(entry.ActorRole),
-		nullString(entry.ActorIP),
-		nullString(entry.Reason),
-		previousStateJSON,
-		newStateJSON,
-		metadataJSON,
-		entry.CreatedAt,
-	).Scan(&entry.ID)
+	// This is a WRITE with the shape of a read (INSERT ... RETURNING id), so it
+	// needs the org scope for the policy's WITH CHECK, not just for visibility.
+	err = rls.WithOrgScope(ctx, r.db, entry.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			entry.OrgID,
+			entry.KillSwitchID,
+			string(entry.Action),
+			entry.ActorID,
+			nullString(entry.ActorEmail),
+			nullString(entry.ActorRole),
+			nullString(entry.ActorIP),
+			nullString(entry.Reason),
+			previousStateJSON,
+			newStateJSON,
+			metadataJSON,
+			entry.CreatedAt,
+		).Scan(&entry.ID)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to add history entry: %w", err)
 	}
@@ -467,30 +536,45 @@ func (r *PostgresKillSwitchRepository) GetHistory(ctx context.Context, orgID, ki
 		LIMIT $3
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID, killSwitchID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get history: %w", err)
-	}
-	defer rows.Close()
-
 	var entries []*KillSwitchHistoryEntry
-	for rows.Next() {
-		entry, err := r.scanHistoryEntry(rows)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, orgID, killSwitchID, limit)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("failed to get history: %w", err)
 		}
-		entries = append(entries, entry)
+		defer rows.Close()
+
+		for rows.Next() {
+			entry, scanErr := r.scanHistoryEntry(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			entries = append(entries, entry)
+		}
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
-	return entries, rows.Err()
+	return entries, nil
 }
 
 // CheckActive checks if any active kill switch applies to the given scope.
 func (r *PostgresKillSwitchRepository) CheckActive(ctx context.Context, orgID string, scope KillSwitchScope, systemID, targetID string) (bool, *KillSwitch, error) {
-	// Check in order of priority: global > system > specific
+	// Check in order of priority: global > system > specific.
+	//
+	// All three probes share ONE rls.WithOrgScope, so they see a consistent
+	// snapshot as well as the org GUC. ErrKillSwitchNotFound is NOT an error
+	// here — it means "keep looking", and ultimately "no kill switch active" —
+	// so it must never be returned out of the closure: WithOrgScope propagates
+	// the closure's error verbatim, which would turn a benign miss into a
+	// hard error. The verdict is carried out in `active` / `match` instead.
+	var active bool
+	var match *KillSwitch
 
-	// Check global kill switch first
-	globalQuery := `
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		// Check global kill switch first
+		globalQuery := `
 		SELECT
 			id, org_id, scope, system_id, target_identifier,
 			is_active, activated_by, activated_by_email, activated_at, activation_reason,
@@ -502,17 +586,18 @@ func (r *PostgresKillSwitchRepository) CheckActive(ctx context.Context, orgID st
 		WHERE org_id = $1 AND scope = 'global' AND is_active = true
 		LIMIT 1
 	`
-	ks, err := r.scanKillSwitch(r.db.QueryRowContext(ctx, globalQuery, orgID))
-	if err == nil {
-		return true, ks, nil
-	}
-	if err != ErrKillSwitchNotFound {
-		return false, nil, err
-	}
+		ks, err := r.scanKillSwitch(tx.QueryRowContext(ctx, globalQuery, orgID))
+		if err == nil {
+			active, match = true, ks
+			return nil
+		}
+		if err != ErrKillSwitchNotFound {
+			return err
+		}
 
-	// Check system-level kill switch
-	if systemID != "" {
-		systemQuery := `
+		// Check system-level kill switch
+		if systemID != "" {
+			systemQuery := `
 			SELECT
 				id, org_id, scope, system_id, target_identifier,
 				is_active, activated_by, activated_by_email, activated_at, activation_reason,
@@ -524,18 +609,19 @@ func (r *PostgresKillSwitchRepository) CheckActive(ctx context.Context, orgID st
 			WHERE org_id = $1 AND scope = 'system' AND system_id = $2 AND is_active = true
 			LIMIT 1
 		`
-		ks, err = r.scanKillSwitch(r.db.QueryRowContext(ctx, systemQuery, orgID, systemID))
-		if err == nil {
-			return true, ks, nil
+			ks, err = r.scanKillSwitch(tx.QueryRowContext(ctx, systemQuery, orgID, systemID))
+			if err == nil {
+				active, match = true, ks
+				return nil
+			}
+			if err != ErrKillSwitchNotFound {
+				return err
+			}
 		}
-		if err != ErrKillSwitchNotFound {
-			return false, nil, err
-		}
-	}
 
-	// Check specific scope
-	if systemID != "" && targetID != "" && scope != KillSwitchScopeGlobal && scope != KillSwitchScopeSystem {
-		specificQuery := `
+		// Check specific scope
+		if systemID != "" && targetID != "" && scope != KillSwitchScopeGlobal && scope != KillSwitchScopeSystem {
+			specificQuery := `
 			SELECT
 				id, org_id, scope, system_id, target_identifier,
 				is_active, activated_by, activated_by_email, activated_at, activation_reason,
@@ -547,16 +633,22 @@ func (r *PostgresKillSwitchRepository) CheckActive(ctx context.Context, orgID st
 			WHERE org_id = $1 AND scope = $2 AND system_id = $3 AND target_identifier = $4 AND is_active = true
 			LIMIT 1
 		`
-		ks, err = r.scanKillSwitch(r.db.QueryRowContext(ctx, specificQuery, orgID, string(scope), systemID, targetID))
-		if err == nil {
-			return true, ks, nil
+			ks, err = r.scanKillSwitch(tx.QueryRowContext(ctx, specificQuery, orgID, string(scope), systemID, targetID))
+			if err == nil {
+				active, match = true, ks
+				return nil
+			}
+			if err != ErrKillSwitchNotFound {
+				return err
+			}
 		}
-		if err != ErrKillSwitchNotFound {
-			return false, nil, err
-		}
+
+		return nil
+	}); err != nil {
+		return false, nil, err
 	}
 
-	return false, nil, nil
+	return active, match, nil
 }
 
 // scanKillSwitch scans a single row into a KillSwitch.

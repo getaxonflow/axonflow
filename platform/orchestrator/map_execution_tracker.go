@@ -104,7 +104,11 @@ func (t *MAPExecutionTracker) GetPlanStatus(ctx context.Context, planID string) 
 		return nil, fmt.Errorf("plan %s: %w", planID, execution.ErrExecutionNotFound)
 	}
 
-	plan, err := t.planService.GetPlan(ctx, planID)
+	// #3065: named unscoped read — this reconciliation holds no request scope
+	// and its result is authorized by the HTTP layer
+	// (UnifiedExecutionHandler.checkTenantOwnership) before it reaches a
+	// client. See planning.Service.GetPlanUnscoped.
+	plan, err := t.planService.GetPlanUnscoped(ctx, planID)
 	if err != nil {
 		if errors.Is(err, planning.ErrPlanNotFound) {
 			return nil, fmt.Errorf("plan %s: %w", planID, execution.ErrExecutionNotFound)

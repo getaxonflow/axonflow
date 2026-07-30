@@ -32,6 +32,12 @@ services:
         EDITION: community
     container_name: mcp-poc-axonflow
     environment:
+      # Required since #3096: an UNSET DEPLOYMENT_MODE is no longer treated as
+      # Community. `AXONFLOW_EDITION` below describes the BUILD, not the runtime
+      # posture, and nothing reads it as one — this is the variable that decides
+      # whether the agent authenticates. Without it the POC agent comes up in the
+      # enterprise posture and demands a license it was never given.
+      DEPLOYMENT_MODE: community
       DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
       AXONFLOW_EDITION: community
       AXONFLOW_DB_USE_APP_ROLE: "false"

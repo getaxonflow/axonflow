@@ -42,6 +42,7 @@ func TestGetBudgetHandler_CrossOrgIsNotFound(t *testing.T) {
 
 	// The IDOR variant: a caller from org-b knows/guesses org-a's budget id.
 	req := httptest.NewRequest("GET", "/api/v1/budgets/b-org-a", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-b")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -52,6 +53,7 @@ func TestGetBudgetHandler_CrossOrgIsNotFound(t *testing.T) {
 
 	// Control (non-vacuous): the owning org still reads it.
 	req = httptest.NewRequest("GET", "/api/v1/budgets/b-org-a", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-a")
 	rr = httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -68,6 +70,7 @@ func TestUpdateBudgetHandler_CrossOrgIsNotFound(t *testing.T) {
 
 	body, _ := json.Marshal(Budget{Name: "hijacked"})
 	req := httptest.NewRequest("PUT", "/api/v1/budgets/b-org-a", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-b")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -87,6 +90,7 @@ func TestDeleteBudgetHandler_CrossOrgIsNotFound(t *testing.T) {
 	seedOrgBudget(repo, "b-org-a", "org-a")
 
 	req := httptest.NewRequest("DELETE", "/api/v1/budgets/b-org-a", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-b")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -100,6 +104,7 @@ func TestDeleteBudgetHandler_CrossOrgIsNotFound(t *testing.T) {
 
 	// Control: the owning org can delete.
 	req = httptest.NewRequest("DELETE", "/api/v1/budgets/b-org-a", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-a")
 	rr = httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -120,6 +125,7 @@ func TestBudgetStatusAndAlertsHandlers_CrossOrgIsNotFound(t *testing.T) {
 		"/api/v1/budgets/b-org-a/alerts",
 	} {
 		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.Header.Set("X-Org-ID", "org-b")
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
@@ -128,6 +134,7 @@ func TestBudgetStatusAndAlertsHandlers_CrossOrgIsNotFound(t *testing.T) {
 		}
 
 		req = httptest.NewRequest("GET", path, nil)
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.Header.Set("X-Org-ID", "org-a")
 		rr = httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
@@ -148,6 +155,7 @@ func TestGetBudgetHandler_GlobalBudgetVisibleToAnyOrg(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/budgets/b-global", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req.Header.Set("X-Org-ID", "org-b")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -166,6 +174,8 @@ func TestCheckBudgetHandler_RedactsSpendWhenRequested(t *testing.T) {
 	do := func(redact bool) BudgetDecision {
 		body, _ := json.Marshal(CheckBudgetRequest{OrgID: "org-1"})
 		req := httptest.NewRequest("POST", "/api/v1/budgets/check", bytes.NewReader(body))
+		req.Header.Set("X-Org-ID", "org-1")
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req.Header.Set("Content-Type", "application/json")
 		if redact {
 			req = req.WithContext(WithSpendRedaction(req.Context()))

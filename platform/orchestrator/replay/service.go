@@ -232,8 +232,17 @@ func (s *Service) GetExecution(ctx context.Context, requestID string, scope Acce
 	return &Execution{Summary: summary, Steps: steps}, nil
 }
 
-// ListExecutions lists execution summaries with filtering and pagination
+// ListExecutions lists execution summaries with filtering and pagination.
+//
+// #3065: the tenancy filters are mandatory. Both the Postgres repository and
+// the mock append the org/tenant conditions only when non-empty, so an
+// unscoped call listed every tenant's executions. The guard lives here as
+// well as in the repository so a future in-memory or cached implementation
+// inherits it.
 func (s *Service) ListExecutions(ctx context.Context, opts ListOptions) ([]ExecutionSummary, int, error) {
+	if err := (AccessScope{OrgID: opts.OrgID, TenantID: opts.TenantID}).Validate(); err != nil {
+		return nil, 0, err
+	}
 	return s.repo.ListSummaries(ctx, opts)
 }
 
@@ -347,6 +356,9 @@ func (s *Service) IsHealthy(ctx context.Context) bool {
 
 // GetExecutionCount returns the count of executions matching the filter
 func (s *Service) GetExecutionCount(ctx context.Context, opts ListOptions) (int, error) {
+	if err := (AccessScope{OrgID: opts.OrgID, TenantID: opts.TenantID}).Validate(); err != nil {
+		return 0, err
+	}
 	_, total, err := s.repo.ListSummaries(ctx, ListOptions{
 		OrgID:      opts.OrgID,
 		TenantID:   opts.TenantID,

@@ -271,6 +271,7 @@ func TestPostgresRepository_Integration_List(t *testing.T) {
 	t.Run("list all for tenant", func(t *testing.T) {
 		opts := ListWorkflowsOptions{
 			TenantID: tenantID,
+			OrgID:    "org-123",
 			Limit:    50,
 		}
 		workflows, total, err := repo.List(ctx, opts)
@@ -289,6 +290,7 @@ func TestPostgresRepository_Integration_List(t *testing.T) {
 		status := WorkflowStatusInProgress
 		opts := ListWorkflowsOptions{
 			TenantID: tenantID,
+			OrgID:    "org-123",
 			Status:   &status,
 			Limit:    50,
 		}
@@ -308,6 +310,7 @@ func TestPostgresRepository_Integration_List(t *testing.T) {
 		source := WorkflowSourceCrewAI
 		opts := ListWorkflowsOptions{
 			TenantID: tenantID,
+			OrgID:    "org-123",
 			Source:   &source,
 			Limit:    50,
 		}
@@ -326,6 +329,7 @@ func TestPostgresRepository_Integration_List(t *testing.T) {
 	t.Run("list with pagination", func(t *testing.T) {
 		opts := ListWorkflowsOptions{
 			TenantID: tenantID,
+			OrgID:    "org-123",
 			Limit:    2,
 			Offset:   0,
 		}
@@ -823,6 +827,8 @@ func TestPostgresRepository_Integration_Concurrency(t *testing.T) {
 				Source:       WorkflowSourceExternal,
 				Status:       WorkflowStatusInProgress,
 				TenantID:     tenantID,
+				// #3065: the listing below binds on both dimensions.
+				OrgID: "org-concurrency",
 			}
 			err := repo.Create(ctx, workflow)
 			if err != nil {
@@ -838,7 +844,7 @@ func TestPostgresRepository_Integration_Concurrency(t *testing.T) {
 	}
 
 	// Verify all workflows were created
-	workflows, total, err := repo.List(ctx, ListWorkflowsOptions{TenantID: tenantID, Limit: 50})
+	workflows, total, err := repo.List(ctx, ListWorkflowsOptions{TenantID: tenantID, OrgID: "org-concurrency", Limit: 50})
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}

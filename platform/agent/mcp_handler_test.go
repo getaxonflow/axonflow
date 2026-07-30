@@ -1572,6 +1572,15 @@ func TestMCPQueryHandler_DynamicPolicyGracefulDegradation(t *testing.T) {
 	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
 
 	// Initialize dynamic policy evaluator pointing to non-existent server
+	// #3068: this test covers the TRANSIENT-outage path — the orchestrator is
+	// unreachable and graceful degradation lets the request proceed. That path
+	// requires a configured internal-service secret, because a MISSING secret is
+	// a permanent misconfiguration (every orchestrator call would be refused
+	// forever) and now deliberately fails CLOSED regardless of
+	// GracefulDegradation, so it cannot silently become allow-all. See
+	// TestDynamicPolicyEvaluator_MissingSecretFailsClosed.
+	t.Setenv("AXONFLOW_INTERNAL_SERVICE_SECRET", "mcp-graceful-degradation-test-secret-32c")
+
 	// With graceful degradation enabled
 	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
 		Enabled:              true,
@@ -1928,17 +1937,17 @@ func TestValidateServiceLicense_CommunityMode(t *testing.T) {
 	}{
 		{"community mode with license key", "community", "AXON-fake-key.fake-signature"},
 		{"community mode empty license", "community", ""},
-		{"unset deployment mode with license key", "", "AXON-fake-key.fake-signature"},
-		{"unset deployment mode empty license", "", ""},
+		// #3096: the two "unset deployment mode" rows were removed. They
+		// asserted that an unset DEPLOYMENT_MODE skips license validation and
+		// the connector:operation permission check (mcp_handler.go:92) — i.e.
+		// that forgetting to configure a mode disabled the PEP. Unset now takes
+		// the enterprise path, which validates; that path is covered by
+		// TestValidateServiceLicense_EnterpriseMode_LicenseValidated below.
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.deploymentMode != "" {
-				t.Setenv("DEPLOYMENT_MODE", tt.deploymentMode)
-			} else {
-				os.Unsetenv("DEPLOYMENT_MODE")
-			}
+			t.Setenv("DEPLOYMENT_MODE", tt.deploymentMode)
 
 			w := httptest.NewRecorder()
 			granted, err := validateServiceLicense(context.Background(), w, tt.licenseKey, "postgres", "query", "query", "tenant-test", "org-test", "client-test")

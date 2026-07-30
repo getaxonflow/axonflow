@@ -91,12 +91,24 @@ func TestServiceCrossOrgRejected(t *testing.T) {
 		}
 	})
 
-	t.Run("empty caller org (internal bridge) skips the check", func(t *testing.T) {
+	// #3065 (F5): this sub-test used to be "empty caller org (internal
+	// bridge) skips the check" and asserted that an org-less caller received
+	// another org's approval request. rejectCrossOrg carried the fail-open
+	// compare (`callerOrg != "" && req.OrgID != callerOrg`), so omitting
+	// X-Org-ID skipped the isolation entirely — the same shape as the rest of
+	// #3065. Every caller of these by-id flows arrives through the HTTP
+	// handlers, which pass WithCallerOrg from the agent-authenticated
+	// X-Org-ID; the MCP-tool bridge uses CreateRequest, which does not run
+	// this check at all.
+	t.Run("empty caller org is denied", func(t *testing.T) {
 		svc, mock := newSvc(t)
 		expectApprovalLookup(mock, requestID, "org-b")
 		got, err := svc.GetApprovalRequest(context.Background(), requestID)
-		if err != nil || got == nil {
-			t.Fatalf("internal (org-less) callers are pre-authorized by their ingress guards: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("an org-less caller must be denied, got req=%v err=%v", got, err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
 		}
 	})
 }

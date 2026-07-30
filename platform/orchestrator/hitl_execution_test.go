@@ -855,6 +855,9 @@ func TestHITLWorkflowEngine_SaveExecution(t *testing.T) {
 			ID:           "test-exec-save-1",
 			WorkflowName: "test-workflow",
 			Status:       StatusPaused,
+			// #3067: the store is keyed by the owning org, so an execution
+			// needs the identity the handlers overlay from the auth headers.
+			UserContext: UserContext{OrgID: "org-save"},
 		},
 		ApprovalID:     uuid.New(),
 		ApprovalStatus: "pending",
@@ -867,7 +870,7 @@ func TestHITLWorkflowEngine_SaveExecution(t *testing.T) {
 
 	// Verify it was saved
 	executionStoreMutex.RLock()
-	saved, exists := executionStore["test-exec-save-1"]
+	saved, exists := executionStore[hitlStoreKey("org-save", "test-exec-save-1")]
 	executionStoreMutex.RUnlock()
 
 	if !exists {
@@ -904,10 +907,11 @@ func TestHITLWorkflowEngine_GetExecutionStatus(t *testing.T) {
 	executionStoreMutex.Lock()
 	executionStore = make(map[string]*HITLWorkflowExecution)
 	approvalID := uuid.New()
-	executionStore["test-exec-get-1"] = &HITLWorkflowExecution{
+	executionStore[hitlStoreKey("org-get", "test-exec-get-1")] = &HITLWorkflowExecution{
 		WorkflowExecution: &WorkflowExecution{
-			ID:     "test-exec-get-1",
-			Status: StatusPaused,
+			ID:          "test-exec-get-1",
+			Status:      StatusPaused,
+			UserContext: UserContext{OrgID: "org-get"},
 		},
 		ApprovalID:     approvalID,
 		ApprovalStatus: "pending",
@@ -919,7 +923,7 @@ func TestHITLWorkflowEngine_GetExecutionStatus(t *testing.T) {
 	hitlEngine := NewHITLWorkflowEngine(nil, nil, nil)
 	ctx := context.Background()
 
-	status, err := hitlEngine.GetExecutionStatus(ctx, "test-exec-get-1")
+	status, err := hitlEngine.GetExecutionStatusForScope(ctx, "org-get", "test-exec-get-1")
 
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -956,7 +960,7 @@ func TestHITLWorkflowEngine_GetExecutionStatus_NotFound(t *testing.T) {
 	hitlEngine := NewHITLWorkflowEngine(nil, nil, nil)
 	ctx := context.Background()
 
-	status, err := hitlEngine.GetExecutionStatus(ctx, "nonexistent-exec")
+	status, err := hitlEngine.GetExecutionStatusForScope(ctx, "org-get", "nonexistent-exec")
 
 	if err != ErrExecutionNotFound {
 		t.Errorf("Expected ErrExecutionNotFound, got %v", err)
@@ -981,6 +985,8 @@ func TestHITLWorkflowEngine_SaveAndGetExecution_Integration(t *testing.T) {
 			ID:           "test-exec-integration",
 			WorkflowName: "integration-workflow",
 			Status:       StatusPaused,
+			// #3067: the store is keyed by the owning org.
+			UserContext: UserContext{OrgID: "org-integration"},
 		},
 		ApprovalID:     approvalID,
 		ApprovalStatus: "pending",
@@ -992,7 +998,7 @@ func TestHITLWorkflowEngine_SaveAndGetExecution_Integration(t *testing.T) {
 	hitlEngine.SaveExecution(exec)
 
 	// Get the status
-	status, err := hitlEngine.GetExecutionStatus(ctx, "test-exec-integration")
+	status, err := hitlEngine.GetExecutionStatusForScope(ctx, "org-integration", "test-exec-integration")
 
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

@@ -252,6 +252,14 @@ func TestDeleteOverride(t *testing.T) {
 				// v9 Phase 8 #2384 PR-C1: GetByID also projects the new
 				// org_id column (mig 110), and Delete wraps the DELETE in
 				// WithOrgScope using that org_id.
+				//
+				// #3065 (F7): GetByID is itself org-scoped now — an unknown
+				// caller org is a denial, so the read runs inside its own
+				// WithOrgScope transaction rather than as a bare SELECT.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT .* FROM policy_overrides WHERE`).
 					WithArgs("override-1").
 					WillReturnRows(sqlmock.NewRows([]string{
@@ -267,6 +275,7 @@ func TestDeleteOverride(t *testing.T) {
 						"Testing", nil,
 						"user1", time.Now(), "user1", time.Now(),
 					))
+				mock.ExpectCommit()
 
 				// Wrapped DELETE.
 				mock.ExpectBegin()
@@ -284,10 +293,15 @@ func TestDeleteOverride(t *testing.T) {
 			name:       "override not found",
 			overrideID: "nonexistent",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// GetByID returns not found
+				// GetByID returns not found, inside its own scoped txn.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT .* FROM policy_overrides WHERE`).
 					WithArgs("nonexistent").
 					WillReturnError(sql.ErrNoRows)
+				mock.ExpectRollback()
 			},
 			wantErr: ErrOverrideNotFound,
 		},
@@ -302,7 +316,10 @@ func TestDeleteOverride(t *testing.T) {
 			tt.setupMock(mock)
 
 			repo := NewPolicyOverrideRepository(db)
-			err = repo.Delete(context.Background(), tt.overrideID, "test-user")
+			// #3065 (F7): the caller org travels in the context — without one
+			// GetByID (and therefore Delete) denies before touching the DB.
+			ctx := context.WithValue(context.Background(), ContextKeyOrgID, "tenant-1")
+			err = repo.Delete(ctx, tt.overrideID, "test-user")
 
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
@@ -462,6 +479,11 @@ func TestGetOverrideByID(t *testing.T) {
 	expiry := now.Add(24 * time.Hour)
 
 	// v9 Phase 8 #2384 PR-C1: SELECT now projects org_id (added by mig 110).
+	// #3065 (F7): the read is org-scoped, so it runs inside a WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM policy_overrides WHERE`).
 		WithArgs("override-1").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -477,9 +499,13 @@ func TestGetOverrideByID(t *testing.T) {
 			"Testing phase", expiry,
 			"user1", now, "user2", now,
 		))
+	mock.ExpectCommit()
 
 	repo := NewPolicyOverrideRepository(db)
-	override, err := repo.GetByID(context.Background(), "override-1")
+	// #3065 (F7): GetByID now refuses to hand back a row outside the caller's
+	// org. The caller org travels in the context (the same channel the #3048
+	// RLS scoping already uses), so the test must present one.
+	override, err := repo.GetByID(context.WithValue(context.Background(), ContextKeyOrgID, "tenant-1"), "override-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, "override-1", override.ID)

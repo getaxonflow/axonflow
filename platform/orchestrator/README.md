@@ -181,13 +181,23 @@ docker build -t axonflow-orchestrator .
 
 ### Docker
 ```bash
+# DEPLOYMENT_MODE selects the runtime security posture AND which database
+# migrations are applied. It has no baked-in default in the image on purpose —
+# see scripts/lint-deployment-mode.sh. An unset value resolves to the enterprise
+# posture; an unrecognised one is a hard boot failure.
 docker run -p 8081:8081 \
+  -e DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-community} \
   -e DATABASE_URL=$DATABASE_URL \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   axonflow-orchestrator
 ```
 
 ### Kubernetes
+
+`DEPLOYMENT_MODE` must be set on the container. This manifest shipped without
+an `env:` block at all, which since #3096 means the deployment runs the
+enterprise posture by accident (#3170).
+
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -200,6 +210,9 @@ spec:
       containers:
       - name: orchestrator
         image: axonflow/orchestrator:latest
+        env:
+        - name: DEPLOYMENT_MODE
+          value: in-vpc-enterprise
         ports:
         - containerPort: 8081
 ```

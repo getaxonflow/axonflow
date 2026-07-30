@@ -149,16 +149,15 @@ func (r *MockRepository) GetSummary(ctx context.Context, requestID string) (*Exe
 	return nil, ErrNotFound
 }
 
-// summaryInScope mirrors summaryOrgScopeSQL: empty caller value leaves the
-// dimension unfiltered; NULL/empty stamps are pre-attribution rows.
+// summaryInScope mirrors summaryOrgScopeSQL.
+//
+// #3065: it used to replicate the production fail-open verbatim — an empty
+// caller value left the dimension unfiltered, so a mock-based unit test that
+// called GetSummaryScoped with no scope got the row back and PASSED. The mock
+// certified the bug. It now mirrors the fixed contract: both sides must be
+// present and equal.
 func summaryInScope(s *ExecutionSummary, scope AccessScope) bool {
-	if scope.OrgID != "" && s.OrgID != "" && s.OrgID != scope.OrgID {
-		return false
-	}
-	if scope.TenantID != "" && s.TenantID != "" && s.TenantID != scope.TenantID {
-		return false
-	}
-	return true
+	return scope.Authorize(s.OrgID, s.TenantID) == nil
 }
 
 func (r *MockRepository) GetSummaryScoped(ctx context.Context, requestID string, scope AccessScope) (*ExecutionSummary, error) {
@@ -203,10 +202,10 @@ func (r *MockRepository) ListSummaries(ctx context.Context, opts ListOptions) ([
 		if opts.Status != "" && string(summary.Status) != opts.Status {
 			continue
 		}
-		if opts.OrgID != "" && summary.OrgID != opts.OrgID {
-			continue
-		}
-		if opts.TenantID != "" && summary.TenantID != opts.TenantID {
+		// #3065: the tenancy filters used to be skipped when empty, so an
+		// unscoped list returned every tenant's executions — the same
+		// fail-open the by-id scope carried, replicated in the mock.
+		if !summaryInScope(summary, AccessScope{OrgID: opts.OrgID, TenantID: opts.TenantID}) {
 			continue
 		}
 		if opts.WorkflowID != "" && summary.WorkflowName != opts.WorkflowID {

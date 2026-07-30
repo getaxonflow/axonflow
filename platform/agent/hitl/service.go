@@ -19,6 +19,7 @@ import (
 
 	"axonflow/platform/agent/license"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 
 	"github.com/google/uuid"
 )
@@ -233,11 +234,11 @@ func (s *Service) CreateApprovalRequest(ctx context.Context, input CreateApprova
 
 	// Add creation history entry
 	history := &ApprovalHistory{
-		RequestID:  req.RequestID,
-		OrgID:      req.OrgID,
-		TenantID:   req.TenantID,
-		Action:     "created",
-		NewStatus:  "pending",
+		RequestID: req.RequestID,
+		OrgID:     req.OrgID,
+		TenantID:  req.TenantID,
+		Action:    "created",
+		NewStatus: "pending",
 	}
 	if err := s.repo.AddHistory(ctx, history); err != nil {
 		// Log but don't fail - history is supplementary
@@ -246,7 +247,6 @@ func (s *Service) CreateApprovalRequest(ctx context.Context, input CreateApprova
 
 	return req, nil
 }
-
 
 // callerOrgContextKey carries the authenticated caller org for the HITL
 // service flows (#3048 R3 BLOCKER-2). The HTTP handlers stamp it from the
@@ -280,8 +280,21 @@ func callerOrgFromContext(ctx context.Context) string {
 // not-found error a genuinely missing id yields (no cross-org existence
 // oracle, mirroring the repo's existing "approval request not found" reply).
 func rejectCrossOrg(ctx context.Context, req *ApprovalRequest, requestID uuid.UUID) error {
-	callerOrg := callerOrgFromContext(ctx)
-	if callerOrg != "" && req != nil && req.OrgID != callerOrg {
+	// #3065 (F5): this was `callerOrg != "" && req != nil && req.OrgID !=
+	// callerOrg` — the fail-open compare. A caller who omitted X-Org-ID
+	// skipped the check entirely and could act on ANY org's approval request,
+	// which is the same guard #3048 R3 added to close the HITL approve
+	// forgery. It now fails closed on an empty value on either side.
+	//
+	// Every call site reaches this through the HTTP handlers, which pass
+	// WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")) — and X-Org-ID is
+	// Set from the validated credential by the agent's apiAuthMiddleware in
+	// every deployment mode. The MCP-tool path uses CreateRequest, which does
+	// not run this check.
+	if req == nil {
+		return fmt.Errorf("approval request not found: %s", requestID)
+	}
+	if tenantscope.NewOrgOnly(callerOrgFromContext(ctx)).AuthorizeOrgOnly(req.OrgID) != nil {
 		return fmt.Errorf("approval request not found: %s", requestID)
 	}
 	return nil
@@ -546,12 +559,12 @@ func (s *Service) dispatchTerminal(req *ApprovalRequest, status, decidedByID, de
 		RequestType:   req.RequestType,
 		Severity:      req.Severity,
 		DecisionEnvelope: map[string]interface{}{
-			"org_id":             req.OrgID,
-			"tenant_id":          req.TenantID,
-			"client_id":          req.ClientID,
+			"org_id":              req.OrgID,
+			"tenant_id":           req.TenantID,
+			"client_id":           req.ClientID,
 			"triggered_policy_id": req.TriggeredPolicyID,
-			"comment":            comment,
-			"justification":      justification,
+			"comment":             comment,
+			"justification":       justification,
 		},
 	}
 	s.dispatcher.Enqueue(req.NotifyURL, envelope)

@@ -262,7 +262,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		// Perform initial health check unless skipped
 		if !cfg.SkipHealthCheck {
 			healthCtx, cancel := context.WithTimeout(ctx, healthTimeout)
-			healthResult, err := registry.HealthCheckSingle(healthCtx, config.Name)
+			healthResult, err := registry.HealthCheckSingle(healthCtx, GlobalTenant, config.Name)
 			cancel()
 
 			if err != nil {
@@ -282,7 +282,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 	// Set default provider
 	defaultProvider := os.Getenv(EnvLLMDefaultProvider)
 	if defaultProvider != "" {
-		if registry.Has(defaultProvider) {
+		if registry.Has(GlobalTenant, defaultProvider) {
 			result.DefaultProvider = defaultProvider
 		} else {
 			result.Warnings = append(result.Warnings,
@@ -514,7 +514,7 @@ func bootstrapFromConfigs(cfg *BootstrapConfig, registry *Registry, logger *log.
 
 		if !cfg.SkipHealthCheck {
 			healthCtx, cancel := context.WithTimeout(ctx, healthTimeout)
-			healthResult, err := registry.HealthCheckSingle(healthCtx, config.Name)
+			healthResult, err := registry.HealthCheckSingle(healthCtx, GlobalTenant, config.Name)
 			cancel()
 
 			if err != nil {
@@ -534,7 +534,7 @@ func bootstrapFromConfigs(cfg *BootstrapConfig, registry *Registry, logger *log.
 	// Set default provider
 	defaultProvider := os.Getenv(EnvLLMDefaultProvider)
 	if defaultProvider != "" {
-		if registry.Has(defaultProvider) {
+		if registry.Has(GlobalTenant, defaultProvider) {
 			result.DefaultProvider = defaultProvider
 		} else {
 			result.Warnings = append(result.Warnings,

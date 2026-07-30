@@ -96,6 +96,12 @@ func TestIncidentRepository_Create_Success(t *testing.T) {
 		Metadata:     map[string]interface{}{"env": "prod"},
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_incidents`)).
 		WithArgs(
 			sqlmock.AnyArg(), // id
@@ -137,6 +143,7 @@ func TestIncidentRepository_Create_Success(t *testing.T) {
 			sqlmock.AnyArg(), // updated_at
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, incident)
 	assert.NoError(t, err)
@@ -165,8 +172,15 @@ func TestIncidentRepository_Create_DBError(t *testing.T) {
 		Status:       IncidentStatusOpen,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_incidents`)).
 		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, incident)
 	assert.Error(t, err)
@@ -185,9 +199,16 @@ func TestIncidentRepository_Get_Success(t *testing.T) {
 	rows := sqlmock.NewRows(incidentColumns).
 		AddRow(sampleIncidentRow("inc-id-1", "org-001", "INC-abc12345")...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("inc-id-1", "org-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	incident, err := repo.Get(ctx, "org-001", "inc-id-1")
 	require.NoError(t, err)
@@ -212,9 +233,16 @@ func TestIncidentRepository_Get_NotFound(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("nonexistent", "org-001").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	incident, err := repo.Get(ctx, "org-001", "nonexistent")
 	assert.Nil(t, incident)
@@ -233,9 +261,16 @@ func TestIncidentRepository_GetByIncidentID_Success(t *testing.T) {
 	rows := sqlmock.NewRows(incidentColumns).
 		AddRow(sampleIncidentRow("inc-id-1", "org-001", "INC-abc12345")...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("INC-abc12345", "org-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	incident, err := repo.GetByIncidentID(ctx, "org-001", "INC-abc12345")
 	require.NoError(t, err)
@@ -256,6 +291,12 @@ func TestIncidentRepository_List_Success(t *testing.T) {
 		Offset: 0,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Count query
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM rbi_ai_incidents WHERE org_id = $1`)).
 		WithArgs("org-001").
@@ -269,6 +310,7 @@ func TestIncidentRepository_List_Success(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	incidents, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -298,6 +340,12 @@ func TestIncidentRepository_List_WithFilters(t *testing.T) {
 		Offset:        0,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Count query with filters
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM rbi_ai_incidents WHERE`).
 		WithArgs("org-001", "sys-001", "model_failure", "critical", "open", false).
@@ -310,6 +358,7 @@ func TestIncidentRepository_List_WithFilters(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", "sys-001", "model_failure", "critical", "open", false, 20, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	incidents, total, err := repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -326,6 +375,12 @@ func TestIncidentRepository_List_NilParams(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -333,6 +388,7 @@ func TestIncidentRepository_List_NilParams(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 50, 0).
 		WillReturnRows(sqlmock.NewRows(incidentColumns))
+	mock.ExpectCommit()
 
 	incidents, total, err := repo.List(ctx, "org-001", nil)
 	require.NoError(t, err)
@@ -351,6 +407,12 @@ func TestIncidentRepository_List_LimitCapping(t *testing.T) {
 
 	params := &ListIncidentsParams{Limit: 999}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -358,6 +420,7 @@ func TestIncidentRepository_List_LimitCapping(t *testing.T) {
 	mock.ExpectQuery(`SELECT`).
 		WithArgs("org-001", 100, 0).
 		WillReturnRows(sqlmock.NewRows(incidentColumns))
+	mock.ExpectCommit()
 
 	_, _, err = repo.List(ctx, "org-001", params)
 	require.NoError(t, err)
@@ -375,9 +438,16 @@ func TestIncidentRepository_ListBySystem_Success(t *testing.T) {
 	dataRows := sqlmock.NewRows(incidentColumns).
 		AddRow(sampleIncidentRow("inc-1", "org-001", "INC-001")...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001", "sys-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	incidents, err := repo.ListBySystem(ctx, "org-001", "sys-001")
 	require.NoError(t, err)
@@ -406,8 +476,15 @@ func TestIncidentRepository_Update_Success(t *testing.T) {
 		Status:       IncidentStatusResolved,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_ai_incidents SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, incident)
 	assert.NoError(t, err)
@@ -434,8 +511,15 @@ func TestIncidentRepository_Update_NotFound(t *testing.T) {
 		Status:       IncidentStatusOpen,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE rbi_ai_incidents SET`)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, incident)
 	assert.ErrorIs(t, err, ErrIncidentNotFound)
@@ -450,9 +534,16 @@ func TestIncidentRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_ai_incidents WHERE id = $1 AND org_id = $2`)).
 		WithArgs("inc-id-1", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "inc-id-1")
 	assert.NoError(t, err)
@@ -467,9 +558,16 @@ func TestIncidentRepository_Delete_NotFound(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM rbi_ai_incidents WHERE id = $1 AND org_id = $2`)).
 		WithArgs("nonexistent", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-001", "nonexistent")
 	assert.ErrorIs(t, err, ErrIncidentNotFound)
@@ -488,9 +586,16 @@ func TestIncidentRepository_GetOpenIncidents_Success(t *testing.T) {
 		AddRow(sampleIncidentRow("inc-1", "org-001", "INC-001")...).
 		AddRow(sampleIncidentRow("inc-2", "org-001", "INC-002")...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	incidents, err := repo.GetOpenIncidents(ctx, "org-001")
 	require.NoError(t, err)
@@ -506,9 +611,16 @@ func TestIncidentRepository_GetOpenIncidents_Empty(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows(incidentColumns))
+	mock.ExpectCommit()
 
 	incidents, err := repo.GetOpenIncidents(ctx, "org-001")
 	require.NoError(t, err)
@@ -527,9 +639,16 @@ func TestIncidentRepository_GetPendingNotifications_Board(t *testing.T) {
 	dataRows := sqlmock.NewRows(incidentColumns).
 		AddRow(sampleIncidentRow("inc-1", "org-001", "INC-001")...)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`board_notification_required = true AND board_notified = false`)).
 		WithArgs("org-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	incidents, err := repo.GetPendingNotifications(ctx, "org-001", "board")
 	require.NoError(t, err)
@@ -545,9 +664,16 @@ func TestIncidentRepository_GetPendingNotifications_RBI(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`rbi_notification_required = true AND rbi_notified = false`)).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows(incidentColumns))
+	mock.ExpectCommit()
 
 	incidents, err := repo.GetPendingNotifications(ctx, "org-001", "rbi")
 	require.NoError(t, err)
@@ -577,9 +703,16 @@ func TestIncidentRepository_Get_ScanError(t *testing.T) {
 	repo := NewPostgresAIIncidentRepository(db)
 	ctx := context.Background()
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT`)).
 		WithArgs("inc-id-1", "org-001").
 		WillReturnError(fmt.Errorf("connection closed"))
+	mock.ExpectRollback()
 
 	incident, err := repo.Get(ctx, "org-001", "inc-id-1")
 	assert.Nil(t, incident)
@@ -609,8 +742,15 @@ func TestIncidentRepository_Create_PresetIDAndIncidentID(t *testing.T) {
 		Status:       IncidentStatusOpen,
 	}
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-001").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO rbi_ai_incidents`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, incident)
 	assert.NoError(t, err)
@@ -658,9 +798,16 @@ func TestIncidentRepository_Create_OmitsGeneratedColumns(t *testing.T) {
 	defer db.Close()
 	repo := NewPostgresAIIncidentRepository(db)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO rbi_ai_incidents").
 		WithArgs(anyArgs(35)...).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err := repo.Create(context.Background(), &AIIncident{
 		OrgID:        "org-1",
@@ -687,9 +834,16 @@ func TestIncidentRepository_Update_OmitsGeneratedColumns(t *testing.T) {
 	defer db.Close()
 	repo := NewPostgresAIIncidentRepository(db)
 
+	// #3103: every statement runs inside rls.WithOrgScope, which BEGINs and
+	// pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE rbi_ai_incidents").
 		WithArgs(anyArgs(33)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err := repo.Update(context.Background(), &AIIncident{
 		ID:           "inc-1",

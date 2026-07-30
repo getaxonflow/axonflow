@@ -126,7 +126,7 @@ func (h *AISystemRegistryHandler) handleAISystemByID(w http.ResponseWriter, r *h
 
 // createSystem handles POST /api/v1/rbi/ai-systems
 func (h *AISystemRegistryHandler) createSystem(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -150,7 +150,7 @@ func (h *AISystemRegistryHandler) createSystem(w http.ResponseWriter, r *http.Re
 
 // listSystems handles GET /api/v1/rbi/ai-systems
 func (h *AISystemRegistryHandler) listSystems(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -197,7 +197,7 @@ func (h *AISystemRegistryHandler) listSystems(w http.ResponseWriter, r *http.Req
 
 // getSystem handles GET /api/v1/rbi/ai-systems/{id}
 func (h *AISystemRegistryHandler) getSystem(w http.ResponseWriter, r *http.Request, systemID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -214,7 +214,7 @@ func (h *AISystemRegistryHandler) getSystem(w http.ResponseWriter, r *http.Reque
 
 // updateSystem handles PATCH /api/v1/rbi/ai-systems/{id}
 func (h *AISystemRegistryHandler) updateSystem(w http.ResponseWriter, r *http.Request, systemID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -238,7 +238,7 @@ func (h *AISystemRegistryHandler) updateSystem(w http.ResponseWriter, r *http.Re
 
 // deleteSystem handles DELETE /api/v1/rbi/ai-systems/{id}
 func (h *AISystemRegistryHandler) deleteSystem(w http.ResponseWriter, r *http.Request, systemID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -254,7 +254,7 @@ func (h *AISystemRegistryHandler) deleteSystem(w http.ResponseWriter, r *http.Re
 
 // processBoardApproval handles POST /api/v1/rbi/ai-systems/{id}/board-approval
 func (h *AISystemRegistryHandler) processBoardApproval(w http.ResponseWriter, r *http.Request, systemID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -267,6 +267,12 @@ func (h *AISystemRegistryHandler) processBoardApproval(w http.ResponseWriter, r 
 		return
 	}
 
+	// #3150: `approver` is persisted as rbi_ai_systems.board_approver_name,
+	// the named board member recorded against an AI system's approval, and
+	// the same request's `action` drives the approve/reject/revoke transition.
+	actor := resolveActor(r)
+	req.Approver = actor.ID
+
 	system, err := h.service.ProcessBoardApproval(r.Context(), orgID, systemID, &req)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -278,7 +284,7 @@ func (h *AISystemRegistryHandler) processBoardApproval(w http.ResponseWriter, r 
 
 // scheduleValidation handles POST /api/v1/rbi/ai-systems/{id}/validation
 func (h *AISystemRegistryHandler) scheduleValidation(w http.ResponseWriter, r *http.Request, systemID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -308,7 +314,7 @@ func (h *AISystemRegistryHandler) scheduleValidation(w http.ResponseWriter, r *h
 
 // getSummary handles GET /api/v1/rbi/ai-systems/summary
 func (h *AISystemRegistryHandler) getSummary(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -321,17 +327,6 @@ func (h *AISystemRegistryHandler) getSummary(w http.ResponseWriter, r *http.Requ
 	}
 
 	h.writeJSON(w, http.StatusOK, summary)
-}
-
-// getOrgID extracts the organization ID from the request.
-// In production, this would typically come from JWT claims or request headers.
-func (h *AISystemRegistryHandler) getOrgID(r *http.Request) string {
-	// Try X-Org-ID header first
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		return orgID
-	}
-	// Fall back to query parameter for testing
-	return r.URL.Query().Get("org_id")
 }
 
 // handleCORS handles OPTIONS requests for CORS preflight.

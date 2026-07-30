@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/shared/egress"
 )
 
 // NotificationType defines the notification channel type
@@ -63,10 +65,25 @@ const (
 	pagerDutyEventsURL         = "https://events.pagerduty.com/v2/enqueue"
 )
 
+// NotifyAllowPrivateEnv unlocks notification targets that resolve into a
+// reserved range. Default behavior REJECTS them at the network dialer.
+//
+// This is a migration escape hatch for #3104, which moved this surface onto
+// egress.CallbackEgress. Before #3104 the local classifier covered only eight
+// CIDRs, so a notification URL on carrier-grade NAT (100.64.0.0/10 — which is
+// ALSO Tailscale's address range, the most likely real-world breakage here),
+// on a TEST-NET range, on 0.0.0.0/8, on multicast, on 240.0.0.0/4 or on the
+// broadcast address was accepted. Those are now refused.
+//
+// Set to "true" (exactly; "1" and "yes" do not count) only while migrating
+// such a receiver onto a reachable address. Engaging it WARN-logs at
+// construction and names every range it re-permits.
+const NotifyAllowPrivateEnv = "AXONFLOW_CIRCUITBREAKER_NOTIFY_ALLOW_PRIVATE"
+
 // NewNotificationService creates a notification service with SSRF-safe transport
 func NewNotificationService(repo *Repository) *NotificationService {
 	transport := &http.Transport{
-		DialContext: ssrfSafeDialer,
+		DialContext:         newSSRFSafeDialer(allowPrivateRanges()),
 		MaxIdleConns:        20,
 		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
@@ -82,54 +99,41 @@ func NewNotificationService(repo *Repository) *NotificationService {
 	}
 }
 
-// ssrfSafeDialer rejects connections to private/reserved IP ranges
-func ssrfSafeDialer(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid address: %w", err)
-	}
-
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS lookup failed: %w", err)
-	}
-
-	for _, ip := range ips {
-		if isPrivateIP(ip.IP) {
-			return nil, fmt.Errorf("SSRF protection: connection to private IP %s blocked", ip.IP)
-		}
-	}
-
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	return dialer.DialContext(ctx, network, addr)
+// allowPrivateRanges reads the escape hatch once, at service construction. It
+// is a var so tests can flip the env between service instances.
+var allowPrivateRanges = func() bool {
+	return egress.AllowPrivateFromEnv(NotifyAllowPrivateEnv, "circuit-breaker notifications", egress.CallbackEgress)
 }
 
-// isPrivateIP checks if an IP address is in a private/reserved range
+// newSSRFSafeDialer rejects connections to reserved IP ranges. When
+// allowPrivate is set the gate is bypassed entirely, matching the shape of
+// platform/agent/hitl's dispatcher.
+func newSSRFSafeDialer(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	base := &net.Dialer{Timeout: 5 * time.Second}
+	if allowPrivate {
+		return base.DialContext
+	}
+	// egress.NewSafeDialContext dials the addresses it validated, by literal,
+	// closing the DNS-rebinding window the previous resolve-check-dial-the-name
+	// shape left open (#3104 R3 F1).
+	return egress.NewSafeDialContext(egress.CallbackEgress, base, nil, func(ip net.IP) error {
+		return fmt.Errorf("SSRF protection: connection to private IP %s blocked (%s; set %s=true to allow while migrating)",
+			ip, egress.CallbackEgress.Reason(ip), NotifyAllowPrivateEnv)
+	})
+}
+
+// isPrivateIP binds this surface to egress.CallbackEgress, the shared policy
+// for operator-supplied callback URLs (#3104). The range table lives in
+// platform/shared/egress.
+//
+// The local list this replaces covered eight CIDRs and, notably, permitted
+// 0.0.0.0/8 — `http://0.0.0.0/` is dial-routed to loopback on Linux and macOS,
+// the same bypass platform/agent/hitl closed as "R3 R2 HIGH-2" and never
+// propagated here. It also permitted CGNAT, TEST-NET, the benchmarking range,
+// multicast, 240.0.0.0/4 and the broadcast address. All are now refused; see
+// NotifyAllowPrivateEnv for the migration hatch.
 func isPrivateIP(ip net.IP) bool {
-	privateRanges := []struct {
-		network *net.IPNet
-	}{
-		{parseCIDR("10.0.0.0/8")},
-		{parseCIDR("172.16.0.0/12")},
-		{parseCIDR("192.168.0.0/16")},
-		{parseCIDR("127.0.0.0/8")},
-		{parseCIDR("169.254.0.0/16")},
-		{parseCIDR("::1/128")},
-		{parseCIDR("fc00::/7")},
-		{parseCIDR("fe80::/10")},
-	}
-
-	for _, r := range privateRanges {
-		if r.network.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseCIDR(cidr string) *net.IPNet {
-	_, network, _ := net.ParseCIDR(cidr)
-	return network
+	return egress.CallbackEgress.Blocks(ip)
 }
 
 // HandleTripEvent delivers notifications for a circuit trip event.

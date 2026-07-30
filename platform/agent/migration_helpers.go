@@ -32,6 +32,7 @@ import (
 //   ├── core/           (001-099) Always run on every deployment
 //   ├── enterprise/     (100-199) Enterprise self-hosted deployments
 //   ├── community-saas/ (086+)    try.getaxonflow.com hosted infra ONLY
+//   ├── internal/       AxonFlow-operated seed data — selected by NO mode
 //   └── industry/       (200+) Industry-specific verticals
 //       ├── travel/     (200-249) Travel vertical (EU AI Act)
 //       ├── healthcare/ (250-299) Healthcare vertical
@@ -50,15 +51,151 @@ import (
 // migrations table is keyed by version+filename and the runner skips
 // already-applied migrations by version).
 //
-// DEPLOYMENT_MODE controls which paths are included:
-//   - community:         core/
-//   - saas:              core/ + enterprise/ + industry/*
-//   - in-vpc-healthcare: core/ + enterprise/ + industry/healthcare/
-//   - in-vpc-banking:    core/ + enterprise/ + industry/banking/
-//   - in-vpc-travel:     core/ + enterprise/ + industry/travel/
-//   - in-vpc-enterprise: core/ + enterprise/
-//   - community-saas:    core/ + community-saas/
+// DEPLOYMENT_MODE controls which paths are included — see
+// canonicalDeploymentModes below, which is the single definition of both
+// "which categories" and "which values are recognised at all".
 // =============================================================================
+
+// canonicalDeploymentModes maps every RECOGNISED DEPLOYMENT_MODE to the
+// migration categories it loads, in apply order, as slash-separated paths
+// relative to the migrations/ root.
+//
+// This map is the ONLY definition of "recognised". A value that is neither a
+// key here nor a key of deploymentModeAliases is REFUSED — getMigrationPaths
+// returns an error and the agent refuses to boot. It does not fall through to
+// the widest set, which is what shipped before #3167: `enterprise` — the value
+// our own docker-compose.enterprise.yml has always defaulted to — was not a
+// case, so every self-hosted enterprise stack silently applied the SaaS set,
+// including all three industry verticals it never asked for.
+var canonicalDeploymentModes = map[string][]string{
+	"community":         {"core"},
+	"evaluation":        {"core"},
+	"community-saas":    {"core", "community-saas"},
+	"in-vpc-enterprise": {"core", "enterprise"},
+	"in-vpc-healthcare": {"core", "enterprise", "industry/healthcare"},
+	"in-vpc-banking":    {"core", "enterprise", "industry/banking"},
+	"in-vpc-travel":     {"core", "enterprise", "industry/travel"},
+	"saas":              {"core", "enterprise", "industry/healthcare", "industry/banking", "industry/travel"},
+}
+
+// deploymentModeAliases maps accepted non-canonical spellings onto a canonical
+// mode. An alias is recognised; anything outside these two maps is not.
+//
+//   - "invpc"      predates the in-vpc-<vertical> split and is still accepted
+//     by the marketplace CloudFormation template's AllowedValues.
+//   - "enterprise" is what docker-compose.enterprise.yml, docker-compose.test.yml
+//     and docker/docker-compose.base.yaml default to, and what
+//     scripts/setup-e2e-testing.sh writes into .env. It denotes a single-tenant
+//     self-hosted enterprise deployment, which is in-vpc-enterprise. (#3167)
+var deploymentModeAliases = map[string]string{
+	"invpc":      "in-vpc-enterprise",
+	"enterprise": "in-vpc-enterprise",
+}
+
+// unsetDeploymentMode is what an EMPTY DEPLOYMENT_MODE resolves to.
+//
+// It is `community`, UNCHANGED from before #3167, and the divergence from
+// isCommunityMode() — which fails closed on unset and therefore gives an
+// unconfigured deployment the ENTERPRISE posture — is the open, measured,
+// deliberately-not-closed-here issue #3128. See the getMigrationPaths doc
+// comment for what pointing this at an enterprise mode was measured to do to an
+// existing stack, and
+// technical-docs/DEPLOYMENT_MODE_MIGRATION_SELECTOR_DECISION.md for the full
+// replay and the options.
+//
+// Unset is deliberately NOT fatal either, and the reason is NOT "the launchers
+// leave it unset" — #3170 fixed those in the same change, and
+// scripts/marketplace/deploy-with-metering.sh now refuses to run without it. The
+// reason is that this process cannot tell an operator who never configured the
+// variable from one whose configuration failed to reach the container, and the
+// population in the first group is every deployment that predates #3117. Making
+// it fatal is Option 2 in the decision document: the most internally consistent
+// answer, and a breaking change that belongs in a major.
+//
+// An unrecognised value IS fatal, because that is an operator asserting
+// something the platform cannot honour — a distinction the old `default:` arm
+// could not make.
+const unsetDeploymentMode = "community"
+
+// neverSelectedMigrationCategories are directories under migrations/ that NO
+// deployment mode loads, in any configuration.
+//
+// migrations/internal/ holds AxonFlow's own E2E fixtures and demo-tenant
+// mappings. They lived in enterprise/ and therefore shipped onto every customer
+// stack — five dynamic_policies rows for our `e2e-test-saas` tenant and two
+// `customers` rows for our `travel-us` / `ecommerce-prod-us` demo orgs, both
+// visible in the customer's own portal (#3168). The tenant and FOUR of the five
+// policies are seeded for real by .github/workflows/seed-test-data.yml against
+// the portal API; `115` was a superset that ran everywhere instead. The fifth,
+// `e2e-pii-detection-001`, has no counterpart in that workflow — nothing in the
+// repository references it. See migrations/internal/README.md.
+var neverSelectedMigrationCategories = []string{"internal"}
+
+// allMigrationCategories returns every category directory that is expected to
+// exist under migrations/, selected or not, sorted. Tests that walk the
+// migrations tree use it so that adding a directory can never silently escape
+// their coverage.
+func allMigrationCategories() []string {
+	set := map[string]bool{}
+	for _, cats := range canonicalDeploymentModes {
+		for _, c := range cats {
+			set[c] = true
+		}
+	}
+	for _, c := range neverSelectedMigrationCategories {
+		set[c] = true
+	}
+	out := make([]string, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// recognisedDeploymentModes returns every accepted DEPLOYMENT_MODE spelling —
+// canonical names and aliases — sorted. Used in the boot-failure message and
+// by scripts/lint-deployment-mode.sh's fixture, so an operator who mistyped is
+// told what the accepted values actually are.
+func recognisedDeploymentModes() []string {
+	out := make([]string, 0, len(canonicalDeploymentModes)+len(deploymentModeAliases))
+	for m := range canonicalDeploymentModes {
+		out = append(out, m)
+	}
+	for m := range deploymentModeAliases {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolveDeploymentMode maps a raw DEPLOYMENT_MODE value onto a canonical mode.
+//
+// The value is matched EXACTLY — not trimmed, not case-folded — for the same
+// reason isCommunityMode() is (see platform/agent/run.go). This string selects
+// the database schema; normalising it would silently accept a value the
+// operator did not write, and " community" would quietly become Community.
+// Since an unrecognised value is now refused rather than widened, a whitespace
+// or case slip surfaces as a named boot failure instead of a silent schema
+// choice.
+func resolveDeploymentMode(raw string) (string, error) {
+	if raw == "" {
+		return unsetDeploymentMode, nil
+	}
+	if canonical, ok := deploymentModeAliases[raw]; ok {
+		return canonical, nil
+	}
+	if _, ok := canonicalDeploymentModes[raw]; ok {
+		return raw, nil
+	}
+	return "", fmt.Errorf(
+		"unrecognised DEPLOYMENT_MODE=%q — refusing to guess which database schema to apply. "+
+			"Accepted values (matched exactly, no trimming or case-folding): %s. "+
+			"Do NOT resolve this by unsetting the variable: unset selects %q (core migrations only) "+
+			"while the RUNTIME posture of an unset value has been the enterprise one since #3096, "+
+			"which is the open asymmetry #3128 — name the mode this deployment actually is",
+		raw, strings.Join(recognisedDeploymentModes(), ", "), unsetDeploymentMode)
+}
 
 // MigrationFile represents a migration file with metadata
 type MigrationFile struct {
@@ -68,101 +205,89 @@ type MigrationFile struct {
 	Name     string // Human-readable name
 }
 
-// getMigrationPaths returns the migration directories to scan based on DEPLOYMENT_MODE
-func getMigrationPaths(basePath string) []string {
-	mode := os.Getenv("DEPLOYMENT_MODE")
-	if mode == "" {
-		mode = "community" // Default to Community mode for local development and docker-compose
+// getMigrationPaths returns the migration directories to scan based on
+// DEPLOYMENT_MODE, or an error if the configured value is not recognised.
+//
+// The error is fatal to the boot (see run.go). Refusal is the point: the
+// previous default arm applied core + enterprise + all three industry
+// verticals to anything it did not recognise, which is how `enterprise`
+// — a value we ship ourselves — put eight industry migrations on every
+// self-hosted enterprise stack (#3167). A selector that widens on input it does
+// not understand cannot tell "the operator chose the SaaS schema" from "the
+// operator typed something we've never heard of".
+//
+// #3128 — UNSET STILL MEANS `community` HERE, AND THAT IS DELIBERATE.
+//
+// #3117 made isCommunityMode() fail CLOSED on unset, so unset means the
+// ENTERPRISE posture at runtime while it still means COMMUNITY here. The two
+// halves disagree, and closing that gap is NOT part of the #3167 fix.
+//
+// Do not close it by pointing unsetDeploymentMode at an enterprise mode. It was
+// measured against a real PostgreSQL 15 and the flip SUCCEEDS — 33 applied, 0
+// failed — which is the trap. What it leaves behind is `connector_configs` with
+// no `org_id`, RLS OFF and ZERO policies, plus `sso_configurations`,
+// `sso_sessions` and `sso_login_attempts` with no `org_id` and RLS unforced,
+// because `core/106`, `core/107` and `core/138` — the migrations that add
+// exactly those columns and policies — already ran and no-op'd on a stack whose
+// community schema had none of those tables yet. The runner skips by
+// (version, name), so they never run again, and `enterprise/108` / `enterprise/120`
+// then create the tables in their pre-v9 shape with nothing to repair them.
+// That is #2782 re-created inside a fix for #3167.
+//
+// Closing it needs a bundled re-repair migration and is an operator decision on
+// whether an unconfigured deployment should ever be handed the enterprise schema
+// automatically. Both the measurement and the four options are in
+// technical-docs/DEPLOYMENT_MODE_MIGRATION_SELECTOR_DECISION.md; #3128 stays
+// open for it. What #3167 removes is the *other* half of the same variable: an
+// unrecognised value no longer selects the widest set, so the population that
+// can reach this asymmetry is now exactly "unset", not "unset or mistyped".
+//
+// The community-saas note that used to live on its own case arm: the
+// community-SaaS hosted deployment (try.getaxonflow.com) has internal-only
+// infrastructure (tenant registrations, the A1.5 adoption bridge) that does NOT
+// belong in core/, because self-hosted community and enterprise customers do
+// not need those tables. Migrations 085 + 086 live in community-saas/ from
+// inception. Migrations 068 / 073 / 075 / 076 (and a few other tenant-related
+// ones) remain in core/ because they shipped in releases <= v7.8.0 and customer
+// environments have applied them; relocating them needs a drift-detection
+// runbook planned as a separate refactor.
+func getMigrationPaths(basePath string) ([]string, error) {
+	raw := os.Getenv("DEPLOYMENT_MODE")
+
+	mode, err := resolveDeploymentMode(raw)
+	if err != nil {
+		return nil, err
 	}
 
-	// Handle legacy 'invpc' value (backwards compatibility)
-	if mode == "invpc" {
-		mode = "in-vpc-enterprise"
-		log.Println("📦 Note: DEPLOYMENT_MODE=invpc is deprecated, treating as in-vpc-enterprise")
+	switch {
+	case raw == "":
+		log.Printf("⚠️  DEPLOYMENT_MODE is not set. Applying the %q migration set — but since #3096 an unset "+
+			"value is NOT Community at RUNTIME: this agent runs the enterprise posture on the community "+
+			"schema. That mismatch is #3128 and it is not fixed by this warning. "+
+			"Set DEPLOYMENT_MODE explicitly (accepted: %s).",
+			mode, strings.Join(recognisedDeploymentModes(), ", "))
+	case raw != mode:
+		log.Printf("📦 Note: DEPLOYMENT_MODE=%s is an alias, treating as %s", raw, mode)
 	}
 
-	paths := []string{}
-
-	// Core migrations always run
-	paths = append(paths, filepath.Join(basePath, "core"))
-
-	switch mode {
-	case "community":
-		// Community only runs core migrations
-		log.Println("📦 DEPLOYMENT_MODE=community: Running core migrations only")
-
-	case "evaluation":
-		// Evaluation runs core migrations only (community binary with evaluation license)
-		log.Println("📦 DEPLOYMENT_MODE=evaluation: Running core migrations only (evaluation tier)")
-
-	case "saas":
-		// SaaS runs everything
-		paths = append(paths, filepath.Join(basePath, "enterprise"))
-		paths = append(paths, filepath.Join(basePath, "industry", "healthcare"))
-		paths = append(paths, filepath.Join(basePath, "industry", "banking"))
-		paths = append(paths, filepath.Join(basePath, "industry", "travel"))
-		log.Println("📦 DEPLOYMENT_MODE=saas: Running all migrations (core + enterprise + industry)")
-
-	case "in-vpc-healthcare":
-		// Healthcare runs core + enterprise + healthcare industry
-		paths = append(paths, filepath.Join(basePath, "enterprise"))
-		paths = append(paths, filepath.Join(basePath, "industry", "healthcare"))
-		log.Println("📦 DEPLOYMENT_MODE=in-vpc-healthcare: Running core + enterprise + healthcare migrations")
-
-	case "in-vpc-banking":
-		// Banking runs core + enterprise + banking industry
-		paths = append(paths, filepath.Join(basePath, "enterprise"))
-		paths = append(paths, filepath.Join(basePath, "industry", "banking"))
-		log.Println("📦 DEPLOYMENT_MODE=in-vpc-banking: Running core + enterprise + banking migrations")
-
-	case "in-vpc-travel":
-		// Travel runs core + enterprise + travel industry
-		paths = append(paths, filepath.Join(basePath, "enterprise"))
-		paths = append(paths, filepath.Join(basePath, "industry", "travel"))
-		log.Println("📦 DEPLOYMENT_MODE=in-vpc-travel: Running core + enterprise + travel migrations")
-
-	case "in-vpc-enterprise":
-		// Enterprise runs core + enterprise only
-		paths = append(paths, filepath.Join(basePath, "enterprise"))
-		log.Println("📦 DEPLOYMENT_MODE=in-vpc-enterprise: Running core + enterprise migrations")
-
-	case "community-saas":
-		// Community-SaaS: core migrations + the dedicated community-saas/
-		// category. The community-SaaS hosted deployment (try.getaxonflow.com)
-		// has internal-only infrastructure (tenant registrations, the A1.5
-		// adoption bridge, etc.) that does NOT belong in core/ because
-		// self-hosted community + enterprise customers don't need those
-		// tables.
-		//
-		// Migrations 085 + 086 live in community-saas/ from inception
-		// (085 was added 2026-05-08, post-v7.8.0 release, so no customer
-		// self-host environment had applied it yet at relocation time —
-		// move was safe; the leftover core/085 copy was deleted in the
-		// migration runner version-collision fix once the on-disk
-		// composite-key regression guard caught it). Migrations 068 /
-		// 073 / 075 / 076 (and a few other tenant-related ones) remain
-		// in core/ for now because they shipped in releases <= v7.8.0
-		// and customer environments have applied them; relocating them
-		// needs a drift-detection runbook that's planned as a separate
-		// refactor.
-		paths = append(paths, filepath.Join(basePath, "community-saas"))
-		log.Println("📦 DEPLOYMENT_MODE=community-saas: Running core + community-saas migrations")
-
-	default:
-		// Unknown mode - default to saas for safety
-		log.Printf("⚠️  Unknown DEPLOYMENT_MODE=%s, defaulting to saas", mode)
-		paths = append(paths, filepath.Join(basePath, "enterprise"))
-		paths = append(paths, filepath.Join(basePath, "industry", "healthcare"))
-		paths = append(paths, filepath.Join(basePath, "industry", "banking"))
-		paths = append(paths, filepath.Join(basePath, "industry", "travel"))
+	categories := canonicalDeploymentModes[mode]
+	paths := make([]string, 0, len(categories))
+	for _, category := range categories {
+		paths = append(paths, filepath.Join(basePath, filepath.FromSlash(category)))
 	}
 
-	return paths
+	log.Printf("📦 DEPLOYMENT_MODE=%s: running migration categories %s",
+		mode, strings.Join(categories, " + "))
+
+	return paths, nil
 }
 
 // collectMigrations collects all migration files from configured paths
 func collectMigrations(basePath string) ([]MigrationFile, error) {
-	paths := getMigrationPaths(basePath)
+	paths, err := getMigrationPaths(basePath)
+	if err != nil {
+		return nil, err
+	}
 	var migrations []MigrationFile
 
 	for _, path := range paths {

@@ -72,12 +72,28 @@ package agent
 //
 // FAIL-CLOSED gating (§4): the endpoint is registered ONLY when an environment
 // signal is EXPLICITLY a known non-production value. Unset or unrecognized is
-// treated as production and the route is NOT registered (→ 404). This is the
-// deliberate INVERSE of the existing isDevOrStaging() precedent
-// (ee/platform/customer-portal/api/organizations.go:1661-1664) and of
-// isCommunityMode()/getDeploymentKind(), all of which fail OPEN on an unset
-// value. A token minter silently live in production is a critical exposure, so
-// none of those helpers are reused here.
+// treated as production and the route is NOT registered (→ 404). None of the
+// ambient mode helpers is reused here, for two separate reasons.
+//
+//   - isDevOrStaging() (ee/platform/customer-portal/api/organizations.go, the
+//     isDevOrStaging func) and getDeploymentKind() (run.go) still fail OPEN on
+//     an unset value today — `env == ""` is in the true set of the first, and
+//     the second defaults UNSET → "dev". Reusing either would put the minter
+//     live on a stack that simply forgot to configure itself.
+//
+//   - isCommunityMode() no longer does: #3096 removed `mode == ""` from its
+//     true set, so it now fails CLOSED on unset like this gate. It is still not
+//     reused, and deliberately so. First, the accepting sets are not the same
+//     set — this gate trims and case-folds, isCommunityMode() is exact by
+//     design (run.go explains why: every widening of THAT predicate disables
+//     authentication). Second and more important, a gate that registers a
+//     SIGNING ORACLE must not inherit its accepting set from the helper whose
+//     job is to turn authentication off. Coupling them means any future
+//     widening of isCommunityMode() silently re-arms the minter in production,
+//     which is a re-run of the class this endpoint was written to avoid.
+//
+// A token minter silently live in production is a critical exposure, so the
+// condition is spelled out locally where it can be read in one place.
 //
 // Honest scope (§4 "bounded blast radius"): service-license auth is stateless
 // and accepts any caller-chosen username (db_auth.go:253-290), so this endpoint
@@ -152,8 +168,11 @@ func isExplicitNonProd(v string) bool {
 // devTokenEndpointEnabled reports whether the dev-mode token endpoint may be
 // registered. FAIL-CLOSED: returns true ONLY when at least one environment
 // signal is EXPLICITLY a known non-production value. All-unset ⇒ false
-// (production). See the file header for why the fail-open isCommunityMode() /
-// getDeploymentKind() / isDevOrStaging() helpers are intentionally NOT used.
+// (production). See the file header for why the ambient mode helpers
+// (isCommunityMode / getDeploymentKind / isDevOrStaging) are NOT used —
+// getDeploymentKind and isDevOrStaging still fail open on unset; isCommunityMode
+// no longer does, and is still not reused because its accepting set is narrower
+// than this gate's and is owned by the authentication posture, not by this gate.
 //
 // Recognized explicit non-prod signals (any one suffices):
 //   - ENVIRONMENT      ∈ {development, dev, staging, local, test}
@@ -166,8 +185,12 @@ func devTokenEndpointEnabled() bool {
 	if isExplicitNonProd(os.Getenv("ENVIRONMENT")) {
 		return true
 	}
-	// DEPLOYMENT_MODE=community is an explicit signal; check the raw env value,
-	// NOT isCommunityMode(), because that helper also returns true on UNSET.
+	// DEPLOYMENT_MODE=community is an explicit signal. The raw value is read
+	// deliberately rather than calling isCommunityMode(): since #3096 that
+	// helper also fails closed on unset, but it matches the canonical token
+	// EXACTLY (no trim, no case-fold) while this gate normalises, and a gate
+	// that registers a signing oracle must not take its accepting set from the
+	// helper that decides whether to authenticate at all.
 	if strings.ToLower(strings.TrimSpace(os.Getenv("DEPLOYMENT_MODE"))) == "community" {
 		return true
 	}

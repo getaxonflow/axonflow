@@ -78,6 +78,12 @@ func TestAssessmentRepository_Create_Success(t *testing.T) {
 		CreatedBy:       "admin@bank.com",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO mas_feat_assessments")).
 		WithArgs(
 			sqlmock.AnyArg(), // id
@@ -95,6 +101,7 @@ func TestAssessmentRepository_Create_Success(t *testing.T) {
 			sqlmock.AnyArg(), // updated_at
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, assessment)
 	require.NoError(t, err)
@@ -126,6 +133,12 @@ func TestAssessmentRepository_Create_WithExistingID(t *testing.T) {
 		CreatedBy:      "admin",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO mas_feat_assessments")).
 		WithArgs(
 			"pre-set-id",
@@ -140,6 +153,7 @@ func TestAssessmentRepository_Create_WithExistingID(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, assessment)
 	require.NoError(t, err)
@@ -166,6 +180,12 @@ func TestAssessmentRepository_Create_DBError(t *testing.T) {
 		CreatedBy:      "admin",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO mas_feat_assessments")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -179,6 +199,7 @@ func TestAssessmentRepository_Create_DBError(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("foreign key constraint: system_id not found"))
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, assessment)
 	assert.Error(t, err)
@@ -221,6 +242,12 @@ func TestAssessmentRepository_GetByID_Success(t *testing.T) {
 	recommendationsJSON, _ := json.Marshal([]string{"Rec 1", "Rec 2"})
 	assessorsJSON, _ := json.Marshal([]string{"assessor@bank.com"})
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id")).
 		WithArgs("org-1", "asmt-1").
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).AddRow(
@@ -230,6 +257,7 @@ func TestAssessmentRepository_GetByID_Success(t *testing.T) {
 			now, now, submittedAt, "submitter@bank.com",
 			approvedAt, "approver@bank.com", nil, nil, nil,
 		))
+	mock.ExpectCommit()
 
 	assessment, err := repo.GetByID(ctx, "org-1", "asmt-1")
 	require.NoError(t, err)
@@ -274,9 +302,16 @@ func TestAssessmentRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewPostgresAssessmentRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id")).
 		WithArgs("org-1", "nonexistent").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	assessment, err := repo.GetByID(ctx, "org-1", "nonexistent")
 	require.NoError(t, err)
@@ -293,9 +328,16 @@ func TestAssessmentRepository_GetByID_DBError(t *testing.T) {
 	repo := NewPostgresAssessmentRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id")).
 		WithArgs("org-1", "asmt-1").
 		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
 
 	assessment, err := repo.GetByID(ctx, "org-1", "asmt-1")
 	assert.Error(t, err)
@@ -315,6 +357,12 @@ func TestAssessmentRepository_GetByID_NullableFields(t *testing.T) {
 	now := time.Now().UTC()
 
 	// All nullable fields are nil
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id")).
 		WithArgs("org-1", "asmt-1").
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).AddRow(
@@ -323,6 +371,7 @@ func TestAssessmentRepository_GetByID_NullableFields(t *testing.T) {
 			nil, nil, nil, "admin",
 			now, now, nil, nil, nil, nil, nil, nil, nil,
 		))
+	mock.ExpectCommit()
 
 	assessment, err := repo.GetByID(ctx, "org-1", "asmt-1")
 	require.NoError(t, err)
@@ -358,6 +407,12 @@ func TestAssessmentRepository_GetByID_RejectedAssessment(t *testing.T) {
 	now := time.Now().UTC()
 	rejectedAt := now.Add(-2 * time.Hour)
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id")).
 		WithArgs("org-1", "asmt-1").
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).AddRow(
@@ -367,6 +422,7 @@ func TestAssessmentRepository_GetByID_RejectedAssessment(t *testing.T) {
 			now, now, nil, nil, nil, nil,
 			rejectedAt, "reviewer@bank.com", "Insufficient evidence for fairness claims",
 		))
+	mock.ExpectCommit()
 
 	assessment, err := repo.GetByID(ctx, "org-1", "asmt-1")
 	require.NoError(t, err)
@@ -393,6 +449,12 @@ func TestAssessmentRepository_List_Success(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id")).
 		WithArgs("org-1", 50, 0).
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).
@@ -408,6 +470,7 @@ func TestAssessmentRepository_List_Success(t *testing.T) {
 				nil, nil, nil, "admin",
 				now, now, nil, nil, nil, nil, nil, nil, nil,
 			))
+	mock.ExpectCommit()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{})
 	require.NoError(t, err)
@@ -433,6 +496,12 @@ func TestAssessmentRepository_List_WithStatusFilter(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("AND status = $2")).
 		WithArgs("org-1", "completed", 20, 0).
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).
@@ -442,6 +511,7 @@ func TestAssessmentRepository_List_WithStatusFilter(t *testing.T) {
 				nil, nil, nil, "admin",
 				now, now, nil, nil, nil, nil, nil, nil, nil,
 			))
+	mock.ExpectCommit()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{
 		Limit:  20,
@@ -462,6 +532,12 @@ func TestAssessmentRepository_List_WithSystemIDFilter(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("AND system_id = $2")).
 		WithArgs("org-1", "sys-credit", 50, 0).
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).
@@ -471,6 +547,7 @@ func TestAssessmentRepository_List_WithSystemIDFilter(t *testing.T) {
 				nil, nil, nil, "admin",
 				now, now, nil, nil, nil, nil, nil, nil, nil,
 			))
+	mock.ExpectCommit()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{
 		SystemID: "sys-credit",
@@ -491,9 +568,16 @@ func TestAssessmentRepository_List_WithStatusAndSystemIDFilters(t *testing.T) {
 	ctx := context.Background()
 
 	// When both status and system_id filters are provided
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("AND status = $2")).
 		WithArgs("org-1", "approved", "sys-1", 10, 5).
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()))
+	mock.ExpectCommit()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{
 		Limit:    10,
@@ -516,9 +600,16 @@ func TestAssessmentRepository_List_LimitClamping(t *testing.T) {
 	ctx := context.Background()
 
 	// Limit > MaxListLimit should be clamped
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1", MaxListLimit, 0).
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()))
+	mock.ExpectCommit()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{Limit: 9999})
 	require.NoError(t, err)
@@ -535,9 +626,16 @@ func TestAssessmentRepository_List_NegativeLimit(t *testing.T) {
 	repo := NewPostgresAssessmentRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1", DefaultListLimit, 0).
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()))
+	mock.ExpectCommit()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{Limit: -5})
 	require.NoError(t, err)
@@ -554,9 +652,16 @@ func TestAssessmentRepository_List_DBError(t *testing.T) {
 	repo := NewPostgresAssessmentRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1", DefaultListLimit, 0).
 		WillReturnError(fmt.Errorf("permission denied"))
+	mock.ExpectRollback()
 
 	assessments, err := repo.List(ctx, "org-1", ListParams{})
 	assert.Error(t, err)
@@ -593,6 +698,12 @@ func TestAssessmentRepository_Update_Success(t *testing.T) {
 		SubmittedBy:     "submitter@bank.com",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_feat_assessments SET")).
 		WithArgs(
 			assessment.Status, 2, // version incremented
@@ -610,6 +721,7 @@ func TestAssessmentRepository_Update_Success(t *testing.T) {
 			assessment.OrgID, assessment.ID,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, assessment)
 	require.NoError(t, err)
@@ -636,6 +748,12 @@ func TestAssessmentRepository_Update_DBError(t *testing.T) {
 		Assessors: []string{},
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_feat_assessments SET")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -650,6 +768,7 @@ func TestAssessmentRepository_Update_DBError(t *testing.T) {
 			"org-1", "asmt-1",
 		).
 		WillReturnError(fmt.Errorf("deadlock detected"))
+	mock.ExpectRollback()
 
 	err = repo.Update(ctx, assessment)
 	assert.Error(t, err)
@@ -673,6 +792,12 @@ func TestAssessmentRepository_Update_VersionIncrement(t *testing.T) {
 		Assessors: []string{},
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_feat_assessments SET")).
 		WithArgs(
 			sqlmock.AnyArg(), 6, // version 5 -> 6
@@ -688,6 +813,7 @@ func TestAssessmentRepository_Update_VersionIncrement(t *testing.T) {
 			"org-1", "asmt-1",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, assessment)
 	require.NoError(t, err)
@@ -710,11 +836,24 @@ func TestAssessmentRepository_GetLatestForSystem_Success(t *testing.T) {
 	now := time.Now().UTC()
 
 	// First query: get ID of latest assessment
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM mas_feat_assessments WHERE org_id = $1 AND system_id = $2 ORDER BY created_at DESC LIMIT 1")).
 		WithArgs("org-1", "sys-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asmt-latest"))
+	mock.ExpectCommit()
 
 	// Second query: GetByID
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id")).
 		WithArgs("org-1", "asmt-latest").
 		WillReturnRows(sqlmock.NewRows(assessmentColumns()).AddRow(
@@ -723,6 +862,7 @@ func TestAssessmentRepository_GetLatestForSystem_Success(t *testing.T) {
 			nil, nil, nil, "admin",
 			now, now, nil, nil, nil, nil, nil, nil, nil,
 		))
+	mock.ExpectCommit()
 
 	assessment, err := repo.GetLatestForSystem(ctx, "org-1", "sys-1")
 	require.NoError(t, err)
@@ -742,9 +882,16 @@ func TestAssessmentRepository_GetLatestForSystem_NotFound(t *testing.T) {
 	repo := NewPostgresAssessmentRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM mas_feat_assessments WHERE org_id = $1 AND system_id = $2")).
 		WithArgs("org-1", "sys-new").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	assessment, err := repo.GetLatestForSystem(ctx, "org-1", "sys-new")
 	require.NoError(t, err)
@@ -761,9 +908,16 @@ func TestAssessmentRepository_GetLatestForSystem_DBError(t *testing.T) {
 	repo := NewPostgresAssessmentRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM mas_feat_assessments")).
 		WithArgs("org-1", "sys-1").
 		WillReturnError(fmt.Errorf("connection reset"))
+	mock.ExpectRollback()
 
 	assessment, err := repo.GetLatestForSystem(ctx, "org-1", "sys-1")
 	assert.Error(t, err)

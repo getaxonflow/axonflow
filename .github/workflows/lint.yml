@@ -13,10 +13,14 @@ on:
     branches:
       - main
       - develop
+    # There is no root Go module in this repo — the modules are platform/,
+    # ee/ and scripts/key-rotation/. The bare 'go.mod'/'go.sum' patterns
+    # matched nothing, so a dependency bump in platform/go.mod skipped lint on
+    # main entirely (#3089).
     paths:
       - '**.go'
-      - 'go.mod'
-      - 'go.sum'
+      - '**/go.mod'
+      - '**/go.sum'
       - '.golangci.yml'
       - '.github/workflows/lint.yml'
   # Merge queue: re-run lint against the merged code with path filtering

@@ -177,7 +177,7 @@ func (h *AIIncidentHandler) handleIncidentRoutes(w http.ResponseWriter, r *http.
 
 // createIncident handles POST /api/v1/rbi/incidents
 func (h *AIIncidentHandler) createIncident(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -201,7 +201,7 @@ func (h *AIIncidentHandler) createIncident(w http.ResponseWriter, r *http.Reques
 
 // listIncidents handles GET /api/v1/rbi/incidents
 func (h *AIIncidentHandler) listIncidents(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -261,7 +261,7 @@ func (h *AIIncidentHandler) listIncidents(w http.ResponseWriter, r *http.Request
 
 // getIncident handles GET /api/v1/rbi/incidents/{id}
 func (h *AIIncidentHandler) getIncident(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -278,7 +278,7 @@ func (h *AIIncidentHandler) getIncident(w http.ResponseWriter, r *http.Request, 
 
 // updateIncident handles PATCH /api/v1/rbi/incidents/{id}
 func (h *AIIncidentHandler) updateIncident(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -302,7 +302,7 @@ func (h *AIIncidentHandler) updateIncident(w http.ResponseWriter, r *http.Reques
 
 // deleteIncident handles DELETE /api/v1/rbi/incidents/{id}
 func (h *AIIncidentHandler) deleteIncident(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -318,7 +318,7 @@ func (h *AIIncidentHandler) deleteIncident(w http.ResponseWriter, r *http.Reques
 
 // updateStatus handles POST /api/v1/rbi/incidents/{id}/status
 func (h *AIIncidentHandler) updateStatus(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -345,7 +345,7 @@ func (h *AIIncidentHandler) updateStatus(w http.ResponseWriter, r *http.Request,
 
 // addRemediationAction handles POST /api/v1/rbi/incidents/{id}/actions
 func (h *AIIncidentHandler) addRemediationAction(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -369,7 +369,7 @@ func (h *AIIncidentHandler) addRemediationAction(w http.ResponseWriter, r *http.
 
 // updateRemediationAction handles PATCH /api/v1/rbi/incidents/{id}/actions/{actionId}
 func (h *AIIncidentHandler) updateRemediationAction(w http.ResponseWriter, r *http.Request, id, actionID string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -393,7 +393,7 @@ func (h *AIIncidentHandler) updateRemediationAction(w http.ResponseWriter, r *ht
 
 // recordBoardNotification handles POST /api/v1/rbi/incidents/{id}/notify/board
 func (h *AIIncidentHandler) recordBoardNotification(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -417,7 +417,7 @@ func (h *AIIncidentHandler) recordBoardNotification(w http.ResponseWriter, r *ht
 
 // recordRBINotification handles POST /api/v1/rbi/incidents/{id}/notify/rbi
 func (h *AIIncidentHandler) recordRBINotification(w http.ResponseWriter, r *http.Request, id string) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -441,7 +441,7 @@ func (h *AIIncidentHandler) recordRBINotification(w http.ResponseWriter, r *http
 
 // getOpenIncidents handles GET /api/v1/rbi/incidents/open
 func (h *AIIncidentHandler) getOpenIncidents(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -461,7 +461,7 @@ func (h *AIIncidentHandler) getOpenIncidents(w http.ResponseWriter, r *http.Requ
 
 // getPendingBoardNotifications handles GET /api/v1/rbi/incidents/pending-board
 func (h *AIIncidentHandler) getPendingBoardNotifications(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -481,7 +481,7 @@ func (h *AIIncidentHandler) getPendingBoardNotifications(w http.ResponseWriter, 
 
 // getPendingRBINotifications handles GET /api/v1/rbi/incidents/pending-rbi
 func (h *AIIncidentHandler) getPendingRBINotifications(w http.ResponseWriter, r *http.Request) {
-	orgID := h.getOrgID(r)
+	orgID := resolveOrgID(r)
 	if orgID == "" {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Organization ID required")
 		return
@@ -497,14 +497,6 @@ func (h *AIIncidentHandler) getPendingRBINotifications(w http.ResponseWriter, r 
 		"incidents": incidents,
 		"total":     len(incidents),
 	})
-}
-
-// getOrgID extracts the organization ID from the request.
-func (h *AIIncidentHandler) getOrgID(r *http.Request) string {
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		return orgID
-	}
-	return r.URL.Query().Get("org_id")
 }
 
 // handleCORS handles OPTIONS requests.

@@ -95,6 +95,8 @@ func TestListRequests(t *testing.T) {
 				time.Now().Add(24*time.Hour), time.Now(), time.Now()))
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue?status=pending&limit=10", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -155,6 +157,7 @@ func TestCreateRequest_Success(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue", bytes.NewReader(body))
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -202,6 +205,7 @@ func TestCreateRequest_CommunityTierForbidden(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue", bytes.NewReader(body))
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -247,6 +251,8 @@ func TestCreateRequest_MissingOrgHeader(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	// Missing X-Org-ID and X-Tenant-ID
 	w := httptest.NewRecorder()
@@ -287,6 +293,8 @@ func TestGetRequest(t *testing.T) {
 		))
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue/"+requestID.String(), nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -317,6 +325,8 @@ func TestGetRequest_NotFound(t *testing.T) {
 		}))
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue/"+requestID.String(), nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -333,6 +343,8 @@ func TestGetRequest_InvalidID(t *testing.T) {
 	defer cleanup()
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue/invalid-uuid", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -397,6 +409,8 @@ func TestApproveRequest(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/approve", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -461,6 +475,8 @@ func TestRejectRequest(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/reject", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -526,6 +542,8 @@ func TestOverrideRequest(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/override", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -552,6 +570,7 @@ func TestGetStats(t *testing.T) {
 	mock.ExpectCommit()
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/stats", nil)
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("X-Org-ID", "org-1")
 	w := httptest.NewRecorder()
 
@@ -578,7 +597,7 @@ func TestGetStats_MissingOrgHeader(t *testing.T) {
 	defer cleanup()
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/stats", nil)
-	// Missing X-Org-ID
+	// Deliberately NO X-Org-ID — the header sweep must not "fix" this case.
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -599,6 +618,8 @@ func TestExpireStale(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"expire_hitl_requests"}).AddRow(5))
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/expire", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -621,10 +642,10 @@ func TestExpireStale(t *testing.T) {
 
 func TestGetClientIP(t *testing.T) {
 	tests := []struct {
-		name     string
-		headers  map[string]string
+		name       string
+		headers    map[string]string
 		remoteAddr string
-		expected string
+		expected   string
 	}{
 		{
 			name:       "X-Forwarded-For single IP",
@@ -694,6 +715,7 @@ func TestCreateRequest_InvalidJSON(t *testing.T) {
 	defer cleanup()
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue", bytes.NewReader([]byte("{invalid json")))
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-ID", "org-1")
 	req.Header.Set("X-Tenant-ID", "tenant-1")
@@ -724,6 +746,8 @@ func TestApproveRequest_InvalidJSON(t *testing.T) {
 	requestID := uuid.New()
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/approve", bytes.NewReader([]byte("{invalid")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -747,6 +771,8 @@ func TestApproveRequest_InvalidID(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/invalid-uuid/approve", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -784,6 +810,8 @@ func TestApproveRequest_NotFound(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/approve", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -829,6 +857,8 @@ func TestApproveRequest_Conflict(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/approve", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -848,6 +878,8 @@ func TestRejectRequest_InvalidJSON(t *testing.T) {
 	requestID := uuid.New()
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/reject", bytes.NewReader([]byte("bad json")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -871,6 +903,8 @@ func TestRejectRequest_InvalidID(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/not-a-uuid/reject", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -907,6 +941,8 @@ func TestRejectRequest_NotFound(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/reject", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -952,6 +988,8 @@ func TestRejectRequest_Conflict(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/reject", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -971,6 +1009,8 @@ func TestOverrideRequest_InvalidJSON(t *testing.T) {
 	requestID := uuid.New()
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/override", bytes.NewReader([]byte("{")))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -995,6 +1035,8 @@ func TestOverrideRequest_InvalidID(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/bad-uuid/override", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -1032,6 +1074,8 @@ func TestOverrideRequest_NotFound(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/override", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -1077,6 +1121,8 @@ func TestOverrideRequest_MissingJustification(t *testing.T) {
 	body, _ := json.Marshal(input)
 
 	req := httptest.NewRequest("POST", "/api/v1/hitl/queue/"+requestID.String()+"/override", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -1118,6 +1164,8 @@ func TestGetRequestHistory(t *testing.T) {
 				"pending", "approved", now.Add(1*time.Hour)))
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue/"+requestID.String()+"/history", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -1143,6 +1191,8 @@ func TestGetRequestHistory_InvalidID(t *testing.T) {
 	defer cleanup()
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue/invalid-uuid/history", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()
@@ -1181,6 +1231,8 @@ func TestListRequests_WithMultipleFilters(t *testing.T) {
 				time.Now().Add(24*time.Hour), time.Now(), time.Now()))
 
 	req := httptest.NewRequest("GET", "/api/v1/hitl/queue?status=pending&severity=high&policy_id=policy-1&client_id=client-1&user_id=user-1&limit=20&offset=0&order_by=created_at&order_dir=ASC", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Client-ID", "client-1")
 	w := httptest.NewRecorder()
 
 	router := mux.NewRouter()

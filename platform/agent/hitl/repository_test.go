@@ -283,6 +283,7 @@ func TestRepository_List_WithFilters(t *testing.T) {
 				now.Add(24*time.Hour), now, now))
 
 	filter := ListFilter{
+		OrgID:    "org-1",
 		Status:   []string{"pending"},
 		Severity: []string{"high", "critical"},
 		PolicyID: "policy-1",
@@ -334,6 +335,7 @@ func TestRepository_List_OrderByASC(t *testing.T) {
 		}))
 
 	filter := ListFilter{
+		OrgID:    "org-1",
 		OrderBy:  "created_at",
 		OrderDir: "ASC",
 		Limit:    20,

@@ -214,17 +214,14 @@ func getPlanCostHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	orgID := r.Header.Get("X-Org-ID")
-
-	plan, err := planService.GetPlan(r.Context(), planID)
+	// #3065 (F3): tenant isolation now lives inside GetPlan, which fails
+	// closed when the caller org or the plan's org is empty. The post-fetch
+	// compare this handler used to run (`orgID != "" && plan.OrgID != "" &&
+	// plan.OrgID != orgID`) let a caller who simply omitted X-Org-ID read any
+	// tenant's plan — including its query text and workflow definition.
+	plan, err := planService.GetPlan(r.Context(), planID, r.Header.Get("X-Org-ID"))
 	if err != nil {
 		log.Printf("[GetPlanCost] Failed to get plan %s: %v", logutil.Sanitize(planID), err)
-		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
-		return
-	}
-
-	// Tenant isolation
-	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
 		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
 		return
 	}

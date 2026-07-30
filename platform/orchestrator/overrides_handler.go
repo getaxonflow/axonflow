@@ -218,9 +218,16 @@ func invalidateCachedDeniedDecisions(ctx context.Context, db *sql.DB, tenantID, 
 	if db == nil || policyID == "" {
 		return
 	}
-	if tenantID == "" && userEmail == "" {
-		// Refuse to delete without at least one scoping dimension — we will
-		// not invalidate across the whole table.
+	// #3065: the tenant dimension is MANDATORY, not one of two acceptable
+	// dimensions. The old guard accepted (tenantID="", userEmail="alice@…")
+	// and the SQL below then read `($1 = '' OR w.tenant_id = $1)` — so an
+	// empty tenant disabled the tenancy filter and the DELETE reached every
+	// tenant's workflow_steps rows for that email. The user dimension stays
+	// optional (org-wide overrides carry no per-user identity) and narrows
+	// within the tenant.
+	if tenantID == "" {
+		// Refuse to delete without a tenant scope — we will not invalidate
+		// across the whole table.
 		return
 	}
 
@@ -281,7 +288,7 @@ func invalidateCachedDeniedDecisions(ctx context.Context, db *sql.DB, tenantID, 
 			SELECT ws.id
 			FROM workflow_steps ws
 			JOIN workflows w ON ws.workflow_id = w.workflow_id
-			WHERE ($1 = '' OR w.tenant_id = $1)
+			WHERE w.tenant_id = $1
 			  AND ($2 = '' OR w.user_id = $2)
 			  AND ws.decision IN ('block', 'require_approval')
 			  AND (
@@ -373,7 +380,11 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	// override out of their own scoped list.
 	userEmail = sharedidentity.CanonicalEmail(userEmail)
 	if userEmail == "" {
-		sendErrorResponse(w, "Authenticated user identity required (X-User-Email header)", http.StatusUnauthorized)
+		// #3062: the bare "send X-User-Email" 401 sent users looking for a
+		// client-side mistake when the cause is almost always server-side —
+		// the agent's default-off identity trust gate removed the header they
+		// did send. sendIdentityRequiredError names whichever it actually was.
+		sendIdentityRequiredError(w, r, "policy overrides")
 		return
 	}
 	if tenantID == "" {
@@ -487,6 +498,24 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 // Sets revoked_at + revoked_by on the override row.
 // Emits override_revoked audit event.
 func revokeOverrideHandler(w http.ResponseWriter, r *http.Request) {
+	// #3076: the SAME guard createOverrideHandler opens with. Revoke keys
+	// revoked_by on a per-user identity read from a client-assertable header,
+	// and its per-user authorization (createdBy == scope.UserEmail, below)
+	// keys on the same channel — so it belongs to the #2896 WS1b ingress class
+	// even though the census that added the guard only named create.
+	//
+	// Since #3068 the whole orchestrator mux sits behind requireInternalProxyAuth,
+	// so this is now the INNER of two layers rather than the only one, and the
+	// asymmetry it removes is one of consistency: create carried both layers and
+	// revoke carried one, for no stated reason. Keeping the pair identical is
+	// what stops the next reader concluding the difference was deliberate.
+	// Community mode with no configured secret is exempt inside the helper,
+	// exactly as it is for create.
+	if ok, msg := verifyAgentProxyAuth(r, "OverrideRevoke"); !ok {
+		sendErrorResponse(w, msg, http.StatusForbidden)
+		return
+	}
+
 	vars := mux.Vars(r)
 	overrideID := vars["id"]
 	if overrideID == "" {
@@ -502,7 +531,9 @@ func revokeOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if revokedBy == "" {
-		sendErrorResponse(w, "Authenticated user identity required (X-User-Email header)", http.StatusUnauthorized)
+		// #3062: same actionable body as create — revoke is the other half of
+		// the lifecycle the plugins expose, and it failed the same opaque way.
+		sendIdentityRequiredError(w, r, "policy overrides")
 		return
 	}
 	if tenantID == "" {
@@ -628,6 +659,12 @@ func getOverrideHandler(w http.ResponseWriter, r *http.Request) {
 		RevokedBy      *string    `json:"revoked_by,omitempty"`
 	}
 
+	// #3060 (#2991 coverage gap): stamped before the lookup so the header goes
+	// out on both 404s this handler can produce — the non-oracle body cannot
+	// distinguish "no such override" from "not yours".
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+
 	// #3048: org-scoped read — bare, this matched 0 rows under
 	// axonflow_app_role (mig 110 RLS) and every override GET 404'd. Same
 	// scope key convention as createOverrideHandler (X-Org-ID falling back
@@ -661,7 +698,7 @@ func getOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	// #2922 role-scoped reads: a non-tenant-wide caller may fetch only
 	// overrides they created. Same 404 as "no such id" — not 403 — so the
 	// endpoint is not a cross-user existence oracle.
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	if !scope.TenantWide {
 		if scope.UserEmail == "" ||
 			sharedidentity.CanonicalEmail(row.CreatedBy) != scope.UserEmail {
 			sendErrorResponse(w, "Override not found", http.StatusNotFound)
@@ -708,8 +745,13 @@ func listOverridesHandler(w http.ResponseWriter, r *http.Request) {
 	// THEY created; admin/owner list the tenant's. Empty identity ⇒ empty list
 	// (fail-closed). Exact canonical match; the write path stores the same
 	// identity this scope compares against (see createOverrideHandler).
+	//
+	// #3060 (#2991 coverage gap): stamp the scope so the empty list below is
+	// self-diagnosing rather than a bare 200 {"overrides":[],"count":0}.
 	scopeUserEmail := ""
-	if scope := resolveCallerReadScope(r); !scope.TenantWide {
+	scope := resolveCallerReadScope(r)
+	applyReadScopeHeader(w, r, scope)
+	if !scope.TenantWide {
 		if scope.UserEmail == "" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{

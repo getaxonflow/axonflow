@@ -29,7 +29,7 @@ func TestPostgresRepository_GetBudgetScoped(t *testing.T) {
 	}).AddRow("b1", "Budget", "", "organization", "org-a", 100.0, "monthly",
 		"warn", []byte("[50,80,100]"), true, "org-a", "tenant-a", "", "", time.Now(), time.Now())
 
-	mock.ExpectQuery(`SELECT id, name, description, scope, scope_id, limit_usd, period,\s+on_exceed, alert_thresholds, enabled, org_id, tenant_id,\s+created_by, updated_by, created_at, updated_at\s+FROM budgets\s+WHERE id = \$1\s+AND \(\$2 = '' OR org_id IS NULL OR org_id = '' OR org_id = \$2\)\s+AND \(\$3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = \$3\)`).
+	mock.ExpectQuery(`SELECT id, name, description, scope, scope_id, limit_usd, period,\s+on_exceed, alert_thresholds, enabled, org_id, tenant_id,\s+created_by, updated_by, created_at, updated_at\s+FROM budgets\s+WHERE id = \$1\s+AND org_id = \$2\s+AND tenant_id = \$3`).
 		WithArgs("b1", "org-a", "tenant-a").
 		WillReturnRows(rows)
 
@@ -54,11 +54,30 @@ func TestPostgresRepository_GetBudgetScoped_CrossOrgNoRows(t *testing.T) {
 	repo := NewPostgresRepository(db)
 
 	mock.ExpectQuery(`FROM budgets\s+WHERE id = \$1`).
-		WithArgs("b1", "org-b", "").
+		WithArgs("b1", "org-b", "tenant-b").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	if _, err := repo.GetBudgetScoped(context.Background(), "b1", "org-b", ""); err != ErrBudgetNotFound {
+	if _, err := repo.GetBudgetScoped(context.Background(), "b1", "org-b", "tenant-b"); err != ErrBudgetNotFound {
 		t.Fatalf("cross-org scoped get must be ErrBudgetNotFound, got %v", err)
+	}
+
+	// #3065 (F4): an unbound caller never reaches the query. Previously the
+	// empty value matched the `$2 = <empty>` disjunct and the statement
+	// returned (or deleted) another tenant's budget.
+	db2, mock2, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock: %v", err)
+	}
+	defer db2.Close()
+	repo2 := NewPostgresRepository(db2)
+	if _, err := repo2.GetBudgetScoped(context.Background(), "b1", "", ""); err != ErrBudgetNotFound {
+		t.Fatalf("unscoped get must be ErrBudgetNotFound, got %v", err)
+	}
+	if err := repo2.DeleteBudgetScoped(context.Background(), "b1", "", ""); err != ErrBudgetNotFound {
+		t.Fatalf("unscoped delete must be ErrBudgetNotFound, got %v", err)
+	}
+	if err := mock2.ExpectationsWereMet(); err != nil {
+		t.Fatalf("an unbound caller must issue no SQL at all: %v", err)
 	}
 }
 
@@ -70,7 +89,7 @@ func TestPostgresRepository_DeleteBudgetScoped(t *testing.T) {
 	defer db.Close()
 	repo := NewPostgresRepository(db)
 
-	mock.ExpectExec(`DELETE FROM budgets WHERE id = \$1\s+AND \(\$2 = '' OR org_id IS NULL OR org_id = '' OR org_id = \$2\)\s+AND \(\$3 = '' OR tenant_id IS NULL OR tenant_id = '' OR tenant_id = \$3\)`).
+	mock.ExpectExec(`DELETE FROM budgets WHERE id = \$1\s+AND org_id = \$2\s+AND tenant_id = \$3`).
 		WithArgs("b1", "org-a", "tenant-a").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

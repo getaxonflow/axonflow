@@ -17,13 +17,13 @@ on:
   push:
     branches:
       - main
+    # The image is built with `COPY platform/ .`, so every Go package under
+    # platform/ is a build input — not just the five subtrees this filter used
+    # to enumerate. A compile error in platform/shared/ or platform/database/
+    # broke the community image without re-triggering the builder (#3089).
     paths:
       - 'platform/*/Dockerfile'
-      - 'platform/agent/**/*.go'
-      - 'platform/orchestrator/**/*.go'
-      - 'platform/connectors/**/*.go'
-      - 'platform/common/**/*.go'
-      - 'platform/cmd/**/*.go'
+      - 'platform/**/*.go'
       - 'platform/**/go.mod'
       - 'platform/**/go.sum'
       - 'migrations/core/**/*.sql'

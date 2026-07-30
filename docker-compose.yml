@@ -30,7 +30,9 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Bound to loopback (#3068): host-only, matching the shipped
+      # axonflow-install bundle. Nothing here should be reachable from off-box.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow"]
       interval: 10s
@@ -46,7 +48,7 @@ services:
     container_name: axonflow-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -86,9 +88,15 @@ services:
       # Service ports and mode
       PORT: 8080
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
+      # Browser origins allowed to call this API cross-origin (#3096).
+      # Unset/blank + a non-community DEPLOYMENT_MODE denies every cross-origin
+      # request, so .env.example documents it and this line is what makes that
+      # documentation true — an env var no deployment surface reads is not
+      # configurable. Blank is identical to unset for the resolver.
+      AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.12.2}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.13.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -229,7 +237,11 @@ services:
       GRAFANA_PASSWORD: grafana_localdev456
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
     ports:
-      - "8080:8080"
+      # Loopback-bound (#3068). The agent IS the authenticated entry point,
+      # but the dev stack should not publish it to the network by default;
+      # front it with a reverse proxy, or add a compose override, for remote
+      # access. Matches axonflow-install/docker-compose.yml.
+      - "127.0.0.1:8080:8080"
     volumes:
       # MCP connector configuration (enables postgres connector for demos)
       - ./config/axonflow.yaml:/app/config/axonflow.yaml:ro
@@ -276,8 +288,11 @@ services:
       # Service ports and mode
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
+      # Same origin policy as the agent — see that service for the rationale.
+      # The two resolve it independently, so both must carry it.
+      AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.12.2}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-9.13.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
@@ -344,7 +359,12 @@ services:
       DEPLOYMENT_KIND: ${DEPLOYMENT_KIND:-dev}
       LOG_LEVEL: debug
     ports:
-      - "8081:8081"
+      # #3068: MUST stay loopback. The orchestrator is an INTERNAL service
+      # (ADR-026): the agent reaches it over the compose network, never via
+      # the host port. Publishing it host-wide put the governance control
+      # plane — unauthenticated, tenant-selectable read AND write — on every
+      # interface of the host. Mirrors axonflow-install/docker-compose.yml.
+      - "127.0.0.1:8081:8081"
     depends_on:
       axonflow-agent:
         condition: service_healthy
@@ -374,7 +394,7 @@ services:
       - ./config/prometheus-local.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     networks:
       - axonflow-network
     healthcheck:
@@ -401,7 +421,7 @@ services:
       GF_SERVER_ROOT_URL: http://localhost:3000
       GF_INSTALL_PLUGINS: ""
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       axonflow-agent:
         condition: service_healthy
@@ -438,8 +458,8 @@ services:
     container_name: axonflow-minio
     restart: unless-stopped
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin

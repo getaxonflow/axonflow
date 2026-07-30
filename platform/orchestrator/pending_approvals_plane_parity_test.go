@@ -255,14 +255,15 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 		},
 		{
 			name:         "community + evaluation license allowed",
-			deployment:   "",
+			// #3096: was "" relying on unset==community. Named explicitly.
+			deployment:   "community",
 			licenseTier:  license.TierEvaluation,
 			hitlEnabled:  true,
 			wantHTTPCode: http.StatusOK,
 		},
 		{
 			name:         "community without license blocked",
-			deployment:   "",
+			deployment:   "community",
 			licenseTier:  license.TierCommunity,
 			hitlEnabled:  false,
 			wantHTTPCode: http.StatusForbidden,
@@ -270,7 +271,7 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 		},
 		{
 			name:         "community with nil tier checker blocked",
-			deployment:   "",
+			deployment:   "community",
 			nilChecker:   true,
 			wantHTTPCode: http.StatusForbidden,
 		},
@@ -278,11 +279,9 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.deployment != "" {
-				os.Setenv("DEPLOYMENT_MODE", tc.deployment)
-			} else {
-				os.Unsetenv("DEPLOYMENT_MODE")
-			}
+			// t.Setenv (not os.Setenv) so the mode is restored after each case;
+			// the old form leaked an unset DEPLOYMENT_MODE into whatever ran next.
+			t.Setenv("DEPLOYMENT_MODE", tc.deployment)
 			if tc.nilChecker {
 				tierChecker = nil
 			} else {
@@ -457,6 +456,10 @@ func callWCPPendingHandler(t *testing.T, tenantID string, svc *workflow_control.
 	handler := workflow_control.NewHandler(svc)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/approvals/pending", nil)
 	req.Header.Set("X-Tenant-ID", tenantID)
+	// #3065: the WCP listing binds on BOTH tenancy dimensions now — it was the
+	// one listing route still reading a self-asserted header after the by-id
+	// routes were converted.
+	req.Header.Set("X-Org-ID", "org-"+tenantID)
 	rr := httptest.NewRecorder()
 	handler.GetPendingApprovals(rr, req)
 	if rr.Code != http.StatusOK {

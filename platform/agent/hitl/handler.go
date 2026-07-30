@@ -21,6 +21,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // Prometheus metrics for HITL API
@@ -131,10 +133,10 @@ type ReviewInput struct {
 
 // OverrideInput is the JSON input for overriding a request.
 type OverrideInput struct {
-	Justification    string `json:"justification"`
-	AuthorizedByID   string `json:"authorized_by_id"`
+	Justification     string `json:"justification"`
+	AuthorizedByID    string `json:"authorized_by_id"`
 	AuthorizedByEmail string `json:"authorized_by_email"`
-	AuthorizedByRole string `json:"authorized_by_role,omitempty"`
+	AuthorizedByRole  string `json:"authorized_by_role,omitempty"`
 }
 
 // APIResponse is the standard API response structure.
@@ -186,6 +188,12 @@ func (h *Handler) ListRequests(w http.ResponseWriter, r *http.Request) {
 	requests, total, err := h.service.ListApprovalRequests(r.Context(), filter)
 	if err != nil {
 		hitlRequestsTotal.WithLabelValues("GET", "/api/v1/hitl/queue", "error").Inc()
+		// #3065 (R3 round 2): an unbound caller is a 401, matching every
+		// other converted surface — not a 500 echoing the internal message.
+		if errors.Is(err, tenantscope.ErrNoCallerScope) {
+			h.writeError(w, http.StatusUnauthorized, "missing authenticated org identity")
+			return
+		}
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -359,11 +367,15 @@ func (h *Handler) ApproveRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reviewer := &Reviewer{
-		ID:    input.ReviewerID,
-		Email: input.ReviewerEmail,
-		Role:  input.ReviewerRole,
-		IP:    getClientIP(r),
+	// #3065 (F5): the reviewer is the AUTHENTICATED caller, never the
+	// body-asserted reviewer_id / reviewer_email / reviewer_role. See
+	// resolveReviewer — an Article 14 oversight record whose actor is
+	// self-asserted is not evidence of oversight.
+	reviewer, ok := resolveReviewer(r)
+	if !ok {
+		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/approve", "error").Inc()
+		h.writeError(w, http.StatusUnauthorized, "missing authenticated reviewer identity")
+		return
 	}
 
 	if err := h.service.ApproveRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID, reviewer, input.Comment); err != nil {
@@ -407,11 +419,15 @@ func (h *Handler) RejectRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reviewer := &Reviewer{
-		ID:    input.ReviewerID,
-		Email: input.ReviewerEmail,
-		Role:  input.ReviewerRole,
-		IP:    getClientIP(r),
+	// #3065 (F5): the reviewer is the AUTHENTICATED caller, never the
+	// body-asserted reviewer_id / reviewer_email / reviewer_role. See
+	// resolveReviewer — an Article 14 oversight record whose actor is
+	// self-asserted is not evidence of oversight.
+	reviewer, ok := resolveReviewer(r)
+	if !ok {
+		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/reject", "error").Inc()
+		h.writeError(w, http.StatusUnauthorized, "missing authenticated reviewer identity")
+		return
 	}
 
 	if err := h.service.RejectRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID, reviewer, input.Comment); err != nil {
@@ -455,11 +471,15 @@ func (h *Handler) OverrideRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authorizedBy := &Reviewer{
-		ID:    input.AuthorizedByID,
-		Email: input.AuthorizedByEmail,
-		Role:  input.AuthorizedByRole,
-		IP:    getClientIP(r),
+	// #3065 (F5): the overriding authority is the AUTHENTICATED caller, never
+	// the body-asserted authorized_by_* fields. An override is the strongest
+	// oversight action in the queue; attributing it to a name the caller
+	// typed defeats the record entirely.
+	authorizedBy, ok := resolveReviewer(r)
+	if !ok {
+		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/override", "error").Inc()
+		h.writeError(w, http.StatusUnauthorized, "missing authenticated reviewer identity")
+		return
 	}
 
 	if err := h.service.OverrideRequest(WithCallerOrg(r.Context(), r.Header.Get("X-Org-ID")), requestID, input.Justification, authorizedBy); err != nil {

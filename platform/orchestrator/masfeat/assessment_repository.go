@@ -13,7 +13,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3133. Migration 400 RLS-gates mas_feat_assessments with `FOR ALL USING
+// (org_id = get_current_org_id()) WITH CHECK (org_id = get_current_org_id())`,
+// but this package never set app.current_org_id. Every statement below now
+// runs inside rls.WithOrgScope; the hand-written `WHERE org_id = $n`
+// predicates are KEPT as an additive backstop. See the fuller note in
+// killswitch_repository.go.
 
 // AssessmentRepository defines the interface for FEAT assessment data access.
 type AssessmentRepository interface {
@@ -78,13 +87,16 @@ func (r *PostgresAssessmentRepository) Create(ctx context.Context, assessment *F
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		assessment.ID, assessment.OrgID, assessment.SystemID, assessment.AssessmentType,
-		assessment.Status, assessment.Version, assessment.AssessmentDate, assessment.ValidUntil,
-		assessment.FairnessScore, assessment.EthicsScore, assessment.AccountabilityScore,
-		assessment.TransparencyScore, assessment.OverallScore, findingsJSON, recommendationsJSON,
-		assessorsJSON, assessment.CreatedBy, assessment.CreatedAt, assessment.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, assessment.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			assessment.ID, assessment.OrgID, assessment.SystemID, assessment.AssessmentType,
+			assessment.Status, assessment.Version, assessment.AssessmentDate, assessment.ValidUntil,
+			assessment.FairnessScore, assessment.EthicsScore, assessment.AccountabilityScore,
+			assessment.TransparencyScore, assessment.OverallScore, findingsJSON, recommendationsJSON,
+			assessorsJSON, assessment.CreatedBy, assessment.CreatedAt, assessment.UpdatedAt,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to insert FEAT assessment: %w", err)
 	}
@@ -111,14 +123,16 @@ func (r *PostgresAssessmentRepository) GetByID(ctx context.Context, orgID, id st
 	var submittedBy, approvedBy, rejectedBy, rejectionReason sql.NullString
 	var fairnessScore, ethicsScore, accountabilityScore, transparencyScore, overallScore sql.NullFloat64
 
-	err := r.db.QueryRowContext(ctx, query, orgID, id).Scan(
-		&assessment.ID, &assessment.OrgID, &assessment.SystemID, &assessment.AssessmentType,
-		&assessment.Status, &assessment.Version, &assessment.AssessmentDate, &validUntil,
-		&fairnessScore, &ethicsScore, &accountabilityScore, &transparencyScore, &overallScore,
-		&findingsJSON, &recommendationsJSON, &assessorsJSON, &assessment.CreatedBy,
-		&assessment.CreatedAt, &assessment.UpdatedAt, &submittedAt, &submittedBy,
-		&approvedAt, &approvedBy, &rejectedAt, &rejectedBy, &rejectionReason,
-	)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, orgID, id).Scan(
+			&assessment.ID, &assessment.OrgID, &assessment.SystemID, &assessment.AssessmentType,
+			&assessment.Status, &assessment.Version, &assessment.AssessmentDate, &validUntil,
+			&fairnessScore, &ethicsScore, &accountabilityScore, &transparencyScore, &overallScore,
+			&findingsJSON, &recommendationsJSON, &assessorsJSON, &assessment.CreatedBy,
+			&assessment.CreatedAt, &assessment.UpdatedAt, &submittedAt, &submittedBy,
+			&approvedAt, &approvedBy, &rejectedAt, &rejectedBy, &rejectionReason,
+		)
+	})
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -217,84 +231,89 @@ func (r *PostgresAssessmentRepository) List(ctx context.Context, orgID string, p
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list FEAT assessments: %w", err)
-	}
-	defer rows.Close()
-
 	var assessments []*FEATAssessment
-	for rows.Next() {
-		assessment := &FEATAssessment{}
-		var findingsJSON, recommendationsJSON, assessorsJSON []byte
-		var validUntil, submittedAt, approvedAt, rejectedAt sql.NullTime
-		var submittedBy, approvedBy, rejectedBy, rejectionReason sql.NullString
-		var fairnessScore, ethicsScore, accountabilityScore, transparencyScore, overallScore sql.NullFloat64
-
-		err := rows.Scan(
-			&assessment.ID, &assessment.OrgID, &assessment.SystemID, &assessment.AssessmentType,
-			&assessment.Status, &assessment.Version, &assessment.AssessmentDate, &validUntil,
-			&fairnessScore, &ethicsScore, &accountabilityScore, &transparencyScore, &overallScore,
-			&findingsJSON, &recommendationsJSON, &assessorsJSON, &assessment.CreatedBy,
-			&assessment.CreatedAt, &assessment.UpdatedAt, &submittedAt, &submittedBy,
-			&approvedAt, &approvedBy, &rejectedAt, &rejectedBy, &rejectionReason,
-		)
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan FEAT assessment: %w", err)
+			return fmt.Errorf("failed to list FEAT assessments: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			assessment := &FEATAssessment{}
+			var findingsJSON, recommendationsJSON, assessorsJSON []byte
+			var validUntil, submittedAt, approvedAt, rejectedAt sql.NullTime
+			var submittedBy, approvedBy, rejectedBy, rejectionReason sql.NullString
+			var fairnessScore, ethicsScore, accountabilityScore, transparencyScore, overallScore sql.NullFloat64
+
+			if scanErr := rows.Scan(
+				&assessment.ID, &assessment.OrgID, &assessment.SystemID, &assessment.AssessmentType,
+				&assessment.Status, &assessment.Version, &assessment.AssessmentDate, &validUntil,
+				&fairnessScore, &ethicsScore, &accountabilityScore, &transparencyScore, &overallScore,
+				&findingsJSON, &recommendationsJSON, &assessorsJSON, &assessment.CreatedBy,
+				&assessment.CreatedAt, &assessment.UpdatedAt, &submittedAt, &submittedBy,
+				&approvedAt, &approvedBy, &rejectedAt, &rejectedBy, &rejectionReason,
+			); scanErr != nil {
+				return fmt.Errorf("failed to scan FEAT assessment: %w", scanErr)
+			}
+
+			// Handle nullable fields
+			if validUntil.Valid {
+				assessment.ValidUntil = &validUntil.Time
+			}
+			if fairnessScore.Valid {
+				assessment.FairnessScore = &fairnessScore.Float64
+			}
+			if ethicsScore.Valid {
+				assessment.EthicsScore = &ethicsScore.Float64
+			}
+			if accountabilityScore.Valid {
+				assessment.AccountabilityScore = &accountabilityScore.Float64
+			}
+			if transparencyScore.Valid {
+				assessment.TransparencyScore = &transparencyScore.Float64
+			}
+			if overallScore.Valid {
+				assessment.OverallScore = &overallScore.Float64
+			}
+			if submittedAt.Valid {
+				assessment.SubmittedAt = &submittedAt.Time
+			}
+			if submittedBy.Valid {
+				assessment.SubmittedBy = submittedBy.String
+			}
+			if approvedAt.Valid {
+				assessment.ApprovedAt = &approvedAt.Time
+			}
+			if approvedBy.Valid {
+				assessment.ApprovedBy = approvedBy.String
+			}
+			if rejectedAt.Valid {
+				assessment.RejectedAt = &rejectedAt.Time
+			}
+			if rejectedBy.Valid {
+				assessment.RejectedBy = rejectedBy.String
+			}
+			if rejectionReason.Valid {
+				assessment.RejectionReason = rejectionReason.String
+			}
+
+			if len(findingsJSON) > 0 {
+				json.Unmarshal(findingsJSON, &assessment.Findings)
+			}
+			if len(recommendationsJSON) > 0 {
+				json.Unmarshal(recommendationsJSON, &assessment.Recommendations)
+			}
+			if len(assessorsJSON) > 0 {
+				json.Unmarshal(assessorsJSON, &assessment.Assessors)
+			}
+
+			assessments = append(assessments, assessment)
 		}
 
-		// Handle nullable fields
-		if validUntil.Valid {
-			assessment.ValidUntil = &validUntil.Time
-		}
-		if fairnessScore.Valid {
-			assessment.FairnessScore = &fairnessScore.Float64
-		}
-		if ethicsScore.Valid {
-			assessment.EthicsScore = &ethicsScore.Float64
-		}
-		if accountabilityScore.Valid {
-			assessment.AccountabilityScore = &accountabilityScore.Float64
-		}
-		if transparencyScore.Valid {
-			assessment.TransparencyScore = &transparencyScore.Float64
-		}
-		if overallScore.Valid {
-			assessment.OverallScore = &overallScore.Float64
-		}
-		if submittedAt.Valid {
-			assessment.SubmittedAt = &submittedAt.Time
-		}
-		if submittedBy.Valid {
-			assessment.SubmittedBy = submittedBy.String
-		}
-		if approvedAt.Valid {
-			assessment.ApprovedAt = &approvedAt.Time
-		}
-		if approvedBy.Valid {
-			assessment.ApprovedBy = approvedBy.String
-		}
-		if rejectedAt.Valid {
-			assessment.RejectedAt = &rejectedAt.Time
-		}
-		if rejectedBy.Valid {
-			assessment.RejectedBy = rejectedBy.String
-		}
-		if rejectionReason.Valid {
-			assessment.RejectionReason = rejectionReason.String
-		}
-
-		if len(findingsJSON) > 0 {
-			json.Unmarshal(findingsJSON, &assessment.Findings)
-		}
-		if len(recommendationsJSON) > 0 {
-			json.Unmarshal(recommendationsJSON, &assessment.Recommendations)
-		}
-		if len(assessorsJSON) > 0 {
-			json.Unmarshal(assessorsJSON, &assessment.Assessors)
-		}
-
-		assessments = append(assessments, assessment)
+		return rows.Err()
+	}); err != nil {
+		return nil, err
 	}
 
 	return assessments, nil
@@ -331,15 +350,18 @@ func (r *PostgresAssessmentRepository) Update(ctx context.Context, assessment *F
 		WHERE org_id = $20 AND id = $21
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		assessment.Status, assessment.Version, assessment.ValidUntil,
-		assessment.FairnessScore, assessment.EthicsScore, assessment.AccountabilityScore,
-		assessment.TransparencyScore, assessment.OverallScore, findingsJSON,
-		recommendationsJSON, assessorsJSON, assessment.UpdatedAt,
-		assessment.SubmittedAt, assessment.SubmittedBy, assessment.ApprovedAt, assessment.ApprovedBy,
-		assessment.RejectedAt, assessment.RejectedBy, assessment.RejectionReason,
-		assessment.OrgID, assessment.ID,
-	)
+	err = rls.WithOrgScope(ctx, r.db, assessment.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			assessment.Status, assessment.Version, assessment.ValidUntil,
+			assessment.FairnessScore, assessment.EthicsScore, assessment.AccountabilityScore,
+			assessment.TransparencyScore, assessment.OverallScore, findingsJSON,
+			recommendationsJSON, assessorsJSON, assessment.UpdatedAt,
+			assessment.SubmittedAt, assessment.SubmittedBy, assessment.ApprovedAt, assessment.ApprovedBy,
+			assessment.RejectedAt, assessment.RejectedBy, assessment.RejectionReason,
+			assessment.OrgID, assessment.ID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update FEAT assessment: %w", err)
 	}
@@ -357,7 +379,9 @@ func (r *PostgresAssessmentRepository) GetLatestForSystem(ctx context.Context, o
 	`
 
 	var id string
-	err := r.db.QueryRowContext(ctx, query, orgID, systemID).Scan(&id)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, orgID, systemID).Scan(&id)
+	})
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -365,5 +389,7 @@ func (r *PostgresAssessmentRepository) GetLatestForSystem(ctx context.Context, o
 		return nil, fmt.Errorf("failed to get latest assessment: %w", err)
 	}
 
+	// GetByID opens its own wrap. Sequential, not nested: the transaction above
+	// has already committed by the time this runs.
 	return r.GetByID(ctx, orgID, id)
 }

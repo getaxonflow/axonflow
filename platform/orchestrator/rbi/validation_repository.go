@@ -15,7 +15,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3103. Migration 301 switches RLS on for all seven rbi_* tables with a
+// `FOR ALL USING (org_id = get_current_org_id())` policy, but this package
+// never set app.current_org_id — so on an axonflow_app_role pool every read
+// here returned SILENT ZERO ROWS and every write was refused. Every statement
+// below therefore runs inside rls.WithOrgScope, which opens a transaction and
+// SET LOCALs the GUC the policy reads. The hand-written `WHERE org_id = $n`
+// predicates are KEPT: the wrap is a backstop, not a replacement.
 
 // Validation-specific errors.
 var (
@@ -113,17 +123,20 @@ func (r *PostgresModelValidationRepository) Create(ctx context.Context, validati
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		validation.ID, validation.OrgID, validation.SystemID, validation.ValidationType, validation.ValidatorType,
-		validation.ValidatorName, validation.ValidatorOrganization, validation.ValidatorCredentials,
-		validation.ValidationDate, validation.ValidationPeriodStart, validation.ValidationPeriodEnd,
-		validation.DatasetDescription, validation.DatasetSize, datasetCharsJSON,
-		validation.Methodology, testScenariosJSON, findingsJSON, accuracyJSON,
-		biasJSON, biasCatsJSON, stressJSON,
-		validation.StressTestPassed, validation.Recommendation, validation.Conditions,
-		validation.NextReviewDate, validation.RemediationRequired, validation.RemediationDeadline,
-		validation.ReportFilePath, validation.ReportFileChecksum, validation.CreatedAt, validation.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, validation.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			validation.ID, validation.OrgID, validation.SystemID, validation.ValidationType, validation.ValidatorType,
+			validation.ValidatorName, validation.ValidatorOrganization, validation.ValidatorCredentials,
+			validation.ValidationDate, validation.ValidationPeriodStart, validation.ValidationPeriodEnd,
+			validation.DatasetDescription, validation.DatasetSize, datasetCharsJSON,
+			validation.Methodology, testScenariosJSON, findingsJSON, accuracyJSON,
+			biasJSON, biasCatsJSON, stressJSON,
+			validation.StressTestPassed, validation.Recommendation, validation.Conditions,
+			validation.NextReviewDate, validation.RemediationRequired, validation.RemediationDeadline,
+			validation.ReportFilePath, validation.ReportFileChecksum, validation.CreatedAt, validation.UpdatedAt,
+		)
+		return execErr
+	})
 
 	if err != nil {
 		return fmt.Errorf("insert validation: %w", err)
@@ -149,7 +162,15 @@ func (r *PostgresModelValidationRepository) Get(ctx context.Context, orgID, id s
 		WHERE org_id = $1 AND id = $2
 	`
 
-	return r.scanValidation(r.db.QueryRowContext(ctx, query, orgID, id))
+	var v *ModelValidation
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		v, scanErr = r.scanValidation(tx.QueryRowContext(ctx, query, orgID, id))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 // scanValidation scans a row into a ModelValidation.
@@ -311,11 +332,7 @@ func (r *PostgresModelValidationRepository) List(ctx context.Context, orgID stri
 	}
 
 	// Count total
-	var total int
 	countQuery := "SELECT COUNT(*)" + baseQuery
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count validations: %w", err)
-	}
 
 	// Get paginated results
 	selectQuery := `
@@ -330,24 +347,39 @@ func (r *PostgresModelValidationRepository) List(ctx context.Context, orgID stri
 			next_review_date, remediation_required, remediation_deadline,
 			report_file_path, report_file_checksum, created_at, updated_at
 	` + baseQuery + fmt.Sprintf(" ORDER BY validation_date DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
-	args = append(args, params.Limit, params.Offset)
+	countArgs := args
+	args = append(append([]interface{}{}, args...), params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, selectQuery, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query validations: %w", err)
-	}
-	defer rows.Close()
-
+	// One wrap for BOTH statements: the count and the page are separate call
+	// sites and each had to be scoped, and sharing the transaction also makes
+	// total and rows a consistent snapshot.
 	var validations []*ModelValidation
-	for rows.Next() {
-		v, err := r.scanValidationRow(rows)
-		if err != nil {
-			return nil, 0, err
+	var total int
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("count validations: %w", err)
 		}
-		validations = append(validations, v)
+
+		rows, err := tx.QueryContext(ctx, selectQuery, args...)
+		if err != nil {
+			return fmt.Errorf("query validations: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			v, scanErr := r.scanValidationRow(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			validations = append(validations, v)
+		}
+
+		return rows.Err()
+	}); err != nil {
+		return nil, 0, err
 	}
 
-	return validations, total, rows.Err()
+	return validations, total, nil
 }
 
 // scanValidationRow scans a row from rows iterator.
@@ -479,18 +511,23 @@ func (r *PostgresModelValidationRepository) Update(ctx context.Context, validati
 		WHERE org_id = $28 AND id = $29
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		validation.ValidationType, validation.ValidatorType,
-		validation.ValidatorName, validation.ValidatorOrganization, validation.ValidatorCredentials,
-		validation.ValidationDate, validation.ValidationPeriodStart, validation.ValidationPeriodEnd,
-		validation.DatasetDescription, validation.DatasetSize, datasetCharsJSON,
-		validation.Methodology, testScenariosJSON, findingsJSON, accuracyJSON,
-		biasJSON, biasCatsJSON, stressJSON,
-		validation.StressTestPassed, validation.Recommendation, validation.Conditions,
-		validation.NextReviewDate, validation.RemediationRequired, validation.RemediationDeadline,
-		validation.ReportFilePath, validation.ReportFileChecksum, validation.UpdatedAt,
-		validation.OrgID, validation.ID,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, validation.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			validation.ValidationType, validation.ValidatorType,
+			validation.ValidatorName, validation.ValidatorOrganization, validation.ValidatorCredentials,
+			validation.ValidationDate, validation.ValidationPeriodStart, validation.ValidationPeriodEnd,
+			validation.DatasetDescription, validation.DatasetSize, datasetCharsJSON,
+			validation.Methodology, testScenariosJSON, findingsJSON, accuracyJSON,
+			biasJSON, biasCatsJSON, stressJSON,
+			validation.StressTestPassed, validation.Recommendation, validation.Conditions,
+			validation.NextReviewDate, validation.RemediationRequired, validation.RemediationDeadline,
+			validation.ReportFilePath, validation.ReportFileChecksum, validation.UpdatedAt,
+			validation.OrgID, validation.ID,
+		)
+		return execErr
+	})
 
 	if err != nil {
 		return fmt.Errorf("update validation: %w", err)
@@ -506,10 +543,15 @@ func (r *PostgresModelValidationRepository) Update(ctx context.Context, validati
 
 // Delete deletes a validation record.
 func (r *PostgresModelValidationRepository) Delete(ctx context.Context, orgID, id string) error {
-	result, err := r.db.ExecContext(ctx,
-		"DELETE FROM rbi_model_validations WHERE org_id = $1 AND id = $2",
-		orgID, id,
-	)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx,
+			"DELETE FROM rbi_model_validations WHERE org_id = $1 AND id = $2",
+			orgID, id,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("delete validation: %w", err)
 	}
@@ -556,17 +598,19 @@ func (r *PostgresModelValidationRepository) GetLatestBySystem(ctx context.Contex
 	var datasetSize sql.NullInt32
 	var stressTestPassed sql.NullBool
 
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(
-		&v.ID, &v.OrgID, &v.SystemID, &v.ValidationType, &v.ValidatorType,
-		&v.ValidatorName, &validatorOrg, &validatorCreds,
-		&v.ValidationDate, &periodStart, &periodEnd,
-		&datasetDesc, &datasetSize, &datasetCharsJSON,
-		&methodology, &testScenariosJSON, &findingsJSON, &accuracyJSON,
-		&biasJSON, &biasCatsJSON, &stressJSON,
-		&stressTestPassed, &v.Recommendation, &conditions,
-		&nextReview, &v.RemediationRequired, &remDeadline,
-		&reportPath, &reportChecksum, &v.CreatedAt, &v.UpdatedAt,
-	)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, args...).Scan(
+			&v.ID, &v.OrgID, &v.SystemID, &v.ValidationType, &v.ValidatorType,
+			&v.ValidatorName, &validatorOrg, &validatorCreds,
+			&v.ValidationDate, &periodStart, &periodEnd,
+			&datasetDesc, &datasetSize, &datasetCharsJSON,
+			&methodology, &testScenariosJSON, &findingsJSON, &accuracyJSON,
+			&biasJSON, &biasCatsJSON, &stressJSON,
+			&stressTestPassed, &v.Recommendation, &conditions,
+			&nextReview, &v.RemediationRequired, &remDeadline,
+			&reportPath, &reportChecksum, &v.CreatedAt, &v.UpdatedAt,
+		)
+	})
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

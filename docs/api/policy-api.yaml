@@ -952,13 +952,25 @@ paths:
       summary: List active dynamic policies (legacy)
       deprecated: true
       description: |
-        **Legacy endpoint.** Returns the raw array of dynamic policies
-        currently active in the orchestrator's policy engine (no pagination,
-        no tenant filtering parameters). Prefer `GET /api/v1/dynamic-policies`.
+        **Legacy endpoint.** Returns the array of active dynamic policies
+        visible to the CALLING tenant — its own plus the shared
+        global/default baseline (no pagination). Policies owned by other
+        tenants are never returned in the same response, and requests
+        without a resolvable tenant are rejected with 401 (fail closed).
+
+        The tenant scope is read from the `X-Tenant-ID` header. When the
+        request arrives through the AxonFlow Agent, that header is set from
+        the validated credential and overwrites any client-supplied value,
+        so the caller cannot choose the scope. The orchestrator itself does
+        not authenticate this route, so a caller with direct network access
+        to the orchestrator can name a tenant — deploy the orchestrator on a
+        private network behind the Agent.
+
+        Prefer `GET /api/v1/dynamic-policies`.
       operationId: listActiveDynamicPoliciesLegacy
       responses:
         '200':
-          description: Array of active dynamic policies
+          description: Array of active dynamic policies visible to the calling tenant
           content:
             application/json:
               schema:
@@ -967,6 +979,8 @@ paths:
                   type: object
                   additionalProperties: true
                   description: Engine-internal dynamic policy representation
+        '401':
+          description: Tenant scope could not be resolved (missing gateway-stamped X-Tenant-ID); fails closed with no policy data
 
   /api/v1/policies/test:
     post:
@@ -2030,7 +2044,14 @@ components:
           format: int64
         total_policies:
           type: integer
-          description: Total number of active policies evaluated
+          description: |
+            Number of active policies visible to the calling tenant — its own
+            plus the shared global/default baseline.
+
+            CHANGED: this previously counted every active policy in the
+            deployment, across all tenants, which disclosed the deployment-wide
+            policy count to every caller. Integrations that treated this as a
+            deployment-level total will now see a smaller, tenant-scoped number.
         dry_run:
           type: boolean
           description: Always true — no actions were applied

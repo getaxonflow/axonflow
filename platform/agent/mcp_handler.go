@@ -436,12 +436,15 @@ func GetConnectorForTenant(ctx context.Context, tenantID, connectorName string) 
 		return nil, fmt.Errorf("MCP registry not initialized")
 	}
 
-	connector, err := mcpRegistry.Get(connectorName)
+	// #3067 (S-1): the static-registry fallback is tenant-scoped too. Before,
+	// a lookup that missed the per-tenant cache fell through to a flat
+	// deployment-wide map and could return another tenant's connector.
+	connector, err := mcpRegistry.Get(tenantID, connectorName)
 	if err != nil {
 		return nil, fmt.Errorf("connector '%s' not found: %w", connectorName, err)
 	}
 
-	log.Printf("[MCP] Retrieved connector '%s' from static registry (fallback)", logutil.Sanitize(connectorName))
+	log.Printf("[MCP] Retrieved connector '%s' from static registry (fallback, tenant: %s)", logutil.Sanitize(connectorName), logutil.Sanitize(tenantID))
 	return connector, nil
 }
 
@@ -554,11 +557,31 @@ func registerAmadeusConnector() error {
 
 // RegisterMCPHandlers adds MCP endpoints to the router
 func RegisterMCPHandlers(r *mux.Router) {
-	// List all connectors
-	r.HandleFunc("/mcp/connectors", mcpListConnectorsHandler).Methods("GET")
+	// Connector inventory + per-connector health.
+	//
+	// #3067 (S-5): these two were registered with NO auth middleware and
+	// served every tenant's connector name, type, version, capabilities,
+	// health and raw driver error strings (which routinely embed host/db/user)
+	// to any anonymous caller; the /health variant additionally opened a live
+	// connection using the victim's decrypted credentials. They are now behind
+	// apiAuthMiddleware and scoped to the authenticated tenant, which is the
+	// same gate /api/clients and /api/policies/test already use. Registering
+	// them here (rather than leaving them bare on globalRouter) also keeps
+	// them from shadowing the authenticated proxy prefix — the route-ordering
+	// class tracked separately as #2883.
+	//
+	// NOTE (R3 BLOCKER): these are registered for GET ONLY, deliberately.
+	// apiAuthMiddleware forwards CORS preflights (`OPTIONS`) to the next
+	// handler WITHOUT authenticating — so registering "OPTIONS" here would
+	// hand an anonymous caller the handler with no identity in context, which
+	// resolves to the deployment-shared scope and serves exactly the
+	// inventory + live health check this change is closing. These endpoints
+	// are server-to-server (SDK/plugin), not browser-XHR, so they need no
+	// preflight.
+	r.Handle("/mcp/connectors", apiAuthMiddleware(http.HandlerFunc(mcpListConnectorsHandler))).Methods("GET")
 
 	// Health check for specific connector
-	r.HandleFunc("/mcp/connectors/{name}/health", mcpConnectorHealthHandler).Methods("GET")
+	r.Handle("/mcp/connectors/{name}/health", apiAuthMiddleware(http.HandlerFunc(mcpConnectorHealthHandler))).Methods("GET")
 
 	// Execute query (MCP Resource pattern - read-only)
 	r.HandleFunc("/mcp/resources/query", mcpQueryHandler).Methods("POST")
@@ -586,11 +609,15 @@ func mcpListConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tenant comes from the authenticated credential (apiAuthMiddleware), never
+	// from a caller-supplied header or path segment (#3067 S-5).
+	tenantID := TenantIDFromContext(r.Context())
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Get health status for all connectors
-	healthStatuses := mcpRegistry.HealthCheck(ctx)
+	// Get health status for the connectors this tenant may reach
+	healthStatuses := mcpRegistry.HealthCheck(ctx, tenantID)
 
 	// Build response
 	connectors := make([]map[string]interface{}, 0)
@@ -602,7 +629,7 @@ func mcpListConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Get connector type from registry
-		if conn, err := mcpRegistry.Get(name); err == nil {
+		if conn, err := mcpRegistry.Get(tenantID, name); err == nil {
 			connector["type"] = conn.Type()
 			connector["version"] = conn.Version()
 			connector["capabilities"] = conn.Capabilities()
@@ -635,10 +662,15 @@ func mcpConnectorHealthHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	connectorName := vars["name"]
 
+	// #3067 (S-5): scope to the authenticated tenant. Naming another tenant's
+	// connector now yields the same 404 as a nonexistent one — no existence
+	// oracle, and no live connection opened with the victim's credentials.
+	tenantID := TenantIDFromContext(r.Context())
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	status, err := mcpRegistry.HealthCheckSingle(ctx, connectorName)
+	status, err := mcpRegistry.HealthCheckSingle(ctx, tenantID, connectorName)
 	if err != nil {
 		sendErrorResponse(w, "Connector not found", http.StatusNotFound, nil)
 		return
@@ -3342,7 +3374,15 @@ func mcpHealthHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	healthStatuses := mcpRegistry.HealthCheck(ctx)
+	// #3067: /mcp/health is an unauthenticated liveness probe, so the live
+	// health checks it runs are limited to the deployment-shared (operator-
+	// configured) connectors. Previously it opened a connection to EVERY
+	// tenant's backend on every anonymous GET — cross-tenant credential use
+	// plus a free amplification lever. Per-tenant connector health is served
+	// by the authenticated /mcp/connectors endpoints. total_connectors keeps
+	// its deployment-wide meaning (an aggregate integer that was already
+	// public here) so operator dashboards do not silently change scale.
+	healthStatuses := mcpRegistry.HealthCheck(ctx, registry.SharedTenant)
 
 	healthyCount := 0
 	unhealthyCount := 0

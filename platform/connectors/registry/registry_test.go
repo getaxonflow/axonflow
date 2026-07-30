@@ -102,7 +102,7 @@ func TestRegistry_Register(t *testing.T) {
 	}
 
 	// Verify registration
-	got, err := registry.Get("pg1")
+	got, err := registry.Get(SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("failed to get registered connector: %v", err)
 	}
@@ -148,13 +148,13 @@ func TestRegistry_Unregister(t *testing.T) {
 
 	registry.Register("pg1", connector, config)
 
-	err := registry.Unregister("pg1")
+	err := registry.Unregister(SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Verify unregistration
-	_, err = registry.Get("pg1")
+	_, err = registry.Get(SharedTenant, "pg1")
 	if err == nil {
 		t.Error("expected error when getting unregistered connector")
 	}
@@ -163,7 +163,7 @@ func TestRegistry_Unregister(t *testing.T) {
 func TestRegistry_Unregister_NotFound(t *testing.T) {
 	registry := NewRegistry()
 
-	err := registry.Unregister("nonexistent")
+	err := registry.Unregister(SharedTenant, "nonexistent")
 	if err == nil {
 		t.Error("expected error when unregistering nonexistent connector")
 	}
@@ -186,7 +186,7 @@ func TestRegistry_Unregister_DisconnectError(t *testing.T) {
 	registry.Register("pg1", connector, config)
 
 	// Should still unregister even if disconnect fails
-	err := registry.Unregister("pg1")
+	err := registry.Unregister(SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestRegistry_Unregister_DisconnectError(t *testing.T) {
 func TestRegistry_Get_NotFound(t *testing.T) {
 	registry := NewRegistry()
 
-	_, err := registry.Get("nonexistent")
+	_, err := registry.Get(SharedTenant, "nonexistent")
 	if err == nil {
 		t.Error("expected error when getting nonexistent connector")
 	}
@@ -218,7 +218,7 @@ func TestRegistry_GetConfig(t *testing.T) {
 
 	registry.Register("pg1", connector, config)
 
-	got, err := registry.GetConfig("pg1")
+	got, err := registry.GetConfig(SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestRegistry_GetConfig(t *testing.T) {
 func TestRegistry_GetConfig_NotFound(t *testing.T) {
 	registry := NewRegistry()
 
-	_, err := registry.GetConfig("nonexistent")
+	_, err := registry.GetConfig(SharedTenant, "nonexistent")
 	if err == nil {
 		t.Error("expected error when getting config for nonexistent connector")
 	}
@@ -240,7 +240,7 @@ func TestRegistry_List(t *testing.T) {
 	registry := NewRegistry()
 
 	// Empty registry
-	names := registry.List()
+	names := registry.List(SharedTenant)
 	if len(names) != 0 {
 		t.Errorf("expected empty list, got %d items", len(names))
 	}
@@ -251,7 +251,7 @@ func TestRegistry_List(t *testing.T) {
 	config2 := &base.ConnectorConfig{Name: "pg2", Type: "postgres", Timeout: 5 * time.Second}
 	registry.Register("pg2", &mockConnector{name: "pg2", connType: "postgres"}, config2)
 
-	names = registry.List()
+	names = registry.List(SharedTenant)
 	if len(names) != 2 {
 		t.Errorf("expected 2 connectors, got %d", len(names))
 	}
@@ -265,7 +265,7 @@ func TestRegistry_ListWithTypes(t *testing.T) {
 	config2 := &base.ConnectorConfig{Name: "cass1", Type: "cassandra", Timeout: 5 * time.Second}
 	registry.Register("cass1", &mockConnector{name: "cass1", connType: "cassandra"}, config2)
 
-	result := registry.ListWithTypes()
+	result := registry.ListWithTypes(SharedTenant)
 	if result["pg1"] != "postgres" {
 		t.Errorf("expected pg1 to be postgres, got %s", result["pg1"])
 	}
@@ -298,7 +298,7 @@ func TestRegistry_HealthCheck(t *testing.T) {
 	registry.Register("pg2", &mockConnector{name: "pg2", connType: "postgres", healthy: false}, config2)
 
 	ctx := context.Background()
-	results := registry.HealthCheck(ctx)
+	results := registry.HealthCheck(ctx, SharedTenant)
 
 	if len(results) != 2 {
 		t.Errorf("expected 2 results, got %d", len(results))
@@ -323,7 +323,7 @@ func TestRegistry_HealthCheck_Error(t *testing.T) {
 	}, config)
 
 	ctx := context.Background()
-	results := registry.HealthCheck(ctx)
+	results := registry.HealthCheck(ctx, SharedTenant)
 
 	if results["pg1"].Healthy {
 		t.Error("expected unhealthy status when health check errors")
@@ -340,7 +340,7 @@ func TestRegistry_HealthCheckSingle(t *testing.T) {
 	registry.Register("pg1", &mockConnector{name: "pg1", connType: "postgres", healthy: true}, config)
 
 	ctx := context.Background()
-	status, err := registry.HealthCheckSingle(ctx, "pg1")
+	status, err := registry.HealthCheckSingle(ctx, SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestRegistry_HealthCheckSingle_NotFound(t *testing.T) {
 	registry := NewRegistry()
 
 	ctx := context.Background()
-	_, err := registry.HealthCheckSingle(ctx, "nonexistent")
+	_, err := registry.HealthCheckSingle(ctx, SharedTenant, "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent connector")
 	}
@@ -370,7 +370,7 @@ func TestRegistry_HealthCheckSingle_Error(t *testing.T) {
 	}, config)
 
 	ctx := context.Background()
-	status, err := registry.HealthCheckSingle(ctx, "pg1")
+	status, err := registry.HealthCheckSingle(ctx, SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -502,14 +502,14 @@ func TestRegistry_LazyLoad(t *testing.T) {
 	registry.SetFactory(factory)
 
 	// Manually add config without connector (simulating storage load)
-	registry.configs["pg1"] = &base.ConnectorConfig{
+	registry.configs[scopeKey(SharedTenant, "pg1")] = &base.ConnectorConfig{
 		Name:    "pg1",
 		Type:    "postgres",
 		Timeout: 5 * time.Second,
 	}
 
 	// Get should lazy-load
-	conn, err := registry.Get("pg1")
+	conn, err := registry.Get(SharedTenant, "pg1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -528,14 +528,14 @@ func TestRegistry_LazyLoad_FactoryError(t *testing.T) {
 	registry.SetFactory(factory)
 
 	// Add config
-	registry.configs["pg1"] = &base.ConnectorConfig{
+	registry.configs[scopeKey(SharedTenant, "pg1")] = &base.ConnectorConfig{
 		Name:    "pg1",
 		Type:    "postgres",
 		Timeout: 5 * time.Second,
 	}
 
 	// Get should fail
-	_, err := registry.Get("pg1")
+	_, err := registry.Get(SharedTenant, "pg1")
 	if err == nil {
 		t.Error("expected error from factory")
 	}
@@ -554,14 +554,14 @@ func TestRegistry_LazyLoad_ConnectError(t *testing.T) {
 	registry.SetFactory(factory)
 
 	// Add config
-	registry.configs["pg1"] = &base.ConnectorConfig{
+	registry.configs[scopeKey(SharedTenant, "pg1")] = &base.ConnectorConfig{
 		Name:    "pg1",
 		Type:    "postgres",
 		Timeout: 5 * time.Second,
 	}
 
 	// Get should fail
-	_, err := registry.Get("pg1")
+	_, err := registry.Get(SharedTenant, "pg1")
 	if err == nil {
 		t.Error("expected connect error")
 	}

@@ -9,6 +9,8 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/tenantscope"
 )
 
 // Handler provides HTTP handlers for webhook management.
@@ -32,7 +34,11 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 
 func (h *Handler) createWebhook(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-	tenantID, orgID := extractContext(r)
+	scope, ok := requireScope(w, r)
+	if !ok {
+		return
+	}
+	tenantID, orgID := scope.TenantID, scope.OrgID
 
 	var req CreateSubscriptionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -54,7 +60,11 @@ func (h *Handler) createWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getWebhook(w http.ResponseWriter, r *http.Request) {
-	tenantID, orgID := extractContext(r)
+	scope, ok := requireScope(w, r)
+	if !ok {
+		return
+	}
+	tenantID, orgID := scope.TenantID, scope.OrgID
 	id := mux.Vars(r)["id"]
 
 	sub, err := h.service.Get(r.Context(), id, tenantID, orgID)
@@ -71,7 +81,11 @@ func (h *Handler) getWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateWebhook(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-	tenantID, orgID := extractContext(r)
+	scope, ok := requireScope(w, r)
+	if !ok {
+		return
+	}
+	tenantID, orgID := scope.TenantID, scope.OrgID
 	id := mux.Vars(r)["id"]
 
 	var req UpdateSubscriptionRequest
@@ -93,7 +107,11 @@ func (h *Handler) updateWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteWebhook(w http.ResponseWriter, r *http.Request) {
-	tenantID, orgID := extractContext(r)
+	scope, ok := requireScope(w, r)
+	if !ok {
+		return
+	}
+	tenantID, orgID := scope.TenantID, scope.OrgID
 	id := mux.Vars(r)["id"]
 
 	if err := h.service.Delete(r.Context(), id, tenantID, orgID); err != nil {
@@ -105,7 +123,11 @@ func (h *Handler) deleteWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listWebhooks(w http.ResponseWriter, r *http.Request) {
-	tenantID, orgID := extractContext(r)
+	scope, ok := requireScope(w, r)
+	if !ok {
+		return
+	}
+	tenantID, orgID := scope.TenantID, scope.OrgID
 
 	resp, err := h.service.List(r.Context(), tenantID, orgID)
 	if err != nil {
@@ -119,10 +141,21 @@ func (h *Handler) listWebhooks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func extractContext(r *http.Request) (tenantID, orgID string) {
-	tenantID = r.Header.Get("X-Tenant-ID")
-	orgID = r.Header.Get("X-Org-ID")
-	return
+// requireScope resolves the caller's authenticated tenancy, writing a 401 and
+// returning ok=false when the request carries none.
+//
+// #3065 (F6): extractContext used to hand the raw headers straight through,
+// so a caller who sent neither reached a repository whose by-id read had no
+// predicate at all — and whose projection included the subscription's HMAC
+// signing secret. Nothing legitimate is affected: the agent gateway and the
+// customer portal proxy both Set these headers from a validated credential.
+func requireScope(w http.ResponseWriter, r *http.Request) (tenantscope.Scope, bool) {
+	scope, err := tenantscope.Bind(r)
+	if err != nil {
+		sendError(w, "Missing tenant or org identity", http.StatusUnauthorized)
+		return tenantscope.Scope{}, false
+	}
+	return scope, true
 }
 
 func sendError(w http.ResponseWriter, msg string, status int) {

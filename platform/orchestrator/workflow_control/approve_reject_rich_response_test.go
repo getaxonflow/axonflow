@@ -51,6 +51,7 @@ func TestHandlerApproveStep_RichResponse(t *testing.T) {
 	body := strings.NewReader(`{"comment": "Approved after full audit review"}`)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "approver@example.com")
 	req.Header.Set("X-Org-ID", "org-1")
@@ -133,6 +134,7 @@ func TestHandlerRejectStep_RichResponse(t *testing.T) {
 	body := strings.NewReader(`{"reason": "PII risk detected in output sample"}`)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "rejecter@example.com")
 	req.Header.Set("X-Org-ID", "org-1")
@@ -208,6 +210,7 @@ func TestHandlerApproveStep_ParityWithRejectShape(t *testing.T) {
 		}
 		req := httptest.NewRequest(http.MethodPost,
 			"/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/"+method, body)
+		req.Header.Set("X-Tenant-ID", "tenant-1")
 		req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 		req.Header.Set("X-User-ID", "u@example.com")
 		req.Header.Set("X-Org-ID", "org-1")

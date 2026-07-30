@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/mux"
 
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 )
 
 // ProxyAuthCheck verifies that a request was routed through the AxonFlow
@@ -33,10 +34,59 @@ type Handler struct {
 	proxyAuthCheck ProxyAuthCheck
 }
 
-// SetProxyAuthCheck installs the agent proxy-auth verification the StepGate
-// endpoint enforces before evaluating (see ProxyAuthCheck).
+// SetProxyAuthCheck installs the agent proxy-auth verification the workflow
+// routes enforce before touching a workflow (see ProxyAuthCheck).
 func (h *Handler) SetProxyAuthCheck(check ProxyAuthCheck) {
 	h.proxyAuthCheck = check
+}
+
+// requireProxyAuth enforces the agent proxy-auth gate, writing the 403 and
+// returning false when the request did not arrive through a trusted hop.
+//
+// #3065 (F1): RegisterRoutes + RegisterEvaluationRoutes + RegisterEnterpriseRoutes
+// register 14 routes and only three of them (StepGate, ResumeFromLastCheckpoint,
+// ResumeFromCheckpoint) ran this gate. The other id-addressed routes accepted
+// the caller's self-asserted X-Tenant-ID / X-Org-ID — and accepted their
+// ABSENCE, which the old workflowBelongsTo read as "trusted caller, allow".
+// Every route that reads or mutates a workflow by id now runs the same gate
+// its three siblings did, so the tenancy headers a handler reads were set by
+// an authenticating hop (the Agent's proxyAuthMiddleware or the customer
+// portal's orchestrator proxy — both Set them from a validated credential and
+// both attach the HMAC proxy token).
+//
+// A nil check means the gate is not wired (embedded use, unit tests); the
+// orchestrator always wires it, and verifyAgentProxyAuth itself fails closed
+// when the internal-service secret is unset outside Community mode.
+func (h *Handler) requireProxyAuth(w http.ResponseWriter, r *http.Request) bool {
+	if h.proxyAuthCheck == nil {
+		return true
+	}
+	if ok, msg := h.proxyAuthCheck(r); !ok {
+		h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
+		return false
+	}
+	return true
+}
+
+// requireScope resolves the caller's authenticated tenancy, writing a 401 and
+// returning ok=false when the request carries none.
+//
+// #3065: the by-id handlers used to read X-Tenant-ID / X-Org-ID individually
+// and pass whatever they got — including nothing — down to a check that read
+// "nothing" as "trusted". Binding once, up front, means a request with no
+// authenticated tenancy is refused before any workflow id is looked up, so the
+// refusal cannot double as an existence oracle either. 401 (not 404) is
+// correct here: the answer does not depend on the id.
+//
+// Mirrors UnifiedExecutionHandler.checkTenantOwnership, the posture this
+// package is being brought in line with.
+func (h *Handler) requireScope(w http.ResponseWriter, r *http.Request) (tenantscope.Scope, bool) {
+	scope, err := tenantscope.Bind(r)
+	if err != nil {
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
+		return tenantscope.Scope{}, false
+	}
+	return scope, true
 }
 
 // NewHandler creates a new workflow control handler
@@ -107,6 +157,15 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	var req CreateWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body")
@@ -118,14 +177,22 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get tenant/org context from headers or auth
-	tenantID := h.getTenantID(r)
-	orgID := h.getOrgID(r)
+	// Tenant/org come from the bound scope (#3065); user/client identity is
+	// attribution only and keeps its existing resolution.
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 	userID := h.getUserID(r)
 	clientID := h.getClientID(r)
 
 	workflow, err := h.service.CreateWorkflow(r.Context(), &req, tenantID, orgID, userID, clientID)
 	if err != nil {
+		// #3065: the service refuses to persist a workflow with no tenancy
+		// key. requireScope above already guarantees a bound scope, so this
+		// is a belt-and-braces mapping for embedded/nil-check callers.
+		if errors.Is(err, tenantscope.ErrNoCallerScope) {
+			h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
+			return
+		}
 		if strings.Contains(err.Error(), "trace_id exceeds") {
 			h.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"error":   "validation_error",
@@ -157,14 +224,23 @@ func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	workflowID := mux.Vars(r)["id"]
 	if workflowID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
 		return
 	}
 
-	tenantID := h.getClientID(r)
-	orgID := h.getOrgID(r)
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 
 	workflow, err := h.service.GetWorkflow(r.Context(), workflowID, tenantID, orgID)
 	if err != nil {
@@ -184,6 +260,15 @@ func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListWorkflows(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
+		return
+	}
+
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
 		return
 	}
 
@@ -215,12 +300,22 @@ func (h *Handler) ListWorkflows(w http.ResponseWriter, r *http.Request) {
 		opts.TraceID = traceID
 	}
 
-	// Get tenant/org context
-	opts.TenantID = h.getTenantID(r)
-	opts.OrgID = h.getOrgID(r)
+	// #3065 (F1, R3 round 1): the listing routes were NOT on the issue's list
+	// of nine ungated routes, so the first pass gated the by-id routes and left
+	// these two reading self-asserted headers — the very "census of the doors a
+	// review named" that epic #3071 exists to end. A direct caller sending
+	// `X-Org-ID: victim-org` got the victim's whole workflow list.
+	opts.TenantID = scope.TenantID
+	opts.OrgID = scope.OrgID
 
 	response, err := h.service.ListWorkflows(r.Context(), opts)
 	if err != nil {
+		// #3065: an unbound scope is a 401, never a 500 — the service refuses
+		// rather than widening, and the response code must say so.
+		if errors.Is(err, tenantscope.ErrNoCallerScope) {
+			h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
+			return
+		}
 		h.logger.Printf("[WorkflowControl] ListWorkflows error: %v", err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list workflows")
 		return
@@ -242,11 +337,12 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 	// EvaluateStepGate — a deny→allow flip. Only agent-routed requests
 	// (trust-gated identity + HMAC proxy token) may drive it; a direct
 	// caller with a forged identity is rejected before any evaluation.
-	if h.proxyAuthCheck != nil {
-		if ok, msg := h.proxyAuthCheck(r); !ok {
-			h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
-			return
-		}
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
 	}
 
 	vars := mux.Vars(r)
@@ -308,9 +404,10 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 		req.IncludePriorOutput = true
 	}
 
-	// Get tenant/org context
-	tenantID := h.getTenantID(r)
-	orgID := h.getOrgID(r)
+	// Tenant/org come from the bound scope (#3065); user/client identity is
+	// attribution only and keeps its existing resolution.
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 	userID := h.getUserID(r)
 	clientID := h.getClientID(r)
 
@@ -349,6 +446,15 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	workflowID := vars["id"]
 	stepID := vars["step_id"]
@@ -381,10 +487,10 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 
 	// Inconsistency fix (Issue #1673 drive-by): this handler previously passed
 	// getClientID as the service's tenantID parameter, while StepGate passes
-	// getTenantID. That meant a real X-Tenant-ID header worked for gate but
+	// the client-id getter. That meant a real X-Tenant-ID header worked for gate but
 	// broke complete on the isolation check. Align with StepGate — tenantID
 	// is the proper parameter.
-	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req, h.getTenantID(r), h.getOrgID(r)); err != nil {
+	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req, scope.TenantID, scope.OrgID); err != nil {
 		// Issue #1673 Phase 2: 409 IDEMPOTENCY_KEY_MISMATCH
 		var mismatchErr *IdempotencyKeyMismatchError
 		if errors.As(err, &mismatchErr) {
@@ -433,14 +539,23 @@ func (h *Handler) CompleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	workflowID := mux.Vars(r)["id"]
 	if workflowID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
 		return
 	}
 
-	tenantID := h.getClientID(r)
-	orgID := h.getOrgID(r)
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 
 	if err := h.service.CompleteWorkflow(r.Context(), workflowID, tenantID, orgID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -474,6 +589,15 @@ func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	workflowID := mux.Vars(r)["id"]
 	if workflowID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
@@ -488,7 +612,7 @@ func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Failed"
 	}
 
-	if err := h.service.FailWorkflow(r.Context(), workflowID, req.Reason, h.getClientID(r), h.getOrgID(r)); err != nil {
+	if err := h.service.FailWorkflow(r.Context(), workflowID, req.Reason, scope.TenantID, scope.OrgID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -519,6 +643,15 @@ func (h *Handler) AbortWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	workflowID := mux.Vars(r)["id"]
 	if workflowID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
@@ -534,8 +667,8 @@ func (h *Handler) AbortWorkflow(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Aborted by user"
 	}
 
-	tenantID := h.getClientID(r)
-	orgID := h.getOrgID(r)
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 
 	if err := h.service.AbortWorkflow(r.Context(), workflowID, req.Reason, tenantID, orgID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -566,13 +699,22 @@ func (h *Handler) ResumeWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	workflowID := mux.Vars(r)["id"]
 	if workflowID == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
 		return
 	}
 
-	if err := h.service.ResumeWorkflow(r.Context(), workflowID, h.getClientID(r), h.getOrgID(r)); err != nil {
+	if err := h.service.ResumeWorkflow(r.Context(), workflowID, scope.TenantID, scope.OrgID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -608,6 +750,15 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	workflowID := vars["id"]
 	stepID := vars["step_id"]
@@ -640,7 +791,7 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r), approvedBy, comment); err != nil {
+	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID, approvedBy, comment); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -660,7 +811,7 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 
 	// Project the rich StepGateHTTPResponse — same helper that MAP calls, so
 	// cross-plane parity is structural rather than hand-maintained (Issue #1677).
-	step, err := h.service.GetStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r))
+	step, err := h.service.GetStep(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID)
 	if err != nil {
 		// Post-approval fetch failure shouldn't fail the approval; surface the
 		// minimal response but log loudly so it's observable.
@@ -677,6 +828,15 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
+		return
+	}
+
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
 		return
 	}
 
@@ -712,7 +872,7 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.RejectStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r), rejectedBy, reason); err != nil {
+	if err := h.service.RejectStep(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID, rejectedBy, reason); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -732,7 +892,7 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 
 	// Rich response via the shared projector — same shape as ApproveStep so
 	// cross-plane parity stays structural (Issue #1677).
-	step, err := h.service.GetStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r))
+	step, err := h.service.GetStep(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID)
 	if err != nil {
 		h.logger.Printf("[WorkflowControl] RejectStep post-fetch error for %s/%s: %v", workflowID, stepID, err)
 		h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", nil, ApproverMeta{}, "Step rejected, workflow aborted", false))
@@ -750,11 +910,18 @@ func (h *Handler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Tenant ID is required")
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
 		return
 	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
+	// #3065 (F1, R3 round 1): bound, not self-asserted — and 401 rather than
+	// the old 400, matching every converted sibling.
+	tenantID := scope.TenantID
 
 	limit := 20
 	if l := r.URL.Query().Get("limit"); l != "" {
@@ -765,6 +932,10 @@ func (h *Handler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
 
 	steps, err := h.service.GetPendingApprovals(r.Context(), tenantID, limit)
 	if err != nil {
+		if errors.Is(err, tenantscope.ErrNoCallerScope) {
+			h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
+			return
+		}
 		h.logger.Printf("[WorkflowControl] GetPendingApprovals error: %v", err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get pending approvals")
 		return
@@ -801,27 +972,16 @@ type ErrorResponse struct {
 
 // Helper methods
 
-// getTenantID extracts tenant ID from request
-func (h *Handler) getTenantID(r *http.Request) string {
-	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
-		return tenantID
-	}
-	if tenantID, ok := r.Context().Value("tenant_id").(string); ok {
-		return tenantID
-	}
-	return ""
-}
-
-// getOrgID extracts org ID from request
-func (h *Handler) getOrgID(r *http.Request) string {
-	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
-		return orgID
-	}
-	if orgID, ok := r.Context().Value("org_id").(string); ok {
-		return orgID
-	}
-	return ""
-}
+// #3065: getTenantID and getOrgID are GONE. Every handler in this package
+// resolves tenancy through requireScope (tenantscope.Bind), so there is no
+// longer a way to read a tenancy value out of a raw header here — which is
+// the structural half of the fix. The linter flagged them as unused the
+// moment the last caller was converted; that is the invariant reporting
+// itself, so they are deleted rather than silenced.
+//
+// getUserID and getClientID remain: they carry ATTRIBUTION (who acted, which
+// credential), never authorization, and the trust-gate contract in
+// platform/shared/identity governs them.
 
 // getUserID extracts user ID from request.
 //
@@ -908,6 +1068,15 @@ func (h *Handler) GetCheckpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3065 (F1): same proxy-auth gate as StepGate — see requireProxyAuth.
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+
 	vars := mux.Vars(r)
 	workflowID := vars["id"]
 	if workflowID == "" {
@@ -915,8 +1084,8 @@ func (h *Handler) GetCheckpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := h.getTenantID(r)
-	orgID := h.getOrgID(r)
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 
 	resp, err := h.service.GetCheckpoints(r.Context(), workflowID, tenantID, orgID)
 	if err != nil {
@@ -945,11 +1114,12 @@ func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Reques
 	// deny→allow flip. Only agent-routed requests (trust-gated identity +
 	// HMAC proxy token) may drive it; a direct caller is rejected before any
 	// re-evaluation. Mirrors the StepGate guard.
-	if h.proxyAuthCheck != nil {
-		if ok, msg := h.proxyAuthCheck(r); !ok {
-			h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
-			return
-		}
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
 	}
 
 	vars := mux.Vars(r)
@@ -959,8 +1129,8 @@ func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	tenantID := h.getTenantID(r)
-	orgID := h.getOrgID(r)
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 
 	resp, err := h.service.ResumeFromLastCheckpoint(r.Context(), workflowID, tenantID, orgID)
 	if err != nil {
@@ -992,11 +1162,12 @@ func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
 	// applies any ADR-044 override keyed on the checkpoint's stored actor
 	// identity — a deny→allow flip. Require the Agent gateway's proxy token
 	// (mirrors StepGate / ResumeFromLastCheckpoint).
-	if h.proxyAuthCheck != nil {
-		if ok, msg := h.proxyAuthCheck(r); !ok {
-			h.writeError(w, http.StatusForbidden, "FORBIDDEN", msg)
-			return
-		}
+	if !h.requireProxyAuth(w, r) {
+		return
+	}
+	scope, ok := h.requireScope(w, r)
+	if !ok {
+		return
 	}
 
 	vars := mux.Vars(r)
@@ -1018,8 +1189,8 @@ func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := h.getTenantID(r)
-	orgID := h.getOrgID(r)
+	tenantID := scope.TenantID
+	orgID := scope.OrgID
 
 	resp, err := h.service.ResumeFromCheckpoint(r.Context(), workflowID, checkpointID, tenantID, orgID)
 	if err != nil {

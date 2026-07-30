@@ -9,7 +9,16 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"axonflow/platform/shared/tenantscope"
 )
+
+// tenantScopeMatches is the mock's fail-closed tenancy predicate (#3065). It
+// mirrors what the fixed Postgres path enforces: a filter value and a row
+// value must both be present and equal. Empty on either side matches nothing.
+func tenantScopeMatches(filter, row string) bool {
+	return tenantscope.NewOrgOnly(filter).AuthorizeOrgOnly(row) == nil
+}
 
 // MockRepository is an in-memory implementation of Repository for testing
 type MockRepository struct {
@@ -220,11 +229,18 @@ func (m *MockRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([
 	var result []Workflow
 
 	for _, w := range m.workflows {
-		// Apply filters
-		if opts.TenantID != "" && w.TenantID != opts.TenantID {
+		// Apply filters.
+		//
+		// #3065: the tenancy filters used to be `opts.X != "" && w.X != opts.X`
+		// — an empty filter matched every tenant's rows, exactly replicating
+		// the production fail-open the issue is about. Mock-based unit tests
+		// therefore CERTIFIED the bug: a test that called List with no scope
+		// saw rows and passed. The mock now mirrors the fixed contract —
+		// tenancy is mandatory, and an unscoped list matches nothing.
+		if !tenantScopeMatches(opts.TenantID, w.TenantID) {
 			continue
 		}
-		if opts.OrgID != "" && w.OrgID != opts.OrgID {
+		if !tenantScopeMatches(opts.OrgID, w.OrgID) {
 			continue
 		}
 		if opts.Status != nil && w.Status != *opts.Status {

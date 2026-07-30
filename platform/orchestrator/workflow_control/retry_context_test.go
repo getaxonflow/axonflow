@@ -636,11 +636,11 @@ func TestApplyRetryContextToGate_Semantics(t *testing.T) {
 // applyRetryContextToGate's semantics.
 func TestBuildRetryContext_PriorCompletionStatus_AllBranches(t *testing.T) {
 	tests := []struct {
-		name         string
-		gateCount    int
-		completeCnt  int
-		want         PriorCompletionStatus
-		wantAvail    bool
+		name        string
+		gateCount   int
+		completeCnt int
+		want        PriorCompletionStatus
+		wantAvail   bool
 	}{
 		{"first call", 1, 0, PriorCompletionStatusNone, false},
 		{"retry post-complete", 2, 1, PriorCompletionStatusCompleted, true},
@@ -675,8 +675,8 @@ type switchableEvaluator struct {
 
 func (e *switchableEvaluator) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
 	return &StepGateEvaluation{
-		Decision: e.current,
-		Reason:   fmt.Sprintf("switchable:%s", e.current),
+		Decision:  e.current,
+		Reason:    fmt.Sprintf("switchable:%s", e.current),
 		PolicyIDs: []string{"switchable-policy"},
 		PoliciesEvaluated: []PolicyMatch{{
 			PolicyID: "switchable-policy", PolicyName: "Switchable", Action: string(e.current),

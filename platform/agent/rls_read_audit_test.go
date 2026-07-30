@@ -320,6 +320,20 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		"platform/shared/policy/loader.go::GetPolicyByID":                "dual-shape discovery reader: bare pass for owner pools + 'global'-scoped retry for system rows; no production callers today (#3048).",
 		"platform/agent/static_policy_repository.go::scopedListBare":     "deliberate legacy bare read: filterless (tenantID==\"\") cross-tenant ops listing on owner pools; cross-org work belongs on the admin role (#3048).",
 
+		// ── RBI cross-org worker sweeps (#3103). Every other read in the RBI
+		// package is now wrapped; these two have NO caller org — the statement
+		// spans every tenant by design and rls.WithOrgScope rejects an empty
+		// orgID precisely so "scope me to nothing" cannot be spelled by
+		// accident. They must run on the BYPASSRLS axonflow_platform_admin
+		// pool. Neither has a production caller today
+		// (ProcessPendingExports/CleanupExpiredExports are unwired), so no live
+		// path reads zero rows; wiring either one MUST construct the repository
+		// with the admin pool. Documented in full on the methods themselves.
+		"platform/orchestrator/rbi/auditexport_repository.go::GetPending":    "cross-org worker sweep (status='pending', no org predicate by design) — admin-pool only; unwired today (#3103).",
+		"platform/orchestrator/rbi/auditexport_repository.go::GetExpired":    "cross-org retention sweep (expires_at < NOW(), no org predicate by design) — admin-pool only; unwired today (#3103).",
+		"ee/platform/orchestrator/rbi/auditexport_repository.go::GetPending": "EE mirror of the cross-org worker sweep — admin-pool only; unwired today (#3103).",
+		"ee/platform/orchestrator/rbi/auditexport_repository.go::GetExpired": "EE mirror of the cross-org retention sweep — admin-pool only; unwired today (#3103).",
+
 		// ── BYPASSRLS lookup/refresh pools by construction: the receiver is
 		// an accessor that resolves to the platform-admin pool when wired
 		// (SetCrossOrgDB / refreshDB / crossOrgDB — #3039/#3048 pattern);
@@ -372,7 +386,33 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// ── Pre-auth discovery lookups tracked by #2403 (same entries as
 		// the write audit): the credential itself is the lookup key and the
 		// resolved row establishes the org.
-		"ee/platform/customer-portal/api/keys.go::ValidateAPIKey": "pre-auth lookup by key_hash (the credential IS the key): tracked by #2403; resolved org is the authenticated result.",
+		//
+		// #3163 CORRECTION. The justification here used to argue only
+		// DISCLOSURE — "the credential IS the key, so the read yields nothing
+		// the caller did not already hold" — and was silent on AVAILABILITY,
+		// which is the half that actually bites. A pre-auth read on an
+		// RLS-gated table does not merely fail to leak: under app-role it
+		// matches zero rows, and ErrNoRows is indistinguishable from a bad
+		// credential, so a VALID key is rejected and the operator rotates
+		// something that was never wrong. An allowlist entry that reasons only
+		// about disclosure will keep re-approving that outcome. The entry
+		// stays — the read genuinely cannot carry a GUC — but it now records
+		// WHICH pool makes it correct, because "pre-auth" alone does not.
+		// #3156 surfaced this by adding the scim_* tables to the gated set. It
+		// is the SAME shape as sso.go::GetSession and keys.go::ValidateAPIKey
+		// below, and it is already FIXED — #3134 routed it through
+		// m.preAuthDB(), the BYPASSRLS platform_admin pool. The walker cannot
+		// distinguish preAuthDB() from db at the call site.
+		//
+		// Availability, not only disclosure: validateToken discovers WHICH
+		// tenant owns a presented bearer token, so it is the query that would
+		// have to supply app.current_org_id. Unrouted it matches 0 rows under
+		// mig 117's RLS and every valid SCIM token is reported invalid. The
+		// tenant scope is applied AFTER the token resolves it (updateLastUsed
+		// re-asserts it both as an org scope and in the predicate).
+		"ee/platform/customer-portal/scim/middleware.go::validateToken": "pre-auth lookup by token_hash (the credential IS the key), routed through m.preAuthDB() — the BYPASSRLS platform_admin pool (#3134). NOT merely a disclosure argument: on the ordinary pool this read matches 0 rows under mig 117's RLS and every valid bearer token is reported invalid (availability). The resolved tenant is the authenticated result and scopes every statement that follows.",
+
+		"ee/platform/customer-portal/api/keys.go::ValidateAPIKey": "pre-auth lookup by key_hash (the credential IS the key), routed through h.preAuthDB() — the BYPASSRLS platform_admin pool (#3163). NOT merely a disclosure argument: on the ordinary pool this read matches 0 rows under mig 018's RLS and every valid key is reported invalid (availability). The resolved org is the authenticated result and scopes the last_used_at write that follows. The AST walker cannot distinguish preAuthDB() from db at the call site, so this is allowlisted with the design intent named — same shape as sso.go::GetSession.",
 
 		// ── Deliberate deployment-wide reads with the constraint documented
 		// at the call site.

@@ -17,20 +17,20 @@ import (
 
 // MockAIIncidentService is a mock for testing handlers.
 type MockAIIncidentService struct {
-	createFunc                func(ctx context.Context, orgID string, req *CreateIncidentRequest) (*AIIncident, error)
-	getFunc                   func(ctx context.Context, orgID, id string) (*AIIncident, error)
-	getByIncidentIDFunc       func(ctx context.Context, orgID, incidentID string) (*AIIncident, error)
-	listFunc                  func(ctx context.Context, orgID string, params *ListIncidentsParams) ([]*AIIncident, int, error)
-	updateFunc                func(ctx context.Context, orgID, id string, req *UpdateIncidentRequest) (*AIIncident, error)
-	deleteFunc                func(ctx context.Context, orgID, id string) error
-	updateStatusFunc          func(ctx context.Context, orgID, id string, status IncidentStatus, resolution string) (*AIIncident, error)
-	addRemediationFunc        func(ctx context.Context, orgID, id string, action *RemediationAction) (*AIIncident, error)
-	updateRemediationFunc     func(ctx context.Context, orgID, id, actionID string, req *UpdateRemediationActionRequest) (*AIIncident, error)
-	recordBoardNotifyFunc     func(ctx context.Context, orgID, id string, req *RecordNotificationRequest) (*AIIncident, error)
-	recordRBINotifyFunc       func(ctx context.Context, orgID, id string, req *RecordNotificationRequest) (*AIIncident, error)
-	getOpenFunc               func(ctx context.Context, orgID string) ([]*AIIncident, error)
-	getPendingBoardFunc       func(ctx context.Context, orgID string) ([]*AIIncident, error)
-	getPendingRBIFunc         func(ctx context.Context, orgID string) ([]*AIIncident, error)
+	createFunc            func(ctx context.Context, orgID string, req *CreateIncidentRequest) (*AIIncident, error)
+	getFunc               func(ctx context.Context, orgID, id string) (*AIIncident, error)
+	getByIncidentIDFunc   func(ctx context.Context, orgID, incidentID string) (*AIIncident, error)
+	listFunc              func(ctx context.Context, orgID string, params *ListIncidentsParams) ([]*AIIncident, int, error)
+	updateFunc            func(ctx context.Context, orgID, id string, req *UpdateIncidentRequest) (*AIIncident, error)
+	deleteFunc            func(ctx context.Context, orgID, id string) error
+	updateStatusFunc      func(ctx context.Context, orgID, id string, status IncidentStatus, resolution string) (*AIIncident, error)
+	addRemediationFunc    func(ctx context.Context, orgID, id string, action *RemediationAction) (*AIIncident, error)
+	updateRemediationFunc func(ctx context.Context, orgID, id, actionID string, req *UpdateRemediationActionRequest) (*AIIncident, error)
+	recordBoardNotifyFunc func(ctx context.Context, orgID, id string, req *RecordNotificationRequest) (*AIIncident, error)
+	recordRBINotifyFunc   func(ctx context.Context, orgID, id string, req *RecordNotificationRequest) (*AIIncident, error)
+	getOpenFunc           func(ctx context.Context, orgID string) ([]*AIIncident, error)
+	getPendingBoardFunc   func(ctx context.Context, orgID string) ([]*AIIncident, error)
+	getPendingRBIFunc     func(ctx context.Context, orgID string) ([]*AIIncident, error)
 }
 
 func (m *MockAIIncidentService) CreateIncident(ctx context.Context, orgID string, req *CreateIncidentRequest) (*AIIncident, error) {
@@ -137,7 +137,8 @@ func TestAIIncidentHandler_CreateIncident(t *testing.T) {
 
 	t.Run("successful creation", func(t *testing.T) {
 		body := `{"incident_type":"bias","severity":"high","detected_by":"automated_monitoring","title":"Test","description":"Test desc"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -163,7 +164,8 @@ func TestAIIncidentHandler_CreateIncident(t *testing.T) {
 
 	t.Run("invalid JSON", func(t *testing.T) {
 		body := `{invalid}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -176,8 +178,14 @@ func TestAIIncidentHandler_CreateIncident(t *testing.T) {
 }
 
 func TestAIIncidentHandler_ListIncidents(t *testing.T) {
+	// gotParams records what the handler actually parsed out of the query string.
+	// A w.Code == 200 assertion alone cannot tell "filters parsed" from "filters
+	// silently dropped" (a malformed URL such as `/api/v1/rbi/incidents&severity=critical`
+	// leaves RawQuery empty and still returns 200).
+	var gotParams *ListIncidentsParams
 	mockService := &MockAIIncidentService{
 		listFunc: func(ctx context.Context, orgID string, params *ListIncidentsParams) ([]*AIIncident, int, error) {
+			gotParams = params
 			return []*AIIncident{
 				{ID: "inc-1", OrgID: orgID, IncidentID: "INC-001"},
 				{ID: "inc-2", OrgID: orgID, IncidentID: "INC-002"},
@@ -187,7 +195,8 @@ func TestAIIncidentHandler_ListIncidents(t *testing.T) {
 	handler := NewAIIncidentHandler(mockService)
 
 	t.Run("list incidents", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidents(w, req)
@@ -206,13 +215,43 @@ func TestAIIncidentHandler_ListIncidents(t *testing.T) {
 	})
 
 	t.Run("with filters", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents?org_id=org-1&severity=critical&status=open", nil)
+		gotParams = nil
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/rbi/incidents?severity=critical&status=open&system_id=sys-1&incident_type=bias&board_notified=true&rbi_notified=false&limit=10&offset=5", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidents(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if gotParams == nil {
+			t.Fatal("ListIncidents was never invoked, so no filter was parsed")
+		}
+		if gotParams.Severity != "critical" {
+			t.Errorf("Severity = %q, want %q", gotParams.Severity, "critical")
+		}
+		if gotParams.Status != "open" {
+			t.Errorf("Status = %q, want %q", gotParams.Status, "open")
+		}
+		if gotParams.SystemID != "sys-1" {
+			t.Errorf("SystemID = %q, want %q", gotParams.SystemID, "sys-1")
+		}
+		if gotParams.IncidentType != "bias" {
+			t.Errorf("IncidentType = %q, want %q", gotParams.IncidentType, "bias")
+		}
+		if gotParams.BoardNotified == nil || !*gotParams.BoardNotified {
+			t.Errorf("BoardNotified = %v, want a non-nil true", gotParams.BoardNotified)
+		}
+		if gotParams.RBINotified == nil || *gotParams.RBINotified {
+			t.Errorf("RBINotified = %v, want a non-nil false", gotParams.RBINotified)
+		}
+		if gotParams.Limit != 10 {
+			t.Errorf("Limit = %d, want 10", gotParams.Limit)
+		}
+		if gotParams.Offset != 5 {
+			t.Errorf("Offset = %d, want 5", gotParams.Offset)
 		}
 	})
 }
@@ -229,7 +268,8 @@ func TestAIIncidentHandler_GetIncident(t *testing.T) {
 	handler := NewAIIncidentHandler(mockService)
 
 	t.Run("get existing incident", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/inc-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/inc-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -240,7 +280,8 @@ func TestAIIncidentHandler_GetIncident(t *testing.T) {
 	})
 
 	t.Run("incident not found", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/not-found?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/not-found", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -257,7 +298,8 @@ func TestAIIncidentHandler_UpdateStatus(t *testing.T) {
 
 	t.Run("update status", func(t *testing.T) {
 		body := `{"status":"investigating"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/status?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/status", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -275,7 +317,8 @@ func TestAIIncidentHandler_AddRemediationAction(t *testing.T) {
 
 	t.Run("add action", func(t *testing.T) {
 		body := `{"action":"Retrain model","assigned_to":"data-science"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/actions?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/actions", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -293,7 +336,8 @@ func TestAIIncidentHandler_UpdateRemediationAction(t *testing.T) {
 
 	t.Run("update action", func(t *testing.T) {
 		body := `{"status":"completed"}`
-		req := httptest.NewRequest(http.MethodPatch, "/api/v1/rbi/incidents/inc-123/actions/action-1?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/rbi/incidents/inc-123/actions/action-1", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -312,7 +356,8 @@ func TestAIIncidentHandler_RecordNotifications(t *testing.T) {
 	t.Run("record board notification", func(t *testing.T) {
 		notifyDate := time.Now().UTC().Format(time.RFC3339)
 		body := `{"notification_date":"` + notifyDate + `","reference":"BOARD-001"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/notify/board?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/notify/board", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -326,7 +371,8 @@ func TestAIIncidentHandler_RecordNotifications(t *testing.T) {
 	t.Run("record RBI notification", func(t *testing.T) {
 		notifyDate := time.Now().UTC().Format(time.RFC3339)
 		body := `{"notification_date":"` + notifyDate + `","reference":"RBI-001"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/notify/rbi?org_id=org-1", bytes.NewBufferString(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/rbi/incidents/inc-123/notify/rbi", bytes.NewBufferString(body))
+		req.Header.Set("X-Org-ID", "org-1")
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 
@@ -343,7 +389,8 @@ func TestAIIncidentHandler_GetOpenIncidents(t *testing.T) {
 	handler := NewAIIncidentHandler(mockService)
 
 	t.Run("get open incidents", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/open?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/open", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -359,7 +406,8 @@ func TestAIIncidentHandler_GetPendingNotifications(t *testing.T) {
 	handler := NewAIIncidentHandler(mockService)
 
 	t.Run("get pending board notifications", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/pending-board?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/pending-board", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -370,7 +418,8 @@ func TestAIIncidentHandler_GetPendingNotifications(t *testing.T) {
 	})
 
 	t.Run("get pending RBI notifications", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/pending-rbi?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents/pending-rbi", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -393,7 +442,8 @@ func TestAIIncidentHandler_DeleteIncident(t *testing.T) {
 	handler := NewAIIncidentHandler(mockService)
 
 	t.Run("delete existing incident", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/incidents/inc-123?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/incidents/inc-123", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -404,7 +454,8 @@ func TestAIIncidentHandler_DeleteIncident(t *testing.T) {
 	})
 
 	t.Run("delete non-existent incident", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/incidents/not-found?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/rbi/incidents/not-found", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidentRoutes(w, req)
@@ -439,7 +490,8 @@ func TestAIIncidentHandler_MethodNotAllowed(t *testing.T) {
 	handler := NewAIIncidentHandler(mockService)
 
 	t.Run("PUT not allowed", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/rbi/incidents?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/rbi/incidents", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 
 		handler.handleIncidents(w, req)
@@ -458,7 +510,8 @@ func TestAIIncidentHandler_RegisterRoutes(t *testing.T) {
 	handler.RegisterRoutes(mux)
 
 	t.Run("routes are registered", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents?org_id=org-1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/rbi/incidents", nil)
+		req.Header.Set("X-Org-ID", "org-1")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 

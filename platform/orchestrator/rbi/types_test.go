@@ -7,6 +7,7 @@ package rbi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -922,8 +923,19 @@ func TestBoardApprovalRequest_JSONSerialization(t *testing.T) {
 	if decoded.Action != req.Action {
 		t.Errorf("Action mismatch: got %v, want %v", decoded.Action, req.Action)
 	}
-	if decoded.Approver != req.Approver {
-		t.Errorf("Approver mismatch: got %v, want %v", decoded.Approver, req.Approver)
+
+	// INVERTED BY #3150. This assertion used to be
+	// `decoded.Approver == req.Approver`, i.e. it PINNED the defect as a
+	// requirement: it required that the acting principal survive a JSON
+	// round-trip, which is precisely the property that let a caller name the
+	// board member who approved an AI system. `approver` is now json:"-" and
+	// the handler fills it from the authenticated identity, so the field must
+	// NOT come back off the wire.
+	if decoded.Approver != "" {
+		t.Errorf("approver must not be decodable from the request body, got %q", decoded.Approver)
+	}
+	if strings.Contains(string(data), "approver") {
+		t.Errorf("approver must not appear on the wire at all, body was %s", data)
 	}
 }
 

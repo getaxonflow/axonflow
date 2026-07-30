@@ -69,6 +69,12 @@ func TestRegistryRepository_Create_Success(t *testing.T) {
 		CreatedBy:            "admin@bank.com",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO mas_ai_system_registry")).
 		WithArgs(
 			sqlmock.AnyArg(), // id (generated)
@@ -85,6 +91,7 @@ func TestRegistryRepository_Create_Success(t *testing.T) {
 			system.CreatedBy,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, system)
 	require.NoError(t, err)
@@ -121,6 +128,12 @@ func TestRegistryRepository_Create_WithExistingID(t *testing.T) {
 		CreatedBy:            "user-1",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO mas_ai_system_registry")).
 		WithArgs(
 			"pre-existing-id", // Should use existing ID
@@ -133,6 +146,7 @@ func TestRegistryRepository_Create_WithExistingID(t *testing.T) {
 			sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, system)
 	require.NoError(t, err)
@@ -162,6 +176,12 @@ func TestRegistryRepository_Create_DBError(t *testing.T) {
 		CreatedBy:  "u",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO mas_ai_system_registry")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -173,6 +193,7 @@ func TestRegistryRepository_Create_DBError(t *testing.T) {
 			sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("unique constraint violation"))
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, system)
 	assert.Error(t, err)
@@ -206,6 +227,12 @@ func TestRegistryRepository_GetByID_Success(t *testing.T) {
 	now := time.Now().UTC()
 	deployDate := now.Add(-30 * 24 * time.Hour)
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id, system_name")).
 		WithArgs("org-1", "id-1").
 		WillReturnRows(sqlmock.NewRows(registryColumns()).AddRow(
@@ -217,6 +244,7 @@ func TestRegistryRepository_GetByID_Success(t *testing.T) {
 			[]byte(`{"region":"sg"}`),
 			now, now, "admin", "editor",
 		))
+	mock.ExpectCommit()
 
 	system, err := repo.GetByID(ctx, "org-1", "id-1")
 	require.NoError(t, err)
@@ -250,9 +278,16 @@ func TestRegistryRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id, system_name")).
 		WithArgs("org-1", "nonexistent").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	system, err := repo.GetByID(ctx, "org-1", "nonexistent")
 	require.NoError(t, err)
@@ -269,9 +304,16 @@ func TestRegistryRepository_GetByID_DBError(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id")).
 		WithArgs("org-1", "id-1").
 		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
 
 	system, err := repo.GetByID(ctx, "org-1", "id-1")
 	assert.Error(t, err)
@@ -291,6 +333,12 @@ func TestRegistryRepository_GetByID_NullableFields(t *testing.T) {
 	now := time.Now().UTC()
 
 	// All nullable fields are nil
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id")).
 		WithArgs("org-1", "id-1").
 		WillReturnRows(sqlmock.NewRows(registryColumns()).AddRow(
@@ -300,6 +348,7 @@ func TestRegistryRepository_GetByID_NullableFields(t *testing.T) {
 			nil, nil, nil, nil, nil, nil, nil,
 			now, now, "admin", nil,
 		))
+	mock.ExpectCommit()
 
 	system, err := repo.GetByID(ctx, "org-1", "id-1")
 	require.NoError(t, err)
@@ -332,11 +381,24 @@ func TestRegistryRepository_GetBySystemID_Success(t *testing.T) {
 	now := time.Now().UTC()
 
 	// First query: look up ID by system_id
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM mas_ai_system_registry WHERE org_id = $1 AND system_id = $2")).
 		WithArgs("org-1", "sys-credit").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("uuid-1"))
+	mock.ExpectCommit()
 
 	// Second query: GetByID
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id")).
 		WithArgs("org-1", "uuid-1").
 		WillReturnRows(sqlmock.NewRows(registryColumns()).AddRow(
@@ -346,6 +408,7 @@ func TestRegistryRepository_GetBySystemID_Success(t *testing.T) {
 			nil, nil, nil, nil, nil, nil, nil,
 			now, now, "admin", nil,
 		))
+	mock.ExpectCommit()
 
 	system, err := repo.GetBySystemID(ctx, "org-1", "sys-credit")
 	require.NoError(t, err)
@@ -364,9 +427,16 @@ func TestRegistryRepository_GetBySystemID_NotFound(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM mas_ai_system_registry WHERE org_id = $1 AND system_id = $2")).
 		WithArgs("org-1", "nonexistent").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	system, err := repo.GetBySystemID(ctx, "org-1", "nonexistent")
 	require.NoError(t, err)
@@ -383,9 +453,16 @@ func TestRegistryRepository_GetBySystemID_DBError(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM mas_ai_system_registry")).
 		WithArgs("org-1", "sys-1").
 		WillReturnError(fmt.Errorf("connection error"))
+	mock.ExpectRollback()
 
 	system, err := repo.GetBySystemID(ctx, "org-1", "sys-1")
 	assert.Error(t, err)
@@ -408,6 +485,12 @@ func TestRegistryRepository_List_Success(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, org_id, system_id, system_name")).
 		WithArgs("org-1", 50, 0).
 		WillReturnRows(sqlmock.NewRows(registryColumns()).
@@ -421,6 +504,7 @@ func TestRegistryRepository_List_Success(t *testing.T) {
 				2, 2, 2, MaterialityLow, "team-b", "b@b.com",
 				nil, nil, nil, nil, nil, nil, nil,
 				now, now, "admin", nil))
+	mock.ExpectCommit()
 
 	systems, err := repo.List(ctx, "org-1", ListParams{})
 	require.NoError(t, err)
@@ -447,6 +531,12 @@ func TestRegistryRepository_List_WithStatusFilter(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("AND status = $2")).
 		WithArgs("org-1", "active", 10, 0).
 		WillReturnRows(sqlmock.NewRows(registryColumns()).
@@ -455,6 +545,7 @@ func TestRegistryRepository_List_WithStatusFilter(t *testing.T) {
 				2, 2, 2, MaterialityLow, "team", "t@t.com",
 				nil, nil, nil, nil, nil, nil, nil,
 				now, now, "admin", nil))
+	mock.ExpectCommit()
 
 	systems, err := repo.List(ctx, "org-1", ListParams{
 		Limit:  10,
@@ -475,9 +566,16 @@ func TestRegistryRepository_List_WithPagination(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("LIMIT $2 OFFSET $3")).
 		WithArgs("org-1", 5, 10).
 		WillReturnRows(sqlmock.NewRows(registryColumns()))
+	mock.ExpectCommit()
 
 	systems, err := repo.List(ctx, "org-1", ListParams{Limit: 5, Offset: 10})
 	require.NoError(t, err)
@@ -495,9 +593,16 @@ func TestRegistryRepository_List_LimitClamping(t *testing.T) {
 	ctx := context.Background()
 
 	// Limit > MaxListLimit (1000) should be clamped
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1", MaxListLimit, 0).
 		WillReturnRows(sqlmock.NewRows(registryColumns()))
+	mock.ExpectCommit()
 
 	systems, err := repo.List(ctx, "org-1", ListParams{Limit: 5000})
 	require.NoError(t, err)
@@ -515,9 +620,16 @@ func TestRegistryRepository_List_NegativeLimit(t *testing.T) {
 	ctx := context.Background()
 
 	// Negative limit should default to DefaultListLimit (50)
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1", DefaultListLimit, 0).
 		WillReturnRows(sqlmock.NewRows(registryColumns()))
+	mock.ExpectCommit()
 
 	systems, err := repo.List(ctx, "org-1", ListParams{Limit: -1})
 	require.NoError(t, err)
@@ -534,9 +646,16 @@ func TestRegistryRepository_List_DBError(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-1", DefaultListLimit, 0).
 		WillReturnError(fmt.Errorf("connection timeout"))
+	mock.ExpectRollback()
 
 	systems, err := repo.List(ctx, "org-1", ListParams{})
 	assert.Error(t, err)
@@ -579,6 +698,12 @@ func TestRegistryRepository_Update_Success(t *testing.T) {
 		UpdatedBy:            "editor@bank.com",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_ai_system_registry SET")).
 		WithArgs(
 			system.SystemName, system.Description, system.UseCase, system.Status,
@@ -593,6 +718,7 @@ func TestRegistryRepository_Update_Success(t *testing.T) {
 			system.OrgID, system.ID,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, system)
 	require.NoError(t, err)
@@ -617,6 +743,12 @@ func TestRegistryRepository_Update_DBError(t *testing.T) {
 		OrgID: "org-1",
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_ai_system_registry SET")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -627,6 +759,7 @@ func TestRegistryRepository_Update_DBError(t *testing.T) {
 			"org-1", "id-1",
 		).
 		WillReturnError(fmt.Errorf("deadlock detected"))
+	mock.ExpectRollback()
 
 	err = repo.Update(ctx, system)
 	assert.Error(t, err)
@@ -651,6 +784,12 @@ func TestRegistryRepository_Update_MaterialityMedium(t *testing.T) {
 		RiskRatingReliance:   2,
 	}
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_ai_system_registry SET")).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -661,6 +800,7 @@ func TestRegistryRepository_Update_MaterialityMedium(t *testing.T) {
 			"org-1", "id-1",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, system)
 	require.NoError(t, err)
@@ -682,9 +822,16 @@ func TestRegistryRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_ai_system_registry")).
 		WithArgs(SystemStatusRetired, sqlmock.AnyArg(), "org-1", "id-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Delete(ctx, "org-1", "id-1")
 	require.NoError(t, err)
@@ -700,9 +847,16 @@ func TestRegistryRepository_Delete_DBError(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE mas_ai_system_registry")).
 		WithArgs(SystemStatusRetired, sqlmock.AnyArg(), "org-1", "id-1").
 		WillReturnError(fmt.Errorf("foreign key violation"))
+	mock.ExpectRollback()
 
 	err = repo.Delete(ctx, "org-1", "id-1")
 	assert.Error(t, err)
@@ -723,15 +877,29 @@ func TestRegistryRepository_GetSummary_Success(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT\n\t\t\tCOUNT(*) as total")).
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total", "active", "high_mat", "medium_mat", "low_mat", "assessments_due",
 		}).AddRow(10, 7, 2, 5, 3, 1))
+	mock.ExpectCommit()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM mas_kill_switches")).
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectCommit()
 
 	summary, err := repo.GetSummary(ctx, "org-1")
 	require.NoError(t, err)
@@ -757,9 +925,16 @@ func TestRegistryRepository_GetSummary_DBError(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT\n\t\t\tCOUNT(*)")).
 		WithArgs("org-1").
 		WillReturnError(fmt.Errorf("connection lost"))
+	mock.ExpectRollback()
 
 	summary, err := repo.GetSummary(ctx, "org-1")
 	assert.Error(t, err)
@@ -777,16 +952,30 @@ func TestRegistryRepository_GetSummary_KillSwitchQueryFails(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT\n\t\t\tCOUNT(*) as total")).
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total", "active", "high_mat", "medium_mat", "low_mat", "assessments_due",
 		}).AddRow(5, 3, 1, 2, 2, 0))
+	mock.ExpectCommit()
 
 	// Kill switch query fails (non-fatal in the code -- Scan error is ignored)
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM mas_kill_switches")).
 		WithArgs("org-1").
 		WillReturnError(fmt.Errorf("table not found"))
+	mock.ExpectRollback()
 
 	summary, err := repo.GetSummary(ctx, "org-1")
 	require.NoError(t, err)
@@ -809,12 +998,19 @@ func TestRegistryRepository_CountByStatus_Success(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*) as count FROM mas_ai_system_registry")).
 		WithArgs("org-1").
 		WillReturnRows(sqlmock.NewRows([]string{"status", "count"}).
 			AddRow(SystemStatusActive, 5).
 			AddRow(SystemStatusDraft, 2).
 			AddRow(SystemStatusRetired, 1))
+	mock.ExpectCommit()
 
 	counts, err := repo.CountByStatus(ctx, "org-1")
 	require.NoError(t, err)
@@ -836,9 +1032,16 @@ func TestRegistryRepository_CountByStatus_Empty(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-empty").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*) as count")).
 		WithArgs("org-empty").
 		WillReturnRows(sqlmock.NewRows([]string{"status", "count"}))
+	mock.ExpectCommit()
 
 	counts, err := repo.CountByStatus(ctx, "org-empty")
 	require.NoError(t, err)
@@ -855,9 +1058,16 @@ func TestRegistryRepository_CountByStatus_DBError(t *testing.T) {
 	repo := NewPostgresRegistryRepository(db)
 	ctx := context.Background()
 
+	// #3133: the statement now runs inside rls.WithOrgScope, which BEGINs
+	// and pins app.current_org_id before the real SQL.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*)")).
 		WithArgs("org-1").
 		WillReturnError(fmt.Errorf("query cancelled"))
+	mock.ExpectRollback()
 
 	counts, err := repo.CountByStatus(ctx, "org-1")
 	assert.Error(t, err)

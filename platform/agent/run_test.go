@@ -1197,6 +1197,12 @@ func generateTestLicenseKey(orgID string, tier string, expiryDate string) string
 
 // TestClientRequestHandler_SuccessPath tests the happy path with valid auth and policy
 func TestClientRequestHandler_SuccessPath(t *testing.T) {
+	// #3096: these exercise the client-request happy path, not the
+	// deployment posture. They used to reach the community posture via an
+	// unset DEPLOYMENT_MODE; unset now means enterprise, so the mode the
+	// test actually depends on is named explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	// Initialize test environment
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
@@ -1292,6 +1298,12 @@ func TestClientRequestHandler_SuccessPath(t *testing.T) {
 
 // TestClientRequestHandler_CircuitBreakerAllowed tests CB check allows requests (community stub)
 func TestClientRequestHandler_CircuitBreakerAllowed(t *testing.T) {
+	// #3096: these exercise the client-request happy path, not the
+	// deployment posture. They used to reach the community posture via an
+	// unset DEPLOYMENT_MODE; unset now means enterprise, so the mode the
+	// test actually depends on is named explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
 			latencies:              []int64{},
@@ -1554,6 +1566,12 @@ func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
 
 // TestClientRequestHandler_OrchestratorError tests orchestrator failure handling
 func TestClientRequestHandler_OrchestratorError(t *testing.T) {
+	// #3096: these exercise the client-request happy path, not the
+	// deployment posture. They used to reach the community posture via an
+	// unset DEPLOYMENT_MODE; unset now means enterprise, so the mode the
+	// test actually depends on is named explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
 			latencies:     []int64{},
@@ -1617,6 +1635,12 @@ func TestClientRequestHandler_OrchestratorError(t *testing.T) {
 
 // TestClientRequestHandler_MultiAgentPlan tests multi-agent plan response flattening
 func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
+	// #3096: these exercise the client-request happy path, not the
+	// deployment posture. They used to reach the community posture via an
+	// unset DEPLOYMENT_MODE; unset now means enterprise, so the mode the
+	// test actually depends on is named explicitly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
 			latencies:     []int64{},

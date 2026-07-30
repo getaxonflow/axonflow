@@ -538,6 +538,20 @@ func init() {
 //   - circuit-breaker trips return HTTP 503 so the PEP adapter can apply its
 //     configured fail-open / fail-closed posture (ADR-056 §Components)
 func handleDecide(w http.ResponseWriter, r *http.Request) {
+	// #3092 defence in depth. This route is registered `.Methods("POST",
+	// "OPTIONS")` so a preflight does not 404, and apiAuthMiddleware now
+	// TERMINATES OPTIONS rather than forwarding it. Neither fact is this
+	// handler's to rely on: the decision engine is reachable only by an
+	// authenticated POST, so it refuses anything else itself. Without this,
+	// re-adding a method to the registration — or reintroducing the preflight
+	// passthrough — silently hands an anonymous caller a full policy
+	// evaluation plus an audit_logs row with empty tenancy.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	startTime := time.Now()
 	ctx := r.Context()
 
@@ -593,20 +607,20 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 
 	// #2860: Enterprise per-client version-distribution telemetry — record the
 	// validated client/version pair (e.g. mcp-proxy/0.3.0) for the decide
-	// plane. POST-only guard: this route is registered `.Methods("POST",
-	// "OPTIONS")` and apiAuthMiddleware forwards CORS preflights (OPTIONS)
-	// UNAUTHENTICATED straight to this handler (auth.go). Recording on OPTIONS
-	// would let an anonymous caller mint label series and exhaust the
-	// per-process series cap, permanently blinding the distribution — so an
-	// authenticated POST is the only request we count. Telemetry-only +
+	// plane. This used to carry its own POST-only guard, because
+	// apiAuthMiddleware forwarded CORS preflights UNAUTHENTICATED straight to
+	// this handler and recording on OPTIONS would let an anonymous caller mint
+	// label series and exhaust the per-process series cap, permanently
+	// blinding the distribution. #3092 moved that guard to the top of the
+	// handler where it protects the whole body rather than this one call, so
+	// an authenticated POST is again the only request that reaches here.
+	// Telemetry-only +
 	// fail-open by contract (community no-op): a missing/garbage header is
 	// dropped inside the recorder and can never influence the verdict below —
 	// a version-bearing caller whose POST is later DENIED by policy still
 	// lands in the distribution (denies are traffic too; this plane counts
 	// attempts, unlike the post-decode check-output plane).
-	if r.Method == http.MethodPost {
-		recordClientVersionTelemetry(PlaneDecision, clientHeader)
-	}
+	recordClientVersionTelemetry(PlaneDecision, clientHeader)
 
 	// Canonicalized request context (#2509) is computed after a successful decode
 	// (it needs req.Context); declared here so the early-deny audit closure can

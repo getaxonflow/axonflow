@@ -341,7 +341,7 @@ func TestKillSwitchRepository_Integration_RecordHistory(t *testing.T) {
 		PerformedBy:    "test-user@example.com",
 	}
 
-	err := repo.RecordHistory(ctx, history)
+	err := repo.RecordHistory(ctx, orgID, history)
 	if err != nil {
 		t.Fatalf("RecordHistory() error = %v", err)
 	}
@@ -415,7 +415,7 @@ func TestKillSwitchRepository_Integration_RecordHistory_MultipleEntries(t *testi
 			Reason:         a.reason,
 			PerformedBy:    "operator@example.com",
 		}
-		if err := repo.RecordHistory(ctx, history); err != nil {
+		if err := repo.RecordHistory(ctx, orgID, history); err != nil {
 			t.Fatalf("RecordHistory() error = %v", err)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -467,7 +467,7 @@ func TestKillSwitchRepository_Integration_GetHistory_Limit(t *testing.T) {
 			Reason:         "Config update " + string(rune('A'+i)),
 			PerformedBy:    "operator@example.com",
 		}
-		if err := repo.RecordHistory(ctx, history); err != nil {
+		if err := repo.RecordHistory(ctx, orgID, history); err != nil {
 			t.Fatalf("RecordHistory() error = %v", err)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -688,7 +688,7 @@ func TestKillSwitchRepository_Integration_FullLifecycle(t *testing.T) {
 	}
 
 	// Record create history
-	if err := repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "create",
 		PreviousStatus: "",
@@ -709,7 +709,7 @@ func TestKillSwitchRepository_Integration_FullLifecycle(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	if err := repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "trigger",
 		PreviousStatus: "enabled",
@@ -730,7 +730,7 @@ func TestKillSwitchRepository_Integration_FullLifecycle(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	if err := repo.RecordHistory(ctx, &KillSwitchHistory{
+	if err := repo.RecordHistory(ctx, orgID, &KillSwitchHistory{
 		KillSwitchID:   ks.ID,
 		Action:         "restore",
 		PreviousStatus: "triggered",
@@ -800,7 +800,7 @@ func TestKillSwitchRepository_Integration_DefaultLimits(t *testing.T) {
 			Reason:         "Periodic health check",
 			PerformedBy:    "health-monitor",
 		}
-		if err := repo.RecordHistory(ctx, history); err != nil {
+		if err := repo.RecordHistory(ctx, orgID, history); err != nil {
 			t.Fatalf("RecordHistory() error = %v", err)
 		}
 	}

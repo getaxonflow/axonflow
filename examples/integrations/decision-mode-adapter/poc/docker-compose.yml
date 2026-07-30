@@ -44,6 +44,11 @@ services:
       args:
         EDITION: community
     environment:
+      # Required since #3096: an UNSET DEPLOYMENT_MODE is no longer treated as
+      # Community. This POC builds the community edition and provisions no
+      # license key, so the mode has to be stated or the agent comes up in the
+      # enterprise posture and demands a license it was never given.
+      DEPLOYMENT_MODE: community
       DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
       REDIS_URL: redis://redis:6379
       PORT: "8080"

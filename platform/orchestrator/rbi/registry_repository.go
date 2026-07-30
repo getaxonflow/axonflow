@@ -15,7 +15,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent/rls"
 )
+
+// #3103. Migration 301 switches RLS on for all seven rbi_* tables with a
+// `FOR ALL USING (org_id = get_current_org_id())` policy, but this package
+// never set app.current_org_id — see the header comment on
+// auditexport_repository.go for the full failure mode. Every statement below
+// therefore runs inside rls.WithOrgScope, which opens a transaction and
+// SET LOCALs the GUC the policy reads. The hand-written `WHERE org_id = $n`
+// predicates are KEPT: the wrap is a backstop, not a replacement, and the two
+// failing independently is the point.
 
 // Common errors for the registry.
 var (
@@ -135,16 +146,19 @@ func (r *PostgresAISystemRepository) Create(ctx context.Context, system *AISyste
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		system.ID, system.OrgID, system.SystemID, system.SystemName, system.Version, system.Description,
-		system.RiskCategory, system.DeploymentStatus, system.ModelType, system.ModelProvider,
-		system.UseCase, system.UseCaseDescription, dataSourcesJSON, sensitiveDataJSON,
-		system.DataResidency, system.OwnerID, system.OwnerName, system.OwnerDepartment, system.OwnerEmail,
-		system.BoardApprovalStatus, system.BoardApprovalDate,
-		system.BoardApprovalReference, system.BoardApproverName, system.BoardApprovalNotes,
-		system.LastValidationDate, system.NextValidationDue, system.ValidationFrequencyDays,
-		tagsJSON, metadataJSON, system.CreatedAt, system.UpdatedAt,
-	)
+	err = rls.WithOrgScope(ctx, r.db, system.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			system.ID, system.OrgID, system.SystemID, system.SystemName, system.Version, system.Description,
+			system.RiskCategory, system.DeploymentStatus, system.ModelType, system.ModelProvider,
+			system.UseCase, system.UseCaseDescription, dataSourcesJSON, sensitiveDataJSON,
+			system.DataResidency, system.OwnerID, system.OwnerName, system.OwnerDepartment, system.OwnerEmail,
+			system.BoardApprovalStatus, system.BoardApprovalDate,
+			system.BoardApprovalReference, system.BoardApproverName, system.BoardApprovalNotes,
+			system.LastValidationDate, system.NextValidationDue, system.ValidationFrequencyDays,
+			tagsJSON, metadataJSON, system.CreatedAt, system.UpdatedAt,
+		)
+		return execErr
+	})
 
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -172,7 +186,15 @@ func (r *PostgresAISystemRepository) Get(ctx context.Context, orgID, id string) 
 		WHERE org_id = $1 AND id = $2
 	`
 
-	return r.scanSystem(r.db.QueryRowContext(ctx, query, orgID, id))
+	var system *AISystem
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		system, scanErr = r.scanSystem(tx.QueryRowContext(ctx, query, orgID, id))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return system, nil
 }
 
 // GetBySystemID retrieves an AI system by system_id.
@@ -191,7 +213,15 @@ func (r *PostgresAISystemRepository) GetBySystemID(ctx context.Context, orgID, s
 		WHERE org_id = $1 AND system_id = $2
 	`
 
-	return r.scanSystem(r.db.QueryRowContext(ctx, query, orgID, systemID))
+	var system *AISystem
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var scanErr error
+		system, scanErr = r.scanSystem(tx.QueryRowContext(ctx, query, orgID, systemID))
+		return scanErr
+	}); err != nil {
+		return nil, err
+	}
+	return system, nil
 }
 
 // scanSystem scans a single row into an AISystem struct.
@@ -356,10 +386,6 @@ func (r *PostgresAISystemRepository) List(ctx context.Context, orgID string, par
 
 	// Get total count
 	countQuery := "SELECT COUNT(*) " + baseQuery
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count AI systems: %w", err)
-	}
 
 	// Get paginated results
 	selectQuery := `
@@ -373,25 +399,42 @@ func (r *PostgresAISystemRepository) List(ctx context.Context, orgID string, par
 			last_validation_date, next_validation_due, validation_frequency_days,
 			tags, metadata, created_at, updated_at, deprecated_at
 	` + baseQuery + fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
-	args = append(args, params.Limit, params.Offset)
+	// countArgs must be captured BEFORE the LIMIT/OFFSET append, and the append
+	// must go to a fresh backing array — appending in place could otherwise
+	// overwrite the slice countArgs aliases.
+	countArgs := args
+	args = append(append([]interface{}{}, args...), params.Limit, params.Offset)
 
-	rows, err := r.db.QueryContext(ctx, selectQuery, args...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query AI systems: %w", err)
-	}
-	defer rows.Close()
-
+	// One wrap for BOTH statements: each was a separate call site that had to be
+	// scoped, and sharing the transaction also makes total and rows a consistent
+	// snapshot.
 	var systems []*AISystem
-	for rows.Next() {
-		system, err := r.scanSystemRow(rows)
-		if err != nil {
-			return nil, 0, err
+	var total int
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+			return fmt.Errorf("count AI systems: %w", err)
 		}
-		systems = append(systems, system)
-	}
 
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("iterate AI systems: %w", err)
+		rows, err := tx.QueryContext(ctx, selectQuery, args...)
+		if err != nil {
+			return fmt.Errorf("query AI systems: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			system, scanErr := r.scanSystemRow(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			systems = append(systems, system)
+		}
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate AI systems: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, 0, err
 	}
 
 	return systems, total, nil
@@ -549,17 +592,22 @@ func (r *PostgresAISystemRepository) Update(ctx context.Context, system *AISyste
 		WHERE org_id = $29 AND id = $30
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		system.SystemName, system.Version, system.Description,
-		system.RiskCategory, system.DeploymentStatus, system.ModelType, system.ModelProvider,
-		system.UseCase, system.UseCaseDescription, dataSourcesJSON, sensitiveDataJSON,
-		system.DataResidency, system.OwnerID, system.OwnerName, system.OwnerDepartment, system.OwnerEmail,
-		system.BoardApprovalStatus, system.BoardApprovalDate,
-		system.BoardApprovalReference, system.BoardApproverName, system.BoardApprovalNotes,
-		system.LastValidationDate, system.NextValidationDue, system.ValidationFrequencyDays,
-		tagsJSON, metadataJSON, system.UpdatedAt, system.DeprecatedAt,
-		system.OrgID, system.ID,
-	)
+	var result sql.Result
+	err = rls.WithOrgScope(ctx, r.db, system.OrgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query,
+			system.SystemName, system.Version, system.Description,
+			system.RiskCategory, system.DeploymentStatus, system.ModelType, system.ModelProvider,
+			system.UseCase, system.UseCaseDescription, dataSourcesJSON, sensitiveDataJSON,
+			system.DataResidency, system.OwnerID, system.OwnerName, system.OwnerDepartment, system.OwnerEmail,
+			system.BoardApprovalStatus, system.BoardApprovalDate,
+			system.BoardApprovalReference, system.BoardApproverName, system.BoardApprovalNotes,
+			system.LastValidationDate, system.NextValidationDue, system.ValidationFrequencyDays,
+			tagsJSON, metadataJSON, system.UpdatedAt, system.DeprecatedAt,
+			system.OrgID, system.ID,
+		)
+		return execErr
+	})
 
 	if err != nil {
 		return fmt.Errorf("update AI system: %w", err)
@@ -586,7 +634,12 @@ func (r *PostgresAISystemRepository) Delete(ctx context.Context, orgID, id strin
 		WHERE org_id = $3 AND id = $4
 	`
 
-	result, err := r.db.ExecContext(ctx, query, DeploymentStatusDeprecated, now, orgID, id)
+	var result sql.Result
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		var execErr error
+		result, execErr = tx.ExecContext(ctx, query, DeploymentStatusDeprecated, now, orgID, id)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("delete AI system: %w", err)
 	}
@@ -610,76 +663,91 @@ func (r *PostgresAISystemRepository) GetSummary(ctx context.Context, orgID strin
 		SystemsByStatus: make(map[string]int),
 	}
 
-	// Get total count
-	var total int
-	err := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM rbi_ai_system_registry WHERE org_id = $1
-	`, orgID).Scan(&total)
-	if err != nil {
-		return nil, fmt.Errorf("count total systems: %w", err)
-	}
-	summary.TotalSystems = total
-
-	// Get counts by risk category
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT risk_category, COUNT(*)
-		FROM rbi_ai_system_registry
-		WHERE org_id = $1
-		GROUP BY risk_category
-	`, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("count by risk: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var category string
-		var count int
-		if err := rows.Scan(&category, &count); err != nil {
-			return nil, fmt.Errorf("scan risk count: %w", err)
+	// One wrap for ALL FIVE statements: each was a separate call site that had to
+	// be scoped, and sharing the transaction also makes the five counts a
+	// consistent snapshot of the same registry state.
+	//
+	// Each *sql.Rows is closed explicitly before the next statement is issued —
+	// a *sql.Tx multiplexes one connection, so leaving a result set open across
+	// the next query would break the wire protocol.
+	if err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		// Get total count
+		var total int
+		err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM rbi_ai_system_registry WHERE org_id = $1
+		`, orgID).Scan(&total)
+		if err != nil {
+			return fmt.Errorf("count total systems: %w", err)
 		}
-		summary.SystemsByRisk[category] = count
-	}
+		summary.TotalSystems = total
 
-	// Get counts by deployment status
-	rows, err = r.db.QueryContext(ctx, `
-		SELECT deployment_status, COUNT(*)
-		FROM rbi_ai_system_registry
-		WHERE org_id = $1
-		GROUP BY deployment_status
-	`, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("count by status: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var status string
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
-			return nil, fmt.Errorf("scan status count: %w", err)
+		// Get counts by risk category
+		rows, err := tx.QueryContext(ctx, `
+			SELECT risk_category, COUNT(*)
+			FROM rbi_ai_system_registry
+			WHERE org_id = $1
+			GROUP BY risk_category
+		`, orgID)
+		if err != nil {
+			return fmt.Errorf("count by risk: %w", err)
 		}
-		summary.SystemsByStatus[status] = count
-	}
+		defer rows.Close()
 
-	// Get pending approval count
-	err = r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM rbi_ai_system_registry
-		WHERE org_id = $1 AND board_approval_status = 'pending'
-	`, orgID).Scan(&summary.SystemsPendingApproval)
-	if err != nil {
-		return nil, fmt.Errorf("count pending approval: %w", err)
-	}
+		for rows.Next() {
+			var category string
+			var count int
+			if err := rows.Scan(&category, &count); err != nil {
+				return fmt.Errorf("scan risk count: %w", err)
+			}
+			summary.SystemsByRisk[category] = count
+		}
+		rows.Close()
 
-	// Get overdue validation count
-	err = r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM rbi_ai_system_registry
-		WHERE org_id = $1 AND next_validation_due < NOW()
-	`, orgID).Scan(&summary.SystemsOverdueValidation)
-	if err != nil {
-		return nil, fmt.Errorf("count overdue validation: %w", err)
+		// Get counts by deployment status
+		rows, err = tx.QueryContext(ctx, `
+			SELECT deployment_status, COUNT(*)
+			FROM rbi_ai_system_registry
+			WHERE org_id = $1
+			GROUP BY deployment_status
+		`, orgID)
+		if err != nil {
+			return fmt.Errorf("count by status: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var status string
+			var count int
+			if err := rows.Scan(&status, &count); err != nil {
+				return fmt.Errorf("scan status count: %w", err)
+			}
+			summary.SystemsByStatus[status] = count
+		}
+		rows.Close()
+
+		// Get pending approval count
+		err = tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM rbi_ai_system_registry
+			WHERE org_id = $1 AND board_approval_status = 'pending'
+		`, orgID).Scan(&summary.SystemsPendingApproval)
+		if err != nil {
+			return fmt.Errorf("count pending approval: %w", err)
+		}
+
+		// Get overdue validation count
+		err = tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM rbi_ai_system_registry
+			WHERE org_id = $1 AND next_validation_due < NOW()
+		`, orgID).Scan(&summary.SystemsOverdueValidation)
+		if err != nil {
+			return fmt.Errorf("count overdue validation: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return summary, nil

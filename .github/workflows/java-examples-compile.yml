@@ -1,0 +1,194 @@
+name: Java Examples Compile
+
+# Compiles every Java example project under examples/ (#3158, #3185).
+#
+# WHY A SEPARATE WORKFLOW RATHER THAN A STEP IN security.yml
+# ----------------------------------------------------------
+# security.yml's Maven warm-up already enumerates a pom set and could have
+# hosted this. It was deliberately not put there.
+#
+# `Security Scan Summary` IS a required check, and its `security-relevant`
+# filter fires on `**/*.go`, `**/go.mod`, `**/pom.xml` and `**/Dockerfile*` —
+# i.e. nearly every product PR. #3178 measured the warm-up that already lives
+# there at ~7 minutes on that required path. Adding a full 58-project compile
+# to it would make every Go-only PR pay for Java example compilation on the
+# critical path to merge.
+#
+# HOW THIS IS SCOPED, AND WHY IT IS NOT A `paths:` FILTER ON pull_request
+# -----------------------------------------------------------------------
+# The obvious formulation — `pull_request: paths: ['examples/**', ...]` — is
+# wrong here in two independent ways, and this repo had already solved both:
+#
+#   1. It makes requiredness UNACHIEVABLE. With a paths filter on
+#      pull_request, a PR touching no example produces no check-run at all.
+#      An operator who adds this to the ruleset would leave every such PR
+#      sitting at "Expected — waiting for status to be reported", forever.
+#      lint.yml states the counter-pattern in its own header: run
+#      detect-changes and the Summary on every PR, "so the required Lint
+#      Summary check is present for merge queue entry".
+#   2. `merge_group` does not support `paths:` at all (GitHub supports it only
+#      on push / pull_request / pull_request_target). A paths filter therefore
+#      does nothing for merge-queue entries, and the full 58-project compile
+#      would run on every single one regardless of content — the exact cost
+#      the note above says this workflow avoids.
+#
+# So the scoping is done the way this repo's other EXPENSIVE merge_group
+# workflows do it — `lint.yml`, `test.yml`, `build.yml`, `security.yml`,
+# `test-community.yml`, `build-community.yml` and `sdk-smoke-tests.yml`, seven
+# of the fourteen that declare `merge_group`: no `paths:` on pull_request, a
+# `detect-changes` job using dorny/paths-filter, and the expensive job gated on
+# its output. (The other six declare `merge_group` with no filter at all
+# because they are seconds-long lints; that is not this job.) A PR that
+# touches no example still reports `Java Examples Summary` — in seconds,
+# without a JDK — so it can be made required; a PR that does touch one pays
+# the compile. Requiredness itself is a repository ruleset setting and cannot
+# be changed from a PR.
+#
+# COMMUNITY MIRROR
+# ----------------
+# This file is NOT in sync-community-repo.yml's exclusion list, so it syncs to
+# the public mirror — which is correct: `examples/` is exactly what that mirror
+# publishes, and every path referenced below survives the rsync (in particular
+# `tests/regression-test-required/java_examples_compile_gate_test.sh` is not
+# among the nine suite files that workflow excludes individually). Nothing here
+# reads `ee/`, a secret, or any path the sync strips, so it cannot red the
+# mirror's CI for a reason unrelated to the examples.
+
+on:
+  # No `paths:` here, on purpose — see the header. Scoping is done by
+  # detect-changes so the Summary job is always reported.
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+    paths:
+      - 'examples/**'
+      - '.github/workflows/java-examples-compile.yml'
+      - '.github/scripts/compile-java-examples.sh'
+      - '.github/scripts/pom_introspect.py'
+      - 'tests/regression-test-required/java_examples_compile_gate_test.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Cancel superseded PR runs. Pushes to main and merge_group runs key on the SHA
+# so they never share a group and never cancel each other's verification.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      java-examples: ${{ steps.filter.outputs.java-examples }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Detect Java example changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # The gate's own self-test is included: editing the guard's guard
+          # must re-run the guard.
+          filters: |
+            java-examples:
+              - 'examples/**'
+              - '.github/workflows/java-examples-compile.yml'
+              - '.github/scripts/compile-java-examples.sh'
+              - '.github/scripts/pom_introspect.py'
+              - 'tests/regression-test-required/java_examples_compile_gate_test.sh'
+
+  compile-java-examples:
+    name: Compile Java examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [detect-changes]
+    # Run if: push/workflow_dispatch OR (PR/merge_group touching the examples)
+    if: |
+      always() &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.java-examples == 'true'))
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Every JDK the example tree declares. 57 of the 58 projects are Java 11
+      # or 17; examples/llm-providers/azure-openai/hello-world/java declares 21
+      # (it uses text blocks) and is the sole outlier. The compile script reads
+      # the required level out of each pom and selects the matching JDK, so a
+      # project is never built against a toolchain that cannot emit its
+      # declared target.
+      #
+      # Keep this list and SUPPORTED_JDKS below in step: a level with no
+      # installed JDK is a hard failure in the script, naming the version to
+      # add — it is never silently built with whatever is default.
+      - name: Set up JDK 17 and 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: 'temurin'
+          java-version: |
+            17
+            21
+          cache: 'maven'
+
+      - name: Compile every Java example
+        env:
+          SUPPORTED_JDKS: '17 21'
+        run: bash .github/scripts/compile-java-examples.sh
+
+      # The gate's own fail-closed properties, exercised against synthetic
+      # fixtures with a stub Maven: zero discovered fails, a failing build
+      # fails, a lost dispatch entry fails, an uninstallable Java level fails,
+      # a build that emits no classes fails, an unresolvable <mainClass> fails,
+      # and the invoked goal really is `compile` rather than a resolve-only one.
+      #
+      # `always()` because the two results are independent questions. Without
+      # it a compile failure skips this step, so a PR that breaks an example
+      # AND weakens the gate reports only the first — and once the example is
+      # repaired the gate's own regression is already merged.
+      - name: Self-test the compile gate
+        if: always()
+        run: bash tests/regression-test-required/java_examples_compile_gate_test.sh
+
+  java-examples-summary:
+    name: Java Examples Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, compile-java-examples]
+    if: always()
+    steps:
+      - name: Report
+        run: |
+          echo "Detect Changes:        ${{ needs.detect-changes.result }}"
+          echo "Compile Java examples: ${{ needs.compile-java-examples.result }}"
+
+      # 'skipped' on compile is legitimate: the PR touched no example.
+      # 'skipped' on detect-changes is legitimate on push/workflow_dispatch.
+      # Anything else — including a cancelled or failed detect-changes — must
+      # not report success, or the scoping decision itself becomes unverified.
+      - name: Fail if the compile gate did not pass
+        if: |
+          needs.detect-changes.result == 'failure' ||
+          needs.detect-changes.result == 'cancelled' ||
+          (needs.compile-java-examples.result != 'success' &&
+           needs.compile-java-examples.result != 'skipped')
+        run: |
+          echo "::error::The Java example compile gate did not pass."
+          echo "examples/ ships to the public community mirror; an example that does not"
+          echo "build is a broken artifact a reader hits on first 'mvn compile'."
+          exit 1
+
+      - name: Success
+        if: success()
+        run: echo "Java example compile gate satisfied."
