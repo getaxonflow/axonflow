@@ -1,7 +1,7 @@
 //go:build !enterprise
 
 // Copyright 2025 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package rbi provides RBI FREE-AI Framework compliance functionality.
 // This is the Community stub - RBI compliance is an Enterprise feature for Indian banking.

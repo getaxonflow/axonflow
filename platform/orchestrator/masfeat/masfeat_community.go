@@ -1,7 +1,7 @@
 //go:build !enterprise
 
 // Copyright 2026 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package masfeat provides MAS FEAT (Singapore) compliance functionality.
 // This is the Community stub - MAS FEAT compliance is an Enterprise feature.

@@ -45,7 +45,10 @@ var tenantWideAuditExportPaths = []string{
 // complianceReportBasePath is the compliance report facade's collection route.
 // Declared here rather than imported from the compliancereport package because
 // that package is Enterprise-tagged and this file compiles in both editions.
-// TestComplianceReport_BasePathMatchesTheFacade asserts the two agree.
+// TestComplianceReport_BasePathMatchesTheExportClassConstant pins this copy
+// against the literal, and (Enterprise-only, where the facade source is present)
+// TestComplianceReport_BasePathMatchesTheFacadeSource asserts it still agrees
+// with the route compliancereport/handlers.go actually registers.
 const complianceReportBasePath = "/api/v1/compliance/reports"
 
 // isTenantWideAuditExportPath reports whether p is (or is a sub-path of) a

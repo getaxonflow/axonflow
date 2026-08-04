@@ -6,8 +6,6 @@ package orchestrator
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
 
 	sharedidentity "axonflow/platform/shared/identity"
@@ -181,37 +179,24 @@ func TestComplianceReport_PathIsInTheExportClassList(t *testing.T) {
 	}
 }
 
-// TestComplianceReport_BasePathMatchesTheFacade guards the one duplicated
-// literal in this change.
+// TestComplianceReport_BasePathMatchesTheExportClassConstant guards the copy of
+// the route literal that read_scope.go carries.
 //
 // read_scope.go compiles in BOTH editions, so it cannot import the
 // Enterprise-tagged compliancereport package to reference its exported
-// BasePath. The constant is therefore copied, and a copy that drifts would
+// BasePath. The constant is therefore copied here, and a copy that drifts would
 // silently un-gate the whole route family - the gate would simply stop matching
-// and every request would pass through. This asserts the copy against the
-// route the facade actually registers, read out of its source rather than
-// re-typed here (re-typing it would just be a third copy agreeing with itself).
-func TestComplianceReport_BasePathMatchesTheFacade(t *testing.T) {
+// and every request would pass through. This half of the guard is
+// edition-independent and lives in the shared test.
+//
+// The other half - that this copy still matches the literal the facade actually
+// registers, read out of compliancereport/handlers.go source - is
+// Enterprise-only: that file carries `//go:build enterprise` and is not present
+// in the community distribution, so the cross-file assertion lives in
+// read_scope_compliance_report_enterprise_test.go.
+func TestComplianceReport_BasePathMatchesTheExportClassConstant(t *testing.T) {
 	const want = "/api/v1/compliance/reports"
 	if complianceReportBasePath != want {
 		t.Fatalf("complianceReportBasePath = %q, want %q", complianceReportBasePath, want)
-	}
-	assertLiteralInFile(t, "compliancereport/handlers.go", `BasePath = "`+want+`"`)
-}
-
-// assertLiteralInFile fails unless want appears verbatim in the named source
-// file, resolved relative to this package directory.
-//
-// Reading the OTHER file's source is the point: an assertion that both copies
-// equal a string typed in this test would pass while the facade registered
-// something else entirely (`[[feedback_verify_the_guard_in_the_repo_you_claim_it_for]]`).
-func assertLiteralInFile(t *testing.T, relPath, want string) {
-	t.Helper()
-	b, err := os.ReadFile(relPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", relPath, err)
-	}
-	if !strings.Contains(string(b), want) {
-		t.Errorf("%s does not contain %q - the duplicated route literal has drifted, which would silently un-gate the facade", relPath, want)
 	}
 }
