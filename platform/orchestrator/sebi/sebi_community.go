@@ -1,7 +1,7 @@
 //go:build !enterprise
 
 // Copyright 2025 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package sebi provides SEBI AI/ML Guidelines compliance functionality.
 // This is the Community stub - SEBI audit export is an Enterprise feature for Indian markets.

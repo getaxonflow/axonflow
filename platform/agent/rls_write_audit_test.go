@@ -839,11 +839,6 @@ func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// closeout decisions; PR-C1 §3a marketplace_usage_records).
 		"platform/orchestrator/audit_cleanup.go::*": "admin-pool: cross-org audit/execution retention sweep. Operates on platform-admin pool by service construction.",
 
-		// ee/platform/orchestrator/sebi/sebi_audit_export_service.go
-		// is enterprise-only; SEBI audit exports run cross-tenant on
-		// the admin pool for the regulatory export workflow.
-		"ee/platform/orchestrator/sebi/sebi_audit_export_service.go::*": "admin-pool: SEBI regulatory cross-tenant audit export.",
-
 		// platform/orchestrator/hitl_wcp_community.go::expireEvalApprovals
 		// is the community-build (no enterprise tag) HITL eval auto-
 		// reject sweep. Runs every 5 minutes across ALL tenants — by

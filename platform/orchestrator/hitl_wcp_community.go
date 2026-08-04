@@ -1,7 +1,7 @@
 //go:build !enterprise
 
 // Copyright 2026 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 //
 // Community + Evaluation HITL wiring for WCP.
 // Community mode: HITL disabled (no queue).

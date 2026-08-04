@@ -1,7 +1,7 @@
 //go:build !enterprise
 
 // Copyright 2026 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 //
 // Tests for Community + Evaluation WCP HITL wiring.
 // Issue #1082: Wire WCP require_approval action to HITL queue
