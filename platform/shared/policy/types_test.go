@@ -1,5 +1,5 @@
 // Copyright 2025 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 package policy
 

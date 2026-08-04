@@ -1,5 +1,5 @@
 // Copyright 2026 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 //
 // WCP retry_context + idempotency_key E2E example (Issue #1673 Phase 1 + 2).
 //

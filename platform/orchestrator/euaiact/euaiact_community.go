@@ -1,7 +1,7 @@
 //go:build !enterprise
 
 // Copyright 2025 AxonFlow
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package euaiact provides EU AI Act compliance functionality.
 // This is the Community stub - EU AI Act compliance is an Enterprise feature.

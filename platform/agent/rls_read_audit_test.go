@@ -331,8 +331,6 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// with the admin pool. Documented in full on the methods themselves.
 		"platform/orchestrator/rbi/auditexport_repository.go::GetPending":    "cross-org worker sweep (status='pending', no org predicate by design) — admin-pool only; unwired today (#3103).",
 		"platform/orchestrator/rbi/auditexport_repository.go::GetExpired":    "cross-org retention sweep (expires_at < NOW(), no org predicate by design) — admin-pool only; unwired today (#3103).",
-		"ee/platform/orchestrator/rbi/auditexport_repository.go::GetPending": "EE mirror of the cross-org worker sweep — admin-pool only; unwired today (#3103).",
-		"ee/platform/orchestrator/rbi/auditexport_repository.go::GetExpired": "EE mirror of the cross-org retention sweep — admin-pool only; unwired today (#3103).",
 
 		// ── BYPASSRLS lookup/refresh pools by construction: the receiver is
 		// an accessor that resolves to the platform-admin pool when wired
@@ -367,7 +365,6 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		"platform/agent/tenant_delete.go::*":                                   "admin-pool (tracked #2397): GDPR delete surface. Mirrors write allowlist.",
 		"platform/orchestrator/audit_cleanup.go::*":                            "admin-pool: cross-org audit/execution retention sweep. Mirrors write allowlist.",
 		"platform/orchestrator/sebi/sebi_audit_export_service.go::*":           "admin-pool: SEBI regulatory cross-tenant audit export. Mirrors write allowlist.",
-		"ee/platform/orchestrator/sebi/sebi_audit_export_service.go::*":        "admin-pool: SEBI regulatory cross-tenant audit export (EE). Mirrors write allowlist.",
 		"ee/platform/customer-portal/api/admin.go::*":                          "admin-pool: h.adminConn() / rejectTierDowngrade receives the admin conn. Mirrors write allowlist.",
 		"ee/platform/customer-portal/api/organizations.go::*":                  "admin-pool: h.adminConn() routes to axonflow_platform_admin (falls back with a loud WARN). Mirrors write allowlist.",
 		"ee/platform/customer-portal/api/user_tokens.go::mint":                 "admin-pool: h.adminConn() — commented 'cross-org read → admin connection' at the call site (#2924).",
