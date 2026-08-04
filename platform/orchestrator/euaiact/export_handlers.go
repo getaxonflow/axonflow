@@ -6,6 +6,7 @@
 package euaiact
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -158,9 +159,20 @@ func (h *ExportHandler) handleExportByID(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	export, err := h.service.GetExport(r.Context(), exportID)
+	// #3241: resolve the AUTHENTICATED organization before touching the row.
+	// This path used to read `WHERE id = $1` with no organization anywhere in
+	// the call chain, so naming another company's export id returned it. The
+	// method check stays ABOVE this gate so a wrong verb still answers 405
+	// rather than "header required".
+	orgID := getOrgIDFromRequest(r)
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "X-Org-ID or X-Tenant-ID header required")
+		return
+	}
+
+	export, err := h.service.GetExport(r.Context(), orgID, exportID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeExportLookupError(w, err)
 		return
 	}
 	if export == nil {
@@ -171,6 +183,19 @@ func (h *ExportHandler) handleExportByID(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, export)
 }
 
+// writeExportLookupError maps a by-id lookup failure to its HTTP shape.
+//
+// ErrExportNotFound covers BOTH "no such id" and "that id belongs to another
+// organization", and both must be 404: a distinguishable refusal turns the
+// endpoint into a cross-organization existence oracle.
+func writeExportLookupError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrExportNotFound) {
+		writeError(w, http.StatusNotFound, "Export not found")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
+
 // downloadExport handles GET /api/v1/euaiact/export/{id}/download.
 func (h *ExportHandler) downloadExport(w http.ResponseWriter, r *http.Request, exportID string) {
 	if r.Method != http.MethodGet {
@@ -178,9 +203,17 @@ func (h *ExportHandler) downloadExport(w http.ResponseWriter, r *http.Request, e
 		return
 	}
 
-	export, err := h.service.GetExport(r.Context(), exportID)
+	// #3241: this handler resolved no organization at all, so a presigned URL
+	// for another company's compliance evidence was one request away.
+	orgID := getOrgIDFromRequest(r)
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "X-Org-ID or X-Tenant-ID header required")
+		return
+	}
+
+	export, err := h.service.GetExport(r.Context(), orgID, exportID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeExportLookupError(w, err)
 		return
 	}
 	if export == nil {
@@ -196,9 +229,9 @@ func (h *ExportHandler) downloadExport(w http.ResponseWriter, r *http.Request, e
 	// If the export has a cloud storage key and the service has a storage backend,
 	// generate a presigned URL and redirect the client.
 	if export.StorageKey != "" {
-		downloadURL, err := h.service.GetExportDownloadURL(r.Context(), exportID)
+		downloadURL, err := h.service.GetExportDownloadURL(r.Context(), orgID, exportID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to generate download URL: "+err.Error())
+			writeExportLookupError(w, err)
 			return
 		}
 		if downloadURL != "" {

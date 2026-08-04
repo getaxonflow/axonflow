@@ -80,7 +80,7 @@ A common adoption pattern:
 
 ### `DEPLOYMENT_MODE` must be set explicitly
 
-**Changed by #3096** (next release after 9.12.2). An *unset* `DEPLOYMENT_MODE` used to mean
+**Changed by #3096** (9.13.0). An *unset* `DEPLOYMENT_MODE` used to mean
 `community`. It no longer does. The Community posture is the most permissive one
 the platform has — it disables authentication and license validation, skips the
 MCP connector permission check, auto-approves `require_approval` policies, and
@@ -128,7 +128,7 @@ variable.
 |----------|--------|---------|-------------|
 | `AXONFLOW_CORS_ALLOWED_ORIGINS` | comma-separated origins (exact, or containing `*`), or `*` | unset | Browser origins permitted to call the agent, orchestrator and customer-portal HTTP APIs. Credentials are advertised only for an all-exact list |
 
-**Added by #3096** (next release after 9.12.2). Entries are scheme + host + optional port:
+**Added by #3096** (9.13.0). Entries are scheme + host + optional port:
 
 ```bash
 AXONFLOW_CORS_ALLOWED_ORIGINS=https://portal.example.com,https://app.example.com
@@ -176,7 +176,7 @@ them only part-opens the door.
 | `ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml` (and the partner mirror) | the `CorsAllowedOrigins` stack parameter, wired into the agent, orchestrator and customer-portal task definitions |
 | `infrastructure/cloudformation/community-saas-ecs.yaml` | the same parameter. `community-saas` is **not** `community`, so this deployment denies cross-origin requests too. That template deploys no customer-portal |
 
-**Changed by #3161** (next release after 9.12.2): the customer-portal used to
+**Changed by #3161** (9.13.0): the customer-portal used to
 ignore this variable entirely and answer from an allowlist compiled into the
 image — `localhost:3000`, `localhost:3001`, two `getaxonflow.com` domains and a
 bare eu-central-1 EC2 address — with credentials enabled. On a self-hosted

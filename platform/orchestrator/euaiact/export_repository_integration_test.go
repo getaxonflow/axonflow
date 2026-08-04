@@ -8,6 +8,7 @@ package euaiact
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func TestExportRepository_Integration_Create(t *testing.T) {
 	}
 
 	// Verify by retrieving
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -145,9 +146,12 @@ func TestExportRepository_Integration_GetByID_NotFound(t *testing.T) {
 	repo := NewPostgresExportRepository(db)
 	ctx := context.Background()
 
-	retrieved, err := repo.GetByID(ctx, "non-existent-export-id")
-	if err != nil {
-		t.Fatalf("GetByID() error = %v", err)
+	// #3241: a miss now returns ErrExportNotFound rather than (nil, nil) - the
+	// handler needs a value it can map to 404, and "no such id" must be
+	// indistinguishable from "belongs to another organization".
+	retrieved, err := repo.GetByID(ctx, "test-org-nonexistent-lookup", "non-existent-export-id")
+	if !errors.Is(err, ErrExportNotFound) {
+		t.Fatalf("GetByID() error = %v, want ErrExportNotFound", err)
 	}
 	if retrieved != nil {
 		t.Error("Expected nil for non-existent ID")
@@ -297,7 +301,7 @@ func TestExportRepository_Integration_Update(t *testing.T) {
 	}
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -353,7 +357,7 @@ func TestExportRepository_Integration_Update_Complete(t *testing.T) {
 	}
 
 	// Verify
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -412,7 +416,7 @@ func TestExportRepository_Integration_Update_Failed(t *testing.T) {
 	}
 
 	// Verify
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -451,13 +455,13 @@ func TestExportRepository_Integration_Delete(t *testing.T) {
 	}
 
 	// Delete the export
-	err := repo.Delete(ctx, export.ID)
+	err := repo.Delete(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
 	// Verify deletion
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -501,7 +505,7 @@ func TestExportRepository_Integration_AllExportTypes(t *testing.T) {
 			t.Fatalf("Create() error for type %s: %v", et, err)
 		}
 
-		retrieved, err := repo.GetByID(ctx, export.ID)
+		retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 		if err != nil {
 			t.Fatalf("GetByID() error for type %s: %v", et, err)
 		}
@@ -544,7 +548,7 @@ func TestExportRepository_Integration_AllExportFormats(t *testing.T) {
 			t.Fatalf("Create() error for format %s: %v", f, err)
 		}
 
-		retrieved, err := repo.GetByID(ctx, export.ID)
+		retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 		if err != nil {
 			t.Fatalf("GetByID() error for format %s: %v", f, err)
 		}
@@ -583,7 +587,7 @@ func TestExportRepository_Integration_WithDateRange(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -627,7 +631,7 @@ func TestExportRepository_Integration_WithFilters(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	retrieved, err := repo.GetByID(ctx, export.ID)
+	retrieved, err := repo.GetByID(ctx, export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}

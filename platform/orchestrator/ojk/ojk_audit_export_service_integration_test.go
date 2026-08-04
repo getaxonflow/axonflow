@@ -9,29 +9,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
+// getOJKTestDB returns a database with the full core + enterprise schema.
+//
+// It was gated on a hand-set DATABASE_URL. R3 round 1 established that the only
+// CI job running this package under -tags enterprise DELIBERATELY leaves
+// DATABASE_URL unset, so this ENTIRE integration family -- breach lifecycle,
+// handler full-stack, cross-border round trip -- skipped in every CI run since
+// it was written. A test that never executes is a file, not a guard.
+//
+// It now uses the repo's standard convention (TEST_PG_INTEGRATION=1 + a
+// throwaway container via approletest), which is the gate the enterprise real-PG
+// job actually sets. Same schema, same assertions, now executed.
 func getOJKTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test — DATABASE_URL not set")
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
-
-	return db
+	t.Helper()
+	return newOJKPGEnv(t).master
 }
 
 func createOJKTestOrg(t *testing.T, db *sql.DB, tenantID string) string {
@@ -141,14 +138,30 @@ func TestOJKAuditExportService_Integration_ValidateReadiness(t *testing.T) {
 		t.Fatalf("ValidateComplianceReadiness failed: %v", err)
 	}
 
-	if !resp.Ready {
-		t.Error("Expected ready=true when region=ID")
+	// INVERTED (#3242). This asserted Ready=true / Score=100 for an org with no
+	// traffic, no oversight records and no detection events -- true only because
+	// four of the five checks were unconditional "pass" literals. Against a real
+	// database the checks now MEASURE, so a silent org is "configured, never
+	// exercised" (warnings), not ready.
+	if resp.Ready {
+		t.Error("an org with no governed traffic must not be reported OJK-ready")
 	}
-	if resp.Score != 100 {
-		t.Errorf("Expected score=100, got %d", resp.Score)
+	if resp.Score == 100 {
+		t.Error("a perfect score for an org with no evidence is the literal-pass defect")
+	}
+	if resp.UnknownChecks != 0 {
+		t.Errorf("unknown checks = %d against a real database, want 0 (every dimension is measurable here)", resp.UnknownChecks)
+	}
+	if resp.MeasuredChecks != 5 {
+		t.Errorf("measured checks = %d, want 5", resp.MeasuredChecks)
 	}
 	if len(resp.Checks) != 5 {
 		t.Errorf("Expected 5 checks, got %d", len(resp.Checks))
+	}
+	for _, c := range resp.Checks {
+		if c.Details == "" {
+			t.Errorf("check %q reports no detail; a check must say what it observed", c.Name)
+		}
 	}
 }
 
@@ -221,11 +234,18 @@ func TestOJKAuditExportService_Integration_GetDashboard(t *testing.T) {
 	if resp.Framework != OJKFrameworkCombined {
 		t.Errorf("Expected OJK_BI_COMBINED, got %s", resp.Framework)
 	}
-	if resp.ComplianceScore != 100 {
-		t.Errorf("Expected score=100, got %d", resp.ComplianceScore)
+	// INVERTED (#3242): both values were literals. active_policies is now the
+	// count of ENABLED Indonesia-PII policy rows the org can see (the global
+	// system tier plus its own), which on a fresh database is the single
+	// sys_pii_indonesia_ktp row from core/116 -- not 8.
+	if resp.ComplianceScore == 100 {
+		t.Error("a perfect dashboard score for an org with no evidence is the literal-pass defect")
 	}
-	if resp.ActivePolicies != 8 {
-		t.Errorf("Expected 8 active policies, got %d", resp.ActivePolicies)
+	if resp.ActivePolicies < 0 {
+		t.Errorf("active_policies = %d; the count could not be derived on a fully-migrated database", resp.ActivePolicies)
+	}
+	if len(resp.Unavailable) != 0 {
+		t.Errorf("unavailable = %v against a real database, want none", resp.Unavailable)
 	}
 }
 

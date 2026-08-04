@@ -724,6 +724,18 @@ func rlsGatedTables() map[string]bool {
 		// against scim_users. This audit does.
 		"scim_users", "scim_groups", "scim_group_members",
 		"scim_tokens", "scim_audit_log",
+		// enterprise/137 (#3242) — Indonesia PII detection events, ENABLE RLS
+		// with `FOR ALL USING/WITH CHECK (org_id = current_setting(
+		// 'app.current_org_id', true))`. Listed at the same time the table and its
+		// only writer land, so the wrap discipline on it is standing from day one
+		// rather than being retro-fitted after a silent-zero incident (the shape
+		// the rbi_*/mas_*/scim_* entries above each arrived by).
+		//
+		// The writer (indonesia_pii_events_enterprise.go) issues a STATIC
+		// single-row INSERT literal inside a WithOrgScope closure precisely so
+		// this audit can see it; a dynamically built multi-row VALUES list would
+		// be invisible to the walker.
+		"indonesia_pii_detection_events",
 	}
 	out := make(map[string]bool, len(tables))
 	for _, t := range tables {

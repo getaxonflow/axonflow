@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"axonflow/platform/shared/plugincompat"
 	"regexp"
 
 	"axonflow/platform/shared/version"
@@ -113,10 +114,10 @@ func getSDKCompatibility() SDKCompatInfo {
 		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
 		// examples baseline). Mirrors platform/agent/capabilities.go.
 		RecommendedSDKVersion: map[string]string{
-			"python":     "9.0.0",
-			"typescript": "9.0.0",
-			"go":         "9.0.0",
-			"java":       "9.0.0",
+			"python":     "9.1.0",
+			"typescript": "9.1.0",
+			"go":         "9.1.0",
+			"java":       "9.1.0",
 			"rust":       "0.8.1",
 		},
 	}
@@ -126,75 +127,18 @@ func getSDKCompatibility() SDKCompatInfo {
 // every plugin the platform speaks to. Mirrors platform/agent/capabilities.go
 // so /health on both ports surfaces the same downgrade-warning gate.
 func getPluginCompatibility() PluginCompatInfo {
+	// Both values come from platform/shared/plugincompat, the single source of
+	// truth for the two planes. These literals used to live here AND in the
+	// sibling plane, and /health serves both — a duplication that produced
+	// one-sided drift (claude-code 1.8.0 vs 1.9.0) and, on the v9.10.0 train,
+	// released plugin versions advertised in neither file (#2962). A test that
+	// compared the two copies was tried and is not sufficient: two files that
+	// agree at a stale value agree, so it cannot see that second shape at all.
+	//
+	// The release-train narrative that used to sit inline moved to the
+	// plugincompat package doc, next to the values it explains.
 	return PluginCompatInfo{
-		// Floor of each plugin's current released contract. Bumped from
-		// {2.0.0, 1.0.0×3} to {2.4.0, 1.4.0×3} during the v7.9.0
-		// release-train prep (#2102): openclaw 2.0–2.3.x carried bugs
-		// we no longer support; claude-code/cursor/codex 1.0–1.3.x
-		// predate the v8 list_decisions integration. Anything below
-		// this floor speaks an out-of-contract version and receives
-		// the actionable downgrade-warning header on every governed
-		// call. The plugin tags shipped within ~15-30 minutes of the
-		// v7.9.0 community sync per the release-train order locked at
-		// #2047. Mirrors platform/agent/capabilities.go.
-		// claude-desktop joined the registry in the 9.7.0 release-train.
-		// Its floor is 0.2.0 — the first release whose response redaction
-		// goes through the authoritative engine check-output endpoint and
-		// whose response plane is unconditionally fail-closed; the 0.1.x
-		// proxies hand-rolled a divergent local-regex redaction we no
-		// longer support. Mirrors platform/agent/capabilities.go.
-		MinPluginVersion: map[string]string{
-			"openclaw":       "2.4.0",
-			"claude-code":    "1.4.0",
-			"cursor":         "1.4.0",
-			"codex":          "1.4.0",
-			"claude-desktop": "0.2.0",
-		},
-		// Latest tag this platform was tested against. Kept in lockstep
-		// with each plugin's release-train tag. Bumped to claude/cursor/codex
-		// 1.4.0 + openclaw 2.4.0 during the v7.9.0 release-train (#2102
-		// on 2026-05-09) — the new minor carries the SDK v8 list_decisions
-		// integration so the "show me the last decisions for this user"
-		// affordance lands natively in each host. The v8.0.0 platform bump
-		// (#2308) did NOT change the plugin recommended-version. Bumped
-		// claude-code + cursor to 1.5.3 during the v8.5.2 release-train
-		// (headersHelper ${CLAUDE_PLUGIN_ROOT} Basic-auth fix). claude-code
-		// bumped 1.5.3 -> 1.6.0 (2026-06-10) — 1.6.0 adds the endpoint-gated
-		// Community-SaaS credential + self-hosted-auth.json Enterprise
-		// credential fallback (no more Enterprise MCP 401;
-		// axonflow-claude-plugin#94/#95); cursor stays 1.5.3 (no 1.6.0 cut).
-		// codex stays 1.5.2 (v8.5.2 fix was docs-only, no codex 1.5.3);
-		// openclaw bumped 2.6.1 -> 2.6.5 to track its latest published release
-		// (prior value lagged the registry; openclaw 2.6.5 is live on npm).
-		// openclaw bumped 2.6.5 -> 2.6.6 in the 9.1.1 security patch
-		// (2026-06-16): 2.6.6 clears a runtime protobufjs CVE and is
-		// republished on ClawHub/npm; claude-code/cursor/codex unchanged.
-		// claude-code bumped 1.6.0 -> 1.7.0 in the 9.2.2 release-train, then
-		// 1.7.0 -> 1.8.0 in the 9.3.0 release-train (ships with the v9.3.0
-		// platform minor carrying the audit-visibility bundle; the 1.8.0
-		// marketplace release fires immediately after the tag), then
-		// 1.8.0 -> 1.9.1 in the 9.7.0 release-train (this surface never got
-		// the 1.9.0 bump the agent side carried — orchestrator/agent drift
-		// closed here; 1.9.1 ships correct on-wire version reporting on the
-		// hook + MCP planes, plugin#105). claude-desktop enters at 0.3.1 in
-		// the 9.7.0 train — 0.3.1 sends X-Axonflow-Client: mcp-proxy/<v> on
-		// decide + check-output for the per-client version telemetry
-		// (desktop#23). cursor/codex/openclaw unchanged. MinPluginVersion
-		// floor stays 1.4.0 / 2.4.0 (claude-desktop's floor is 0.2.0, see
-		// above).
-		// 9.10.0 release-train (#2919 fleet RBAC per-user identity): all four
-		// bumped — claude-code 1.9.1 -> 1.10.0, cursor 1.5.3 -> 1.6.0, codex
-		// 1.5.2 -> 1.6.0, openclaw 2.6.6 -> 2.7.0 — each now sends the per-user
-		// token header for per-user read-scoping; below the recommended
-		// version a plugin keeps working (floor unchanged) but reads the
-		// shared-identity zero-rows fallback. claude-desktop unchanged.
-		// Mirrors platform/agent/capabilities.go.
-		RecommendedPluginVersion: map[string]string{
-			"openclaw":       "2.8.4",
-			"claude-code":    "1.11.0",
-			"cursor":         "1.7.0",
-			"codex":          "1.7.0",
-			"claude-desktop": "0.3.1",
-		},
+		MinPluginVersion:         plugincompat.MinVersions(),
+		RecommendedPluginVersion: plugincompat.RecommendedVersions(),
 	}
 }

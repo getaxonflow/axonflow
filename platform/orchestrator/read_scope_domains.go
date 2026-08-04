@@ -117,7 +117,7 @@ func enforceDomainReadAuthority(next http.Handler) http.Handler {
 
 		if scope := resolveCallerReadScope(r); !scope.AdminAuthority {
 			log.Printf("[domain-read-scope] BLOCKED: caller lacks tenant-wide read authority for %s %s", r.Method, r.URL.Path)
-			sendErrorResponse(w, "cost/usage and execution APIs require an admin/owner role", http.StatusForbidden)
+			sendErrorResponse(w, "cost/usage and execution APIs require an administrator role", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

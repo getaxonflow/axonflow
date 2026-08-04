@@ -7,6 +7,7 @@ package euaiact
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -205,7 +206,7 @@ func TestExportService_GetExport(t *testing.T) {
 
 	service := NewExportService(repo, nil)
 
-	export, err := service.GetExport(context.Background(), "export-123")
+	export, err := service.GetExport(context.Background(), "test-org", "export-123")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -221,12 +222,35 @@ func TestExportService_GetExport_NotFound(t *testing.T) {
 	repo := NewMockExportRepository()
 	service := NewExportService(repo, nil)
 
-	export, err := service.GetExport(context.Background(), "nonexistent")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	export, err := service.GetExport(context.Background(), "test-org", "nonexistent")
+	if !errors.Is(err, ErrExportNotFound) {
+		t.Fatalf("Expected ErrExportNotFound, got %v", err)
 	}
 	if export != nil {
 		t.Error("Expected nil export for nonexistent ID")
+	}
+}
+
+// TestExportService_GetExport_CrossOrgIsRefused is the unit-level companion to
+// the real-Postgres suite in cross_org_idor_realpg_test.go: the same export id,
+// named by a DIFFERENT organization, must not resolve. Without this the mock
+// suite would pass on a service that forwards an id with no organization at
+// all, which is exactly what #3241 fixed.
+func TestExportService_GetExport_CrossOrgIsRefused(t *testing.T) {
+	repo := NewMockExportRepository()
+	repo.exports["export-123"] = &Export{
+		ID:     "export-123",
+		OrgID:  "victim-org",
+		Status: ExportStatusCompleted,
+	}
+	service := NewExportService(repo, nil)
+
+	export, err := service.GetExport(context.Background(), "attacker-org", "export-123")
+	if !errors.Is(err, ErrExportNotFound) {
+		t.Fatalf("cross-org GetExport: expected ErrExportNotFound, got err=%v export=%+v", err, export)
+	}
+	if export != nil {
+		t.Errorf("cross-org GetExport returned a record: %+v", export)
 	}
 }
 
@@ -256,7 +280,7 @@ func TestExportService_ProcessExport_NotFound(t *testing.T) {
 	service := NewExportService(repo, nil)
 
 	// This should not panic
-	service.processExport("nonexistent")
+	service.processExport("org-001", "nonexistent")
 }
 
 func TestExportService_ProcessExport_FullAudit(t *testing.T) {
@@ -270,13 +294,13 @@ func TestExportService_ProcessExport_FullAudit(t *testing.T) {
 	repo.exports[export.ID] = export
 
 	service := NewExportService(repo, nil)
-	service.processExport(export.ID)
+	service.processExport(export.OrgID, export.ID)
 
 	// Wait a bit for async processing
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify export was updated
-	updated, _ := repo.GetByID(context.Background(), export.ID)
+	updated, _ := repo.GetByID(context.Background(), export.OrgID, export.ID)
 	if updated != nil && updated.Status != ExportStatusCompleted {
 		t.Logf("Export status: %s (may still be processing)", updated.Status)
 	}
@@ -304,7 +328,7 @@ func TestExportService_ProcessExport_AllTypes(t *testing.T) {
 			repo.exports[export.ID] = export
 
 			service := NewExportService(repo, nil)
-			service.processExport(export.ID)
+			service.processExport(export.OrgID, export.ID)
 
 			// Wait for async processing
 			time.Sleep(50 * time.Millisecond)
@@ -323,13 +347,13 @@ func TestExportService_ProcessExport_UnsupportedType(t *testing.T) {
 	repo.exports[export.ID] = export
 
 	service := NewExportService(repo, nil)
-	service.processExport(export.ID)
+	service.processExport(export.OrgID, export.ID)
 
 	// Wait for async processing
 	time.Sleep(50 * time.Millisecond)
 
 	// Should fail with unsupported type
-	updated, _ := repo.GetByID(context.Background(), export.ID)
+	updated, _ := repo.GetByID(context.Background(), export.OrgID, export.ID)
 	if updated != nil && updated.Status == ExportStatusCompleted {
 		t.Error("Expected export to fail for unsupported type")
 	}

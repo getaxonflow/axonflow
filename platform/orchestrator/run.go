@@ -40,9 +40,10 @@ import (
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/node_enforcement"
-	"axonflow/platform/orchestrator/cloudstorage" // Cloud storage backends for audit exports (#589)
-	"axonflow/platform/orchestrator/cost"         // Cost controls & budget management (#764)
-	"axonflow/platform/orchestrator/euaiact"      // EU AI Act compliance - Community stub or EE impl
+	"axonflow/platform/orchestrator/cloudstorage"     // Cloud storage backends for audit exports (#589)
+	"axonflow/platform/orchestrator/compliancereport" // Unified compliance report facade (#3241) - Community stub or EE impl
+	"axonflow/platform/orchestrator/cost"             // Cost controls & budget management (#764)
+	"axonflow/platform/orchestrator/euaiact"          // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
 	"axonflow/platform/orchestrator/masfeat"  // MAS FEAT module - Community stub or EE impl
 	"axonflow/platform/orchestrator/media"    // Media governance analysis pipeline
@@ -123,6 +124,13 @@ var (
 	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
 	masfeatModule *masfeat.Module  // MAS FEAT compliance (Singapore)
 	ojkModule     *ojk.OJKModule   // OJK AI Governance compliance (Indonesia)
+
+	// Unified compliance report facade (#3241, epic #2892). Sits IN FRONT of
+	// the five modules above as a read-only consumer: it constructs after them
+	// so it can be handed the live modules, and a module that failed to
+	// initialize arrives as nil, which the facade reports as report_state
+	// "not_available" rather than as an error.
+	complianceReportModule *compliancereport.Module
 
 	// Execution Replay/Debug Mode (#763)
 	replayService *replay.Service // Execution replay service
@@ -757,6 +765,19 @@ func Run() {
 			log.Println("OJK Compliance API routes registered (/api/v1/ojk/...)")
 		} else {
 			log.Println("OJK Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
+	}
+
+	// Unified Compliance Report facade (Enterprise - #3241, epic #2892).
+	// Registration is UNCONDITIONAL, like every module above: IsHealthy gates
+	// nothing here either, and the edition gate is the build tag plus the
+	// community no-op stub.
+	if complianceReportModule != nil {
+		complianceReportModule.RegisterRoutesWithMux(r)
+		if complianceReportModule.IsHealthy() {
+			log.Println("Compliance Report API routes registered (/api/v1/compliance/reports)")
+		} else {
+			log.Println("Compliance Report facade loaded (routes inactive — Enterprise build required)")
 		}
 	}
 
@@ -1789,6 +1810,30 @@ func initializeComponents() {
 		} else {
 			log.Println("⚠️  OJK Module initialized but not healthy - database may be required")
 		}
+
+		// Initialize the unified compliance report facade (Enterprise, #3241).
+		// LAST in this block, deliberately: it takes the five modules above as
+		// read-only data providers, so it must see their final values.
+		log.Println("Initializing Compliance Report facade...")
+		complianceReportConfig := compliancereport.ModuleConfig{
+			DB:             usageDB,
+			StorageBackend: auditStorageBackend,
+			Licenses:       tierChecker,
+			EUAIAct:        euaiactModule,
+			SEBI:           sebiModule,
+			RBI:            rbiModule,
+			MASFEAT:        masfeatModule,
+			OJK:            ojkModule,
+		}
+		var complianceReportErr error
+		complianceReportModule, complianceReportErr = compliancereport.NewModule(complianceReportConfig)
+		if complianceReportErr != nil {
+			log.Printf("⚠️  Compliance Report facade initialization error: %v", complianceReportErr)
+		} else if complianceReportModule.IsHealthy() {
+			log.Println("Compliance Report facade initialized ✅")
+		} else {
+			log.Println("⚠️  Compliance Report facade initialized but not healthy - database may be required")
+		}
 	} else {
 		log.Println("⚠️  Policy CRUD API not initialized - database connection required")
 		log.Println("⚠️  Policy Templates API not initialized - database connection required")
@@ -1797,6 +1842,7 @@ func initializeComponents() {
 		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
 		log.Println("⚠️  MAS FEAT Compliance Module not initialized - database connection required")
 		log.Println("⚠️  OJK Compliance Module not initialized - database connection required")
+		log.Println("⚠️  Compliance Report facade not initialized - database connection required")
 	}
 
 	// Initialize proxy auth validator — verifies requests came through the Agent gateway.
@@ -1840,6 +1886,21 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if masfeatModule != nil {
 		components["masfeat_compliance"] = masfeatModule.IsHealthy()
+	}
+	// #3242: OJK was the one compliance module absent from this map, so /health
+	// reported four of five regulator modules and an operator had no way to see
+	// that the Indonesia module had failed to construct.
+	//
+	// HONEST SCOPE, stated because the sibling entries do not state it: this is
+	// a BOOT-TIME latch, not a liveness signal. IsHealthy() is
+	// `AuditService != nil`, fixed at NewOJKModule time (which returns a nil
+	// service when the database is unavailable at startup). A database that dies
+	// AFTER startup leaves this true while every OJK route 500s. Making it a
+	// live probe would change the semantics of all five compliance entries at
+	// once and belongs with the module-health work, not here; adding OJK to the
+	// map with the same semantics as its siblings is what this closes.
+	if ojkModule != nil {
+		components["ojk_compliance"] = ojkModule.IsHealthy()
 	}
 
 	health := map[string]interface{}{

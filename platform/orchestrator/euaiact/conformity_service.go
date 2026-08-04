@@ -7,6 +7,7 @@ package euaiact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,6 +22,27 @@ type ConformityService struct {
 // NewConformityService creates a new conformity service.
 func NewConformityService(repo ConformityRepository) *ConformityService {
 	return &ConformityService{repo: repo}
+}
+
+// loadOwned fetches an assessment that the given organization owns.
+//
+// One helper for all five by-id entry points so a new mutator cannot be added
+// with the scope check accidentally omitted. ErrAssessmentNotFound is returned
+// unwrapped for BOTH "no such id" and "belongs to another organization" - the
+// handler maps it to 404, so the two are indistinguishable on the wire and the
+// endpoint cannot be used as a cross-organization existence oracle.
+func (s *ConformityService) loadOwned(ctx context.Context, orgID, id string) (*ConformityAssessment, error) {
+	assessment, err := s.repo.GetByID(ctx, orgID, id)
+	if err != nil {
+		if errors.Is(err, ErrAssessmentNotFound) {
+			return nil, ErrAssessmentNotFound
+		}
+		return nil, fmt.Errorf("get assessment: %w", err)
+	}
+	if assessment == nil {
+		return nil, ErrAssessmentNotFound
+	}
+	return assessment, nil
 }
 
 // CreateAssessmentInput contains input for creating an assessment.
@@ -84,9 +106,15 @@ func (s *ConformityService) CreateAssessment(ctx context.Context, input CreateAs
 	return assessment, nil
 }
 
-// GetAssessment retrieves an assessment by ID.
-func (s *ConformityService) GetAssessment(ctx context.Context, id string) (*ConformityAssessment, error) {
-	return s.repo.GetByID(ctx, id)
+// GetAssessment retrieves an assessment by ID within an organization.
+//
+// orgID is REQUIRED (#3241). Every method on this service used to take an id
+// alone, so an authenticated caller of organization B could read - and, via the
+// mutators below, rewrite, submit, approve and reject - organization A's
+// Article 43 conformity assessments. RBI and MAS FEAT were hardened for this
+// class in #3103/#3141; euaiact was missed.
+func (s *ConformityService) GetAssessment(ctx context.Context, orgID, id string) (*ConformityAssessment, error) {
+	return s.repo.GetByID(ctx, orgID, id)
 }
 
 // ListAssessments retrieves assessments for an organization.
@@ -107,13 +135,10 @@ type UpdateAssessmentInput struct {
 }
 
 // UpdateAssessment updates an assessment.
-func (s *ConformityService) UpdateAssessment(ctx context.Context, id string, input UpdateAssessmentInput) (*ConformityAssessment, error) {
-	assessment, err := s.repo.GetByID(ctx, id)
+func (s *ConformityService) UpdateAssessment(ctx context.Context, orgID, id string, input UpdateAssessmentInput) (*ConformityAssessment, error) {
+	assessment, err := s.loadOwned(ctx, orgID, id)
 	if err != nil {
-		return nil, fmt.Errorf("get assessment: %w", err)
-	}
-	if assessment == nil {
-		return nil, fmt.Errorf("assessment not found")
+		return nil, err
 	}
 
 	// Only allow updates in draft or in_progress status
@@ -162,13 +187,10 @@ func (s *ConformityService) UpdateAssessment(ctx context.Context, id string, inp
 }
 
 // SubmitAssessment submits an assessment for review.
-func (s *ConformityService) SubmitAssessment(ctx context.Context, id, userID string) (*ConformityAssessment, error) {
-	assessment, err := s.repo.GetByID(ctx, id)
+func (s *ConformityService) SubmitAssessment(ctx context.Context, orgID, id, userID string) (*ConformityAssessment, error) {
+	assessment, err := s.loadOwned(ctx, orgID, id)
 	if err != nil {
-		return nil, fmt.Errorf("get assessment: %w", err)
-	}
-	if assessment == nil {
-		return nil, fmt.Errorf("assessment not found")
+		return nil, err
 	}
 
 	// Validate status transition
@@ -195,13 +217,10 @@ func (s *ConformityService) SubmitAssessment(ctx context.Context, id, userID str
 }
 
 // ApproveAssessment approves a submitted assessment.
-func (s *ConformityService) ApproveAssessment(ctx context.Context, id, userID string, validityYears int) (*ConformityAssessment, error) {
-	assessment, err := s.repo.GetByID(ctx, id)
+func (s *ConformityService) ApproveAssessment(ctx context.Context, orgID, id, userID string, validityYears int) (*ConformityAssessment, error) {
+	assessment, err := s.loadOwned(ctx, orgID, id)
 	if err != nil {
-		return nil, fmt.Errorf("get assessment: %w", err)
-	}
-	if assessment == nil {
-		return nil, fmt.Errorf("assessment not found")
+		return nil, err
 	}
 
 	// Validate status
@@ -226,13 +245,10 @@ func (s *ConformityService) ApproveAssessment(ctx context.Context, id, userID st
 }
 
 // RejectAssessment rejects a submitted assessment.
-func (s *ConformityService) RejectAssessment(ctx context.Context, id, userID, reason string) (*ConformityAssessment, error) {
-	assessment, err := s.repo.GetByID(ctx, id)
+func (s *ConformityService) RejectAssessment(ctx context.Context, orgID, id, userID, reason string) (*ConformityAssessment, error) {
+	assessment, err := s.loadOwned(ctx, orgID, id)
 	if err != nil {
-		return nil, fmt.Errorf("get assessment: %w", err)
-	}
-	if assessment == nil {
-		return nil, fmt.Errorf("assessment not found")
+		return nil, err
 	}
 
 	// Validate status

@@ -77,11 +77,23 @@ for wf in "$WORKFLOWS_DIR"/*.yml "$WORKFLOWS_DIR"/*.yaml; do
     # Strip comment lines before marker matching. A comment that *mentions*
     # `secrets.AXONFLOW_INTERNAL_LICENSE_E2E` for documentation is NOT a
     # real wiring — only an actual env binding satisfies the marker.
-    body_no_comments=$(grep -v -E '^[[:space:]]*#' "$wf")
+    #
+    # Written to a TEMP FILE, not piped into grep. Under `set -o pipefail` (line
+    # 2), `echo "$body" | grep -q PATTERN` returns 141 for a SUCCESSFUL match
+    # once the body outgrows the pipe buffer: grep -q exits the instant it
+    # matches, echo takes SIGPIPE on the rest, and pipefail promotes echo's
+    # failure to the pipeline status. So a workflow that DOES carry the marker
+    # reads as missing it, and the bigger the workflow the more likely it is.
+    # Observed on .github/workflows/sdk-smoke-tests.yml (31 KB): the runner
+    # logged "line 83: echo: write error: Broken pipe" and the lint reported the
+    # marker absent while it was present at line 63.
+    body_no_comments_file=$(mktemp)
+    grep -v -E '^[[:space:]]*#' "$wf" > "$body_no_comments_file" || true
 
     has_marker=0
-    if echo "$body_no_comments" | grep -qE "$MARKER_TELEMETRY_OFF"; then has_marker=1; fi
-    if echo "$body_no_comments" | grep -qE "$MARKER_INTERNAL_LICENSE"; then has_marker=1; fi
+    if grep -qE "$MARKER_TELEMETRY_OFF" "$body_no_comments_file"; then has_marker=1; fi
+    if grep -qE "$MARKER_INTERNAL_LICENSE" "$body_no_comments_file"; then has_marker=1; fi
+    rm -f "$body_no_comments_file"
     # Escape hatch IS a comment — match against the original file (not the
     # comment-stripped body). Anchor at start-of-line + leading-whitespace
     # so it can't appear inside a string literal.

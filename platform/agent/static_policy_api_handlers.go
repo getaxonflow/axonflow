@@ -437,8 +437,13 @@ func (h *StaticPolicyAPIHandler) HandleGetEffectivePolicies(w http.ResponseWrite
 		orgID = &orgIDHeader
 	}
 
-	// Get effective policies (with overrides applied)
-	policies, err := h.policyRepo.GetEffective(ctx, tenantID, orgID)
+	// Get effective policies (with overrides applied). Segment-scoped policies
+	// are intentionally excluded here (nil segmentIDs): this endpoint is the
+	// portal's admin/unified-policy VIEW, which has no verified per-viewer
+	// segment membership to resolve against (that's a P6, #2989, concern —
+	// the portal write/view path for segment-scoped authoring). It shows the
+	// org-wide tier-effective policy set exactly as before P3.
+	policies, err := h.policyRepo.GetEffective(ctx, tenantID, orgID, nil)
 	if err != nil {
 		log.Printf("[StaticPolicyAPI] Error getting effective policies: %v", err)
 		writeJSONError(w, "Failed to get effective policies", http.StatusInternalServerError)

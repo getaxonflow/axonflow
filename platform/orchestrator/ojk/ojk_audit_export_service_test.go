@@ -57,6 +57,11 @@ func TestOJKAuditExportServiceImpl_SubmitBreachNotification_NilDB(t *testing.T) 
 	}
 }
 
+// TestOJKAuditExportServiceImpl_ValidateReadiness pins the INVERTED contract
+// (#3242). It previously asserted Ready=true and Score=100 for a service with
+// NO DATABASE -- which was true only because four of the five checks were
+// unconditional "pass" literals. A deployment that can measure exactly one of
+// five compliance dimensions is not OJK-ready, and saying so was the defect.
 func TestOJKAuditExportServiceImpl_ValidateReadiness(t *testing.T) {
 	t.Setenv("AXONFLOW_COMPLIANCE_REGION", "ID")
 
@@ -65,11 +70,19 @@ func TestOJKAuditExportServiceImpl_ValidateReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !resp.Ready {
-		t.Error("expected ready=true when region=ID")
+	if resp.Ready {
+		t.Error("Ready must be false: four of five dimensions are unmeasurable without a database")
 	}
-	if resp.Score != 100 {
-		t.Errorf("expected score=100, got %d", resp.Score)
+	// Retention is the only measurable check and it passes at region=ID, so 1 of
+	// 5 dimensions scores: 20. Scoring over the MEASURABLE set instead would
+	// give 100 here -- which R3 round 1 proved is strictly worse than the
+	// literal-pass code this replaced, because a deployment that can observe
+	// nothing would present as perfect.
+	if resp.Score != 20 {
+		t.Errorf("score = %d, want 20 (1 of 5 dimensions passing)", resp.Score)
+	}
+	if resp.MeasuredChecks != 1 || resp.UnknownChecks != 4 {
+		t.Errorf("measured/unknown = %d/%d, want 1/4", resp.MeasuredChecks, resp.UnknownChecks)
 	}
 	if len(resp.Checks) != 5 {
 		t.Errorf("expected 5 checks, got %d", len(resp.Checks))
@@ -85,8 +98,47 @@ func TestOJKAuditExportServiceImpl_ValidateReadiness_NonIDRegion(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// US region defaults to 3650 days (> 1825 minimum), so retention still passes
-	if resp.Score != 100 {
-		t.Errorf("expected score=100 (US default 3650 > 1825 floor), got %d", resp.Score)
+	// -- 1 of 5 dimensions -- and readiness stays blocked on the four
+	// unmeasurable ones.
+	if resp.Score != 20 {
+		t.Errorf("expected score=20 (retention passes, 4 dimensions unknown), got %d", resp.Score)
+	}
+	if resp.Ready {
+		t.Error("Ready must be false while four dimensions are unknown")
+	}
+}
+
+// TestValidateReadiness_RetentionFailureIsScored proves the score MOVES with
+// the one dimension this input can vary -- otherwise a score assertion of 100
+// above would be satisfied by a function that always returns 100.
+func TestValidateReadiness_RetentionFailureIsScored(t *testing.T) {
+	t.Setenv("AXONFLOW_COMPLIANCE_REGION", "ID")
+	t.Setenv("AXONFLOW_AUDIT_RETENTION_DAYS", "30")
+
+	svc := &ojkAuditExportServiceImpl{}
+	resp, err := svc.ValidateComplianceReadiness(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The retention floor is derived from the compliance region, not from an
+	// arbitrary env var, so this asserts the shape rather than the number: the
+	// single measurable check must be the ONLY thing the score reflects.
+	if resp.MeasuredChecks != 1 {
+		t.Fatalf("measured checks = %d, want 1", resp.MeasuredChecks)
+	}
+	for _, c := range resp.Checks {
+		if c.Name == "Data Retention" && c.Observed == nil {
+			t.Error("the retention check must report what it observed")
+		}
+	}
+}
+
+// TestValidateReadiness_BlankOrgIsRefused: a blank scope must never reach a
+// query, where it would alias every blank-org row.
+func TestValidateReadiness_BlankOrgIsRefused(t *testing.T) {
+	svc := &ojkAuditExportServiceImpl{}
+	if _, err := svc.ValidateComplianceReadiness(context.Background(), "  "); err == nil {
+		t.Fatal("expected a blank org scope to be refused")
 	}
 }
 
@@ -101,8 +153,11 @@ func TestOJKAuditExportServiceImpl_GetDashboard(t *testing.T) {
 	if resp.Framework != OJKFrameworkCombined {
 		t.Errorf("framework = %s, want OJK_BI_COMBINED", resp.Framework)
 	}
-	if resp.ActivePolicies != 8 {
-		t.Errorf("active_policies = %d, want 8", resp.ActivePolicies)
+	// INVERTED (#3242): active_policies was a literal 8 ("8 Indonesia PII
+	// patterns") returned on every deployment. With no database the honest
+	// answer is "unavailable", not a number.
+	if resp.ActivePolicies != OJKCountUnavailable {
+		t.Errorf("active_policies = %d, want %d (the literal 8 was a fabricated count)", resp.ActivePolicies, OJKCountUnavailable)
 	}
 }
 
@@ -146,8 +201,10 @@ func TestOJKAuditExportServiceImpl_CalculateComplianceScore(t *testing.T) {
 
 	svc := &ojkAuditExportServiceImpl{}
 	score := svc.calculateComplianceScore(context.Background(), "test")
-	if score != 1.0 {
-		t.Errorf("expected 1.0, got %f", score)
+	// 1 of 5 dimensions passing = 0.2. A deployment that cannot measure four of
+	// five must not report a perfect compliance score on every export it emits.
+	if score != 0.2 {
+		t.Errorf("expected 0.2, got %f", score)
 	}
 }
 

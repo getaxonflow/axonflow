@@ -133,12 +133,15 @@ func (r *PostgresAccuracyRepository) GetMetrics(ctx context.Context, orgID, mode
 	for rows.Next() {
 		metric := &AccuracyMetric{}
 		var metadataJSON []byte
+		var sampleSize sql.NullInt64
+		var windowStart, windowEnd sql.NullTime
 		if err := rows.Scan(
-			&metric.ID, &metric.OrgID, &metric.ModelID, &metric.MetricType, &metric.Value, &metric.SampleSize,
-			&metric.Timestamp, &metric.WindowStart, &metric.WindowEnd, &metadataJSON,
+			&metric.ID, &metric.OrgID, &metric.ModelID, &metric.MetricType, &metric.Value, &sampleSize,
+			&metric.Timestamp, &windowStart, &windowEnd, &metadataJSON,
 		); err != nil {
 			return nil, 0, err
 		}
+		metric.SampleSize, metric.WindowStart, metric.WindowEnd = applyNullableWindow(sampleSize, windowStart, windowEnd)
 		if len(metadataJSON) > 0 {
 			if err := json.Unmarshal(metadataJSON, &metric.Metadata); err != nil {
 				return nil, 0, fmt.Errorf("unmarshal metadata: %w", err)
@@ -162,9 +165,11 @@ func (r *PostgresAccuracyRepository) GetLatestMetric(ctx context.Context, orgID,
 
 	metric := &AccuracyMetric{}
 	var metadataJSON []byte
+	var sampleSize sql.NullInt64
+	var windowStart, windowEnd sql.NullTime
 	err := r.db.QueryRowContext(ctx, query, orgID, modelID, metricType).Scan(
-		&metric.ID, &metric.OrgID, &metric.ModelID, &metric.MetricType, &metric.Value, &metric.SampleSize,
-		&metric.Timestamp, &metric.WindowStart, &metric.WindowEnd, &metadataJSON,
+		&metric.ID, &metric.OrgID, &metric.ModelID, &metric.MetricType, &metric.Value, &sampleSize,
+		&metric.Timestamp, &windowStart, &windowEnd, &metadataJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -172,6 +177,7 @@ func (r *PostgresAccuracyRepository) GetLatestMetric(ctx context.Context, orgID,
 	if err != nil {
 		return nil, err
 	}
+	metric.SampleSize, metric.WindowStart, metric.WindowEnd = applyNullableWindow(sampleSize, windowStart, windowEnd)
 	if len(metadataJSON) > 0 {
 		if err := json.Unmarshal(metadataJSON, &metric.Metadata); err != nil {
 			return nil, fmt.Errorf("unmarshal metadata: %w", err)
@@ -259,13 +265,16 @@ func (r *PostgresAccuracyRepository) GetBiasRecords(ctx context.Context, orgID, 
 	for rows.Next() {
 		record := &BiasRecord{}
 		var metadataJSON []byte
+		var sampleSize sql.NullInt64
+		var windowStart, windowEnd sql.NullTime
 		if err := rows.Scan(
 			&record.ID, &record.OrgID, &record.ModelID, &record.Category, &record.Score, &record.Threshold, &record.IsViolation,
-			&record.SampleSize, &record.GroupA, &record.GroupB, &record.GroupARate, &record.GroupBRate,
-			&record.Timestamp, &record.WindowStart, &record.WindowEnd, &metadataJSON,
+			&sampleSize, &record.GroupA, &record.GroupB, &record.GroupARate, &record.GroupBRate,
+			&record.Timestamp, &windowStart, &windowEnd, &metadataJSON,
 		); err != nil {
 			return nil, err
 		}
+		record.SampleSize, record.WindowStart, record.WindowEnd = applyNullableWindow(sampleSize, windowStart, windowEnd)
 		if len(metadataJSON) > 0 {
 			if err := json.Unmarshal(metadataJSON, &record.Metadata); err != nil {
 				return nil, fmt.Errorf("unmarshal metadata: %w", err)
@@ -314,17 +323,48 @@ func (r *PostgresAccuracyRepository) GetActiveAlerts(ctx context.Context, orgID 
 	var alerts []*AccuracyAlert
 	for rows.Next() {
 		alert := &AccuracyAlert{}
+		var metricType, biasCategory, ackedBy, resolvedBy sql.NullString
 		if err := rows.Scan(
 			&alert.ID, &alert.OrgID, &alert.ModelID, &alert.AlertType, &alert.Severity, &alert.Title, &alert.Description,
-			&alert.MetricType, &alert.BiasCategory, &alert.CurrentValue, &alert.Threshold, &alert.TriggeredAt,
-			&alert.AckedAt, &alert.AckedBy, &alert.ResolvedAt, &alert.ResolvedBy,
+			&metricType, &biasCategory, &alert.CurrentValue, &alert.Threshold, &alert.TriggeredAt,
+			&alert.AckedAt, &ackedBy, &alert.ResolvedAt, &resolvedBy,
 		); err != nil {
 			return nil, err
 		}
+		scanNullableAlertFields(alert, metricType, biasCategory, ackedBy, resolvedBy)
 		alerts = append(alerts, alert)
 	}
 
 	return alerts, rows.Err()
+}
+
+// applyNullableWindow copies the three NULLABLE measurement-window columns onto
+// a metric or bias record.
+//
+// #3243 R3 round 2: sample_size, window_start and window_end are all nullable
+// in migration 116 (verified against a live database, not against the file),
+// and the structs declare them `int` and `time.Time` - values, not pointers.
+// One row with any of them unset failed the WHOLE list read, on
+// GET /api/v1/euaiact/accuracy and /accuracy/history, both of which the portal
+// proxy admits. Round 1 fixed the alerts in this same file and stopped one
+// scan short.
+func applyNullableWindow(sampleSize sql.NullInt64, windowStart, windowEnd sql.NullTime) (int, time.Time, time.Time) {
+	return int(sampleSize.Int64), windowStart.Time, windowEnd.Time
+}
+
+// scanNullableAlertFields copies the four NULLABLE alert columns onto the alert.
+//
+// #3243: metric_type, bias_category, acked_by and resolved_by are nullable in
+// migration 116 (an accuracy alert has no bias_category, a bias alert has no
+// metric_type, and neither is acknowledged when raised) but the struct declares
+// them as plain strings. Same class as the conformity read this was found
+// alongside: an un-acknowledged alert would 500 the whole list with
+// "converting NULL to string is unsupported".
+func scanNullableAlertFields(a *AccuracyAlert, metricType, biasCategory, ackedBy, resolvedBy sql.NullString) {
+	a.MetricType = MetricType(metricType.String)
+	a.BiasCategory = BiasCategory(biasCategory.String)
+	a.AckedBy = ackedBy.String
+	a.ResolvedBy = resolvedBy.String
 }
 
 // GetAlertByID retrieves a specific alert by ID.
@@ -337,10 +377,11 @@ func (r *PostgresAccuracyRepository) GetAlertByID(ctx context.Context, alertID s
 		WHERE id = $1`
 
 	alert := &AccuracyAlert{}
+	var metricType, biasCategory, ackedBy, resolvedBy sql.NullString
 	err := r.db.QueryRowContext(ctx, query, alertID).Scan(
 		&alert.ID, &alert.OrgID, &alert.ModelID, &alert.AlertType, &alert.Severity, &alert.Title, &alert.Description,
-		&alert.MetricType, &alert.BiasCategory, &alert.CurrentValue, &alert.Threshold, &alert.TriggeredAt,
-		&alert.AckedAt, &alert.AckedBy, &alert.ResolvedAt, &alert.ResolvedBy,
+		&metricType, &biasCategory, &alert.CurrentValue, &alert.Threshold, &alert.TriggeredAt,
+		&alert.AckedAt, &ackedBy, &alert.ResolvedAt, &resolvedBy,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -348,6 +389,7 @@ func (r *PostgresAccuracyRepository) GetAlertByID(ctx context.Context, alertID s
 	if err != nil {
 		return nil, err
 	}
+	scanNullableAlertFields(alert, metricType, biasCategory, ackedBy, resolvedBy)
 	return alert, nil
 }
 

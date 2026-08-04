@@ -6,6 +6,7 @@
 package euaiact
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -126,38 +127,80 @@ func (h *ConformityHandler) handleConformityByID(w http.ResponseWriter, r *http.
 
 	assessmentID := parts[0]
 
-	// Check for action
+	// Route shape and method are resolved BEFORE the organization gate, so a
+	// CORS preflight and a wrong-method request keep answering exactly as they
+	// did (200 / 405) rather than turning into "header required" - the org gate
+	// must not change what an unauthenticated OPTIONS or a typo'd verb sees.
+	action := ""
 	if len(parts) > 1 {
-		action := parts[1]
-		switch action {
-		case "submit":
-			h.submitAssessment(w, r, assessmentID)
-		case "approve":
-			h.approveAssessment(w, r, assessmentID)
-		case "reject":
-			h.rejectAssessment(w, r, assessmentID)
-		default:
-			http.Error(w, "Invalid action", http.StatusBadRequest)
+		action = parts[1]
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	switch action {
+	case "":
+		if r.Method != http.MethodGet && r.Method != http.MethodPut {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
+	case "submit", "approve", "reject":
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+	default:
+		http.Error(w, "Invalid action", http.StatusBadRequest)
 		return
 	}
 
-	// Handle CRUD operations
-	switch r.Method {
-	case http.MethodGet:
-		h.getAssessment(w, r, assessmentID)
-	case http.MethodPut:
-		h.updateAssessment(w, r, assessmentID)
+	// #3241: resolve the AUTHENTICATED organization ONCE, here, before any
+	// branch touches the row. Every one of these five entry points used to
+	// reach the repository with an id alone, so a foreign organization could
+	// read, rewrite, submit, approve and reject another company's Article 43
+	// assessment. Resolving at the dispatcher rather than per-handler means a
+	// sixth action cannot be added with the check accidentally omitted.
+	orgID := getOrgIDFromRequest(r)
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "X-Org-ID or X-Tenant-ID header required")
+		return
+	}
+
+	switch action {
+	case "submit":
+		h.submitAssessment(w, r, orgID, assessmentID)
+	case "approve":
+		h.approveAssessment(w, r, orgID, assessmentID)
+	case "reject":
+		h.rejectAssessment(w, r, orgID, assessmentID)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		if r.Method == http.MethodGet {
+			h.getAssessment(w, r, orgID, assessmentID)
+			return
+		}
+		h.updateAssessment(w, r, orgID, assessmentID)
 	}
 }
 
+// writeAssessmentError maps a by-id conformity failure to its HTTP shape.
+//
+// ErrAssessmentNotFound covers BOTH "no such id" and "that id belongs to
+// another organization"; both are 404, so the refusal cannot be used to probe
+// which assessment ids exist elsewhere on the deployment.
+func writeAssessmentError(w http.ResponseWriter, err error, fallbackStatus int) {
+	if errors.Is(err, ErrAssessmentNotFound) {
+		writeError(w, http.StatusNotFound, "Assessment not found")
+		return
+	}
+	writeError(w, fallbackStatus, err.Error())
+}
+
 // getAssessment handles GET /api/v1/euaiact/conformity/{id}.
-func (h *ConformityHandler) getAssessment(w http.ResponseWriter, r *http.Request, id string) {
-	assessment, err := h.service.GetAssessment(r.Context(), id)
+func (h *ConformityHandler) getAssessment(w http.ResponseWriter, r *http.Request, orgID, id string) {
+	assessment, err := h.service.GetAssessment(r.Context(), orgID, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeAssessmentError(w, err, http.StatusInternalServerError)
 		return
 	}
 	if assessment == nil {
@@ -169,7 +212,7 @@ func (h *ConformityHandler) getAssessment(w http.ResponseWriter, r *http.Request
 }
 
 // updateAssessment handles PUT /api/v1/euaiact/conformity/{id}.
-func (h *ConformityHandler) updateAssessment(w http.ResponseWriter, r *http.Request, id string) {
+func (h *ConformityHandler) updateAssessment(w http.ResponseWriter, r *http.Request, orgID, id string) {
 	var req UpdateAssessmentRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error())
@@ -187,9 +230,9 @@ func (h *ConformityHandler) updateAssessment(w http.ResponseWriter, r *http.Requ
 		Recommendations: req.Recommendations,
 	}
 
-	assessment, err := h.service.UpdateAssessment(r.Context(), id, input)
+	assessment, err := h.service.UpdateAssessment(r.Context(), orgID, id, input)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeAssessmentError(w, err, http.StatusBadRequest)
 		return
 	}
 
@@ -197,7 +240,7 @@ func (h *ConformityHandler) updateAssessment(w http.ResponseWriter, r *http.Requ
 }
 
 // submitAssessment handles POST /api/v1/euaiact/conformity/{id}/submit.
-func (h *ConformityHandler) submitAssessment(w http.ResponseWriter, r *http.Request, id string) {
+func (h *ConformityHandler) submitAssessment(w http.ResponseWriter, r *http.Request, orgID, id string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -208,9 +251,9 @@ func (h *ConformityHandler) submitAssessment(w http.ResponseWriter, r *http.Requ
 		userID = "system"
 	}
 
-	assessment, err := h.service.SubmitAssessment(r.Context(), id, userID)
+	assessment, err := h.service.SubmitAssessment(r.Context(), orgID, id, userID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeAssessmentError(w, err, http.StatusBadRequest)
 		return
 	}
 
@@ -218,7 +261,7 @@ func (h *ConformityHandler) submitAssessment(w http.ResponseWriter, r *http.Requ
 }
 
 // approveAssessment handles POST /api/v1/euaiact/conformity/{id}/approve.
-func (h *ConformityHandler) approveAssessment(w http.ResponseWriter, r *http.Request, id string) {
+func (h *ConformityHandler) approveAssessment(w http.ResponseWriter, r *http.Request, orgID, id string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -239,9 +282,9 @@ func (h *ConformityHandler) approveAssessment(w http.ResponseWriter, r *http.Req
 		req.ValidityYears = DefaultValidityYears
 	}
 
-	assessment, err := h.service.ApproveAssessment(r.Context(), id, userID, req.ValidityYears)
+	assessment, err := h.service.ApproveAssessment(r.Context(), orgID, id, userID, req.ValidityYears)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeAssessmentError(w, err, http.StatusBadRequest)
 		return
 	}
 
@@ -249,7 +292,7 @@ func (h *ConformityHandler) approveAssessment(w http.ResponseWriter, r *http.Req
 }
 
 // rejectAssessment handles POST /api/v1/euaiact/conformity/{id}/reject.
-func (h *ConformityHandler) rejectAssessment(w http.ResponseWriter, r *http.Request, id string) {
+func (h *ConformityHandler) rejectAssessment(w http.ResponseWriter, r *http.Request, orgID, id string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -268,9 +311,9 @@ func (h *ConformityHandler) rejectAssessment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	assessment, err := h.service.RejectAssessment(r.Context(), id, userID, req.Reason)
+	assessment, err := h.service.RejectAssessment(r.Context(), orgID, id, userID, req.Reason)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeAssessmentError(w, err, http.StatusBadRequest)
 		return
 	}
 

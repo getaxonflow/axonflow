@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -19,20 +18,17 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// getOJKHandlerTestDB returns a database with the full core + enterprise
+// schema.
+//
+// It was gated on a hand-set DATABASE_URL, which the enterprise real-PG CI job
+// deliberately leaves unset -- so this file's two tests skipped in every CI run.
+// Round 1 repointed the sibling integration file and claimed the whole family;
+// round 2 measured 2 remaining SKIPs and was right. Same fixture as the rest of
+// the package now.
 func getOJKHandlerTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping handler integration test — DATABASE_URL not set")
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
-	return db
+	t.Helper()
+	return newOJKPGEnv(t).master
 }
 
 func TestOJKModule_Integration_FullStack(t *testing.T) {
@@ -150,8 +146,13 @@ func TestOJKModule_Integration_FullStack(t *testing.T) {
 
 		var resp OJKComplianceReadinessResponse
 		json.Unmarshal(w.Body.Bytes(), &resp)
-		if resp.Score != 100 {
-			t.Errorf("score = %d, want 100", resp.Score)
+		// INVERTED (#3242): a score of 100 for an org with no governed traffic
+		// was only reachable because four checks were literal passes.
+		if resp.Score == 100 {
+			t.Error("score = 100 for an org with no evidence; the checks are not deriving from state")
+		}
+		if resp.UnknownChecks != 0 {
+			t.Errorf("unknown checks = %d against a real database, want 0", resp.UnknownChecks)
 		}
 	})
 
@@ -169,8 +170,12 @@ func TestOJKModule_Integration_FullStack(t *testing.T) {
 
 		var resp OJKDashboardResponse
 		json.Unmarshal(w.Body.Bytes(), &resp)
-		if resp.ActivePolicies != 8 {
-			t.Errorf("active_policies = %d, want 8", resp.ActivePolicies)
+		// INVERTED (#3242): 8 was a literal ("8 Indonesia PII patterns").
+		if resp.ActivePolicies == OJKCountUnavailable {
+			t.Error("active_policies could not be derived against a real database")
+		}
+		if len(resp.Unavailable) != 0 {
+			t.Errorf("unavailable = %v against a real database, want none", resp.Unavailable)
 		}
 	})
 

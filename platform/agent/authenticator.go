@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	serviceauth "axonflow/platform/shared/serviceauth"
 )
@@ -85,6 +86,24 @@ type AuthResult struct {
 	TenantID string // canonical tenant (from credentials, never from body)
 	OrgID    string // canonical org (from license or deployment)
 	ClientID string // canonical client ID (from credentials)
+
+	// Segments carries the resolved ADR-060 (#2989) governance-segment set
+	// for a per-user validated identity on the enterprise fleet/MCP-server
+	// plane (populated only after a per-user token validates via Path A
+	// HS256 or Path B OIDC — see authenticateMCPServerRequest in
+	// mcp_server_handler.go). nil for every other auth kind/path: community,
+	// no per-user token presented, or the identity attribute resolver is
+	// unavailable. Threaded here purely for observability/downstream
+	// wiring (mcpSession.userSegments, request context) — still NOT consumed
+	// for any policy decision on the MCP-server plane (that stays P3b/#3052
+	// scope, orchestrator-adjacent). #3051 (ADR-060 P3) instead promotes
+	// segment resolution to policy-affecting on the agent STATIC-policy
+	// proxy plane (clientRequestHandler / tierAwarePolicyEngine, run.go) via
+	// its own resolution call (resolveSegmentsForPolicy, segment_policy_gate.go)
+	// — a separate resolve, not a read of this field, since this field is
+	// populated only on the MCP-server session-auth path, not the proxy
+	// plane's Basic-Auth+user_token path.
+	Segments []sharedidentity.Segment
 }
 
 // AuthError is protocol-neutral — callers translate to their wire format.

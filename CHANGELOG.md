@@ -10,6 +10,86 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+<!--
+  Version decision (Step 0, release-prep RP-9.14): v9.14.0, MINOR, by explicit
+  operator ruling 2026-08-04. The train carries two refusal-behavior changes
+  (SEBI format=xml export now 501s instead of mislabeling JSON; portal export
+  actions now require admin authority, so viewer sessions get 403). Under the
+  2026-07-30 semver policy a new refusal is normally a MAJOR; the operator
+  ruled MINOR for this train because both refusals are enterprise-gated
+  surfaces with zero affected customers (no design partner uses SEBI, and the
+  viewer-403 restores the documented authority model). Recorded here so the
+  next train does not read this as precedent without the ruling.
+-->
+## [9.14.0] - 2026-08-04 (jurisdiction-selectable compliance reports: one facade, real renderers, honest refusals)
+
+> Scope: mostly the compliance surface (EU AI Act, SEBI, RBI, MAS FEAT, OJK) and the
+> customer portal, plus the first segment-scoped policy increment on the agent static
+> plane. Four additive migrations, no data mutation. Two refusal-behavior changes on
+> enterprise-gated surfaces; see Migration before upgrading.
+
+### Security
+
+- **EU AI Act by-id compliance routes answered for records the caller's organization does not own** *(Enterprise)* - the conformity-assessment and export by-id families (read, download, update, submit, approve, reject) resolved rows by id alone. Every one of those paths is now scoped to the calling organization in the SQL predicate and additionally runs inside a per-organization RLS session (`rls.WithOrgScope`), and a record outside the caller's organization answers **404**, byte-identical to an unknown id, so the route is not an existence oracle. (#3248)
+- **Administrative authority and tenant-wide read scope were one axis on the export plane, so a viewer session could trigger tenant-wide exports** *(Enterprise)* - the tenant-wide export gate keyed on the read-scope grant that every portal session with tenant-wide visibility carries, not on the caller's authority to ACT. A portal session holding only viewer-level read permission could POST the evidence, SEBI, EU AI Act, OJK and media-governance exports and generate or download compliance reports. The gate now keys on administrative authority, asserted by the portal via a new trusted header (`X-Axonflow-Admin-Authority`, stamped only when the session's effective permissions include `policy:write`, which admits exactly admin, owner and policy_admin) and stripped from client requests by the agent at both strip sites. Viewer sessions now receive **403** on export actions; the report-status poll deliberately stays readable by any session in the tenancy. (#3248)
+- **Enterprise images shipped an outdated SEBI module without its row-level-security scoping** *(Enterprise)* - the enterprise Docker build overlaid a stale `ee/` copy of the SEBI package over the canonical one at image build, and that copy predated the org-scoping wraps on SEBI audit-export reads. The shipped binary therefore ran those reads without the per-organization RLS session the source tree carries. All compliance-module overlays are removed from the enterprise build (sebi, rbi, euaiact, masfeat in #3248; ojk in #3250), so fixes to those modules now reach shipped binaries, and a CI guard (`scripts/ci/check-no-compliance-overlay.sh`) fails the build if a compliance overlay is reintroduced. (#3248, #3250)
+- **The agent's policy-test preview bound its organization scope from a caller-influenced identifier** *(Community)* - `POST /api/policies/test` resolved segment membership for the preview under an organization value derived from the caller-supplied tenant string instead of the organization bound to the validated credential. It now binds from the authenticated context, exactly as the enforcement plane does. On enterprise deployments, where the license organization and the tenant string legitimately differ, this also fixes previews that silently resolved no segment-scoped policies at all. (#3255)
+
+### Community
+
+#### Added
+- **Segment-scoped static policy targeting on the agent request plane** - a static policy can now carry a `segment_id` (migration core/157, nullable, orthogonal to `tier`), and the caller's resolved governance-segment set participates in policy selection on `/api/request`. Selection is strictly additive: rows with `segment_id IS NULL` behave exactly as before, and a segment-scoped policy can only add or tighten a restriction (the combiner takes the strictest of the tier decision and any applicable segment policy), never loosen one. A genuine segment-resolution error fails the request closed; an empty resolution proceeds org-only. Segment-scoped rows are excluded from the Enterprise override-downgrade JOIN at three layers. Not yet segment-aware, deliberately: the dynamic policy engine, the MCP-server fleet and gateway check planes, `GET /static-policies/effective`, `/api/policies/test` simulation semantics, and portal authoring (rows are authored via SQL until the write path lands). No behavior change until a segment-scoped row exists. (#3057)
+- **Segments resolve from SCIM group membership** - a validated per-user identity on the fleet/MCP-server plane resolves its governance segments from the SCIM directory (`scim_users` to `scim_group_members` to `scim_groups`, org-scoped on both the user and the group row). Zero memberships is success (empty set); a query error fails resolution closed rather than degrading to role-only. In-process cache with clamped TTL; errors are never cached. Prometheus counters and a histogram cover resolution outcomes. (#3038)
+- **The self-hosted upgrade preflight answers the v9.13.0 upgrade questions from the running old stack** - `scripts/deployment/v9_self_hosted_preflight.sh` (vendored byte-identically into the install bundle as `preflight.sh`) gained checks 9 to 12: it names every `dynamic_policies` row that migration core/155 will disable (with paste-ready remediation SQL, recoverable only before the migration), validates `DEPLOYMENT_MODE` on the agent and the orchestrator separately, sizes the core/156 ACCESS EXCLUSIVE lock window by measurement, and reports the CORS deny-by-default consequences. The query layer fails closed: results never travel through command substitution, existence probes use `pg_catalog` rather than the privilege-filtered `information_schema`, and a parity guard keeps the partner copy byte-identical. (#3234, #3237)
+
+#### Changed
+- `/health` advertises recommended SDK version **9.1.0** for Go, Python, TypeScript and Java (9.0.0 before; Rust stays 0.8.1). The 9.1.0 SDK minors are published as part of this release train, after the platform release: they add the real audit read-model wire fields (`policy_decision`, `policy_details`, `response_time_ms`, `action`) additively and deprecate `request_type`; no existing field is removed or renamed, so 9.0.0 clients keep working unchanged.
+- `/health` advertises openclaw recommended plugin version **2.8.5** (2.8.4 before; 2.8.5 has been live since 2026-07-30). The plugin min/recommended maps now come from one shared package (`platform/shared/plugincompat`) read by both planes, so the agent and orchestrator can no longer drift apart on plugin advice; the wire shape is unchanged. (#3229)
+
+#### Fixed
+- In-repo documentation stamps (getting-started, SDK and guide headers, the compatibility matrix) now state the current platform version and the real SDK coordinates; the README's install block previously named a Go module path, Java version and Rust version that did not match the registries. (#3218, #3228)
+
+### Enterprise
+
+#### Added
+- **One compliance-report API for all five regulators** - `POST /api/v1/compliance/reports` (202 with a job id), `GET /api/v1/compliance/reports/{id}` (poll), `GET /api/v1/compliance/reports/{id}/download` (307 to a presigned URL, 1 hour TTL, `Cache-Control: no-store`). One request shape selects the regulator (EU AI Act, SEBI, RBI, MAS FEAT, OJK) and the format; MAS FEAT gains its first export path of any kind. Every create/poll response carries `report_state`: `not_available`, `enabled_empty` or `populated`, so "the module is off", "the module is on and the period is empty" and "there is data" are three distinct answers instead of one empty 200. A job reaches `completed` only with a durably stored, checksummed artifact (a DB CHECK enforces it); a deployment with no storage backend gets a failed job naming the missing configuration, not a silent success. Report generation and download are admin-gated; the poll is not. Per-org daily generation limits by license tier (Evaluation: 3 per day, then 429). (#3248)
+- **Real renderers behind every format** - PDF via go-pdf/fpdf (deterministic output: catalog sort plus a fixed generation timestamp; renderers refuse a zero timestamp), XLSX via excelize, CSV via encoding/csv. CSV and XLSX neutralize formula injection in tenant-controlled strings. RBI's export artifacts were plain text renamed to `.pdf` and CSV labeled `.xlsx`; both are now the real thing. (#3248)
+- **The portal compliance page selects jurisdictions and reports states honestly** - a regulator selector covering all five modules (RBI, MAS FEAT and OJK previously had no client code at all), generate/export actions wired to the facade, and one typed three-state contract for every compliance fetch: `populated`, `enabled_empty`, or `not_available` with a reason (`plan`, `permission`, `unauthenticated`, `unsupported`, `unreachable`). Before this, a healthy-empty 200, a license refusal, a permission refusal, a 5xx and a network error all rendered as "module not enabled for this tenant" - a state the backend cannot produce. Refusal reasons render distinctly with the right affordance (the sign-in prompt links to sign-in); the license-gate upsell message is surfaced instead of discarded. The audit page's summary moved to the same contract. Downloads are honest about what they are: truncation caps are surfaced, the evidence export's tier-window clamp is reported, and presigned handoffs report `truncated: unknown` and the delivered `Content-Type` rather than a guess. (#3247, #3260)
+- **Indonesia PII detections are persisted and exported** - detections from the gateway, decision and MCP planes are recorded (masked values only; a test parses the persistence seam for raw-bearing field references) into `indonesia_pii_detection_events` (migration enterprise/137, RLS-gated on `org_id`) and reach the OJK audit export under their OJK category. Community builds write nothing. (#3250)
+- **Every declared OJK export data type now produces data or an explicit error** - `policy_violations`, `llm_calls` and `decision_chain` were empty stubs, and `hitl_oversight` and `pii_redactions` had no dispatcher case at all (a 200 with a silently missing section). The dispatcher is now exhaustive by construction (handler table keyed from the declared data-type list; unknown types produce a per-section error), and every section plus the summary carries `report_state` and an `error_kind` (`section_not_implemented`, `store_absent`, `query_failed`). The four framework labels (`OJK_AI_GOVERNANCE`, `BI_PJP`, `UU_PDP`, and the combined view) now select different section lists and name the instrument they report under; previously they were a validation whitelist producing identical output. (#3250)
+
+#### Changed
+- **SEBI audit export refuses what it cannot produce.** `POST /api/v1/sebi/audit/export?format=xml` returns **501 XML_NOT_IMPLEMENTED**; it previously returned a JSON body under an XML content type, so nothing could have been consuming it as XML. `format=csv` now returns genuine CSV (previously a JSON body under a `text/csv` header). `GET /api/v1/sebi/audit/export/{id}` returns **501 ASYNC_EXPORT_NOT_IMPLEMENTED** naming the synchronous contract; it previously returned 500 on every deployment, because the table it read exists in no migration. (#3248)
+- **OJK identity resolution is org-first and header-only** - the scoping organization comes from `X-Org-ID` (then `X-Tenant-ID` only when the org header is absent), trimmed, and a blank or whitespace-only value is refused with **400 missing_org** instead of reaching the repositories as an empty scope. The previous resolver read the tenant header first into org-labelled columns. On `audit_logs`-backed sections (a table with no RLS), the tenancy predicate now matches rows owned by the caller's org plus rows with no org attribution belonging to the caller's tenant; the previous `(tenant_id = $1 OR org_id = $1)` shape could read across the org/tenant distinction on v9 licenses. Deployments that hold `ojk_breach_notifications` rows and send distinct org and tenant values should read `docs/compliance/ojk-org-scope-upgrade.md` before upgrading. (#3250)
+- **OJK readiness is measured, not asserted** - four of the five readiness checks were unconditional pass literals and the dashboard carried hardcoded counts; a deployment with no reachable database scored 80 or better. Every check now queries the state it names or reports `unknown`, which scores zero and stays in the denominator, so scores on real deployments will move (typically down) on upgrade. The OJK module also joins the `/health` components map. (#3250)
+- The OJK audit-export response's `format` field now states what the body actually is (`json`, and the OpenAPI schema enumerates only that value); a csv or xml ask is echoed in `requested_format` with a `format_note`. The body itself was always JSON. (#3250)
+- Compliance-report job failures expose a closed set of stage messages; raw database and storage errors are no longer readable off the poll by any session in the tenancy. (#3248)
+
+#### Fixed
+- `GET /api/v1/euaiact/export` returned 500 on every non-travel deployment - the storage columns it read were created only by the travel industry pack. Migration enterprise/138 adds them everywhere the euaiact module runs. (#3248)
+- The EU AI Act conformity list no longer 500s when it contains a draft assessment - nullable columns (`submitted_by`, `approved_by`, `rejected_by`, `rejection_reason`, the accuracy/bias metrics, and the export rows' `file_path`/`error`) were scanned into non-nullable Go types. Fixed in the canonical tree and, because the overlay was still live at that merge, in the `ee/` copy as well. (#3247)
+- RBI board-report counters no longer fail on NULL aggregate scans, and tenant-controlled strings are no longer written raw into CSV export attachments. (#3248, #3246)
+- A transient failed poll tick on the portal report panel no longer leaves a permanent refusal card beside a completed report, and the polling-exhausted banner retires when the job reaches any terminal state. (#3260)
+- Compliance-report jobs stranded by a restart or timeout are reaped by derivation on read (no background writer), and the per-day rate-limit backstop survives restarts. (#3248)
+
+### Migration
+
+**Four migrations, all additive, no data mutation.** Take the usual pre-upgrade snapshot (the preflight's backup check applies unchanged), but none of these rewrites existing rows.
+
+| Migration | Applies to | What it does |
+|---|---|---|
+| core/157 | every deployment mode | nullable `static_policies.segment_id`; NULL on all existing rows, no behavior change until a segment-scoped policy is authored |
+| enterprise/136 | enterprise migration sets | new `compliance_report_jobs` table (org- and tenant-keyed, RLS enabled AND forced with its own policy, CHECK-constrained completion states) |
+| enterprise/137 | enterprise migration sets | new `indonesia_pii_detection_events` table (RLS on `org_id`, masked values only) |
+| enterprise/138 | enterprise migration sets | additive storage columns on `euaiact_exports` (fixes the euaiact export 500 outside travel/saas); its down migration deliberately retains the columns |
+
+**Upgrade notes - the two refusal changes:**
+
+1. **SEBI XML export now refuses.** Anything calling `POST /api/v1/sebi/audit/export?format=xml` gets 501 where it previously got 200 with JSON mislabeled as XML, and `format=csv` responses change body shape from JSON to real CSV. Audit any SEBI export automation for a hardcoded `format=xml` or a JSON parse of the csv response before upgrading.
+2. **Portal export actions now require admin authority.** Sessions holding roles without `policy:write` (viewer, developer) receive 403 on tenant-wide export POSTs (evidence, SEBI, EU AI Act, OJK, media-governance, compliance-report generate/download) where they previously succeeded. Admin, owner and policy_admin sessions are unaffected. If an automation drives exports through a portal session, move it to an admin-authority role before upgrading.
+
+Also worth knowing before upgrading: cross-org EU AI Act by-id requests now answer 404 (previously 200 including mutations); blank org identity on OJK routes now answers 400; OJK readiness scores are now measured; and enterprise images no longer apply any `ee/` compliance overlay, so this train's compliance fixes actually reach the shipped binary.
+
 ## [9.13.0] - 2026-07-30 (cross-tenant remediation: authoritative principals, pre-auth RLS, deployment-mode validation, and CI guards that can fail)
 
 ### Security

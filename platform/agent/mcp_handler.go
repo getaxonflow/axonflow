@@ -1104,6 +1104,38 @@ func maskJSONSafe(s string, masker func(string) (string, bool)) (string, bool) {
 	return out, true
 }
 
+// indonesiaPIIRemainsAfterMask reports whether Indonesia PII is STILL present in
+// the content that is about to be forwarded, after the redaction pass ran.
+//
+// It reconstructs the same concatenated text the detection pass used, so the
+// two are directly comparable: if the detector found something before and still
+// finds something after, at least one value was not masked. That is the case a
+// batch-level "did we mask anything" flag cannot see, because the detector reads
+// leaves joined together and the masker reads them one at a time -- a match
+// spanning a leaf boundary is visible to the first and invisible to the second.
+//
+// Returning TRUE downgrades the recorded action from "redacted" to "detected".
+// Fail-safe direction: an inconclusive answer must never inflate the claim.
+func indonesiaPIIRemainsAfterMask(rows []map[string]interface{}, message string) bool {
+	var text string
+	if rows != nil {
+		for _, row := range rows {
+			for _, v := range row {
+				if s, ok := v.(string); ok {
+					text += s + " "
+				}
+			}
+		}
+	} else {
+		text = message
+	}
+	if text == "" {
+		return false
+	}
+	res := checkIndonesiaResponsePII(text, false)
+	return res != nil && res.HasPII
+}
+
 // toolIdentity (#2801): same contract as evaluateInputPolicies — advisory
 // planes (check-output, mcp-server check_output) pass the caller-sent
 // connector_type; managed-connector planes (query/execute responses) pass ""
@@ -1241,8 +1273,23 @@ func evaluateOutputPolicies(
 					},
 				}
 				log.Printf("[MCP] Response blocked by Indonesia PII detection: %s", logutil.Sanitize(idResult.Reason))
+				// #3242: persist the UU PDP / OJK detection events (MASKED values
+				// only) so the OJK pii_redactions export evidences this RESPONSE-side
+				// refusal. This plane is the one an auditor is most likely to be
+				// missing: input-side NIK governance was already visible via the
+				// decision row, output-side governance was invisible everywhere.
+				// Best-effort; the block above is already held. No-op in community.
+				recordIndonesiaPIIEvents(ctx, OrgIDFromContext(ctx), tenantID, "", "",
+					PlaneMCP, indonesiaPIIActionBlocked, idResult)
 				return out
 			}
+			// anyMasked records whether the redact pass below ACTUALLY modified
+			// content. The persisted detection event's action is derived from it, so
+			// "redacted" is never claimed on the strength of the posture alone:
+			// idText is the concatenation of every string leaf, so a match spanning a
+			// leaf boundary is detectable there and yet absent from every individual
+			// leaf, leaving the content unmodified.
+			anyMasked := false
 			if idResult.HasPII && mcpDetectionCfg.PIIAction == DetectionActionRedact {
 				// Mask NIK/NPWP/etc ONLY under PII_ACTION=redact, then feed the masked
 				// content forward into the static pass below. Under warn/log the action
@@ -1263,14 +1310,38 @@ func evaluateOutputPolicies(
 					if anyRedacted {
 						out.RedactedRows = rows
 						out.IndonesiaRedactedTypes = indonesiaDetectedTypeNames(idResult)
+						anyMasked = true
 					}
 				} else if message != "" {
 					if masked, changed := maskJSONSafe(message, redactIndonesiaPIIInString); changed {
 						message = masked
 						out.RedactedMessage = masked
 						out.IndonesiaRedactedTypes = indonesiaDetectedTypeNames(idResult)
+						anyMasked = true
 					}
 				}
+			}
+			// #3242: record the non-blocking outcome. Under a warn/log posture the
+			// content is forwarded UNMODIFIED and this event is the only record that
+			// Indonesia PII left the deployment in a tool response, so the action
+			// must distinguish "we masked it" from "we saw it and did not".
+			//
+			// anyMasked alone is NOT sufficient to claim "redacted". It is a
+			// BATCH-level flag over N detections, and the two passes see different
+			// text: the detector runs over every string leaf CONCATENATED, the
+			// masker runs per leaf. A match that spans a leaf boundary is detected
+			// and NOT masked, so a batch where anything was masked would record
+			// "redacted" for a bank account that was forwarded in the clear.
+			//
+			// The content is therefore RE-SCANNED after masking. If the detector
+			// still finds Indonesia PII in what is about to be forwarded, at least
+			// one value survived and the honest action is "detected" -- the record
+			// that PII left the deployment unmasked, which is the one an auditor
+			// most needs.
+			if idResult.HasPII {
+				cleanAfterMask := anyMasked && !indonesiaPIIRemainsAfterMask(rows, message)
+				recordIndonesiaPIIEvents(ctx, OrgIDFromContext(ctx), tenantID, "", "",
+					PlaneMCP, indonesiaPIIActionForEnforcedPlane(false, cleanAfterMask), idResult)
 			}
 		}
 	}

@@ -39,13 +39,20 @@ func (m *MockConformityRepository) Create(ctx context.Context, assessment *Confo
 	return nil
 }
 
-func (m *MockConformityRepository) GetByID(ctx context.Context, id string) (*ConformityAssessment, error) {
+// GetByID enforces the ORG PREDICATE, matching production.
+//
+// A mock that ignored orgID would replicate the pre-#3241 vulnerable semantics
+// and every mock-based test above it would CERTIFY the cross-org bug rather
+// than catch it (`[[feedback_mocks_that_replicate_prod_semantics_certify_the_bug]]`).
+// Where it diverges from production it diverges STRICTER: an empty orgID is a
+// miss here, and production also refuses it.
+func (m *MockConformityRepository) GetByID(ctx context.Context, orgID, id string) (*ConformityAssessment, error) {
 	if m.getByIDErr != nil {
 		return nil, m.getByIDErr
 	}
 	assessment, ok := m.assessments[id]
-	if !ok {
-		return nil, nil
+	if !ok || orgID == "" || assessment.OrgID != orgID {
+		return nil, ErrAssessmentNotFound
 	}
 	return assessment, nil
 }
@@ -67,11 +74,19 @@ func (m *MockConformityRepository) Update(ctx context.Context, assessment *Confo
 	if m.updateErr != nil {
 		return m.updateErr
 	}
+	existing, ok := m.assessments[assessment.ID]
+	if !ok || existing.OrgID != assessment.OrgID {
+		return ErrAssessmentNotFound
+	}
 	m.assessments[assessment.ID] = assessment
 	return nil
 }
 
-func (m *MockConformityRepository) Delete(ctx context.Context, id string) error {
+func (m *MockConformityRepository) Delete(ctx context.Context, orgID, id string) error {
+	existing, ok := m.assessments[id]
+	if !ok || orgID == "" || existing.OrgID != orgID {
+		return ErrAssessmentNotFound
+	}
 	delete(m.assessments, id)
 	return nil
 }
@@ -270,6 +285,7 @@ func TestConformityHandler_HandleByID_MissingID(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -285,6 +301,7 @@ func TestConformityHandler_GetAssessment_NotFound(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -305,6 +322,7 @@ func TestConformityHandler_GetAssessment_Success(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/assess-123", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -322,6 +340,7 @@ func TestConformityHandler_GetAssessment_Error(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/assess-123", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -339,6 +358,7 @@ func TestConformityHandler_UpdateAssessment_InvalidJSON(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/euaiact/conformity/assess-123", bytes.NewBufferString("invalid"))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -352,6 +372,7 @@ func TestConformityHandler_UpdateAssessment_Success(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusDraft,
 	}
 
@@ -360,6 +381,7 @@ func TestConformityHandler_UpdateAssessment_Success(t *testing.T) {
 
 	body := `{"system_name": "Updated System"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/euaiact/conformity/assess-123", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -375,6 +397,7 @@ func TestConformityHandler_HandleByID_MethodNotAllowed(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/euaiact/conformity/assess-123", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -390,6 +413,7 @@ func TestConformityHandler_HandleByID_InvalidAction(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/invalid-action", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -405,6 +429,7 @@ func TestConformityHandler_SubmitAssessment_MethodNotAllowed(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/assess-123/submit", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -418,6 +443,7 @@ func TestConformityHandler_SubmitAssessment_Success(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusDraft,
 		Requirements: []RequirementStatus{
 			{RequirementID: "req-1", Article: "Article 9", Description: "Risk management", Status: "compliant"},
@@ -428,6 +454,7 @@ func TestConformityHandler_SubmitAssessment_Success(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/submit", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "submitter")
 	rr := httptest.NewRecorder()
 
@@ -444,6 +471,7 @@ func TestConformityHandler_ApproveAssessment_MethodNotAllowed(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/assess-123/approve", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -457,6 +485,7 @@ func TestConformityHandler_ApproveAssessment_Success(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusSubmitted,
 	}
 
@@ -465,6 +494,7 @@ func TestConformityHandler_ApproveAssessment_Success(t *testing.T) {
 
 	body := `{"validity_years": 2}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/approve", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "approver")
 	rr := httptest.NewRecorder()
 
@@ -479,6 +509,7 @@ func TestConformityHandler_ApproveAssessment_DefaultValidity(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusSubmitted,
 	}
 
@@ -486,6 +517,7 @@ func TestConformityHandler_ApproveAssessment_DefaultValidity(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/approve", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "approver")
 	rr := httptest.NewRecorder()
 
@@ -502,6 +534,7 @@ func TestConformityHandler_RejectAssessment_MethodNotAllowed(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/conformity/assess-123/reject", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -517,6 +550,7 @@ func TestConformityHandler_RejectAssessment_InvalidJSON(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/reject", bytes.NewBufferString("invalid"))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -530,6 +564,7 @@ func TestConformityHandler_RejectAssessment_Success(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusSubmitted,
 	}
 
@@ -538,6 +573,7 @@ func TestConformityHandler_RejectAssessment_Success(t *testing.T) {
 
 	body := `{"reason": "Does not meet requirements"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/reject", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "reviewer")
 	rr := httptest.NewRecorder()
 
@@ -645,6 +681,7 @@ func TestConformityHandler_UpdateAssessment_NotFound(t *testing.T) {
 
 	body := `{"system_name": "Updated System"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/euaiact/conformity/nonexistent", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -659,6 +696,7 @@ func TestConformityHandler_UpdateAssessment_ServiceError(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusDraft,
 	}
 	repo.updateErr = errors.New("database error")
@@ -668,6 +706,7 @@ func TestConformityHandler_UpdateAssessment_ServiceError(t *testing.T) {
 
 	body := `{"system_name": "Updated System"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/euaiact/conformity/assess-123", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleConformityByID(rr, req)
@@ -684,6 +723,7 @@ func TestConformityHandler_SubmitAssessment_NotFound(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/nonexistent/submit", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "submitter")
 	rr := httptest.NewRecorder()
 
@@ -701,6 +741,7 @@ func TestConformityHandler_ApproveAssessment_NotFound(t *testing.T) {
 	handler := NewConformityHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/nonexistent/approve", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "approver")
 	rr := httptest.NewRecorder()
 
@@ -719,6 +760,7 @@ func TestConformityHandler_RejectAssessment_NotFound(t *testing.T) {
 
 	body := `{"reason": "Does not meet requirements"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/nonexistent/reject", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "reviewer")
 	rr := httptest.NewRecorder()
 
@@ -734,6 +776,7 @@ func TestConformityHandler_RejectAssessment_MissingReason(t *testing.T) {
 	repo := NewMockConformityRepository()
 	repo.assessments["assess-123"] = &ConformityAssessment{
 		ID:     "assess-123",
+		OrgID:  "test-org",
 		Status: AssessmentStatusSubmitted,
 	}
 
@@ -742,6 +785,7 @@ func TestConformityHandler_RejectAssessment_MissingReason(t *testing.T) {
 
 	// Empty body - no reason provided
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/conformity/assess-123/reject", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	req.Header.Set("X-User-ID", "reviewer")
 	rr := httptest.NewRecorder()
 

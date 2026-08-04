@@ -3,18 +3,23 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
 
-// Characterization + parity suite for the #2989 (ADR-060 Phase 1)
-// IdentityAttributeResolver seam extraction. The extraction is supposed to
-// be BEHAVIOR-PRESERVING: it must not change a single bit of role
-// resolution. This file pins the pre-extraction scimRoleResolver behavior
-// (the characterization net) and then proves, case by case, that the new
-// combined resolver produces byte-identical Role output on the same inputs
-// (the parity net) while Segments stays the Phase 1 no-op (always nil).
+// Characterization + parity suite for the #2989 (ADR-060) IdentityAttribute
+// Resolver seam. P1 extracted the seam BEHAVIOR-PRESERVING for role: it must
+// not change a single bit of role resolution. This file pins the
+// pre-extraction scimRoleResolver behavior (the characterization net) and
+// then proves, case by case, that the new combined resolver produces
+// byte-identical Role output on the same inputs (the parity net). P2 fills
+// Segments for real (see segment_resolution_test.go for the dedicated
+// multi-segment / zero-group / cache / cross-org / forced-error suite); the
+// parity cases here assert every role-only fixture user — none of whom have
+// a backing scim_users row — resolves an EMPTY (not nil, not erroring)
+// Segments set, proving segment resolution doesn't perturb role parity.
 //
 // Real-Postgres, same pattern as TestSCIMRoleResolver_RealPostgres
-// (provisioning_realpg_test.go): a minimal mirror of custom_roles (mig 023)
-// and role_assignments (org_id post-mig-111), seeded directly (no SCIM sync
-// simulated — the resolver only ever reads role_assignments/custom_roles).
+// (provisioning_realpg_test.go): a minimal mirror of custom_roles (mig 023),
+// role_assignments (org_id post-mig-111), and — for the new resolver's
+// segment query — a minimal mirror of the SCIM group tables (mig 117),
+// seeded directly (no SCIM sync simulated).
 package identity
 
 import (
@@ -26,10 +31,18 @@ import (
 )
 
 // seedIdentityAttrSchema creates the minimal role_assignments/custom_roles
-// mirror the resolver reads. Deliberately does NOT create any SCIM group
-// table: this is structural proof that role resolution reads only
-// role_assignments/custom_roles and never joins to group membership, so a
-// manual/API grant with no backing group cannot be silently dropped.
+// mirror scimRoleResolver reads, PLUS a minimal mirror of the SCIM group
+// tables (scim_users/scim_groups/scim_group_members, mig 117) the new
+// resolver's segment query joins. None of the role-only fixture emails below
+// get a scim_users row: that is deliberate structural proof, on two fronts —
+// (a) scimRoleResolver's OWN query text (scim_role_resolver.go) still never
+// references role_assignments/custom_roles, so a manual/API grant with no
+// backing group still resolves via role resolution alone; (b) the new
+// resolver's segment join naturally yields the empty (not erroring) segment
+// set when a user has no scim_users row at all — see
+// TestIdentityAttributeResolver_ParityWithSCIMRoleResolver below, and the
+// dedicated fixture in segment_resolution_test.go for the multi-segment /
+// zero-group-WITH-a-scim_users-row cases this file does not cover.
 func seedIdentityAttrSchema(t *testing.T, pc *testutil.PostgresContainer) {
 	t.Helper()
 	pc.RunMigration(t, `
@@ -47,6 +60,22 @@ func seedIdentityAttrSchema(t *testing.T, pc *testutil.PostgresContainer) {
 			source VARCHAR(20) DEFAULT 'scim',
 			expires_at TIMESTAMPTZ,
 			assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE TABLE scim_users (
+			id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+			tenant_id VARCHAR(255) NOT NULL,
+			email VARCHAR(255) NOT NULL,
+			active BOOLEAN DEFAULT true
+		);
+		CREATE TABLE scim_groups (
+			id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+			tenant_id VARCHAR(255) NOT NULL,
+			display_name VARCHAR(255) NOT NULL
+		);
+		CREATE TABLE scim_group_members (
+			id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+			group_id VARCHAR(255) NOT NULL REFERENCES scim_groups(id) ON DELETE CASCADE,
+			user_id VARCHAR(255) NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE
 		);
 	`)
 }
@@ -236,8 +265,17 @@ func TestIdentityAttributeResolver_ParityWithSCIMRoleResolver(t *testing.T) {
 			if resolved.Role != tc.want {
 				t.Fatalf("new resolver Resolve(%q).Role = %q, want %q", tc.email, resolved.Role, tc.want)
 			}
-			if resolved.Segments != nil {
-				t.Fatalf("Segments must be the Phase 1 no-op (nil) for %q, got %v", tc.email, resolved.Segments)
+			// None of these fixture users have a backing scim_users row (the
+			// fixture only seeds role_assignments), so segment resolution's
+			// natural zero-row-join outcome applies: an empty, non-nil set,
+			// never an error. This proves segment resolution doesn't disturb
+			// role parity even where there is no SCIM identity to resolve
+			// segments from at all.
+			if resolved.Segments == nil {
+				t.Fatalf("Segments must be a non-nil empty set (not nil) for %q with no scim_users row, got nil", tc.email)
+			}
+			if len(resolved.Segments) != 0 {
+				t.Fatalf("Segments must be empty for %q (no backing scim_users row), got %v", tc.email, resolved.Segments)
 			}
 
 			// The embedded RoleResolver path (used by NewOIDCVerifier) must

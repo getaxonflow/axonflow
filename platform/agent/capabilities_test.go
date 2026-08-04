@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"axonflow/platform/shared/plugincompat"
 	"os"
 	"strings"
 	"testing"
@@ -242,36 +243,26 @@ func TestSDKFloorCommentAttribution(t *testing.T) {
 	}
 }
 
-// TestPluginFloorCommentAttribution guards the historical-attribution
-// narrative in getPluginCompatibility(). The plugin v1.4.0 / v2.4.0 floor
-// + recommended-version bump landed during the v7.9.0 release-train
-// (#2102 on 2026-05-09), not the v8.0.0 platform bump (#2308). PR #2311
-// fixed the MinPluginVersion narrative; the structurally-identical
-// RecommendedPluginVersion narrative directly below was missed twice
-// (sessions #2308 + #2311). This test catches both blocks at once so
-// the next adjacent-class drift can't slip past.
+// TestPluginFloorCommentAttribution guards the historical-attribution narrative
+// for the plugin floors. The plugin v1.4.0 / v2.4.0 floor + recommended-version
+// bump landed during the v7.9.0 release-train (#2102 on 2026-05-09), not the
+// v8.0.0 platform bump (#2308). PR #2311 fixed the MinPluginVersion narrative;
+// the structurally-identical RecommendedPluginVersion narrative directly below it
+// was missed twice. This test catches both at once.
+//
+// It reads platform/shared/plugincompat, not this package: the two duplicated map
+// literals were replaced by that single source of truth, and the narrative moved
+// with the values it explains. Pointing this guard at the old location would have
+// meant retiring it because its subject moved — which is exactly how the
+// attribution was lost the first two times. The orchestrator has the mirror of
+// this test and both now read the same file.
 func TestPluginFloorCommentAttribution(t *testing.T) {
-	src, err := os.ReadFile("capabilities.go")
+	const narrativePath = "../shared/plugincompat/plugincompat.go"
+	src, err := os.ReadFile(narrativePath)
 	if err != nil {
-		t.Fatalf("read capabilities.go: %v", err)
+		t.Fatalf("read %s: %v", narrativePath, err)
 	}
-	s := string(src)
-
-	// Isolate the getPluginCompatibility() function body (entire function,
-	// MinPluginVersion + RecommendedPluginVersion blocks both included).
-	startMarker := "func getPluginCompatibility() PluginCompatInfo {"
-	startIdx := strings.Index(s, startMarker)
-	if startIdx == -1 {
-		t.Fatalf("could not locate getPluginCompatibility() block start")
-	}
-	// End at end of file or next top-level func, whichever comes first.
-	endIdx := strings.Index(s[startIdx+len(startMarker):], "\nfunc ")
-	if endIdx == -1 {
-		endIdx = len(s) - startIdx
-	} else {
-		endIdx += len(startMarker)
-	}
-	pluginBlock := s[startIdx : startIdx+endIdx]
+	pluginBlock := string(src)
 
 	// Required PR citation: #2102 (the v7.9.0 release-train PR that
 	// landed both the plugin floor + recommended bump) must appear at
@@ -304,5 +295,64 @@ func TestPluginFloorCommentAttribution(t *testing.T) {
 	// Catch regression to the pending/unshipped framing.
 	if strings.Contains(pluginBlock, "until the tags ship") {
 		t.Errorf("getPluginCompatibility() comment must NOT say 'until the tags ship' — plugin tags are live on their registries. Got:\n%s", pluginBlock)
+	}
+}
+
+// TestPluginCompatComesFromTheSharedSourceOfTruth pins that this plane serves
+// exactly what platform/shared/plugincompat holds — not a copy of it.
+//
+// This replaces a test that compared the two capabilities.go files as SOURCE
+// TEXT. That test was defeated by four shapes that compile cleanly, the worst
+// being a decoy `PluginCompatInfo` literal earlier in the same function: the
+// parser matched the decoy, reported agreement, and the value actually served
+// was different. It also could not see the shape that caused #2962 in the first
+// place — NEITHER file being touched — because two maps that agree at a stale
+// value agree.
+//
+// Comparing the compiled result removes both problems: there is one set of
+// values, and this asserts the wiring to it. It says nothing about whether those
+// values are current relative to npm/ClawHub; that is a fact about a registry
+// and belongs to the release runbook.
+func TestPluginCompatComesFromTheSharedSourceOfTruth(t *testing.T) {
+	got := getPluginCompatibility()
+
+	for name, pair := range map[string][2]map[string]string{
+		"MinPluginVersion":         {got.MinPluginVersion, plugincompat.MinVersions()},
+		"RecommendedPluginVersion": {got.RecommendedPluginVersion, plugincompat.RecommendedVersions()},
+	} {
+		served, canonical := pair[0], pair[1]
+		if len(canonical) == 0 {
+			t.Fatalf("%s: plugincompat returned an empty map — the source of truth is broken, and comparing two empty maps would pass", name)
+		}
+		if len(served) != len(canonical) {
+			t.Errorf("%s: served %d entries, plugincompat holds %d", name, len(served), len(canonical))
+		}
+		for id, want := range canonical {
+			if served[id] != want {
+				t.Errorf("%s[%q] = %q; plugincompat holds %q", name, id, served[id], want)
+			}
+		}
+		for id := range served {
+			if _, ok := canonical[id]; !ok {
+				t.Errorf("%s has key %q that plugincompat does not", name, id)
+			}
+		}
+	}
+}
+
+// TestPluginCompatMapsAreNotAliased guards the copy-on-read contract. Handing
+// out the package-level map would let any consumer mutate the source of truth
+// for the whole process.
+func TestPluginCompatMapsAreNotAliased(t *testing.T) {
+	first := getPluginCompatibility()
+	first.RecommendedPluginVersion["openclaw"] = "0.0.0-mutated"
+	first.MinPluginVersion["openclaw"] = "0.0.0-mutated"
+
+	second := getPluginCompatibility()
+	if second.RecommendedPluginVersion["openclaw"] == "0.0.0-mutated" {
+		t.Error("RecommendedPluginVersion is aliased: mutating one caller's map changed the next caller's")
+	}
+	if second.MinPluginVersion["openclaw"] == "0.0.0-mutated" {
+		t.Error("MinPluginVersion is aliased: mutating one caller's map changed the next caller's")
 	}
 }

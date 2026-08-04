@@ -7,11 +7,11 @@
 # Format reference:
 # https://github.com/Tufin/oasdiff/blob/main/docs/BREAKING-CHANGES.md
 
-# PR axonflow-enterprise#1764 — SDKCompatInfo schema correction.
+# PR axonflow-enterprise#1764 - SDKCompatInfo schema correction.
 # The platform has returned per-language object maps for
 # sdk_compatibility.min_sdk_version + recommended_sdk_version since
 # v4.8.0 (the same release that introduced the field). All four SDKs
-# at v6.0.0+ depend on the object shape — the Go SDK v6.0.0 CHANGELOG
+# at v6.0.0+ depend on the object shape - the Go SDK v6.0.0 CHANGELOG
 # calls this out explicitly as a wire-shape bug fix. The agent-api.yaml
 # string shape was the bug; the platform behaviour is the contract.
 # Entries are scoped to those two specific properties so unrelated
@@ -19,7 +19,7 @@
 GET /health the `sdk_compatibility/min_sdk_version` response's property type/format changed from `string`/`` to `object`/`` for status `200`
 GET /health the `sdk_compatibility/recommended_sdk_version` response's property type/format changed from `string`/`` to `object`/`` for status `200`
 
-# PR axonflow-enterprise#2422 — HITL spec path rename.
+# PR axonflow-enterprise#2422 - HITL spec path rename.
 # The handler has always been at /api/v1/hitl/queue (since v9 Phase 8);
 # the spec had drifted to /api/v1/hitl/decisions. Renaming the spec to
 # match the handler is a doc-only correction with zero customer impact:
@@ -33,16 +33,16 @@ in API GET /api/v1/hitl/decisions/{id} api path removed without deprecation
 in API POST /api/v1/hitl/decisions/{id}/approve api path removed without deprecation
 in API POST /api/v1/hitl/decisions/{id}/reject api path removed without deprecation
 
-# PR axonflow-enterprise#2881 (docs session API-1) — agent-api.yaml corrections.
+# PR axonflow-enterprise#2881 (docs session API-1) - agent-api.yaml corrections.
 # (a) The /api/v1/accuracy/*, /api/v1/conformity/*, and /api/v1/euaiact/*
 # families never existed on the agent (some never existed anywhere); the
 # shipped EU-AI-Act surface lives on the orchestrator at
 # /api/v1/euaiact/* (ee overlay) and is documented in
 # ee/docs/api/eu-ai-act-api.md. Removal is a doc-only correction.
 # (b) /mcp/check-input + /mcp/check-output were documented at the wrong
-# paths — the handlers have only ever been registered at
+# paths - the handlers have only ever been registered at
 # /api/v1/mcp/check-input|check-output (mcp_handler.go:575-576).
-# (c) /api/v1/circuit-breaker/activate|deactivate never existed — the
+# (c) /api/v1/circuit-breaker/activate|deactivate never existed - the
 # routes are /trip and /reset (circuitbreaker/handler.go:71-72).
 # (d) /decide 429 body is written by the auth middleware (shared
 # rate-limit envelope), never the DecideErrorResponse the spec claimed.
@@ -91,8 +91,8 @@ in API POST /mcp/check-input api path removed without deprecation
 in API POST /mcp/check-output api path removed without deprecation
 in API PUT /api/v1/conformity/assessments/{id}/checks/{checkId} api path removed without deprecation
 
-# PR axonflow-enterprise#2881 — policy-api.yaml corrections.
-# unified-policies (never implemented on the orchestrator — shipped later
+# PR axonflow-enterprise#2881 - policy-api.yaml corrections.
+# unified-policies (never implemented on the orchestrator - shipped later
 # on the Enterprise customer portal with a different schema, documented in
 # ee/docs/api/unified-policies-api.md) and the static-policies section
 # (agent-owned; canonically specified in agent-api.yaml, which the removed
@@ -112,7 +112,7 @@ in API GET /api/v1/unified-policies/{policy_id} api path removed without depreca
 in API PATCH /api/v1/static-policies/{policy_id} api path removed without deprecation
 in API POST /api/v1/static-policies/{policy_id}/override api path removed without deprecation
 
-# PR axonflow-enterprise#2881 — masfeat-api.yaml rewrite (spec v2.0.0).
+# PR axonflow-enterprise#2881 - masfeat-api.yaml rewrite (spec v2.0.0).
 # The spec predated the shipped module and documented an earlier design:
 # 4 endpoints that do not exist or are unreachable under the production
 # mux (activate/check/enable/disable), a wrong method (configure PUT),
@@ -190,7 +190,7 @@ in API PUT /api/v1/masfeat/assessments/{assessment_id} the `transparency_score` 
 in API PUT /api/v1/masfeat/killswitch/{system_id}/configure api removed without deprecation
 in API PUT /api/v1/masfeat/registry/{system_id} for the `path` request parameter `system_id`, the `format` was changed from `none` to `uuid`
 
-# PR axonflow-enterprise#2881 — orchestrator-api.yaml corrections.
+# PR axonflow-enterprise#2881 - orchestrator-api.yaml corrections.
 # (a) /api/v1/media/analyzers*, /api/v1/media/analyze, /api/v1/llm-providers/health,
 # and /api/v1/agents/domain/{domain} never existed in any shipped binary
 # (zero route registrations; the agents domain handler is dead code, #2884).
@@ -198,11 +198,11 @@ in API PUT /api/v1/masfeat/registry/{system_id} for the `path` request parameter
 # (run.go:2601-2607, :2684-2696), audit/tool-call has always required the
 # X-Axonflow-Proxy-Auth HMAC outside Community (run.go:2767-2785), and the
 # unified stream handler has always read X-Org-ID (unified_execution_handler.go:75-98)
-# — the spec previously omitted required headers the platform enforced.
+# - the spec previously omitted required headers the platform enforced.
 # (c) audit/search has always returned {entries,total,limit,offset}
 # (run.go:2635-2645), never a bare array.
 # (d) /health sdk_compatibility maps: same correction as PR #1764 made for
-# agent-api.yaml — per-language object maps since v4.8.0 (capabilities.go:20-23).
+# agent-api.yaml - per-language object maps since v4.8.0 (capabilities.go:20-23).
 in API GET /api/v1/agents/domain/{domain} api path removed without deprecation
 in API GET /api/v1/audit/tenant/{tenant_id} added the new required `header` request parameter `x-tenant-id`
 in API GET /api/v1/llm-providers/health api path removed without deprecation
@@ -217,7 +217,7 @@ in API POST /api/v1/audit/tool-call added the new required `header` request para
 in API POST /api/v1/media/analyze api path removed without deprecation
 
 # v9.8.0 (#2890): euaiact/export is now documented as a thin PROXIED pointer in
-# agent-api.yaml — the canonical request/response contract lives in
+# agent-api.yaml - the canonical request/response contract lives in
 # orchestrator-api.yaml (per the single-entry-point Option-C convention). The full
 # request body + response schema were intentionally moved to the orchestrator spec;
 # the agent-api entry is a reachability pointer. The endpoint itself is unchanged
@@ -226,7 +226,7 @@ in API POST /api/v1/media/analyze api path removed without deprecation
 in API POST /api/v1/euaiact/export removed the request body
 in API POST /api/v1/euaiact/export removed the success response with the status `200`
 
-# PR axonflow-enterprise#3099 (#3066 C3-3) — RBI audit-export scope binding.
+# PR axonflow-enterprise#3099 (#3066 C3-3) - RBI audit-export scope binding.
 # X-Org-ID was already mandatory on these five operations at runtime before the
 # spec caught up: the AxonFlow Agent gateway Set()s the header from the
 # validated client credential on every /api/v1/rbi request, and the orchestrator
@@ -244,3 +244,15 @@ in API POST /api/v1/rbi/audit-exports added the new required `header` request pa
 in API GET /api/v1/rbi/audit-exports/{export_id} added the new required `header` request parameter `x-org-id`
 in API DELETE /api/v1/rbi/audit-exports/{export_id} added the new required `header` request parameter `x-org-id`
 in API POST /api/v1/rbi/audit-exports/{export_id}/process added the new required `header` request parameter `x-org-id`
+
+# PR axonflow-enterprise#3248 (#3246) - SEBI export-status 200 removal.
+# The route queried `sebi_audit_exports`, a table that appears in NO migration
+# in this repository and that nothing has ever written to, so the documented
+# 200 was unreachable: every call returned 500 on every deployment, always. It
+# survived because its only tests were sqlmock tests supplying rows for a table
+# that cannot exist. Removing a success status that could never be produced
+# breaks no caller - there was no caller, and the UI's getSEBIExportStatus has
+# no call site. The route now returns 501 naming the endpoint that does this job
+# (POST /api/v1/compliance/reports). Scoped to this one operation so any other
+# success-status removal still trips the gate.
+in API GET /api/v1/sebi/audit/export/{export_id} removed the success response with the status `200`

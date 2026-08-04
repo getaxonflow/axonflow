@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"axonflow/platform/shared/plugincompat"
 	"os"
 	"strings"
 	"testing"
@@ -31,10 +32,10 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"rust":       "0.7.0",
 	}
 	wantRecommended := map[string]string{
-		"python":     "9.0.0",
-		"typescript": "9.0.0",
-		"go":         "9.0.0",
-		"java":       "9.0.0",
+		"python":     "9.1.0",
+		"typescript": "9.1.0",
+		"go":         "9.1.0",
+		"java":       "9.1.0",
 		"rust":       "0.8.1",
 	}
 
@@ -54,42 +55,38 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 	}
 }
 
-// TestPluginCompatibilityPinnedToReleaseTrain pins the orchestrator's
-// plugin compat block to the same release-train values the agent's
-// PluginCompatInfo carries. The block was missing entirely before the
-// orchestrator-vs-agent compat-drift fix; this test prevents regression
-// to the empty / missing state.
-func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
-	c := getPluginCompatibility()
+// TestPluginCompatComesFromTheSharedSourceOfTruth pins that this plane serves
+// exactly what platform/shared/plugincompat holds.
+//
+// Successor to TestPluginCompatibilityPinnedToReleaseTrain, which hardcoded the
+// values here. That was right while the orchestrator held its own copy — it is
+// the test that caught one-sided drift — but now that both planes read one map,
+// a second hardcoded list would be a third place to forget on a bump. The values
+// are pinned once, in plugincompat's own test; this asserts the wiring.
+func TestPluginCompatComesFromTheSharedSourceOfTruth(t *testing.T) {
+	got := getPluginCompatibility()
 
-	wantMin := map[string]string{
-		"openclaw":       "2.4.0",
-		"claude-code":    "1.4.0",
-		"cursor":         "1.4.0",
-		"codex":          "1.4.0",
-		"claude-desktop": "0.2.0",
-	}
-	wantRecommended := map[string]string{
-		"openclaw":       "2.8.4",
-		"claude-code":    "1.11.0",
-		"cursor":         "1.7.0",
-		"codex":          "1.7.0",
-		"claude-desktop": "0.3.1",
-	}
-
-	for id, want := range wantMin {
-		if got := c.MinPluginVersion[id]; got != want {
-			t.Errorf("MinPluginVersion[%q] = %q; want %q", id, got, want)
+	for name, pair := range map[string][2]map[string]string{
+		"MinPluginVersion":         {got.MinPluginVersion, plugincompat.MinVersions()},
+		"RecommendedPluginVersion": {got.RecommendedPluginVersion, plugincompat.RecommendedVersions()},
+	} {
+		served, canonical := pair[0], pair[1]
+		if len(canonical) == 0 {
+			t.Fatalf("%s: plugincompat returned an empty map — comparing two empty maps would pass", name)
 		}
-	}
-	for id, want := range wantRecommended {
-		if got := c.RecommendedPluginVersion[id]; got != want {
-			t.Errorf("RecommendedPluginVersion[%q] = %q; want %q", id, got, want)
+		if len(served) != len(canonical) {
+			t.Errorf("%s: served %d entries, plugincompat holds %d", name, len(served), len(canonical))
 		}
-	}
-	if len(c.MinPluginVersion) != 5 || len(c.RecommendedPluginVersion) != 5 {
-		t.Errorf("expected 5 plugins, got Min=%d Recommended=%d",
-			len(c.MinPluginVersion), len(c.RecommendedPluginVersion))
+		for id, want := range canonical {
+			if served[id] != want {
+				t.Errorf("%s[%q] = %q; plugincompat holds %q", name, id, served[id], want)
+			}
+		}
+		for id := range served {
+			if _, ok := canonical[id]; !ok {
+				t.Errorf("%s has key %q that plugincompat does not", name, id)
+			}
+		}
 	}
 }
 
@@ -124,28 +121,26 @@ func TestSDKFloorCommentAttribution(t *testing.T) {
 	}
 }
 
-// TestPluginFloorCommentAttribution mirrors the agent-side test. Same
-// scope: catches drift in either the MinPluginVersion or
-// RecommendedPluginVersion narrative blocks of getPluginCompatibility().
+// TestPluginFloorCommentAttribution guards the historical-attribution narrative
+// for the plugin floors. The plugin v1.4.0 / v2.4.0 floor + recommended-version
+// bump landed during the v7.9.0 release-train (#2102 on 2026-05-09), not the
+// v8.0.0 platform bump (#2308). PR #2311 fixed the MinPluginVersion narrative;
+// the structurally-identical RecommendedPluginVersion narrative directly below it
+// was missed twice. This test catches both at once.
+//
+// It reads platform/shared/plugincompat, not this package: the two duplicated map
+// literals were replaced by that single source of truth, and the narrative moved
+// with the values it explains. Pointing this guard at the old location would have
+// meant retiring it because its subject moved — which is exactly how the
+// attribution was lost the first two times. The orchestrator has the mirror of
+// this test and both now read the same file.
 func TestPluginFloorCommentAttribution(t *testing.T) {
-	src, err := os.ReadFile("capabilities.go")
+	const narrativePath = "../shared/plugincompat/plugincompat.go"
+	src, err := os.ReadFile(narrativePath)
 	if err != nil {
-		t.Fatalf("read capabilities.go: %v", err)
+		t.Fatalf("read %s: %v", narrativePath, err)
 	}
-	s := string(src)
-
-	startMarker := "func getPluginCompatibility() PluginCompatInfo {"
-	startIdx := strings.Index(s, startMarker)
-	if startIdx == -1 {
-		t.Fatalf("could not locate getPluginCompatibility() block start")
-	}
-	endIdx := strings.Index(s[startIdx+len(startMarker):], "\nfunc ")
-	if endIdx == -1 {
-		endIdx = len(s) - startIdx
-	} else {
-		endIdx += len(startMarker)
-	}
-	pluginBlock := s[startIdx : startIdx+endIdx]
+	pluginBlock := string(src)
 
 	// Required PR citation: #2102 (the v7.9.0 release-train PR that
 	// landed both the plugin floor + recommended bump) must appear at

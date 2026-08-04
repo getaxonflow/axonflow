@@ -23,7 +23,12 @@ import (
 
 var (
 	cbStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	cbEnd   = time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	// cbEnd is the END-OF-DAY form of the 2026-12-31 request date. ExportAuditData
+	// extends end_date to the last instant of that day: parsed as midnight it
+	// silently excluded every row recorded after 00:00:00 on the final day of the
+	// requested window. The section queries are driven with the same value here so
+	// the sqlmock argument expectations match what the service actually binds.
+	cbEnd   = time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC).Add(24*time.Hour - time.Nanosecond)
 	cbRowTS = time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
 )
 
@@ -42,16 +47,16 @@ func TestQueryCrossBorderTransfers_SurfacesTransferBasisVerbatim(t *testing.T) {
 		AddRow("audit-101", cbRowTS, "US", "pasal_56b_dpa").
 		AddRow("audit-102", cbRowTS, "SG", "safeguards")
 	mock.ExpectQuery(`FROM audit_logs`).
-		WithArgs("org-buku", cbStart, cbEnd).
+		WithArgs("org-buku", cbStart, cbEnd, ojkSectionLimit).
 		WillReturnRows(rows)
 
 	svc := &ojkAuditExportServiceImpl{db: db}
-	records, count, err := svc.queryCrossBorderTransfers(context.Background(), "org-buku", cbStart, cbEnd)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	records, res := svc.queryCrossBorderTransfers(context.Background(), "org-buku", cbStart, cbEnd)
+	if res.err != nil {
+		t.Fatalf("unexpected error: %v", res.err)
 	}
-	if count != 2 || len(records) != 2 {
-		t.Fatalf("expected 2 records, got count=%d len=%d", count, len(records))
+	if res.count != 2 || len(records) != 2 {
+		t.Fatalf("expected 2 records, got count=%d len=%d", res.count, len(records))
 	}
 
 	if records[0].TransferBasis != "pasal_56b_dpa" {
@@ -85,16 +90,16 @@ func TestQueryCrossBorderTransfers_Empty(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectQuery(`FROM audit_logs`).
-		WithArgs("org-empty", cbStart, cbEnd).
+		WithArgs("org-empty", cbStart, cbEnd, ojkSectionLimit).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}))
 
 	svc := &ojkAuditExportServiceImpl{db: db}
-	records, count, err := svc.queryCrossBorderTransfers(context.Background(), "org-empty", cbStart, cbEnd)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	records, res := svc.queryCrossBorderTransfers(context.Background(), "org-empty", cbStart, cbEnd)
+	if res.err != nil {
+		t.Fatalf("unexpected error: %v", res.err)
 	}
-	if count != 0 {
-		t.Errorf("count = %d, want 0", count)
+	if res.count != 0 {
+		t.Errorf("count = %d, want 0", res.count)
 	}
 	if records == nil {
 		t.Error("records must be non-nil empty slice, got nil")
@@ -113,13 +118,16 @@ func TestQueryCrossBorderTransfers_QueryError(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectQuery(`FROM audit_logs`).
-		WithArgs("org-boom", cbStart, cbEnd).
+		WithArgs("org-boom", cbStart, cbEnd, ojkSectionLimit).
 		WillReturnError(errors.New("connection reset"))
 
 	svc := &ojkAuditExportServiceImpl{db: db}
-	_, _, err = svc.queryCrossBorderTransfers(context.Background(), "org-boom", cbStart, cbEnd)
-	if err == nil {
+	_, res := svc.queryCrossBorderTransfers(context.Background(), "org-boom", cbStart, cbEnd)
+	if res.err == nil {
 		t.Fatal("expected error to propagate")
+	}
+	if res.unavailable {
+		t.Error("a connection reset must NOT be classified as table-not-present; that would report a confident empty section")
 	}
 }
 
@@ -135,12 +143,12 @@ func TestQueryCrossBorderTransfers_ScanError(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}).
 		AddRow("audit-1", "not-a-timestamp", "US", "pasal_56b_dpa")
 	mock.ExpectQuery(`FROM audit_logs`).
-		WithArgs("org-scan", cbStart, cbEnd).
+		WithArgs("org-scan", cbStart, cbEnd, ojkSectionLimit).
 		WillReturnRows(rows)
 
 	svc := &ojkAuditExportServiceImpl{db: db}
-	_, _, err = svc.queryCrossBorderTransfers(context.Background(), "org-scan", cbStart, cbEnd)
-	if err == nil {
+	_, res := svc.queryCrossBorderTransfers(context.Background(), "org-scan", cbStart, cbEnd)
+	if res.err == nil {
 		t.Fatal("expected scan error to propagate")
 	}
 }
@@ -158,7 +166,7 @@ func TestExportAuditData_CrossBorderRoundTrip(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"id", "timestamp", "data_residency", "transfer_basis"}).
 		AddRow("audit-7", cbRowTS, "US", "pasal_56b_dpa")
 	mock.ExpectQuery(`FROM audit_logs`).
-		WithArgs("org-buku", cbStart, cbEnd).
+		WithArgs("org-buku", cbStart, cbEnd, ojkSectionLimit).
 		WillReturnRows(rows)
 
 	svc := &ojkAuditExportServiceImpl{db: db}

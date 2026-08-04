@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 9.12.0
+**Platform Version:** 9.14.0
 
 > **Scope:** This guide covers the internal Go LLM provider system used within the AxonFlow platform. For client SDK usage (Go, Python, TypeScript, Java), see the [SDK Quick Start](./README.md).
 

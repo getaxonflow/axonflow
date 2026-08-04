@@ -88,9 +88,9 @@ func TestProcessExport_RealDataTypes_CompleteWithRecords(t *testing.T) {
 
 			// Called directly, processExport runs synchronously (the goroutine is
 			// only spawned by CreateExport), so the final state is deterministic.
-			NewExportService(repo, nil).processExport(export.ID)
+			NewExportService(repo, nil).processExport(export.OrgID, export.ID)
 
-			got, err := repo.GetByID(context.Background(), export.ID)
+			got, err := repo.GetByID(context.Background(), export.OrgID, export.ID)
 			if err != nil {
 				t.Fatalf("GetByID: %v", err)
 			}
@@ -145,9 +145,9 @@ func TestProcessExport_RealDataTypes_QueryError_Fails(t *testing.T) {
 			}
 			repo.exports[export.ID] = export
 
-			NewExportService(repo, nil).processExport(export.ID)
+			NewExportService(repo, nil).processExport(export.OrgID, export.ID)
 
-			got, err := repo.GetByID(context.Background(), export.ID)
+			got, err := repo.GetByID(context.Background(), export.OrgID, export.ID)
 			if err != nil {
 				t.Fatalf("GetByID: %v", err)
 			}
@@ -183,9 +183,9 @@ func TestProcessExport_DecisionChain_NotRegressed(t *testing.T) {
 	}
 	repo.exports[export.ID] = export
 
-	NewExportService(repo, nil).processExport(export.ID)
+	NewExportService(repo, nil).processExport(export.OrgID, export.ID)
 
-	got, err := repo.GetByID(context.Background(), export.ID)
+	got, err := repo.GetByID(context.Background(), export.OrgID, export.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}

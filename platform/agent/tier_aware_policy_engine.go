@@ -24,6 +24,8 @@ import (
 	"database/sql"
 	"log"
 	"regexp"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -109,12 +111,24 @@ func NewTierAwarePolicyEngine(db *sql.DB, config *TierAwarePolicyEngineConfig) *
 
 // GetEffectivePolicies returns effective policies for a tenant with caching.
 // It respects tier priority and applies any active overrides.
-func (e *TierAwarePolicyEngine) GetEffectivePolicies(ctx context.Context, tenantID string, orgID *string) ([]EffectiveStaticPolicy, error) {
+//
+// segmentIDs (ADR-060 #2989 P3) is the caller's resolved governance-segment
+// set — see StaticPolicyRepository.GetEffective's doc for the selection
+// contract (additive, orthogonal to tier; nil/empty is exactly pre-P3
+// behavior). It is normalized (deduped + sorted) once here so the cache key
+// (buildCacheKey) and the repository query both see a canonical form —
+// callers passing the same logical set in a different order or with
+// duplicates must hit the same cache entry, never a distinct one (a
+// cache-key miss here would mean two requests for the identical resolved
+// segment set redundantly hit the database, not a correctness bug, but
+// still worth normalizing once at the entry point).
+func (e *TierAwarePolicyEngine) GetEffectivePolicies(ctx context.Context, tenantID string, orgID *string, segmentIDs []string) ([]EffectiveStaticPolicy, error) {
 	if tenantID == "" {
 		tenantID = e.defaultTenant
 	}
+	normSegments := normalizeSegmentIDs(segmentIDs)
 
-	cacheKey := e.buildCacheKey(tenantID, orgID)
+	cacheKey := e.buildCacheKey(tenantID, orgID, normSegments)
 
 	// Try to get from cache first
 	e.cacheMutex.RLock()
@@ -127,17 +141,17 @@ func (e *TierAwarePolicyEngine) GetEffectivePolicies(ctx context.Context, tenant
 	e.cacheMutex.RUnlock()
 
 	// Cache miss or expired - fetch from database
-	return e.refreshCache(ctx, tenantID, orgID, cacheKey)
+	return e.refreshCache(ctx, tenantID, orgID, normSegments, cacheKey)
 }
 
 // GetEffectivePoliciesByCategory returns effective policies for a specific category.
-func (e *TierAwarePolicyEngine) GetEffectivePoliciesByCategory(ctx context.Context, tenantID string, orgID *string, category PolicyCategory) ([]EffectiveStaticPolicy, error) {
-	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID)
+func (e *TierAwarePolicyEngine) GetEffectivePoliciesByCategory(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, category PolicyCategory) ([]EffectiveStaticPolicy, error) {
+	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID, segmentIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	cacheKey := e.buildCacheKey(tenantID, orgID)
+	cacheKey := e.buildCacheKey(tenantID, orgID, normalizeSegmentIDs(segmentIDs))
 	e.cacheMutex.RLock()
 	cache, exists := e.policyCache[cacheKey]
 	e.cacheMutex.RUnlock()
@@ -159,13 +173,13 @@ func (e *TierAwarePolicyEngine) GetEffectivePoliciesByCategory(ctx context.Conte
 }
 
 // GetEffectivePoliciesByTier returns effective policies for a specific tier.
-func (e *TierAwarePolicyEngine) GetEffectivePoliciesByTier(ctx context.Context, tenantID string, orgID *string, tier PolicyTier) ([]EffectiveStaticPolicy, error) {
-	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID)
+func (e *TierAwarePolicyEngine) GetEffectivePoliciesByTier(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, tier PolicyTier) ([]EffectiveStaticPolicy, error) {
+	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID, segmentIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	cacheKey := e.buildCacheKey(tenantID, orgID)
+	cacheKey := e.buildCacheKey(tenantID, orgID, normalizeSegmentIDs(segmentIDs))
 	e.cacheMutex.RLock()
 	cache, exists := e.policyCache[cacheKey]
 	e.cacheMutex.RUnlock()
@@ -186,56 +200,221 @@ func (e *TierAwarePolicyEngine) GetEffectivePoliciesByTier(ctx context.Context, 
 	return result, nil
 }
 
-// EvaluatePolicy evaluates input against all effective policies for a tenant.
-// Returns the first matching policy result or nil if no match.
-func (e *TierAwarePolicyEngine) EvaluatePolicy(ctx context.Context, tenantID string, orgID *string, input string) (*PolicyEvaluationResult, error) {
-	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID)
+// EvaluatePolicy evaluates input against all effective policies for a tenant,
+// combining the tier-effective result with any applicable segment policies
+// per ADR-060 Decision 1 (additive, restriction-only — LOCKED): a segment can
+// only TIGHTEN the outcome, never loosen it, and never participates in the
+// Enterprise override-downgrade path. See combineTierAndSegmentResults for
+// the combiner itself.
+//
+// When segmentIDs is empty (including every org with zero segment-scoped
+// policies, regardless of what segmentIDs the caller passes), this is
+// byte-identical to the pre-P3 single-pass "first tier/priority match wins"
+// behavior: GetEffectivePolicies returns only segment_id IS NULL rows, the
+// segment pass finds nothing to evaluate, and the combiner returns the tier
+// result unchanged.
+func (e *TierAwarePolicyEngine) EvaluatePolicy(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, input string) (*PolicyEvaluationResult, error) {
+	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID, segmentIDs)
 	if err != nil {
 		return nil, err
 	}
 
 	startTime := time.Now()
+	tierPolicies, segmentPolicies := splitBySegment(policies)
 
+	tierResult := e.evaluateFirstMatch(tierPolicies, input)
+	segmentResult := e.evaluateStrictestMatch(segmentPolicies, input)
+	result := combineTierAndSegmentResults(tierResult, segmentResult)
+	result.EvaluationTimeMs = time.Since(startTime).Milliseconds()
+	return result, nil
+}
+
+// evaluateFirstMatch is the EXACT pre-P3 EvaluatePolicy algorithm (unchanged
+// byte-for-byte): walk policies in their existing tier/priority sort order
+// and return the first pattern match. This is deliberately NOT
+// "most-restrictive wins" — that is the existing, preserved tier-effective
+// semantics (system→org→tenant + override-downgrade), which ADR-060 Decision
+// 1 requires this combiner leave untouched. Never called with segment-scoped
+// policies mixed in (see splitBySegment) — interleaving a segment row into
+// this order-dependent walk could let a WEAKER segment match pre-empt a
+// stronger tier match purely by sort position, which would be a loosening
+// bug (the exact R3 risk this split exists to rule out).
+func (e *TierAwarePolicyEngine) evaluateFirstMatch(policies []EffectiveStaticPolicy, input string) *PolicyEvaluationResult {
 	for _, policy := range policies {
-		// Skip disabled policies (including those disabled via override)
 		if !policy.EffectiveEnabled() {
 			continue
 		}
-
-		// Get or compile pattern
 		re, err := e.getCompiledPattern(policy.Pattern)
 		if err != nil {
 			log.Printf("[TierAwarePolicyEngine] Error compiling pattern for policy %s: %v", policy.PolicyID, err)
 			continue
 		}
-
 		if re.MatchString(input) {
 			return &PolicyEvaluationResult{
-				Matched:          true,
-				PolicyID:         policy.PolicyID,
-				PolicyName:       policy.Name,
-				Category:         policy.Category,
-				Tier:             policy.Tier,
-				Action:           policy.EffectiveAction(),
-				Severity:         policy.Severity,
-				Description:      policy.Description,
-				HasOverride:      policy.HasOverride,
-				OverrideReason:   policy.OverrideReason,
-				EvaluationTimeMs: time.Since(startTime).Milliseconds(),
-			}, nil
+				Matched:        true,
+				PolicyID:       policy.PolicyID,
+				PolicyName:     policy.Name,
+				Category:       policy.Category,
+				Tier:           policy.Tier,
+				Action:         policy.EffectiveAction(),
+				Severity:       policy.Severity,
+				Description:    policy.Description,
+				HasOverride:    policy.HasOverride,
+				OverrideReason: policy.OverrideReason,
+			}
 		}
 	}
+	return &PolicyEvaluationResult{Matched: false}
+}
 
-	return &PolicyEvaluationResult{
-		Matched:          false,
-		EvaluationTimeMs: time.Since(startTime).Milliseconds(),
-	}, nil
+// evaluateStrictestMatch scans ALL matching segment-scoped policies (already
+// filtered to the caller's resolved segment set by GetEffectivePolicies) and
+// returns the single MOST RESTRICTIVE match by OverrideAction ordering
+// (block > require_approval > redact > warn > log), never merely the first
+// in sort order — "strictest applicable segment policy" (ADR-060 §"Combining
+// multiple segments") is a restrictiveness ranking, not a priority ranking.
+//
+// Deliberately reads policy.Action / policy.Enabled (the RAW columns), never
+// EffectiveAction() / EffectiveEnabled() (which fold in override fields) —
+// this is belt-and-suspenders on top of GetEffective's own override-JOIN
+// exclusion + field-stripping for segment rows (ADR-060 Decision 1: a
+// segment policy must never enter the override-downgrade path). Reading the
+// Effective* accessors here would trust HasOverride/OverrideAction/
+// OverrideEnabled on a segment row if they were EVER non-zero — whether from
+// a defect in GetEffective, a future refactor, or a caller constructing an
+// EffectiveStaticPolicy directly (as tests do) — and an OverrideEnabled=
+// false would even let an override silently DISABLE a segment block policy
+// outright, a loosening path strictly worse than a downgraded action. Using
+// the raw fields makes that whole class of bug structurally unreachable from
+// this function, independent of what the repository layer does.
+func (e *TierAwarePolicyEngine) evaluateStrictestMatch(policies []EffectiveStaticPolicy, input string) *PolicyEvaluationResult {
+	var best *PolicyEvaluationResult
+	for _, policy := range policies {
+		if !policy.Enabled {
+			continue
+		}
+		re, err := e.getCompiledPattern(policy.Pattern)
+		if err != nil {
+			log.Printf("[TierAwarePolicyEngine] Error compiling segment pattern for policy %s: %v", policy.PolicyID, err)
+			continue
+		}
+		if !re.MatchString(input) {
+			continue
+		}
+		candidate := &PolicyEvaluationResult{
+			Matched:        true,
+			PolicyID:       policy.PolicyID,
+			PolicyName:     policy.Name,
+			Category:       policy.Category,
+			Tier:           policy.Tier,
+			Action:         policy.Action,
+			Severity:       policy.Severity,
+			Description:    policy.Description,
+			HasOverride:    false,
+			OverrideReason: "",
+		}
+		if best == nil || ActionRestrictiveness(OverrideAction(candidate.Action)) > ActionRestrictiveness(OverrideAction(best.Action)) {
+			best = candidate
+		}
+	}
+	if best == nil {
+		return &PolicyEvaluationResult{Matched: false}
+	}
+	return best
+}
+
+// combineTierAndSegmentResults is the ADR-060 Decision 1 combiner (LOCKED,
+// additive restriction-only): effective = strictest(tier_effective,
+// strictest applicable segment policy). Segments only ADD restriction:
+//   - No segment match -> tier result verbatim (byte-identical to pre-P3;
+//     also covers "no segment-scoped policies for this org at all").
+//   - No tier match, but a segment matches -> the segment result alone: a
+//     segment-only block policy (no corresponding org/tenant/system policy)
+//     must still fire — required by the runtime-e2e "member of segment X
+//     with a segment-X block policy is blocked" gate.
+//   - Both match -> whichever action is MORE restrictive wins; a tie prefers
+//     the tier result (deterministic, and keeps existing PolicyID/Tier
+//     attribution stable for callers used to today's single-result shape).
+//     A tie can never mean the segment loosened anything, by construction —
+//     ActionRestrictiveness is compared, never overwritten downward.
+func combineTierAndSegmentResults(tier, segment *PolicyEvaluationResult) *PolicyEvaluationResult {
+	if segment == nil || !segment.Matched {
+		return tier
+	}
+	if tier == nil || !tier.Matched {
+		return segment
+	}
+	if ActionRestrictiveness(OverrideAction(segment.Action)) > ActionRestrictiveness(OverrideAction(tier.Action)) {
+		return segment
+	}
+	return tier
+}
+
+// splitBySegment partitions an already tier/priority-sorted effective-policy
+// list into (tier-scoped, segment-scoped) sublists, preserving each side's
+// relative order. tierPolicies (segment_id == nil) is therefore, for an org
+// with zero segment-scoped policies, IDENTICAL to the full input slice —
+// which is exactly what makes evaluateFirstMatch(tierPolicies, ...)
+// byte-identical to the pre-P3 single-list walk in that case.
+func splitBySegment(policies []EffectiveStaticPolicy) (tierPolicies, segmentPolicies []EffectiveStaticPolicy) {
+	for _, p := range policies {
+		if p.SegmentID != nil && *p.SegmentID != "" {
+			segmentPolicies = append(segmentPolicies, p)
+		} else {
+			tierPolicies = append(tierPolicies, p)
+		}
+	}
+	return tierPolicies, segmentPolicies
+}
+
+// normalizeSegmentIDs dedupes, drops empty entries, and sorts a caller-
+// supplied segment-ID set so the cache key (buildCacheKey) and the
+// repository selection query both see one canonical form regardless of the
+// order or duplication the caller happened to pass — required so two
+// requests resolving to the SAME logical segment set (e.g. ["b","a"] and
+// ["a","b","a"]) hit the SAME cache entry rather than needlessly bypassing
+// the cache, and so a cache key can never accidentally differ (or collide)
+// based on incidental ordering. Returns nil (never a non-nil empty slice)
+// for an empty/all-empty input, matching the "no segments" contract used
+// throughout (GetEffective/buildCacheKey treat nil and [] identically).
+func normalizeSegmentIDs(segmentIDs []string) []string {
+	if len(segmentIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(segmentIDs))
+	out := make([]string, 0, len(segmentIDs))
+	for _, id := range segmentIDs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // EvaluateAllPolicies evaluates input against all effective policies and returns all matches.
 // This is useful for comprehensive policy reporting.
-func (e *TierAwarePolicyEngine) EvaluateAllPolicies(ctx context.Context, tenantID string, orgID *string, input string) (*PolicyEvaluationResults, error) {
-	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID)
+//
+// segmentIDs threads through to GetEffectivePolicies exactly like
+// EvaluatePolicy. Unlike EvaluatePolicy's order-dependent first-match walk,
+// this method's aggregate outputs (ShouldBlock = OR across every match,
+// HighestSeverity = MAX across every match) are already monotonic in the
+// number of matched policies — adding segment-scoped rows to the same
+// evaluated set can only ever add matches, which can only turn ShouldBlock
+// true or raise HighestSeverity, never the reverse — so no separate
+// tier/segment combiner is needed here for ADR-060 Decision 1 to hold: it
+// falls out of the existing OR/MAX aggregation once segment rows carry no
+// override (already enforced by GetEffective, see its doc).
+func (e *TierAwarePolicyEngine) EvaluateAllPolicies(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, input string) (*PolicyEvaluationResults, error) {
+	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID, segmentIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -299,12 +478,26 @@ func (e *TierAwarePolicyEngine) EvaluateAllPolicies(ctx context.Context, tenantI
 	return results, nil
 }
 
-// InvalidateCache invalidates the cache for a specific tenant.
+// InvalidateCache invalidates the cache for a specific tenant/org, including
+// every segment-scoped cache entry for that same (tenantID, orgID) pair
+// (ADR-060 #2989 P3): buildCacheKey now appends a sorted segment suffix, so
+// a plain exact-key delete keyed on (tenantID, orgID) alone would leave every
+// segment-keyed variant stale after a policy edit — an admin editing (or
+// adding) a segment-scoped policy would not see it take effect until the
+// unrelated cache TTL expired. This deletes the base (no-segment) key plus
+// every "base:seg=..." key, and nothing belonging to a DIFFERENT
+// (tenantID, orgID) pair (the base+":seg=" prefix match is anchored to the
+// exact base string, not a loose substring match).
 func (e *TierAwarePolicyEngine) InvalidateCache(tenantID string, orgID *string) {
-	cacheKey := e.buildCacheKey(tenantID, orgID)
+	base := e.buildCacheKey(tenantID, orgID, nil)
+	segPrefix := base + ":seg="
 	e.cacheMutex.Lock()
-	delete(e.policyCache, cacheKey)
-	e.cacheMutex.Unlock()
+	defer e.cacheMutex.Unlock()
+	for k := range e.policyCache {
+		if k == base || strings.HasPrefix(k, segPrefix) {
+			delete(e.policyCache, k)
+		}
+	}
 }
 
 // InvalidateAllCaches invalidates all tenant caches.
@@ -337,9 +530,9 @@ func (e *TierAwarePolicyEngine) GetCacheStats() map[string]interface{} {
 }
 
 // refreshCache fetches policies from database and updates the cache.
-func (e *TierAwarePolicyEngine) refreshCache(ctx context.Context, tenantID string, orgID *string, cacheKey string) ([]EffectiveStaticPolicy, error) {
+func (e *TierAwarePolicyEngine) refreshCache(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, cacheKey string) ([]EffectiveStaticPolicy, error) {
 	// Fetch effective policies from repository
-	policies, err := e.policyRepo.GetEffective(ctx, tenantID, orgID)
+	policies, err := e.policyRepo.GetEffective(ctx, tenantID, orgID, segmentIDs)
 	if err != nil {
 		log.Printf("[TierAwarePolicyEngine] Error fetching effective policies: %v", err)
 		return nil, err
@@ -385,12 +578,29 @@ func (e *TierAwarePolicyEngine) refreshCache(ctx context.Context, tenantID strin
 	return policies, nil
 }
 
-// buildCacheKey creates a cache key from tenant and org IDs.
-func (e *TierAwarePolicyEngine) buildCacheKey(tenantID string, orgID *string) string {
-	if orgID == nil || *orgID == "" {
-		return tenantID
+// buildCacheKey creates a cache key from tenant ID, org ID, and the resolved
+// segment set (ADR-060 #2989 P3). segmentIDs MUST already be normalized
+// (normalizeSegmentIDs — deduped + sorted) by the caller: GetEffectivePolicies
+// does this once at the entry point so every reader of the cache (including
+// InvalidateCache) agrees on one canonical key shape. A caller passing an
+// un-normalized set here directly (bypassing GetEffectivePolicies) would
+// fragment the cache across order/duplicate variants of the SAME logical
+// segment set — not a correctness bug (each variant still selects the right
+// policies), but a cache-efficiency footgun and a way to defeat the
+// same-request-same-key invariant InvalidateCache relies on. Segments are
+// appended as a THIRD, clearly delimited component precisely so a
+// segment-scoped entry never collides with — or gets read back as — the
+// base (no-segment) entry for the same tenant/org (would otherwise be
+// cross-segment/cross-org policy bleed: R3 focus item).
+func (e *TierAwarePolicyEngine) buildCacheKey(tenantID string, orgID *string, segmentIDs []string) string {
+	key := tenantID
+	if orgID != nil && *orgID != "" {
+		key += ":" + *orgID
 	}
-	return tenantID + ":" + *orgID
+	if len(segmentIDs) > 0 {
+		key += ":seg=" + strings.Join(segmentIDs, ",")
+	}
+	return key
 }
 
 // getCompiledPattern returns a compiled regex pattern, using cache when possible.

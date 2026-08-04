@@ -453,16 +453,11 @@ func gateProxyIdentityHeaders(r *http.Request) {
 // gateProxyIdentityHeaders' #3062 "we dropped what you sent" marker — which is
 // why this runs on the preflight branch only, after which nothing is read.
 func stripClientAssertedProxyHeaders(r *http.Request) {
-	for _, h := range []string{
+	headers := []string{
 		// Auth-derived tenancy (ADR-052 §5 / ADR-053 §Step 2).
 		"X-Tenant-ID",
 		"X-Org-ID",
 		"X-Client-ID",
-		// #2922: never client-assertable — the orchestrator honours these on
-		// proxy-auth'd requests, so forwarding an inbound value would let any
-		// caller mint tenant-wide read authority.
-		sharedidentity.HeaderUserRole,
-		sharedidentity.HeaderReadScope,
 		// V1.1 SaaS plugin tier: resolved by the agent from the license lookup.
 		"X-Axonflow-Effective-Tier",
 		// #3062 diagnostic marker: ours to stamp, never the client's to assert.
@@ -473,7 +468,12 @@ func stripClientAssertedProxyHeaders(r *http.Request) {
 		identityHeaderUserEmail,
 		identityHeaderUserID,
 		identityHeaderSessionID,
-	} {
+	}
+	// #2922 / #3241: the trusted-plane role, read-scope and admin-authority
+	// headers, from the ONE shared census rather than a literal list that can
+	// drift from the authenticated branch below.
+	headers = append(headers, sharedidentity.NeverClientAssertableHeaders...)
+	for _, h := range headers {
 		r.Header.Del(h)
 	}
 }
@@ -548,15 +548,22 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// affected. See gateProxyIdentityHeaders.
 		gateProxyIdentityHeaders(r)
 
-		// #2922: the role/scope trust headers are NEVER client-assertable, on
-		// any proxied route — the orchestrator honors them on proxy-auth'd
-		// requests (which the Director adds to everything we forward), so
-		// forwarding an inbound value would let any governed caller mint
-		// tenant-wide read authority. Strip unconditionally (global choke
-		// point, per the #2896 census lesson), then re-assert the role below
-		// only from a VALIDATED per-user token.
-		r.Header.Del(sharedidentity.HeaderUserRole)
-		r.Header.Del(sharedidentity.HeaderReadScope)
+		// #2922: the role/scope/admin-authority trust headers are NEVER
+		// client-assertable, on any proxied route — the orchestrator honors
+		// them on proxy-auth'd requests (which the Director adds to everything
+		// we forward), so forwarding an inbound value would let any governed
+		// caller mint tenant-wide read authority or administrative authority.
+		// Strip unconditionally (global choke point, per the #2896 census
+		// lesson), then re-assert the role below only from a VALIDATED per-user
+		// token.
+		//
+		// Iterates sharedidentity.NeverClientAssertableHeaders rather than
+		// naming headers here: this site and stripClientAssertedProxyHeaders
+		// kept independent literal lists, which is how a newly-trusted header
+		// gets stripped on one branch and forwarded on the other.
+		for _, h := range sharedidentity.NeverClientAssertableHeaders {
+			r.Header.Del(h)
+		}
 
 		// #2922: resolve a presented per-user token on the proxied-API plane so
 		// a developer or admin token works identically against the proxied REST
@@ -722,6 +729,18 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// EU AI Act Compliance (Europe) - Enterprise feature
 	r.PathPrefix("/api/v1/euaiact").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
+	// Unified compliance report facade (#3241) - Enterprise feature.
+	//
+	// Without this the facade had NO product ingress: the portal proxy refuses
+	// it until a console page ships, and the agent did not route it, so the
+	// only way to reach it was to mint an internal-service token by hand. An
+	// endpoint an SDK caller cannot reach is not shipped.
+	//
+	// No DELETE: the facade serves POST (create), GET (poll) and GET
+	// (download) only, and admitting a verb the orchestrator does not route
+	// turns a 405 into a 404 on a path we advertise.
+	r.PathPrefix("/api/v1/compliance").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
+
 	// Workflow Control Plane (#834)
 	r.PathPrefix("/api/v1/workflows").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
@@ -811,6 +830,7 @@ func IsProxiedPath(path string) bool {
 		strings.HasPrefix(path, "/api/v1/policies/simulate") ||
 		strings.HasPrefix(path, "/api/v1/policies/impact-report") ||
 		strings.HasPrefix(path, "/api/v1/policies/conflicts") ||
+		strings.HasPrefix(path, "/api/v1/compliance") ||
 		strings.HasPrefix(path, "/api/v1/evidence") {
 		return true
 	}
