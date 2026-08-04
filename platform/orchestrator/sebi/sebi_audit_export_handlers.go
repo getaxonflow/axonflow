@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/orchestrator/compliancereport/renderer"
 	logutil "axonflow/platform/shared/logger"
 )
 
@@ -165,23 +166,80 @@ func (h *SEBIAuditExportHandler) exportAuditData(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Set content type based on format
+	// Emit the artifact in the requested format (#3241, epic #2892).
+	//
+	// This block used to set a text/csv or application/xml Content-Type and
+	// then call writeJSON: every "CSV" and "XML" export was a JSON body under a
+	// lying header. A spreadsheet cannot open it and an XML parser rejects it,
+	// so both formats were unusable while appearing to work.
 	switch req.Format {
 	case SEBIFormatCSV:
-		w.Header().Set("Content-Type", "text/csv")
+		payload, renderErr := renderer.NewCSV().Render(buildAuditExportReport(tenantID, &req, response))
+		if renderErr != nil {
+			log.Printf("[SEBIAudit] CSV render error for tenant %s: %v", logutil.Sanitize(tenantID), renderErr)
+			h.writeError(w, http.StatusInternalServerError, "RENDER_FAILED", "Failed to render the CSV export")
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=sebi-audit-export.csv")
+		w.WriteHeader(http.StatusOK)
+		if _, writeErr := w.Write(payload); writeErr != nil {
+			log.Printf("[SEBIAudit] CSV write error for tenant %s: %v", logutil.Sanitize(tenantID), writeErr)
+		}
 	case SEBIFormatXML:
-		w.Header().Set("Content-Type", "application/xml")
-		w.Header().Set("Content-Disposition", "attachment; filename=sebi-audit-export.xml")
+		// HONEST 501 rather than JSON under an application/xml header.
+		//
+		// BEHAVIOR CHANGE, called out for the release train's semver decision:
+		// callers that requested format=xml previously received HTTP 200 with a
+		// JSON body. They now receive 501. Nothing could have been consuming the
+		// old response AS XML - it never was XML - so this removes a capability
+		// that never existed, but it is a status-code change on a public
+		// surface and is flagged as such rather than slipped in.
+		//
+		// XML is not implemented rather than emitted best-effort because there
+		// is no SEBI-published schema to target; inventing one would produce a
+		// document that looks authoritative and matches nothing.
+		h.writeError(w, http.StatusNotImplemented, "XML_NOT_IMPLEMENTED",
+			"XML rendering is not implemented for SEBI audit exports. Use format=json or format=csv; "+
+				"for a formatted regulatory artifact use POST /api/v1/compliance/reports with regulator=sebi.")
 	default:
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", "attachment; filename=sebi-audit-export.json")
+		h.writeJSON(w, http.StatusOK, response)
 	}
-
-	h.writeJSON(w, http.StatusOK, response)
 }
 
 // getExportStatus handles GET /api/v1/sebi/audit/export/{id}
+//
+// # This route has no backing store, and says so (#3246(b))
+//
+// It queried `sebi_audit_exports`, a table NO migration creates - grep the
+// whole migrations/ tree and it does not appear once - and which nothing in the
+// codebase ever writes to. So every call returned
+//
+//	500 INTERNAL_ERROR
+//	pq: relation "sebi_audit_exports" does not exist
+//
+// on every deployment, always. It survived because the only tests were sqlmock
+// tests: the mock supplied rows for a table that does not exist, so the suite
+// certified the behaviour of a query that can never run.
+//
+// WHY NOT MIGRATION enterprise/139 (which was reserved for this)
+//
+// Creating the table would fix the error message and nothing else. SEBI audit
+// export is SYNCHRONOUS - ExportAuditData collects and returns the data inline,
+// there is no job record, no worker, and no code anywhere that would ever
+// INSERT a row. A new table would therefore be empty forever, and this endpoint
+// would return a permanent, confident "Export not found" for every id a caller
+// ever presents. That is a worse failure than the current one: it looks like an
+// answer.
+//
+// Building async SEBI exports is a feature, not a defect fix, and it is not in
+// this PR's scope. So the endpoint now states its actual status, with the route
+// that does do this job. Same treatment, and same reasoning, as the XML branch
+// above.
+//
+// A caller cannot be relying on the old behaviour: the old behaviour was a 500.
 func (h *SEBIAuditExportHandler) getExportStatus(w http.ResponseWriter, r *http.Request) {
 	tenantID := h.getTenantID(r)
 	if tenantID == "" {
@@ -197,18 +255,12 @@ func (h *SEBIAuditExportHandler) getExportStatus(w http.ResponseWriter, r *http.
 		return
 	}
 
-	response, err := h.service.GetExportStatus(r.Context(), tenantID, exportID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Export not found")
-			return
-		}
-		log.Printf("[SEBIAudit] GetExportStatus error for tenant %s, export %s: %v", logutil.Sanitize(tenantID), logutil.Sanitize(exportID), err)
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get export status")
-		return
-	}
-
-	h.writeJSON(w, http.StatusOK, response)
+	h.writeError(w, http.StatusNotImplemented, "ASYNC_EXPORT_NOT_IMPLEMENTED",
+		"SEBI audit export is synchronous: POST /api/v1/sebi/audit/export returns the data in the "+
+			"response, so there is no export job to poll and no status to report. "+
+			"For an asynchronous, downloadable regulatory artifact use "+
+			"POST /api/v1/compliance/reports with regulator=sebi, then poll "+
+			"GET /api/v1/compliance/reports/{id}.")
 }
 
 // getRetentionStatus handles GET /api/v1/sebi/audit/retention

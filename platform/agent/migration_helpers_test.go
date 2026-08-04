@@ -747,9 +747,11 @@ func TestNoDeploymentModeLoadsAxonFlowInternalSeeds(t *testing.T) {
 // TestShellCopiesOfRecognisedModesMatchGo pins EVERY shell-side copy of the
 // recognised DEPLOYMENT_MODE set to recognisedDeploymentModes().
 //
-// Three of them are pinned here: `scripts/lint-deployment-mode.sh` runs in CI
-// with no Go toolchain, and the two deploy scripts run over SSM on a remote host
-// with no repository checked out, so none can import the Go map.
+// Four of them are pinned here: `scripts/lint-deployment-mode.sh` runs in CI
+// with no Go toolchain, the two deploy scripts run over SSM on a remote host
+// with no repository checked out, and the self-hosted preflight runs on a
+// CUSTOMER's machine from a bundle that contains neither. None can import the
+// Go map.
 //
 // They are not the only lists of mode strings in the repository, and this test
 // does not claim otherwise. Two more exist and are deliberately NOT pinned:
@@ -811,6 +813,21 @@ func TestShellCopiesOfRecognisedModesMatchGo(t *testing.T) {
 		{filepath.Join("scripts", "lint-deployment-mode.sh"), "RECOGNISED_MODES=(", ")", "", false, true},
 		{filepath.Join("scripts", "marketplace", "deploy-with-metering.sh"), "# axonflow-modes: begin\n", "# axonflow-modes: end", "|", true, false},
 		{filepath.Join("scripts", "utilities", "rolling-deployment.sh"), "# axonflow-modes: begin\n", "# axonflow-modes: end", "|", true, false},
+		// The self-hosted upgrade preflight. This copy is the one with a
+		// customer on the other end of it: an operator runs it BEFORE pulling a
+		// new image, and check 10 FAILS the upgrade on a DEPLOYMENT_MODE this
+		// list does not contain. Both drift directions hurt, and in opposite
+		// ways — a list that still accepts a value Go now refuses tells an
+		// operator to go ahead into a container that will not boot, and a list
+		// missing a value Go accepts blocks an upgrade that would have been
+		// fine. It cannot import the Go map for the most basic reason of all:
+		// it runs on the customer's machine, from a bundle that contains no Go
+		// toolchain and no copy of this repository.
+		//
+		// syncedToCommunity is true: sync-community-repo.yml excludes
+		// /scripts/* wholesale and then re-includes this file BY NAME, so it is
+		// present on a community checkout and must be read there too.
+		{filepath.Join("scripts", "deployment", "v9_self_hosted_preflight.sh"), "RECOGNISED_MODES=(", ")", "", false, true},
 	}
 
 	// Positive identification of a community checkout: `ee/` is excluded from

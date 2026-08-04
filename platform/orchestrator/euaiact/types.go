@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -525,11 +526,30 @@ type AccuracyMetricsParams struct {
 
 // Helper functions for HTTP responses
 
-// getOrgIDFromRequest extracts the organization ID from request headers.
+// getOrgIDFromRequest returns the organization the caller is AUTHENTICATED for,
+// or "" when there is none.
+//
+// HEADER-ONLY and TRIMMED, mirroring the hardened rbi/org_scope.go resolveOrgID
+// (#3066). Two properties matter:
+//
+//   - No query parameter and no context fallback. platform/agent/proxy.go's
+//     proxyAuthMiddleware Set()s (not Add()s) X-Org-ID and X-Tenant-ID from the
+//     cryptographically validated client credential on every proxied route, so
+//     on this plane the headers are server-derived. No gateway policy can
+//     neutralise an `?org_id=` parameter, which is why RBI's was deleted rather
+//     than narrowed.
+//   - TRIMMED (#3241). A whitespace-only header is non-empty, so it passes
+//     every caller's `orgID == ""` fail-closed check and then reaches the
+//     repositories as a scope that matches no row - a silent zero-rows result
+//     that reads to a customer as "our compliance data is gone" (the #3039
+//     class). Treating it as absent turns that into an explicit refusal.
 func getOrgIDFromRequest(r *http.Request) string {
-	orgID := r.Header.Get("X-Org-ID")
+	if r == nil {
+		return ""
+	}
+	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
 	if orgID == "" {
-		orgID = r.Header.Get("X-Tenant-ID")
+		orgID = strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
 	}
 	return orgID
 }

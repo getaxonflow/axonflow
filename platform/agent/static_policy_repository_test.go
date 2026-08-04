@@ -754,7 +754,7 @@ func TestGetEffective(t *testing.T) {
 	policyCols := []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id",
+		"organization_id", "tenant_id", "org_id", "segment_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -762,16 +762,19 @@ func TestGetEffective(t *testing.T) {
 	// #3048: GetEffective runs pass A (caller org scope: tenant/org-tier
 	// rows + the live static overrides), then pass B ('global' scope:
 	// system-tier rows). Overrides are applied in Go from the pass-A map.
+	// #3051 (P3): both passes also carry a trailing segment_id predicate
+	// arg (pq.Array(segArg)); this fixture passes nil segmentIDs, so both
+	// rows below are segment_id NULL.
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
 		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
-		WithArgs("tenant-1", "org-1").
+		WithArgs("tenant-1", "org-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"org-pol-1", "org_policy_1", "Org Policy", "pii-global", `\bSSN\b`, "high",
 			nil, "block", "organization", 80, true,
-			"org-1", "tenant-1", nil,
+			"org-1", "tenant-1", nil, nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
@@ -788,30 +791,103 @@ func TestGetEffective(t *testing.T) {
 		WithArgs(GlobalOrgSentinel).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"sys-1", "sys_sqli_1", "System SQLi Policy", "security-sqli", `\bDROP\b`, "critical",
 			nil, "block", "system", 100, true,
-			nil, "global", nil,
+			nil, "global", nil, nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
 	mock.ExpectCommit()
 
 	repo := NewStaticPolicyRepository(db)
-	policies, err := repo.GetEffective(context.Background(), "tenant-1", &orgID)
+	policies, err := repo.GetEffective(context.Background(), "tenant-1", &orgID, nil)
 
 	require.NoError(t, err)
 	assert.Len(t, policies, 2)
 
-	// First policy has override
+	// System policy sorts first (tier rank); it carries the override.
 	assert.True(t, policies[0].HasOverride)
 	assert.NotNil(t, policies[0].OverrideAction)
 	assert.Equal(t, OverrideAction("warn"), *policies[0].OverrideAction)
 	assert.Equal(t, "Testing phase", policies[0].OverrideReason)
 
-	// Second policy has no override
+	// Organization-tier policy has no override.
 	assert.False(t, policies[1].HasOverride)
 	assert.Nil(t, policies[1].OverrideAction)
+
+	// Neither policy is segment-scoped (segment_id NULL on both rows).
+	assert.Nil(t, policies[0].SegmentID)
+	assert.Nil(t, policies[1].SegmentID)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetEffective_SegmentScoped tests that a segment-scoped policy row
+// (segment_id IS NOT NULL) is decoded with SegmentID populated and NEVER
+// carries an applied override (ADR-060 #2989 P3, Decision 1 — segment
+// policies must never enter the override-downgrade path), even if the
+// pass-A override map has a live override keyed to its policy ID (the
+// map-lookup gate in GetEffective is the defense-in-depth for this, since
+// #3048 removed the LEFT JOIN whose predicate used to exclude segment rows
+// upstream).
+func TestGetEffective_SegmentScoped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	now := time.Now()
+	orgID := "org-1"
+
+	policyCols := []string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WithArgs("tenant-1", "org-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
+			"seg-1", "finance_block", "Finance Segment Block", "pii-global", `\bSSN\b`, "critical",
+			nil, "block", "tenant", 80, true,
+			nil, "tenant-1", nil, "finance",
+			nil, nil, 1,
+			now, now, nil, nil,
+		))
+	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
+		WithArgs("tenant-1", "org-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+		}).AddRow(
+			// A live override keyed to seg-1 — must never surface on the
+			// segment-scoped policy below (ADR-060 Decision 1).
+			"override-x", "seg-1", "warn", nil, nil, "should never apply to a segment policy",
+		))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs(GlobalOrgSentinel).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows(policyCols))
+	mock.ExpectCommit()
+
+	repo := NewStaticPolicyRepository(db)
+	policies, err := repo.GetEffective(context.Background(), "tenant-1", &orgID, []string{"finance"})
+
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.NotNil(t, policies[0].SegmentID)
+	assert.Equal(t, "finance", *policies[0].SegmentID)
+	assert.False(t, policies[0].HasOverride)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

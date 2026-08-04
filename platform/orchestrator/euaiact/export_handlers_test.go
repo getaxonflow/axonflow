@@ -54,13 +54,16 @@ func (m *MockExportRepository) Create(ctx context.Context, export *Export) error
 	return nil
 }
 
-func (m *MockExportRepository) GetByID(ctx context.Context, id string) (*Export, error) {
+// GetByID enforces the ORG PREDICATE, matching production. See the note on
+// MockConformityRepository.GetByID for why a permissive mock would be worse
+// than no mock at all here.
+func (m *MockExportRepository) GetByID(ctx context.Context, orgID, id string) (*Export, error) {
 	if m.getByIDErr != nil {
 		return nil, m.getByIDErr
 	}
 	export, ok := m.exports[id]
-	if !ok {
-		return nil, nil
+	if !ok || orgID == "" || export.OrgID != orgID {
+		return nil, ErrExportNotFound
 	}
 	return export, nil
 }
@@ -82,11 +85,19 @@ func (m *MockExportRepository) Update(ctx context.Context, export *Export) error
 	if m.updateErr != nil {
 		return m.updateErr
 	}
+	existing, ok := m.exports[export.ID]
+	if !ok || existing.OrgID != export.OrgID {
+		return ErrExportNotFound
+	}
 	m.exports[export.ID] = export
 	return nil
 }
 
-func (m *MockExportRepository) Delete(ctx context.Context, id string) error {
+func (m *MockExportRepository) Delete(ctx context.Context, orgID, id string) error {
+	existing, ok := m.exports[id]
+	if !ok || orgID == "" || existing.OrgID != orgID {
+		return ErrExportNotFound
+	}
 	delete(m.exports, id)
 	return nil
 }
@@ -416,6 +427,7 @@ func TestExportHandler_HandleExportByID_MissingID(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -431,6 +443,7 @@ func TestExportHandler_HandleExportByID_NotFound(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/nonexistent", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -452,6 +465,7 @@ func TestExportHandler_HandleExportByID_Success(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/export-123", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -463,12 +477,13 @@ func TestExportHandler_HandleExportByID_Success(t *testing.T) {
 
 func TestExportHandler_HandleExportByID_MethodNotAllowed(t *testing.T) {
 	repo := NewMockExportRepository()
-	repo.exports["export-123"] = &Export{ID: "export-123"}
+	repo.exports["export-123"] = &Export{ID: "export-123", OrgID: "test-org"}
 
 	service := NewExportService(repo, nil)
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/euaiact/export/export-123", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -486,6 +501,7 @@ func TestExportHandler_HandleExportByID_Error(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/export-123", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -499,6 +515,7 @@ func TestExportHandler_DownloadExport_NotCompleted(t *testing.T) {
 	repo := NewMockExportRepository()
 	repo.exports["export-123"] = &Export{
 		ID:     "export-123",
+		OrgID:  "test-org",
 		Status: ExportStatusPending,
 	}
 
@@ -506,6 +523,7 @@ func TestExportHandler_DownloadExport_NotCompleted(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/export-123/download", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -519,6 +537,7 @@ func TestExportHandler_DownloadExport_NoFile(t *testing.T) {
 	repo := NewMockExportRepository()
 	repo.exports["export-123"] = &Export{
 		ID:       "export-123",
+		OrgID:    "test-org",
 		Status:   ExportStatusCompleted,
 		FilePath: "",
 	}
@@ -527,6 +546,7 @@ func TestExportHandler_DownloadExport_NoFile(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/export-123/download", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -540,6 +560,7 @@ func TestExportHandler_DownloadExport_Success(t *testing.T) {
 	repo := NewMockExportRepository()
 	repo.exports["export-123"] = &Export{
 		ID:       "export-123",
+		OrgID:    "test-org",
 		Status:   ExportStatusCompleted,
 		FilePath: "/exports/export-123.json",
 		FileSize: 1024,
@@ -550,6 +571,7 @@ func TestExportHandler_DownloadExport_Success(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/export-123/download", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -563,6 +585,7 @@ func TestExportHandler_DownloadExport_MethodNotAllowed(t *testing.T) {
 	repo := NewMockExportRepository()
 	repo.exports["export-123"] = &Export{
 		ID:       "export-123",
+		OrgID:    "test-org",
 		Status:   ExportStatusCompleted,
 		FilePath: "/exports/export-123.json",
 	}
@@ -571,6 +594,7 @@ func TestExportHandler_DownloadExport_MethodNotAllowed(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/euaiact/export/export-123/download", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)
@@ -586,6 +610,7 @@ func TestExportHandler_DownloadExport_NotFound(t *testing.T) {
 	handler := NewExportHandler(service)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/euaiact/export/nonexistent/download", nil)
+	req.Header.Set("X-Org-ID", "test-org") // #3241: by-id paths require an authenticated organization
 	rr := httptest.NewRecorder()
 
 	handler.handleExportByID(rr, req)

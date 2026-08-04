@@ -94,15 +94,31 @@
 //   - POST /api/v1/masfeat/killswitch/{system_id}/restore - Restore system
 //   - GET  /api/v1/masfeat/killswitch/{system_id}/history - Get state change history
 //
-// Bias Monitoring:
-//   - POST /api/v1/masfeat/bias/record - Record bias measurement
-//   - GET  /api/v1/masfeat/bias - Get bias metrics
-//   - GET  /api/v1/masfeat/bias/alerts - Get bias alerts
+// Export (#3241, epic #2892):
 //
-// Export:
-//   - POST /api/v1/masfeat/export - Create MAS-compliant export
-//   - GET  /api/v1/masfeat/export/{id} - Get export status
-//   - GET  /api/v1/masfeat/export/{id}/download - Download export
+// This module has NO export endpoints of its own. Regulator-facing MAS FEAT
+// artifacts are produced by the unified compliance report facade:
+//
+//   - POST /api/v1/compliance/reports        - create (regulator=masfeat), 202
+//   - GET  /api/v1/compliance/reports/{id}          - poll
+//   - GET  /api/v1/compliance/reports/{id}/download - presigned artifact
+//
+// The facade reads this module's registry, assessment and kill-switch services
+// read-only (platform/orchestrator/compliancereport/provider_masfeat.go) and
+// renders PDF, CSV or JSON.
+//
+// Until that change this section documented three endpoints -
+// POST /api/v1/masfeat/export and two /export/{id} routes - that were never
+// implemented, alongside three /api/v1/masfeat/bias routes that likewise do not
+// exist: a grep for either path across the tree returns only this file. Both
+// sets are removed rather than left as aspirations, because a documented
+// endpoint that 404s reads to an integrator as a broken deployment.
+//
+// On bias specifically: migration 400 creates a mas_bias_metrics table and
+// RLS-gates it, but the table has no repository, no reader and no writer
+// anywhere in this tree - TestMASFEAT_BiasMetricsHasNoGoCallSite pins that. So
+// the removed routes were not "not yet exposed", they had nothing behind them.
+// Bias and fairness ARE assessed, through the FEAT assessment pillars above.
 //go:build enterprise
 
 package masfeat

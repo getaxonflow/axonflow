@@ -28,16 +28,21 @@ func NewExportService(repo ExportRepository, storageBackend cloudstorage.Storage
 	return &ExportService{repo: repo, storageBackend: storageBackend}
 }
 
-// GetExportDownloadURL generates a presigned download URL for a completed export.
-// If the export has a StorageKey and a storage backend is configured, it returns
-// a time-limited presigned URL. Otherwise it returns an empty string.
-func (s *ExportService) GetExportDownloadURL(ctx context.Context, exportID string) (string, error) {
-	export, err := s.repo.GetByID(ctx, exportID)
+// GetExportDownloadURL generates a presigned download URL for a completed export
+// OWNED BY orgID. If the export has a StorageKey and a storage backend is
+// configured, it returns a time-limited presigned URL. Otherwise it returns an
+// empty string.
+//
+// orgID is required (#3241): without it this minted a presigned URL for any
+// export id, which is a download of another organization's compliance evidence
+// over a link that then works for anyone who holds it.
+func (s *ExportService) GetExportDownloadURL(ctx context.Context, orgID, exportID string) (string, error) {
+	export, err := s.repo.GetByID(ctx, orgID, exportID)
 	if err != nil {
 		return "", fmt.Errorf("get export: %w", err)
 	}
 	if export == nil {
-		return "", fmt.Errorf("export not found: %s", exportID)
+		return "", ErrExportNotFound
 	}
 	if export.StorageKey == "" || s.storageBackend == nil {
 		return "", nil
@@ -97,15 +102,17 @@ func (s *ExportService) CreateExport(ctx context.Context, input CreateExportInpu
 	// The copy must be made BEFORE launching the goroutine to avoid a data race.
 	result := *export
 
-	// Start async export processing
-	go s.processExport(export.ID)
+	// Start async export processing. The organization travels WITH the id: the
+	// processor re-reads the row, and an unscoped re-read is the same by-id
+	// hole this change closes on the request path (#3241).
+	go s.processExport(export.OrgID, export.ID)
 
 	return &result, nil
 }
 
-// GetExport retrieves an export by ID.
-func (s *ExportService) GetExport(ctx context.Context, id string) (*Export, error) {
-	return s.repo.GetByID(ctx, id)
+// GetExport retrieves an export by ID within an organization.
+func (s *ExportService) GetExport(ctx context.Context, orgID, id string) (*Export, error) {
+	return s.repo.GetByID(ctx, orgID, id)
 }
 
 // ListExports retrieves exports for an organization.
@@ -114,10 +121,10 @@ func (s *ExportService) ListExports(ctx context.Context, orgID string, limit, of
 }
 
 // processExport processes an export job asynchronously.
-func (s *ExportService) processExport(exportID string) {
+func (s *ExportService) processExport(orgID, exportID string) {
 	ctx := context.Background()
 
-	export, err := s.repo.GetByID(ctx, exportID)
+	export, err := s.repo.GetByID(ctx, orgID, exportID)
 	if err != nil || export == nil {
 		return
 	}

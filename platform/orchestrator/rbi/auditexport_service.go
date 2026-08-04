@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"axonflow/platform/orchestrator/cloudstorage"
+	"axonflow/platform/orchestrator/compliancereport/renderer"
 )
 
 // AuditExportService provides business logic for audit exports.
@@ -196,10 +197,10 @@ func (s *AuditExportService) ProcessExport(ctx context.Context, export *AuditExp
 			Body:        bytes.NewReader(content),
 			ContentType: contentType,
 			Metadata: map[string]string{
-				"export_id":  export.ID,
-				"org_id":     export.OrgID,
+				"export_id":   export.ID,
+				"org_id":      export.OrgID,
 				"export_type": string(export.ExportType),
-				"checksum":   checksum,
+				"checksum":    checksum,
 			},
 		})
 		if uploadErr != nil {
@@ -242,40 +243,74 @@ func (s *AuditExportService) ProcessExport(ctx context.Context, export *AuditExp
 
 // ExportData holds the collected data for an export.
 type ExportData struct {
-	Systems      []*AISystem        `json:"systems,omitempty"`
-	Validations  []*ModelValidation `json:"validations,omitempty"`
-	Incidents    []*AIIncident      `json:"incidents,omitempty"`
-	KillSwitches []*KillSwitch      `json:"kill_switches,omitempty"`
-	Reports      []*BoardReport     `json:"reports,omitempty"`
-	TotalRecords int                `json:"total_records"`
+	Systems      []*AISystem         `json:"systems,omitempty"`
+	Validations  []*ModelValidation  `json:"validations,omitempty"`
+	Incidents    []*AIIncident       `json:"incidents,omitempty"`
+	KillSwitches []*KillSwitch       `json:"kill_switches,omitempty"`
+	Reports      []*BoardReport      `json:"reports,omitempty"`
+	TotalRecords int                 `json:"total_records"`
 	Summary      *AuditExportSummary `json:"summary"`
-	ExportMeta   *ExportMetadata    `json:"export_metadata"`
+	ExportMeta   *ExportMetadata     `json:"export_metadata"`
 }
 
 // ExportMetadata contains metadata about the export.
 type ExportMetadata struct {
-	ExportID      string     `json:"export_id"`
-	OrgID         string     `json:"org_id"`
-	ExportType    string     `json:"export_type"`
-	Format        string     `json:"format"`
-	StartDate     *time.Time `json:"start_date,omitempty"`
-	EndDate       *time.Time `json:"end_date,omitempty"`
-	GeneratedAt   time.Time  `json:"generated_at"`
-	GeneratedBy   string     `json:"generated_by,omitempty"`
-	Purpose       string     `json:"purpose,omitempty"`
+	ExportID    string     `json:"export_id"`
+	OrgID       string     `json:"org_id"`
+	ExportType  string     `json:"export_type"`
+	Format      string     `json:"format"`
+	StartDate   *time.Time `json:"start_date,omitempty"`
+	EndDate     *time.Time `json:"end_date,omitempty"`
+	GeneratedAt time.Time  `json:"generated_at"`
+	GeneratedBy string     `json:"generated_by,omitempty"`
+	Purpose     string     `json:"purpose,omitempty"`
+}
+
+// exportGeneratedAt returns the timestamp that stamps a rendered artifact.
+//
+// Preference order, and why each step exists rather than one line reading
+// CreatedAt:
+//
+//   - export.CreatedAt: the persisted row's own creation time. Stable across
+//     re-processing, which is what makes the artifact's checksum meaningful.
+//   - export.StartedAt: a row written by an older migration may carry a zero
+//     CreatedAt; the processing start is still a record-derived value.
+//   - the zero time: NOT substituted with time.Now(). The renderers refuse a
+//     zero GeneratedAt (renderer.ErrZeroGeneratedAt), so this surfaces as a
+//     failed export rather than as an artifact stamped with an invented
+//     timestamp. An export that fails loudly can be retried; one that silently
+//     claims the wrong generation time is indistinguishable from a real one.
+func exportGeneratedAt(export *AuditExport) time.Time {
+	if export == nil {
+		return time.Time{}
+	}
+	if !export.CreatedAt.IsZero() {
+		return export.CreatedAt.UTC()
+	}
+	if export.StartedAt != nil && !export.StartedAt.IsZero() {
+		return export.StartedAt.UTC()
+	}
+	return time.Time{}
 }
 
 func (s *AuditExportService) collectExportData(ctx context.Context, export *AuditExport) (*ExportData, error) {
 	data := &ExportData{
 		Summary: &AuditExportSummary{},
 		ExportMeta: &ExportMetadata{
-			ExportID:    export.ID,
-			OrgID:       export.OrgID,
-			ExportType:  string(export.ExportType),
-			Format:      string(export.Format),
-			StartDate:   export.StartDate,
-			EndDate:     export.EndDate,
-			GeneratedAt: time.Now().UTC(),
+			ExportID:   export.ID,
+			OrgID:      export.OrgID,
+			ExportType: string(export.ExportType),
+			Format:     string(export.Format),
+			StartDate:  export.StartDate,
+			EndDate:    export.EndDate,
+			// #3241 round 2 (H2): the PERSISTED record's creation time, not
+			// time.Now(). This value reaches the PDF/XLSX renderers as
+			// Report.GeneratedAt and lands in the artifact's /CreationDate, so
+			// a wall-clock read here means re-processing the same export
+			// produces different bytes and a different checksum - which defeats
+			// the checksum. CreatedAt is stamped once when the export row is
+			// written and never moves.
+			GeneratedAt: exportGeneratedAt(export),
 			GeneratedBy: export.RequestedBy,
 			Purpose:     export.Purpose,
 		},
@@ -655,6 +690,26 @@ func (s *AuditExportService) generateJSONFile(filePath string, data *ExportData)
 	return nil
 }
 
+// writeCSVRow writes one record with every cell neutralized against spreadsheet
+// formula injection (#3241 round 2, R3).
+//
+// This file hand-rolls encoding/csv and writes tenant-controlled strings -
+// AI-system names, incident titles, validation notes - straight into a
+// text/csv attachment that an RBI compliance officer double-clicks into Excel.
+// A system named `=cmd|'/c calc'!A0` was a live formula in that spreadsheet.
+//
+// The sibling PDF and XLSX generators were re-pointed at the shared renderer in
+// this same PR series and inherited its protection; CSV was left hand-rolled
+// and did not. It delegates to renderer.NeutralizeCSVCell so there is ONE
+// definition of what is dangerous, and numbers stay numbers.
+func writeCSVRow(w *csv.Writer, record []string) error {
+	out := make([]string, len(record))
+	for i, c := range record {
+		out[i] = renderer.NeutralizeCSVCell(c)
+	}
+	return w.Write(out)
+}
+
 func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) error {
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -666,18 +721,18 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 	defer writer.Flush()
 
 	// Write metadata header
-	writer.Write([]string{"# RBI Audit Export"})
-	writer.Write([]string{"# Export ID:", data.ExportMeta.ExportID})
-	writer.Write([]string{"# Generated At:", data.ExportMeta.GeneratedAt.Format(time.RFC3339)})
-	writer.Write([]string{"# Type:", data.ExportMeta.ExportType})
-	writer.Write([]string{""})
+	writeCSVRow(writer, []string{"# RBI Audit Export"})
+	writeCSVRow(writer, []string{"# Export ID:", data.ExportMeta.ExportID})
+	writeCSVRow(writer, []string{"# Generated At:", data.ExportMeta.GeneratedAt.Format(time.RFC3339)})
+	writeCSVRow(writer, []string{"# Type:", data.ExportMeta.ExportType})
+	writeCSVRow(writer, []string{""})
 
 	// Write systems
 	if len(data.Systems) > 0 {
-		writer.Write([]string{"## AI Systems"})
-		writer.Write([]string{"ID", "System Name", "Description", "Risk Category", "Deployment Status", "Created At"})
+		writeCSVRow(writer, []string{"## AI Systems"})
+		writeCSVRow(writer, []string{"ID", "System Name", "Description", "Risk Category", "Deployment Status", "Created At"})
 		for _, sys := range data.Systems {
-			writer.Write([]string{
+			writeCSVRow(writer, []string{
 				sys.ID,
 				sys.SystemName,
 				sys.Description,
@@ -686,15 +741,15 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 				sys.CreatedAt.Format(time.RFC3339),
 			})
 		}
-		writer.Write([]string{""})
+		writeCSVRow(writer, []string{""})
 	}
 
 	// Write validations
 	if len(data.Validations) > 0 {
-		writer.Write([]string{"## Model Validations"})
-		writer.Write([]string{"ID", "System ID", "Validator Name", "Validation Type", "Recommendation", "Created At"})
+		writeCSVRow(writer, []string{"## Model Validations"})
+		writeCSVRow(writer, []string{"ID", "System ID", "Validator Name", "Validation Type", "Recommendation", "Created At"})
 		for _, val := range data.Validations {
-			writer.Write([]string{
+			writeCSVRow(writer, []string{
 				val.ID,
 				val.SystemID,
 				val.ValidatorName,
@@ -703,15 +758,15 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 				val.CreatedAt.Format(time.RFC3339),
 			})
 		}
-		writer.Write([]string{""})
+		writeCSVRow(writer, []string{""})
 	}
 
 	// Write incidents
 	if len(data.Incidents) > 0 {
-		writer.Write([]string{"## Incidents"})
-		writer.Write([]string{"ID", "System ID", "Title", "Severity", "Status", "Created At"})
+		writeCSVRow(writer, []string{"## Incidents"})
+		writeCSVRow(writer, []string{"ID", "System ID", "Title", "Severity", "Status", "Created At"})
 		for _, inc := range data.Incidents {
-			writer.Write([]string{
+			writeCSVRow(writer, []string{
 				inc.ID,
 				inc.SystemID,
 				inc.Title,
@@ -720,19 +775,19 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 				inc.CreatedAt.Format(time.RFC3339),
 			})
 		}
-		writer.Write([]string{""})
+		writeCSVRow(writer, []string{""})
 	}
 
 	// Write kill switches
 	if len(data.KillSwitches) > 0 {
-		writer.Write([]string{"## Kill Switches"})
-		writer.Write([]string{"ID", "Scope", "System ID", "Activation Reason", "Is Active", "Created At"})
+		writeCSVRow(writer, []string{"## Kill Switches"})
+		writeCSVRow(writer, []string{"ID", "Scope", "System ID", "Activation Reason", "Is Active", "Created At"})
 		for _, ks := range data.KillSwitches {
 			activeStr := "false"
 			if ks.IsActive {
 				activeStr = "true"
 			}
-			writer.Write([]string{
+			writeCSVRow(writer, []string{
 				ks.ID,
 				string(ks.Scope),
 				ks.SystemID,
@@ -741,13 +796,13 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 				ks.CreatedAt.Format(time.RFC3339),
 			})
 		}
-		writer.Write([]string{""})
+		writeCSVRow(writer, []string{""})
 	}
 
 	// Write reports
 	if len(data.Reports) > 0 {
-		writer.Write([]string{"## Board Reports"})
-		writer.Write([]string{"ID", "Report Type", "Period Start", "Period End", "Approval Status", "Created At"})
+		writeCSVRow(writer, []string{"## Board Reports"})
+		writeCSVRow(writer, []string{"ID", "Report Type", "Period Start", "Period End", "Approval Status", "Created At"})
 		for _, rpt := range data.Reports {
 			periodStart := ""
 			periodEnd := ""
@@ -757,7 +812,7 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 			if rpt.ReportPeriodEnd != nil {
 				periodEnd = rpt.ReportPeriodEnd.Format("2006-01-02")
 			}
-			writer.Write([]string{
+			writeCSVRow(writer, []string{
 				rpt.ID,
 				string(rpt.ReportType),
 				periodStart,
@@ -769,54 +824,32 @@ func (s *AuditExportService) generateCSVFile(filePath string, data *ExportData) 
 	}
 
 	// Write summary
-	writer.Write([]string{""})
-	writer.Write([]string{"## Summary"})
-	writer.Write([]string{"Total Systems:", fmt.Sprintf("%d", data.Summary.TotalSystems)})
-	writer.Write([]string{"Total Validations:", fmt.Sprintf("%d", data.Summary.TotalValidations)})
-	writer.Write([]string{"Total Incidents:", fmt.Sprintf("%d", data.Summary.TotalIncidents)})
-	writer.Write([]string{"Total Kill Switches:", fmt.Sprintf("%d", data.Summary.TotalKillSwitches)})
-	writer.Write([]string{"Total Reports:", fmt.Sprintf("%d", data.Summary.TotalReports)})
+	writeCSVRow(writer, []string{""})
+	writeCSVRow(writer, []string{"## Summary"})
+	writeCSVRow(writer, []string{"Total Systems:", fmt.Sprintf("%d", data.Summary.TotalSystems)})
+	writeCSVRow(writer, []string{"Total Validations:", fmt.Sprintf("%d", data.Summary.TotalValidations)})
+	writeCSVRow(writer, []string{"Total Incidents:", fmt.Sprintf("%d", data.Summary.TotalIncidents)})
+	writeCSVRow(writer, []string{"Total Kill Switches:", fmt.Sprintf("%d", data.Summary.TotalKillSwitches)})
+	writeCSVRow(writer, []string{"Total Reports:", fmt.Sprintf("%d", data.Summary.TotalReports)})
 
 	return nil
 }
 
+// generatePDFFile writes a REAL PDF (#3241).
+//
+// It used to write a plain-text file and `os.Rename` it to `.pdf`: no viewer
+// opened it, and the service then checksummed that text, so the artifact
+// verified perfectly as exactly the wrong thing. See auditexport_render.go.
 func (s *AuditExportService) generatePDFFile(filePath string, data *ExportData) error {
-	// For now, generate a text-based placeholder that could be converted to PDF
-	// In production, use a proper PDF library like gofpdf or wkhtmltopdf
-	textPath := strings.TrimSuffix(filePath, ".pdf") + ".txt"
-
-	file, err := os.Create(textPath)
-	if err != nil {
-		return fmt.Errorf("failed to create PDF placeholder: %w", err)
-	}
-	defer file.Close()
-
-	// Write content
-	fmt.Fprintf(file, "RBI FREE-AI FRAMEWORK AUDIT REPORT\n")
-	fmt.Fprintf(file, "===================================\n\n")
-	fmt.Fprintf(file, "Export ID: %s\n", data.ExportMeta.ExportID)
-	fmt.Fprintf(file, "Organization: %s\n", data.ExportMeta.OrgID)
-	fmt.Fprintf(file, "Generated: %s\n", data.ExportMeta.GeneratedAt.Format(time.RFC1123))
-	fmt.Fprintf(file, "Purpose: %s\n\n", data.ExportMeta.Purpose)
-
-	fmt.Fprintf(file, "SUMMARY\n")
-	fmt.Fprintf(file, "-------\n")
-	fmt.Fprintf(file, "AI Systems: %d\n", data.Summary.TotalSystems)
-	fmt.Fprintf(file, "Model Validations: %d\n", data.Summary.TotalValidations)
-	fmt.Fprintf(file, "Incidents: %d\n", data.Summary.TotalIncidents)
-	fmt.Fprintf(file, "Kill Switches: %d\n", data.Summary.TotalKillSwitches)
-	fmt.Fprintf(file, "Board Reports: %d\n\n", data.Summary.TotalReports)
-
-	// Rename to .pdf (placeholder)
-	os.Rename(textPath, filePath)
-
-	return nil
+	return renderAuditExportTo(filePath, data, renderer.NewPDF(), "PDF")
 }
 
+// generateXLSXFile writes a REAL .xlsx workbook (#3241).
+//
+// It used to be `return s.generateCSVFile(filePath, data)` - a CSV named .xlsx,
+// which Excel refuses to open.
 func (s *AuditExportService) generateXLSXFile(filePath string, data *ExportData) error {
-	// For now, generate CSV as placeholder for XLSX
-	// In production, use excelize library
-	return s.generateCSVFile(filePath, data)
+	return renderAuditExportTo(filePath, data, renderer.NewXLSX(), "XLSX")
 }
 
 // GetExportFile retrieves the export file content.

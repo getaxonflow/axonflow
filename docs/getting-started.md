@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: July 2026** | **Platform: v9.12.0** | **SDKs: Python / Go / TypeScript / Java v9.0.0 + Rust v0.8.1 (preview)**
+**Last Updated: July 2026** | **Platform: v9.14.0** | **SDKs: Python / Go / TypeScript / Java v9.0.0 + Rust v0.8.1 (preview)**
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -847,4 +847,4 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 
 ---
 
-*Last Updated: July 2026 | Platform: v9.12.0 | SDKs: v9.0.0*
+*Last Updated: July 2026 | Platform: v9.14.0 | SDKs: v9.0.0*

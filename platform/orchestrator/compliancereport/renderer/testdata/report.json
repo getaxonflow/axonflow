@@ -1,0 +1,84 @@
+{
+  "schema": "axonflow.compliance-report/v1",
+  "title": "AxonFlow Compliance Report - OJK / BI / UU PDP (Indonesia)",
+  "report": {
+    "job_id": "creport-fixture-0001",
+    "regulator": "ojk",
+    "regulator_name": "OJK / BI / UU PDP (Indonesia)",
+    "framework": "OJK_AI_GOVERNANCE",
+    "org_id": "id-fintech-org",
+    "period_start": "2026-04-01T00:00:00Z",
+    "period_end": "2026-06-30T23:59:59Z",
+    "generated_at": "2026-07-01T09:30:00Z",
+    "report_state": "populated",
+    "retention_note": "OJK / UU PDP: records retained 5 years.",
+    "record_count": 3,
+    "sections": [
+      {
+        "key": "policy_violations",
+        "title": "Policy violations",
+        "description": "Governance policy violations recorded in the reporting period.",
+        "columns": [
+          "ID",
+          "Timestamp",
+          "Policy",
+          "Severity",
+          "Description"
+        ],
+        "rows": [
+          [
+            "pv-1",
+            "2026-04-02T10:00:00Z",
+            "pii_block",
+            "high",
+            "Blocked NIK, NPWP and \"bank account\" patterns"
+          ],
+          [
+            "pv-2",
+            "2026-05-11T14:22:00Z",
+            "sqli_guard",
+            "critical",
+            "Multi-line\ndescription with a newline"
+          ],
+          [
+            "pv-0007",
+            "2026-06-01T00:00:00Z",
+            "rate_limit",
+            "low",
+            "Leading zeros must survive"
+          ]
+        ],
+        "summary": [
+          {
+            "key": "Severity: high",
+            "value": "1"
+          },
+          {
+            "key": "Severity: critical",
+            "value": "1"
+          }
+        ]
+      },
+      {
+        "key": "cross_border_transfers",
+        "title": "Cross-border transfers (UU PDP Pasal 56)",
+        "description": "Transfers with the legal basis recorded at decision time.",
+        "notes": [
+          "No cross-border personal-data transfers were recorded in the reporting period."
+        ]
+      },
+      {
+        "key": "unicode_probe",
+        "title": "Nama pengguna",
+        "columns": [
+          "Name"
+        ],
+        "rows": [
+          [
+            "Ravi कुमार"
+          ]
+        ]
+      }
+    ]
+  }
+}

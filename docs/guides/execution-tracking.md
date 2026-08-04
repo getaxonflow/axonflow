@@ -2,7 +2,7 @@
 
 **Last Updated:** April 2026
 
-**Platform Version:** 9.12.0 | **SDK Version:** 9.0.0
+**Platform Version:** 9.14.0 | **SDK Version:** 9.0.0
 
 Unified Execution Tracking provides a consistent way to monitor and track the status of both MAP (Multi-Agent Planning) plans and WCP (Workflow Control Plane) workflows. This enables real-time progress monitoring, duration tracking, and cost analytics across all AxonFlow execution types.
 

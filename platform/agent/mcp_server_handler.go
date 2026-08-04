@@ -182,6 +182,14 @@ type mcpSession struct {
 	userRole  string
 	clientID  string
 
+	// userSegments carries the #2989 (ADR-060 P2) resolved governance-segment
+	// set for this session's validated identity (mirrors auth.Segments at
+	// session-create time — see authenticateMCPServerRequest). nil for every
+	// session without a validated per-user token (community, legacy
+	// shared-credential fleet). Observability-only in this phase: NOT
+	// consumed for any policy decision, NOT written to the audit row.
+	userSegments []sharedidentity.Segment
+
 	// clientSessionID is the AI-tool session id the caller forwards via the
 	// X-Session-Id header (Claude Code / Desktop session_id) — issue #2753.
 	// Distinct from `id` above (the MCP-protocol session). Captured per request
@@ -784,9 +792,11 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 	// handle.
 	var sessClient *Client
 	var sessAuthKind AuthKind
+	var sessSegments []sharedidentity.Segment
 	if auth != nil {
 		sessClient = auth.Client
 		sessAuthKind = auth.Kind
+		sessSegments = auth.Segments // #2989 (ADR-060 P2), observability-only
 	}
 	session := &mcpSession{
 		id:              sessionID,
@@ -797,6 +807,7 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		userID:          userID,
 		userEmail:       userEmail,
 		userRole:        userRole,
+		userSegments:    sessSegments,
 		clientID:        clientID,
 		tier:            tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
 		client:          sessClient,
@@ -1312,6 +1323,13 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 			// "@"; ResolveToken checks nothing), so vid.Email CAN be a reserved
 			// spelling and CAN reach the shared-identity refusal.
 			idInputs.tokenResolvedIdentity = true
+			// #2989 (ADR-060 P2): resolve + thread governance Segments onto
+			// the returned AuthResult now that identity is VALIDATED (never
+			// before — see resolveUserSegments's Real-World-Path doc).
+			// Covers both Path A (HS256) and Path B (OIDC) uniformly, since
+			// both reach this one success branch. Observability-only in
+			// this phase: not consumed for policy, not written to audit.
+			auth.Segments = resolveUserSegments(r.Context(), auth.OrgID, vid.Email)
 			return auth.TenantID, auth.OrgID, vid.Email, vid.Email, vid.Role, auth.ClientID, resolvedTier, auth, idInputs, nil
 		}
 	}
@@ -1448,9 +1466,11 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 	}
 	var sessClient *Client
 	var sessAuthKind AuthKind
+	var sessSegments []sharedidentity.Segment
 	if auth != nil {
 		sessClient = auth.Client
 		sessAuthKind = auth.Kind
+		sessSegments = auth.Segments // #2989 (ADR-060 P2), observability-only
 	}
 	return &mcpSession{
 		tenantID:        tenantID,
@@ -1458,6 +1478,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		userID:          userID,
 		userEmail:       userEmail,
 		userRole:        userRole,
+		userSegments:    sessSegments,
 		clientID:        clientID,
 		tier:            tier,
 		client:          sessClient,

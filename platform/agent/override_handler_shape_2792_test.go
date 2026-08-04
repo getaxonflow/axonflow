@@ -76,6 +76,7 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 			organization_id text,
 			tenant_id  varchar(255),
 			org_id     varchar(255),
+			segment_id varchar(255),
 			tags       text,
 			metadata   text,
 			version    int,
@@ -144,7 +145,7 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 	// (a) REAL apply path: GetEffective resolves the override via the production
 	// JOIN (sp.id::text = po.policy_id::text, tenant-scoped) → block becomes warn.
 	orgPtr := org
-	effective, err := staticRepo.GetEffective(ctx, tenant, &orgPtr)
+	effective, err := staticRepo.GetEffective(ctx, tenant, &orgPtr, nil)
 	require.NoError(t, err)
 	var ktp *EffectiveStaticPolicy
 	for i := range effective {

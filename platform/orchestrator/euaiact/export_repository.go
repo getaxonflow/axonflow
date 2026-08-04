@@ -11,7 +11,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -19,22 +21,55 @@ import (
 	"axonflow/platform/shared/audit"
 )
 
+// ErrExportNotFound is returned when no export matches the id WITHIN the
+// caller's organization.
+//
+// Deliberately indistinguishable from "this id does not exist at all": handlers
+// map it to 404, never 403, so the endpoint cannot be used as a cross-org
+// existence oracle (same instruction tenantscope.ErrNotOwned carries).
+var ErrExportNotFound = errors.New("euaiact: export not found")
+
 // ExportRepository defines the interface for export persistence.
+//
+// # Organization scoping (#3241, epic #2892)
+//
+// Every by-id method takes an orgID and puts it in the SQL WHERE clause. It
+// used to be `WHERE id = $1` with no organization anywhere in the signature, so
+// an authenticated caller of organization B could read and download
+// organization A's export records by naming the id. RBI and MAS FEAT were
+// hardened for this class in #3103 / #3141; euaiact was missed.
+//
+// Two independent mechanisms, deliberately:
+//
+//   - The explicit org predicate. This is the boundary that actually holds on
+//     the deployments where it matters: migration 116 ENABLEs RLS on these
+//     tables but does not FORCE it, so under the table owner - the posture of
+//     every docker-compose stack and most self-hosted installs - RLS does not
+//     apply at all.
+//   - rls.WithOrgScope around every statement. Under axonflow_app_role the
+//     bare statements read ZERO rows (the #3039 blind-read class), so the wrap
+//     is what makes the module work at all on an app-role deployment.
+//
+// A post-fetch `if row.OrgID != callerOrg` comparison is NOT used: that is the
+// fail-open shape #3065 catalogued, and it leaks the row into process memory
+// before deciding.
 type ExportRepository interface {
 	// Create creates a new export record.
 	Create(ctx context.Context, export *Export) error
 
-	// GetByID retrieves an export by ID.
-	GetByID(ctx context.Context, id string) (*Export, error)
+	// GetByID retrieves an export by ID within the given organization.
+	// Returns ErrExportNotFound when the id does not exist in that org.
+	GetByID(ctx context.Context, orgID, id string) (*Export, error)
 
 	// List retrieves exports for an organization.
 	List(ctx context.Context, orgID string, limit, offset int) ([]*Export, int64, error)
 
-	// Update updates an export record.
+	// Update updates an export record. The record's own OrgID is the scope; a
+	// row owned by another organization is never touched.
 	Update(ctx context.Context, export *Export) error
 
-	// Delete deletes an export record.
-	Delete(ctx context.Context, id string) error
+	// Delete deletes an export record within the given organization.
+	Delete(ctx context.Context, orgID, id string) error
 
 	// GetDecisionChain returns the per-decision audit rows (canonical audit_logs
 	// decision rows) for an org within an optional date range, in chronological
@@ -81,8 +116,21 @@ func NewPostgresExportRepository(db *sql.DB) *PostgresExportRepository {
 	return &PostgresExportRepository{db: db}
 }
 
+// exportSelectColumns is the single column list every export read uses, so a
+// column added to one reader can never drift out of the other.
+const exportSelectColumns = `id, org_id, export_type, format, status, progress,
+		file_path, file_size, record_count, date_from, date_to,
+		model_ids, filters, error, requested_by, created_at,
+		started_at, completed_at, download_url, storage_type, storage_key`
+
 // Create creates a new export record.
 func (r *PostgresExportRepository) Create(ctx context.Context, export *Export) error {
+	if export == nil {
+		return fmt.Errorf("euaiact: export is nil")
+	}
+	if strings.TrimSpace(export.OrgID) == "" {
+		return fmt.Errorf("euaiact: refusing to create an export with no organization")
+	}
 	query := `
 		INSERT INTO euaiact_exports (
 			id, org_id, export_type, format, status, progress,
@@ -96,44 +144,86 @@ func (r *PostgresExportRepository) Create(ctx context.Context, export *Export) e
 		return fmt.Errorf("marshal filters: %w", err)
 	}
 
-	_, err = r.db.ExecContext(ctx, query,
-		export.ID, export.OrgID, export.ExportType, export.Format, export.Status, export.Progress,
-		export.FilePath, export.FileSize, export.RecordCount, nullTime(export.DateFrom), nullTime(export.DateTo),
-		pq.Array(export.ModelIDs), filtersJSON, export.Error, export.RequestedBy, export.CreatedAt,
-		export.StartedAt, export.CompletedAt, nullString(export.DownloadURL), nullString(export.StorageType), nullString(export.StorageKey),
-	)
-	return err
+	return rls.WithOrgScope(ctx, r.db, export.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			export.ID, export.OrgID, export.ExportType, export.Format, export.Status, export.Progress,
+			export.FilePath, export.FileSize, export.RecordCount, nullTime(export.DateFrom), nullTime(export.DateTo),
+			pq.Array(export.ModelIDs), filtersJSON, export.Error, export.RequestedBy, export.CreatedAt,
+			export.StartedAt, export.CompletedAt, nullString(export.DownloadURL), nullString(export.StorageType), nullString(export.StorageKey),
+		)
+		return execErr
+	})
 }
 
-// GetByID retrieves an export by ID.
-func (r *PostgresExportRepository) GetByID(ctx context.Context, id string) (*Export, error) {
-	query := `
-		SELECT id, org_id, export_type, format, status, progress,
-			file_path, file_size, record_count, date_from, date_to,
-			model_ids, filters, error, requested_by, created_at,
-			started_at, completed_at, download_url, storage_type, storage_key
-		FROM euaiact_exports
-		WHERE id = $1`
+// GetByID retrieves an export by ID within an organization.
+func (r *PostgresExportRepository) GetByID(ctx context.Context, orgID, id string) (*Export, error) {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		// Never degrade to an unscoped read. An empty org would otherwise reach
+		// the WHERE clause and match every row whose org was written blank.
+		return nil, ErrExportNotFound
+	}
+	query := `SELECT ` + exportSelectColumns + ` FROM euaiact_exports WHERE id = $1 AND org_id = $2`
 
+	var export *Export
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		e, scanErr := scanExport(tx.QueryRowContext(ctx, query, id, orgID))
+		if scanErr != nil {
+			return scanErr
+		}
+		export = e
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return export, nil
+}
+
+// scanExport materializes one export row. Every nullable column is scanned
+// through a Null* wrapper: euaiact_exports.error / file_path / file_size /
+// record_count are NULLABLE with no default in migration 116, and scanning a
+// NULL into a plain string or int fails the whole read with `converting NULL to
+// string is unsupported` - i.e. the record becomes permanently unreadable
+// through the API. The module's own Create writes an empty string and 0, so
+// this only bites rows
+// written by a backfill, a manual insert or a future migration, which is
+// exactly why it went unnoticed.
+func scanExport(row interface{ Scan(...interface{}) error }) (*Export, error) {
 	export := &Export{}
 	var filtersJSON []byte
 	var dateFrom, dateTo sql.NullTime
 	var modelIDs pq.StringArray
+	var filePath, errText, requestedBy sql.NullString
 	var downloadURL, storageType, storageKey sql.NullString
+	// #3243: file_path, error, file_size and record_count are ALL nullable in
+	// migration 116, and a row that did not come through Create (a seed, a
+	// backfill, another writer) has them NULL. Scanning any of them into a
+	// plain Go value fails the whole read, not just that row.
+	//
+	// #3241 adds requested_by to that set - it is nullable in 116 too - and
+	// routes every reader through this one helper, so the two fixes are a union
+	// rather than a choice.
+	var fileSize, recordCount sql.NullInt64
 
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := row.Scan(
 		&export.ID, &export.OrgID, &export.ExportType, &export.Format, &export.Status, &export.Progress,
-		&export.FilePath, &export.FileSize, &export.RecordCount, &dateFrom, &dateTo,
-		&modelIDs, &filtersJSON, &export.Error, &export.RequestedBy, &export.CreatedAt,
+		&filePath, &fileSize, &recordCount, &dateFrom, &dateTo,
+		&modelIDs, &filtersJSON, &errText, &requestedBy, &export.CreatedAt,
 		&export.StartedAt, &export.CompletedAt, &downloadURL, &storageType, &storageKey,
 	)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrExportNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
 
+	export.FilePath = filePath.String
+	export.FileSize = fileSize.Int64
+	export.RecordCount = int(recordCount.Int64)
+	export.Error = errText.String
+	export.RequestedBy = requestedBy.String
 	if dateFrom.Valid {
 		export.DateFrom = dateFrom.Time
 	}
@@ -141,120 +231,122 @@ func (r *PostgresExportRepository) GetByID(ctx context.Context, id string) (*Exp
 		export.DateTo = dateTo.Time
 	}
 	export.ModelIDs = modelIDs
-	if downloadURL.Valid {
-		export.DownloadURL = downloadURL.String
-	}
-	if storageType.Valid {
-		export.StorageType = storageType.String
-	}
-	if storageKey.Valid {
-		export.StorageKey = storageKey.String
-	}
+	export.DownloadURL = downloadURL.String
+	export.StorageType = storageType.String
+	export.StorageKey = storageKey.String
 	if len(filtersJSON) > 0 {
 		if err := json.Unmarshal(filtersJSON, &export.Filters); err != nil {
 			return nil, fmt.Errorf("unmarshal filters: %w", err)
 		}
 	}
-
 	return export, nil
 }
 
 // List retrieves exports for an organization.
 func (r *PostgresExportRepository) List(ctx context.Context, orgID string, limit, offset int) ([]*Export, int64, error) {
-	// Count query
-	var total int64
-	countQuery := `SELECT COUNT(*) FROM euaiact_exports WHERE org_id = $1`
-	if err := r.db.QueryRowContext(ctx, countQuery, orgID).Scan(&total); err != nil {
-		return nil, 0, err
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return nil, 0, fmt.Errorf("euaiact: refusing to list exports with no organization")
 	}
-
-	// Data query
 	if limit <= 0 {
 		limit = DefaultListLimit
 	}
-	query := `
-		SELECT id, org_id, export_type, format, status, progress,
-			file_path, file_size, record_count, date_from, date_to,
-			model_ids, filters, error, requested_by, created_at,
-			started_at, completed_at, download_url, storage_type, storage_key
+	countQuery := `SELECT COUNT(*) FROM euaiact_exports WHERE org_id = $1`
+	query := `SELECT ` + exportSelectColumns + `
 		FROM euaiact_exports
 		WHERE org_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3`
 
-	rows, err := r.db.QueryContext(ctx, query, orgID, limit, offset)
+	var (
+		total   int64
+		exports []*Export
+	)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, countQuery, orgID).Scan(&total); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, query, orgID, limit, offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			export, scanErr := scanExport(rows)
+			if scanErr != nil {
+				return scanErr
+			}
+			exports = append(exports, export)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-
-	var exports []*Export
-	for rows.Next() {
-		export := &Export{}
-		var filtersJSON []byte
-		var dateFrom, dateTo sql.NullTime
-		var modelIDs pq.StringArray
-		var downloadURL, storageType, storageKey sql.NullString
-
-		if err := rows.Scan(
-			&export.ID, &export.OrgID, &export.ExportType, &export.Format, &export.Status, &export.Progress,
-			&export.FilePath, &export.FileSize, &export.RecordCount, &dateFrom, &dateTo,
-			&modelIDs, &filtersJSON, &export.Error, &export.RequestedBy, &export.CreatedAt,
-			&export.StartedAt, &export.CompletedAt, &downloadURL, &storageType, &storageKey,
-		); err != nil {
-			return nil, 0, err
-		}
-
-		if dateFrom.Valid {
-			export.DateFrom = dateFrom.Time
-		}
-		if dateTo.Valid {
-			export.DateTo = dateTo.Time
-		}
-		export.ModelIDs = modelIDs
-		if downloadURL.Valid {
-			export.DownloadURL = downloadURL.String
-		}
-		if storageType.Valid {
-			export.StorageType = storageType.String
-		}
-		if storageKey.Valid {
-			export.StorageKey = storageKey.String
-		}
-		if len(filtersJSON) > 0 {
-			if err := json.Unmarshal(filtersJSON, &export.Filters); err != nil {
-				return nil, 0, fmt.Errorf("unmarshal filters: %w", err)
-			}
-		}
-
-		exports = append(exports, export)
-	}
-
-	return exports, total, rows.Err()
+	return exports, total, nil
 }
 
-// Update updates an export record.
+// Update updates an export record within its own organization.
+//
+// The org predicate is in the WHERE clause, not just implied by the caller: a
+// bug that hands this method a record it did not scope-check must not be able
+// to rewrite another organization's export.
 func (r *PostgresExportRepository) Update(ctx context.Context, export *Export) error {
+	if export == nil {
+		return fmt.Errorf("euaiact: export is nil")
+	}
+	orgID := strings.TrimSpace(export.OrgID)
+	if orgID == "" {
+		return fmt.Errorf("euaiact: refusing to update an export with no organization")
+	}
 	query := `
 		UPDATE euaiact_exports
 		SET status = $2, progress = $3, file_path = $4, file_size = $5,
 			record_count = $6, error = $7, started_at = $8, completed_at = $9,
 			download_url = $10, storage_type = $11, storage_key = $12
-		WHERE id = $1`
+		WHERE id = $1 AND org_id = $13`
 
-	_, err := r.db.ExecContext(ctx, query,
-		export.ID, export.Status, export.Progress, export.FilePath, export.FileSize,
-		export.RecordCount, export.Error, export.StartedAt, export.CompletedAt,
-		export.DownloadURL, export.StorageType, export.StorageKey,
-	)
-	return err
+	return rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, query,
+			export.ID, export.Status, export.Progress, export.FilePath, export.FileSize,
+			export.RecordCount, export.Error, export.StartedAt, export.CompletedAt,
+			export.DownloadURL, export.StorageType, export.StorageKey, orgID,
+		)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrExportNotFound
+		}
+		return nil
+	})
 }
 
-// Delete deletes an export record.
-func (r *PostgresExportRepository) Delete(ctx context.Context, id string) error {
-	query := `DELETE FROM euaiact_exports WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, id)
-	return err
+// Delete deletes an export record within an organization.
+func (r *PostgresExportRepository) Delete(ctx context.Context, orgID, id string) error {
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return fmt.Errorf("euaiact: refusing to delete an export with no organization")
+	}
+	query := `DELETE FROM euaiact_exports WHERE id = $1 AND org_id = $2`
+	return rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, query, id, orgID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrExportNotFound
+		}
+		return nil
+	})
 }
 
 // GetDecisionChain returns the per-decision audit rows for an org from

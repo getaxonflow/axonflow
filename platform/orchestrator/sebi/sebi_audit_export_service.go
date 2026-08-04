@@ -290,56 +290,19 @@ func (s *SEBIAuditExportServiceImpl) GetRetentionStatus(ctx context.Context, ten
 	return response, nil
 }
 
-// GetExportStatus returns the status of an async export
-func (s *SEBIAuditExportServiceImpl) GetExportStatus(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error) {
-	// Query export status from database
-	query := `
-		SELECT export_id, status, exported_at, framework, summary_json, download_url, expires_at
-		FROM sebi_audit_exports
-		WHERE export_id = $1 AND tenant_id = $2
-	`
-
-	var response SEBIAuditExportResponse
-	var summaryJSON []byte
-	var downloadURL, framework sql.NullString
-	var expiresAt sql.NullTime
-
-	err := s.db.QueryRowContext(ctx, query, exportID, tenantID).Scan(
-		&response.ExportID,
-		&response.Status,
-		&response.ExportedAt,
-		&framework,
-		&summaryJSON,
-		&downloadURL,
-		&expiresAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("export not found: %s", exportID)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get export status: %w", err)
-	}
-
-	if framework.Valid {
-		response.Framework = SEBIComplianceFramework(framework.String)
-	}
-	if downloadURL.Valid {
-		response.DownloadURL = downloadURL.String
-	}
-	if expiresAt.Valid {
-		response.ExpiresAt = expiresAt.Time
-	}
-
-	if len(summaryJSON) > 0 {
-		var summary SEBIAuditExportSummary
-		if err := json.Unmarshal(summaryJSON, &summary); err == nil {
-			response.Summary = &summary
-		}
-	}
-
-	return &response, nil
-}
+// GetExportStatus is REMOVED (#3246(b)).
+//
+// It queried `sebi_audit_exports`, a table that appears in no migration in this
+// repository and that nothing has ever written to, so it could only ever return
+//
+//	pq: relation "sebi_audit_exports" does not exist
+//
+// It is deleted rather than left in place because dead code that queries a
+// phantom table is an invitation: the next person to need an export-status
+// endpoint finds a method that looks implemented, wires it up, and ships the
+// same 500. SEBI audit export is synchronous - POST returns the data - so there
+// is no status to report. The asynchronous, pollable equivalent is
+// POST /api/v1/compliance/reports with regulator=sebi.
 
 // ValidateComplianceReadiness checks if the org is ready for SEBI audit
 func (s *SEBIAuditExportServiceImpl) ValidateComplianceReadiness(ctx context.Context, tenantID string) (*SEBIComplianceReadinessResponse, error) {

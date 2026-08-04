@@ -215,21 +215,6 @@ func TestSEBIAuditExportService_Integration_ExportAllDataTypes(t *testing.T) {
 	}
 }
 
-func TestSEBIAuditExportService_Integration_GetExportStatus_NotFound(t *testing.T) {
-	db := getSEBITestDB(t)
-	defer db.Close()
-
-	service := NewSEBIAuditExportService(db, nil)
-	tenantID := createSEBITestOrg(t, db, "test-sebi-status-"+time.Now().Format("20060102150405"))
-
-	ctx := context.Background()
-
-	_, err := service.GetExportStatus(ctx, tenantID, "nonexistent-export-id")
-	if err == nil {
-		t.Error("Expected error for nonexistent export")
-	}
-}
-
 func TestSEBIAuditExportService_Integration_ExportLLMCalls(t *testing.T) {
 	db := getSEBITestDB(t)
 	defer db.Close()

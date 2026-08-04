@@ -550,6 +550,12 @@ func (r *PostgresBoardReportRepository) scanBoardReport(row *sql.Row) (*BoardRep
 	var reportQuarter, generatedBy, generatedByEmail, generationMethod sql.NullString
 	var approvedBy, approvedByEmail, approvalNotes sql.NullString
 	var filePath, fileFormat, fileChecksum sql.NullString
+	// #3246: every counter below is a NULLABLE column in
+	// migrations/industry/banking/301 (`total_ai_systems INTEGER`, no NOT NULL,
+	// no DEFAULT). Scanning a NULL into a plain int fails the whole row with
+	// `converting NULL to int is unsupported`, so ONE board report written by a
+	// generator that left a counter unset 500s the entire list endpoint.
+	var counters boardReportCounters
 	var systemsByRiskJSON, systemsByStatusJSON []byte
 	var validationsByTypeJSON, validationsByRecommendationJSON []byte
 	var incidentsBySeverityJSON, incidentsByTypeJSON []byte
@@ -559,19 +565,19 @@ func (r *PostgresBoardReportRepository) scanBoardReport(row *sql.Row) (*BoardRep
 	err := row.Scan(
 		&report.ID, &report.OrgID, &report.ReportType,
 		&reportPeriodStart, &reportPeriodEnd, &reportQuarter,
-		&report.TotalAISystems, &systemsByRiskJSON, &systemsByStatusJSON,
-		&report.NewSystemsDeployed, &report.SystemsDeprecated,
-		&report.TotalValidations, &validationsByTypeJSON, &validationsByRecommendationJSON,
-		&report.OverdueValidations,
-		&report.TotalIncidents, &incidentsBySeverityJSON, &incidentsByTypeJSON,
-		&report.IncidentsResolved, &report.IncidentsOpen,
-		&report.AverageResolutionTimeHours, &keyMetricsJSON, &report.ComplianceScore,
-		&complianceIssuesJSON, &correctiveActionsJSON, &report.KillSwitchActivations,
+		&counters.TotalAISystems, &systemsByRiskJSON, &systemsByStatusJSON,
+		&counters.NewSystemsDeployed, &counters.SystemsDeprecated,
+		&counters.TotalValidations, &validationsByTypeJSON, &validationsByRecommendationJSON,
+		&counters.OverdueValidations,
+		&counters.TotalIncidents, &incidentsBySeverityJSON, &incidentsByTypeJSON,
+		&counters.IncidentsResolved, &counters.IncidentsOpen,
+		&counters.AverageResolutionTimeHours, &keyMetricsJSON, &counters.ComplianceScore,
+		&complianceIssuesJSON, &correctiveActionsJSON, &counters.KillSwitchActivations,
 		&killSwitchDetailsJSON,
-		&generatedBy, &generatedByEmail, &report.GeneratedAt, &generationMethod,
-		&report.ApprovalStatus, &approvedBy, &approvedByEmail, &approvedAt, &approvalNotes,
-		&filePath, &fileFormat, &report.FileSizeBytes, &fileChecksum,
-		&report.CreatedAt, &report.UpdatedAt,
+		&generatedBy, &generatedByEmail, &counters.GeneratedAt, &generationMethod,
+		&counters.ApprovalStatus, &approvedBy, &approvedByEmail, &approvedAt, &approvalNotes,
+		&filePath, &fileFormat, &counters.FileSizeBytes, &fileChecksum,
+		&counters.CreatedAt, &counters.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrBoardReportNotFound
@@ -579,6 +585,7 @@ func (r *PostgresBoardReportRepository) scanBoardReport(row *sql.Row) (*BoardRep
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan board report: %w", err)
 	}
+	counters.applyTo(&report)
 
 	// Handle nullable fields
 	if reportPeriodStart.Valid {
@@ -663,6 +670,12 @@ func (r *PostgresBoardReportRepository) scanBoardReportRows(rows *sql.Rows) (*Bo
 	var reportQuarter, generatedBy, generatedByEmail, generationMethod sql.NullString
 	var approvedBy, approvedByEmail, approvalNotes sql.NullString
 	var filePath, fileFormat, fileChecksum sql.NullString
+	// #3246: every counter below is a NULLABLE column in
+	// migrations/industry/banking/301 (`total_ai_systems INTEGER`, no NOT NULL,
+	// no DEFAULT). Scanning a NULL into a plain int fails the whole row with
+	// `converting NULL to int is unsupported`, so ONE board report written by a
+	// generator that left a counter unset 500s the entire list endpoint.
+	var counters boardReportCounters
 	var systemsByRiskJSON, systemsByStatusJSON []byte
 	var validationsByTypeJSON, validationsByRecommendationJSON []byte
 	var incidentsBySeverityJSON, incidentsByTypeJSON []byte
@@ -672,23 +685,24 @@ func (r *PostgresBoardReportRepository) scanBoardReportRows(rows *sql.Rows) (*Bo
 	err := rows.Scan(
 		&report.ID, &report.OrgID, &report.ReportType,
 		&reportPeriodStart, &reportPeriodEnd, &reportQuarter,
-		&report.TotalAISystems, &systemsByRiskJSON, &systemsByStatusJSON,
-		&report.NewSystemsDeployed, &report.SystemsDeprecated,
-		&report.TotalValidations, &validationsByTypeJSON, &validationsByRecommendationJSON,
-		&report.OverdueValidations,
-		&report.TotalIncidents, &incidentsBySeverityJSON, &incidentsByTypeJSON,
-		&report.IncidentsResolved, &report.IncidentsOpen,
-		&report.AverageResolutionTimeHours, &keyMetricsJSON, &report.ComplianceScore,
-		&complianceIssuesJSON, &correctiveActionsJSON, &report.KillSwitchActivations,
+		&counters.TotalAISystems, &systemsByRiskJSON, &systemsByStatusJSON,
+		&counters.NewSystemsDeployed, &counters.SystemsDeprecated,
+		&counters.TotalValidations, &validationsByTypeJSON, &validationsByRecommendationJSON,
+		&counters.OverdueValidations,
+		&counters.TotalIncidents, &incidentsBySeverityJSON, &incidentsByTypeJSON,
+		&counters.IncidentsResolved, &counters.IncidentsOpen,
+		&counters.AverageResolutionTimeHours, &keyMetricsJSON, &counters.ComplianceScore,
+		&complianceIssuesJSON, &correctiveActionsJSON, &counters.KillSwitchActivations,
 		&killSwitchDetailsJSON,
-		&generatedBy, &generatedByEmail, &report.GeneratedAt, &generationMethod,
-		&report.ApprovalStatus, &approvedBy, &approvedByEmail, &approvedAt, &approvalNotes,
-		&filePath, &fileFormat, &report.FileSizeBytes, &fileChecksum,
-		&report.CreatedAt, &report.UpdatedAt,
+		&generatedBy, &generatedByEmail, &counters.GeneratedAt, &generationMethod,
+		&counters.ApprovalStatus, &approvedBy, &approvedByEmail, &approvedAt, &approvalNotes,
+		&filePath, &fileFormat, &counters.FileSizeBytes, &fileChecksum,
+		&counters.CreatedAt, &counters.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan board report row: %w", err)
 	}
+	counters.applyTo(&report)
 
 	// Handle nullable fields (same as scanBoardReport)
 	if reportPeriodStart.Valid {
@@ -764,4 +778,95 @@ func (r *PostgresBoardReportRepository) scanBoardReportRows(rows *sql.Rows) (*Bo
 	}
 
 	return &report, nil
+}
+
+// boardReportCounters holds the NULLABLE numeric columns of rbi_board_reports
+// so both scan paths read them the same way (#3246).
+//
+// THE DEFECT
+//
+//	migrations/industry/banking/301 declares every one of these without NOT NULL
+//	and (except kill_switch_activations) without a DEFAULT:
+//
+//	  total_ai_systems INTEGER,
+//	  average_resolution_time_hours DECIMAL(10, 2),
+//	  compliance_score DECIMAL(5, 2),
+//	  ...
+//
+//	They were scanned straight into `int` / `float64` / `int64` fields. A single
+//	board report whose generator left one counter unset makes database/sql
+//	return `converting NULL to int is unsupported`, and because the list handler
+//	returns on the first scan error, ONE such row 500s the whole list for the
+//	organization - not just that report.
+//
+// WHY A STRUCT RATHER THAN TWELVE LOCALS IN EACH FUNCTION
+//
+//	scanBoardReport and scanBoardReportRows are near-duplicates that already
+//	drifted once. Twelve sql.Null* locals plus twelve Valid checks, written out
+//	twice, is twenty-four opportunities for the two paths to disagree about what
+//	a NULL counter means. One type, one applyTo, both callers.
+//
+// A NULL counter becomes the ZERO VALUE, which is the honest reading: the
+// column is "how many of X were there", and a report that never recorded a
+// count has no basis for claiming any other number. It is also what every
+// consumer already assumed, since before this the row simply failed.
+type boardReportCounters struct {
+	TotalAISystems             sql.NullInt64
+	NewSystemsDeployed         sql.NullInt64
+	SystemsDeprecated          sql.NullInt64
+	TotalValidations           sql.NullInt64
+	OverdueValidations         sql.NullInt64
+	TotalIncidents             sql.NullInt64
+	IncidentsResolved          sql.NullInt64
+	IncidentsOpen              sql.NullInt64
+	AverageResolutionTimeHours sql.NullFloat64
+	ComplianceScore            sql.NullFloat64
+	KillSwitchActivations      sql.NullInt64
+	FileSizeBytes              sql.NullInt64
+	// #3241 round 2 (R3): these four are nullable in migration 301 too -
+	// `generated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()`, `approval_status
+	// VARCHAR(20) DEFAULT 'draft'`, and both audit timestamps. A DEFAULT does
+	// not stop an explicit NULL, and the first pass at this fix covered the 12
+	// numeric columns and left these, on exactly the premise it had just
+	// rejected for the others.
+	GeneratedAt    sql.NullTime
+	ApprovalStatus sql.NullString
+	CreatedAt      sql.NullTime
+	UpdatedAt      sql.NullTime
+}
+
+// applyTo copies the scanned counters onto the report, mapping NULL to zero.
+func (c boardReportCounters) applyTo(report *BoardReport) {
+	report.TotalAISystems = int(c.TotalAISystems.Int64)
+	report.NewSystemsDeployed = int(c.NewSystemsDeployed.Int64)
+	report.SystemsDeprecated = int(c.SystemsDeprecated.Int64)
+	report.TotalValidations = int(c.TotalValidations.Int64)
+	report.OverdueValidations = int(c.OverdueValidations.Int64)
+	report.TotalIncidents = int(c.TotalIncidents.Int64)
+	report.IncidentsResolved = int(c.IncidentsResolved.Int64)
+	report.IncidentsOpen = int(c.IncidentsOpen.Int64)
+	report.AverageResolutionTimeHours = c.AverageResolutionTimeHours.Float64
+	report.ComplianceScore = c.ComplianceScore.Float64
+	report.KillSwitchActivations = int(c.KillSwitchActivations.Int64)
+	report.FileSizeBytes = c.FileSizeBytes.Int64
+	report.GeneratedAt = c.GeneratedAt.Time
+	// NULL -> the column's own DEFAULT ('draft'), not "".
+	//
+	// "" is not a member of ReportApprovalStatus and fails its Valid(), and it
+	// would turn a guard into a fail-open: boardreport_service.go DeleteReport
+	// refuses only when ApprovalStatus == ReportApprovalApproved, so an empty
+	// value sails past it. Before the nullable-scan fix that row made Get
+	// ERROR, so nothing was deleted - mapping NULL to "" would have converted a
+	// loud failure into a silent successful delete of a report whose approval
+	// state is unknown.
+	//
+	// 'draft' is the honest reading as well as the safe one: it is what the
+	// column defaults to, so a row with no recorded status is a row that was
+	// never advanced past draft.
+	report.ApprovalStatus = ReportApprovalDraft
+	if c.ApprovalStatus.Valid && c.ApprovalStatus.String != "" {
+		report.ApprovalStatus = ReportApprovalStatus(c.ApprovalStatus.String)
+	}
+	report.CreatedAt = c.CreatedAt.Time
+	report.UpdatedAt = c.UpdatedAt.Time
 }

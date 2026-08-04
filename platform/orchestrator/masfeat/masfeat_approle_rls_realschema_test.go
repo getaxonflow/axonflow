@@ -718,7 +718,15 @@ func TestMASFEAT_BiasMetricsHasNoGoCallSite(t *testing.T) {
 			if readErr != nil {
 				return nil
 			}
-			if strings.Contains(string(src), "mas_bias_metrics") {
+			// PARSED, not grepped (#3241). The previous version was a
+			// strings.Contains over the whole file, so it counted a mention in
+			// a DOC COMMENT as a call site. That is the worse direction for a
+			// guard whose message says "wrap it": the only way to satisfy it is
+			// to delete accurate documentation, which is exactly the
+			// false-positive-instructs-falsification shape. A SQL statement
+			// naming the table has to appear in a STRING LITERAL, so that is
+			// what is scanned; comments are ignored.
+			if fileHasTableLiteral(src, "mas_bias_metrics") {
 				rel, _ := filepath.Rel(root, path)
 				hits = append(hits, filepath.ToSlash(rel))
 			}
@@ -732,6 +740,79 @@ func TestMASFEAT_BiasMetricsHasNoGoCallSite(t *testing.T) {
 		t.Fatalf("mas_bias_metrics now has Go call sites %v — migration 400 RLS-gates it with "+
 			"`org_id = get_current_org_id()`, so every one of them must run inside rls.WithOrgScope "+
 			"and be added to this package's app-role proof (#3133)", hits)
+	}
+}
+
+// fileHasTableLiteral reports whether the Go source names the table inside a
+// STRING LITERAL - i.e. somewhere it could actually reach the database.
+//
+// A file that fails to parse is treated as a HIT rather than a pass: a guard
+// that goes quiet on input it cannot read has failed open, and the alternative
+// (a spurious failure on a genuinely broken file) is loud and self-correcting.
+func fileHasTableLiteral(src []byte, table string) bool {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, 0) // no ParseComments: comments are not call sites
+	if err != nil {
+		return true
+	}
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		if strings.Contains(lit.Value, table) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// TestFileHasTableLiteralDiscriminates is the guard's own self-test.
+//
+// A guard rewritten to be less trigger-happy has to prove it did not simply
+// stop firing. Three cases, and the decoys are the point: a mention inside a
+// comment must NOT count, and a mention inside a string must.
+func TestFileHasTableLiteralDiscriminates(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "a real call site in a SQL string literal",
+			src:  "package p\nfunc f(db interface{ Q(string) }) { db.Q(`SELECT * FROM mas_bias_metrics`) }\n",
+			want: true,
+		},
+		{
+			name: "a concatenated SQL string still counts",
+			src:  "package p\nconst q = \"SELECT * FROM \" + \"mas_bias_metrics WHERE org_id = $1\"\n",
+			want: true,
+		},
+		{
+			name: "a doc comment mentioning the table does NOT count",
+			src:  "package p\n\n// mas_bias_metrics is RLS-gated but has no reader.\nfunc f() {}\n",
+			want: false,
+		},
+		{
+			name: "an inline comment does NOT count",
+			src:  "package p\nfunc f() { _ = 1 /* mas_bias_metrics */ }\n",
+			want: false,
+		},
+		{
+			name: "unparseable source is treated as a hit (fails closed)",
+			src:  "package p\nfunc f( {",
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileHasTableLiteral([]byte(tc.src), "mas_bias_metrics"); got != tc.want {
+				t.Errorf("fileHasTableLiteral = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

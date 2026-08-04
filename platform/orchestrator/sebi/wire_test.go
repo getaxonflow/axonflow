@@ -9,6 +9,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gorilla/mux"
@@ -281,6 +282,21 @@ func TestSEBIModule_RegisterRoutesWithMux_WithHandler(t *testing.T) {
 	}
 }
 
+// TestSEBIModule_HandleExportByIDWithMux pins the #3246(b) fix.
+//
+// This test used to assert 200, and that assertion was only ever true of the
+// MOCK. On every real deployment the route returned
+//
+//	500 pq: relation "sebi_audit_exports" does not exist
+//
+// because no migration creates that table and no code ever writes to it. The
+// mock supplied rows for a table that cannot exist, so the suite certified the
+// behaviour of a query that can never run - and the green tick is why the
+// endpoint shipped broken.
+//
+// The route now reports its real status: SEBI audit export is synchronous, so
+// there is no job to poll. See the handler comment for why this is not
+// migration enterprise/139.
 func TestSEBIModule_HandleExportByIDWithMux(t *testing.T) {
 	mockService := &mockModuleSEBIService{}
 	handler := NewSEBIAuditExportHandler(mockService)
@@ -298,9 +314,14 @@ func TestSEBIModule_HandleExportByIDWithMux(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
-	// Should return 200 (mock service returns success)
-	if rr.Code != http.StatusOK {
-		t.Errorf("handleExportByIDWithMux() status = %v, want %v", rr.Code, http.StatusOK)
+	if rr.Code != http.StatusNotImplemented {
+		t.Errorf("handleExportByIDWithMux() status = %v, want %v (the route has no backing store)",
+			rr.Code, http.StatusNotImplemented)
+	}
+	// The body must name the route that DOES do this job, or the 501 is a dead
+	// end for whoever hits it.
+	if body := rr.Body.String(); !strings.Contains(body, "/api/v1/compliance/reports") {
+		t.Errorf("the 501 body does not point at the working route: %s", body)
 	}
 }
 
@@ -403,13 +424,6 @@ func (m *mockModuleSEBIService) GetRetentionStatus(ctx context.Context, tenantID
 	return &SEBIRetentionStatusResponse{
 		TenantID:         tenantID,
 		ComplianceStatus: "COMPLIANT",
-	}, nil
-}
-
-func (m *mockModuleSEBIService) GetExportStatus(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error) {
-	return &SEBIAuditExportResponse{
-		ExportID: exportID,
-		Status:   "completed",
 	}, nil
 }
 

@@ -35,7 +35,18 @@ var tenantWideAuditExportPaths = []string{
 	"/api/v1/euaiact/export",
 	"/api/v1/sebi/audit/export",
 	"/api/v1/ojk/audit/export",
+	// #3241 / epic #2892: the unified compliance report facade. Its GENERATION
+	// and DOWNLOAD routes are this same data class; its status POLL is not.
+	// See complianceReportPollShape below - that carve-out is the only reason
+	// this entry is not a plain whole-prefix gate.
+	complianceReportBasePath,
 }
+
+// complianceReportBasePath is the compliance report facade's collection route.
+// Declared here rather than imported from the compliancereport package because
+// that package is Enterprise-tagged and this file compiles in both editions.
+// TestComplianceReport_BasePathMatchesTheFacade asserts the two agree.
+const complianceReportBasePath = "/api/v1/compliance/reports"
 
 // isTenantWideAuditExportPath reports whether p is (or is a sub-path of) a
 // whole-tenant audit-export endpoint. Prefix match so the euaiact/…/export/{id}
@@ -49,6 +60,65 @@ func isTenantWideAuditExportPath(p string) bool {
 	return false
 }
 
+// isTenantWideAuditExportRequest is the REQUEST-aware form the middleware uses.
+//
+// It exists for one route family. Epic #2892 D4 splits the compliance report
+// facade across the two axes this file keeps apart (see callerReadScope):
+//
+//   - GENERATING a report and DOWNLOADING its artifact produce a whole-tenant
+//     compliance artifact. That is the export class: admin authority, 403 for
+//     everyone else, exactly like the five entries above.
+//
+//   - POLLING a report's STATUS returns the JOB RECORD: id, regulator,
+//     framework, format, period, status, report_state, progress, record_count,
+//     size_bytes, checksum, requested_by, the failure cause when it failed, and
+//     the lifecycle timestamps. It contains no audit ROWS - no query text, no
+//     user emails, no decision records - but record_count IS a count derived
+//     from the tenant's governed activity, and requested_by names a colleague.
+//     That is the viewing class rather than the export class, and the poll is
+//     gated on TENANCY BINDING ALONE: the facade requires a bound
+//     tenantscope.Scope and authorizes the row on both dimensions, and there is
+//     no additional positive read-authority check on this path.
+//
+//     Stated plainly because the alternative - gating the poll on admin
+//     authority - means a compliance viewer cannot see whether the report they
+//     asked for has finished, and the portal has to poll as an administrator on
+//     their behalf. If the record_count / requested_by exposure is judged too
+//     wide for a non-admin, the fix is to narrow the POLL PAYLOAD, not to widen
+//     this gate.
+//
+// The carve-out is a WHITELIST OF ONE SHAPE, not a blacklist: exactly
+// `GET /api/v1/compliance/reports/{id}` with no further path segments. Every
+// other method and every other shape under the prefix - POST, DELETE, the
+// /download suffix, a future sub-resource - stays gated. Written this way round
+// because the failure mode of a blacklist is silent: a route added later would
+// be ungated by default and nothing would say so
+// (`[[feedback_guard_by_capability_not_by_shape]]`).
+//
+// Note the poll is still ORGANIZATION-scoped and tenancy-authorized inside the
+// facade (tenantscope.Authorize on the fetched row); this decides only whether
+// the caller needs ADMIN authority on top of that.
+func isTenantWideAuditExportRequest(r *http.Request) bool {
+	if !isTenantWideAuditExportPath(r.URL.Path) {
+		return false
+	}
+	return !complianceReportPollShape(r)
+}
+
+// complianceReportPollShape reports whether r is exactly the compliance report
+// STATUS POLL: GET on the base path plus one non-empty segment.
+func complianceReportPollShape(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	rest, ok := strings.CutPrefix(r.URL.Path, complianceReportBasePath+"/")
+	if !ok {
+		return false
+	}
+	// Exactly one segment: "abc" polls, "abc/download" and "" do not.
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
 // enforceTenantWideAuditExport is orchestrator middleware that requires
 // tenant-wide read authority for the whole-tenant audit-export endpoints
 // (see tenantWideAuditExportPaths). It runs before every matched route; for a
@@ -58,7 +128,7 @@ func isTenantWideAuditExportPath(p string) bool {
 // because these exports have no meaningful own-rows form.
 func enforceTenantWideAuditExport(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions || !isTenantWideAuditExportPath(r.URL.Path) {
+		if r.Method == http.MethodOptions || !isTenantWideAuditExportRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -118,9 +188,15 @@ type callerReadScope struct {
 	// AdminAuthority is true only when the caller has established ADMINISTRATIVE
 	// authority over the tenant: a validated admin/owner/policy_admin role over
 	// the trusted proxy-auth channel, the customer-portal's explicit
-	// X-Axonflow-Read-Scope: tenant assertion, or Community mode (a local
+	// X-Axonflow-Admin-Authority: true assertion, or Community mode (a local
 	// single-operator deployment where the operator IS the administrator —
 	// this is the pre-#3060 behavior and must not narrow).
+	//
+	// NOT derivable from X-Axonflow-Read-Scope (#3241 round 2). It was until
+	// then, and because the portal stamps that header for every audit:read
+	// holder — including the seeded viewer role — the two axes were joined
+	// again on the portal plane after #3060 had separated them on the
+	// orchestrator's. Authority is its own assertion on its own header.
 	//
 	// Deliberately FALSE for Community-SaaS (#3060). A csaas tenant is a
 	// self-registered free evaluation account: it should read its own
@@ -281,7 +357,26 @@ func resolveCallerReadScope(r *http.Request) callerReadScope {
 					return callerReadScope{TenantWide: true, AdminAuthority: true}
 				}
 				if r.Header.Get(sharedidentity.HeaderReadScope) == sharedidentity.ReadScopeTenant {
-					return callerReadScope{TenantWide: true, AdminAuthority: true}
+					// #3241 round 2: AdminAuthority is NOT derivable from the
+					// read-scope header. It used to be, and that re-created the
+					// #3060 conflation one plane up: the portal stamps
+					// X-Axonflow-Read-Scope for any session holding audit:read,
+					// which the seeded VIEWER role holds, so a viewer passed
+					// every AdminAuthority gate - whole-tenant compliance
+					// exports, /api/v1/evidence/export, /api/v1/sebi/audit/export,
+					// budget-governance CRUD, execution cancel/delete and
+					// unredacted spend.
+					//
+					// Authority now needs its own assertion on the same trusted
+					// channel, stamped by the portal only for sessions its RBAC
+					// authorizes as administrators (orchestrator_proxy.go
+					// sessionHasAdminAuthority). A caller with read scope and no
+					// authority is exactly the viewer: tenant-wide reads, 403 on
+					// everything administrative.
+					return callerReadScope{
+						TenantWide:     true,
+						AdminAuthority: sharedidentity.AdminAuthorityFromHeader(r.Header.Get(sharedidentity.HeaderAdminAuthority)),
+					}
 				}
 			}
 		}

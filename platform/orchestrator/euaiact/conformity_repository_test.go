@@ -83,8 +83,10 @@ func TestConformityRepository_Create_Success(t *testing.T) {
 		UpdatedAt:       now,
 	}
 
+	expectOrgScope(mock, assessment.OrgID)
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO euaiact_conformity_assessments`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	err = repo.Create(ctx, assessment)
 	assert.NoError(t, err)
@@ -113,8 +115,10 @@ func TestConformityRepository_Create_DBError(t *testing.T) {
 		UpdatedAt:      time.Now().UTC(),
 	}
 
+	expectOrgScope(mock, assessment.OrgID)
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO euaiact_conformity_assessments`)).
 		WillReturnError(fmt.Errorf("duplicate key"))
+	mock.ExpectRollback()
 
 	err = repo.Create(ctx, assessment)
 	assert.Error(t, err)
@@ -132,11 +136,14 @@ func TestConformityRepository_GetByID_Success(t *testing.T) {
 	rows := sqlmock.NewRows(conformityColumns).
 		AddRow(sampleConformityRow("assess-001", "org-001")...)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`FROM euaiact_conformity_assessments WHERE id = $1`)).
-		WithArgs("assess-001").
+	expectOrgScope(mock, "org-001")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM euaiact_conformity_assessments
+		WHERE id = $1 AND org_id = $2`)).
+		WithArgs("assess-001", "org-001").
 		WillReturnRows(rows)
+	mock.ExpectCommit()
 
-	assessment, err := repo.GetByID(ctx, "assess-001")
+	assessment, err := repo.GetByID(ctx, "org-001", "assess-001")
 	require.NoError(t, err)
 	assert.Equal(t, "assess-001", assessment.ID)
 	assert.Equal(t, "org-001", assessment.OrgID)
@@ -166,12 +173,16 @@ func TestConformityRepository_GetByID_NotFound(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
-	mock.ExpectQuery(regexp.QuoteMeta(`FROM euaiact_conformity_assessments WHERE id = $1`)).
-		WithArgs("nonexistent").
+	expectOrgScope(mock, "org-001")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM euaiact_conformity_assessments`)).
+		WithArgs("nonexistent", "org-001").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
-	assessment, err := repo.GetByID(ctx, "nonexistent")
-	assert.NoError(t, err)
+	// Post-#3241 a miss is ErrAssessmentNotFound, not (nil, nil): "no such id"
+	// and "another organization's id" must be the SAME answer on the wire.
+	assessment, err := repo.GetByID(ctx, "org-001", "nonexistent")
+	assert.ErrorIs(t, err, ErrAssessmentNotFound)
 	assert.Nil(t, assessment)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -184,11 +195,13 @@ func TestConformityRepository_GetByID_DBError(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
-	mock.ExpectQuery(regexp.QuoteMeta(`FROM euaiact_conformity_assessments WHERE id = $1`)).
-		WithArgs("assess-001").
+	expectOrgScope(mock, "org-001")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM euaiact_conformity_assessments`)).
+		WithArgs("assess-001", "org-001").
 		WillReturnError(fmt.Errorf("connection lost"))
+	mock.ExpectRollback()
 
-	assessment, err := repo.GetByID(ctx, "assess-001")
+	assessment, err := repo.GetByID(ctx, "org-001", "assess-001")
 	assert.Nil(t, assessment)
 	assert.Error(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -203,6 +216,7 @@ func TestConformityRepository_List_Success(t *testing.T) {
 	ctx := context.Background()
 
 	// Count query
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -215,6 +229,7 @@ func TestConformityRepository_List_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, org_id`).
 		WithArgs("org-001", 10, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	assessments, total, err := repo.List(ctx, "org-001", "", 10, 0)
 	require.NoError(t, err)
@@ -231,6 +246,7 @@ func TestConformityRepository_List_WithStatusFilter(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001", AssessmentStatusSubmitted).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -241,6 +257,7 @@ func TestConformityRepository_List_WithStatusFilter(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, org_id`).
 		WithArgs("org-001", AssessmentStatusSubmitted, 50, 0).
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	assessments, total, err := repo.List(ctx, "org-001", AssessmentStatusSubmitted, 50, 0)
 	require.NoError(t, err)
@@ -257,6 +274,7 @@ func TestConformityRepository_List_DefaultLimit(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -264,6 +282,7 @@ func TestConformityRepository_List_DefaultLimit(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, org_id`).
 		WithArgs("org-001", 50, 0).
 		WillReturnRows(sqlmock.NewRows(conformityColumns))
+	mock.ExpectCommit()
 
 	assessments, total, err := repo.List(ctx, "org-001", "", 0, 0)
 	require.NoError(t, err)
@@ -280,9 +299,11 @@ func TestConformityRepository_List_CountError(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs("org-001").
 		WillReturnError(fmt.Errorf("table missing"))
+	mock.ExpectRollback()
 
 	_, _, err = repo.List(ctx, "org-001", "", 10, 0)
 	assert.Error(t, err)
@@ -300,6 +321,7 @@ func TestConformityRepository_Update_Success(t *testing.T) {
 	now := time.Now().UTC()
 	assessment := &ConformityAssessment{
 		ID:           "assess-001",
+		OrgID:        "org-001",
 		SystemName:   "Updated System",
 		RiskCategory: RiskCategoryHighRisk,
 		Status:       AssessmentStatusApproved,
@@ -316,8 +338,10 @@ func TestConformityRepository_Update_Success(t *testing.T) {
 		ApprovedBy:      "approver",
 	}
 
+	expectOrgScope(mock, assessment.OrgID)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE euaiact_conformity_assessments`)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = repo.Update(ctx, assessment)
 	assert.NoError(t, err)
@@ -334,14 +358,17 @@ func TestConformityRepository_Update_DBError(t *testing.T) {
 
 	assessment := &ConformityAssessment{
 		ID:           "assess-001",
+		OrgID:        "org-001",
 		SystemName:   "Test",
 		RiskCategory: RiskCategoryMinimal,
 		Status:       AssessmentStatusDraft,
 		Version:      1,
 	}
 
+	expectOrgScope(mock, assessment.OrgID)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE euaiact_conformity_assessments`)).
 		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
 
 	err = repo.Update(ctx, assessment)
 	assert.Error(t, err)
@@ -356,11 +383,13 @@ func TestConformityRepository_Delete_Success(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
-	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM euaiact_conformity_assessments WHERE id = $1`)).
-		WithArgs("assess-001").
+	expectOrgScope(mock, "org-001")
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM euaiact_conformity_assessments WHERE id = $1 AND org_id = $2`)).
+		WithArgs("assess-001", "org-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	err = repo.Delete(ctx, "assess-001")
+	err = repo.Delete(ctx, "org-001", "assess-001")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -373,11 +402,13 @@ func TestConformityRepository_Delete_DBError(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
-	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM euaiact_conformity_assessments WHERE id = $1`)).
-		WithArgs("nonexistent").
+	expectOrgScope(mock, "org-001")
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM euaiact_conformity_assessments WHERE id = $1 AND org_id = $2`)).
+		WithArgs("nonexistent", "org-001").
 		WillReturnError(fmt.Errorf("database error"))
+	mock.ExpectRollback()
 
-	err = repo.Delete(ctx, "nonexistent")
+	err = repo.Delete(ctx, "org-001", "nonexistent")
 	assert.Error(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -394,9 +425,11 @@ func TestConformityRepository_GetBySystemID_Success(t *testing.T) {
 		AddRow(sampleConformityRow("assess-001", "org-001")...).
 		AddRow(sampleConformityRow("assess-002", "org-001")...)
 
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND system_id = $2`)).
 		WithArgs("org-001", "sys-001").
 		WillReturnRows(dataRows)
+	mock.ExpectCommit()
 
 	assessments, err := repo.GetBySystemID(ctx, "org-001", "sys-001")
 	require.NoError(t, err)
@@ -413,9 +446,11 @@ func TestConformityRepository_GetBySystemID_Empty(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND system_id = $2`)).
 		WithArgs("org-001", "sys-nonexistent").
 		WillReturnRows(sqlmock.NewRows(conformityColumns))
+	mock.ExpectCommit()
 
 	assessments, err := repo.GetBySystemID(ctx, "org-001", "sys-nonexistent")
 	require.NoError(t, err)
@@ -431,9 +466,11 @@ func TestConformityRepository_GetBySystemID_QueryError(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
+	expectOrgScope(mock, "org-001")
 	mock.ExpectQuery(regexp.QuoteMeta(`WHERE org_id = $1 AND system_id = $2`)).
 		WithArgs("org-001", "sys-001").
 		WillReturnError(fmt.Errorf("timeout"))
+	mock.ExpectRollback()
 
 	assessments, err := repo.GetBySystemID(ctx, "org-001", "sys-001")
 	assert.Nil(t, assessments)

@@ -792,118 +792,11 @@ func TestExportAuditData_DataTypeAll(t *testing.T) {
 }
 
 // =============================================================================
-// GetExportStatus Tests
 // =============================================================================
 
-func TestGetExportStatus_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
 
-	service := NewSEBIAuditExportService(db, nil)
-	ctx := context.Background()
-	tenantID := "travel-us"
-	exportID := "exp_12345_abcdefgh"
 
-	now := time.Now().UTC()
-	summaryJSON, _ := json.Marshal(SEBIAuditExportSummary{
-		TotalRecords:  500,
-		RecordsByType: map[SEBIAuditDataType]int{SEBIDataTypeLLMCalls: 500},
-	})
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT export_id, status, exported_at, framework, summary_json, download_url, expires_at FROM sebi_audit_exports")).
-		WithArgs(exportID, tenantID).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"export_id", "status", "exported_at", "framework", "summary_json", "download_url", "expires_at",
-		}).AddRow(
-			exportID, "completed", now, "SEBI_AI_ML", summaryJSON,
-			"https://storage.example.com/export.json", now.Add(1*time.Hour),
-		))
-
-	resp, err := service.GetExportStatus(ctx, tenantID, exportID)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.Equal(t, exportID, resp.ExportID)
-	assert.Equal(t, "completed", resp.Status)
-	assert.Equal(t, SEBIComplianceFramework("SEBI_AI_ML"), resp.Framework)
-	assert.Equal(t, "https://storage.example.com/export.json", resp.DownloadURL)
-	assert.False(t, resp.ExpiresAt.IsZero())
-	require.NotNil(t, resp.Summary)
-	assert.Equal(t, 500, resp.Summary.TotalRecords)
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetExportStatus_NotFound(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	service := NewSEBIAuditExportService(db, nil)
-	ctx := context.Background()
-
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT export_id, status, exported_at, framework, summary_json, download_url, expires_at FROM sebi_audit_exports")).
-		WithArgs("nonexistent", "travel-us").
-		WillReturnError(sql.ErrNoRows)
-
-	resp, err := service.GetExportStatus(ctx, "travel-us", "nonexistent")
-	assert.Error(t, err)
-	assert.Nil(t, resp)
-	assert.Contains(t, err.Error(), "export not found")
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetExportStatus_DBError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	service := NewSEBIAuditExportService(db, nil)
-	ctx := context.Background()
-
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT export_id, status, exported_at, framework, summary_json, download_url, expires_at FROM sebi_audit_exports")).
-		WithArgs("exp-1", "banking-india").
-		WillReturnError(fmt.Errorf("connection timeout"))
-
-	resp, err := service.GetExportStatus(ctx, "banking-india", "exp-1")
-	assert.Error(t, err)
-	assert.Nil(t, resp)
-	assert.Contains(t, err.Error(), "failed to get export status")
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestGetExportStatus_NullableFieldsNil(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer db.Close()
-
-	service := NewSEBIAuditExportService(db, nil)
-	ctx := context.Background()
-	now := time.Now().UTC()
-
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT export_id, status, exported_at, framework, summary_json, download_url, expires_at FROM sebi_audit_exports")).
-		WithArgs("exp-1", "banking-india").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"export_id", "status", "exported_at", "framework", "summary_json", "download_url", "expires_at",
-		}).AddRow(
-			"exp-1", "processing", now, nil, nil, nil, nil,
-		))
-
-	resp, err := service.GetExportStatus(ctx, "banking-india", "exp-1")
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-
-	assert.Equal(t, "processing", resp.Status)
-	assert.Equal(t, SEBIComplianceFramework(""), resp.Framework)
-	assert.Empty(t, resp.DownloadURL)
-	assert.True(t, resp.ExpiresAt.IsZero())
-	assert.Nil(t, resp.Summary)
-
-	require.NoError(t, mock.ExpectationsWereMet())
-}
 
 // =============================================================================
 // GetRetentionStatus Tests

@@ -5,8 +5,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	sharedidentity "axonflow/platform/shared/identity"
@@ -305,5 +307,203 @@ func TestAuthMCP_CommunityModeIgnoresPerUserToken(t *testing.T) {
 	}
 	if userEmail != "mcp-client:community" {
 		t.Errorf("community caller should use the client-scoped pseudo-identity, got %q", userEmail)
+	}
+}
+
+// --- #2989 (ADR-060 P2): fleet-plane segment resolution wiring ---
+
+// fakeSegmentResolver is a call-counting sharedidentity.IdentityAttributeResolver
+// double, mirroring stubFleetValidator's shape — injected via
+// setFleetSegmentResolver so a test can assert WHETHER and HOW segment
+// resolution ran without a real SCIM-backed database.
+type fakeSegmentResolver struct {
+	mu       sync.Mutex
+	calls    int
+	resolved sharedidentity.ResolvedIdentity
+	err      error
+}
+
+func (f *fakeSegmentResolver) Resolve(_ context.Context, _, _ string) (sharedidentity.ResolvedIdentity, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	if f.err != nil {
+		return sharedidentity.ResolvedIdentity{}, f.err
+	}
+	return f.resolved, nil
+}
+
+func (f *fakeSegmentResolver) ResolveRole(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+func (f *fakeSegmentResolver) InvalidateUserSegments(_, _ string) {}
+
+func (f *fakeSegmentResolver) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// withFleetSegmentResolver wires r as the process-wide fleet segment
+// resolver for the test's lifetime.
+func withFleetSegmentResolver(t *testing.T, r sharedidentity.IdentityAttributeResolver) {
+	t.Helper()
+	setFleetSegmentResolver(r)
+	t.Cleanup(ResetFleetSegmentResolverForTest)
+}
+
+// TestAuthMCP_Enterprise_InvalidToken_SegmentResolutionNeverInvoked is the
+// #2989 Real-World-Path contract: segment resolution must NEVER run on an
+// absent/invalid/rejected per-user token — only after a TokenValidator has
+// already produced a validated identity. An invalid token here must reject
+// (as TestAuthMCP_Enterprise_InvalidTokenRejected already proves) AND the
+// segment resolver must see zero calls.
+func TestAuthMCP_Enterprise_InvalidToken_SegmentResolutionNeverInvoked(t *testing.T) {
+	withEnterpriseWhitelist(t)
+	withFleetValidator(t, stubFleetValidator{
+		name: sharedidentity.ValidatorNameHS256,
+		err:  sharedidentity.ErrTokenInvalid,
+	})
+	fake := &fakeSegmentResolver{}
+	withFleetSegmentResolver(t, fake)
+
+	_, _, _, _, _, _, _, _, err := authenticateMCPServerRequest(enterpriseTokenRequest(t, "tampered"))
+	if err == nil {
+		t.Fatal("an invalid per-user token must be REJECTED")
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("segment resolution must NOT run on a rejected/invalid token, calls=%d", fake.callCount())
+	}
+}
+
+// TestAuthMCP_Enterprise_NoToken_SegmentResolutionNeverInvoked proves the
+// legacy shared-credential (no per-user token) path never resolves segments
+// either — segments are per-user, so there is no identity to resolve them
+// for.
+func TestAuthMCP_Enterprise_NoToken_SegmentResolutionNeverInvoked(t *testing.T) {
+	withEnterpriseWhitelist(t)
+	withFleetValidator(t, stubFleetValidator{
+		name: sharedidentity.ValidatorNameHS256,
+		id:   &sharedidentity.ValidatedIdentity{Email: "unused@corp.com", Role: "admin", Validated: true},
+	})
+	fake := &fakeSegmentResolver{}
+	withFleetSegmentResolver(t, fake)
+
+	_, _, _, _, _, _, _, _, err := authenticateMCPServerRequest(enterpriseTokenRequest(t, ""))
+	if err != nil {
+		t.Fatalf("no-token caller should authenticate (attribution-only): %v", err)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("segment resolution must NOT run when no per-user token was presented, calls=%d", fake.callCount())
+	}
+}
+
+// TestAuthMCP_Enterprise_ValidToken_SegmentsResolvedAndThreaded proves a
+// successful per-user-token validation resolves segments exactly once and
+// threads the result onto the returned AuthResult (which mcpSession /
+// resolveMCPSession read at session-create time).
+func TestAuthMCP_Enterprise_ValidToken_SegmentsResolvedAndThreaded(t *testing.T) {
+	withEnterpriseWhitelist(t)
+	withFleetValidator(t, stubFleetValidator{
+		name: sharedidentity.ValidatorNameHS256,
+		id:   &sharedidentity.ValidatedIdentity{Email: "alice@corp.com", Role: "developer", Validated: true},
+	})
+	fake := &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
+		Role:     "developer",
+		Segments: []sharedidentity.Segment{{ID: "grp-finance", DisplayName: "finance"}},
+	}}
+	withFleetSegmentResolver(t, fake)
+
+	_, _, _, _, userRole, _, _, auth, err := authenticateMCPServerRequest(enterpriseTokenRequest(t, "tok"))
+	if err != nil {
+		t.Fatalf("valid token must authenticate: %v", err)
+	}
+	if userRole != "developer" {
+		t.Fatalf("ResolveRole/vid.Role must stay unaffected by segment wiring, got %q", userRole)
+	}
+	if fake.callCount() != 1 {
+		t.Fatalf("segment resolver calls = %d, want exactly 1", fake.callCount())
+	}
+	if auth == nil || len(auth.Segments) != 1 || auth.Segments[0].ID != "grp-finance" {
+		t.Fatalf("resolved segments were not threaded onto AuthResult: %+v", auth)
+	}
+}
+
+// TestAuthMCP_Enterprise_SegmentResolutionError_DoesNotFailAuth proves
+// segments are observability-only in this phase (#2989 P2 DoD: "not consumed
+// for policy yet") — a segment-resolution failure must not reject the
+// request or perturb the already-validated role.
+func TestAuthMCP_Enterprise_SegmentResolutionError_DoesNotFailAuth(t *testing.T) {
+	withEnterpriseWhitelist(t)
+	withFleetValidator(t, stubFleetValidator{
+		name: sharedidentity.ValidatorNameHS256,
+		id:   &sharedidentity.ValidatedIdentity{Email: "alice@corp.com", Role: "developer", Validated: true},
+	})
+	fake := &fakeSegmentResolver{err: errors.New("segment query failed")}
+	withFleetSegmentResolver(t, fake)
+
+	_, _, _, _, userRole, _, _, auth, err := authenticateMCPServerRequest(enterpriseTokenRequest(t, "tok"))
+	if err != nil {
+		t.Fatalf("a segment resolution error must not fail the whole request: %v", err)
+	}
+	if userRole != "developer" {
+		t.Fatalf("role must be unaffected by a segment resolution error, got %q", userRole)
+	}
+	if auth == nil || auth.Segments != nil {
+		t.Fatalf("Segments must be nil after a resolution error, got %+v", auth.Segments)
+	}
+}
+
+// TestAuthMCP_Enterprise_NoSegmentResolverWired_SegmentsNil covers the
+// community-build reality (registerFleetValidators never wires
+// fleetSegmentResolver there) and any construction failure: Segments stays
+// nil, no panic, auth otherwise unaffected.
+func TestAuthMCP_Enterprise_NoSegmentResolverWired_SegmentsNil(t *testing.T) {
+	withEnterpriseWhitelist(t)
+	withFleetValidator(t, stubFleetValidator{
+		name: sharedidentity.ValidatorNameHS256,
+		id:   &sharedidentity.ValidatedIdentity{Email: "alice@corp.com", Role: "developer", Validated: true},
+	})
+	ResetFleetSegmentResolverForTest()
+	t.Cleanup(ResetFleetSegmentResolverForTest)
+
+	_, _, _, _, _, _, _, auth, err := authenticateMCPServerRequest(enterpriseTokenRequest(t, "tok"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if auth == nil || auth.Segments != nil {
+		t.Fatalf("with no resolver wired, Segments must stay nil, got %+v", auth.Segments)
+	}
+}
+
+// --- resolveUserSegments direct contract tests ---
+
+func TestResolveUserSegments_NilResolver_ReturnsNil(t *testing.T) {
+	ResetFleetSegmentResolverForTest()
+	if got := resolveUserSegments(context.Background(), "org-a", "a@example.com"); got != nil {
+		t.Fatalf("nil resolver must yield nil segments, got %v", got)
+	}
+}
+
+func TestResolveUserSegments_EmptySetReturnsNil(t *testing.T) {
+	withFleetSegmentResolver(t, &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{Segments: []sharedidentity.Segment{}}})
+	if got := resolveUserSegments(context.Background(), "org-a", "a@example.com"); got != nil {
+		t.Fatalf("an empty resolved set must surface as nil here (nothing to thread), got %v", got)
+	}
+}
+
+func TestResolveUserSegments_ErrorReturnsNil(t *testing.T) {
+	withFleetSegmentResolver(t, &fakeSegmentResolver{err: errors.New("boom")})
+	if got := resolveUserSegments(context.Background(), "org-a", "a@example.com"); got != nil {
+		t.Fatalf("a resolution error must surface as nil (observability-only), got %v", got)
+	}
+}
+
+func TestResolveUserSegments_SuccessReturnsSet(t *testing.T) {
+	want := []sharedidentity.Segment{{ID: "g1", DisplayName: "finance"}, {ID: "g2", DisplayName: "ml-platform"}}
+	withFleetSegmentResolver(t, &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{Segments: want}})
+	got := resolveUserSegments(context.Background(), "org-a", "a@example.com")
+	if len(got) != 2 || got[0].ID != "g1" || got[1].ID != "g2" {
+		t.Fatalf("resolveUserSegments = %+v, want %+v", got, want)
 	}
 }
