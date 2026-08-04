@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -106,6 +107,21 @@ func registerFleetValidators() {
 		log.Printf("[MCP-Server] per-user token revocation store unavailable: %v", err)
 	}
 
+	// #2989 (ADR-060 P2): the shared IdentityAttributeResolver also resolves
+	// governance Segments (SCIM group membership), independent of whether an
+	// OIDC config exists — wire it process-wide so BOTH Path A (HS256) and
+	// Path B (OIDC) can resolve segments for a validated per-user identity
+	// (fleetSegmentResolver below), not only Path B. A resolver-construction
+	// failure other than ErrEnterpriseOnly is logged; segment resolution then
+	// simply stays unavailable (resolveUserSegments returns nil) — role
+	// resolution and per-user auth are NOT gated on this.
+	attrs, attrsErr := sharedidentity.NewIdentityAttributeResolver(db)
+	if attrsErr == nil {
+		setFleetSegmentResolver(attrs)
+	} else if !errors.Is(attrsErr, sharedidentity.ErrEnterpriseOnly) {
+		log.Printf("[MCP-Server] identity attribute resolver unavailable: %v", attrsErr)
+	}
+
 	// Path B — IdP-issued OIDC/JWKS tokens, role resolved from the SCIM-synced
 	// directory (never the token's own role claim). #2989 (ADR-060 P1): the
 	// role resolver is now reached through the shared IdentityAttributeResolver
@@ -114,7 +130,6 @@ func registerFleetValidators() {
 	// unmodified, and the role logic it delegates to is byte-for-byte the same
 	// scimRoleResolver as before this change.
 	cfg, cfgErr := sharedidentity.NewDBOIDCConfigProvider(db)
-	attrs, attrsErr := sharedidentity.NewIdentityAttributeResolver(db)
 	if cfgErr == nil && attrsErr == nil {
 		if v, verr := sharedidentity.NewOIDCVerifier(cfg, attrs); verr == nil {
 			if regErr := sharedidentity.RegisterValidator(v); regErr != nil {
@@ -123,13 +138,8 @@ func registerFleetValidators() {
 		} else if !errors.Is(verr, sharedidentity.ErrEnterpriseOnly) {
 			log.Printf("[MCP-Server] OIDC per-user token validator unavailable: %v", verr)
 		}
-	} else {
-		if cfgErr != nil && !errors.Is(cfgErr, sharedidentity.ErrEnterpriseOnly) {
-			log.Printf("[MCP-Server] OIDC config provider unavailable: %v", cfgErr)
-		}
-		if attrsErr != nil && !errors.Is(attrsErr, sharedidentity.ErrEnterpriseOnly) {
-			log.Printf("[MCP-Server] identity attribute resolver unavailable: %v", attrsErr)
-		}
+	} else if cfgErr != nil && !errors.Is(cfgErr, sharedidentity.ErrEnterpriseOnly) {
+		log.Printf("[MCP-Server] OIDC config provider unavailable: %v", cfgErr)
 	}
 }
 
@@ -163,4 +173,85 @@ func extractPerUserToken(r *http.Request) string {
 		return strings.TrimSpace(auth[len(bearer):])
 	}
 	return ""
+}
+
+// --- #2989 (ADR-060 Phase 2): fleet-plane segment resolution wiring ---
+//
+// Segments become resolved + OBSERVABLE this phase; they are deliberately
+// NOT consumed for any policy decision (P3) and NOT written to the audit row
+// (P5) here — see resolveUserSegments below.
+
+// fleetSegmentResolver is the process-wide shared IdentityAttributeResolver
+// used to resolve segments for a validated per-user identity, wired once at
+// startup by registerFleetValidators (guarded by fleetValidatorsOnce, same
+// as the token validators). nil in community builds / when construction
+// fails (ErrEnterpriseOnly or a DB problem) — resolveUserSegments treats nil
+// as "capability unavailable", never an error.
+var (
+	fleetSegmentResolverMu sync.RWMutex
+	fleetSegmentResolver   sharedidentity.IdentityAttributeResolver
+)
+
+func setFleetSegmentResolver(r sharedidentity.IdentityAttributeResolver) {
+	fleetSegmentResolverMu.Lock()
+	fleetSegmentResolver = r
+	fleetSegmentResolverMu.Unlock()
+}
+
+func getFleetSegmentResolver() sharedidentity.IdentityAttributeResolver {
+	fleetSegmentResolverMu.RLock()
+	defer fleetSegmentResolverMu.RUnlock()
+	return fleetSegmentResolver
+}
+
+// ResetFleetSegmentResolverForTest clears the wired resolver. Test-only.
+func ResetFleetSegmentResolverForTest() {
+	setFleetSegmentResolver(nil)
+}
+
+// resolveUserSegments resolves the ADR-060 (#2989) governance-segment set
+// for an ALREADY-VALIDATED per-user identity (orgID/email come from a
+// successful Path A or Path B TokenValidator result — see
+// authenticateMCPServerRequest in mcp_server_handler.go) and makes the
+// outcome observable (log + Prometheus: the resolved set, latency, and
+// error-vs-empty).
+//
+// Real-World-Path (#2989 constraint, coordinated with — and not duplicating
+// — #2948): this MUST be called only for a validated identity, never on an
+// absent or rejected token. #2948 owns making an absent/invalid user_token
+// itself reject observably; this function's job starts only after that has
+// already happened successfully. Callers must not invoke this on a
+// ResolveToken error or a "" token.
+//
+// A resolution ERROR here does NOT reject the request or downgrade the
+// caller's role/identity — Segments are observability-only in this phase
+// (not consumed for policy, per DoD). It returns nil on any unavailability
+// or error, logging + counting the outcome either way, so an operator can
+// see the gap without the fleet plane's availability depending on it.
+func resolveUserSegments(ctx context.Context, orgID, email string) []sharedidentity.Segment {
+	resolver := getFleetSegmentResolver()
+	if resolver == nil {
+		return nil // community build, or resolver construction unavailable
+	}
+	start := time.Now()
+	resolved, err := resolver.Resolve(ctx, orgID, email)
+	latency := time.Since(start)
+	if err != nil {
+		segmentResolutionTotal.WithLabelValues("error").Inc()
+		log.Printf("[Identity] WARNING: #2989 segment resolution failed org=%q latency=%s: %v", orgID, latency, err)
+		return nil
+	}
+	segmentResolutionDurationSeconds.Observe(latency.Seconds())
+	if len(resolved.Segments) == 0 {
+		segmentResolutionTotal.WithLabelValues("empty").Inc()
+		log.Printf("[Identity] #2989 segments resolved org=%q count=0 latency=%s", orgID, latency)
+		return nil
+	}
+	segmentResolutionTotal.WithLabelValues("resolved").Inc()
+	ids := make([]string, len(resolved.Segments))
+	for i, s := range resolved.Segments {
+		ids[i] = string(s.ID)
+	}
+	log.Printf("[Identity] #2989 segments resolved org=%q count=%d segments=%v latency=%s", orgID, len(resolved.Segments), ids, latency)
+	return resolved.Segments
 }

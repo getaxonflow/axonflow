@@ -3770,8 +3770,15 @@ paths:
         - Multiple export formats (JSON, CSV, XML)
         - Optional PII redaction for external auditors
 
-        Large exports are processed asynchronously. Poll the export status endpoint
-        to check completion and get the download URL.
+        **This endpoint is SYNCHRONOUS.** The export data is collected and returned
+        in this response; there is no job to poll and no separate download URL.
+        (An earlier version of this text said large exports were processed
+        asynchronously and told callers to poll a status endpoint. That was never
+        true - the status route queried a table no migration creates, so it
+        returned 500 on every deployment. See #3246.)
+
+        For an ASYNCHRONOUS, downloadable regulatory artifact use
+        `POST /api/v1/compliance/reports` with `regulator=sebi`.
 
         **5-Year Retention**: Per SEBI AI/ML Guidelines, all audit data is retained
         for minimum 5 years (1825 days).
@@ -3815,37 +3822,56 @@ paths:
     get:
       tags:
         - SEBI Compliance
-      summary: Get export status
+      summary: Get export status (not implemented)
       description: |
-        Get the status of an asynchronous SEBI audit export.
-        When status is "completed", the download_url will be provided.
+        **Always returns 501.** SEBI audit export is SYNCHRONOUS:
+        `POST /api/v1/sebi/audit/export` returns the data in its own response,
+        so there is no export job to poll and no status to report.
+
+        This route previously queried a table (`sebi_audit_exports`) that no
+        migration creates and nothing ever writes to, so it returned 500 on
+        every deployment. It now states its actual status rather than failing
+        (#3246).
+
+        For an ASYNCHRONOUS, downloadable regulatory artifact use
+        `POST /api/v1/compliance/reports` with `regulator=sebi`, then poll
+        `GET /api/v1/compliance/reports/{id}` and download via
+        `GET /api/v1/compliance/reports/{id}/download`.
       operationId: getSEBIExportStatus
+      deprecated: true
       parameters:
         - name: export_id
           in: path
           required: true
-          description: Export ID from the export request
+          description: Ignored. Retained so the route shape is unchanged.
           schema:
             type: string
           example: "exp_abc123"
       responses:
-        '200':
-          description: Export status
+        '501':
+          description: |
+            Not implemented. SEBI audit export is synchronous, so there is no
+            job to poll.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SEBIAuditExportResponse'
+                $ref: '#/components/schemas/ErrorResponse'
               example:
-                export_id: "exp_abc123"
-                status: "completed"
-                framework: "SEBI_DPDP_COMBINED"
-                download_url: "/api/v1/sebi/audit/export/exp_abc123/download"
-                expires_at: "2024-12-08T14:00:00Z"
-                summary:
-                  total_records: 15420
-                  compliance_score: 85.5
-        '404':
-          description: Export not found
+                error_code: "ASYNC_EXPORT_NOT_IMPLEMENTED"
+                error: >-
+                  SEBI audit export is synchronous: POST /api/v1/sebi/audit/export returns the data
+                  in the response, so there is no export job to poll and no status to report.
+                  For an asynchronous, downloadable regulatory artifact use
+                  POST /api/v1/compliance/reports with regulator=sebi, then poll
+                  GET /api/v1/compliance/reports/{id}.
+        '400':
+          description: Export ID is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing tenant ID
           content:
             application/json:
               schema:
@@ -3943,21 +3969,55 @@ paths:
         - OJK Compliance
       summary: Export OJK audit data
       description: |
-        Export audit data for OJK/BI regulatory submission. Supports:
-        - Compliance frameworks: `OJK_AI_GOVERNANCE`, `UU_PDP`, `BI_PJP`,
-          `OJK_BI_COMBINED` (default)
-        - Data types: policy_violations, llm_calls, decision_chain,
-          cross_border_transfers, breach_notifications, all (default).
-          `hitl_oversight` and `pii_redactions` are accepted by request
-          validation but are **not implemented** by the export service —
-          requesting them (or expecting them under `all`) yields no rows
-          and no error (no `queryHITLRecords`/`queryPIIRedactions` exists
-          in `ojk_audit_export_service.go`).
-        - Formats: json (default), csv, xml
+        Export audit data for OJK/BI regulatory submission.
+
+        **Compliance frameworks** — the label SELECTS the report sections when
+        `data_types` is omitted (#3242). It is not a cosmetic tag:
+
+        | Framework | Sections, in report order |
+        |---|---|
+        | `OJK_AI_GOVERNANCE` | policy_violations, llm_calls, decision_chain, hitl_oversight |
+        | `UU_PDP` | pii_redactions, cross_border_transfers, breach_notifications, policy_violations |
+        | `BI_PJP` | decision_chain, hitl_oversight, pii_redactions, cross_border_transfers, breach_notifications |
+        | `OJK_BI_COMBINED` (default) | all seven sections |
+
+        **Data types**: policy_violations, llm_calls, decision_chain,
+        hitl_oversight, pii_redactions, cross_border_transfers,
+        breach_notifications, all. All seven are implemented. An explicitly
+        requested section outside the selected framework's scope is still
+        served, flagged `in_framework_scope: false`. An UNKNOWN data type
+        produces an explicit per-section error — never a silent empty section.
+
+        **Formats**: `format` is accepted as json (default), csv or xml, but this
+        endpoint PRODUCES ONLY JSON: the response is written with
+        `Content-Type: application/json` and the data is inline. When csv or xml
+        is requested the response reports `format: json` (what the body IS),
+        echoes the ask in `requested_format`, and explains the difference in
+        `format_note`. It does NOT label a JSON body as csv (#3242) - a
+        regulator artifact that misstates its own encoding is worse than one
+        that refuses. Rendered output is the compliance-report facade's job.
+
+        **`report_state`** is carried per section and rolled up on the summary:
+        `populated` (served, has records), `enabled_empty` (served, honestly
+        zero for this organization and window), `not_available` (could not be
+        served at all — always paired with an `error` and an `error_kind` of
+        `section_not_implemented` / `store_absent` / `query_failed`). Read
+        `report_state`, not the presence of a JSON key: every data array is
+        `omitempty`, so absence alone is ambiguous.
+
+        Sections are capped at 100,000 records; a section that reaches the cap
+        says so in its `note`.
 
         The date range may span at most 5 years, matching the OJK 5-year
-        (1825-day) retention requirement. The export runs synchronously and
-        returns `status: completed` with the data inline.
+        (1825-day) retention requirement. `start_date` and `end_date` are dates
+        (`YYYY-MM-DD`) and the window is inclusive of the whole final day, **in
+        UTC at both ends** — a request for `2026-08-03` covers
+        2026-08-03T00:00Z..T23:59Z, which is 07:00..07:00 WIB. The export runs
+        synchronously and returns `status: completed` with the data inline.
+
+        `metadata.export_version` is `2.0.0` for this contract. A `1.0.0`
+        consumer that inferred "module not enabled" from an empty body must move
+        to `report_state`.
 
         **Enterprise Feature**: Available only for Indonesian financial
         services deployments.
@@ -3967,15 +4027,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       requestBody:
@@ -4057,15 +4123,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       responses:
@@ -4115,25 +4187,32 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
         - name: data_types
           in: query
           required: false
           description: |
-            Comma-separated list of data types to report on. ⚠️ Parsed but
-            **ignored** by the current implementation — `GetRetentionStatus`
-            never reads it and always returns an empty `data_types` array
-            (`ojk_audit_export_service.go`).
+            Comma-separated list of data types to report on. Narrows the report;
+            omit it for every data type. Each entry is derived from its backing
+            store (count, oldest and newest record, and a status of `compliant` /
+            `short_history` / `no_data` / `unknown`); a store that cannot be read
+            reports `unknown`, never `no_data` (#3242).
           schema:
             type: string
           example: "policy_violations,llm_calls"
@@ -4145,7 +4224,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OJKRetentionStatusResponse'
         '400':
-          description: Missing tenant headers (code `missing_tenant`)
+          description: Missing organization scope (code `missing_org`)
           content:
             application/json:
               schema:
@@ -4165,7 +4244,18 @@ paths:
       description: |
         Validates readiness for an OJK regulatory audit across five checks:
         Data Retention, PII Detection, Human Oversight, Audit Logging, and
-        Breach Notification. Returns a 0-100 score; `ready` is true at 80+.
+        Breach Notification.
+
+        Every check QUERIES the state it names or reports `unknown` (#3242) —
+        four of the five were previously unconditional `pass` literals. Check
+        statuses are `pass`, `warning`, `fail` or `unknown`, and each carries
+        `details` describing what was OBSERVED plus an `observed` measurement.
+
+        Scoring: a pass counts 1, a warning 0.5, a failure 0, and an `unknown`
+        check scores ZERO while STILL counting in the denominator — an
+        unobservable dimension must drag the score down, never inflate it.
+        `measured_checks` / `unknown_checks` expose the split. `ready` requires
+        no failures, **no unknowns**, and a score of at least 80.
 
         **Enterprise Feature**.
       operationId: getOJKComplianceReadiness
@@ -4174,15 +4264,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       responses:
@@ -4204,7 +4300,7 @@ paths:
                     description: "Indonesian PII patterns active"
                     status: "pass"
         '400':
-          description: Missing tenant headers (code `missing_tenant`)
+          description: Missing organization scope (code `missing_org`)
           content:
             application/json:
               schema:
@@ -4236,15 +4332,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       requestBody:
@@ -4305,15 +4407,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       requestBody:
@@ -4377,15 +4485,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       responses:
@@ -4402,7 +4516,7 @@ paths:
               example:
                 flipped_overdue: 2
         '400':
-          description: Missing tenant headers (code `missing_tenant`)
+          description: Missing organization scope (code `missing_org`)
           content:
             application/json:
               schema:
@@ -4431,15 +4545,21 @@ paths:
           in: header
           required: false
           description: |
-            Tenant identifier. The OJK module falls back to X-Org-ID when
-            absent; a request carrying neither header is rejected with 400
-            (code `missing_tenant`).
+            Deprecated fallback. Every OJK route is scoped to the caller's
+            ORGANIZATION via `X-Org-ID` (#3242); `X-Tenant-ID` is used only when
+            `X-Org-ID` is absent, which covers single-identifier deployments
+            where the two values are the same. When both are present the
+            organization wins. A request carrying neither header, or a
+            whitespace-only value, is rejected with 400 (code `missing_org`).
           schema:
             type: string
         - name: X-Org-ID
           in: header
           required: false
-          description: Fallback tenant identifier when X-Tenant-ID is absent
+          description: |
+            Organization identifier — the authoritative OJK scope. Set by the
+            AxonFlow agent from the validated client credential on every proxied
+            route, so a caller cannot choose it.
           schema:
             type: string
       responses:
@@ -4460,7 +4580,7 @@ paths:
                 overdue_breach_notifications: 0
                 last_updated: "2026-07-10T09:00:00Z"
         '400':
-          description: Missing tenant headers (code `missing_tenant`)
+          description: Missing organization scope (code `missing_org`)
           content:
             application/json:
               schema:
@@ -13462,6 +13582,12 @@ components:
           type: string
           enum: [json, csv, xml]
           default: json
+          description: |
+            All three values are ACCEPTED. This endpoint PRODUCES only JSON:
+            a csv or xml request succeeds and returns the same JSON body, with
+            the response reporting `format: json`, echoing the ask in
+            `requested_format` and explaining it in `format_note`. It does NOT
+            label a JSON body as csv (#3242).
         framework:
           type: string
           enum: [OJK_AI_GOVERNANCE, UU_PDP, BI_PJP, OJK_BI_COMBINED]
@@ -13508,7 +13634,26 @@ components:
           enum: [OJK_AI_GOVERNANCE, UU_PDP, BI_PJP, OJK_BI_COMBINED]
         format:
           type: string
-          enum: [json, csv, xml]
+          enum: [json]
+          description: |
+            The format this response BODY is in, NOT the one that was
+            requested. Always `json`: this endpoint writes
+            `Content-Type: application/json` with the data inline, and no
+            renderer for csv or xml exists on it. Rendered output is the
+            compliance-report facade's job.
+        requested_format:
+          type: string
+          enum: [csv, xml]
+          description: |
+            Present ONLY when the caller asked for a format this endpoint
+            does not produce. Its presence is the signal that the body is
+            not what was requested. Absent on a json request.
+        format_note:
+          type: string
+          description: |
+            Prose explanation of the discrepancy, present exactly when
+            `requested_format` is. Exists so a human reading the artifact
+            does not have to infer it from two fields disagreeing.
         summary:
           type: object
           properties:

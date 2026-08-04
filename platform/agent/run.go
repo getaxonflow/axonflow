@@ -2119,25 +2119,44 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Phase 2: Tenant-specific policies (if not already blocked and tier engine available)
 	if !policyResult.Blocked && tierAwarePolicyEngine != nil {
 		ctx := r.Context()
-		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, req.Query)
-		if err != nil {
-			log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
-		} else if tierResult.Matched && tierResult.Action == "block" {
-			// Tenant policy triggered a block
-			policyResult.Blocked = true
-			policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
-			policyResult.Severity = tierResult.Severity
-			log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
-		} else if tierResult.Matched {
-			// Policy matched but action is not block (allow, warn, log, redact, require_approval)
-			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
-			log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
 
-			// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
-			if tierResult.Action == "require_approval" {
-				policyResult.RequiresApproval = true
-				log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
+		// #3051 (ADR-060 P3): resolve the caller's governance-segment set for
+		// POLICY-AFFECTING consumption — unlike resolveUserSegments
+		// (mcp_identity.go, P2, observability-only), a genuine resolution
+		// ERROR here must DENY the request, never silently fall back to
+		// org-only (ADR-060 §Fail-closed, locked). segOK=false means "deny";
+		// segOK=true with a nil/empty set means either the capability is
+		// unavailable (community mode / no SCIM configured — not a failure)
+		// or the caller legitimately belongs to zero segments.
+		segmentIDs, segOK := resolveSegmentsForPolicy(ctx, user.OrgID, user.Email, true)
+		if !segOK {
+			policyResult.Blocked = true
+			policyResult.Reason = "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
+			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, "segment_resolution_failed")
+			log.Printf("🛡️ Request denied: segment resolution failed (fail-closed) for org %s", logutil.Sanitize(user.OrgID))
+		}
+
+		if !policyResult.Blocked {
+			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, segmentIDs, req.Query)
+			if err != nil {
+				log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
+			} else if tierResult.Matched && tierResult.Action == "block" {
+				// Tenant/segment policy triggered a block
+				policyResult.Blocked = true
+				policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
+				policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+				policyResult.Severity = tierResult.Severity
+				log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
+			} else if tierResult.Matched {
+				// Policy matched but action is not block (allow, warn, log, redact, require_approval)
+				policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+				log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
+
+				// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
+				if tierResult.Action == "require_approval" {
+					policyResult.RequiresApproval = true
+					log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
+				}
 			}
 		}
 	}
@@ -2987,15 +3006,27 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "community" // default for community mode
 	}
+	// #3255: the org this preview evaluates under comes from the
+	// AUTHENTICATED context, never from the tenant string. On the enterprise
+	// service-license path the two differ: TenantID is the Basic-Auth
+	// username the caller chooses (db_auth.go), while OrgID is validated from
+	// the license (auth.go). This value is passed to the segment resolver
+	// below, whose lookup is scoped by exactly this argument (SQL predicate
+	// and RLS GUC alike), so a tenant-sourced org let the caller choose whose
+	// directory the preview read - and the wrong org also silently matched
+	// nothing, making the preview under-report segment-scoped policies.
+	// The fallback preserves the previous behavior only where no authenticated
+	// org exists (the community shape, where tenant is not caller-influenced).
+	orgID := OrgIDFromContext(r.Context())
+	if orgID == "" {
+		orgID = tenantID
+	}
 	testUser := &User{
 		Email:       testReq.UserEmail,
 		Role:        "agent",
 		Permissions: []string{"query"},
 		TenantID:    tenantID,
-		// v9 Phase 8 #2384 PR-C1: policyTestHandler is an internal /api/v1/policies/test
-		// admin path; OrgID==TenantID is the safe default consistent with the
-		// community / community-saas auth synthesisers above.
-		OrgID: tenantID,
+		OrgID:       orgID,
 	}
 
 	// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
@@ -3032,7 +3063,22 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 	// Phase 2: Tier-aware policies (if not blocked and engine available)
 	if !result.Blocked && tierAwarePolicyEngine != nil {
 		ctx := r.Context()
-		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, nil, testReq.Query)
+		// #3051 (ADR-060 P3): resolve segments for the caller-supplied
+		// testReq.UserEmail so this simulation matches what /api/request would
+		// actually do for that user. Unlike the real request plane, nothing is
+		// being granted or enforced against testReq.UserEmail here — this is a
+		// read-only preview, already gated by this endpoint's tenant-level auth
+		// — so there is no privilege-escalation risk in resolving segments for
+		// arbitrary caller-supplied input the way there would be on the
+		// enforcement path. Unlike that path's fail-closed contract, a genuine
+		// resolution ERROR here must NOT deny the test call (nothing real is
+		// being blocked): fall back to an org-only simulation and log the gap.
+		segmentIDs, segOK := resolveSegmentsForPolicy(ctx, testUser.OrgID, testReq.UserEmail, false)
+		if !segOK {
+			log.Printf("⚠️ Policy test: segment resolution failed for %q — simulating org-only (a real /api/request call would fail-closed here)", logutil.Sanitize(testReq.UserEmail))
+			segmentIDs = nil
+		}
+		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, nil, segmentIDs, testReq.Query)
 		if err != nil {
 			log.Printf("⚠️ Tier-aware policy test error: %v", err)
 		} else if tierResult.Matched && tierResult.Action == "block" {

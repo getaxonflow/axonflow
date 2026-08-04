@@ -16,10 +16,12 @@ package sebi
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,9 +31,9 @@ import (
 // =============================================================================
 
 type mockSEBIAuditExportService struct {
-	exportAuditDataFunc           func(ctx context.Context, tenantID string, req *SEBIAuditExportRequest) (*SEBIAuditExportResponse, error)
-	getRetentionStatusFunc        func(ctx context.Context, tenantID string, req *SEBIRetentionStatusRequest) (*SEBIRetentionStatusResponse, error)
-	getExportStatusFunc           func(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error)
+	exportAuditDataFunc             func(ctx context.Context, tenantID string, req *SEBIAuditExportRequest) (*SEBIAuditExportResponse, error)
+	getRetentionStatusFunc          func(ctx context.Context, tenantID string, req *SEBIRetentionStatusRequest) (*SEBIRetentionStatusResponse, error)
+	getExportStatusFunc             func(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error)
 	validateComplianceReadinessFunc func(ctx context.Context, tenantID string) (*SEBIComplianceReadinessResponse, error)
 }
 
@@ -72,17 +74,6 @@ func (m *mockSEBIAuditExportService) GetRetentionStatus(ctx context.Context, ten
 	}, nil
 }
 
-func (m *mockSEBIAuditExportService) GetExportStatus(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error) {
-	if m.getExportStatusFunc != nil {
-		return m.getExportStatusFunc(ctx, tenantID, exportID)
-	}
-	return &SEBIAuditExportResponse{
-		ExportID:   exportID,
-		Status:     "completed",
-		Framework:  SEBIFrameworkAIML,
-		ExportedAt: time.Now().UTC(),
-	}, nil
-}
 
 func (m *mockSEBIAuditExportService) ValidateComplianceReadiness(ctx context.Context, tenantID string) (*SEBIComplianceReadinessResponse, error) {
 	if m.validateComplianceReadinessFunc != nil {
@@ -163,7 +154,7 @@ func TestSEBIAuditExportHandler_ExportAuditData(t *testing.T) {
 			expectedError:  "VALIDATION_ERROR",
 		},
 		{
-			name:  "end date before start date",
+			name:     "end date before start date",
 			tenantID: "travel-us",
 			requestBody: `{
 				"start_date": "2024-12-31T00:00:00Z",
@@ -173,7 +164,7 @@ func TestSEBIAuditExportHandler_ExportAuditData(t *testing.T) {
 			expectedError:  "VALIDATION_ERROR",
 		},
 		{
-			name:  "date range exceeds 5 years",
+			name:     "date range exceeds 5 years",
 			tenantID: "travel-us",
 			requestBody: `{
 				"start_date": "2018-01-01T00:00:00Z",
@@ -183,7 +174,7 @@ func TestSEBIAuditExportHandler_ExportAuditData(t *testing.T) {
 			expectedError:  "VALIDATION_ERROR",
 		},
 		{
-			name:  "invalid format",
+			name:     "invalid format",
 			tenantID: "travel-us",
 			requestBody: `{
 				"start_date": "2024-01-01T00:00:00Z",
@@ -194,7 +185,7 @@ func TestSEBIAuditExportHandler_ExportAuditData(t *testing.T) {
 			expectedError:  "VALIDATION_ERROR",
 		},
 		{
-			name:  "invalid framework",
+			name:     "invalid framework",
 			tenantID: "travel-us",
 			requestBody: `{
 				"start_date": "2024-01-01T00:00:00Z",
@@ -205,7 +196,7 @@ func TestSEBIAuditExportHandler_ExportAuditData(t *testing.T) {
 			expectedError:  "VALIDATION_ERROR",
 		},
 		{
-			name:  "invalid data type",
+			name:     "invalid data type",
 			tenantID: "travel-us",
 			requestBody: `{
 				"start_date": "2024-01-01T00:00:00Z",
@@ -268,56 +259,6 @@ func TestSEBIAuditExportHandler_ExportAuditData(t *testing.T) {
 	}
 }
 
-func TestSEBIAuditExportHandler_GetExportStatus(t *testing.T) {
-	tests := []struct {
-		name           string
-		tenantID       string
-		exportID       string
-		expectedStatus int
-		expectedError  string
-	}{
-		{
-			name:           "successful status check",
-			tenantID:       "travel-us",
-			exportID:       "exp_123_test",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "missing tenant ID",
-			tenantID:       "",
-			exportID:       "exp_123_test",
-			expectedStatus: http.StatusUnauthorized,
-			expectedError:  "UNAUTHORIZED",
-		},
-		{
-			name:           "missing export ID",
-			tenantID:       "travel-us",
-			exportID:       "",
-			expectedStatus: http.StatusBadRequest,
-			expectedError:  "BAD_REQUEST",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockService := &mockSEBIAuditExportService{}
-			handler := NewSEBIAuditExportHandler(mockService)
-
-			url := "/api/v1/sebi/audit/export/" + tt.exportID
-			req := httptest.NewRequest(http.MethodGet, url, nil)
-			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
-			}
-
-			rr := httptest.NewRecorder()
-			handler.handleExportByID(rr, req)
-
-			if rr.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
-			}
-		})
-	}
-}
 
 func TestSEBIAuditExportHandler_GetRetentionStatus(t *testing.T) {
 	tests := []struct {
@@ -1021,43 +962,7 @@ func TestSEBIAuditExportHandler_ExportServiceError(t *testing.T) {
 	}
 }
 
-func TestSEBIAuditExportHandler_GetExportStatus_ServiceError(t *testing.T) {
-	mockService := &mockSEBIAuditExportService{
-		getExportStatusFunc: func(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error) {
-			return nil, fmt.Errorf("internal error")
-		},
-	}
-	handler := NewSEBIAuditExportHandler(mockService)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sebi/audit/export/test-id", nil)
-	req.Header.Set("X-Tenant-ID", "travel-us")
-	rr := httptest.NewRecorder()
-
-	handler.handleExportByID(rr, req)
-
-	if rr.Code != http.StatusInternalServerError {
-		t.Errorf("Expected status 500, got %d", rr.Code)
-	}
-}
-
-func TestSEBIAuditExportHandler_GetExportStatus_NotFound(t *testing.T) {
-	mockService := &mockSEBIAuditExportService{
-		getExportStatusFunc: func(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error) {
-			return nil, fmt.Errorf("export not found")
-		},
-	}
-	handler := NewSEBIAuditExportHandler(mockService)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sebi/audit/export/nonexistent", nil)
-	req.Header.Set("X-Tenant-ID", "travel-us")
-	rr := httptest.NewRecorder()
-
-	handler.handleExportByID(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("Expected status 404, got %d", rr.Code)
-	}
-}
 
 func TestSEBIAuditExportHandler_RetentionStatus_ServiceError(t *testing.T) {
 	mockService := &mockSEBIAuditExportService{
@@ -1097,6 +1002,14 @@ func TestSEBIAuditExportHandler_ComplianceReadiness_ServiceError(t *testing.T) {
 	}
 }
 
+// TestSEBIAuditExportHandler_ExportCSVFormat asserts the response BODY parses
+// as CSV, not merely that a CSV Content-Disposition header was set (#3241).
+//
+// The version this replaces checked the header only, and carried the comment
+// "writeJSON always sets application/json, overwriting format-specific headers"
+// - it DOCUMENTED the defect and passed anyway. A header assertion cannot tell
+// a CSV file from a JSON body wearing a CSV filename, which is exactly what
+// this endpoint returned.
 func TestSEBIAuditExportHandler_ExportCSVFormat(t *testing.T) {
 	mockService := &mockSEBIAuditExportService{}
 	handler := NewSEBIAuditExportHandler(mockService)
@@ -1115,17 +1028,40 @@ func TestSEBIAuditExportHandler_ExportCSVFormat(t *testing.T) {
 	handler.handleExport(rr, req)
 
 	if rr.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rr.Code)
+		t.Fatalf("Expected status 200, got %d. body=%s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("Expected a text/csv Content-Type, got %q", ct)
+	}
+	if disposition := rr.Header().Get("Content-Disposition"); disposition != "attachment; filename=sebi-audit-export.csv" {
+		t.Errorf("Expected CSV Content-Disposition, got %s", disposition)
 	}
 
-	// Note: writeJSON always sets application/json, overwriting format-specific headers
-	// The Content-Disposition header should be set for CSV
-	disposition := rr.Header().Get("Content-Disposition")
-	if disposition != "attachment; filename=sebi-audit-export.csv" {
-		t.Errorf("Expected CSV Content-Disposition, got %s", disposition)
+	body := rr.Body.String()
+	// A JSON body starts with '{'. Nothing else in this assertion set catches
+	// the original defect as directly.
+	if strings.HasPrefix(strings.TrimSpace(body), "{") {
+		t.Fatalf("CSV export returned a JSON body under a text/csv header: %s", body)
+	}
+	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	if err != nil {
+		t.Fatalf("CSV export body does not parse as CSV: %v\nbody=%s", err, body)
+	}
+	if len(records) == 0 {
+		t.Fatal("CSV export body parsed to zero records")
+	}
+	if !strings.Contains(records[0][0], "AxonFlow Compliance Report") {
+		t.Errorf("CSV export is missing its title row; first record = %q", records[0])
 	}
 }
 
+// TestSEBIAuditExportHandler_ExportXMLFormat asserts the XML format returns an
+// honest 501 (#3241).
+//
+// BEHAVIOR CHANGE, deliberate: this used to be a 200 carrying a JSON body under
+// an application/xml header. The version of this test it replaces asserted only
+// the Content-Disposition filename, so it passed on the mislabelled response.
+// Nothing could have consumed that response as XML - it never was XML.
 func TestSEBIAuditExportHandler_ExportXMLFormat(t *testing.T) {
 	mockService := &mockSEBIAuditExportService{}
 	handler := NewSEBIAuditExportHandler(mockService)
@@ -1143,24 +1079,24 @@ func TestSEBIAuditExportHandler_ExportXMLFormat(t *testing.T) {
 
 	handler.handleExport(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rr.Code)
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("Expected status 501 for the unimplemented XML format, got %d. body=%s", rr.Code, rr.Body.String())
 	}
-
-	// Note: writeJSON always sets application/json, overwriting format-specific headers
-	// The Content-Disposition header should be set for XML
-	disposition := rr.Header().Get("Content-Disposition")
-	if disposition != "attachment; filename=sebi-audit-export.xml" {
-		t.Errorf("Expected XML Content-Disposition, got %s", disposition)
+	if !strings.Contains(rr.Body.String(), "XML_NOT_IMPLEMENTED") {
+		t.Errorf("Expected the XML_NOT_IMPLEMENTED error code, got %s", rr.Body.String())
+	}
+	// The refusal must not carry a filename that suggests a downloadable file.
+	if disposition := rr.Header().Get("Content-Disposition"); disposition != "" {
+		t.Errorf("A 501 must not advertise an attachment; got Content-Disposition %q", disposition)
 	}
 }
 
 func TestSEBIAuditExportHandler_ComplianceReadinessChecks(t *testing.T) {
 	tests := []struct {
-		name          string
-		ready         bool
-		score         int
-		failedChecks  []string
+		name            string
+		ready           bool
+		score           int
+		failedChecks    []string
 		recommendations []string
 	}{
 		{
@@ -1169,17 +1105,17 @@ func TestSEBIAuditExportHandler_ComplianceReadinessChecks(t *testing.T) {
 			score: 100,
 		},
 		{
-			name:         "missing retention config",
-			ready:        false,
-			score:        75,
-			failedChecks: []string{"Retention Configuration"},
+			name:            "missing retention config",
+			ready:           false,
+			score:           75,
+			failedChecks:    []string{"Retention Configuration"},
 			recommendations: []string{"Update retention configuration to meet 5-year SEBI requirement"},
 		},
 		{
-			name:         "missing PII policies",
-			ready:        false,
-			score:        75,
-			failedChecks: []string{"PII Detection Policies"},
+			name:            "missing PII policies",
+			ready:           false,
+			score:           75,
+			failedChecks:    []string{"PII Detection Policies"},
 			recommendations: []string{"Enable PAN and Aadhaar detection policies for DPDP Act compliance"},
 		},
 	}

@@ -22,11 +22,18 @@ import (
 // symbol-identical so shared call sites compile unconditionally.
 type SegmentID string
 
+// Segment mirrors the enterprise type. See identity_attribute_resolver.go
+// for the field docs.
+type Segment struct {
+	ID          SegmentID
+	DisplayName string
+}
+
 // ResolvedIdentity mirrors the enterprise type. See identity_attribute_
 // resolver.go for the field docs.
 type ResolvedIdentity struct {
 	Role     string
-	Segments []SegmentID
+	Segments []Segment
 }
 
 // IdentityAttributeResolver mirrors the enterprise interface (embeds
@@ -35,6 +42,7 @@ type ResolvedIdentity struct {
 type IdentityAttributeResolver interface {
 	RoleResolver
 	Resolve(ctx context.Context, orgID, email string) (ResolvedIdentity, error)
+	InvalidateUserSegments(orgID, email string)
 }
 
 // NewIdentityAttributeResolver is Enterprise-only in community builds — SCIM,

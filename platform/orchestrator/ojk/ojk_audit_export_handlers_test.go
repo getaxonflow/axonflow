@@ -11,12 +11,19 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
 type mockOJKService struct {
-	exportCalled   bool
+	// exportCalls counts reaching the service. A blank-scope refusal must show
+	// ZERO calls: asserting only on the 400 cannot tell "refused at the door"
+	// from "called with a blank scope and the service happened to error".
+	exportCalls int
+	// lastOrgID records the scope the handler resolved and passed down.
+	lastOrgID       string
+	exportCalled    bool
 	retentionCalled bool
 	readinessCalled bool
 	breachCalled    bool
@@ -28,16 +35,18 @@ type mockOJKService struct {
 	evalFlipped     int
 }
 
-func (m *mockOJKService) ExportAuditData(ctx context.Context, tenantID string, req *OJKAuditExportRequest) (*OJKAuditExportResponse, error) {
+func (m *mockOJKService) ExportAuditData(ctx context.Context, orgID string, req *OJKAuditExportRequest) (*OJKAuditExportResponse, error) {
 	m.exportCalled = true
+	m.exportCalls++
+	m.lastOrgID = orgID
 	return &OJKAuditExportResponse{
 		ExportID:  "test-export-id",
 		Status:    "completed",
 		Framework: OJKFrameworkCombined,
 		Format:    OJKFormatJSON,
 		Summary: &OJKAuditExportSummary{
-			TotalRecords:  0,
-			RecordsByType: map[string]int{},
+			TotalRecords:    0,
+			RecordsByType:   map[string]int{},
 			ComplianceScore: 1.0,
 		},
 		CreatedAt: time.Now().UTC(),
@@ -312,11 +321,11 @@ func TestValidateBreachNotification(t *testing.T) {
 			"valid",
 			OJKBreachNotification{
 				IncidentTimestamp:    now,
-				DiscoveryTime:       now,
+				DiscoveryTime:        now,
 				DataSubjectsAffected: 1,
-				DataTypesInvolved:   []string{"nik"},
-				Description:         "breach",
-				RemediationSteps:    []string{"fix"},
+				DataTypesInvolved:    []string{"nik"},
+				Description:          "breach",
+				RemediationSteps:     []string{"fix"},
 			},
 			false,
 		},
@@ -368,25 +377,95 @@ func TestHandleCORS(t *testing.T) {
 	})
 }
 
-func TestGetTenantID_Precedence(t *testing.T) {
-	handler := NewOJKAuditExportHandler(&mockOJKService{})
-
-	t.Run("X-Tenant-ID takes precedence", func(t *testing.T) {
+// TestResolveOrgID_Precedence pins the INVERTED precedence (#3242).
+//
+// This test previously asserted the opposite -- that X-Tenant-ID outranked
+// X-Org-ID -- and in doing so it PINNED the defect: every durable OJK surface
+// is keyed on the organisation (org_id columns, RLS on app.current_org_id), so
+// on a proxied deployment with distinct v9 identifiers the old resolver fed a
+// TENANT value into an ORG-labelled column and scoped every read by it.
+// Inverting the assertion is the point; leaving it as it was would have made
+// the fix un-shippable.
+func TestResolveOrgID_Precedence(t *testing.T) {
+	t.Run("X-Org-ID wins when both are present", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("X-Tenant-ID", "tenant-a")
 		req.Header.Set("X-Org-ID", "org-b")
-		if id := handler.getTenantID(req); id != "tenant-a" {
-			t.Errorf("getTenantID = %q, want tenant-a", id)
+		if id := resolveOrgID(req); id != "org-b" {
+			t.Errorf("resolveOrgID = %q, want org-b (the ORGANISATION, not the tenant)", id)
 		}
 	})
 
-	t.Run("Falls back to X-Org-ID", func(t *testing.T) {
+	t.Run("falls back to X-Tenant-ID only when X-Org-ID is absent", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Org-ID", "org-b")
-		if id := handler.getTenantID(req); id != "org-b" {
-			t.Errorf("getTenantID = %q, want org-b", id)
+		req.Header.Set("X-Tenant-ID", "tenant-a")
+		if id := resolveOrgID(req); id != "tenant-a" {
+			t.Errorf("resolveOrgID = %q, want tenant-a", id)
 		}
 	})
+
+	t.Run("whitespace-only X-Org-ID does not shadow the fallback", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Org-ID", "   ")
+		req.Header.Set("X-Tenant-ID", "tenant-a")
+		if id := resolveOrgID(req); id != "tenant-a" {
+			t.Errorf("resolveOrgID = %q, want tenant-a; a blank org must never win", id)
+		}
+	})
+
+	t.Run("whitespace is trimmed, never passed downstream as a blank scope", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Org-ID", "  org-b\t")
+		if id := resolveOrgID(req); id != "org-b" {
+			t.Errorf("resolveOrgID = %q, want org-b", id)
+		}
+	})
+
+	t.Run("no identity headers yields empty, which callers must treat as a refusal", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		if id := resolveOrgID(req); id != "" {
+			t.Errorf("resolveOrgID = %q, want empty", id)
+		}
+	})
+
+	t.Run("whitespace-only in BOTH headers yields empty", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Org-ID", " ")
+		req.Header.Set("X-Tenant-ID", "\t\n")
+		if id := resolveOrgID(req); id != "" {
+			t.Errorf("resolveOrgID = %q, want empty; a blank scope must never reach the database", id)
+		}
+	})
+
+	t.Run("nil request is safe", func(t *testing.T) {
+		if id := resolveOrgID(nil); id != "" {
+			t.Errorf("resolveOrgID(nil) = %q, want empty", id)
+		}
+	})
+}
+
+// TestMissingOrgScopeIsRefused proves the handler refuses rather than passing a
+// blank scope downstream: the mock service records every call, so a 400 with
+// zero service calls is observable, not inferred from the status code alone.
+func TestMissingOrgScopeIsRefused(t *testing.T) {
+	svc := &mockOJKService{}
+	handler := NewOJKAuditExportHandler(svc)
+
+	body := `{"start_date":"2026-01-01","end_date":"2026-01-31"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ojk/audit/export", bytes.NewBufferString(body))
+	req.Header.Set("X-Org-ID", "   ")
+	w := httptest.NewRecorder()
+	handler.handleExport(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+	if svc.exportCalls != 0 {
+		t.Fatalf("service was called %d times with a blank scope; it must never be reached", svc.exportCalls)
+	}
+	if !strings.Contains(w.Body.String(), "missing_org") {
+		t.Errorf("error code missing from body: %s", w.Body.String())
+	}
 }
 
 func TestRegisterRoutes_ServeMux(t *testing.T) {

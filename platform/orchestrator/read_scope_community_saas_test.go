@@ -289,13 +289,49 @@ func TestResolveCallerReadScope_AxesByBranch(t *testing.T) {
 			wantTenantWide: true, wantAdmin: true,
 		},
 		{
-			name: "portal tenant-scope assertion over the trusted channel",
+			// INVERTED in #3241 round 2. This case asserted wantAdmin: true,
+			// which is precisely the conflation the round-2 fix removes: the
+			// portal stamps this header for EVERY session holding audit:read,
+			// and the seeded viewer role holds it - so "read scope asserted"
+			// meant "administrator" for a read-only user.
+			//
+			// The case is kept rather than deleted, with the expectation
+			// flipped, because it is the one that would go red if the grant
+			// came back.
+			name: "portal tenant-scope assertion ALONE: scoping, NOT authority",
 			mode: "enterprise", validator: true,
 			mutate: func(t *testing.T, r *http.Request) {
 				r.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 				r.Header.Set(sharedidentity.HeaderReadScope, sharedidentity.ReadScopeTenant)
 			},
+			wantTenantWide: true, wantAdmin: false,
+		},
+		{
+			// The other half of the axes split, and the positive control for
+			// the case above: a fix that simply never granted AdminAuthority on
+			// this branch would satisfy that case and 403 every administrator.
+			name: "portal tenant-scope assertion PLUS an admin-authority assertion: both",
+			mode: "enterprise", validator: true,
+			mutate: func(t *testing.T, r *http.Request) {
+				r.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
+				r.Header.Set(sharedidentity.HeaderReadScope, sharedidentity.ReadScopeTenant)
+				r.Header.Set(sharedidentity.HeaderAdminAuthority, sharedidentity.AdminAuthorityAsserted)
+			},
 			wantTenantWide: true, wantAdmin: true,
+		},
+		{
+			// An admin-authority assertion with NO read scope. It resolves to
+			// neither: the branch that reads the authority header is inside the
+			// read-scope branch, so authority is not reachable on its own -
+			// which is the coherent direction (AdminAuthority implies
+			// TenantWide, asserted below for every case).
+			name: "admin-authority assertion with no read scope: neither",
+			mode: "enterprise", validator: true,
+			mutate: func(t *testing.T, r *http.Request) {
+				r.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
+				r.Header.Set(sharedidentity.HeaderAdminAuthority, sharedidentity.AdminAuthorityAsserted)
+			},
+			wantTenantWide: false, wantAdmin: false,
 		},
 		{
 			name: "community-saas over the agent channel: scoping only",

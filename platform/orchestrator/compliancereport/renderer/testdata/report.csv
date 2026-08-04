@@ -1,0 +1,28 @@
+# AxonFlow Compliance Report - OJK / BI / UU PDP (Indonesia),,,,
+# Report ID,creport-fixture-0001,,,
+# Regulator,OJK / BI / UU PDP (Indonesia),,,
+# Framework,OJK_AI_GOVERNANCE,,,
+# Organization,id-fintech-org,,,
+# Reporting period,2026-04-01 to 2026-06-30,,,
+# Generated at,2026-07-01T09:30:00Z,,,
+# Data state,populated - the period contains governed activity,,,
+# Records,3,,,
+# Retention,OJK / UU PDP: records retained 5 years.,,,
+,,,,
+## Policy violations,,,,
+# Governance policy violations recorded in the reporting period.,,,,
+# Severity: high,1,,,
+# Severity: critical,1,,,
+ID,Timestamp,Policy,Severity,Description
+pv-1,2026-04-02T10:00:00Z,pii_block,high,"Blocked NIK, NPWP and ""bank account"" patterns"
+pv-2,2026-05-11T14:22:00Z,sqli_guard,critical,"Multi-line
+description with a newline"
+pv-0007,2026-06-01T00:00:00Z,rate_limit,low,Leading zeros must survive
+,,,,
+## Cross-border transfers (UU PDP Pasal 56),,,,
+# Transfers with the legal basis recorded at decision time.,,,,
+# NOTE,No cross-border personal-data transfers were recorded in the reporting period.,,,
+,,,,
+## Nama pengguna,,,,
+Name,,,,
+Ravi कुमार,,,,

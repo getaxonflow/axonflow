@@ -1,6 +1,6 @@
 # SEBI AI/ML Guidelines Compliance
 
-*Last updated: July 2026 | **Platform:** 9.12.0 · **SDKs:** 9.0.0*
+*Last updated: July 2026 | **Platform:** 9.14.0 · **SDKs:** 9.0.0*
 
 AxonFlow provides compliance support for the Securities and Exchange Board of India's **Framework for AI/ML in Securities Markets** (June 2025 Consultation Paper) and the Digital Personal Data Protection Act (DPDP) 2023, for regulated entities in India's capital markets.
 

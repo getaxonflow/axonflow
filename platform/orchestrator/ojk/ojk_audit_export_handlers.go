@@ -117,9 +117,9 @@ func (h *OJKAuditExportHandler) handleDashboard(w http.ResponseWriter, r *http.R
 }
 
 func (h *OJKAuditExportHandler) exportAuditData(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
@@ -134,9 +134,9 @@ func (h *OJKAuditExportHandler) exportAuditData(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	resp, err := h.service.ExportAuditData(r.Context(), tenantID, &req)
+	resp, err := h.service.ExportAuditData(r.Context(), orgID, &req)
 	if err != nil {
-		log.Printf("OJK export error for tenant %s: %v", tenantID, err)
+		log.Printf("OJK export error for org %s: %v", orgID, err)
 		h.writeError(w, "internal_error", "Export failed", err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -145,9 +145,9 @@ func (h *OJKAuditExportHandler) exportAuditData(w http.ResponseWriter, r *http.R
 }
 
 func (h *OJKAuditExportHandler) getExportStatus(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
@@ -158,7 +158,7 @@ func (h *OJKAuditExportHandler) getExportStatus(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	resp, err := h.service.GetExportStatus(r.Context(), tenantID, exportID)
+	resp, err := h.service.GetExportStatus(r.Context(), orgID, exportID)
 	if err != nil {
 		h.writeError(w, "not_found", "Export not found", err.Error(), http.StatusNotFound)
 		return
@@ -168,9 +168,9 @@ func (h *OJKAuditExportHandler) getExportStatus(w http.ResponseWriter, r *http.R
 }
 
 func (h *OJKAuditExportHandler) getExportStatusMux(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
@@ -181,7 +181,7 @@ func (h *OJKAuditExportHandler) getExportStatusMux(w http.ResponseWriter, r *htt
 		return
 	}
 
-	resp, err := h.service.GetExportStatus(r.Context(), tenantID, exportID)
+	resp, err := h.service.GetExportStatus(r.Context(), orgID, exportID)
 	if err != nil {
 		h.writeError(w, "not_found", "Export not found", err.Error(), http.StatusNotFound)
 		return
@@ -191,9 +191,9 @@ func (h *OJKAuditExportHandler) getExportStatusMux(w http.ResponseWriter, r *htt
 }
 
 func (h *OJKAuditExportHandler) getRetentionStatus(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
@@ -205,7 +205,7 @@ func (h *OJKAuditExportHandler) getRetentionStatus(w http.ResponseWriter, r *htt
 		}
 	}
 
-	resp, err := h.service.GetRetentionStatus(r.Context(), tenantID, req)
+	resp, err := h.service.GetRetentionStatus(r.Context(), orgID, req)
 	if err != nil {
 		h.writeError(w, "internal_error", "Failed to get retention status", err.Error(), http.StatusInternalServerError)
 		return
@@ -215,13 +215,13 @@ func (h *OJKAuditExportHandler) getRetentionStatus(w http.ResponseWriter, r *htt
 }
 
 func (h *OJKAuditExportHandler) getComplianceReadiness(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
-	resp, err := h.service.ValidateComplianceReadiness(r.Context(), tenantID)
+	resp, err := h.service.ValidateComplianceReadiness(r.Context(), orgID)
 	if err != nil {
 		h.writeError(w, "internal_error", "Failed to validate readiness", err.Error(), http.StatusInternalServerError)
 		return
@@ -231,9 +231,9 @@ func (h *OJKAuditExportHandler) getComplianceReadiness(w http.ResponseWriter, r 
 }
 
 func (h *OJKAuditExportHandler) submitBreachNotification(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
@@ -248,9 +248,9 @@ func (h *OJKAuditExportHandler) submitBreachNotification(w http.ResponseWriter, 
 		return
 	}
 
-	resp, err := h.service.SubmitBreachNotification(r.Context(), tenantID, &req)
+	resp, err := h.service.SubmitBreachNotification(r.Context(), orgID, &req)
 	if err != nil {
-		log.Printf("OJK breach notification error for tenant %s: %v", tenantID, err)
+		log.Printf("OJK breach notification error for org %s: %v", orgID, err)
 		h.writeError(w, "internal_error", "Failed to submit breach notification", err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -259,13 +259,13 @@ func (h *OJKAuditExportHandler) submitBreachNotification(w http.ResponseWriter, 
 }
 
 func (h *OJKAuditExportHandler) getDashboard(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
-	resp, err := h.service.GetDashboard(r.Context(), tenantID)
+	resp, err := h.service.GetDashboard(r.Context(), orgID)
 	if err != nil {
 		h.writeError(w, "internal_error", "Failed to get dashboard", err.Error(), http.StatusInternalServerError)
 		return
@@ -300,9 +300,9 @@ func (h *OJKAuditExportHandler) handleBreachEvaluateDeadlines(w http.ResponseWri
 // Maps service sentinels to client-correctable HTTP codes: 404 for an unknown
 // id, 409 when the breach is not in a submittable→acknowledgeable state.
 func (h *OJKAuditExportHandler) acknowledgeBreach(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
@@ -318,7 +318,7 @@ func (h *OJKAuditExportHandler) acknowledgeBreach(w http.ResponseWriter, r *http
 		return
 	}
 
-	resp, err := h.service.AcknowledgeBreachNotification(r.Context(), tenantID, strings.TrimSpace(body.ID))
+	resp, err := h.service.AcknowledgeBreachNotification(r.Context(), orgID, strings.TrimSpace(body.ID))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrBreachNotFound):
@@ -326,7 +326,7 @@ func (h *OJKAuditExportHandler) acknowledgeBreach(w http.ResponseWriter, r *http
 		case errors.Is(err, ErrInvalidBreachTransition):
 			h.writeError(w, "invalid_transition", "Breach cannot be acknowledged from its current status", err.Error(), http.StatusConflict)
 		default:
-			log.Printf("OJK breach acknowledge error for tenant %s: %v", tenantID, err)
+			log.Printf("OJK breach acknowledge error for org %s: %v", orgID, err)
 			h.writeError(w, "internal_error", "Failed to acknowledge breach notification", err.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -338,15 +338,15 @@ func (h *OJKAuditExportHandler) acknowledgeBreach(w http.ResponseWriter, r *http
 // evaluateBreachDeadlines durably flips never-submitted lapsed drafts to overdue
 // and returns how many rows changed.
 func (h *OJKAuditExportHandler) evaluateBreachDeadlines(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, "missing_tenant", "Tenant ID is required", "", http.StatusBadRequest)
+	orgID := resolveOrgID(r)
+	if orgID == "" {
+		h.writeError(w, "missing_org", "Organization scope is required (X-Org-ID, or X-Tenant-ID on a single-identifier deployment)", "", http.StatusBadRequest)
 		return
 	}
 
-	flipped, err := h.service.EvaluateBreachDeadlines(r.Context(), tenantID)
+	flipped, err := h.service.EvaluateBreachDeadlines(r.Context(), orgID)
 	if err != nil {
-		log.Printf("OJK breach deadline evaluation error for tenant %s: %v", tenantID, err)
+		log.Printf("OJK breach deadline evaluation error for org %s: %v", orgID, err)
 		h.writeError(w, "internal_error", "Failed to evaluate breach deadlines", err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -418,15 +418,12 @@ func (h *OJKAuditExportHandler) validateBreachNotification(req *OJKBreachNotific
 	return nil
 }
 
-func (h *OJKAuditExportHandler) getTenantID(r *http.Request) string {
-	if id := r.Header.Get("X-Tenant-ID"); id != "" {
-		return id
-	}
-	if id := r.Header.Get("X-Org-ID"); id != "" {
-		return id
-	}
-	return ""
-}
+// Identity resolution lives in org_scope.go (resolveOrgID). The previous
+// getTenantID helper returned X-Tenant-ID FIRST and untrimmed, then fell back to
+// X-Org-ID; every durable OJK surface is keyed on the ORGANISATION, so on a
+// proxied deployment with distinct v9 identifiers that fed a tenant value into
+// an org-labelled column and scoped every read by it. See org_scope.go for the
+// full rationale and the upgrade note.
 
 var allowedCORSOrigins = map[string]bool{
 	"https://app.getaxonflow.com":         true,

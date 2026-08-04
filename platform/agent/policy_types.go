@@ -37,6 +37,16 @@ type StaticPolicy struct {
 	TenantID       string  `json:"tenant_id" db:"tenant_id"`
 	OrgID          string  `json:"org_id,omitempty" db:"org_id"` // RLS column
 
+	// SegmentID is the ADR-060 (#2989 P3) governance-segment targeting key:
+	// the stable scim_groups.id (never display_name), scoped under OrgID
+	// above (never the deprecated OrganizationID/TenantID columns — #2791).
+	// Orthogonal to Tier (Decision 2, locked): nil means "not segment-scoped"
+	// — the pre-P3, backward-compatible default, independent of which tier
+	// the policy is authored at. Populated only by GetEffective's segment
+	// selection (migrations/core/157); the Create/Update API surface does
+	// not expose it yet (portal write path is P6, #2989).
+	SegmentID *string `json:"segment_id,omitempty" db:"segment_id"`
+
 	// Flexible metadata
 	Tags     []string        `json:"tags,omitempty"`
 	Metadata json.RawMessage `json:"metadata,omitempty" db:"metadata"`

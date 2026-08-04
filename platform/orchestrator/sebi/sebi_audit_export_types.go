@@ -553,8 +553,6 @@ type SEBIAuditExportService interface {
 	// GetRetentionStatus returns the retention status for audit data
 	GetRetentionStatus(ctx context.Context, tenantID string, req *SEBIRetentionStatusRequest) (*SEBIRetentionStatusResponse, error)
 
-	// GetExportStatus returns the status of an async export
-	GetExportStatus(ctx context.Context, tenantID string, exportID string) (*SEBIAuditExportResponse, error)
 
 	// ValidateComplianceReadiness checks if the org is ready for SEBI audit
 	ValidateComplianceReadiness(ctx context.Context, tenantID string) (*SEBIComplianceReadinessResponse, error)

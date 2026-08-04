@@ -184,6 +184,12 @@ func TestStaticPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 	f.seedOrg(t, org)
 	f.applyMigration(t, "153_backfill_global_policy_org_id.sql")
 	f.applyMigration(t, "154_global_policy_org_id_default.sql")
+	// #3051 (ADR-060 P3): GetEffective's query unconditionally selects
+	// sp.segment_id (both scoped passes) regardless of the segmentIDs arg,
+	// so the fixture must carry the column even though this subtest passes
+	// nil segments. 157 is independent of 155/156 (depends only on 010/090,
+	// both inside approletest's 001..111 range).
+	f.applyMigration(t, "157_static_policies_segment_id.sql")
 
 	repo := NewStaticPolicyRepository(f.appRoleDB)
 	// The caller org travels via the auth context in production
@@ -258,7 +264,7 @@ func TestStaticPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 
 	t.Run("GetEffective_returns_system_baseline", func(t *testing.T) {
 		orgID := org
-		policies, err := repo.GetEffective(ctx, org, &orgID)
+		policies, err := repo.GetEffective(ctx, org, &orgID, nil)
 		if err != nil {
 			t.Fatalf("GetEffective: %v", err)
 		}

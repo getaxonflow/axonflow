@@ -909,6 +909,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	if indonesiaPIIResult.BlockRecommended {
 		log.Printf("🛑 [Decide] Request blocked by Indonesia PII detection: %s", indonesiaPIIResult.Reason)
 		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"indonesia_pii_protection"}, time.Since(startTime).Milliseconds(), []string{indonesiaPIIResult.Reason}, traceID, reqContext, contextTruncated, decisionAudit)
+		// #3242: persist the UU PDP / OJK detection events (MASKED values only)
+		// keyed to this decision, so the OJK pii_redactions export evidences the
+		// refusal and an auditor can pivot to the audit_logs row by decision_id.
+		// Best-effort; the deny above is already held. No-op in a community build.
+		recordIndonesiaPIIEvents(ctx, client.OrgID, client.TenantID, decisionID, traceID,
+			PlaneDecision, indonesiaPIIActionBlocked, indonesiaPIIResult)
 		writeDecideResponse(w, http.StatusOK, DecideResponse{
 			Verdict:           VerdictDeny,
 			DecisionID:        decisionID,
@@ -929,6 +935,15 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// slipped through unredacted on the allow path while SSN/Aadhaar redacted.
 	if indonesiaPIIResult.HasPII && gwDetectionCfg.Enabled && indonesiaPIIResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
 		indonesiaPIIRequiresRedaction = true
+	}
+	// #3242: record every non-blocking detection too. Under a warn/log posture
+	// /decide returns a plain allow and emits no redact obligation, so this event
+	// is the ONLY record that Indonesia PII was present and was not masked —
+	// which is precisely what a UU PDP auditor asks for. decisionID is stamped so
+	// the event joins to the decision row this request will write.
+	if indonesiaPIIResult.HasPII {
+		recordIndonesiaPIIEvents(ctx, client.OrgID, client.TenantID, decisionID, traceID,
+			PlaneDecision, indonesiaPIIActionForDecisionPlane(false, indonesiaPIIRequiresRedaction), indonesiaPIIResult)
 	}
 
 	// RBI India PII pre-check (Aadhaar / PAN / UPI / bank-account validators).

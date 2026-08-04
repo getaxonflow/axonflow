@@ -2,7 +2,7 @@
 
 **Last Updated:** April 2026
 
-**Platform Version:** 9.12.0 | **SDKs:** 9.0.0 (Go / Python / TypeScript / Java)
+**Platform Version:** 9.14.0 | **SDKs:** 9.0.0 (Go / Python / TypeScript / Java)
 
 AxonFlow supports Mistral AI models for LLM routing and orchestration. Mistral is a leading European AI company based in France, offering high-performance models with competitive pricing and EU data residency options.
 

@@ -8,6 +8,7 @@ package euaiact
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func TestConformityRepository_Integration_Create(t *testing.T) {
 	}
 
 	// Verify by retrieving
-	retrieved, err := repo.GetByID(ctx, assessment.ID)
+	retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -130,9 +131,12 @@ func TestConformityRepository_Integration_GetByID_NotFound(t *testing.T) {
 	repo := NewPostgresConformityRepository(db)
 	ctx := context.Background()
 
-	retrieved, err := repo.GetByID(ctx, "non-existent-assessment-id")
-	if err != nil {
-		t.Fatalf("GetByID() error = %v", err)
+	// #3241: a miss now returns ErrAssessmentNotFound rather than (nil, nil) - the
+	// handler needs a value it can map to 404, and "no such id" must be
+	// indistinguishable from "belongs to another organization".
+	retrieved, err := repo.GetByID(ctx, "test-org-nonexistent-lookup", "non-existent-assessment-id")
+	if !errors.Is(err, ErrAssessmentNotFound) {
+		t.Fatalf("GetByID() error = %v, want ErrAssessmentNotFound", err)
 	}
 	if retrieved != nil {
 		t.Error("Expected nil for non-existent ID")
@@ -328,7 +332,7 @@ func TestConformityRepository_Integration_Update(t *testing.T) {
 	}
 
 	// Verify update
-	retrieved, err := repo.GetByID(ctx, assessment.ID)
+	retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -387,7 +391,7 @@ func TestConformityRepository_Integration_Update_Submit(t *testing.T) {
 	}
 
 	// Verify
-	retrieved, err := repo.GetByID(ctx, assessment.ID)
+	retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -447,7 +451,7 @@ func TestConformityRepository_Integration_Update_Approve(t *testing.T) {
 	}
 
 	// Verify
-	retrieved, err := repo.GetByID(ctx, assessment.ID)
+	retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -509,7 +513,7 @@ func TestConformityRepository_Integration_Update_Reject(t *testing.T) {
 	}
 
 	// Verify
-	retrieved, err := repo.GetByID(ctx, assessment.ID)
+	retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -557,13 +561,13 @@ func TestConformityRepository_Integration_Delete(t *testing.T) {
 	}
 
 	// Delete the assessment
-	err := repo.Delete(ctx, assessment.ID)
+	err := repo.Delete(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
 	// Verify deletion
-	retrieved, err := repo.GetByID(ctx, assessment.ID)
+	retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -659,7 +663,7 @@ func TestConformityRepository_Integration_AllRiskCategories(t *testing.T) {
 			t.Fatalf("Create() error for risk category %s: %v", rc, err)
 		}
 
-		retrieved, err := repo.GetByID(ctx, assessment.ID)
+		retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 		if err != nil {
 			t.Fatalf("GetByID() error for risk category %s: %v", rc, err)
 		}
@@ -706,7 +710,7 @@ func TestConformityRepository_Integration_AllStatuses(t *testing.T) {
 			t.Fatalf("Create() error for status %s: %v", status, err)
 		}
 
-		retrieved, err := repo.GetByID(ctx, assessment.ID)
+		retrieved, err := repo.GetByID(ctx, assessment.OrgID, assessment.ID)
 		if err != nil {
 			t.Fatalf("GetByID() error for status %s: %v", status, err)
 		}

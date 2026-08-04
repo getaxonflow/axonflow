@@ -35,9 +35,43 @@ func NewOJKAuditExportService(db *sql.DB, backend cloudstorage.StorageBackend) O
 	}
 }
 
-func (s *ojkAuditExportServiceImpl) ExportAuditData(ctx context.Context, tenantID string, req *OJKAuditExportRequest) (*OJKAuditExportResponse, error) {
+// ExportAuditData produces the OJK / BI / UU PDP regulator pack for one
+// organisation and window.
+//
+// orgID is the ORGANISATION the export is scoped to (resolveOrgID). Every
+// section query predicates on it explicitly; audit_logs has no RLS, so that
+// predicate IS the tenant boundary.
+//
+// # What changed, and why the old shape had to go
+//
+// The previous dispatcher was a fallthrough chain whose `default: continue`
+// swallowed any data type it did not recognise. Two DECLARED types
+// (hitl_oversight, pii_redactions) had no case at all, so requesting either
+// returned HTTP 200 with a successful, empty, indistinguishable-from-"nothing
+// happened" section -- the worst possible answer to a regulator. Three more
+// were served by `return []T{}, 0, nil` stubs.
+//
+// The replacement is exhaustive BY CONSTRUCTION: sections are dispatched
+// through ojkSectionHandlers(), whose key set is driven from ojkAllDataTypes(),
+// and a lookup MISS produces an explicit per-section error rather than silence.
+// A test walks the declared OJKAuditDataType constants and fails if any lacks a
+// handler, so adding a constant without wiring it can no longer degrade to an
+// empty section.
+//
+// # Failure posture
+//
+// A failing section does NOT fail the whole export: the other sections are
+// still evidence, and a regulator pack that 500s because one table is missing
+// is less useful than one that says which section could not be served. Each
+// section reports its own report_state and error, and the summary rolls them
+// up. The response Status stays "completed" -- the export did complete; read
+// summary.report_state and summary.sections for what is in it.
+func (s *ojkAuditExportServiceImpl) ExportAuditData(ctx context.Context, orgID string, req *OJKAuditExportRequest) (*OJKAuditExportResponse, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("database connection not available")
+	}
+	if strings.TrimSpace(orgID) == "" {
+		return nil, errOrgScopeRequired
 	}
 
 	startDate, err := time.Parse("2006-01-02", req.StartDate)
@@ -48,6 +82,19 @@ func (s *ojkAuditExportServiceImpl) ExportAuditData(ctx context.Context, tenantI
 	if err != nil {
 		return nil, fmt.Errorf("invalid end_date: %w", err)
 	}
+	// end_date is a DATE; a caller asking for 2026-08-03 means the whole of that
+	// day. Parsed as-is it is midnight, so every row after 00:00:00 on the final
+	// day silently fell outside the window. Extend to the end of the day.
+	//
+	// The window is UTC at BOTH ends, deliberately and explicitly: audit_logs
+	// timestamps are written UTC, so a UTC window slices them without an offset
+	// artefact. An Indonesian reader should know that a request for
+	// "2026-08-03" therefore covers 2026-08-03T00:00Z..T23:59Z, which is
+	// 07:00..07:00 WIB (UTC+7), not local midnight to midnight. Interpreting the
+	// dates in WIB would make the boundary depend on a deployment config value
+	// and silently re-slice every historical export; the documented UTC window
+	// is the honest choice and is stated in the API reference.
+	endDate = endDate.Add(24*time.Hour - time.Nanosecond)
 
 	if req.Format == "" {
 		req.Format = OJKFormatJSON
@@ -56,122 +103,245 @@ func (s *ojkAuditExportServiceImpl) ExportAuditData(ctx context.Context, tenantI
 		req.Framework = OJKFrameworkCombined
 	}
 
-	exportID := uuid.New().String()
+	profile := resolveFrameworkProfile(req.Framework)
+	requested, fromFramework := resolveRequestedDataTypes(req.DataTypes, profile)
+	handlers := ojkSectionHandlers()
 
 	data := &OJKAuditExportData{}
-	recordsByType := make(map[string]int)
+	recordsByType := make(map[string]int, len(requested))
+	sections := make([]OJKSectionStatus, 0, len(requested))
 	totalRecords := 0
 
-	dataTypes := req.DataTypes
-	if len(dataTypes) == 0 {
-		dataTypes = []OJKAuditDataType{OJKDataTypeAll}
-	}
+	for _, dt := range requested {
+		status := OJKSectionStatus{
+			DataType:         dt,
+			InFrameworkScope: profile.inScope(dt),
+		}
 
-	for _, dt := range dataTypes {
-		switch dt {
-		case OJKDataTypePolicyViolations, OJKDataTypeAll:
-			violations, count, qErr := s.queryPolicyViolations(ctx, tenantID, startDate, endDate)
-			if qErr != nil {
-				return nil, fmt.Errorf("querying policy violations: %w", qErr)
-			}
-			data.PolicyViolations = violations
-			recordsByType["policy_violations"] = count
-			totalRecords += count
-			if dt != OJKDataTypeAll {
-				continue
-			}
-			fallthrough
-		case OJKDataTypeLLMCalls:
-			if dt == OJKDataTypeLLMCalls || dt == OJKDataTypeAll {
-				calls, count, qErr := s.queryLLMCalls(ctx, tenantID, startDate, endDate)
-				if qErr != nil {
-					return nil, fmt.Errorf("querying llm calls: %w", qErr)
-				}
-				data.LLMCalls = calls
-				recordsByType["llm_calls"] = count
-				totalRecords += count
-			}
-			if dt != OJKDataTypeAll {
-				continue
-			}
-			fallthrough
-		case OJKDataTypeDecisionChain:
-			if dt == OJKDataTypeDecisionChain || dt == OJKDataTypeAll {
-				chains, count, qErr := s.queryDecisionChains(ctx, tenantID, startDate, endDate)
-				if qErr != nil {
-					return nil, fmt.Errorf("querying decision chains: %w", qErr)
-				}
-				data.DecisionChains = chains
-				recordsByType["decision_chain"] = count
-				totalRecords += count
-			}
-			if dt != OJKDataTypeAll {
-				continue
-			}
-			fallthrough
-		case OJKDataTypeCrossBorder:
-			if dt == OJKDataTypeCrossBorder || dt == OJKDataTypeAll {
-				transfers, count, qErr := s.queryCrossBorderTransfers(ctx, tenantID, startDate, endDate)
-				if qErr != nil {
-					return nil, fmt.Errorf("querying cross-border transfers: %w", qErr)
-				}
-				data.CrossBorder = transfers
-				recordsByType["cross_border_transfers"] = count
-				totalRecords += count
-			}
-			if dt != OJKDataTypeAll {
-				continue
-			}
-			fallthrough
-		case OJKDataTypeBreachNotify:
-			if dt == OJKDataTypeBreachNotify || dt == OJKDataTypeAll {
-				breaches, count, qErr := s.queryBreachNotifications(ctx, tenantID, startDate, endDate)
-				if qErr != nil {
-					return nil, fmt.Errorf("querying breach notifications: %w", qErr)
-				}
-				data.BreachNotifications = breaches
-				recordsByType["breach_notifications"] = count
-				totalRecords += count
-			}
-			if dt != OJKDataTypeAll {
-				continue
-			}
-			fallthrough
-		default:
+		handler, known := handlers[dt]
+		if !known {
+			// EXPLICIT, not silent. This is the class the old `default: continue`
+			// hid: an unknown or not-yet-implemented data type now names itself.
+			status.ReportState = OJKReportStateNotAvailable
+			status.ErrorKind = OJKSectionErrorNotImplemented
+			status.Error = fmt.Sprintf("unknown data type %q: no export section is implemented for it (supported: %s)",
+				string(dt), joinDataTypes(ojkAllDataTypes()))
+			sections = append(sections, status)
 			continue
 		}
+
+		res := handler(ctx, s, orgID, startDate, endDate, data)
+		status.RecordCount = res.count
+		switch {
+		case res.err != nil:
+			// Both a missing table and a hard query failure are not_available --
+			// the section could not be produced either way, and neither may be
+			// read as a clean zero. They are DISTINGUISHED by ErrorKind, because
+			// "this deployment structurally cannot produce human-oversight
+			// evidence" and "that read failed once" are different things to tell
+			// a regulator. Before this the `unavailable` flag was computed and
+			// never surfaced.
+			status.ReportState = OJKReportStateNotAvailable
+			status.ErrorKind = OJKSectionErrorQueryFailed
+			if res.unavailable {
+				status.ErrorKind = OJKSectionErrorStoreAbsent
+			}
+			status.Error = res.err.Error()
+		case res.count == 0:
+			status.ReportState = OJKReportStateEnabledEmpty
+		default:
+			status.ReportState = OJKReportStatePopulated
+		}
+		if status.Error == "" {
+			recordsByType[string(dt)] = res.count
+			totalRecords += res.count
+		}
+		status.Note = sectionNote(profile, dt, res, status)
+		sections = append(sections, status)
 	}
 
-	// Compute checksum
-	dataJSON, _ := json.Marshal(data)
+	// Checksum over the DATA only -- the summary, timestamps and export id are
+	// excluded so re-running the SAME request over the SAME rows is verifiably
+	// reproducible. It is NOT stable across frameworks: a framework selects the
+	// sections, so BI_PJP (no model-activity register) and OJK_BI_COMBINED over
+	// identical rows legitimately produce different data and different
+	// checksums. An auditor comparing two packs must compare like for like.
+	dataJSON, marshalErr := json.Marshal(data)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("serializing export data: %w", marshalErr)
+	}
 	hash := sha256.Sum256(dataJSON)
 	checksum := hex.EncodeToString(hash[:])
 
-	resp := &OJKAuditExportResponse{
-		ExportID:  exportID,
-		Status:    "completed",
-		Framework: req.Framework,
-		Format:    req.Format,
-		Summary: &OJKAuditExportSummary{
-			TotalRecords:  totalRecords,
-			RecordsByType: recordsByType,
-			DateRange: DateRange{
-				Start: startDate,
-				End:   endDate,
-			},
-			ComplianceScore: s.calculateComplianceScore(ctx, tenantID),
+	summary := &OJKAuditExportSummary{
+		TotalRecords:  totalRecords,
+		RecordsByType: recordsByType,
+		DateRange: DateRange{
+			Start: startDate,
+			End:   endDate,
 		},
-		Data:      data,
-		CreatedAt: time.Now().UTC(),
-		Metadata: &OJKExportMetadata{
-			ExportVersion: "1.0.0",
-			GeneratedBy:   "axonflow-ojk-module",
-			TenantID:      tenantID,
-			Checksum:      checksum,
-		},
+		ReportState:      rollUpReportState(sections),
+		Sections:         sections,
+		FrameworkSummary: profile.frameworkSummary(req.Framework),
+	}
+	// The compliance score rides on every export, so it must carry the same
+	// observability qualifier the readiness endpoint does -- a bare float that
+	// cannot say "four of five dimensions were unreadable" is exactly the kind of
+	// unqualified number a regulator pack should not contain.
+	if readiness, rErr := s.ValidateComplianceReadiness(ctx, orgID); rErr == nil {
+		summary.ComplianceScore = float64(readiness.Score) / 100.0
+		summary.ComplianceScoreUnknownChecks = readiness.UnknownChecks
+	} else {
+		summary.ComplianceScore = 0
+		summary.ComplianceScoreUnknownChecks = -1
+	}
+	if !fromFramework {
+		summary.FrameworkSummary.Notes = strings.TrimSpace(summary.FrameworkSummary.Notes +
+			" Sections were selected by an explicit data_types request, not by the framework; out-of-scope sections are flagged per section.")
 	}
 
-	return resp, nil
+	// The body this handler writes is ALWAYS JSON (writeJSON sets
+	// Content-Type: application/json and marshals Data inline). csv and xml are
+	// accepted by the request validator and are produced by no renderer on this
+	// endpoint -- the async facade owns rendering (#2892 D2). So the response
+	// reports the format it IS, and says so explicitly when that differs from
+	// what was asked for, rather than echoing the request back as a label on
+	// content that does not match it.
+	producedFormat := OJKFormatJSON
+	requestedFormat := OJKExportFormat("")
+	formatNote := ""
+	if req.Format != OJKFormatJSON {
+		requestedFormat = req.Format
+		formatNote = fmt.Sprintf(
+			"This response body is JSON. %q was requested but is not produced by this endpoint; "+
+				"the data is inline above. Use the compliance-report facade for rendered output.",
+			string(req.Format))
+	}
+
+	return &OJKAuditExportResponse{
+		ExportID:        uuid.New().String(),
+		Status:          "completed",
+		Framework:       req.Framework,
+		Format:          producedFormat,
+		RequestedFormat: requestedFormat,
+		FormatNote:      formatNote,
+		Summary:         summary,
+		Data:            data,
+		CreatedAt:       time.Now().UTC(),
+		Metadata: &OJKExportMetadata{
+			ExportVersion: ojkExportVersion,
+			GeneratedBy:   "axonflow-ojk-module",
+			TenantID:      orgID,
+			Checksum:      checksum,
+		},
+	}, nil
+}
+
+// ojkExportVersion is bumped when the export CONTRACT changes in a way a
+// consumer must notice. 2.0.0: per-section report_state + explicit section
+// errors + framework-driven section selection (#3242). A 1.0.0 consumer that
+// inferred "module not enabled" from an empty body must move to
+// summary.report_state.
+const ojkExportVersion = "2.0.0"
+
+// sectionHandler produces one export section, writing its records into data and
+// returning the outcome. Signature is uniform across sections so the dispatcher
+// is a table lookup rather than a switch that can grow a silent default.
+type sectionHandler func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult
+
+// ojkSectionHandlers is the single dispatch table. Its key set MUST equal
+// ojkAllDataTypes(); TestEveryDeclaredDataTypeHasASectionHandler enforces that
+// against the DECLARED OJKAuditDataType constants (parsed from source), so a
+// new constant without a handler fails a test instead of silently producing an
+// empty section.
+func ojkSectionHandlers() map[OJKAuditDataType]sectionHandler {
+	return map[OJKAuditDataType]sectionHandler{
+		OJKDataTypePolicyViolations: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryPolicyViolations(ctx, orgID, start, end)
+			data.PolicyViolations = records
+			return res
+		},
+		OJKDataTypeLLMCalls: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryLLMCalls(ctx, orgID, start, end)
+			data.LLMCalls = records
+			return res
+		},
+		OJKDataTypeDecisionChain: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryDecisionChains(ctx, orgID, start, end)
+			data.DecisionChains = records
+			data.DecisionChainGroups = groupOJKDecisionChains(records)
+			return res
+		},
+		OJKDataTypeHITLOversight: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryHITLOversight(ctx, orgID, start, end)
+			data.HITLRecords = records
+			return res
+		},
+		OJKDataTypePIIRedactions: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryPIIRedactions(ctx, orgID, start, end)
+			data.PIIRedactions = records
+			return res
+		},
+		OJKDataTypeCrossBorder: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryCrossBorderTransfers(ctx, orgID, start, end)
+			data.CrossBorder = records
+			return res
+		},
+		OJKDataTypeBreachNotify: func(ctx context.Context, s *ojkAuditExportServiceImpl, orgID string, start, end time.Time, data *OJKAuditExportData) sectionResult {
+			records, res := s.queryBreachNotifications(ctx, orgID, start, end)
+			data.BreachNotifications = records
+			return res
+		},
+	}
+}
+
+// rollUpReportState reduces the per-section states to one summary state.
+// populated wins over everything (there IS evidence); not_available is reported
+// only when NO section could be served, so one missing table never makes a
+// populated pack read as "module not enabled".
+func rollUpReportState(sections []OJKSectionStatus) OJKReportState {
+	if len(sections) == 0 {
+		return OJKReportStateNotAvailable
+	}
+	allUnavailable := true
+	for _, sec := range sections {
+		if sec.ReportState == OJKReportStatePopulated {
+			return OJKReportStatePopulated
+		}
+		if sec.ReportState != OJKReportStateNotAvailable {
+			allUnavailable = false
+		}
+	}
+	if allUnavailable {
+		return OJKReportStateNotAvailable
+	}
+	return OJKReportStateEnabledEmpty
+}
+
+// sectionNote explains a section to the reader: the framework relevance when it
+// is in scope, why it is present when it is not, and any truncation.
+func sectionNote(p frameworkProfile, dt OJKAuditDataType, res sectionResult, status OJKSectionStatus) string {
+	parts := make([]string, 0, 2)
+	if status.InFrameworkScope {
+		if rel := p.relevance[dt]; rel != "" {
+			parts = append(parts, rel)
+		}
+	} else if status.Error == "" {
+		parts = append(parts, "Supplementary: explicitly requested, outside the selected framework's scope.")
+	}
+	if res.truncated {
+		parts = append(parts, fmt.Sprintf("TRUNCATED at the %d-row section limit; narrow the date range for a complete section.", ojkSectionLimit))
+	}
+	return strings.Join(parts, " ")
+}
+
+// joinDataTypes renders a data-type list for an error message.
+func joinDataTypes(types []OJKAuditDataType) string {
+	out := make([]string, 0, len(types))
+	for _, t := range types {
+		out = append(out, string(t))
+	}
+	return strings.Join(out, ", ")
 }
 
 func (s *ojkAuditExportServiceImpl) GetExportStatus(ctx context.Context, tenantID string, exportID string) (*OJKAuditExportResponse, error) {
@@ -186,92 +356,12 @@ func (s *ojkAuditExportServiceImpl) GetExportStatus(ctx context.Context, tenantI
 	}, nil
 }
 
-func (s *ojkAuditExportServiceImpl) GetRetentionStatus(ctx context.Context, tenantID string, req *OJKRetentionStatusRequest) (*OJKRetentionStatusResponse, error) {
-	if s.db == nil {
-		return nil, fmt.Errorf("database connection not available")
-	}
+// GetRetentionStatus is implemented in retention.go, where each data type's
+// entry is derived from its backing store rather than returned as an
+// unconditional empty slice.
 
-	retentionDays := s.getEffectiveRetentionDays()
-	status := "compliant"
-	if retentionDays < IndonesiaRetentionDays {
-		status = "non_compliant"
-	}
-
-	resp := &OJKRetentionStatusResponse{
-		ComplianceStatus: status,
-		Framework:        OJKFrameworkCombined,
-		RetentionDays:    retentionDays,
-		MinRetentionDays: IndonesiaRetentionDays,
-		DataTypes:        []OJKDataTypeRetentionStatus{},
-	}
-
-	return resp, nil
-}
-
-func (s *ojkAuditExportServiceImpl) ValidateComplianceReadiness(ctx context.Context, tenantID string) (*OJKComplianceReadinessResponse, error) {
-	checks := []OJKComplianceCheck{
-		{
-			Name:        "Data Retention",
-			Description: "OJK requires minimum 5-year retention of AI decision records",
-			Status:      "pass",
-			Details:     fmt.Sprintf("Retention configured at %d days (minimum %d)", s.getEffectiveRetentionDays(), IndonesiaRetentionDays),
-		},
-		{
-			Name:        "PII Detection",
-			Description: "NIK, NPWP, and bank account detection must be active per UU PDP",
-			Status:      "pass",
-			Details:     "Indonesia PII detection patterns registered (NIK, NPWP legacy, NPWP new, phone, BCA, Mandiri, BRI, BNI)",
-		},
-		{
-			Name:        "Human Oversight",
-			Description: "OJK AI Governance requires human oversight for material decisions",
-			Status:      "pass",
-			Details:     "HITL approval gates active via Plans API",
-		},
-		{
-			Name:        "Audit Logging",
-			Description: "Complete audit trail of AI inputs, outputs, and actions",
-			Status:      "pass",
-			Details:     "Agent + orchestrator audit logging active",
-		},
-		{
-			Name:        "Breach Notification",
-			Description: "UU PDP Art. 46 requires notification within 3x24 hours",
-			Status:      "pass",
-			Details:     "Breach notification endpoint available at POST /api/v1/ojk/breach/notify",
-		},
-	}
-
-	retentionDays := s.getEffectiveRetentionDays()
-	if retentionDays < IndonesiaRetentionDays {
-		checks[0].Status = "fail"
-		checks[0].Details = fmt.Sprintf("Retention is %d days, minimum required is %d", retentionDays, IndonesiaRetentionDays)
-	}
-
-	score := 0
-	passCount := 0
-	for _, c := range checks {
-		if c.Status == "pass" {
-			passCount++
-		}
-	}
-	if len(checks) > 0 {
-		score = (passCount * 100) / len(checks)
-	}
-
-	var recommendations []string
-	if retentionDays < IndonesiaRetentionDays {
-		recommendations = append(recommendations, "Increase data retention to at least 1825 days (5 years) for OJK compliance")
-	}
-
-	return &OJKComplianceReadinessResponse{
-		Ready:           score >= 80,
-		Score:           score,
-		Framework:       OJKFrameworkCombined,
-		Checks:          checks,
-		Recommendations: recommendations,
-	}, nil
-}
+// ValidateComplianceReadiness is implemented in readiness.go, where each check
+// QUERIES the state it claims to measure or reports "unknown".
 
 func (s *ojkAuditExportServiceImpl) SubmitBreachNotification(ctx context.Context, tenantID string, req *OJKBreachNotification) (*OJKBreachNotification, error) {
 	if s.db == nil {
@@ -440,48 +530,8 @@ func (s *ojkAuditExportServiceImpl) EvaluateBreachDeadlines(ctx context.Context,
 	return int(flipped), nil
 }
 
-func (s *ojkAuditExportServiceImpl) GetDashboard(ctx context.Context, tenantID string) (*OJKDashboardResponse, error) {
-	score := 0
-	readiness, err := s.ValidateComplianceReadiness(ctx, tenantID)
-	if err == nil {
-		score = readiness.Score
-	}
-
-	// Real breach-notification counts (replaces the prior literal 0): total
-	// recorded for the org + how many are effectively overdue right now.
-	totalBreaches, overdueBreaches := 0, 0
-	if s.db != nil {
-		t, o, qErr := s.countBreachNotifications(ctx, tenantID)
-		if qErr != nil {
-			return nil, fmt.Errorf("counting breach notifications: %w", qErr)
-		}
-		totalBreaches, overdueBreaches = t, o
-	}
-
-	return &OJKDashboardResponse{
-		Framework:                  OJKFrameworkCombined,
-		ComplianceScore:            score,
-		TotalAuditRecords:          0,
-		ActivePolicies:             8, // 8 Indonesia PII patterns
-		RecentViolations:           0,
-		RetentionStatus:            "compliant",
-		BreachNotifications:        totalBreaches,
-		OverdueBreachNotifications: overdueBreaches,
-		LastUpdated:                time.Now().UTC(),
-	}, nil
-}
-
-func (s *ojkAuditExportServiceImpl) queryPolicyViolations(ctx context.Context, tenantID string, start, end time.Time) ([]OJKPolicyViolationRecord, int, error) {
-	return []OJKPolicyViolationRecord{}, 0, nil
-}
-
-func (s *ojkAuditExportServiceImpl) queryLLMCalls(ctx context.Context, tenantID string, start, end time.Time) ([]OJKLLMCallRecord, int, error) {
-	return []OJKLLMCallRecord{}, 0, nil
-}
-
-func (s *ojkAuditExportServiceImpl) queryDecisionChains(ctx context.Context, tenantID string, start, end time.Time) ([]OJKDecisionChainRecord, int, error) {
-	return []OJKDecisionChainRecord{}, 0, nil
-}
+// GetDashboard is implemented in readiness.go, where every count is derived
+// from an org-scoped query rather than a literal.
 
 // queryCrossBorderTransfers returns cross-border data-transfer records for
 // UU PDP Pasal 56 surfacing. A transfer record is any canonical decision row
@@ -499,26 +549,37 @@ func (s *ojkAuditExportServiceImpl) queryDecisionChains(ctx context.Context, ten
 // audit_logs is NOT FORCE ROW LEVEL SECURITY (migration 101 deliberately left it
 // unprotected for the cross-org cleanup worker), so this read needs no
 // withOrgScope wrap; it mirrors the proven SEBI exportDecisionChain pattern
-// (#2588). The OJK tenantID argument is used loosely as either the org_id or
-// tenant_id label across callers, so both columns are matched. The
-// `transfer_basis IS NOT NULL` filter selects ONLY declared cross-border
-// transfers, so SEBI/euaiact decision rows (which never carry a basis) are never
-// swept in.
-func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Context, tenantID string, start, end time.Time) ([]CrossBorderTransferRecord, int, error) {
+// (#2588). The `transfer_basis IS NOT NULL` filter selects ONLY declared
+// cross-border transfers, so SEBI/euaiact decision rows (which never carry a
+// basis) are never swept in.
+//
+// TENANCY (#3242): the predicate was `(tenant_id = $1 OR org_id = $1)`, a
+// cross-tenant leak with no RLS backstop on this table. It now uses the shared
+// ojkOrgPredicate, which every audit_logs read in this module uses verbatim --
+// see its doc comment for why neither the bare OR nor a bare `org_id = $1` is
+// correct.
+func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Context, orgID string, start, end time.Time) ([]CrossBorderTransferRecord, sectionResult) {
 	records := []CrossBorderTransferRecord{}
+	if strings.TrimSpace(orgID) == "" {
+		return records, sectionResult{err: errOrgScopeRequired}
+	}
 	rows, qErr := s.db.QueryContext(ctx,
 		`SELECT id, timestamp, COALESCE(data_residency, ''), COALESCE(transfer_basis, '')
 		   FROM audit_logs
-		  WHERE (tenant_id = $1 OR org_id = $1)
+		  WHERE `+ojkOrgPredicate+`
 		    AND transfer_basis IS NOT NULL
 		    AND transfer_basis <> ''
 		    AND timestamp >= $2
 		    AND timestamp <= $3
-		  ORDER BY timestamp DESC`,
-		tenantID, start, end,
+		  ORDER BY timestamp DESC
+		  LIMIT $4`,
+		orgID, start, end, ojkSectionLimit,
 	)
 	if qErr != nil {
-		return nil, 0, qErr
+		if isUndefinedTableErr(qErr) {
+			return records, sectionResult{unavailable: true, err: fmt.Errorf("audit_logs is not present on this deployment: %w", qErr)}
+		}
+		return records, sectionResult{err: qErr}
 	}
 	defer rows.Close()
 
@@ -530,7 +591,7 @@ func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Contex
 			transferBasis string
 		)
 		if scanErr := rows.Scan(&id, &ts, &dataResidency, &transferBasis); scanErr != nil {
-			return nil, 0, scanErr
+			return records, sectionResult{err: scanErr}
 		}
 		records = append(records, CrossBorderTransferRecord{
 			ID:                 id,
@@ -541,9 +602,9 @@ func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Contex
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return records, sectionResult{err: err}
 	}
-	return records, len(records), nil
+	return records, sectionResult{count: len(records), truncated: len(records) == ojkSectionLimit}
 }
 
 // queryBreachNotifications returns breach-notification records for the org whose
@@ -552,10 +613,13 @@ func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Contex
 // has silently crossed its 72h window reads "overdue" without a sweep having
 // run. StoredStatus carries the durable DB value for auditors who need the
 // operator-driven fact. Rows are org-scoped (RLS + explicit org_id predicate).
-func (s *ojkAuditExportServiceImpl) queryBreachNotifications(ctx context.Context, tenantID string, start, end time.Time) ([]OJKBreachNotificationRecord, int, error) {
+func (s *ojkAuditExportServiceImpl) queryBreachNotifications(ctx context.Context, orgID string, start, end time.Time) ([]OJKBreachNotificationRecord, sectionResult) {
 	records := []OJKBreachNotificationRecord{}
+	if strings.TrimSpace(orgID) == "" {
+		return records, sectionResult{err: errOrgScopeRequired}
+	}
 	now := time.Now().UTC()
-	err := withOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+	err := withOrgScope(ctx, s.db, orgID, func(tx *sql.Tx) error {
 		rows, qErr := tx.QueryContext(ctx,
 			`SELECT id, incident_timestamp, discovery_time, notification_deadline,
 			        data_subjects_affected, data_types_involved, notified_authority,
@@ -564,8 +628,9 @@ func (s *ojkAuditExportServiceImpl) queryBreachNotifications(ctx context.Context
 			  WHERE org_id = $1
 			    AND discovery_time >= $2
 			    AND discovery_time <= $3
-			  ORDER BY discovery_time DESC`,
-			tenantID, start, end,
+			  ORDER BY discovery_time DESC
+			  LIMIT $4`,
+			orgID, start, end, ojkSectionLimit,
 		)
 		if qErr != nil {
 			return qErr
@@ -620,9 +685,12 @@ func (s *ojkAuditExportServiceImpl) queryBreachNotifications(ctx context.Context
 		return rows.Err()
 	})
 	if err != nil {
-		return nil, 0, err
+		if isUndefinedTableErr(err) {
+			return records, sectionResult{unavailable: true, err: fmt.Errorf("ojk_breach_notifications is not present on this deployment (enterprise migration 130 not applied): %w", err)}
+		}
+		return records, sectionResult{err: err}
 	}
-	return records, len(records), nil
+	return records, sectionResult{count: len(records), truncated: len(records) == ojkSectionLimit}
 }
 
 // countBreachNotifications returns the total breach notifications recorded for
@@ -675,12 +743,4 @@ func (s *ojkAuditExportServiceImpl) getEffectiveRetentionDays() int {
 		return IndonesiaRetentionDays
 	}
 	return 3650 // Enterprise default (10 years)
-}
-
-func (s *ojkAuditExportServiceImpl) calculateComplianceScore(ctx context.Context, tenantID string) float64 {
-	readiness, err := s.ValidateComplianceReadiness(ctx, tenantID)
-	if err != nil {
-		return 0.0
-	}
-	return float64(readiness.Score) / 100.0
 }

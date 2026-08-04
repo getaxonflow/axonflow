@@ -590,6 +590,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 	rbiPIIRequiresRedaction := false
 	indonesiaPIIRequiresRedaction := false
+	// #3242: a non-blocking Indonesia PII detection is held here and recorded at
+	// the terminal exit, where the pre-check's context id exists to join on.
+	var indonesiaPIIPendingRecord *indonesia.IndonesiaPIICheckResult
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock
 
 	// OJK/UU PDP Compliance: Check Indonesia-specific PII FIRST (NIK, NPWP, +62, bank accounts).
@@ -611,6 +614,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, indonesiaPIIResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
 		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{indonesiaPIIResult.Reason}, preCheckAudit)
+		// #3242: persist the UU PDP / OJK detection events (MASKED values only) so
+		// the OJK pii_redactions export can evidence this refusal. Best-effort;
+		// the block above is already held. No-op in a community build.
+		recordIndonesiaPIIEvents(ctx, client.OrgID, client.TenantID, response.ContextID, response.TraceID,
+			PlaneGateway, indonesiaPIIActionBlocked, indonesiaPIIResult)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -625,6 +633,17 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("⚠️ [Pre-check] Indonesia PII detected (non-critical): %v", indonesiaPIIResult.DetectedTypes)
 		}
+		// #3242: the non-blocking paths matter MOST to an auditor — under a
+		// warn/log posture the content is forwarded unmodified and this event is
+		// the only record that Indonesia PII was present. The action distinguishes
+		// "we required redaction" from "we saw it and did nothing".
+		//
+		// Recording is DEFERRED to the terminal exit rather than done here: the
+		// pre-check's context id (the join key back to the audit_logs decision
+		// row) is minted at that exit, and an event with no join key can never be
+		// pivoted from the redaction to the decision that carries the verdict —
+		// which is the whole point of the UU PDP processing-record pillar.
+		indonesiaPIIPendingRecord = indonesiaPIIResult
 	}
 
 	// RBI FREE-AI Compliance: Check for India-specific PII (Aadhaar, PAN, IFSC, bank accounts)
@@ -878,6 +897,23 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	recordGatewayPreCheckAudit(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
 		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
 		response.Policies, reasonsFromPreCheck(response, policyResult), preCheckAudit)
+
+	// #3242: the deferred non-blocking Indonesia PII detection, recorded HERE
+	// because this is where contextID exists — the same key the canonical audit
+	// row above is written under, so an auditor can pivot from the redaction
+	// event to the decision that carries the verdict. Recording it at the
+	// detection site instead would have left every allow-path event permanently
+	// unjoinable, and the UU PDP processing-record pillar rests on that pivot.
+	//
+	// The action is the PDP vocabulary: this plane never masks anything itself,
+	// it sets RequiresRedaction and the calling SDK acts. Best-effort; no-op in
+	// a community build.
+	if indonesiaPIIPendingRecord != nil {
+		recordIndonesiaPIIEvents(ctx, client.OrgID, client.TenantID, contextID, response.TraceID,
+			PlaneGateway,
+			indonesiaPIIActionForDecisionPlane(false, indonesiaPIIRequiresRedaction),
+			indonesiaPIIPendingRecord)
+	}
 
 	// Record metrics
 	latencyMs := time.Since(startTime).Milliseconds()

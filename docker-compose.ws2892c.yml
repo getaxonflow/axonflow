@@ -1,0 +1,65 @@
+# WS-C isolation overlay (#3243, epic #2892).
+#
+# Same shape as docker-compose.ws12.yml: a unique container_name (ws2892c-*)
+# and a remapped host port per service so this compliance-E2E stack coexists
+# with any other worktree's stack on the same daemon. `container_name` is
+# daemon-global, so `-p ws2892c` alone is NOT isolation, and `ports:` MERGE
+# across -f files, so `!override` is required or the inherited host port is
+# re-bound and collides.
+#
+# Driven by scripts/ws2892c-compliance-e2e-up.sh. Use with:
+#   docker compose -p ws2892c -f docker-compose.yml -f docker-compose.enterprise.yml \
+#     -f docker-compose.portal-ui.yml -f docker-compose.ws2892c.yml up -d
+#
+# Ports: agent 8190, orchestrator 8191, customer-portal 8192, portal-ui 3300,
+# postgres 5452, redis 6399, prometheus 9110, grafana 3011, minio 9020/9021.
+
+services:
+  postgres:
+    container_name: ws2892c-axonflow-postgres
+    ports: !override
+      - "5452:5432"
+
+  redis:
+    container_name: ws2892c-axonflow-redis
+    ports: !override
+      - "6399:6379"
+
+  axonflow-agent:
+    container_name: ws2892c-axonflow-agent
+    ports: !override
+      - "8190:8080"
+
+  axonflow-orchestrator:
+    container_name: ws2892c-axonflow-orchestrator
+    ports: !override
+      - "8191:8081"
+
+  axonflow-customer-portal:
+    container_name: ws2892c-axonflow-customer-portal
+    ports: !override
+      - "8192:8080"
+
+  axonflow-customer-portal-ui:
+    container_name: ws2892c-axonflow-customer-portal-ui
+    ports: !override
+      - "3300:3000"
+
+  prometheus:
+    container_name: ws2892c-axonflow-prometheus
+    ports: !override
+      - "9110:9090"
+
+  grafana:
+    container_name: ws2892c-axonflow-grafana
+    ports: !override
+      - "3011:3000"
+
+  minio:
+    container_name: ws2892c-axonflow-minio
+    ports: !override
+      - "9020:9000"
+      - "9021:9001"
+
+  minio-init:
+    container_name: ws2892c-axonflow-minio-init

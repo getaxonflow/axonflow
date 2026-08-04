@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"axonflow/platform/agent/license"
 )
@@ -946,7 +947,36 @@ func staticPolicySortEqual(a, b StaticPolicy, sortBy string) bool {
 //   - Multiple live overrides on one policy now collapse to the
 //     latest-created override (one row per policy), where the old LEFT JOIN
 //     emitted a duplicate EffectiveStaticPolicy per override row.
-func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID string, orgID *string) ([]EffectiveStaticPolicy, error) {
+//
+// segmentIDs (ADR-060 #2989 P3, Decision 2 — LOCKED) is the caller's resolved
+// governance-segment set. Selection is additive and orthogonal to tier: the
+// EXISTING tier predicates on both RLS passes below (system/organization/
+// tenant) are UNCHANGED — they still decide which rows are candidates at all
+// — and a second, independent filter narrows that candidate set on EVERY
+// pass:
+//   - segment_id IS NULL rows (the overwhelming majority — every policy that
+//     predates P3, and every policy an org never scopes to a segment) pass
+//     through UNCONDITIONALLY, regardless of segmentIDs. This is what makes
+//     an org with no segment-scoped policies byte-identical to pre-P3
+//     behavior: segmentIDs being empty, nil, or non-empty can never change
+//     the result for such an org.
+//   - segment_id IS NOT NULL rows (already tier-scoped like any other row)
+//     are ADDITIONALLY required to have their segment_id in segmentIDs.
+//
+// A nil/empty segmentIDs excludes every segment-scoped row (the fail-closed
+// caller contract lives one layer up — see resolveSegmentsForPolicy in
+// run.go: a genuine segment-RESOLUTION error must deny the whole request
+// before ever reaching here, never silently call this with an empty set as
+// if the caller had zero segments).
+//
+// Override-downgrade path (Enterprise policy_overrides, applied in Go from
+// the pass-A override map): segment-scoped policies do NOT participate in it
+// (ADR-060 Decision 1) — the map lookup below is gated on
+// policy.SegmentID == nil regardless of what the override map contains for
+// that policy ID — because the combiner (see tier_aware_policy_engine.go)
+// treats a segment policy's action as an unconditional, un-downgradable
+// restriction candidate.
+func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID string, orgID *string, segmentIDs []string) ([]EffectiveStaticPolicy, error) {
 	orgIDStr := ""
 	if orgID != nil {
 		orgIDStr = *orgID
@@ -975,11 +1005,20 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		scopeOrg = tenantID
 	}
 
+	// pq.Array over a nil/empty slice still serializes to a valid empty
+	// Postgres array literal ('{}'), never SQL NULL, so `= ANY($N::text[])`
+	// correctly evaluates to false for every segment-scoped row (rather than
+	// NULL, which would also be non-true but is worth being explicit about).
+	segArg := segmentIDs
+	if segArg == nil {
+		segArg = []string{}
+	}
+
 	policyQuery := `
 		SELECT
 			sp.id, sp.policy_id, sp.name, sp.category, sp.pattern, sp.severity,
 			sp.description, sp.action, sp.tier, sp.priority, sp.enabled,
-			sp.organization_id, sp.tenant_id, sp.org_id,
+			sp.organization_id, sp.tenant_id, sp.org_id, sp.segment_id,
 			sp.tags, sp.metadata, sp.version,
 			sp.created_at, sp.updated_at, sp.created_by, sp.updated_by
 		FROM static_policies sp
@@ -1000,13 +1039,14 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 			var policy StaticPolicy
 			var description, createdBy, updatedBy sql.NullString
 			var policyOrgID sql.NullString
+			var segmentID sql.NullString
 			var tagsJSON, metadataJSON sql.NullString
 
 			if sErr := rows.Scan(
 				&policy.ID, &policy.PolicyID, &policy.Name, &policy.Category,
 				&policy.Pattern, &policy.Severity, &description, &policy.Action,
 				&policy.Tier, &policy.Priority, &policy.Enabled,
-				&policy.OrganizationID, &policy.TenantID, &policyOrgID,
+				&policy.OrganizationID, &policy.TenantID, &policyOrgID, &segmentID,
 				&tagsJSON, &metadataJSON, &policy.Version,
 				&policy.CreatedAt, &policy.UpdatedAt, &createdBy, &updatedBy,
 			); sErr != nil {
@@ -1018,6 +1058,10 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 			}
 			if policyOrgID.Valid {
 				policy.OrgID = policyOrgID.String
+			}
+			if segmentID.Valid && segmentID.String != "" {
+				sid := segmentID.String
+				policy.SegmentID = &sid
 			}
 			if createdBy.Valid {
 				policy.CreatedBy = createdBy.String
@@ -1055,14 +1099,17 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		tenantPolicies, pErr = scanPolicies(tx, `(
 			(sp.tier = 'organization' AND sp.organization_id::text = $2)
 			OR (sp.tier = 'tenant' AND sp.tenant_id = $1)
-		  )`, tenantID, orgIDStr)
+		  )
+		  AND (sp.segment_id IS NULL OR sp.segment_id = ANY($3::text[]))`, tenantID, orgIDStr, pq.Array(segArg))
 		if pErr != nil {
 			return pErr
 		}
 
 		// Live static overrides scoped to (tenant, org) — the same predicate
 		// the old LEFT JOIN carried. ORDER BY created_at so the map keeps the
-		// latest-created override per policy.
+		// latest-created override per policy. Overrides carry no segment_id
+		// of their own — the segment exclusion (ADR-060 Decision 1) happens
+		// at the map-lookup site below, keyed on the policy's segment_id.
 		oRows, oErr := tx.QueryContext(ctx, `
 			SELECT po.id, po.policy_id::text, po.action_override, po.enabled_override,
 			       po.expires_at, po.override_reason
@@ -1097,7 +1144,9 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 	var systemPolicies []StaticPolicy
 	err = WithOrgScope(ctx, r.db, GlobalOrgSentinel, func(tx *sql.Tx) error {
 		var pErr error
-		systemPolicies, pErr = scanPolicies(tx, `sp.tier = 'system'`)
+		systemPolicies, pErr = scanPolicies(tx,
+			`sp.tier = 'system' AND (sp.segment_id IS NULL OR sp.segment_id = ANY($1::text[]))`,
+			pq.Array(segArg))
 		return pErr
 	})
 	if err != nil {
@@ -1131,7 +1180,10 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 	policies := make([]EffectiveStaticPolicy, 0, len(merged))
 	for _, policy := range merged {
 		effective := EffectiveStaticPolicy{StaticPolicy: policy}
-		if o, ok := overrides[policy.ID]; ok {
+		// Segment-scoped policies never enter the override-downgrade path
+		// (ADR-060 Decision 1): the combiner treats their action as an
+		// unconditional, un-downgradable restriction candidate.
+		if o, ok := overrides[policy.ID]; ok && policy.SegmentID == nil {
 			effective.HasOverride = true
 			if o.action.Valid {
 				action := OverrideAction(o.action.String)
