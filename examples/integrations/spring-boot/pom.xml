@@ -33,6 +33,10 @@
         <spring-framework.version>6.2.19</spring-framework.version>
         <!-- Override Jackson to fix GHSA-72hv-8253-57qq -->
         <jackson-bom.version>2.22.1</jackson-bom.version>
+        <!-- Override Micrometer to fix CVE-2026-40983 / CVE-2026-40984
+             (micrometer-core Denial of Service; pulled transitively via
+             spring-boot-starter-actuator), published 2026-08-07 -->
+        <micrometer.version>1.15.12</micrometer.version>
     </properties>
 
     <dependencyManagement>
