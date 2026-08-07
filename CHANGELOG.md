@@ -10,6 +10,41 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+<!--
+  Version decision (Step 0): v9.15.0, MINOR. The train adds new backward-compatible
+  capabilities - SSO role auto-provisioning (#3291) and the telemetry digest's
+  per-platform-version breakdown (#3277) - so by the 2026-07-30 semver policy it is
+  a MINOR, not a patch. It also RELAXES a refusal (the /api/request empty-email
+  fail-close now proceeds org-only, #3278), which is not a breaking change. No
+  removed capability, no new required credential, no new refusal.
+-->
+
+## [9.15.0] - 2026-08-06 (in-vpc SAML SSO works end-to-end, SSO role auto-provisioning)
+
+> Scope: interactive SAML SSO login is fixed end-to-end for self-hosted in-vpc
+> deployments (it was broken in three independent places), and a first-time SSO
+> user is now assigned their group-mapped role on login. Plus the governed
+> `/api/request` empty-email fail-close is relaxed to proceed org-only, and the
+> telemetry digest breaks down by platform version. No migrations.
+
+### Enterprise
+
+#### Added
+
+- **Interactive SAML SSO login works end-to-end in in-vpc mode** *(Enterprise)* - self-hosted (in-vpc) SAML SSO was broken in three independent places and could not complete a login. Fixed: (1) the login URL is now the SSO addressing key (`getSSOTenantID`, the `__platform__` sentinel in in-vpc) instead of the org id, so `sso_config_org_for_tenant` resolves and login can start; (2) the ACS URL host now derives from `SSO_BASE_URL` and is recomputed at every handler build, so it points at the deployment's own portal (self-healing any stored `acs_url` written against the old hardcoded SaaS host) and the IdP delivers the assertion to the right host; (3) the callback now writes the session to `user_sessions` - the store the request validator reads via `portal_session_lookup()` - instead of `portal_users`/`portal_sessions`, tables no migration creates. **Self-hosted deployments must set `SSO_BASE_URL` to their portal's external URL** (a boot warning fires if it is unset on a non-SaaS deployment). SAML only; JumpCloud must be configured as a SAML app. (#3290, #3289)
+- **SSO users are assigned their group-mapped role on login** *(Enterprise)* - when the SSO config has `AutoProvisionUsers` enabled, a first-time SSO user (no existing active role in the org) is assigned the role from the IdP group mapping (or `DefaultRole`), so they can use the portal instead of getting 403 on every gated action. This mirrors SCIM's group-to-role sync: a direct `source='sso'` write, assign-if-absent (never downgrades an existing owner, never fights SCIM), best-effort so a provisioning failure never blocks login. Full add-and-remove membership lifecycle remains SCIM's job. (#3291)
+
+#### Changed
+
+- **Governed `/api/request` with an empty email claim now proceeds org-only instead of refusing** *(Enterprise)* - the ADR-060 segment gate previously fail-closed to 403 when a governed `/api/request` token carried no email claim. It now proceeds with org-only scoping, matching pre-v9.14 behavior; segment-scoped targeting still requires an email. This relaxes a refusal introduced in v9.14.0. (#3278)
+
+#### Internal
+
+- The telemetry digest now breaks down usage by platform version, using data already in the ingest pipeline. (#3277)
+- The enterprise-leak mirror gate was extracted to a tested, fail-closed script (`.github/scripts/check-enterprise-leak.sh`) with a regression test that fails closed on a grep error too. (#3276)
+- The self-hosted upgrade preflight gained three v9.14.0 advisories (export admin authority, `/api/request` email-claim, target-version guidance) and its version guidance now points at v9.15.0 as the release carrying the `/api/request` org-only fallback. (#3288)
+- The v9.13.0 cross-tenant forgery test now keys its assertion on the forged email so it cannot pass vacuously. (#3275)
+
 ## [9.14.1] - 2026-08-04 (patch: RBI export formats, and enterprise-only source removed from the community distribution)
 
 > Scope: one functional fix (RBI audit export accepts PDF and XLSX) plus

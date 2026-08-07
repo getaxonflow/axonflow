@@ -76,6 +76,30 @@ func resolveSegmentsForPolicy(ctx context.Context, orgID, email string, failClos
 		return nil, true // capability unavailable — not a failure, proceed org-only
 	}
 
+	// No per-user identity on this request. On the agent static plane
+	// (clientRequestHandler) `email` comes from the request's user_token, and a
+	// legitimate TENANT-kind token (the whole self-hosted client-application
+	// pattern — see scripts/generate-jwt.sh's default kind — plus every
+	// community/community-SaaS synthetic identity) carries NO email claim. An
+	// absent email is therefore "there is no user to resolve segments FOR," not
+	// a storage failure: it is capability-not-applicable, identical to a nil
+	// resolver, and must proceed org-only.
+	//
+	// This is NOT a fail-open hole in ADR-060 §Fail-closed. That contract exists
+	// so a user who BELONGS to a stricter segment cannot ESCAPE it by inducing a
+	// resolution failure. Segment membership is keyed on the user's SCIM email
+	// (scim_users.email -> scim_group_members); with no email there is no
+	// membership to escape, and this is exactly the org-only outcome every such
+	// request had before ADR-060 P3 promoted resolution to policy-affecting.
+	// Feeding an empty email into the resolver instead makes ResolveRole return
+	// its "requires an email" error, which failClosed then converts into a hard
+	// DENY of every tenant-token request — the #travel-us production outage this
+	// guard closes. A genuine resolver failure (a NON-empty email whose lookup
+	// errors) still fails closed below, unchanged.
+	if email == "" {
+		return nil, true
+	}
+
 	start := time.Now()
 	resolved, err := resolver.Resolve(ctx, orgID, email)
 	latency := time.Since(start)
