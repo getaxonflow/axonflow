@@ -25,8 +25,9 @@
 # ---------------------------------------------------------------------------
 # The sections below are grouped by the release that introduced them:
 #
-#   [1/12]–[8/12]  v8.x → v9.0 baseline (epic #2230 Phase 7)
-#   [9/12]–[12/12] v9.13.0 (the cross-tenant remediation train, epic #3071)
+#   [1/15]-[8/15]   v8.x -> v9.0 baseline (epic #2230 Phase 7)
+#   [9/15]-[12/15]  v9.13.0 (the cross-tenant remediation train, epic #3071)
+#   [13/15]-[15/15] v9.14.0 governance-gate advisories (#3248, #3057, #3278)
 #
 # The name is therefore accurate for the whole v9 line, and it is a PUBLISHED
 # entry point: docs/deployment/v7-to-v8-migration.md,
@@ -115,7 +116,7 @@ info() { printf "%bℹ️  INFO%b  %s\n" "$BLUE" "$NC" "$1"; }
 # TOTAL_CHECKS is asserted against the number of section() calls at the end. A
 # hard-coded "[3/8]" that nobody updated when a ninth check landed is a small
 # lie printed on every run, and the kind that makes an operator stop reading.
-TOTAL_CHECKS=12
+TOTAL_CHECKS=15
 SECTION_NO=0
 section() {
     SECTION_NO=$((SECTION_NO + 1))
@@ -1543,6 +1544,110 @@ for comp in agent orchestrator; do
             "AXONFLOW_CORS_ALLOWED_ORIGINS is not set and $mode_desc. Who is affected: only a browser front-end served from a DIFFERENT origin that calls the AxonFlow API directly. The bundled Customer Portal is same-origin and is fine; SDKs, curl and CI ignore CORS entirely. If you do have such a front-end, set AXONFLOW_CORS_ALLOWED_ORIGINS to its EXACT origin(s) — scheme + host + optional port, comma-separated, no suffix matching (https://example.com does NOT cover https://app.example.com) — on CloudFormation the CorsAllowedOrigins parameter. This failure is invisible server-side: the browser blocks the request, and the only trace is one startup line reading '[CORS] AXONFLOW_CORS_ALLOWED_ORIGINS is not set and DEPLOYMENT_MODE is not community: cross-origin browser requests are denied. Set AXONFLOW_CORS_ALLOWED_ORIGINS if a browser on another origin must call this API.'"
     fi
 done
+printf "\n"
+
+# ===========================================================================
+# v9.14.0 - checks 13 to 15
+# ===========================================================================
+printf "%b%b-- v9.14.0 --------------------------------------------------------------%b\n\n" "$BOLD" "$BLUE" "$NC"
+
+# These three checks are INTEGRATION-SHAPE dependent. They describe governance
+# gates that tightened in the 9.14.x line and that this script cannot observe
+# from the database alone: they live in HTTP request handling and credential
+# shape, not in the schema. So each is WARN or advisory, never a hard FAIL. A
+# preflight cannot prove which endpoints an operator's automation calls, or what
+# credential it presents, so it advises on the one thing it can read (the
+# deployment posture) and is explicit about what it cannot see.
+#
+# All three only bite in an ENTERPRISE runtime posture. Community mode
+# (DEPLOYMENT_MODE matched EXACTLY as "community") does not register the
+# compliance-export endpoints and does not govern /api/request, so the checks
+# report "not applicable" there. Anything that is NOT exactly "community",
+# INCLUDING unset (whose runtime posture is the enterprise one, #3128; see also
+# checks 10 and 12), is treated as enterprise here.
+discover_env agent DEPLOYMENT_MODE
+V914_MODE="$DISC_VALUE"; V914_MODE_STATE="$DISC_STATE"; V914_MODE_SRC="$DISC_SOURCE"
+if [[ "$V914_MODE_STATE" == "unknown" ]]; then
+    discover_env orchestrator DEPLOYMENT_MODE
+    V914_MODE="$DISC_VALUE"; V914_MODE_STATE="$DISC_STATE"; V914_MODE_SRC="$DISC_SOURCE"
+fi
+
+# V914_POSTURE: community | enterprise | unknown. "community" ONLY on an exact
+# match, mirroring the platform. A value read as empty/unset is enterprise
+# runtime posture. A mode nobody could read is "unknown", and the checks say so
+# rather than guessing an all-clear.
+if [[ "$V914_MODE_STATE" == "unknown" ]]; then
+    V914_POSTURE="unknown"
+elif [[ "$V914_MODE" == "community" ]]; then
+    V914_POSTURE="community"
+else
+    V914_POSTURE="enterprise"
+fi
+info "v9.14.0 checks use DEPLOYMENT_MODE from: $V914_MODE_SRC (state: $V914_MODE_STATE, posture: $V914_POSTURE)"
+printf "\n"
+
+# ---------------------------------------------------------------------------
+# Check 13 - Compliance-export admin authority (#3248)
+# ---------------------------------------------------------------------------
+section "Compliance-export admin authority (#3248, new in 9.14.0)"
+
+# As of 9.14.0 the compliance-export endpoints require ADMIN AUTHORITY, not just
+# tenant-wide read. A tenant-scoped internal-service / license credential that
+# carried these calls before now gets 403. This preflight cannot see which
+# endpoints an operator's automation hits or what credential it sends, so it
+# advises purely on posture and is honest that it is doing so.
+if [[ "$V914_POSTURE" == "community" ]]; then
+    pass "Community posture: the compliance-export endpoints are an Enterprise-only surface, so the #3248 admin-authority gate does not apply here"
+elif [[ "$V914_POSTURE" == "unknown" ]]; then
+    warn "Compliance-export admin authority was NOT VERIFIED (#3248)" \
+        "DEPLOYMENT_MODE could not be read for either component, so this preflight cannot tell whether the compliance-export endpoints are even present. If this deployment drives compliance-export automation (POST /api/v1/ojk/audit/export and the evidence / SEBI / euaiact / media-governance exports, plus compliance-report generate and download), be aware that as of 9.14.0 those endpoints require ADMIN AUTHORITY, not merely tenant-wide read. A tenant-scoped internal-service or license credential with no admin per-user token and no portal session now receives 403. Remedy: mint an admin or owner X-User-Token with mint-admin-token.sh and send it alongside the Basic license credential on those calls. Set AXONFLOW_AGENT_CONTAINER (or ECS_CLUSTER + ECS_AGENT_SERVICE) and re-run to resolve the mode."
+else
+    warn "Compliance-export endpoints now require ADMIN AUTHORITY, not tenant-wide read (#3248)" \
+        "As of 9.14.0, POST /api/v1/ojk/audit/export, the evidence / SEBI / euaiact / media-governance exports, and compliance-report generate and download all require ADMIN AUTHORITY rather than just tenant-wide read. A tenant-scoped credential (a Basic license credential with no admin per-user token and no portal session) now gets 403 instead of a report, so any automation that generates or downloads compliance evidence with a non-admin credential will break on upgrade. Remedy: mint an admin or owner X-User-Token with mint-admin-token.sh and send it ALONGSIDE the Basic license credential on those calls. Honest scope: this preflight cannot see your automation's credentials or which endpoints it calls (posture read: enterprise), so it advises on DEPLOYMENT_MODE alone. If you do NOT drive compliance-export automation, no action is needed."
+fi
+printf "\n"
+
+# ---------------------------------------------------------------------------
+# Check 14 - /api/request empty-email segment gate (#3057, ADR-060)
+# ---------------------------------------------------------------------------
+section "/api/request email-claim gate (#3057, ADR-060, new in 9.14.0)"
+
+# In enterprise mode a governed /api/request call whose token carries no email
+# claim fail-closes to 403 (ADR-060). This is scoped to /api/request only; the
+# decide plane and the MCP planes do not take this path. The platform fix lands
+# in 9.15.0, after which an empty email proceeds org-only rather than refusing.
+if [[ "$V914_POSTURE" == "community" ]]; then
+    pass "Community posture: /api/request is not governed by the ADR-060 email-claim gate here"
+elif [[ "$V914_POSTURE" == "unknown" ]]; then
+    warn "/api/request email-claim gate was NOT VERIFIED (#3057)" \
+        "DEPLOYMENT_MODE could not be read, so this preflight cannot tell whether the ADR-060 email-claim gate is active. In enterprise mode, a governed /api/request call whose token carries no email claim fail-closes to 403. If any caller uses /api/request, mint its token WITH an email claim (mint --kind user --email ... --org-id ...). This affects ONLY /api/request: it does NOT affect /api/v1/decide or the MCP planes. The platform fix ships in 9.15.0, after which an empty email proceeds org-only. Set AXONFLOW_AGENT_CONTAINER (or ECS_CLUSTER + ECS_AGENT_SERVICE) and re-run to resolve the mode."
+else
+    warn "/api/request fail-closes to 403 for a token with no email claim (#3057, ADR-060)" \
+        "In enterprise mode, a governed /api/request call whose token has no email claim fail-closes to 403 (ADR-060). Any caller that uses /api/request must present a token that carries an email claim: mint it with mint --kind user --email ... --org-id .... This affects ONLY /api/request. It does NOT affect /api/v1/decide or the MCP planes, whose governance does not take this path. The platform fix ships in 9.15.0, after which an empty email proceeds org-only rather than refusing; until you are on 9.15.0, ensure every /api/request token carries an email. Honest scope: this preflight cannot inspect your callers' tokens (posture read: enterprise), so it advises on DEPLOYMENT_MODE alone."
+fi
+printf "\n"
+
+# ---------------------------------------------------------------------------
+# Check 15 - Target version carries the /api/request email fix (#3278)
+# ---------------------------------------------------------------------------
+section "Target version carries the /api/request email fix (#3278)"
+
+# ADVISORY. The empty-email landmine from check 14 is present in the version
+# range [9.14.0, 9.15.0): #3278 (the org-only fallback) lands in 9.15.0. This
+# check cannot inspect the target image tag, so it prints guidance keyed on the
+# deployment posture and passes; it never blocks.
+if [[ "$V914_POSTURE" == "community" ]]; then
+    pass "Community posture: the /api/request email-claim landmine does not apply here"
+else
+    info "  Upgrading an enterprise deployment whose /api/request tokens can lack an email to a version in"
+    info "  the range [9.14.0, 9.15.0) carries the #3057 empty-email landmine from check 14: those calls"
+    info "  fail-close to 403 until the target carries #3278."
+    info "  Target 9.15.0 or later (which carries #3278, so an empty email proceeds org-only), OR ensure"
+    info "  every /api/request token carries an email claim before upgrading."
+    info "  This check cannot read the target image tag; it is advisory guidance keyed on DEPLOYMENT_MODE"
+    info "  posture only (posture read: $V914_POSTURE)."
+    pass "Target-version guidance emitted for #3278 (advisory: preflight cannot inspect the target image tag)"
+fi
 printf "\n"
 
 # ---------------------------------------------------------------------------
