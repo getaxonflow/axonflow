@@ -19,6 +19,44 @@ community mirror, **Enterprise** changes are EE-only.
   removed capability, no new required credential, no new refusal.
 -->
 
+<!--
+  Version decision (Step 0): v9.16.0, MINOR. Adds a new backward-compatible
+  capability (interactive OIDC portal login) alongside the existing SAML login,
+  plus SSRF-hardening of OIDC endpoint fetches. It also introduces a new opt-in
+  env var (AXONFLOW_OIDC_ALLOW_PRIVATE) that internal-IdP deployments MUST set to
+  keep private-address IdP fetches working - a required config for those
+  deployments, but not a removed capability or a new refusal for anyone else, so
+  MINOR by the 2026-07-30 semver policy.
+-->
+
+## [9.16.0] - 2026-08-08 (interactive OIDC portal login; OIDC endpoint SSRF hardening)
+
+> **The two editions ship in lockstep at every version.** All v9.16.0 changes are in the **Enterprise** edition (below). The **Community** edition has no functional change from v9.15.0 - its agent and orchestrator binaries are byte-identical - and is released at v9.16.0 so the two editions never diverge in version number. See the Community section below.
+
+### Enterprise
+
+#### Added
+
+- **Interactive OIDC portal login** *(Enterprise)* - the portal now supports a full browser OIDC authorization-code login (`/auth/oidc/{tenant}/login` + `/callback`), alongside SAML. It discovers the authorize/token endpoints from the configured issuer, redirects with the tenant `client_id` and an `SSO_BASE_URL`-derived `redirect_uri` (scopes `openid email profile`), then on callback validates a signed HMAC `state` (CSRF) + `nonce` (replay), exchanges the code via `client_secret_basic`, verifies the `id_token` signature against the JWKS (RS256, issuer, audience==client_id, expiry, `azp` for multi-audience id_tokens), and mints the session into `user_sessions` (the store `portal_session_lookup()` reads). Role auto-provisioning is best-effort and never blocks login. Migration **core/158** adds `oidc_client_id` + `oidc_client_secret` to `sso_configurations`; the client secret is stored with the SAME at-rest posture as `sp_private_key` (a dedicated column under the same FORCE-RLS org isolation, `json:"-"` in the app, masked in every response, never logged, never placed in an audit row) - it is not additionally application-layer encrypted, matching `sp_private_key`. `HandleCheckSSOAvailability` now returns the OIDC login URL for OIDC providers (it previously handed them the SAML URL, which 400s). (#3289)
+
+#### Changed
+
+- **OIDC IdP endpoint fetches (discovery / JWKS / token) are now SSRF-hardened** *(Enterprise)* - both the fleet Path B verifier and the new portal login flow validate resolved IPs at dial time and block redirects that would reach an internal / cloud-metadata address, closing a redirect-follow + DNS-rebinding gap the previous bare HTTP client left open. (#3289)
+
+#### Fixed
+
+- **SSO portal login no longer 500s on an unproxied connection** *(Enterprise)* - both the SAML and OIDC portal-login callbacks passed the request's raw `RemoteAddr` (`host:port`) into the session write, but `user_sessions.ip_address` is a Postgres `inet` column that rejects the port, so every login without an `X-Forwarded-For` header (a direct connection, not behind a load balancer that strips the port) failed at the session INSERT. Both callbacks now use the same port-stripping helper as password login. This is why a direct browser login could fail even where an ALB-fronted one worked. A browser (Playwright) portal-SSO e2e covering both SAML and OIDC now runs on every PR touching the login paths. (#3302)
+- **Compliance report generation + exports work out of the box on the enterprise compose** *(Enterprise)* - the enterprise `docker-compose` overlay shipped a MinIO object store but pointed the orchestrator's artifact storage at `local`, which the orchestrator treats as "no backend" (it cannot presign a `file://` URL the portal proxy can fetch), so every compliance report failed with "no artifact storage backend is configured". The overlay now defaults the orchestrator at the MinIO it already ships; all values remain overridable. (#3303)
+
+#### Upgrade notes
+
+- **Internal-IdP deployments must set `AXONFLOW_OIDC_ALLOW_PRIVATE=true` after upgrading.** The SSRF hardening above blocks IdP hosts that resolve to a PRIVATE address (RFC-1918, CGNAT, ULA, link-local, or a Kubernetes ClusterIP / `*.svc.cluster.local`). A self-hosted / in-vpc deployment running an internal Keycloak / ADFS / PingFederate for per-user OIDC tokens or portal login would otherwise have every OIDC fetch fail closed after the upgrade. Set `AXONFLOW_OIDC_ALLOW_PRIVATE=true` on the agent and customer-portal to permit private-IP IdP endpoints; a blocked fetch logs at ERROR naming the IP and this env var. Public-IdP SaaS deployments need no change (default keeps the anti-metadata hardening). This is a per-surface hatch, separate from the HITL / webhook hatches.
+- **Compliance report exports require artifact storage on self-hosted deployments.** The compliance posture and readiness dashboards work with no extra config, but *generating* a report and downloading its PDF / CSV / XLSX requires an S3-compatible object store (the orchestrator writes the artifact there and hands the portal a presigned URL). The install bundle now exposes an `AUDIT_EXPORT_*` block on the orchestrator (see `.env.example`); set it to your own durable, in-region bucket to enable exports - an in-region bucket keeps compliance evidence in jurisdiction (OJK / UU-PDP Pasal 56b, RBI locality). Left unset, dashboards still render but report generation returns "no artifact storage backend is configured". This is configuration only, no migration. (axonflow-install)
+
+### Community
+
+_No functional changes._ Released in lockstep with the Enterprise edition at v9.16.0; the community `agent` and `orchestrator` are byte-identical to v9.15.0. Every v9.16.0 change is Enterprise-only (see above) - interactive OIDC portal login and the OIDC verifier live under the enterprise build, and the additive `core/158` migration no-ops on community deployments (its `sso_configurations` table is enterprise-only). The version is cut so the Community and Enterprise editions never diverge in version number.
+
 ## [9.15.0] - 2026-08-06 (in-vpc SAML SSO works end-to-end, SSO role auto-provisioning)
 
 > Scope: interactive SAML SSO login is fixed end-to-end for self-hosted in-vpc
