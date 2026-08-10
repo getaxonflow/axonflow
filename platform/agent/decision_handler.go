@@ -851,7 +851,13 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
 				w.Header().Set("Retry-After", retryAfter)
 			}
-			traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, nil, time.Since(startTime).Milliseconds(), []string{string(cbResult.Reason)}, traceID, reqContext, contextTruncated, decisionAudit)
+			// #3243 v9.16.1: name the control that denied. This was the one
+			// /decide call site recording a deny with NO policy identity, so
+			// its rows rendered a blank (now placeholder) Policy cell on the
+			// compliance exports. "circuit_breaker" is the control's own
+			// identifier (mirroring the kill-switch's "rbi_kill_switch"), not
+			// a fabricated policy name; the reason carries the trip cause.
+			traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"circuit_breaker"}, time.Since(startTime).Milliseconds(), []string{string(cbResult.Reason)}, traceID, reqContext, contextTruncated, decisionAudit)
 			sendDecideError(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable, decisionID, traceID)
 			recordDecideMetrics("circuit_breaker", stage, origin, startTime)
 			return

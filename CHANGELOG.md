@@ -20,6 +20,44 @@ community mirror, **Enterprise** changes are EE-only.
 -->
 
 <!--
+  Version decision (Step 0): v9.16.1, PATCH. A partner-facing bug fix (the
+  compliance exports' blank Policy column) plus additive audit-row keys and an
+  additive placeholder/version rendering. No new capability surface, no removed
+  fallback, no new required credential, no new refusal - PATCH by the
+  2026-07-30 semver policy.
+-->
+
+## [9.16.1] - 2026-08-10 (compliance exports: policy attribution across all audit planes)
+
+> Scope: the OJK / BI / UU-PDP, SEBI and EU AI Act export planes, the cowork OTEL
+> ingest, the MCP check-input audit writer, and the `/api/v1/decide`
+> circuit-breaker deny. Found by a design partner on v9.16.0: the OJK report's
+> Policy column was blank for every row.
+
+### Enterprise
+
+#### Fixed
+
+- **Compliance exports resolve policy identity from EVERY audit writer's shape** *(Enterprise)* - the OJK/BI/UU-PDP, SEBI and EU AI Act exporters read only `policy_details->'policy_ids'->>0`, but the audit planes never converged on that key: the MCP check-input writer records `policy_names` + `policy_matches` (+ `policy_versions`), HITL records the singular `policy_id`/`policy_name`, legacy rows carry `policy_names` as a CSV **string**, and cowork OTEL rows recorded nothing at all - so those planes' rows rendered a blank Policy cell on regulator artifacts. All three exporters now resolve through one shared fallback chain (`policy_ids[0]` -> `policy_matches[0].policy_id` -> `policy_names` in either shape -> `policy_id` -> `policy_name`), defined once in `platform/shared/audit` and pinned by a cross-plane writer/reader contract test per writer, so a new writer key the exporters cannot read fails CI. **This part is RETROACTIVE: historical MCP check-input rows (the partner's case) fill in with the real policy id AND recorded version (`id (vN)`) on re-export, with no data migration.** (#3243 follow-up)
+- **Cowork / Claude Code OTEL rows now capture what fired** *(Enterprise, FORWARD-ONLY)* - when the ingest's storage redactor masks content, the row now records `policy_ids` (the engine's matched `sys_pii_*` ids and/or `indonesia_pii_protection` from the checksum masker - never an evaluated-but-unmatched policy), `policy_categories`, `ruleset_version` (the platform version whose redaction ruleset produced the match), and a `reason` (`"PII redaction: <categories>"`), so the export's Policy AND Description columns populate. The same ids now flow into the signed decision chain instead of `nil`, so `decision_chain` and `audit_logs` agree. A pure telemetry observation row still records no policy identity - attribution on a no-match row would be mis-attribution. Rows ingested before 9.16.1 cannot be attributed and are not backfilled (see the placeholder below); their recorded `redacted_fields` do surface in the export Description.
+- **Rows with no recorded identity render an honest placeholder, never a blank cell** *(Enterprise)* - an ACTED row (blocked / redacted / needs_approval) with no identity under any writer key now renders the single shared `Not recorded (pre-9.16.1)` placeholder across all regulator exporters. No attribution is inferred or backfilled, and rows that did not act get no placeholder (a "not recorded" on an observation row would imply a policy fired). Recorded policy versions are surfaced next to the identity (`id (vN)`) on OJK/SEBI/EUAIACT artifacts; a version never renders beside an empty identity or the placeholder.
+- **Acted rows where NO platform policy fired state that affirmatively** *(Enterprise-facing render; writers in both editions)* - a cowork/Claude Code user rejecting a tool call and a HITL gate configured with no policy identity now record a `policy_attribution` marker, and the exporters render the honest labels `None (user decision)` / `Workflow step gate (policy not named)` for them. Without this, freshly-written no-policy rows would have rendered the `(pre-9.16.1)` placeholder: a false era claim and an implied policy (caught in R3 review of this release).
+- **`/api/v1/decide` circuit-breaker denies are attributed** *(also in Community, see below)*.
+
+#### Tests
+
+- The `3243_compliance_reports_portal` runtime-e2e now asserts **Policy-column completeness** on a real OJK export: events seeded through the live cowork OTLP ingest and `/api/v1/decide` planes must render attributed cells, a planted pre-9.16.1 check-input-shaped row must heal to `id (vN)` with no new-format write, and no-identity rows must render the shared placeholder - the structural guard the 9.16.0 verification lacked.
+
+### Community
+
+#### Fixed
+
+- **MCP check-input block rows now also record `policy_ids`** - `writeExplainableAuditLog` recorded identity only as `policy_names`/`policy_matches`; it now additionally writes `policy_ids` (additive; `policy_names`/`policy_matches`/`policy_versions` are unchanged for the portal feed and explain endpoint). Forward-only on the write side.
+- **`/api/v1/decide` circuit-breaker denies now carry `policy_ids: ["circuit_breaker"]`** - previously the one decide deny path with no attribution (the kill-switch and PII denies were already attributed). Forward-only.
+- **The portal decisions feed's policy label resolves every writer key shape** - `GET /api/v1/decisions` read only `policy_id`/`policy_ids[0]`, so MCP check-input rows listed with no policy label; it now uses the same shared fallback chain (retroactive on read, like the exporters). The id-keyed policy *filter* is unchanged.
+- The shared policy-identity extraction helper (`platform/shared/audit`) compiles in community builds but has no community read surface - the compliance exporters that consume it are Enterprise-only, so the blank-Policy fix itself is Enterprise-facing.
+
+<!--
   Version decision (Step 0): v9.16.0, MINOR. Adds a new backward-compatible
   capability (interactive OIDC portal login) alongside the existing SAML login,
   plus SSRF-hardening of OIDC endpoint fetches. It also introduces a new opt-in

@@ -551,29 +551,12 @@ const mcpUnauthenticatedTenant = "unauthenticated"
 // non-tool paths (which structurally have no tool identity to report,
 // #2904/#2905) don't need updating; only the 3 advisory PLANES (check-input,
 // check_policy, /decide) have a caller-sent tool identity in scope to pass.
-func writeMCPDecisionAudit(
-	ctx context.Context,
-	db *sql.DB,
-	decisionID, requestID string,
-	tenantID, orgID, clientID, userEmail string,
-	userIDStr, userRole string,
-	requestType, query, queryHash, policyDecision string,
-	policyIDs, reasons, redactedFields []string,
-	correlationID string,
-	toolIdentity ...string,
-) {
-	if db == nil || decisionID == "" {
-		return
-	}
-
-	// Coerce user_id into an int — audit_logs.user_id is historically typed that
-	// way. Non-numeric ids (plugin pseudo-ids, emails) map to 0; the real identity
-	// travels via user_email. Mirrors writeExplainableAuditLog.
-	userIDInt := 0
-	if n, err := strconv.Atoi(userIDStr); err == nil {
-		userIDInt = n
-	}
-
+// buildMCPDecisionAuditDetails assembles the policy_details JSONB payload for
+// one MCP decision row. Pulled out of writeMCPDecisionAudit as a PURE function
+// (mirroring buildDecisionAuditDetails) so the content contract the compliance
+// exporters read -- policy_ids first of all (#3243 v9.16.1) -- is pinned by the
+// cross-plane writer/reader contract test without a database.
+func buildMCPDecisionAuditDetails(decisionID string, policyIDs, reasons, redactedFields []string, correlationID string, toolIdentity ...string) map[string]interface{} {
 	if policyIDs == nil {
 		policyIDs = []string{}
 	}
@@ -612,7 +595,33 @@ func writeMCPDecisionAudit(
 	if len(toolIdentity) > 1 && toolIdentity[1] != "" {
 		details["tool_name"] = toolIdentity[1]
 	}
-	detailsJSON, err := json.Marshal(details)
+	return details
+}
+
+func writeMCPDecisionAudit(
+	ctx context.Context,
+	db *sql.DB,
+	decisionID, requestID string,
+	tenantID, orgID, clientID, userEmail string,
+	userIDStr, userRole string,
+	requestType, query, queryHash, policyDecision string,
+	policyIDs, reasons, redactedFields []string,
+	correlationID string,
+	toolIdentity ...string,
+) {
+	if db == nil || decisionID == "" {
+		return
+	}
+
+	// Coerce user_id into an int — audit_logs.user_id is historically typed that
+	// way. Non-numeric ids (plugin pseudo-ids, emails) map to 0; the real identity
+	// travels via user_email. Mirrors writeExplainableAuditLog.
+	userIDInt := 0
+	if n, err := strconv.Atoi(userIDStr); err == nil {
+		userIDInt = n
+	}
+
+	detailsJSON, err := json.Marshal(buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, toolIdentity...))
 	if err != nil {
 		log.Printf("mcp decision audit: marshal failed: %v", err)
 		return
@@ -710,6 +719,69 @@ func writeMCPDecisionAudit(
 	}
 }
 
+// buildExplainableAuditDetails assembles the policy_details JSONB payload for
+// one check-input block row. Pulled out of writeExplainableAuditLog as a PURE
+// function so the content contract is pinned by the cross-plane writer/reader
+// contract test without a database.
+//
+// #3243 / v9.16.1: this writer recorded identity ONLY as policy_names +
+// policy_matches + policy_versions -- never policy_ids -- while every
+// compliance exporter read only policy_details->'policy_ids'->>0, so every
+// check-input block rendered a BLANK Policy cell on a regulator artifact (the
+// design partner's report). policy_ids is now written additively (the ids of
+// the matched policies, in match order) so new rows are uniform with the
+// decision/MCP planes; policy_names and policy_matches stay untouched because
+// the portal feed and the explain endpoint read them, and because the
+// exporters' fallback chain is what heals the PRE-9.16.1 rows on re-export.
+func buildExplainableAuditDetails(decisionID, blockReason, topRisk string, matches []RicherPolicyMatch, correlationID string, toolIdentity ...string) map[string]interface{} {
+	policyIDs := make([]string, 0, len(matches))
+	policyNames := make([]string, 0, len(matches))
+	// policy_versions is a parallel { policy_id -> version } map carried at
+	// the JSONB top level so explain/SDK consumers can surface the version
+	// without unpacking the policy_matches array. Each match's Version is
+	// also serialised inline (RicherPolicyMatch.Version → "policy_version"
+	// key under each match) — the top-level map is the convenience view
+	// used by α3's DecisionExplanation passthrough (#1983).
+	policyVersions := make(map[string]int, len(matches))
+	for _, m := range matches {
+		if m.PolicyID != "" {
+			policyIDs = append(policyIDs, m.PolicyID)
+		}
+		policyNames = append(policyNames, m.PolicyName)
+		if m.PolicyID != "" && m.Version > 0 {
+			policyVersions[m.PolicyID] = m.Version
+		}
+	}
+	details := map[string]interface{}{
+		"decision_id":    decisionID,
+		"reason":         blockReason,
+		"risk_level":     topRisk,
+		"policy_names":   policyNames,
+		"policy_matches": matches,
+	}
+	if len(policyIDs) > 0 {
+		details["policy_ids"] = policyIDs
+	}
+	if len(policyVersions) > 0 {
+		details["policy_versions"] = policyVersions
+	}
+	// #2598: mirror the correlation key into JSONB (read-path resilience) so a
+	// check-input block groups with the other stages of the same logical request
+	// when the gateway propagates a W3C traceparent.
+	if correlationID != "" {
+		details["correlation_id"] = correlationID
+	}
+	// #2904: tool_server/tool_name — same keys the audit_tool_call path already
+	// writes, now populated uniformly across every self-auditing policy plane.
+	if len(toolIdentity) > 0 && toolIdentity[0] != "" {
+		details["tool_server"] = toolIdentity[0]
+	}
+	if len(toolIdentity) > 1 && toolIdentity[1] != "" {
+		details["tool_name"] = toolIdentity[1]
+	}
+	return details
+}
+
 // writeExplainableAuditLog persists a plugin-batch-1-compatible audit_logs
 // row for a check-input block. The orchestrator's explain endpoint resolves
 // by policy_details->>'decision_id' against audit_logs, so without this
@@ -749,45 +821,7 @@ func writeExplainableAuditLog(
 		userIDInt = n
 	}
 
-	policyNames := make([]string, 0, len(matches))
-	// policy_versions is a parallel { policy_id -> version } map carried at
-	// the JSONB top level so explain/SDK consumers can surface the version
-	// without unpacking the policy_matches array. Each match's Version is
-	// also serialised inline (RicherPolicyMatch.Version → "policy_version"
-	// key under each match) — the top-level map is the convenience view
-	// used by α3's DecisionExplanation passthrough (#1983).
-	policyVersions := make(map[string]int, len(matches))
-	for _, m := range matches {
-		policyNames = append(policyNames, m.PolicyName)
-		if m.PolicyID != "" && m.Version > 0 {
-			policyVersions[m.PolicyID] = m.Version
-		}
-	}
-	details := map[string]interface{}{
-		"decision_id":    decisionID,
-		"reason":         blockReason,
-		"risk_level":     topRisk,
-		"policy_names":   policyNames,
-		"policy_matches": matches,
-	}
-	if len(policyVersions) > 0 {
-		details["policy_versions"] = policyVersions
-	}
-	// #2598: mirror the correlation key into JSONB (read-path resilience) so a
-	// check-input block groups with the other stages of the same logical request
-	// when the gateway propagates a W3C traceparent.
-	if correlationID != "" {
-		details["correlation_id"] = correlationID
-	}
-	// #2904: tool_server/tool_name — same keys the audit_tool_call path already
-	// writes, now populated uniformly across every self-auditing policy plane.
-	if len(toolIdentity) > 0 && toolIdentity[0] != "" {
-		details["tool_server"] = toolIdentity[0]
-	}
-	if len(toolIdentity) > 1 && toolIdentity[1] != "" {
-		details["tool_name"] = toolIdentity[1]
-	}
-	detailsJSON, err := json.Marshal(details)
+	detailsJSON, err := json.Marshal(buildExplainableAuditDetails(decisionID, blockReason, topRisk, matches, correlationID, toolIdentity...))
 	if err != nil {
 		log.Printf("explainable audit log: marshal failed: %v", err)
 		return
