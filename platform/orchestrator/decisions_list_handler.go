@@ -298,12 +298,17 @@ func queryDecisionList(tenantID, scopeUserEmail string, since time.Time, decisio
 		return []DecisionListItem{}, nil
 	}
 
-	// SQL: pull only the five projected fields. The COALESCE on policy_id
-	// matches the same shape used by explain_handler.go — `policy_id`
-	// scalar takes precedence; fall back to the first element of the
-	// `policy_ids` array. policy_details is JSONB so all of these read
-	// without a join. Filter clauses use the `$N::text = ''` short-circuit
-	// pattern so absent filters compile to a constant TRUE.
+	// SQL: pull only the five projected fields. The policy label resolves
+	// through the shared cross-plane fallback chain (#3243 v9.16.1,
+	// audit.PolicyIdentitySQLExpr): the previous two-key COALESCE
+	// (policy_id scalar, then policy_ids[0]) left the SAME blank-label class
+	// the compliance exporters had for rows whose writer records identity as
+	// policy_names/policy_matches (MCP check-input). The $4 policy FILTER
+	// below deliberately keeps its id-keyed shape: filtering is an exact-id
+	// contract with the caller, not a display fallback. policy_details is
+	// JSONB so all of these read without a join. Filter clauses use the
+	// `$N::text = ''` short-circuit pattern so absent filters compile to a
+	// constant TRUE.
 	//
 	// #2592 / ADR-058 Phase 1: decision_id is now a first-class indexed column.
 	// Read it via COALESCE(column, policy_details->>'decision_id') so the feed
@@ -312,15 +317,12 @@ func queryDecisionList(tenantID, scopeUserEmail string, since time.Time, decisio
 	// NO flag-day. The WHERE predicate mirrors the same fallback. The partial
 	// index idx_audit_logs_decision_id (WHERE decision_id IS NOT NULL) backs
 	// the column arm of the predicate.
-	const q = `
+	q := `
 		SELECT
 			COALESCE(decision_id, policy_details->>'decision_id')  AS decision_id,
 			timestamp,
 			policy_decision                                        AS decision,
-			COALESCE(
-				policy_details->>'policy_id',
-				(policy_details->'policy_ids'->>0)
-			)                                                      AS policy_id,
+			NULLIF(` + audit.PolicyIdentitySQLExpr("policy_details") + `, '') AS policy_id,
 			COALESCE(policy_details->>'tool_signature', '')        AS tool_signature,
 			policy_details->'context'                              AS context,
 			COALESCE(transfer_basis, '')                           AS transfer_basis,
