@@ -406,30 +406,62 @@ func (e *DatabaseDynamicPolicyEngine) crossOrgDB() *sql.DB {
 	return e.db
 }
 
+// refreshPoliciesQueryWithSegment / refreshPoliciesQueryWithoutSegment: two
+// shapes of the same SELECT, split out so refreshPolicies can retry
+// column-less against a not-yet-migrated dynamic_policies table — see H3
+// (segment_column_probe.go's isMissingColumnError doc) for why this
+// tolerance exists.
+const refreshPoliciesQueryWithSegment = `
+	SELECT id::text, name, COALESCE(description, '') AS description,
+	       conditions, actions, tenant_id, priority, policy_id,
+	       COALESCE(policy_type, 'content') as policy_type,
+	       COALESCE(category, '') as category,
+	       COALESCE(risk_level, 'medium') as risk_level,
+	       COALESCE(allow_override, false) as allow_override,
+	       segment_id
+	FROM dynamic_policies
+	WHERE enabled = true
+	ORDER BY priority DESC, created_at DESC
+`
+
+const refreshPoliciesQueryWithoutSegment = `
+	SELECT id::text, name, COALESCE(description, '') AS description,
+	       conditions, actions, tenant_id, priority, policy_id,
+	       COALESCE(policy_type, 'content') as policy_type,
+	       COALESCE(category, '') as category,
+	       COALESCE(risk_level, 'medium') as risk_level,
+	       COALESCE(allow_override, false) as allow_override
+	FROM dynamic_policies
+	WHERE enabled = true
+	ORDER BY priority DESC, created_at DESC
+`
+
 func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	// Plugin Batch 1 (ADR-044): also load risk_level + allow_override so
 	// the evaluator can populate AppliedPoliciesDetail for override
 	// enforcement. description + id surface as metadata fields consumed by
 	// the matcher path and downstream richer-context consumers.
-	query := `
-		SELECT id::text, name, COALESCE(description, '') AS description,
-		       conditions, actions, tenant_id, priority, policy_id,
-		       COALESCE(policy_type, 'content') as policy_type,
-		       COALESCE(category, '') as category,
-		       COALESCE(risk_level, 'medium') as risk_level,
-		       COALESCE(allow_override, false) as allow_override
-		FROM dynamic_policies
-		WHERE enabled = true
-		ORDER BY priority DESC, created_at DESC
-	`
-
+	//
 	// ALL-tenants read feeding the multi-tenant gate cache — must run on the
 	// BYPASSRLS refresh pool (see refreshDB field comment / #3039). On the
 	// app-role pool this SELECT silently returns 0 rows and every dynamic
 	// policy stops being enforced at the gate.
-	rows, err := e.crossOrgDB().Query(query)
+	hasSegmentColumn := true
+	rows, err := e.crossOrgDB().Query(refreshPoliciesQueryWithSegment)
 	if err != nil {
-		return fmt.Errorf("failed to query policies: %w", err)
+		if !isMissingColumnError(err, "segment_id") {
+			return fmt.Errorf("failed to query policies: %w", err)
+		}
+		// H3 (#3239 round 2): booted against a dynamic_policies table that
+		// predates migration 159 — retry segment-less. Correct pre-159: no
+		// segment_id rows can exist yet, so this keeps enforcement live and
+		// segment-unaware instead of failing the refresh outright.
+		log.Printf("[Policy] ADR-060 (#2989 P3b): dynamic_policies.segment_id not found (pre-migration-159) — loading segment-less until the column is migrated")
+		hasSegmentColumn = false
+		rows, err = e.crossOrgDB().Query(refreshPoliciesQueryWithoutSegment)
+		if err != nil {
+			return fmt.Errorf("failed to query policies (segment-less retry): %w", err)
+		}
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -438,10 +470,16 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	for rows.Next() {
 		var id, name, description, conditionsJSON, actionsJSON, policyID, policyType, category, riskLevel string
 		var tenantID sql.NullString
+		var segmentID sql.NullString
 		var priority int
 		var allowOverride bool
 
-		err := rows.Scan(&id, &name, &description, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType, &category, &riskLevel, &allowOverride)
+		var err error
+		if hasSegmentColumn {
+			err = rows.Scan(&id, &name, &description, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType, &category, &riskLevel, &allowOverride, &segmentID)
+		} else {
+			err = rows.Scan(&id, &name, &description, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType, &category, &riskLevel, &allowOverride)
+		}
 		if err != nil {
 			log.Printf("Error scanning policy row: %v", err)
 			continue
@@ -451,6 +489,14 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 		tenantIDStr := "default"
 		if tenantID.Valid {
 			tenantIDStr = tenantID.String
+		}
+
+		// ADR-060 (#2989 P3b): "" (not present, or SQL NULL) means "not
+		// segment-scoped" — the same convention as the in-memory engine's
+		// DynamicPolicy.SegmentID and migration 159's nullable column.
+		segmentIDStr := ""
+		if segmentID.Valid {
+			segmentIDStr = segmentID.String
 		}
 
 		// Critical-risk policies can never be overridable (ADR-044 DB trigger
@@ -476,10 +522,19 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 		// Add metadata — plug in the UUID and ADR-044 risk/override flags so
 		// the evaluator can attach them to AppliedPoliciesDetail for
 		// downstream override enforcement.
+		//
+		// segment_id (ADR-060 #2989 P3b) rides alongside tenant_id here —
+		// the choke point (dbCachedPolicyAppliesToTenant) reads BOTH out of
+		// this same _metadata map. Every writer of e.policies (this
+		// function and loadDefaultPolicies) populates _metadata, so a cache
+		// entry missing it entirely is a programming defect, not a shape
+		// this function is expected to produce — see that function's doc
+		// for how it now fails closed on that case.
 		policyData["_metadata"] = map[string]interface{}{
 			"id":             id,
 			"name":           name,
 			"tenant_id":      tenantIDStr,
+			"segment_id":     segmentIDStr,
 			"priority":       priority,
 			"loaded_at":      time.Now().Unix(),
 			"risk_level":     riskLevel,
@@ -663,12 +718,60 @@ func (e *DatabaseDynamicPolicyEngine) loadDefaultPolicies() {
 				"allowed_models":        []string{"gpt-4o-mini"},
 				"rate_limit_per_minute": 60,
 			},
+			// _metadata mirrors the shape refreshPolicies writes (see
+			// _metadata there) so this is the SAME writer contract, not a
+			// second one. tenant_id: "default" routes the fallback's
+			// existing apply-to-all-tenants behavior through the legitimate
+			// sentinel dbCachedPolicyAppliesToTenant already honors for a
+			// NULL tenant_id row, instead of the absent-_metadata branch —
+			// no behavior change here, just the correct path. segment_id:
+			// "" keeps it segment-agnostic (ADR-060 #2989 P3b convention).
+			"_metadata": map[string]interface{}{
+				"id":             "default",
+				"name":           "fallback",
+				"tenant_id":      "default",
+				"segment_id":     "",
+				"priority":       0,
+				"loaded_at":      time.Now().Unix(),
+				"risk_level":     "",
+				"allow_override": false,
+			},
 		},
 	}
 }
 
+// EvaluateDynamicPolicies evaluates every applicable cached policy for req.
+//
+// ADR-060 (#2989 P3b): resolves the caller's governance-segment set
+// in-process (resolveSegmentsForPolicy, segment_policy_gate.go) BEFORE
+// touching the policy cache, fail-closed — a genuine resolution error denies
+// the whole request immediately. This engine carries no per-request verdict
+// cache (only the cross-tenant policy SET cache refreshed in the background,
+// e.policies), so there is no cache-key collision concern here the way
+// #3142 is for the in-memory engine's verdictCacheKey — only the
+// choke-point predicate (dbCachedPolicyAppliesToTenant) needs the resolved
+// set. orgID/email come straight from req.User.OrgID / req.User.Email,
+// composed above the already-resolved tenantscope scope (#3065) — never
+// re-derived from a header here.
 func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
 	startTime := time.Now()
+
+	segmentIDs, segOK := resolveSegmentsForPolicy(ctx, req.User.OrgID, req.User.Email)
+	if !segOK {
+		// S1 (#3239 round 2): EvaluationError=true is the typed availability
+		// signal — this is NOT a policy match, so AppliedPolicies carries no
+		// entry for it (the magic string "segment_resolution_failed" this
+		// replaced made an availability failure indistinguishable from a
+		// real policy block without string-matching).
+		return &PolicyEvaluationResult{
+			Allowed:          false,
+			AppliedPolicies:  []string{},
+			EvaluationError:  true,
+			DatabaseAccessed: true,
+			RequiredActions:  []string{"blocked: segment resolution failed (fail-closed, ADR-060 #2989 P3b)"},
+			ProcessingTimeMs: time.Since(startTime).Milliseconds(),
+		}
+	}
 
 	// Get all policies from cache (refreshed in background)
 	e.mu.RLock()
@@ -683,6 +786,10 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		ProcessingTimeMs: 0,    // Will be set at the end
 		RiskScore:        0.0,
 		RequiredActions:  []string{},
+		// Signal B (#3239 round 2): true only when a resolved, non-empty
+		// segment set is actually in scope for this verdict — see
+		// PolicyEvaluationResult.SegmentsResolved's doc.
+		SegmentsResolved: len(segmentIDs) > 0,
 	}
 
 	// Apply policies based on tenant/client
@@ -707,9 +814,10 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			name = cacheKey
 		}
 
-		// Check if policy applies to this tenant. Shared choke point with
-		// ListActivePoliciesForTenant — see dbCachedPolicyAppliesToTenant.
-		if !dbCachedPolicyAppliesToTenant(policyMap, tenantID) {
+		// Check if policy applies to this tenant AND resolved segment set.
+		// Shared choke point with ListActivePoliciesForTenant — see
+		// dbCachedPolicyAppliesToTenant.
+		if !dbCachedPolicyAppliesToTenant(policyMap, tenantID, segmentIDs, cacheKey) {
 			continue
 		}
 
@@ -761,6 +869,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		policyUUID := cacheKey
 		riskLevel := ""
 		allowOverride := false
+		segmentID := ""
 		description, _ := policyMap["description"].(string)
 		if metadata, ok := policyMap["_metadata"].(map[string]interface{}); ok {
 			if id, ok := metadata["id"].(string); ok && id != "" {
@@ -772,6 +881,9 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			if ao, ok := metadata["allow_override"].(bool); ok {
 				allowOverride = ao
 			}
+			if sid, ok := metadata["segment_id"].(string); ok {
+				segmentID = sid
+			}
 		}
 		if riskLevel == "" {
 			riskLevel = "medium"
@@ -780,6 +892,20 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		if riskLevel == "critical" {
 			allowOverride = false
 		}
+		// ADR-060: a segment-scoped policy uses the SAME session-override
+		// contract (ADR-044) as a tenant policy — overridable iff its own
+		// allow_override column is true and it is not critical-risk (forced
+		// false above). There is no segment-specific carve-out: additive-
+		// restriction-only (Decision 1) is a property of the applicable-set
+		// combiner earlier in this evaluation, not of ApplyOverrideToResult,
+		// so honoring a segment policy's own allow_override in a later,
+		// separately-authorized, identity-keyed override does not weaken it.
+		// A hard-floor segment policy (compliance) simply ships with
+		// allow_override=false or risk_level=critical, which
+		// createOverrideHandler already refuses to override at creation time
+		// (overrides_handler.go). SegmentID is still carried on the detail
+		// below purely for attribution/audit — it is no longer read as an
+		// override-exclusion signal anywhere.
 		// Determine top action for the detail record — "block",
 		// "require_approval", etc. Peek at actions without consuming them
 		// here; the existing loop below still runs.
@@ -809,6 +935,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			Action:        detailAction,
 			RiskLevel:     riskLevel,
 			AllowOverride: allowOverride,
+			SegmentID:     segmentID,
 		})
 
 		// Apply rate limiting if present
@@ -1247,35 +1374,67 @@ func (e *DatabaseDynamicPolicyEngine) toFloat64(v interface{}) float64 {
 }
 
 // dbCachedPolicyAppliesToTenant decides whether one cached policy applies to
-// one tenant. It is the SINGLE choke point for that decision on this engine:
-// both EvaluateDynamicPolicies (enforcement) and ListActivePoliciesForTenant
+// one tenant AND (ADR-060 #2989 P3b) one resolved segment set. It is the
+// SINGLE choke point for that decision on this engine: both
+// EvaluateDynamicPolicies (enforcement) and ListActivePoliciesForTenant
 // (disclosure) call it, so list and enforce cannot diverge by construction —
-// not by two predicates that merely look alike.
+// not by two predicates that merely look alike. P3b folds the segment test
+// INSIDE this existing choke point rather than adding a second, parallel
+// predicate (#3070 was rejected for exactly that; #3059 established the
+// single-choke-point-per-engine rule this preserves).
 //
-// It is deliberately shape-aware, because the cache holds two shapes with
-// OPPOSITE semantics and collapsing them is exactly how a list-vs-enforce
-// divergence was reproduced on the first cut of this fix:
+// The tenant half is shape-aware over one legitimate shape:
 //
 //   - _metadata PRESENT: tenant_id must be "global", "default" (the NULL
-//     tenant_id sentinel assigned in refreshPolicies) or an exact match.
-//     A present-but-EMPTY tenant_id therefore applies to NOBODY.
-//   - _metadata ABSENT: the policy applies to EVERYBODY (there is no tenant
-//     key to gate on). refreshPolicies always writes _metadata, so this shape
-//     is unreachable in production; it is preserved verbatim because the
-//     enforcement loop has always behaved this way.
+//     tenant_id sentinel assigned in refreshPolicies, and the same sentinel
+//     loadDefaultPolicies assigns its fallback entry) or an exact match. A
+//     present-but-EMPTY tenant_id therefore applies to NOBODY.
+//   - _metadata ABSENT: every writer of the cache — refreshPolicies AND
+//     loadDefaultPolicies — populates _metadata, so this shape is not a
+//     valid cache state; it can only occur if a future writer forgets to
+//     set it. Rather than silently applying such a policy to every tenant
+//     (a fail-OPEN bug that would have shipped as "it just works"), this
+//     function treats it as a defect and fails CLOSED: the entry is
+//     excluded from both enforcement and disclosure, and a [BUG] line is
+//     logged so the missing writer gets fixed instead of quietly relied on.
 //
-// DynamicPolicy.TenantID cannot express that difference — it is "" for both
-// shapes — which is why the scoped list works over the raw cache entries and
-// not over the converted structs.
-func dbCachedPolicyAppliesToTenant(policyMap map[string]interface{}, tenantID string) bool {
+// DynamicPolicy.TenantID cannot express the present-but-empty-tenant vs.
+// legitimately-global distinction — it is "" for both — which is why the
+// scoped list works over the raw cache entries and not over the converted
+// structs.
+//
+// The segment half (ADR-060 Decision 2, additive/orthogonal to tenant, same
+// shape as the in-memory engine's memPolicyAppliesToTenant): an empty/absent
+// segment_id means "not segment-scoped" and passes UNCONDITIONALLY once the
+// tenant test above has already passed — this is what makes an org with zero
+// segment-scoped policies byte-identical to pre-P3b behavior. A non-empty
+// segment_id additionally requires it to be present in callerSegments;
+// nil/empty callerSegments therefore excludes every segment-scoped policy
+// (the fail-closed caller contract lives one layer up, in
+// resolveSegmentsForPolicy).
+//
+// cacheKey identifies the entry for the [BUG] log line only (e.g. the
+// policy_id/name the caller's loop is already keyed on); it plays no role
+// in the tenant/segment decision itself.
+func dbCachedPolicyAppliesToTenant(policyMap map[string]interface{}, tenantID string, callerSegments []string, cacheKey string) bool {
 	metadata, ok := policyMap["_metadata"].(map[string]interface{})
 	if !ok {
-		// No metadata → no tenant key to gate on → applies to all tenants.
-		return true
+		// Every writer (refreshPolicies, loadDefaultPolicies) must populate
+		// _metadata. Reaching here means one didn't — fail closed (exclude)
+		// rather than silently applying the policy to every tenant.
+		log.Printf("[BUG] dbCachedPolicyAppliesToTenant: cache entry %q has no _metadata — excluding (fail-closed); every writer (refreshPolicies, loadDefaultPolicies) must populate _metadata", cacheKey)
+		return false
 	}
 	policyTenant, _ := metadata["tenant_id"].(string)
 	// "global" and "default" (NULL tenant_id) apply to all tenants.
-	return policyTenant == "global" || policyTenant == "default" || policyTenant == tenantID
+	if policyTenant != "global" && policyTenant != "default" && policyTenant != tenantID {
+		return false
+	}
+	policySegment, _ := metadata["segment_id"].(string)
+	if policySegment == "" {
+		return true
+	}
+	return segmentSetContains(callerSegments, policySegment)
 }
 
 // cachedPolicyToDynamicPolicy converts one raw cache entry into the wire
@@ -1313,6 +1472,9 @@ func cachedPolicyToDynamicPolicy(cacheKey string, policyMap map[string]interface
 		}
 		if tenantID, ok := metadata["tenant_id"].(string); ok {
 			dp.TenantID = tenantID
+		}
+		if segmentID, ok := metadata["segment_id"].(string); ok {
+			dp.SegmentID = segmentID
 		}
 	}
 
@@ -1376,12 +1538,15 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 //
 // Walking the raw entries is load-bearing. DynamicPolicy.TenantID is "" both
 // for a policy whose _metadata carries an empty tenant_id (enforced for
-// NOBODY) and for a policy with no _metadata at all (enforced for
-// EVERYBODY); filtering the converted structs collapses those opposite
-// meanings and leaks the first shape to every tenant.
+// NOBODY) and for a policy with no _metadata at all (a defect, excluded —
+// see dbCachedPolicyAppliesToTenant); filtering the converted structs would
+// collapse those meanings.
 //
 // This is the ONLY list variant HTTP handlers may consume.
-func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string) []DynamicPolicy {
+// segmentIDs (ADR-060 #2989 P3b) mirrors the in-memory engine's
+// ListActivePoliciesForTenant parameter of the same name — see that
+// function's doc for why today's callers all pass nil.
+func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -1391,7 +1556,7 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(tenantID strin
 		if !ok {
 			continue
 		}
-		if !dbCachedPolicyAppliesToTenant(policyMap, tenantID) {
+		if !dbCachedPolicyAppliesToTenant(policyMap, tenantID, segmentIDs, cacheKey) {
 			continue
 		}
 		scoped = append(scoped, cachedPolicyToDynamicPolicy(cacheKey, policyMap))

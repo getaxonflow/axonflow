@@ -88,23 +88,11 @@ BEGIN
 END $$;
 
 -- ============================================================================
--- FT.5 — get_dynamic_policies_for_tenant() function still finds 'global' policies
--- (proves the existing function from migration 010 still operates correctly
--- after the additive client_id column)
+-- FT.5 — REMOVED (#3239 round 2 / M7): asserted get_dynamic_policies_for_tenant(),
+-- an unused helper function (migration 010, no production caller) dropped by
+-- migration 159. This was its only runtime caller; removed alongside the
+-- function rather than left to fail the migrations gate.
 -- ============================================================================
-DO $$
-DECLARE
-    found_global BOOLEAN;
-BEGIN
-    SELECT EXISTS (
-        SELECT 1 FROM get_dynamic_policies_for_tenant('cs_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1')
-        WHERE policy_id = 'seed-dyn-2'
-    ) INTO found_global;
-    IF NOT found_global THEN
-        RAISE EXCEPTION 'FT.5 FAILED: get_dynamic_policies_for_tenant() did not return the global seed-dyn-2 policy; migration broke the function';
-    END IF;
-    RAISE NOTICE 'FT.5 PASS: get_dynamic_policies_for_tenant() still resolves global sentinel';
-END $$;
 
 -- ============================================================================
 -- FT.6 — service_identities lookup by client_id matches by tenant_id

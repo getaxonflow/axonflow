@@ -326,6 +326,12 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		SkipCategories:  gwCfg.SkipCategories,
 		ActionOverrides: gwCfg.BuildActionOverrides(),
 		MaxRedactions:   100, // Reasonable limit for LLM responses
+		// #3266: no resolved governance-segment set on this plane — nil
+		// excludes segment-scoped static_policies rows (fail-closed, leak
+		// closed). This response plane evaluates org-level PII/sensitive-data
+		// detection config, not segment-scoped policy; deliberately out of
+		// scope here (not tracked under #3280/#3281/#3297).
+		Segments: nil,
 	})
 
 	// #2820: second line of defense — a load race between PoliciesLoadable and

@@ -144,7 +144,21 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 	return resp.ApprovalID
 }
 
-// convertToOrchestratorRequest converts WCP step context to orchestrator request format
+// convertToOrchestratorRequest converts WCP step context to orchestrator request format.
+//
+// SEGMENT CAVEAT (ADR-060 #2989 P3b, H2 loud-docs, #3239 round 2): the
+// UserContext built below carries TenantID only — no OrgID, no Email. A
+// step-gate's EvaluateDynamicPolicies call therefore ALWAYS resolves segments
+// as "no verified per-user identity" (the M1 org-only early-return,
+// segment_policy_gate.go), so a segment-scoped dynamic policy is silently
+// UNENFORCED on every WCP workflow step-gate, even though the same policy IS
+// enforced on /api/v1/process and MAP. This is not a bug in
+// resolveSegmentsForPolicy — it is a genuine gap in what identity a workflow
+// step carries at all: StepGateContext has no per-user email field to put
+// here. See ADR-060's enforcement-surface coverage matrix. Tracked: epic
+// #3279 (verified machine/agent principal — a workflow step's "caller" is
+// not a human either, so closing this needs the same principal-resolution
+// work as MCP) and #3281 (WCP segment enforcement, depends on #3279).
 func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.StepGateContext) OrchestratorRequest {
 	// Build context map with step information for policy matching
 	contextData := make(map[string]interface{})

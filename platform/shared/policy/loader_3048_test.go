@@ -17,7 +17,7 @@ func loaderTestCols() []string {
 	return []string{
 		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
 		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata",
+		"enabled", "priority", "tenant_id", "organization_id", "segment_id", "metadata",
 		"created_at",
 	}
 }
@@ -26,7 +26,7 @@ func systemRow(rows *sqlmock.Rows, policyID string, priority int) *sqlmock.Rows 
 	return rows.AddRow(
 		"uuid-"+policyID, policyID, "Policy "+policyID, "security-sqli", "system",
 		`(?i)\bDROP\s+TABLE\b`, "critical", nil, "request", "block", nil,
-		true, priority, "global", nil, []byte(`{}`), time.Now().UTC(),
+		true, priority, "global", nil, nil, []byte(`{}`), time.Now().UTC(),
 	)
 }
 
@@ -34,7 +34,18 @@ func tenantRow(rows *sqlmock.Rows, policyID, tenantID string, priority int) *sql
 	return rows.AddRow(
 		"uuid-"+policyID, policyID, "Policy "+policyID, "pii-us", "tenant",
 		`\d{3}-\d{2}-\d{4}`, "high", nil, "request", "block", nil,
-		true, priority, tenantID, nil, []byte(`{}`), time.Now().UTC(),
+		true, priority, tenantID, nil, nil, []byte(`{}`), time.Now().UTC(),
+	)
+}
+
+// segmentRow is tenantRow with a non-NULL segment_id, for the #3266 loader
+// round-trip test (a segment-scoped row's segment_id must reach
+// CompiledPolicy.SegmentID unchanged).
+func segmentRow(rows *sqlmock.Rows, policyID, tenantID, segmentID string, priority int) *sqlmock.Rows {
+	return rows.AddRow(
+		"uuid-"+policyID, policyID, "Policy "+policyID, "pii-us", "tenant",
+		`\d{3}-\d{2}-\d{4}`, "high", nil, "request", "block", nil,
+		true, priority, tenantID, nil, segmentID, []byte(`{}`), time.Now().UTC(),
 	)
 }
 
@@ -184,6 +195,56 @@ func TestEngine_EmptySystemSet_ResponseFailsClosed(t *testing.T) {
 	}
 	if !result.EvaluationError {
 		t.Error("EvaluationError must be set (couldn't-scan signal for storage redactors)")
+	}
+}
+
+// TestLoader_SegmentScopedRow_RoundTrips proves a non-NULL segment_id column
+// value reaches CompiledPolicy.SegmentID unchanged (#3266), and a NULL
+// segment_id round-trips as "". The loader SELECTs segment_id but does NOT
+// filter on it (see loadFromDatabase's doc) — UnifiedPolicyEngine.
+// filterBySegments applies the applicability rule at evaluation time using
+// this field, per caller, via EvalOptions.Segments.
+func TestLoader_SegmentScopedRow_RoundTrips(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	expectScopedLoadPass(mock, "tenant-1",
+		segmentRow(sqlmock.NewRows(loaderTestCols()), "seg_finance_block", "tenant-1", "finance", 50))
+	expectScopedLoadPass(mock, "global",
+		systemRow(sqlmock.NewRows(loaderTestCols()), "sys_sqli_drop", 100))
+
+	loader := NewPolicyLoader(db, NewPolicyCache(time.Minute, 10))
+	policies, err := loader.GetPolicies(context.Background(), "tenant-1", nil, PhaseRequest)
+	if err != nil {
+		t.Fatalf("GetPolicies: %v", err)
+	}
+
+	var segPolicy, sysPolicy *CompiledPolicy
+	for i := range policies {
+		switch policies[i].PolicyID {
+		case "seg_finance_block":
+			segPolicy = &policies[i]
+		case "sys_sqli_drop":
+			sysPolicy = &policies[i]
+		}
+	}
+	if segPolicy == nil {
+		t.Fatal("segment-scoped policy row missing from loaded set")
+	}
+	if segPolicy.SegmentID != "finance" {
+		t.Errorf("segment-scoped row: SegmentID = %q, want %q", segPolicy.SegmentID, "finance")
+	}
+	if sysPolicy == nil {
+		t.Fatal("system policy row missing from loaded set")
+	}
+	if sysPolicy.SegmentID != "" {
+		t.Errorf("non-segment-scoped row: SegmentID = %q, want empty", sysPolicy.SegmentID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

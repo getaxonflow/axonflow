@@ -136,8 +136,8 @@ func TestVerdictCacheIsolatesOrgWithinTheSameTenantID(t *testing.T) {
 	reqOrgA := reqFor("org-a", "shared-tenant-id")
 	reqOrgB := reqFor("org-b", "shared-tenant-id")
 
-	keyA := e.generateCacheKey(reqOrgA)
-	keyB := e.generateCacheKey(reqOrgB)
+	keyA := e.generateCacheKey(reqOrgA, nil)
+	keyB := e.generateCacheKey(reqOrgB, nil)
 	if keyA == keyB {
 		t.Fatalf("two orgs sharing a tenant id produced the same cache key: %+v", keyA)
 	}
@@ -168,7 +168,7 @@ func TestVerdictCacheKeyMatchesThePolicySelector(t *testing.T) {
 	reqB := base
 	reqB.Client = ClientContext{ID: "client-tenant-b"}
 
-	if e.generateCacheKey(reqA) == e.generateCacheKey(reqB) {
+	if e.generateCacheKey(reqA, nil) == e.generateCacheKey(reqB, nil) {
 		t.Fatal("two clients selecting different policy sets produced the same cache key — " +
 			"the key resolver disagrees with getApplicablePolicies")
 	}
@@ -282,7 +282,7 @@ func TestVerdictCacheKeyCoversEveryEvaluableField(t *testing.T) {
 		Client:  ClientContext{ID: "client-a", Name: "Client A"},
 		Context: map[string]interface{}{"step.gate_count": 1},
 	}
-	baseKey := e.generateCacheKey(base)
+	baseKey := e.generateCacheKey(base, nil)
 
 	// This table must cover every field getFieldValue can reach — INCLUDING the
 	// three reachable only through its bare-struct fallthrough. Neither inner
@@ -318,7 +318,7 @@ func TestVerdictCacheKeyCoversEveryEvaluableField(t *testing.T) {
 			req.User.Permissions = append([]string(nil), base.User.Permissions...)
 			req.Context = map[string]interface{}{"step.gate_count": 1}
 			mutate(&req)
-			if e.generateCacheKey(req) == baseKey {
+			if e.generateCacheKey(req, nil) == baseKey {
 				t.Errorf("changing %s did not change the cache key — two requests the evaluator "+
 					"would answer differently share one cached verdict", field)
 			}
@@ -347,14 +347,14 @@ func TestVerdictCacheKeyIsFallthroughAware(t *testing.T) {
 	if fmt.Sprint(e.getFieldValue("client", a, res)) == fmt.Sprint(e.getFieldValue("client", b, res)) {
 		t.Skip("ClientContext no longer renders OrgID — this property needs restating")
 	}
-	if e.generateCacheKey(a) == e.generateCacheKey(b) {
+	if e.generateCacheKey(a, nil) == e.generateCacheKey(b, nil) {
 		t.Error("two requests the evaluator can distinguish through a bare `client` condition share one cache key")
 	}
 
 	c := a
 	c.User.ID = 99
 	if fmt.Sprint(e.getFieldValue("user", a, res)) != fmt.Sprint(e.getFieldValue("user", c, res)) &&
-		e.generateCacheKey(a) == e.generateCacheKey(c) {
+		e.generateCacheKey(a, nil) == e.generateCacheKey(c, nil) {
 		t.Error("two requests the evaluator can distinguish through a bare `user` condition share one cache key")
 	}
 }
@@ -418,7 +418,7 @@ func TestVerdictCacheKeyIsNotForgeableByDelimiterInjection(t *testing.T) {
 	b.User.Email = "x"
 	b.User.Role = "|1:r"
 
-	if e.generateCacheKey(a) == e.generateCacheKey(b) {
+	if e.generateCacheKey(a, nil) == e.generateCacheKey(b, nil) {
 		t.Error("two distinct requests collided by shifting the delimiter between adjacent fields")
 	}
 }

@@ -24,10 +24,11 @@ import (
 	"database/sql"
 	"log"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	sharedidentity "axonflow/platform/shared/identity"
 )
 
 // Default cache settings
@@ -377,27 +378,11 @@ func splitBySegment(policies []EffectiveStaticPolicy) (tierPolicies, segmentPoli
 // based on incidental ordering. Returns nil (never a non-nil empty slice)
 // for an empty/all-empty input, matching the "no segments" contract used
 // throughout (GetEffective/buildCacheKey treat nil and [] identically).
+// Thin wrapper over platform/shared/identity.NormalizeSegmentIDs, the single
+// implementation shared with platform/orchestrator's function of the same
+// name (#3239 round 2 extraction).
 func normalizeSegmentIDs(segmentIDs []string) []string {
-	if len(segmentIDs) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(segmentIDs))
-	out := make([]string, 0, len(segmentIDs))
-	for _, id := range segmentIDs {
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return sharedidentity.NormalizeSegmentIDs(segmentIDs)
 }
 
 // EvaluateAllPolicies evaluates input against all effective policies and returns all matches.

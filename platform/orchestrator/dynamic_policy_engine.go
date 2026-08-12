@@ -68,20 +68,28 @@ type DynamicPolicyEngine struct {
 // Policy evaluation is performed in priority order (highest first).
 // All conditions must match for a policy to trigger (AND logic).
 type DynamicPolicy struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	Type          string            `json:"type"` // "content", "user", "risk", "cost", "media"
-	Category      string            `json:"category,omitempty"`
-	Conditions    []PolicyCondition `json:"conditions"`
-	Actions       []PolicyAction    `json:"actions"`
-	Priority      int               `json:"priority"`
-	Enabled       bool              `json:"enabled"`
-	TenantID      string            `json:"tenant_id,omitempty"`
-	RiskLevel     string            `json:"risk_level,omitempty"` // low|medium|high|critical (ADR-044). Default "medium".
-	AllowOverride bool              `json:"allow_override"`       // Session override allowed? Forced false for critical risk (ADR-044).
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Type        string            `json:"type"` // "content", "user", "risk", "cost", "media"
+	Category    string            `json:"category,omitempty"`
+	Conditions  []PolicyCondition `json:"conditions"`
+	Actions     []PolicyAction    `json:"actions"`
+	Priority    int               `json:"priority"`
+	Enabled     bool              `json:"enabled"`
+	TenantID    string            `json:"tenant_id,omitempty"`
+	// SegmentID (ADR-060 #2989 P3b) is the stable scim_groups.id this policy
+	// is scoped to, or "" when the policy is not segment-scoped (the
+	// overwhelming majority — every pre-P3b policy, and every org that never
+	// authors a segment-scoped policy). Orthogonal to TenantID, mirroring
+	// migration 159 / static_policies.SegmentID (P3): a policy can be
+	// tenant-scoped, segment-scoped, both, or neither. Empty string (not a
+	// pointer) matches this engine's existing TenantID convention.
+	SegmentID     string    `json:"segment_id,omitempty"`
+	RiskLevel     string    `json:"risk_level,omitempty"` // low|medium|high|critical (ADR-044). Default "medium".
+	AllowOverride bool      `json:"allow_override"`       // Session override allowed? Forced false for critical risk (ADR-044).
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // IsOverridable returns true if the policy's deny decision can be overridden
@@ -206,6 +214,22 @@ type verdictCacheKey struct {
 	// Keying on req.User.TenantID alone would do exactly that, because the
 	// selector falls back to req.Client.ID when User.TenantID is empty.
 	TenantID string
+
+	// Segments (ADR-060 #2989 P3b) is the request's resolved
+	// governance-segment set, normalized (deduped + sorted,
+	// normalizeSegmentIDs) and joined — mirroring P3's buildCacheKey suffix
+	// on the agent's TierAwarePolicyEngine (PR #3057). LOAD-BEARING (#3142):
+	// getApplicablePolicies now selects a DIFFERENT policy set depending on
+	// the caller's resolved segments (memPolicyAppliesToTenant folds segment
+	// membership into the same choke point that selects the tenant-scoped
+	// set), so two requests with the same OrgID/TenantID/Request but
+	// DIFFERENT resolved segments can legitimately evaluate to different
+	// applicable-policy sets and therefore different verdicts. Omitting this
+	// field would let the second request's segment-scoped policies be
+	// silently skipped — served the first request's cached verdict instead —
+	// which is exactly the collision class this struct exists to make
+	// impossible by construction (see the struct doc above).
+	Segments string
 
 	// Request is every remaining input the evaluator can read.
 	Request string
@@ -358,13 +382,40 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 //
 // The result includes whether the request is allowed, applied policies,
 // risk score, and required actions (e.g., fields to redact).
+//
+// ADR-060 (#2989 P3b): resolves the caller's governance-segment set
+// in-process (resolveSegmentsForPolicy, segment_policy_gate.go) BEFORE the
+// cache lookup, fail-closed. A genuine resolution error denies the whole
+// request without ever touching the cache — never cached, and never treated
+// as "caller has zero segments" (that would be the exact org-only fallback
+// ADR-060 §Fail-closed forbids). orgID/email come straight from
+// req.User.OrgID / req.User.Email, composed above the already-resolved
+// tenantscope scope (#3065) — never re-derived from a header here.
 func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
 	startTime := time.Now()
 
-	// Check cache first. The key carries the tenancy this request evaluates
-	// under, so a hit cannot be another tenant's verdict (#3142), and the
-	// cache returns a copy, so the caller cannot mutate the shared entry.
-	cacheKey := e.generateCacheKey(req)
+	segmentIDs, segOK := resolveSegmentsForPolicy(ctx, req.User.OrgID, req.User.Email)
+	if !segOK {
+		// S1 (#3239 round 2): EvaluationError=true is the typed availability
+		// signal — this is NOT a policy match, so AppliedPolicies carries no
+		// entry for it (the magic string "segment_resolution_failed" this
+		// replaced made an availability failure indistinguishable from a
+		// real policy block without string-matching).
+		return &PolicyEvaluationResult{
+			Allowed:          false,
+			AppliedPolicies:  []string{},
+			EvaluationError:  true,
+			RequiredActions:  []string{"blocked: segment resolution failed (fail-closed, ADR-060 #2989 P3b)"},
+			ProcessingTimeMs: time.Since(startTime).Milliseconds(),
+		}
+	}
+	normSegments := normalizeSegmentIDs(segmentIDs)
+
+	// Check cache first. The key carries the tenancy AND resolved segment set
+	// this request evaluates under, so a hit cannot be another tenant's or
+	// another segment-set's verdict (#3142), and the cache returns a copy, so
+	// the caller cannot mutate the shared entry.
+	cacheKey := e.generateCacheKey(req, normSegments)
 	if cached, found := e.cache.Get(cacheKey); found {
 		return cached
 	}
@@ -373,6 +424,10 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 		Allowed:         true,
 		AppliedPolicies: []string{},
 		RequiredActions: []string{},
+		// Signal B (#3239 round 2): true only when a resolved, non-empty
+		// segment set is actually in scope for this verdict — see
+		// PolicyEvaluationResult.SegmentsResolved's doc.
+		SegmentsResolved: len(segmentIDs) > 0,
 	}
 
 	// Calculate risk score
@@ -387,9 +442,23 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 		}
 	}
 
-	// Get applicable policies
+	// Get applicable policies. ADR-060 Decision 1 (additive
+	// restriction-only): folding segment-matched policies into this SAME
+	// applicable set, evaluated by the existing OR-across-matches /
+	// MAX-across-matches aggregation below (Allowed goes false the moment
+	// ANY matched policy blocks; RiskScore takes the max of every match), is
+	// what makes segment membership able to only ADD a match — and therefore
+	// only tighten the outcome — never remove one. No separate tier/segment
+	// combiner is needed for that half of Decision 1 to hold; it falls out
+	// of the aggregation already here, the same way P3's EvaluateAllPolicies
+	// doc explains for the agent's aggregate (non-first-match) evaluator.
+	// Additive-restriction-only is a property of THIS combiner only; it says
+	// nothing about session overrides (ADR-044), which are a separate,
+	// post-verdict, identity-keyed, audited exception applied per-policy
+	// after the verdict below. See the AppliedPoliciesDetail comment where
+	// AllowOverride is computed.
 	e.policyMutex.RLock()
-	applicablePolicies := e.getApplicablePolicies(req)
+	applicablePolicies := e.getApplicablePolicies(req, normSegments)
 	e.policyMutex.RUnlock()
 
 	// Evaluate each policy
@@ -407,13 +476,31 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 			if len(policy.Actions) > 0 {
 				action = policy.Actions[0].Type
 			}
+			// ADR-060: a segment-scoped policy uses the SAME session-override
+			// contract (ADR-044) as a tenant policy — overridable iff its own
+			// allow_override column is true AND it is not critical-risk
+			// (IsOverridable forces false for critical regardless of the
+			// column). There is no segment-specific carve-out here: the
+			// additive-restriction-only guarantee (Decision 1) is a property
+			// of the combiner above, not of ApplyOverrideToResult, so
+			// honoring a segment policy's own allow_override in a later,
+			// separately-authorized, identity-keyed override does not
+			// weaken it. A hard-floor segment policy (compliance) simply
+			// ships with allow_override=false or risk_level=critical, which
+			// createOverrideHandler already refuses to override at creation
+			// time (overrides_handler.go). SegmentID is still carried on the
+			// detail below purely for attribution/audit of which segment the
+			// policy targeted — it is no longer read as an override-exclusion
+			// signal anywhere.
+			allowOverride := policy.IsOverridable()
 			result.AppliedPoliciesDetail = append(result.AppliedPoliciesDetail, AppliedPolicyDetail{
 				PolicyID:      policy.ID,
 				PolicyName:    policy.Name,
 				Description:   policy.Description,
 				Action:        action,
 				RiskLevel:     riskLevel,
-				AllowOverride: policy.IsOverridable(),
+				AllowOverride: allowOverride,
+				SegmentID:     policy.SegmentID,
 			})
 
 			// Apply policy actions
@@ -735,8 +822,17 @@ func severityOrdinal(s string) int {
 	}
 }
 
-// getApplicablePolicies returns policies that should be evaluated for this request
-func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest) []DynamicPolicy {
+// getApplicablePolicies returns policies that should be evaluated for this
+// request.
+//
+// callerSegments (ADR-060 #2989 P3b) is the request's resolved,
+// ALREADY-NORMALIZED governance-segment set — resolved once by
+// EvaluateDynamicPolicies (resolveSegmentsForPolicy) and threaded through
+// here so selection and the verdict cache key (generateCacheKey) agree on
+// the exact same set. nil/empty is exactly pre-P3b behavior: every
+// segment-scoped policy is excluded, byte-identical selection for an org
+// with none.
+func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest, callerSegments []string) []DynamicPolicy {
 	var applicable []DynamicPolicy
 
 	// Determine effective tenant ID from User.TenantID or Client.ID (SDK uses
@@ -748,9 +844,11 @@ func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest) []D
 			continue
 		}
 
-		// Check tenant-specific policies. Shared choke point with
-		// ListActivePoliciesForTenant — see memPolicyAppliesToTenant.
-		if !memPolicyAppliesToTenant(policy.TenantID, callerTenant) {
+		// Check tenant-specific AND segment-specific applicability. Shared
+		// choke point with ListActivePoliciesForTenant — see
+		// memPolicyAppliesToTenant. Segment is additive/orthogonal: it
+		// narrows the tenant-scoped candidate set, never widens it.
+		if !memPolicyAppliesToTenant(policy.TenantID, callerTenant, policy.SegmentID, callerSegments) {
 			continue
 		}
 
@@ -785,32 +883,65 @@ func (e *DynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 	return active
 }
 
-// memPolicyAppliesToTenant decides whether one in-memory policy applies to one
-// tenant. It is the SINGLE choke point for that decision on this engine: both
+// memPolicyAppliesToTenant decides whether one in-memory policy applies to
+// one tenant AND (ADR-060 #2989 P3b) one resolved segment set. It is the
+// SINGLE choke point for that decision on this engine: both
 // getApplicablePolicies (enforcement) and ListActivePoliciesForTenant
-// (disclosure) call it, so list and enforce cannot diverge by construction.
+// (disclosure) call it, so list and enforce cannot diverge by construction —
+// P3b folds the segment test INSIDE this existing choke point rather than
+// adding a second, parallel predicate (#3070 was rejected for exactly that;
+// #3059 established the single-choke-point-per-engine rule this preserves).
 //
-// The rule is this engine's long-standing one, unchanged: an empty TenantID
-// means "applies to every request" (community mode); anything else must match
-// the caller exactly.
+// The tenant rule is this engine's long-standing one, unchanged: an empty
+// TenantID means "applies to every request" (community mode); anything else
+// must match the caller exactly.
 //
-// NOTE the deliberate asymmetry with the database engine, which additionally
-// treats "global" and "default" as apply-to-all sentinels. This engine does
-// NOT, and this function must not "helpfully" add them: a policy this engine
-// would not ENFORCE for a tenant must not be LISTED to that tenant. Each
-// engine's list predicate mirrors its OWN enforcement predicate, and there is
-// deliberately no single predicate shared across the two.
-func memPolicyAppliesToTenant(policyTenant, callerTenant string) bool {
-	return policyTenant == "" || policyTenant == callerTenant
+// The segment rule (ADR-060 Decision 2, additive/orthogonal to tenant): an
+// empty policySegment means "not segment-scoped" and passes UNCONDITIONALLY
+// regardless of callerSegments — this is what makes an org with zero
+// segment-scoped policies byte-identical to pre-P3b behavior. A non-empty
+// policySegment additionally requires it to be present in callerSegments —
+// nil/empty callerSegments therefore excludes every segment-scoped policy
+// (the fail-closed caller contract lives one layer up, in
+// resolveSegmentsForPolicy: a genuine resolution error must deny the whole
+// request before ever reaching here).
+//
+// NOTE the deliberate tenant-rule asymmetry with the database engine, which
+// additionally treats "global" and "default" as apply-to-all sentinels. This
+// engine does NOT, and this function must not "helpfully" add them: a policy
+// this engine would not ENFORCE for a tenant must not be LISTED to that
+// tenant. Each engine's list predicate mirrors its OWN enforcement predicate,
+// and there is deliberately no single predicate shared across the two. The
+// segment rule, by contrast, IS the same shape on both engines (empty =
+// apply-to-all, non-empty = membership test) — ADR-060 Decision 2 is
+// engine-agnostic even though the tenant rule is not.
+func memPolicyAppliesToTenant(policyTenant, callerTenant string, policySegment string, callerSegments []string) bool {
+	if policyTenant != "" && policyTenant != callerTenant {
+		return false
+	}
+	if policySegment == "" {
+		return true
+	}
+	return segmentSetContains(callerSegments, policySegment)
 }
 
 // ListActivePoliciesForTenant returns the active policies visible to a single
-// tenant, gated by the same memPolicyAppliesToTenant that decides enforcement.
-// This is the ONLY list variant HTTP handlers may consume (GET
+// tenant, gated by the same memPolicyAppliesToTenant that decides
+// enforcement. This is the ONLY list variant HTTP handlers may consume (GET
 // /api/v1/policies/dynamic used to return the whole deployment-wide cache —
 // every tenant's policy names, regex conditions and owning tenant_id — to any
 // authenticated tenant).
-func (e *DynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string) []DynamicPolicy {
+//
+// segmentIDs (ADR-060 #2989 P3b) mirrors getApplicablePolicies' parameter:
+// today's three callers (mcp_dynamic_policy_handler.go, run.go's
+// listDynamicPoliciesHandler, PolicySimulationHandler's usage count) have no
+// verified per-user email on hand to resolve real segments from, so they all
+// pass nil — which conservatively excludes segment-scoped policies from
+// disclosure (a strict subset of the pre-P3b list, never an over-disclosure)
+// rather than guessing at an unverified identity. The parameter exists so a
+// future caller that DOES carry a verified identity can list exactly what it
+// would enforce, through this same choke point, without a second predicate.
+func (e *DynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy {
 	e.policyMutex.RLock()
 	defer e.policyMutex.RUnlock()
 
@@ -819,7 +950,7 @@ func (e *DynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string) []Dyn
 		if !policy.Enabled {
 			continue
 		}
-		if !memPolicyAppliesToTenant(policy.TenantID, tenantID) {
+		if !memPolicyAppliesToTenant(policy.TenantID, tenantID, policy.SegmentID, segmentIDs) {
 			continue
 		}
 		active = append(active, policy)
@@ -864,7 +995,13 @@ func (e *DynamicPolicyEngine) IsHealthy() bool {
 //
 // Uses length-prefixed encoding for context values to prevent collisions
 // where keys/values containing delimiters could produce identical serializations.
-func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest) verdictCacheKey {
+//
+// normSegments MUST already be normalized (normalizeSegmentIDs — deduped +
+// sorted) by the caller (EvaluateDynamicPolicies resolves once and passes
+// the same normalized set to both this function and getApplicablePolicies) —
+// see the Segments field doc on verdictCacheKey for why this field exists at
+// all (#3142).
+func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest, normSegments []string) verdictCacheKey {
 	var sb strings.Builder
 	for _, part := range []string{
 		req.User.Email,
@@ -901,26 +1038,43 @@ func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest) verdictC
 	return verdictCacheKey{
 		OrgID:    req.User.OrgID,
 		TenantID: effectiveTenantID(req),
+		Segments: strings.Join(normSegments, "\x1f"),
 		Request:  sb.String(),
 	}
 }
+
+// loadPoliciesFromDBQueryWithSegment / loadPoliciesFromDBQueryWithoutSegment:
+// two shapes of the same SELECT, split out so loadPoliciesFromDB can retry
+// column-less against a not-yet-migrated dynamic_policies table — see H3
+// (segment_column_probe.go's isMissingColumnError doc) for why this
+// tolerance exists.
+const loadPoliciesFromDBQueryWithSegment = `
+	SELECT
+		id::text, policy_id, name, description, policy_type,
+		COALESCE(category, '') as category,
+		conditions, actions, priority, enabled, tenant_id, segment_id,
+		created_at, updated_at
+	FROM dynamic_policies
+	WHERE enabled = true
+	ORDER BY priority DESC, created_at DESC
+`
+
+const loadPoliciesFromDBQueryWithoutSegment = `
+	SELECT
+		id::text, policy_id, name, description, policy_type,
+		COALESCE(category, '') as category,
+		conditions, actions, priority, enabled, tenant_id,
+		created_at, updated_at
+	FROM dynamic_policies
+	WHERE enabled = true
+	ORDER BY priority DESC, created_at DESC
+`
 
 // loadPoliciesFromDB loads dynamic policies from database
 func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 	if !e.dbAvailable || e.db == nil {
 		return fmt.Errorf("database not available")
 	}
-
-	query := `
-		SELECT
-			id::text, policy_id, name, description, policy_type,
-			COALESCE(category, '') as category,
-			conditions, actions, priority, enabled, tenant_id,
-			created_at, updated_at
-		FROM dynamic_policies
-		WHERE enabled = true
-		ORDER BY priority DESC, created_at DESC
-	`
 
 	// ALL-tenants read — runs on the BYPASSRLS refresh pool (see refreshDB
 	// field comment, #3048). On the app-role pool this SELECT silently
@@ -929,9 +1083,23 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 	if e.refreshDB != nil {
 		pool = e.refreshDB
 	}
-	rows, err := pool.Query(query)
+	hasSegmentColumn := true
+	rows, err := pool.Query(loadPoliciesFromDBQueryWithSegment)
 	if err != nil {
-		return fmt.Errorf("failed to query dynamic policies: %v", err)
+		if !isMissingColumnError(err, "segment_id") {
+			return fmt.Errorf("failed to query dynamic policies: %v", err)
+		}
+		// H3 (#3239 round 2): booted against a dynamic_policies table that
+		// predates migration 159 — retry segment-less. Correct pre-159: no
+		// segment_id rows can exist yet, so this keeps enforcement live and
+		// segment-unaware instead of failing the load outright (which would
+		// otherwise fall back to loadDefaultDynamicPolicies-only coverage).
+		log.Printf("[Policy] ADR-060 (#2989 P3b): dynamic_policies.segment_id not found (pre-migration-159) — loading segment-less until the column is migrated")
+		hasSegmentColumn = false
+		rows, err = pool.Query(loadPoliciesFromDBQueryWithoutSegment)
+		if err != nil {
+			return fmt.Errorf("failed to query dynamic policies (segment-less retry): %v", err)
+		}
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -944,8 +1112,9 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 		var dbID string
 		var policyID sql.NullString
 		var tenantID sql.NullString
+		var segmentID sql.NullString
 
-		if err := rows.Scan(
+		scanTargets := []interface{}{
 			&dbID,
 			&policyID,
 			&policy.Name,
@@ -957,9 +1126,13 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 			&policy.Priority,
 			&policy.Enabled,
 			&tenantID,
-			&policy.CreatedAt,
-			&policy.UpdatedAt,
-		); err != nil {
+		}
+		if hasSegmentColumn {
+			scanTargets = append(scanTargets, &segmentID)
+		}
+		scanTargets = append(scanTargets, &policy.CreatedAt, &policy.UpdatedAt)
+
+		if err := rows.Scan(scanTargets...); err != nil {
 			log.Printf("Error scanning dynamic policy row: %v", err)
 			continue
 		}
@@ -992,6 +1165,9 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 
 		if tenantID.Valid {
 			policy.TenantID = tenantID.String
+		}
+		if segmentID.Valid {
+			policy.SegmentID = segmentID.String
 		}
 
 		policies = append(policies, policy)

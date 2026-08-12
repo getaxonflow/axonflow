@@ -189,7 +189,10 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 	// until v10. The 'global' wildcard sentinel (per migration 090's
 	// design intent) preserves verbatim — a row with tenant_id='global'
 	// gets client_id='global', keeping SELECT-path wildcard semantics
-	// consistent with get_dynamic_policies_for_tenant (migration 010).
+	// consistent with the application-layer tenant-scoping predicates this
+	// repository and db_dynamic_policies.go apply (the historical cite here,
+	// migration 010's get_dynamic_policies_for_tenant() helper function, was
+	// dropped as dead unused code by migration 159 — #3239 round 2, M7).
 	query := `
 		INSERT INTO static_policies (
 			id, policy_id, name, category, pattern, severity,

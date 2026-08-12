@@ -112,6 +112,13 @@ func TestUnifiedEngineEnforcementUnderAppRole(t *testing.T) {
 	f := setup3048Fixture(t)
 	const org = "rls3048-engine-org"
 	f.seedOrg(t, org)
+	// #3266: the shared loader now unconditionally SELECTs segment_id (both
+	// scoped passes), so the fixture must carry the column before ANY engine
+	// load runs — including the pre-153 leg below. 157 is independent of
+	// 153/154 (depends only on 010/090, both inside approletest's 001..111
+	// range), so it is safe to apply up front rather than deferred like
+	// 153/154 (whose ABSENCE is what the pre-153 leg tests).
+	f.applyMigration(t, "157_static_policies_segment_id.sql")
 
 	cfg := sharedpolicy.DefaultEngineConfig()
 	cfg.RefreshInterval = 0
@@ -302,6 +309,8 @@ func TestStaticPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 // core/153) acquires org_id='global' and becomes visible to the scoped reads.
 func TestMigration154TriggerDefaultsGlobalOrgID(t *testing.T) {
 	f := setup3048Fixture(t)
+	// #3266: LoadSystemPolicies now unconditionally SELECTs segment_id.
+	f.applyMigration(t, "157_static_policies_segment_id.sql")
 	f.applyMigration(t, "153_backfill_global_policy_org_id.sql")
 	f.applyMigration(t, "154_global_policy_org_id_default.sql")
 
@@ -419,6 +428,8 @@ func TestOrgTenantSplitEnforcementUnderAppRole(t *testing.T) {
 	const orgID = "rls3048-split-org"
 	const tenantID = "rls3048-split-tenant"
 	f.seedOrg(t, orgID)
+	// #3266: the shared engine's loader now unconditionally SELECTs segment_id.
+	f.applyMigration(t, "157_static_policies_segment_id.sql")
 	f.applyMigration(t, "153_backfill_global_policy_org_id.sql")
 	f.applyMigration(t, "154_global_policy_org_id_default.sql")
 

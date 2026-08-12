@@ -1138,12 +1138,18 @@ func TestPolicyTestHandler_SegmentScopedPolicy_Blocks(t *testing.T) {
 	}
 }
 
-// TestPolicyTestHandler_SegmentResolutionFailure_FallsBackOrgOnly proves the
-// #3051 fix's non-fail-closed contract for this endpoint: unlike the real
-// request plane, a genuine segment-resolution ERROR must NOT deny or error
-// out the simulation call — nothing real is being blocked by this endpoint —
-// it must fall back to an org-only simulation and still return a normal 200.
-func TestPolicyTestHandler_SegmentResolutionFailure_FallsBackOrgOnly(t *testing.T) {
+// TestPolicyTestHandler_SegmentResolutionFailure_SimulatesFailClosedDeny
+// proves the #3293 convergence (superseding the old #3051 fail-open
+// carve-out this test used to pin): a genuine segment-resolution ERROR must
+// now simulate the SAME fail-closed deny a real /api/request call would
+// produce. This is still a dry-run — nothing real is blocked — so the
+// simulated verdict comes back as a normal 200 (not a 403/5xx), but with
+// blocked=true and a fail-closed reason in the body. Critically, the
+// #3293 invariant requires this to short-circuit BEFORE either engine
+// runs: the mock has ZERO registered expectations, so if policyTestHandler
+// regressed to calling GetEffective (Phase 2) with a nil-on-failure segment
+// set, this test would fail on the unmet/unexpected-query check below.
+func TestPolicyTestHandler_SegmentResolutionFailure_SimulatesFailClosedDeny(t *testing.T) {
 	originalEngine := tierAwarePolicyEngine
 	defer func() { tierAwarePolicyEngine = originalEngine }()
 
@@ -1158,14 +1164,8 @@ func TestPolicyTestHandler_SegmentResolutionFailure_FallsBackOrgOnly(t *testing.
 	fake := &fakeSegmentResolver{err: errAssertSegmentResolutionFailed}
 	withFleetSegmentResolver(t, fake)
 
-	// Org-only (tier-effective) read: no policy matches this query, so the
-	// fallback simulation must come back as a normal, unblocked 200 — not a
-	// denial (403) or a 5xx like the fail-closed real request plane would
-	// produce on the same resolver error.
-	// Resolution failure falls back to org-only: segmentIDs is nil, so the
-	// query must bind an empty segment array, not the caller's actual (never
-	// resolved) segments.
-	expectEffectiveTwoPass(mock, "test-tenant", sqlmock.NewRows(effectiveCols()), emptyOverrideRows(), sqlmock.NewRows(effectiveCols()), nil)
+	// Deliberately NO mock.Expect* calls registered — Phase 2's GetEffective
+	// must never be queried when segment resolution fails.
 
 	body, _ := json.Marshal(map[string]string{
 		"query":        "just a normal query",
@@ -1182,7 +1182,7 @@ func TestPolicyTestHandler_SegmentResolutionFailure_FallsBackOrgOnly(t *testing.
 	policyTestHandler(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200 (resolution failure must not deny the test call), got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected status 200 (simulated verdict, not a real HTTP error), got %d: %s", w.Code, w.Body.String())
 	}
 
 	var response map[string]interface{}
@@ -1190,14 +1190,26 @@ func TestPolicyTestHandler_SegmentResolutionFailure_FallsBackOrgOnly(t *testing.
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if blocked, _ := response["blocked"].(bool); blocked {
-		t.Errorf("expected blocked=false (org-only fallback, no matching policy), got response=%+v", response)
+	const wantReason = "segment resolution unavailable — a real request would be denied (fail-closed, ADR-060 #2989)"
+	if blocked, _ := response["blocked"].(bool); !blocked {
+		t.Errorf("#3293: expected blocked=true (simulated fail-closed deny), got response=%+v", response)
+	}
+	// Exact-string check, not merely non-empty: if Phase 2 ran instead (a
+	// regression of the short-circuit), it would either error on the
+	// unexpected query and leave blocked=false (failing the check above), or
+	// — were it somehow to match a real policy — report a DIFFERENT reason
+	// ("Blocked by ... policy: ..."), so this pins the deny to the
+	// resolution-site simulation specifically.
+	if reason, _ := response["reason"].(string); reason != wantReason {
+		t.Errorf("#3293: reason = %q, want %q", reason, wantReason)
 	}
 	if fake.callCount() != 1 {
 		t.Errorf("expected segment resolver to be called exactly once, got %d", fake.callCount())
 	}
+	// No tier-aware engine query should have been issued at all — the
+	// fail-closed branch returns before ever calling EvaluatePolicy.
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet mock expectations: %v", err)
+		t.Errorf("#3293: GetEffective must NOT have been queried on a fail-closed simulated deny (Phase 2 must never run with a possibly-failed segment set): %v", err)
 	}
 }
 

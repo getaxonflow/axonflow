@@ -79,7 +79,7 @@ func (m *gs3066Engine) EvaluateDynamicPolicies(_ context.Context, req Orchestrat
 }
 
 func (m *gs3066Engine) ListActivePolicies() []DynamicPolicy { return []DynamicPolicy{} }
-func (m *gs3066Engine) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+func (m *gs3066Engine) ListActivePoliciesForTenant(_ string, _ []string) []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 func (m *gs3066Engine) IsHealthy() bool { return true }

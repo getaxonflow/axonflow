@@ -44,12 +44,12 @@ func seedGlobalEngineWithMarkerPolicy(t *testing.T, actionRequest, pattern strin
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mockSQL.MatchExpectationsInOrder(false)
 	cols := policytest.LoaderCols() // #3048: includes created_at
-	for i := 0; i < 8; i++ { // headroom: two scoped passes per load (#3048)
+	for i := 0; i < 8; i++ {        // headroom: two scoped passes per load (#3048)
 		mockSQL.ExpectQuery("SELECT").WillReturnRows(
 			sqlmock.NewRows(cols).AddRow(
 				"p1", "test_marker_policy", "Test Marker", "compliance-rbi", "system",
 				pattern, "critical", "test marker", "request", actionRequest, nil,
-				true, 100, "global", nil, []byte("{}"), time.Now().UTC(),
+				true, 100, "global", nil, nil, []byte("{}"), time.Now().UTC(),
 			))
 	}
 	policytest.ScopedTxPlumbing(mockSQL, 8)

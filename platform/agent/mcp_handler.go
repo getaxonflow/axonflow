@@ -828,6 +828,13 @@ func evaluateInputPolicies(
 			ToolIdentity:    toolIdentity,
 			SkipCategories:  detectionCfg.SkipCategories,
 			ActionOverrides: detectionCfg.BuildActionOverrides(),
+			// #3266: this plane has no resolved governance-segment set on
+			// hand yet, so Segments is left nil — a segment-scoped
+			// static_policies row is excluded here (fail-closed, leak
+			// closed), same as every other caller of the shared engine.
+			// Real segment enforcement on the MCP plane is tracked
+			// in #3312 (agent MCP scan; machine-actor → #3279-gated).
+			Segments: nil,
 		})
 		if out.StaticResult.Blocked {
 			policyID := "unknown"
@@ -1406,6 +1413,11 @@ func evaluateOutputPolicies(
 				SkipCategories:  mcpDetectionCfg.SkipCategories,
 				ActionOverrides: actionOverrides,
 				MaxRedactions:   100,
+				// #3266: no resolved governance-segment set on this plane yet
+				// — nil excludes segment-scoped static_policies rows
+				// (fail-closed, leak closed). Real segment enforcement on the
+				// MCP plane is tracked in #3312 (agent MCP scan; machine-actor → #3279-gated).
+				Segments: nil,
 			})
 			// #2820: second line of defense — a load race between the
 			// PoliciesLoadable gate above and here (cache expiry mid-request)

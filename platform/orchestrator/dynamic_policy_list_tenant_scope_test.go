@@ -40,7 +40,10 @@ const (
 
 // mkScopeTestPolicy builds a cache entry the way refreshPolicies stores rows
 // (policy_id-keyed map, tenant carried in _metadata). withMetadata=false
-// produces the legacy no-_metadata shape.
+// produces the no-_metadata shape, which every real writer (refreshPolicies,
+// loadDefaultPolicies) avoids — it now exercises the fail-closed defect
+// guard in dbCachedPolicyAppliesToTenant, not a legitimate "applies to
+// everyone" shape.
 func mkScopeTestPolicy(id, name, tenant, conditionRegex string, withMetadata bool) map[string]interface{} {
 	p := map[string]interface{}{
 		"name":       name,
@@ -62,12 +65,15 @@ func mkScopeTestPolicy(id, name, tenant, conditionRegex string, withMetadata boo
 // newScopeTestDBEngine seeds a DatabaseDynamicPolicyEngine cache covering
 // every shape that matters: tenant-a, tenant-b (x2), "global", "default" (the
 // NULL-tenant sentinel refreshPolicies assigns), a row whose _metadata carries
-// an EMPTY tenant_id (enforced for nobody), and a legacy row with no
-// _metadata at all (enforced for everybody).
+// an EMPTY tenant_id (enforced for nobody), and a row with no _metadata at
+// all — no real writer produces this, so it now pins the fail-closed defect
+// guard (enforced for nobody, same as the empty-tenant row, but for a
+// different reason: a missing writer contract rather than an explicit
+// nobody-scoped policy).
 //
-// The last two are the shapes DynamicPolicy.TenantID cannot tell apart — both
-// serialize as "" — and conflating them is exactly how the first cut of this
-// fix listed an unenforced policy to every tenant.
+// The last two shapes are both cases DynamicPolicy.TenantID cannot tell
+// apart — both serialize as "" — which is why list/enforce parity is
+// asserted over the raw cache entries, not the converted structs.
 func newScopeTestDBEngine() *DatabaseDynamicPolicyEngine {
 	return &DatabaseDynamicPolicyEngine{
 		policies: map[string]interface{}{
@@ -123,11 +129,10 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 	}
 
 	// Every returned row must be owned by the caller or a shared sentinel.
-	// Note "" is NOT in this set: a policy surfaces with TenantID "" either
-	// because its _metadata carries an empty tenant (enforced for nobody) or
-	// because it has no _metadata (enforced for everybody). Only the second
-	// may be listed, and it is identified by id below — the owner field alone
-	// cannot distinguish them.
+	// Note "" is NOT in this set: a policy surfaces with TenantID "" when its
+	// _metadata carries an empty tenant (enforced for nobody) — the only
+	// legitimate "" shape left, now that the no-_metadata shape also fails
+	// closed (excluded, not listed at all). Identified by id below.
 	allowedOwners := map[string]bool{"tenant-a": true, "global": true, "default": true}
 	seenIDs := map[string]bool{}
 	for _, p := range got {
@@ -142,7 +147,7 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 
 	// Tenant A's own policy and the shared rows must still be served —
 	// scoping must not become "return nothing".
-	for _, want := range []string{"pol-tenant-a", "pol-global", "pol-default", "pol-no-metadata"} {
+	for _, want := range []string{"pol-tenant-a", "pol-global", "pol-default"} {
 		if !seenIDs[want] {
 			t.Errorf("response missing expected policy id=%q", want)
 		}
@@ -155,13 +160,21 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 		t.Error("response contains the empty-tenant policy, which the evaluator enforces for nobody (list/enforce divergence)")
 	}
 
-	if len(got) != 4 {
-		t.Errorf("response has %d policies, want 4 (tenant-a + global + default + no-metadata): %+v", len(got), got)
+	// The no-_metadata row is not a legitimate shape any real writer
+	// produces; dbCachedPolicyAppliesToTenant now treats it as a defect and
+	// excludes it (fail-closed), so it must never reach the response either.
+	if seenIDs["pol-no-metadata"] {
+		t.Error("response contains the no-_metadata policy, which the fail-closed defect guard must exclude from both enforcement and listing")
+	}
+
+	if len(got) != 3 {
+		t.Errorf("response has %d policies, want 3 (tenant-a + global + default): %+v", len(got), got)
 	}
 
 	// Belt and braces on the raw body: neither tenant B's policy id nor its
-	// proprietary condition regex may appear anywhere in the payload, and
-	// neither may the unenforced empty-tenant row's condition.
+	// proprietary condition regex may appear anywhere in the payload, nor may
+	// the unenforced empty-tenant row's condition or the excluded
+	// no-_metadata row's condition.
 	body := w.Body.String()
 	if strings.Contains(body, scopeTestTenantBPolicyID) || strings.Contains(body, "tenant-b") {
 		t.Errorf("raw response body mentions tenant-b: %s", body)
@@ -171,6 +184,9 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 	}
 	if strings.Contains(body, scopeTestEmptyTenantRegex) {
 		t.Errorf("raw response body leaked the empty-tenant policy's condition regex: %s", body)
+	}
+	if strings.Contains(body, "legacy-no-metadata") {
+		t.Errorf("raw response body leaked the excluded no-_metadata policy: %s", body)
 	}
 }
 
@@ -194,11 +210,11 @@ func TestDBCachedPolicyAppliesToTenant_ShapeSemantics(t *testing.T) {
 			wantRationale: "an empty tenant_id in _metadata matches no tenant in the evaluation loop",
 		},
 		{
-			name:          "metadata absent → everybody",
+			name:          "metadata absent → fail-closed defect guard, nobody",
 			policyMap:     mkScopeTestPolicy("p", "p", "", "x", false),
 			caller:        "tenant-a",
-			wantApplies:   true,
-			wantRationale: "no _metadata means no tenant gate in the evaluation loop",
+			wantApplies:   false,
+			wantRationale: "every writer (refreshPolicies, loadDefaultPolicies) populates _metadata; an absent one is a defect and is excluded rather than applied to everyone",
 		},
 		{"metadata present, global", mkScopeTestPolicy("p", "p", "global", "x", true), "tenant-a", true, "global is a shared baseline"},
 		{"metadata present, default", mkScopeTestPolicy("p", "p", "default", "x", true), "tenant-a", true, "default is the NULL-tenant sentinel"},
@@ -207,7 +223,7 @@ func TestDBCachedPolicyAppliesToTenant_ShapeSemantics(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := dbCachedPolicyAppliesToTenant(tc.policyMap, tc.caller); got != tc.wantApplies {
+			if got := dbCachedPolicyAppliesToTenant(tc.policyMap, tc.caller, nil, tc.name); got != tc.wantApplies {
 				t.Fatalf("dbCachedPolicyAppliesToTenant = %v, want %v (%s)", got, tc.wantApplies, tc.wantRationale)
 			}
 		})
@@ -232,7 +248,7 @@ func TestMemPolicyAppliesToTenant_MirrorsEnforcement(t *testing.T) {
 		{"default", "tenant-a", false},  // NOT a sentinel on this engine
 	}
 	for _, tc := range cases {
-		if got := memPolicyAppliesToTenant(tc.policyTenant, tc.caller); got != tc.want {
+		if got := memPolicyAppliesToTenant(tc.policyTenant, tc.caller, "", nil); got != tc.want {
 			t.Errorf("memPolicyAppliesToTenant(%q, %q) = %v, want %v", tc.policyTenant, tc.caller, got, tc.want)
 		}
 	}
@@ -251,11 +267,11 @@ func TestMemPolicyAppliesToTenant_MirrorsEnforcement(t *testing.T) {
 	enforced := map[string]bool{}
 	for _, p := range engine.getApplicablePolicies(OrchestratorRequest{
 		User: UserContext{TenantID: "tenant-a"},
-	}) {
+	}, nil) {
 		enforced[p.ID] = true
 	}
 	listed := map[string]bool{}
-	for _, p := range engine.ListActivePoliciesForTenant("tenant-a") {
+	for _, p := range engine.ListActivePoliciesForTenant("tenant-a", nil) {
 		listed[p.ID] = true
 	}
 	for _, id := range []string{"own", "other", "empty", "global"} {
@@ -331,7 +347,7 @@ func TestDynamicPolicyEngine_ListActivePoliciesForTenant(t *testing.T) {
 		t.Fatal("vacuity control failed: tenant-b policy not in the unscoped list")
 	}
 
-	got := engine.ListActivePoliciesForTenant("tenant-a")
+	got := engine.ListActivePoliciesForTenant("tenant-a", nil)
 	wantIDs := map[string]bool{"a1": true, "e1": true}
 	if len(got) != len(wantIDs) {
 		t.Fatalf("scoped list has %d policies, want %d: %+v", len(got), len(wantIDs), got)

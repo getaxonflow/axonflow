@@ -75,11 +75,12 @@ package agent
 // treated as production and the route is NOT registered (→ 404). None of the
 // ambient mode helpers is reused here, for two separate reasons.
 //
-//   - isDevOrStaging() (ee/platform/customer-portal/api/organizations.go, the
-//     isDevOrStaging func) and getDeploymentKind() (run.go) still fail OPEN on
-//     an unset value today — `env == ""` is in the true set of the first, and
-//     the second defaults UNSET → "dev". Reusing either would put the minter
-//     live on a stack that simply forgot to configure itself.
+//   - getDeploymentKind() (run.go) still fails OPEN on an unset value today:
+//     it defaults UNSET → "dev". Reusing it would put the minter live on a
+//     stack that simply forgot to configure itself. (The portal's
+//     isDevOrStaging() had the same defect and was DELETED in #2330; its
+//     replacement, resetTokenInBodyAllowed(), fails closed on unset and
+//     excludes staging entirely.)
 //
 //   - isCommunityMode() no longer does: #3096 removed `mode == ""` from its
 //     true set, so it now fails CLOSED on unset like this gate. It is still not
@@ -169,8 +170,8 @@ func isExplicitNonProd(v string) bool {
 // registered. FAIL-CLOSED: returns true ONLY when at least one environment
 // signal is EXPLICITLY a known non-production value. All-unset ⇒ false
 // (production). See the file header for why the ambient mode helpers
-// (isCommunityMode / getDeploymentKind / isDevOrStaging) are NOT used —
-// getDeploymentKind and isDevOrStaging still fail open on unset; isCommunityMode
+// (isCommunityMode / getDeploymentKind) are NOT used -
+// getDeploymentKind still fails open on unset; isCommunityMode
 // no longer does, and is still not reused because its accepting set is narrower
 // than this gate's and is owned by the authentication posture, not by this gate.
 //

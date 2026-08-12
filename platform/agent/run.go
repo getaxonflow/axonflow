@@ -2080,6 +2080,78 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📋 Evaluating static policies for request type: %s", req.RequestType)
 	var policyResult *StaticPolicyResult
 
+	// #3051 (ADR-060 P3) + #3266: resolve the caller's governance-segment set
+	// ONCE, up front, so Phase 1 (shared engine, below) and Phase 2
+	// (tier-aware engine) evaluate against the SAME membership set instead of
+	// Phase 1 running segment-blind. Previously this resolved only inside the
+	// Phase 2 block, so the shared engine had no segment context and would
+	// both ACT ON and REPORT segment-scoped static_policies rows for callers
+	// outside the segment (#3266).
+	segmentIDs, segOK := resolveSegmentsForPolicy(r.Context(), user.OrgID, user.Email)
+
+	// #3293 locked invariant: a segment-resolution FAILURE is handled at the
+	// resolution SITE and must NEVER be propagated downstream as a nil/empty
+	// segment set — unlike resolveUserSegments (mcp_identity.go, P2,
+	// observability-only), a genuine resolution ERROR here must DENY the
+	// request, never silently fall back to org-only (ADR-060 §Fail-closed,
+	// locked). Deny and return HERE, before Phase 1 ever runs, so the shared
+	// engine is never called with a nil Segments set that actually means
+	// "failed to load" — below this point (Phase 1 and Phase 2 alike),
+	// nil/empty Segments means only "resolved to none / no identity"
+	// (community mode, no SCIM configured, or zero real memberships), never
+	// "failed." segOK=true with a nil/empty set is NOT a failure; it proceeds
+	// org-only exactly as pre-#3051.
+	if !segOK {
+		reason := "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
+		triggeredPolicies := []string{"segment_resolution_failed"}
+		log.Printf("🛡️ Request denied: segment resolution failed (fail-closed) for org %s", logutil.Sanitize(user.OrgID))
+
+		// Canonical audit row for the fail-closed deny (#2684).
+		auditProxyDeny(AuditVerdictBlocked, triggeredPolicies, []string{reason})
+
+		// Record policy violation for auto-trip threshold tracking (#1176),
+		// same as the policy-block path below (ADR-052 §5, #2318).
+		if circuitBreakerInstance != nil {
+			for _, policyID := range triggeredPolicies {
+				if err := circuitBreakerInstance.RecordPolicyViolation(r.Context(), client.OrgID, client.TenantID, client.ClientID, policyID); err != nil {
+					log.Printf("⚠️ Circuit breaker RecordPolicyViolation error: %v", err)
+				}
+			}
+		}
+
+		// Track blocked request metrics
+		if agentMetrics != nil {
+			atomic.AddInt64(&agentMetrics.blockedRequests, 1)
+			latencyMs := int64(time.Since(startTime).Milliseconds())
+			agentMetrics.recordLatency(latencyMs, "static")
+		}
+
+		// Record Prometheus metrics
+		promRequestsTotal.WithLabelValues("blocked").Inc()
+		promBlockedRequests.Inc()
+		promPolicyEvaluations.Inc()
+		promRequestDuration.WithLabelValues("static").Observe(float64(time.Since(startTime).Milliseconds()))
+
+		response := ClientResponse{
+			Success:     false,
+			Blocked:     true,
+			BlockReason: reason,
+			PolicyInfo: &PolicyEvaluationInfo{
+				MatchedPolicies:   triggeredPolicies,
+				PoliciesEvaluated: triggeredPolicies,
+				ProcessingTime:    time.Since(startTime).String(),
+				TenantID:          user.TenantID,
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Error encoding service permission denied response: %v", err)
+		}
+		return
+	}
+
 	// Check if gateway static policies are enabled (proxy uses gateway config)
 	// #2581: resolve per-org posture (org with no override → deployment-global).
 	gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), user.OrgID)
@@ -2107,6 +2179,10 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Categories:      proxyPolicyCategories,
 			SkipCategories:  skipCats,
 			ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
+			// #3266: the caller's already-resolved governance-segment set
+			// (above), so a segment-scoped static_policies row can only
+			// act/report for a member — closes the Phase-1 cross-segment leak.
+			Segments: segmentIDs,
 		})
 		policyResult = convertSharedResultToStatic(requestResult)
 		log.Printf("[Proxy] Shared policy engine evaluated %d policies in %dms",
@@ -2120,43 +2196,29 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if !policyResult.Blocked && tierAwarePolicyEngine != nil {
 		ctx := r.Context()
 
-		// #3051 (ADR-060 P3): resolve the caller's governance-segment set for
-		// POLICY-AFFECTING consumption — unlike resolveUserSegments
-		// (mcp_identity.go, P2, observability-only), a genuine resolution
-		// ERROR here must DENY the request, never silently fall back to
-		// org-only (ADR-060 §Fail-closed, locked). segOK=false means "deny";
-		// segOK=true with a nil/empty set means either the capability is
-		// unavailable (community mode / no SCIM configured — not a failure)
-		// or the caller legitimately belongs to zero segments.
-		segmentIDs, segOK := resolveSegmentsForPolicy(ctx, user.OrgID, user.Email, true)
-		if !segOK {
+		// #3051 (ADR-060 P3) + #3293: segmentIDs was resolved once, up front
+		// (above, #3266) — a resolution FAILURE (segOK=false) already denied
+		// and returned before Phase 1 ran, so by construction this point is
+		// only reached with a successfully-resolved (possibly nil/empty) set.
+		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, segmentIDs, req.Query)
+		if err != nil {
+			log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
+		} else if tierResult.Matched && tierResult.Action == "block" {
+			// Tenant/segment policy triggered a block
 			policyResult.Blocked = true
-			policyResult.Reason = "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
-			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, "segment_resolution_failed")
-			log.Printf("🛡️ Request denied: segment resolution failed (fail-closed) for org %s", logutil.Sanitize(user.OrgID))
-		}
+			policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
+			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			policyResult.Severity = tierResult.Severity
+			log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
+		} else if tierResult.Matched {
+			// Policy matched but action is not block (allow, warn, log, redact, require_approval)
+			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
 
-		if !policyResult.Blocked {
-			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, segmentIDs, req.Query)
-			if err != nil {
-				log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
-			} else if tierResult.Matched && tierResult.Action == "block" {
-				// Tenant/segment policy triggered a block
-				policyResult.Blocked = true
-				policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-				policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
-				policyResult.Severity = tierResult.Severity
-				log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
-			} else if tierResult.Matched {
-				// Policy matched but action is not block (allow, warn, log, redact, require_approval)
-				policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
-				log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
-
-				// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
-				if tierResult.Action == "require_approval" {
-					policyResult.RequiresApproval = true
-					log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
-				}
+			// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
+			if tierResult.Action == "require_approval" {
+				policyResult.RequiresApproval = true
+				log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
 			}
 		}
 	}
@@ -3029,65 +3091,110 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		OrgID:       orgID,
 	}
 
-	// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
-	var result *StaticPolicyResult
-	// #2581: resolve per-org posture (org with no override → deployment-global).
-	gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), testUser.OrgID)
-	sharedEngine := sharedpolicy.GetGlobalEngine()
-	if !gatewayDetectionCfg.Enabled {
-		result = &StaticPolicyResult{}
-	} else if sharedEngine != nil {
-		skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
-		// #3001: same shared predicate as the real request plane above. This
-		// handler exists to SIMULATE enforcement, so a literal here would make
-		// the simulation disagree with what actually happens for an `owner`.
-		if sharedidentity.RoleIsAdministrative(testUser.Role) {
-			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
-		}
-		requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
-			TenantID:        testUser.TenantID,
-			OrgID:           testUser.OrgID,
-			OrganizationID:  sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
-			ConnectorName:   "proxy",
-			UserID:          fmt.Sprintf("%d", testUser.ID),
-			Categories:      proxyPolicyCategories,
-			SkipCategories:  skipCats,
-			ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
-		})
-		result = convertSharedResultToStatic(requestResult)
-	} else {
-		log.Println("[PolicyTest] WARNING: No policy engine available")
-		result = &StaticPolicyResult{}
-	}
+	// #3051 (ADR-060 P3) + #3266 + #3293: resolve segments for the
+	// caller-supplied testReq.UserEmail ONCE, up front, so both Phase 1 (the
+	// shared engine) and Phase 2 (the tier-aware engine) simulate against
+	// the SAME membership set — matching what /api/request actually does for
+	// that user. The preview is now FULLY CONVERGED with the real request
+	// plane on both axes: Phase 1 is segment-aware (Segments: segmentIDs
+	// below, same as clientRequestHandler) and resolution failures are
+	// fail-closed (failClosed=true below, same contract as the enforcement
+	// path) rather than the old fail-open "simulate org-only" carve-out.
+	//
+	// #3293 invariant: a resolution FAILURE must never reach either engine
+	// as a nil/empty segment set. Unlike clientRequestHandler — which DENIES
+	// the real request outright on segOK=false — this preview is a DRY-RUN:
+	// nothing is actually being granted or enforced against
+	// testReq.UserEmail, so there's nothing to deny. Instead, on segOK=false
+	// this handler short-circuits BEFORE calling either engine and reports
+	// the SIMULATED VERDICT a real /api/request call would produce: a normal
+	// 200 response (matching this endpoint's existing shape) with
+	// blocked=true and a fail-closed reason. That keeps the #3293 invariant
+	// (no possibly-failed set ever reaches Phase 1 or Phase 2) while still
+	// answering the preview's actual question — "what would happen?" — with
+	// "the caller would be denied."
+	//
+	// Coordination with #3239: the preview's fail-closed convergence and
+	// Phase-1 segment-awareness both live HERE now, not split across #3239 —
+	// #3239 predates EvalOptions.Segments and can only do the Phase-2 half.
+	// #3239 will be slimmed to drop its now-redundant copy of this
+	// convergence and drops the failClosed param resolveSegmentsForPolicy
+	// takes here; that signature change is expected to land as a follow-up
+	// rebase, not a conflict in this file's logic.
+	//
+	// Signal B — segments_resolved (#3239 M4, ported here as part of the same
+	// consolidation): an INFORMATIONAL flag in the response, entirely
+	// distinct from the fail-closed deny above (Signal A). It answers "did a
+	// real, non-empty segment membership set actually factor into this
+	// verdict?" — true only when resolution succeeded AND returned at least
+	// one segment; false for every legitimate org-only case (no tier engine,
+	// no email supplied, no resolver configured, zero group memberships) AND
+	// for the fail-closed-deny path. It lets an admin reading the preview
+	// tell "allowed because no segment restricted this" apart from "allowed
+	// and a segment was genuinely considered" — it never itself changes the
+	// verdict.
+	segmentIDs, segOK := resolveSegmentsForPolicy(r.Context(), testUser.OrgID, testReq.UserEmail)
+	segmentsResolved := false
 
-	// Phase 2: Tier-aware policies (if not blocked and engine available)
-	if !result.Blocked && tierAwarePolicyEngine != nil {
-		ctx := r.Context()
-		// #3051 (ADR-060 P3): resolve segments for the caller-supplied
-		// testReq.UserEmail so this simulation matches what /api/request would
-		// actually do for that user. Unlike the real request plane, nothing is
-		// being granted or enforced against testReq.UserEmail here — this is a
-		// read-only preview, already gated by this endpoint's tenant-level auth
-		// — so there is no privilege-escalation risk in resolving segments for
-		// arbitrary caller-supplied input the way there would be on the
-		// enforcement path. Unlike that path's fail-closed contract, a genuine
-		// resolution ERROR here must NOT deny the test call (nothing real is
-		// being blocked): fall back to an org-only simulation and log the gap.
-		segmentIDs, segOK := resolveSegmentsForPolicy(ctx, testUser.OrgID, testReq.UserEmail, false)
-		if !segOK {
-			log.Printf("⚠️ Policy test: segment resolution failed for %q — simulating org-only (a real /api/request call would fail-closed here)", logutil.Sanitize(testReq.UserEmail))
-			segmentIDs = nil
+	var result *StaticPolicyResult
+	if !segOK {
+		log.Printf("🛡️ Policy test: segment resolution failed for %q — simulating the fail-closed deny a real /api/request call would produce (ADR-060 #2989)", logutil.Sanitize(testReq.UserEmail))
+		result = &StaticPolicyResult{
+			Blocked:           true,
+			Reason:            "segment resolution unavailable — a real request would be denied (fail-closed, ADR-060 #2989)",
+			TriggeredPolicies: []string{"segment_resolution_failed"},
 		}
-		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, nil, segmentIDs, testReq.Query)
-		if err != nil {
-			log.Printf("⚠️ Tier-aware policy test error: %v", err)
-		} else if tierResult.Matched && tierResult.Action == "block" {
-			result.Blocked = true
-			result.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-			result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
-			result.Severity = tierResult.Severity
-		} else if tierResult.Matched {
-			result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+	} else {
+		segmentsResolved = len(segmentIDs) > 0
+		// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
+		// #2581: resolve per-org posture (org with no override → deployment-global).
+		gatewayDetectionCfg := ResolveGatewayDetectionConfig(r.Context(), testUser.OrgID)
+		sharedEngine := sharedpolicy.GetGlobalEngine()
+		if !gatewayDetectionCfg.Enabled {
+			result = &StaticPolicyResult{}
+		} else if sharedEngine != nil {
+			skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
+			// #3001: same shared predicate as the real request plane above. This
+			// handler exists to SIMULATE enforcement, so a literal here would make
+			// the simulation disagree with what actually happens for an `owner`.
+			if sharedidentity.RoleIsAdministrative(testUser.Role) {
+				skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
+			}
+			requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
+				TenantID:        testUser.TenantID,
+				OrgID:           testUser.OrgID,
+				OrganizationID:  sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
+				ConnectorName:   "proxy",
+				UserID:          fmt.Sprintf("%d", testUser.ID),
+				Categories:      proxyPolicyCategories,
+				SkipCategories:  skipCats,
+				ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
+				// #3266: the caller's resolved governance-segment set (above,
+				// guaranteed successfully-resolved by the segOK branch), same
+				// as clientRequestHandler — a segment-scoped static_policies
+				// row can only match/report for a member.
+				Segments: segmentIDs,
+			})
+			result = convertSharedResultToStatic(requestResult)
+		} else {
+			log.Println("[PolicyTest] WARNING: No policy engine available")
+			result = &StaticPolicyResult{}
+		}
+
+		// Phase 2: Tier-aware policies (if not blocked and engine available)
+		if !result.Blocked && tierAwarePolicyEngine != nil {
+			ctx := r.Context()
+			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, nil, segmentIDs, testReq.Query)
+			if err != nil {
+				log.Printf("⚠️ Tier-aware policy test error: %v", err)
+			} else if tierResult.Matched && tierResult.Action == "block" {
+				result.Blocked = true
+				result.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
+				result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+				result.Severity = tierResult.Severity
+			} else if tierResult.Matched {
+				result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+			}
 		}
 	}
 
@@ -3098,6 +3205,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		"triggered_policies": result.TriggeredPolicies,
 		"checks_performed":   result.ChecksPerformed,
 		"processing_time_ms": result.ProcessingTimeMs,
+		"segments_resolved":  segmentsResolved,
 	}); err != nil {
 		log.Printf("Error encoding policy test response: %v", err)
 	}

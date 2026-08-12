@@ -142,6 +142,13 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	// identities (fail-closed).
 	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
 
+	// Segment applicability gate (ADR-060, #2989/#3266): a segment-scoped
+	// policy applies only for a caller whose Segments contains it. Applied
+	// BEFORE matching (like the two filters above) so an excluded row is
+	// skipped entirely — not matched, not acted on, not reported in
+	// MatchedPolicies — closing both the enforcement and the reporting leak.
+	policies = e.filterBySegments(policies, opts.Segments)
+
 	// Evaluate each policy
 	for i := range policies {
 		policy := &policies[i]
@@ -309,6 +316,12 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	// any downstream executor runs. The content-borne families (PII,
 	// sensitive-data, prompt-injection redaction per core/128) are untouched.
 	policies = e.filterByToolCapability(policies, opts.ToolIdentity)
+
+	// Segment applicability gate (ADR-060, #2989/#3266): same rule as the
+	// request phase — a segment-scoped policy applies only for a caller
+	// whose Segments contains it; excluded rows are skipped entirely (not
+	// matched, not redacted/blocked, not reported in MatchedPolicies).
+	policies = e.filterBySegments(policies, opts.Segments)
 
 	// Convert content to scannable string
 	scannable := e.toScannable(content)
@@ -581,6 +594,35 @@ func (e *UnifiedPolicyEngine) filterByToolCapability(policies []CompiledPolicy, 
 			continue
 		}
 		filtered = append(filtered, policies[i])
+	}
+	return filtered
+}
+
+// filterBySegments drops segment-scoped policies (SegmentID != "") that the
+// caller's Segments set does not contain (ADR-060, #2989/#3266). Mirrors
+// filterByToolCapability's shape: applied once, before evaluation, so an
+// excluded row never reaches Evaluate/EvaluateAll and therefore never
+// matches, never acts, and never appears in MatchedPolicies. Non-segment-
+// scoped policies (SegmentID == "") always pass through unchanged — this is
+// restriction-only, it can only remove segment-scoped rows, never affect the
+// tenant/org-wide policy set that existed before #2989.
+func (e *UnifiedPolicyEngine) filterBySegments(policies []CompiledPolicy, segments []string) []CompiledPolicy {
+	hasSegmentScoped := false
+	for i := range policies {
+		if policies[i].SegmentID != "" {
+			hasSegmentScoped = true
+			break
+		}
+	}
+	if !hasSegmentScoped {
+		return policies
+	}
+
+	filtered := make([]CompiledPolicy, 0, len(policies))
+	for i := range policies {
+		if policies[i].AppliesToSegments(segments) {
+			filtered = append(filtered, policies[i])
+		}
 	}
 	return filtered
 }

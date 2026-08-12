@@ -93,7 +93,11 @@ var (
 		// tenant's policies). Internal consumers only — HTTP handlers MUST
 		// use ListActivePoliciesForTenant.
 		ListActivePolicies() []DynamicPolicy
-		ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
+		// segmentIDs (ADR-060 #2989 P3b) — see DynamicPolicyEngine's
+		// ListActivePoliciesForTenant doc for the parameter contract; every
+		// call site in this file passes nil today (no verified per-user
+		// identity available at those disclosure endpoints).
+		ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
 		IsHealthy() bool
 	}
 	// Note: Legacy llmRouter *LLMRouter removed in v2.3.0.
@@ -367,6 +371,39 @@ type PolicyEvaluationResult struct {
 	ProcessingTimeMs int64    `json:"processing_time_ms"`
 	DatabaseAccessed bool     `json:"database_accessed,omitempty"`
 
+	// EvaluationError distinguishes "could not evaluate" from "evaluated,
+	// found nothing to block" (S1, #3239 round 2) — the same pattern as
+	// platform/shared/policy.RequestResult/ResponseResult.EvaluationError
+	// (#2820/#2862, types.go). It is set true when the engine could NOT
+	// complete evaluation because ADR-060 (#2989 P3b) segment resolution
+	// failed (a genuine resolver/storage error, never "caller has zero
+	// segments"), as opposed to a clean evaluation (Allowed=false with
+	// EvaluationError=false is a real policy block). Before this field
+	// existed, the ONLY signal was the magic string
+	// AppliedPolicies=["segment_resolution_failed"] — a consumer had to
+	// string-match to tell an availability failure apart from a genuine
+	// policy match, exactly the anti-pattern EvaluationError exists to
+	// kill. Allowed is always false when this is set (the engine fails
+	// CLOSED on a segment resolution error, both on enforcement and on the
+	// simulate/test preview after round 2's fail-closed convergence) — a
+	// consumer that already checks Allowed gets the safe behavior even
+	// without reading this field, but should audit/handle the two cases
+	// differently ("could not govern" vs. "a policy said block").
+	EvaluationError bool `json:"evaluation_error,omitempty"`
+
+	// SegmentsResolved is Signal B (#3239 round 2, M1/M4): true only when a
+	// resolved, non-empty ADR-060 (#2989 P3b) governance-segment set was
+	// actually factored into this verdict. false covers every legitimate
+	// org-only case — no identity supplied, no resolver wired (community /
+	// no SCIM), or the caller belongs to zero segments — as well as the
+	// EvaluationError case above. None of those are failures; the flag
+	// exists purely so a consumer (in particular an admin reading the
+	// SimulatePolicies/policy-test preview response) does not mistake a
+	// legitimate org-only ALLOW for a segment-aware one. Distinct from
+	// EvaluationError, which answers "could the engine evaluate at all?";
+	// this answers "were segments in scope for the answer it gave?".
+	SegmentsResolved bool `json:"segments_resolved,omitempty"`
+
 	// Structured per-policy detail (ADR-044 / ADR-043). Mirror of AppliedPolicies
 	// with risk and override semantics so downstream code (WCP adapter, explain
 	// handler) can decide overridability without re-querying policies.
@@ -396,6 +433,17 @@ type AppliedPolicyDetail struct {
 	RiskLevel     string `json:"risk_level"`     // low|medium|high|critical
 	AllowOverride bool   `json:"allow_override"` // false iff policy forbids session override
 	MatchedRule   string `json:"matched_rule,omitempty"`
+
+	// SegmentID (ADR-060 #2989 P3b) is the stable scim_groups.id this policy
+	// is scoped to, or "" when it is not segment-scoped. Populated by both
+	// dynamic-policy engines for ATTRIBUTION/AUDIT ONLY — which segment a
+	// matched policy targeted. It is NOT read as an override-eligibility
+	// signal anywhere: a segment-scoped policy uses the same AllowOverride
+	// contract as a tenant policy (own allow_override column, not
+	// critical-risk), enforced identically by ApplyOverrideToResult
+	// (override_enforcement.go). Do not reintroduce a SegmentID check into
+	// that function's eligibility logic — see its doc comment for why.
+	SegmentID string `json:"segment_id,omitempty"`
 }
 
 type ProviderInfo struct {
@@ -1194,6 +1242,13 @@ func initializeComponents() {
 		dynamicPolicyEngine = dbEngine
 		log.Println("Dynamic Policy Engine initialized with DATABASE backing ✅")
 	}
+
+	// ADR-060 (#2989 P3b): wire the process-wide governance-segment resolver
+	// used by both dynamic-policy engines' enforcement path
+	// (resolveSegmentsForPolicy, segment_policy_gate.go). Deterministic at
+	// startup, right alongside the engine itself, mirroring the agent's
+	// registerFleetValidators wiring — never lazy-on-first-request.
+	initSegmentPolicyGate(usageDB)
 
 	// Initialize LLM Router context (ADR-007)
 	ctx := context.Background()
@@ -2752,7 +2807,14 @@ func listDynamicPoliciesHandler(w http.ResponseWriter, r *http.Request) {
 		return // resolveTenantOrFail already wrote a 401
 	}
 
-	policies := dynamicPolicyEngine.ListActivePoliciesForTenant(tenantID)
+	// ADR-060 (#2989 P3b): this handler resolves only tenant scope
+	// (resolveTenantOrFail, X-Tenant-ID) — no verified per-user email is
+	// available to resolve real segments from without re-deriving identity
+	// from an unverified header, which the #3099/#3108 fail-open defect
+	// class and this ADR's #3065 rule both forbid. nil conservatively
+	// excludes segment-scoped policies from this list (a strict subset of
+	// pre-P3b disclosure, never an over-disclosure).
+	policies := dynamicPolicyEngine.ListActivePoliciesForTenant(tenantID, nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(policies); err != nil {
@@ -2799,12 +2861,26 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 	// — is scoped by the tenant resolved above, not by the sample actor. If a
 	// future change makes this verdict authoritative for anything, the actor
 	// must be bound here first.
+	//
+	// user.OrgID is likewise forced from the gateway-stamped X-Org-ID header,
+	// never the body — it is not part of the "hypothetical actor" the
+	// exemption above grants. After P3b (ADR-060), EvaluateDynamicPolicies
+	// feeds User.OrgID and User.Email straight into resolveSegmentsForPolicy,
+	// which resolves against the LIVE SCIM directory of whichever org it is
+	// given (identityAttributeResolver.Resolve org-scopes both the RLS GUC and
+	// the query's WHERE clause on that exact argument). A body-sourced OrgID
+	// paired with a body-sourced Email would let a caller probe an arbitrary
+	// org's SCIM group membership one hypothetical email at a time and read
+	// the answer back out of Allowed/AppliedPolicies — a cross-org
+	// information-disclosure oracle. Email stays caller-supplied; that is the
+	// intended degree of freedom. OrgID does not get to travel with it.
 	scopedTenant := resolveTenantOrFail(w, r, "policy/test")
 	if scopedTenant == "" {
 		return
 	}
 	user := testReq.User
 	user.TenantID = scopedTenant
+	user.OrgID = r.Header.Get("X-Org-ID")
 
 	// Create test request
 	req := OrchestratorRequest{

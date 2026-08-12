@@ -38,7 +38,7 @@ func (m *mockPolicyEngineForWCP) ListActivePolicies() []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 
-func (m *mockPolicyEngineForWCP) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+func (m *mockPolicyEngineForWCP) ListActivePoliciesForTenant(_ string, _ []string) []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 

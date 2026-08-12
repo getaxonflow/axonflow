@@ -20,6 +20,175 @@ community mirror, **Enterprise** changes are EE-only.
 -->
 
 <!--
+  Version decision (Step 0): the next train is a MAJOR, pending operator
+  sign-off. #2330's headline is additive (portal password recovery by email,
+  off by default), which alone would be a MINOR - but by the 2026-07-30
+  operator semver policy ("removed fallback / new required credential / new
+  refusal / fatal config value = MAJOR") it carries three qualifying changes:
+
+    1. A REMOVED FALLBACK + NEW REFUSAL: forgot-password no longer returns a
+       reset token in the body on ENVIRONMENT=staging (or unset), it returns
+       501. Any operator scripting against staging token-in-body must move to
+       ENVIRONMENT=development or the admin reset endpoint.
+    2. A NEW REFUSAL AT BOOT: a portal with RESEND_API_KEY but no
+       from-address or no SSO_BASE_URL logs a misconfiguration and keeps
+       forgot-password on 501.
+    3. Reset links issued before the upgrade stop working (tokens are now
+       hashed at rest); they live at most 1 hour.
+
+  Both 1 and 2 are security fixes to unintended behavior, so an argument for
+  MINOR exists - flagged here for the release owner to decide rather than
+  assumed.
+-->
+
+## [9.17.0] - 2026-08-12 (self-service password recovery; forgot-password security hardening; segment-scoped policy targeting)
+
+### Migration
+
+- **One additive migration: `core/159`.** It adds a nullable `segment_id` column to `dynamic_policies` plus a partial index, using `ADD COLUMN IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`, so it is idempotent and safe to re-run. No data is rewritten and no existing row changes meaning: a policy with `segment_id IS NULL` is unaffected by segment targeting and continues to match exactly as it did before. Nothing writes a non-NULL `segment_id` unless an operator authors a segment-scoped policy, so the column is inert until then, and inert in Community entirely (there is no segment resolver on that edition).
+- **Reset links issued before the upgrade stop working.** `password_reset_tokens.token` now stores a hash rather than the raw token, so any password-reset link already in flight when you upgrade must be requested again. This affects only links that were outstanding at upgrade time.
+
+### Community
+
+#### Added
+
+- **Segment gating extended to the remaining agent policy planes** (#2989, #3051, ADR-060). v9.14.0 introduced segment-scoped static policies on `/api/request` (migration `core/157`) and explicitly left the MCP-server fleet, gateway and OpenAI-compatible planes out of scope. Those planes now apply the same gate through the shared policy engine, so a segment-scoped policy is honoured consistently wherever a caller's identity is validated, instead of only on the request plane. Strictly additive as before: policies with `segment_id IS NULL` behave exactly as they always have, and no policy decision changes anywhere until a segment-scoped policy exists.
+
+### Enterprise
+
+#### Added
+
+- **Segment-scoped DYNAMIC policies on the orchestrator** (#3052, ADR-060). v9.14.0 brought segment targeting to STATIC policies only and named the dynamic policy engine as deliberately not yet segment-aware; that gap closes here. A dynamic policy may now target a governance segment resolved from the caller's SCIM group membership, so a rule can apply to one population rather than the whole tenant. The scoping is additive: a policy with no `segment_id` keeps matching every caller in its tenant exactly as before, and segment targeting only takes effect once an operator authors a scoped policy. Requires the `core/159` column (see Migration above).
+- **Customer-portal forgot-password now sends real reset emails** (#2330,
+  closing the #2324/#2287 follow-up). When `RESEND_API_KEY` and
+  `AXONFLOW_FROM_EMAIL` are both configured, `POST /api/v1/auth/forgot-password`
+  on a production portal emails the org's contact address a reset link
+  (1-hour expiry, one active token per org) instead of returning 501. The
+  response is the generic 200 for existing and non-existing orgs alike, and
+  the lookup/token/send work runs off the request path so neither the body
+  nor the latency reveals whether an org exists. Reset links resolve from
+  `SSO_BASE_URL` (the same base as SAML ACS / OIDC redirect URLs), never a
+  hardcoded host. Config surface: compose passthrough
+  (`RESEND_API_KEY`, `AXONFLOW_FROM_EMAIL`, `SSO_BASE_URL`) and additive,
+  default-empty CloudFormation parameters (`ResendAPIKeySecretArn`,
+  `FromEmailAddress`, `PortalExternalBaseURL`) on the customer-portal task
+  definition.
+- **Portal UI password recovery pages**: a "Forgot password?" link on login,
+  `/forgot-password` (always shows the generic confirmation; shows an honest
+  "not configured" notice on 501) and `/reset-password` (consumes the emailed
+  token; clear errors for expired/used links).
+- **Password-reset email can now be sent through your own SMTP relay** (#3311).
+  Resend is an HTTPS SaaS: a self-hosted or in-VPC deployment would have to
+  sign up for a third-party vendor and verify a sending domain there, which a
+  regulated customer generally cannot do, so the recovery flow was true only
+  for AxonFlow-hosted portals. Set `AXONFLOW_SMTP_HOST` and
+  `AXONFLOW_SMTP_PORT` (plus the same `AXONFLOW_FROM_EMAIL` and portal base
+  URL the Resend path needs) and reset mail goes through the relay you already
+  run, staying inside your own infrastructure. Optional
+  `AXONFLOW_SMTP_USERNAME` / `AXONFLOW_SMTP_PASSWORD`, `AXONFLOW_SMTP_TLS`
+  (`starttls` default, `tls` implicit, `none`) and `AXONFLOW_SMTP_CA_FILE` for
+  a relay with a private CA. Standard library only, no new dependency.
+  Additive default-empty compose passthroughs and CloudFormation parameters
+  (`SMTPHost`, `SMTPPort`, `SMTPUsername`, `SMTPPasswordSecretArn`,
+  `SMTPTLSMode`); a stack that sets none of them renders exactly the task
+  definition it rendered before. **Precedence: `RESEND_API_KEY` wins if both
+  transports are configured**, logged loudly at boot, and the CloudFormation
+  template rejects setting both outright. The selected transport is now named
+  at startup.
+- **New `AXONFLOW_PORTAL_BASE_URL`, replacing `SSO_BASE_URL` in the docs**
+  (#3311). One value builds the emailed reset link *and* the SAML ACS / OIDC
+  redirect URLs, but naming it for SSO led deployments that use password login
+  and no SSO to skip it, after which reset mail refused to start or pointed at
+  the wrong host. `SSO_BASE_URL` keeps working as a deprecated alias, logged
+  once at startup; the new name wins whenever it carries a usable value.
+  **No breaking change**: existing deployments are unaffected (a compose
+  `${VAR:-}` passthrough yields the empty string, which reads as unconfigured),
+  and the CloudFormation template renders both names from the single
+  `PortalExternalBaseURL` parameter so a stack update that lands before an
+  image update cannot strip the value. Both names are normalized by the one
+  shared normalizer *before* precedence is decided, so a value that normalizes
+  to nothing (`/`, `//`, whitespace) can never shadow a working value under the
+  other name - that ordering is what keeps the rename from re-opening #3289 on
+  the SAML/OIDC plane, where an unresolved base URL falls back to the AxonFlow
+  SaaS host.
+
+#### Security
+
+- **`POST /api/v1/auth/forgot-password` no longer returns a reset token in the
+  response body on `ENVIRONMENT=staging`.** A staging stack is a deployed,
+  reachable service (the marketplace CloudFormation template defaults
+  `EnvironmentType` to `staging`), and on that branch the endpoint handed a
+  live, password-changing token for ANY organization to ANY anonymous caller -
+  including organizations with no contact email at all, since the pre-fix path
+  minted and returned the token before it ever considered where to send it.
+  The token-in-body path is now limited to a developer machine
+  (`ENVIRONMENT` unset / `development` / `dev` / `local`) with no email
+  backend; every deployed environment returns the honest 501 or, once email
+  is configured, sends the link. Operators who relied on staging token-in-body
+  for scripted testing should use `development` or the admin reset endpoint.
+- **The marketplace CloudFormation template now defaults `EnvironmentType` to
+  `production`** (was `staging`). That default is what made the disclosure
+  above reachable on a stock deployment, and a non-production posture is the
+  wrong default for a template whose primary use is a real deployment. It also
+  means a new default-parameter stack requires `X-Admin-API-Key` on
+  `/api/v1/admin/*` (with `DEPLOYMENT_MODE=saas`); the template already
+  provisions and injects that key, so nothing further is needed.
+  **New stacks only** - CloudFormation stores a stack's resolved parameter
+  values, so an existing stack keeps `staging` across updates until an
+  operator sets the parameter explicitly, which they should. `AllowedValues`
+  is unchanged, so stacks still holding `staging` keep updating cleanly.
+- **Reset tokens are hashed at rest.** `password_reset_tokens.token` now
+  stores a SHA-256 digest instead of the token itself, so read access to that
+  table is no longer equivalent to organization takeover. No migration: the
+  column is unchanged. Reset links issued before the upgrade stop working
+  (request a new one; links live at most 1 hour).
+- `POST /api/v1/auth/forgot-password` now has its own per-IP rate limiter
+  (same 5/min posture as login), closing an email-bomb / probing vector that
+  a real email backend would otherwise open (#2330).
+- **The rate limiter's bucket key is no longer attacker-controlled behind a
+  trusted front proxy.** It used the entire `X-Forwarded-For` header, so
+  rotating a forged prefix put every request in a fresh bucket and the limiter
+  never fired; it now keys on the rightmost hop, the address an ALB (or nginx
+  with `proxy_add_x_forwarded_for`) actually observed. This restores the login
+  endpoint's documented 5-attempts-per-minute limit. Where the portal is
+  directly reachable the header remains unverifiable however it is parsed;
+  the new `AXONFLOW_TRUST_PROXY_HOPS` setting below makes that trust explicit
+  (#3309).
+- **New `AXONFLOW_TRUST_PROXY_HOPS` setting for deployments behind more than
+  one proxy.** The rate-limit bucket key is the Nth `X-Forwarded-For` entry
+  counting from the right, where N is this value. **The default is 1, which is
+  exactly the behaviour that ships without it**, so no deployment changes by
+  upgrading and the setting can be adopted at any time. Set it to the number of
+  trusted proxy layers when the portal sits behind e.g. Cloudflare in front of
+  your own nginx; otherwise every user shares one 5/min login bucket and five
+  failed sign-ins lock out the whole organization. Set it no higher than the
+  real number of proxies: a larger value counts on client-supplied text. The
+  resolved posture is logged once at startup. Exposed as the default-empty
+  `TrustedProxyHops` CloudFormation parameter and a compose passthrough.
+- **New per-organization re-issue cooldown on password reset.** Both limiters
+  key on IP, but `org_id` is the portal login username, not a secret, so an
+  attacker rotating source addresses could email-bomb any organization's
+  contact address and continuously replace its reset token - killing a
+  legitimate user's just-delivered link before they could click it, a targeted
+  lockout of the recovery path. While an unused, unexpired token issued in the
+  last 5 minutes exists, a repeat request is suppressed: no new token, no
+  email, the same generic 200, and the link already in the inbox keeps
+  working. A used or expired token never blocks a new request.
+- Sender selection is fail-closed: no key keeps the honest 501 exactly as
+  before; a key without a from-address, or without `SSO_BASE_URL` in ANY
+  deployment mode, logs the misconfiguration and stays on 501 rather than
+  mailing every customer a link pointing at the SaaS host. A deployment can
+  never claim "link sent" without sending.
+#### Fixed
+
+- The customer-portal built its SAML and OIDC services from its own direct
+  read of `SSO_BASE_URL` rather than the shared resolver used by the
+  reset-link builder (#3311). With the alias above that would have meant an
+  operator setting only `AXONFLOW_PORTAL_BASE_URL` got correct reset links and
+  SAML assertions addressed to the AxonFlow SaaS host, which is #3289 again.
+  Both now resolve through the single resolver.
+
+<!--
   Version decision (Step 0): v9.16.1, PATCH. A partner-facing bug fix (the
   compliance exports' blank Policy column) plus additive audit-row keys and an
   additive placeholder/version rendering. No new capability surface, no removed
