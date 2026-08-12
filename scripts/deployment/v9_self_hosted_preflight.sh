@@ -25,9 +25,10 @@
 # ---------------------------------------------------------------------------
 # The sections below are grouped by the release that introduced them:
 #
-#   [1/15]-[8/15]   v8.x -> v9.0 baseline (epic #2230 Phase 7)
-#   [9/15]-[12/15]  v9.13.0 (the cross-tenant remediation train, epic #3071)
-#   [13/15]-[15/15] v9.14.0 governance-gate advisories (#3248, #3057, #3278)
+#   [1/16]-[8/16]   v8.x -> v9.0 baseline (epic #2230 Phase 7)
+#   [9/16]-[12/16]  v9.13.0 (the cross-tenant remediation train, epic #3071)
+#   [13/16]-[15/16] v9.14.0 governance-gate advisories (#3248, #3057, #3278)
+#   [16/16]         v9.17.0 break-glass recovery readiness (ADMIN_API_KEY)
 #
 # The name is therefore accurate for the whole v9 line, and it is a PUBLISHED
 # entry point: docs/deployment/v7-to-v8-migration.md,
@@ -74,11 +75,13 @@
 #   AXONFLOW_PG_CONTAINER="$(docker compose ps -q postgres)" \
 #     DATABASE_URL="postgres://axonflow:<pw>@localhost:5432/axonflow" ./preflight.sh
 #
-# Optional overrides for the per-component env discovery (checks 10 and 12):
-#   ECS_CLUSTER / ECS_AGENT_SERVICE / ECS_ORCHESTRATOR_SERVICE
+# Optional overrides for the per-component env discovery (checks 10, 12 and 16):
+#   ECS_CLUSTER / ECS_AGENT_SERVICE / ECS_ORCHESTRATOR_SERVICE / ECS_PORTAL_SERVICE
 #   AXONFLOW_AGENT_CONTAINER / AXONFLOW_ORCHESTRATOR_CONTAINER   (docker id/name)
+#     / AXONFLOW_PORTAL_CONTAINER
 #   AXONFLOW_AGENT_SERVICE / AXONFLOW_ORCHESTRATOR_SERVICE       (compose service)
-#   AGENT_ENV_FILE / ORCHESTRATOR_ENV_FILE                       (.env / EnvironmentFile)
+#     / AXONFLOW_PORTAL_SERVICE
+#   AGENT_ENV_FILE / ORCHESTRATOR_ENV_FILE / PORTAL_ENV_FILE     (.env / EnvironmentFile)
 #
 # Exit codes:
 #   0 — all checks pass (possibly with WARNINGs)
@@ -116,7 +119,7 @@ info() { printf "%bℹ️  INFO%b  %s\n" "$BLUE" "$NC" "$1"; }
 # TOTAL_CHECKS is asserted against the number of section() calls at the end. A
 # hard-coded "[3/8]" that nobody updated when a ninth check landed is a small
 # lie printed on every run, and the kind that makes an operator stop reading.
-TOTAL_CHECKS=15
+TOTAL_CHECKS=16
 SECTION_NO=0
 section() {
     SECTION_NO=$((SECTION_NO + 1))
@@ -248,6 +251,75 @@ classify_mode() {
 }
 
 # ---------------------------------------------------------------------------
+# Customer-portal admin-auth requirement (check 16)
+# ---------------------------------------------------------------------------
+# The DEPLOYMENT_MODE values on which the customer-portal's admin middleware
+# leaves authentication OPTIONAL. MUST equal the enumerated arms of the switch
+# in isAdminAuthRequired() (ee/platform/customer-portal/middleware/admin_auth.go).
+#
+# This is deliberately a SEPARATE list from RECOGNISED_MODES above, not a reuse
+# of it. The two happen to hold the same strings today plus the empty one, and
+# reusing the array would make a future addition to the migration selector
+# silently widen the set of modes this check believes may run without admin
+# auth - a fail-open direction. The platform's default arm is `true` (fail
+# closed on a mode nobody enumerated), and the loop below reproduces that by
+# treating any value NOT in this list as requiring auth.
+#
+# The empty entry is real and is the "" case arm in the Go switch: an unset
+# DEPLOYMENT_MODE leaves admin auth optional outside production.
+PORTAL_ADMIN_AUTH_OPTIONAL_MODES=(
+  ""
+  community
+  community-saas
+  enterprise
+  evaluation
+  in-vpc-banking
+  in-vpc-enterprise
+  in-vpc-healthcare
+  in-vpc-travel
+  invpc
+  saas
+)
+
+# admin_auth_required MODE ENVIRONMENT KEY - sets ADMIN_AUTH_REQUIRED to 1 or 0.
+#
+# Mirrors isAdminAuthRequired(deploymentMode, environment, adminAPIKey):
+#   ENVIRONMENT is "production"  -> required, whatever the mode says
+#   a key is configured          -> required (setting it IS how an operator
+#                                   turns enforcement on)
+#   an enumerated mode, no key   -> not required (anonymous admin API)
+#   anything else, no key        -> required (fail closed)
+#
+# The normalisation is NOT decorative and is the opposite of classify_mode's.
+# check 10 must compare DEPLOYMENT_MODE byte-for-byte because the migration
+# selector does; this predicate must TRIM and CASE-FOLD because the portal does:
+# it reads ENVIRONMENT through strings.ToLower and then TrimSpace, TrimSpaces the
+# mode, and reads the key through secretenv.Get, which trims it once so that
+# "is a key configured" and the constant-time compare cannot disagree.
+#
+# The last of those is the one that bites an operator here: ADMIN_API_KEY set to
+# whitespace is a non-empty environment variable that the portal reads as BLANK.
+# A check testing the raw value for non-emptiness would report the recovery path
+# as armed on a deployment where every admin route answers 500.
+#
+# KEY is never printed by this function, and nothing downstream prints it either
+# - only whether it is blank is ever reported.
+ADMIN_AUTH_REQUIRED=0
+admin_auth_required() {
+    local mode_norm env_norm key_norm m
+    mode_norm="$(trim_ws "$1")"
+    env_norm="$(lower "$(trim_ws "$2")")"
+    key_norm="$(trim_ws "$3")"
+    ADMIN_AUTH_REQUIRED=1
+    if [[ "$env_norm" == "production" ]]; then return 0; fi
+    if [[ -n "$key_norm" ]]; then return 0; fi
+    for m in "${PORTAL_ADMIN_AUTH_OPTIONAL_MODES[@]}"; do
+        if [[ "$mode_norm" == "$m" ]]; then ADMIN_AUTH_REQUIRED=0; return 0; fi
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # --self-test — prove the pure logic, with no database and no deployment
 # ---------------------------------------------------------------------------
 # Runs in CI (tests/regression-test-required/preflight_self_test.sh). It exists
@@ -320,6 +392,58 @@ run_self_test() {
     _st_contains "hint(' Community')"     "$MODE_HINT"  "BOTH"
     classify_mode "in-vpc-enterprize"
     _st_contains "hint('in-vpc-enterprize')" "$MODE_HINT" "not any recognised value"
+
+    printf "\ncustomer-portal admin-auth requirement (check 16; mirrors isAdminAuthRequired)\n"
+    # ENVIRONMENT=production requires the key whatever the mode says. This is the
+    # rule the shipped bundle runs under, so it is the arm check 16 nearly always
+    # takes.
+    admin_auth_required "in-vpc-enterprise" "production" ""
+    _st_eq "auth(in-vpc-enterprise, production, no key)" "$ADMIN_AUTH_REQUIRED" "1"
+    admin_auth_required "community" "production" ""
+    _st_eq "auth(community, production, no key)" "$ADMIN_AUTH_REQUIRED" "1"
+    admin_auth_required "" "production" ""
+    _st_eq "auth(unset mode, production, no key)" "$ADMIN_AUTH_REQUIRED" "1"
+    # The portal lower-cases ENVIRONMENT and trims it, so both of these ARE
+    # production. A comparison that skipped either would silently downgrade a
+    # production deployment to the optional path.
+    admin_auth_required "in-vpc-enterprise" "PRODUCTION" ""
+    _st_eq "auth(in-vpc-enterprise, PRODUCTION, no key)" "$ADMIN_AUTH_REQUIRED" "1"
+    admin_auth_required "in-vpc-enterprise" "  production  " ""
+    _st_eq "auth(in-vpc-enterprise, ' production ', no key)" "$ADMIN_AUTH_REQUIRED" "1"
+    # ...but the match is EXACT, not a substring: a substring matcher passes
+    # every case above and wrongly requires auth here.
+    admin_auth_required "in-vpc-enterprise" "production-like" ""
+    _st_eq "auth(in-vpc-enterprise, production-like, no key)" "$ADMIN_AUTH_REQUIRED" "0"
+
+    printf "\noutside production, an enumerated mode with no key leaves admin auth OPTIONAL\n"
+    admin_auth_required "in-vpc-enterprise" "dev" ""
+    _st_eq "auth(in-vpc-enterprise, dev, no key)" "$ADMIN_AUTH_REQUIRED" "0"
+    admin_auth_required "" "dev" ""
+    _st_eq "auth(unset mode, dev, no key)" "$ADMIN_AUTH_REQUIRED" "0"
+    admin_auth_required "community" "" ""
+    _st_eq "auth(community, unset env, no key)" "$ADMIN_AUTH_REQUIRED" "0"
+    admin_auth_required "saas" "staging" ""
+    _st_eq "auth(saas, staging, no key)" "$ADMIN_AUTH_REQUIRED" "0"
+    # The portal TRIMS the mode here, unlike the migration selector in check 10
+    # which matches it byte-for-byte. Both behaviours are the platform's; this
+    # case pins that the two are not confused with each other.
+    admin_auth_required " in-vpc-enterprise" "dev" ""
+    _st_eq "auth(' in-vpc-enterprise', dev, no key)" "$ADMIN_AUTH_REQUIRED" "0"
+
+    printf "\na configured key turns enforcement ON, and a whitespace-only key is NOT configured\n"
+    admin_auth_required "in-vpc-enterprise" "dev" "0123456789abcdef"
+    _st_eq "auth(in-vpc-enterprise, dev, key set)" "$ADMIN_AUTH_REQUIRED" "1"
+    # secretenv.Get trims once, so this reads as blank to the portal. A check
+    # testing the RAW value for non-emptiness reports 'recovery armed' on a
+    # deployment whose every admin route answers 500.
+    admin_auth_required "in-vpc-enterprise" "dev" "   "
+    _st_eq "auth(in-vpc-enterprise, dev, whitespace-only key)" "$ADMIN_AUTH_REQUIRED" "0"
+
+    printf "\na mode nobody enumerated FAILS CLOSED (the platform's default arm is 'required')\n"
+    admin_auth_required "in-vpc-enterprize" "dev" ""
+    _st_eq "auth(in-vpc-enterprize, dev, no key)" "$ADMIN_AUTH_REQUIRED" "1"
+    admin_auth_required "IN-VPC-ENTERPRISE" "dev" ""
+    _st_eq "auth(IN-VPC-ENTERPRISE, dev, no key)" "$ADMIN_AUTH_REQUIRED" "1"
 
     printf "\nstring helpers\n"
     _st_eq "trim_ws('  a b  ')" "$(trim_ws '  a b  ')" "a b"
@@ -530,10 +654,11 @@ info "Database connectivity OK (transport: ${PSQL_TRANSPORT})"
 printf "\n"
 
 # ---------------------------------------------------------------------------
-# Per-component environment discovery (used by checks 4, 8, 10 and 12)
+# Per-component environment discovery (used by checks 4, 8, 10, 12 and 16)
 # ---------------------------------------------------------------------------
-# Reads ONE environment variable off ONE component (agent | orchestrator), from
-# whichever of five sources is available, and reports WHICH one answered.
+# Reads ONE environment variable off ONE component (agent | orchestrator |
+# portal), from whichever of five sources is available, and reports WHICH one
+# answered.
 #
 # Sets, in the caller's shell:
 #   DISC_VALUE   the raw value, NOT trimmed and NOT case-folded (the platform
@@ -546,12 +671,23 @@ printf "\n"
 #                  unknown — NOTHING could be read; never treat as "not set"
 #   DISC_SOURCE  human-readable provenance, printed so the operator can tell
 #                whether the answer came from the deployment or from their shell
+#   DISC_ORIGIN  the same provenance as a STABLE TOKEN, for callers that must
+#                branch on it: ecs | container | compose | file | shell | none
+#
+# DISC_ORIGIN exists because DISC_SOURCE is prose and a caller keying on prose
+# is a caller that silently stops keying on anything the day the wording
+# changes. Check 16 needs the distinction for real: a value found in source (5),
+# the operator's own shell, is not evidence about the component, and the upgrade
+# guide tells operators to load .env into that shell before running the admin
+# commands - so for a secret that also lives in .env, the shell is a likely
+# FALSE positive rather than a weak reading.
 #
 # `absent` and `empty` are reported separately even where the platform treats
 # them identically, because they need different remediation.
 DISC_VALUE=""
 DISC_STATE=""
 DISC_SOURCE=""
+DISC_ORIGIN=""
 
 # _extract_env_line VARNAME BLOB — find "VARNAME=..." in a newline-delimited
 # blob of KEY=VALUE pairs. Sets DISC_VALUE/DISC_STATE; returns 1 if not found.
@@ -618,23 +754,40 @@ _env_from_file() {
     return 0
 }
 
-# discover_env COMPONENT VARNAME  (COMPONENT is "agent" or "orchestrator")
+# discover_env COMPONENT VARNAME
+#   COMPONENT is "agent", "orchestrator" or "portal".
+#
+# The portal is the customer-portal API container, NOT customer-portal-ui: the
+# UI is a Next.js front end that proxies to it and holds none of the
+# configuration any check here reads.
 discover_env() {
     local comp="$1" var="$2"
-    local upper svc_env cid_env file_env ecs_env
+    local upper svc_env cid_env file_env ecs_env default_svc ecs_names
     local taskdef val cid
-    DISC_VALUE=""; DISC_STATE="unknown"; DISC_SOURCE="nothing readable"
+    DISC_VALUE=""; DISC_STATE="unknown"; DISC_SOURCE="nothing readable"; DISC_ORIGIN="none"
 
+    # default_svc and ecs_names are per component rather than derived from the
+    # component word, because the portal's names are not "axonflow-portal" in
+    # either place: the Compose service is axonflow-customer-portal and the ECS
+    # container definition is customer-portal. Deriving them worked only for as
+    # long as every component happened to be named after itself.
     case "$comp" in
-        agent)        upper="AGENT" ;;
-        orchestrator) upper="ORCHESTRATOR" ;;
-        *) DISC_SOURCE="internal error: unknown component '$comp'"; return 0 ;;
+        agent)
+            upper="AGENT"; default_svc="axonflow-agent"
+            ecs_names="name=='agent'||name=='axonflow-agent'" ;;
+        orchestrator)
+            upper="ORCHESTRATOR"; default_svc="axonflow-orchestrator"
+            ecs_names="name=='orchestrator'||name=='axonflow-orchestrator'" ;;
+        portal)
+            upper="PORTAL"; default_svc="axonflow-customer-portal"
+            ecs_names="name=='customer-portal'||name=='axonflow-customer-portal'||name=='portal'" ;;
+        *) DISC_SOURCE="internal error: unknown component '$comp'"; DISC_ORIGIN="none"; return 0 ;;
     esac
     eval "ecs_env=\${ECS_${upper}_SERVICE:-}"
     eval "cid_env=\${AXONFLOW_${upper}_CONTAINER:-}"
     eval "svc_env=\${AXONFLOW_${upper}_SERVICE:-}"
     eval "file_env=\${${upper}_ENV_FILE:-}"
-    [[ -z "$svc_env" ]] && svc_env="axonflow-${comp}"
+    [[ -z "$svc_env" ]] && svc_env="$default_svc"
 
     # (1) ECS task definition.
     if [[ -n "${ECS_CLUSTER:-}" && -n "$ecs_env" ]] && command -v aws >/dev/null 2>&1; then
@@ -642,14 +795,15 @@ discover_env() {
             --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "")
         if [[ -n "$taskdef" && "$taskdef" != "None" ]]; then
             val=$(aws ecs describe-task-definition --task-definition "$taskdef" \
-                --query "taskDefinition.containerDefinitions[?name=='${comp}'||name=='axonflow-${comp}'].environment[?name=='${var}'].value | [0][0]" \
+                --query "taskDefinition.containerDefinitions[?${ecs_names}].environment[?name=='${var}'].value | [0][0]" \
                 --output text 2>/dev/null || echo "")
             DISC_SOURCE="ECS task def ${ECS_CLUSTER}/${ecs_env}"
+            DISC_ORIGIN="ecs"
             if [[ -z "$val" || "$val" == "None" ]]; then
                 # Distinguish "declared but empty" from "not declared": ask for
                 # the NAME rather than the value.
                 val=$(aws ecs describe-task-definition --task-definition "$taskdef" \
-                    --query "taskDefinition.containerDefinitions[?name=='${comp}'||name=='axonflow-${comp}'].environment[?name=='${var}'].name | [0][0]" \
+                    --query "taskDefinition.containerDefinitions[?${ecs_names}].environment[?name=='${var}'].name | [0][0]" \
                     --output text 2>/dev/null || echo "")
                 if [[ -n "$val" && "$val" != "None" ]]; then
                     DISC_VALUE=""; DISC_STATE="empty"
@@ -679,6 +833,7 @@ discover_env() {
         fi
         if _env_from_docker "$cid_env" "$var"; then
             DISC_SOURCE="docker container ${cid_env}"
+            DISC_ORIGIN="container"
             return 0
         fi
         DISC_STATE="unknown"
@@ -696,6 +851,7 @@ discover_env() {
         cid="${cid%%$'\n'*}"
         if [[ -n "$cid" ]] && _env_from_docker "$cid" "$var"; then
             DISC_SOURCE="Compose service '${svc_env}' in $(pwd)"
+            DISC_ORIGIN="compose"
             return 0
         fi
     fi
@@ -712,13 +868,15 @@ discover_env() {
         fi
         _env_from_file "$file_env" "$var"
         DISC_SOURCE="${upper}_ENV_FILE=${file_env}"
+        DISC_ORIGIN="file"
         return 0
     fi
 
-    # (5) This shell. Cannot distinguish agent from orchestrator, so it is last
-    #     and it says so.
+    # (5) This shell. Cannot distinguish one component from another, so it is
+    #     last and it says so.
     if _extract_env_line "$var" "$SHELL_ENV_SNAPSHOT"; then
         DISC_SOURCE="current shell environment (NOT component-specific)"
+        DISC_ORIGIN="shell"
         return 0
     fi
 
@@ -1647,6 +1805,130 @@ else
     info "  This check cannot read the target image tag; it is advisory guidance keyed on DEPLOYMENT_MODE"
     info "  posture only (posture read: $V914_POSTURE)."
     pass "Target-version guidance emitted for #3278 (advisory: preflight cannot inspect the target image tag)"
+fi
+printf "\n"
+
+# ===========================================================================
+# v9.17.0 - check 16
+# ===========================================================================
+printf "%b%b-- v9.17.0 --------------------------------------------------------------%b\n\n" "$BOLD" "$BLUE" "$NC"
+
+# ---------------------------------------------------------------------------
+# Check 16 - break-glass admin key on the customer-portal (ADMIN_API_KEY)
+# ---------------------------------------------------------------------------
+section "Break-glass admin key on the customer-portal (ADMIN_API_KEY)"
+
+# WHY THIS IS A PREFLIGHT CHECK AND NOT AN INSTALLER FIX.
+#
+# install.sh generates an ADMIN_API_KEY on a FRESH install and never rotates it
+# (axonflow-install #62). An UPGRADE does not re-run install.sh - the documented
+# flow is swap digests, compose pull, compose up, verify - so a deployment
+# installed before that change still has a blank key, and nothing has ever told
+# its operator. Generating one from here was considered and rejected: this
+# script does not write to a running deployment, and silently minting a
+# credential into somebody's .env during an upgrade is a surprise, not a fix. So
+# it reports, with the exact remedy, and never blocks.
+#
+# WHY THE PORTAL AND NOT .env. The 500 is produced by the RUNNING portal
+# process, and its environment can differ from .env by exactly one restart -
+# which is the state RECOVERY.md's own troubleshooting table names ("blank in
+# the running portal container. Set it in .env and docker compose up -d"). A
+# check that read .env would report the recovery path as armed for precisely
+# that deployment. So discovery goes through discover_env, whose Compose and
+# container sources read the process, and whose PORTAL_ENV_FILE source remains
+# available for an operator who wants to point it at a file deliberately.
+discover_env portal ADMIN_API_KEY
+PORTAL_KEY_VALUE="$DISC_VALUE"; PORTAL_KEY_STATE="$DISC_STATE"
+PORTAL_KEY_SRC="$DISC_SOURCE"; PORTAL_KEY_ORIGIN="$DISC_ORIGIN"
+PORTAL_KEY_VIA_SECRET=0
+
+# Source (5), the operator's own shell, is NOT evidence about the portal, and
+# for this variable it is actively misleading: UPGRADING.md tells the operator
+# to load ADMIN_API_KEY out of .env before running the admin commands, and
+# RECOVERY.md's curl examples read it from there. Accepting that reading would
+# turn "I sourced .env" into "recovery is armed" on a portal whose own copy is
+# blank - the one false all-clear this check must not produce.
+if [[ "$PORTAL_KEY_ORIGIN" == "shell" ]]; then
+    PORTAL_KEY_STATE="unknown"
+    PORTAL_KEY_SRC="ADMIN_API_KEY was set in YOUR SHELL only, which says nothing about the running portal (sourcing .env does this)"
+fi
+
+# On ECS the admin key is a secrets[] reference (CloudFormation AdminAPIKeySecret
+# -> ADMIN_API_KEY on the customer-portal container), not a literal env value, so
+# the environment[] read above legitimately comes back absent. Ask for the entry
+# NAME rather than its valueFrom: answering "is a key wired?" does not require
+# this script to hold a secret ARN, and a script that never reads one cannot
+# print one.
+if [[ "$PORTAL_KEY_STATE" != "set" && -n "${ECS_CLUSTER:-}" && -n "${ECS_PORTAL_SERVICE:-}" ]] && command -v aws >/dev/null 2>&1; then
+    _ptd=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_PORTAL_SERVICE" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "")
+    if [[ -n "$_ptd" && "$_ptd" != "None" ]]; then
+        _pkeyref=$(aws ecs describe-task-definition --task-definition "$_ptd" \
+            --query "taskDefinition.containerDefinitions[?name=='customer-portal'||name=='axonflow-customer-portal'||name=='portal'].secrets[?name=='ADMIN_API_KEY'].name | [0][0]" \
+            --output text 2>/dev/null || echo "")
+        if [[ -n "$_pkeyref" && "$_pkeyref" != "None" ]]; then
+            PORTAL_KEY_STATE="set"
+            PORTAL_KEY_VIA_SECRET=1
+            PORTAL_KEY_SRC="ECS task def ${ECS_CLUSTER}/${ECS_PORTAL_SERVICE}, secrets[] reference"
+        fi
+    fi
+fi
+
+info "ADMIN_API_KEY source: $PORTAL_KEY_SRC (state: $PORTAL_KEY_STATE)"
+
+# ENVIRONMENT and DEPLOYMENT_MODE decide WHICH way a blank key fails, so they
+# are read from the same component. A shell reading is demoted for them too: it
+# would let the operator's environment answer a question about the deployment.
+discover_env portal ENVIRONMENT
+PORTAL_ENVIRONMENT="$DISC_VALUE"; PORTAL_ENV_STATE="$DISC_STATE"; PORTAL_ENV_SRC="$DISC_SOURCE"
+if [[ "$DISC_ORIGIN" == "shell" ]]; then PORTAL_ENV_STATE="unknown"; PORTAL_ENV_SRC="your shell only"; fi
+discover_env portal DEPLOYMENT_MODE
+PORTAL_MODE="$DISC_VALUE"; PORTAL_MODE_STATE="$DISC_STATE"; PORTAL_MODE_SRC="$DISC_SOURCE"
+if [[ "$DISC_ORIGIN" == "shell" ]]; then PORTAL_MODE_STATE="unknown"; PORTAL_MODE_SRC="your shell only"; fi
+info "  portal ENVIRONMENT: $PORTAL_ENV_SRC (state: $PORTAL_ENV_STATE)"
+info "  portal DEPLOYMENT_MODE: $PORTAL_MODE_SRC (state: $PORTAL_MODE_STATE)"
+
+# Trimmed, because the portal trims once on read (secretenv.Get). A value of
+# "   " is a non-empty environment variable that the platform sees as blank, so
+# testing the raw value here would report a 500-ing deployment as armed.
+PORTAL_KEY_CONFIGURED=0
+if [[ "$PORTAL_KEY_STATE" == "set" && -n "$(trim_ws "$PORTAL_KEY_VALUE")" ]]; then PORTAL_KEY_CONFIGURED=1; fi
+if [[ "$PORTAL_KEY_VIA_SECRET" -eq 1 ]]; then PORTAL_KEY_CONFIGURED=1; fi
+
+# A declared-but-whitespace value is called out separately: it is the one state
+# that looks correct to every check an operator would run by hand on .env.
+PORTAL_KEY_NOTE=""
+if [[ "$PORTAL_KEY_STATE" == "set" && "$PORTAL_KEY_CONFIGURED" -eq 0 ]]; then
+    PORTAL_KEY_NOTE="ADMIN_API_KEY is declared with a WHITESPACE-ONLY value. The portal trims it once on read, so it is blank there while still matching a grep for a set variable in .env. "
+elif [[ "$PORTAL_KEY_STATE" == "empty" ]]; then
+    PORTAL_KEY_NOTE="ADMIN_API_KEY is declared and empty. "
+elif [[ "$PORTAL_KEY_STATE" == "absent" ]]; then
+    PORTAL_KEY_NOTE="ADMIN_API_KEY is not declared on the portal at all. "
+fi
+
+PORTAL_POSTURE_KNOWN=1
+if [[ "$PORTAL_ENV_STATE" == "unknown" || "$PORTAL_MODE_STATE" == "unknown" ]]; then PORTAL_POSTURE_KNOWN=0; fi
+
+if [[ "$PORTAL_KEY_STATE" == "unknown" ]]; then
+    warn "The customer-portal's ADMIN_API_KEY was NOT VERIFIED" \
+        "Nothing component-specific answered, so this check makes NO statement about whether break-glass admin recovery is available here - do not read the absence of a finding as an all-clear. What was tried: ${PORTAL_KEY_SRC}. Re-run from the install bundle directory with the portal container running, or set AXONFLOW_PORTAL_CONTAINER to the portal container id, or PORTAL_ENV_FILE to the file the portal is started from, or ECS_CLUSTER plus ECS_PORTAL_SERVICE. To answer it by hand without printing the secret: grep -cE '^ADMIN_API_KEY=.+' .env, and expect 1. What matters is the value in the RUNNING portal rather than in .env - a key added to .env after the last 'docker compose up -d axonflow-customer-portal' is not in the container yet, and RECOVERY.md's troubleshooting table lists that as its own failure. See RECOVERY.md."
+elif [[ "$PORTAL_KEY_CONFIGURED" -eq 1 && "$PORTAL_KEY_VIA_SECRET" -eq 1 ]]; then
+    info "The admin key is wired as a secrets manager reference on the portal task."
+    pass "ADMIN_API_KEY is wired on the customer-portal task - break-glass admin recovery (RECOVERY.md path 1) is armed. Honest scope: this reads the task definition, not the secret's value; an empty secret would still answer 500"
+elif [[ "$PORTAL_KEY_CONFIGURED" -eq 1 ]]; then
+    pass "ADMIN_API_KEY is set on the customer-portal - the break-glass admin password reset in RECOVERY.md is available (source: ${PORTAL_KEY_SRC}; the value is never printed)"
+elif [[ "$PORTAL_POSTURE_KNOWN" -ne 1 ]]; then
+    warn "The customer-portal has NO ADMIN_API_KEY, and which way that fails could not be determined" \
+        "${PORTAL_KEY_NOTE}Source: ${PORTAL_KEY_SRC}. ENVIRONMENT and/or DEPLOYMENT_MODE could not be read for the portal, so this check will not tell you which of the two outcomes you have. Both need the same fix. Where admin authentication is required - any portal running ENVIRONMENT=production, which is how this bundle ships - every /api/v1/admin/* route answers 500 'Admin API key not configured', and that takes out the admin password reset, the only ONLINE way back into the Customer Portal when the login password is lost. Where it is not required, that same admin surface is served ANONYMOUSLY to anyone who can reach the portal's port. Remedy: generate a value with 'openssl rand -hex 32', set it on the ADMIN_API_KEY= line in this bundle's .env, then 'docker compose up -d axonflow-customer-portal'. Full procedure, verification and the offline fallback: RECOVERY.md. This preflight never prints the value and never writes to your .env."
+else
+    admin_auth_required "$PORTAL_MODE" "$PORTAL_ENVIRONMENT" ""
+    if [[ "$ADMIN_AUTH_REQUIRED" -eq 1 ]]; then
+        warn "The customer-portal has NO ADMIN_API_KEY - break-glass admin recovery returns 500" \
+            "${PORTAL_KEY_NOTE}Source: ${PORTAL_KEY_SRC}. This portal runs ENVIRONMENT='${PORTAL_ENVIRONMENT}' with DEPLOYMENT_MODE='${PORTAL_MODE}', so its admin middleware REQUIRES a key on every /api/v1/admin/* call and, with none configured, answers 500 'Admin API key not configured' before it authenticates anything. The consequence is narrow and only appears on the day you need it: the admin password reset is on that surface, and it is the only ONLINE way back into the Customer Portal when the portal login password is lost. What is left is the offline path, reset-portal-credential.sh, which needs a shell on the host and the database. Nothing about the upgrade causes this and the upgrade does not clear it: install.sh generates a key on a FRESH install and never rotates it, but an upgrade never re-runs install.sh, so a deployment installed before that behaviour existed still has none. Remedy, one container restart and no data change: generate a value with 'openssl rand -hex 32', set it on the ADMIN_API_KEY= line in this bundle's .env, then 'docker compose up -d axonflow-customer-portal'. Treat it as a high-value secret: it can list organizations, disclose an organization's plaintext license key and reset any organization's portal password. Full procedure and verification: RECOVERY.md. This preflight never prints the value and never writes to your .env."
+    else
+        warn "The customer-portal has NO ADMIN_API_KEY, and its admin API is answering ANONYMOUSLY" \
+            "${PORTAL_KEY_NOTE}Source: ${PORTAL_KEY_SRC}. With ENVIRONMENT='${PORTAL_ENVIRONMENT}', DEPLOYMENT_MODE='${PORTAL_MODE}' and no key configured, the portal's admin middleware does not require authentication at all, so /api/v1/admin/* is served to anyone who can reach the portal's port. That surface can list organizations, disclose an organization's plaintext license key - which is the platform's HTTP Basic credential - and reset any organization's portal password. Break-glass recovery does work here, but only because the door is open, and the portal logs that posture once at startup. Worth confirming you meant it: the shipped install bundle sets ENVIRONMENT=production on the customer-portal, where a blank key means 500 on those same routes instead. Remedy either way: generate a value with 'openssl rand -hex 32', set it on the ADMIN_API_KEY= line in this bundle's .env, then 'docker compose up -d axonflow-customer-portal'. See RECOVERY.md. This preflight never prints the value and never writes to your .env."
+    fi
 fi
 printf "\n"
 

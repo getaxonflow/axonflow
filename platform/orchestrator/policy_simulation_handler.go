@@ -20,7 +20,7 @@ import (
 type PolicySimulationHandler struct {
 	engine interface {
 		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
-		ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
+		ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
 	}
 	policyService   *PolicyService
 	conflictService *PolicyConflictService
@@ -67,7 +67,7 @@ func (rl *simulationRateLimiter) tryConsume(tenantID string, limit int) (bool, i
 // NewPolicySimulationHandler creates a new policy simulation handler.
 func NewPolicySimulationHandler(engine interface {
 	EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
-	ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
+	ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
 }, policyService *PolicyService, conflictService *PolicyConflictService, tierChecker LicenseChecker) *PolicySimulationHandler {
 	return &PolicySimulationHandler{
 		engine:          engine,
@@ -153,7 +153,20 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 	// Client.ID still falls back only when unset — it is a client identifier,
 	// not a scope, and overwriting it would change which client's policies
 	// match.
+	//
+	// orchReq.User.OrgID is forced from the gateway-stamped X-Org-ID header
+	// the same way, and for the same reason as the /policies/test fix in
+	// run.go (kept identical so the two evaluation endpoints cannot diverge):
+	// after P3b (ADR-060), EvaluateDynamicPolicies feeds User.OrgID and
+	// User.Email straight into resolveSegmentsForPolicy, which resolves
+	// against the LIVE SCIM directory of whichever org it is given. A
+	// body-sourced OrgID paired with a body-sourced Email would let a caller
+	// probe an arbitrary org's SCIM group membership one hypothetical email at
+	// a time and read the answer back out of Allowed/AppliedPolicies — a
+	// cross-org information-disclosure oracle. Email stays caller-supplied,
+	// same as the tenant fix above; OrgID does not.
 	orchReq.User.TenantID = tenantID
+	orchReq.User.OrgID = r.Header.Get("X-Org-ID")
 	orchReq.Client.TenantID = tenantID
 	if orchReq.Client.ID == "" {
 		orchReq.Client.ID = tenantID
@@ -164,7 +177,10 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 	// Count only the policies visible to the CALLER's tenant. The raw
 	// ListActivePolicies cache is deployment-wide, so counting it leaked how
 	// many policies exist across ALL tenants in every simulate response.
-	totalPolicies := len(h.engine.ListActivePoliciesForTenant(tenantID))
+	// ADR-060 (#2989 P3b): nil segments — this is only a COUNT for usage
+	// info, not the policies themselves, and no verified per-user email is
+	// available here (resolveTenantOrFail resolves tenant only).
+	totalPolicies := len(h.engine.ListActivePoliciesForTenant(tenantID, nil))
 
 	// Build usage info
 	var usage *SimulationDailyUsage
@@ -186,6 +202,7 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 		SimulatedAt:      time.Now(),
 		Tier:             string(h.tierChecker.Tier()),
 		DailyUsage:       usage,
+		SegmentsResolved: result.SegmentsResolved,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -195,6 +212,14 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 
 // ImpactReport handles POST /api/v1/policies/impact-report.
 // Tests a single policy against multiple inputs and returns aggregate statistics.
+//
+// SEGMENT-BLIND (ADR-060 #2989 P3b, M4, #3239 round 2): unlike SimulatePolicies
+// above, this handler evaluates the named policy directly rather than going
+// through EvaluateDynamicPolicies/resolveSegmentsForPolicy, so it never
+// resolves or reports a caller's segment membership — a segment-scoped
+// policy's impact is reported identically to an unscoped one. Documented
+// now rather than fixed here (loud, not silent); the fix is tracked as
+// follow-up **#3283**.
 func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -301,6 +326,13 @@ func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Re
 
 // DetectConflicts handles POST /api/v1/policies/conflicts.
 // Analyzes active policies for contradictions, shadows, and redundancies.
+//
+// SEGMENT-BLIND (ADR-060 #2989 P3b, M4, #3239 round 2): conflict detection
+// compares policies pairwise without factoring in segment_id — two policies
+// scoped to different, non-overlapping segments (and therefore never
+// simultaneously applicable to the same caller) can be reported as
+// "conflicting" when they are not. Documented now rather than fixed here
+// (loud, not silent); the fix is tracked as follow-up **#3283**.
 func (h *PolicySimulationHandler) DetectConflicts(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)

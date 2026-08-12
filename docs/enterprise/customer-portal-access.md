@@ -199,9 +199,162 @@ This endpoint is proxied through the Agent Gateway on port 8080 -- no Basic auth
 
 - `POST /api/v1/auth/logout` -- clears session
 - `GET /api/v1/auth/session` -- checks current session validity
-- `POST /api/v1/auth/forgot-password` -- initiates password reset
+- `POST /api/v1/auth/forgot-password` -- initiates password reset. With an
+  email transport plus `AXONFLOW_FROM_EMAIL` and `AXONFLOW_PORTAL_BASE_URL`
+  configured (#2330, #3311) it emails a reset link to the org's contact email
+  and always answers the same generic 200; without them it returns 501. Rate
+  limited: 5 requests/min per IP. A reset token is only ever returned in the
+  response body on a local development machine with no email backend. See
+  [Sending password-reset email](#sending-password-reset-email) for the two
+  transports.
+
+**"The user requested a reset and no email arrived."** The endpoint answers the
+same generic 200 in every case, so the response never tells you which of these
+happened. Check them in this order:
+
+1. **The deployment has no email backend.** The response is `501`, not `200`,
+   and the boot log says so. Reset the password with
+   `POST /api/v1/admin/organizations/{org_id}/password` instead.
+2. **The email backend is half-configured.** A transport is set but
+   `AXONFLOW_FROM_EMAIL` or `AXONFLOW_PORTAL_BASE_URL` is not, or the SMTP
+   settings are incomplete (host without port, username without password, an
+   unparseable port, an unrecognized `AXONFLOW_SMTP_TLS` value). The portal
+   refuses to build the sender at startup and the endpoint returns `501`. The
+   boot log names the missing or malformed variable. Note a base URL of `/`
+   counts as unset.
+3. **The organization has no `contact_email`.** There is nowhere to send it.
+   The log records `no contact email on organization` for that org.
+4. **A reset link was already sent in the last 5 minutes.** Each organization
+   has a re-issue cooldown: while an unused, unexpired link exists, a repeat
+   request deliberately sends **no second email** and does **not** replace the
+   outstanding link, so the one already in the user's inbox still works. Tell
+   them to use the first email, or wait out the window. The log records
+   `suppressed re-issue`, and `admin_audit_log` carries a
+   `PASSWORD_RESET_REQUESTED` row with that reason.
+5. **The send failed.** The log line is org-scoped and `admin_audit_log`
+   carries a `PASSWORD_RESET_EMAIL_FAILED` row. The reset token itself never
+   appears in either.
+
+**Rate limits count per client address.** The portal reads that address from
+`X-Forwarded-For` and by default trusts **one** proxy layer (an ALB, or a
+single nginx). If requests reach it through two or more trusted proxies -- for
+example Cloudflare in front of your own nginx -- set `AXONFLOW_TRUST_PROXY_HOPS`
+to the number of layers, or every user counts as the same client and five
+failed sign-ins from anyone locks out everyone for a minute. Never set it above
+the real number of proxies: a larger value counts on a header segment the
+caller can choose. The resolved value is printed at startup.
 - `POST /api/v1/auth/reset-password` -- completes password reset
 - `POST /api/v1/auth/change-password` -- changes password (authenticated)
+
+### Sending password-reset email
+
+The portal supports **two** email transports and activates exactly one.
+
+| Transport | Configure with | Suits |
+|---|---|---|
+| SMTP relay | `AXONFLOW_SMTP_HOST` + `AXONFLOW_SMTP_PORT` | Self-hosted and in-VPC deployments. No third-party vendor, no sending-domain verification, mail never leaves your infrastructure. |
+| Resend | `RESEND_API_KEY` | Deployments already using Resend, with a domain verified there. |
+
+If you are running AxonFlow yourself, use SMTP. You almost certainly already
+have a relay (Postfix, Exchange, SES SMTP, your provider's submission host),
+and it keeps reset mail inside your own network, which is usually the only
+answer a regulated deployment can give.
+
+**Precedence.** If `RESEND_API_KEY` is set, Resend wins and the SMTP settings
+are ignored entirely. The boot log says so explicitly. Unset `RESEND_API_KEY`
+to use the relay. On an AWS CloudFormation stack you cannot even create the
+ambiguity: setting both `ResendAPIKeySecretArn` and `SMTPHost` fails the stack
+update.
+
+#### SMTP setup
+
+```bash
+# Required together. There is no default port: 587 and 465 need different
+# transport security, so the portal will not guess one for you.
+AXONFLOW_SMTP_HOST=smtp.internal.acme.example
+AXONFLOW_SMTP_PORT=587
+
+# Required, shared with the Resend transport. Your relay must be willing to
+# send as this address. AXONFLOW_RESET_FROM_EMAIL overrides it for reset mail
+# specifically.
+AXONFLOW_FROM_EMAIL="Acme Portal <no-reply@acme.example>"
+
+# Required. Every reset link is built from this. See the rename note below.
+AXONFLOW_PORTAL_BASE_URL=https://portal.acme.example
+
+# Optional, set BOTH or NEITHER. Many internal relays need neither.
+AXONFLOW_SMTP_USERNAME=portal
+AXONFLOW_SMTP_PASSWORD=...
+
+# Optional. starttls (default) | tls | none
+AXONFLOW_SMTP_TLS=starttls
+
+# Optional. PEM bundle for a relay whose certificate comes from your internal
+# CA. Compose and self-hosted deployments only: it names a path inside the
+# container, so it needs a mounted file. (CloudFormation has no parameter for
+# it -- use a publicly-chaining certificate on that path.)
+AXONFLOW_SMTP_CA_FILE=/etc/axonflow/relay-ca.pem
+```
+
+**Transport security.**
+
+- `starttls` (the default when `AXONFLOW_SMTP_TLS` is unset) connects in
+  plaintext and upgrades. Typical port 587. If the relay does not advertise
+  STARTTLS the send **fails**; it never continues unencrypted.
+- `tls` is implicit TLS from the first byte. Typical port 465.
+- `none` sends the session in the clear. It exists for an internal relay on a
+  trusted network, it has to be typed (you cannot reach it by leaving the
+  variable unset), and the portal **refuses to start** if you combine it with
+  `AXONFLOW_SMTP_USERNAME`: SMTP AUTH PLAIN is base64, not encryption.
+
+There is deliberately no setting that disables certificate verification. If
+your relay uses a private CA, supply the CA with `AXONFLOW_SMTP_CA_FILE`.
+
+#### Fail-closed behaviour
+
+The selection has exactly three outcomes, and "silently does nothing" is not
+one of them:
+
+| Configuration | Result |
+|---|---|
+| No transport configured | Noop sender. `POST /api/v1/auth/forgot-password` returns **501**, exactly as before this feature existed. Use the admin reset endpoint. |
+| A transport fully configured | Mail is sent. Startup logs which transport is live. |
+| A transport **partly** configured | The portal **refuses** to build the sender, logs the specific variable at boot, and the endpoint returns **501**. |
+
+That third row is the important one. Setting `AXONFLOW_SMTP_PORT` and
+forgetting `AXONFLOW_SMTP_HOST`, typing `AXONFLOW_SMTP_TLS=tsl`, or giving a
+username with no password does **not** quietly fall back to "email disabled" --
+it is a named error in the boot log. A silent 501 reads as "the feature was
+never built"; a log line reads as "you set two of three variables".
+
+The same applies to the two shared prerequisites. A transport without
+`AXONFLOW_FROM_EMAIL`, or without `AXONFLOW_PORTAL_BASE_URL`, is refused in
+**every** deployment mode -- including `saas`. Without a base URL every emailed
+link would carry a live reset token to `https://app.getaxonflow.com`, a host
+you do not control.
+
+#### `SSO_BASE_URL` is now `AXONFLOW_PORTAL_BASE_URL`
+
+The portal's external base URL is used by the emailed reset link **and** by the
+SAML ACS / OIDC redirect URLs. Naming it `SSO_BASE_URL` misled deployments that
+use password login and no SSO into skipping it, after which reset mail either
+refused to start or pointed at the wrong host.
+
+`AXONFLOW_PORTAL_BASE_URL` is the name to use. `SSO_BASE_URL` keeps working as
+a deprecated alias, read only when the new name is unset or empty, and logged
+once at startup so you know to rename it. If both are set, the new name wins.
+Nothing breaks on upgrade: existing deployments that set only `SSO_BASE_URL`
+behave exactly as before, and the CloudFormation template renders both names
+from the single `PortalExternalBaseURL` parameter.
+
+A value that is nothing but separators (`/`, `//`), or only whitespace, is not
+a usable base URL and counts as unconfigured under either name. Precedence is
+decided **after** that normalization, so an unusable value under one name never
+shadows a working value under the other: if `AXONFLOW_PORTAL_BASE_URL` is `/`
+and `SSO_BASE_URL` holds a real URL, the real one is used. That ordering
+matters because an unresolved base URL does not mean the same thing everywhere
+- password reset refuses to send, but SAML ACS and OIDC redirect URLs fall back
+to the AxonFlow SaaS host, which your deployment does not serve.
 
 ### SSO/SAML Authentication
 

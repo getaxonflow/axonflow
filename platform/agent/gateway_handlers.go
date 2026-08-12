@@ -719,6 +719,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			Categories:      gatewayPreCheckPolicyCategories,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
+			// #3266: the gateway pre-check has no resolved governance-segment
+			// set on hand yet — nil excludes segment-scoped static_policies
+			// rows (fail-closed, leak closed). Real segment enforcement on
+			// this plane is tracked in #3312 (human-actor enforce-now; machine #3279-gated).
+			Segments: nil,
 		})
 		// Convert to StaticPolicyResult for backward compatibility
 		policyResult = convertSharedResultToStatic(requestResult)

@@ -49,12 +49,13 @@ var (
 //
 // Two reasons, both load-bearing:
 //
-//   - CORRECTNESS. "Does this policy apply to this tenant?" is a shape-aware
-//     question and each engine answers it differently: the database engine
-//     treats tenant_id 'global' and 'default' (the NULL sentinel assigned in
-//     refreshPolicies) as apply-to-all, the in-memory engine treats an empty
-//     TenantID as apply-to-all and knows no sentinels. #3059 made each engine
-//     route BOTH enforcement and disclosure through its own single choke point
+//   - CORRECTNESS (TENANT scoping only — see the SEGMENT caveat below). "Does
+//     this policy apply to this tenant?" is a shape-aware question and each
+//     engine answers it differently: the database engine treats tenant_id
+//     'global' and 'default' (the NULL sentinel assigned in refreshPolicies)
+//     as apply-to-all, the in-memory engine treats an empty TenantID as
+//     apply-to-all and knows no sentinels. #3059 made each engine route BOTH
+//     enforcement and disclosure through its own single choke point
 //     (dbCachedPolicyAppliesToTenant / memPolicyAppliesToTenant) precisely so
 //     the two can never diverge. The predicate this handler used to carry
 //     locally — `p.TenantID != "" && p.TenantID != req.TenantID` — was the
@@ -72,8 +73,29 @@ var (
 //     HTTP-reachable caller and must not grow one". getPoliciesForMCP is
 //     reached from POST /api/v1/mcp/evaluate-policies, so it was exactly that
 //     caller.
+//
+//   - SEGMENT CAVEAT (ADR-060 #2989 P3b, H1 loud-docs, #3239 round 2): the
+//     "blocked on the LLM/MAP/WCP planes" claim above is about TENANT
+//     scoping ONLY and does NOT generalize to SEGMENT scoping. This handler
+//     passes nil segmentIDs (see the interface method doc below), so a
+//     segment-scoped policy is INVISIBLE and UNENFORCED here even though the
+//     same policy IS enforced on /api/v1/process and MAP. Segment
+//     enforcement today covers /process + MAP only — not MCP, not WCP. See
+//     ADR-060's enforcement-surface coverage matrix. Tracked: epic #3279
+//     (verified machine/agent principal — MCP's caller here is typically a
+//     service account, so enforcing segments requires resolving ITS
+//     principal, not threading a human email that doesn't exist on this
+//     plane) and #3280 (MCP segment enforcement, depends on #3279).
 type MCPPolicyEngine interface {
-	ListActivePoliciesForTenant(tenantID string) []DynamicPolicy
+	// segmentIDs (ADR-060 #2989 P3b) — see DynamicPolicyEngine's
+	// ListActivePoliciesForTenant doc. getPoliciesForMCP passes nil: the MCP
+	// evaluate-policies contract (MCPPolicyEvaluationRequest) carries a
+	// verified org/tenant (tenantscope.Bind) but no verified per-user email,
+	// so there is nothing to resolve real segments from here yet. This is
+	// NOT a stopgap awaiting a small follow-up — it is the H1/#3280 gap
+	// (see the interface doc above): a segment-scoped policy is silently
+	// absent from every list/evaluate response this handler returns.
+	ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
 }
 
 // MCPDynamicPolicyHandler handles dynamic policy evaluation requests from MCP Agent.
@@ -365,7 +387,7 @@ func (h *MCPDynamicPolicyHandler) getPoliciesForMCP(req MCPPolicyEvaluationReque
 	// would be enforced for this tenant on the LLM/MAP/WCP planes. The local
 	// `p.TenantID != "" && p.TenantID != req.TenantID` predicate this replaces
 	// was the inverse of the database engine's on all three stored shapes.
-	policies := h.policyEngine.ListActivePoliciesForTenant(req.TenantID)
+	policies := h.policyEngine.ListActivePoliciesForTenant(req.TenantID, nil)
 
 	// Filter by type. Tenant scoping already happened above.
 	var filtered []DynamicPolicy

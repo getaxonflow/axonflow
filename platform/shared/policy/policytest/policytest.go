@@ -20,12 +20,15 @@ import (
 )
 
 // LoaderCols is the loader's SELECT column list (loadFromDatabase), in scan
-// order. Includes created_at (#3048 merge-sort key).
+// order. Includes created_at (#3048 merge-sort key) and segment_id (#3266:
+// scanned into CompiledPolicy.SegmentID so the shared engine's segment
+// applicability gate can filter on it at evaluation time — see
+// UnifiedPolicyEngine.filterBySegments / EvalOptions.Segments).
 func LoaderCols() []string {
 	return []string{
 		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
 		"description", "phase", "action_request", "action_response",
-		"enabled", "priority", "tenant_id", "organization_id", "metadata",
+		"enabled", "priority", "tenant_id", "organization_id", "segment_id", "metadata",
 		"created_at",
 	}
 }
@@ -34,11 +37,27 @@ func LoaderCols() []string {
 // mig 010/031 seeds) to rows. The loader FAILS CLOSED when a load returns
 // zero system-tier policies (ErrEmptySystemPolicySet, #3048 item 10), so
 // every fixture's global pass must include at least one such row.
+// segment_id is always NULL here — system-tier policies are never
+// segment-scoped (#3266); use SegmentScopedPolicyRow for a segment-scoped
+// tenant/org-tier fixture row.
 func SystemPolicyRow(rows *sqlmock.Rows, id, policyID, category, pattern, severity, phase, actionRequest string, priority int) *sqlmock.Rows {
 	return rows.AddRow(
 		id, policyID, "Test policy "+policyID, category, "system", pattern, severity,
 		nil, phase, actionRequest, nil,
-		true, priority, "global", nil, []byte(`{}`),
+		true, priority, "global", nil, nil, []byte(`{}`),
+		time.Now().UTC(),
+	)
+}
+
+// SegmentScopedPolicyRow appends an enabled tenant-tier policy row scoped to
+// segmentID (#3266) to rows — the fixture shape for proving the shared
+// engine's segment applicability gate: a caller whose EvalOptions.Segments
+// contains segmentID may match/be blocked by it; every other caller must not.
+func SegmentScopedPolicyRow(rows *sqlmock.Rows, id, policyID, tenantID, segmentID, category, pattern, severity, phase, actionRequest string, priority int) *sqlmock.Rows {
+	return rows.AddRow(
+		id, policyID, "Test policy "+policyID, category, "tenant", pattern, severity,
+		nil, phase, actionRequest, nil,
+		true, priority, tenantID, nil, segmentID, []byte(`{}`),
 		time.Now().UTC(),
 	)
 }

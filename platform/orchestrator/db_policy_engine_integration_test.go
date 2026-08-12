@@ -95,6 +95,9 @@ func dbPolicyEngineSchema() string {
 			-- that here so the fixture cannot accept a row production rejects.
 			tenant_id VARCHAR(255) DEFAULT 'global'
 				CONSTRAINT dynamic_policies_tenant_id_not_empty CHECK (tenant_id IS NULL OR tenant_id <> ''),
+			-- ADR-060 (#2989 P3b) / migration 159: nullable, orthogonal to
+			-- tenant_id. NULL (the default here) reproduces every pre-P3b row.
+			segment_id VARCHAR(255),
 			priority INTEGER DEFAULT 0,
 			enabled BOOLEAN DEFAULT true,
 			risk_level VARCHAR(20) DEFAULT 'medium',
@@ -250,7 +253,7 @@ func TestDatabaseDynamicPolicyEngine_ListActivePoliciesForTenant_RealPostgres(t 
 		t.Fatal("vacuity control failed: tenant B's policy is not in the raw cross-tenant cache; the assertions below would be vacuous")
 	}
 
-	scoped := engine.ListActivePoliciesForTenant(tenantA)
+	scoped := engine.ListActivePoliciesForTenant(tenantA, nil)
 
 	sawOwn, sawGlobal, sawDefault := false, false, false
 	for _, p := range scoped {
@@ -279,7 +282,7 @@ func TestDatabaseDynamicPolicyEngine_ListActivePoliciesForTenant_RealPostgres(t 
 
 	// Mirror check: tenant B still sees its own row (scoping is per-caller,
 	// not a blanket suppression).
-	scopedB := engine.ListActivePoliciesForTenant(tenantB)
+	scopedB := engine.ListActivePoliciesForTenant(tenantB, nil)
 	foundBForB := false
 	for _, p := range scopedB {
 		if p.ID == "3059-b-"+suffix {
@@ -341,7 +344,7 @@ func TestDBCachedPolicyListEnforceParity_RealPostgres(t *testing.T) {
 	defer func() { _ = engine.Close() }()
 
 	listed := map[string]bool{}
-	for _, p := range engine.ListActivePoliciesForTenant(caller) {
+	for _, p := range engine.ListActivePoliciesForTenant(caller, nil) {
 		listed[p.ID] = true
 	}
 
@@ -363,7 +366,7 @@ func TestDBCachedPolicyListEnforceParity_RealPostgres(t *testing.T) {
 		if !ok {
 			t.Fatalf("cache entry for %s is not a map", rw.id)
 		}
-		enforced := dbCachedPolicyAppliesToTenant(policyMap, caller)
+		enforced := dbCachedPolicyAppliesToTenant(policyMap, caller, nil, rw.id)
 		if enforced != listed[rw.id] {
 			t.Errorf("list/enforce DIVERGENCE for %s (tenant=%v): enforced=%v listed=%v",
 				rw.id, rw.tenant, enforced, listed[rw.id])

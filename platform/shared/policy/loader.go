@@ -61,11 +61,17 @@ func NewPolicyLoader(db *sql.DB, cache *PolicyCache) *PolicyLoader {
 // initQueries initializes the SQL query templates.
 func (l *PolicyLoader) initQueries() {
 	// Query for request-phase policies
+	//
+	// segment_id is SELECTed (not filtered) here — see loadFromDatabase's doc
+	// for why segment applicability is a POST-load, evaluation-time gate
+	// (#3266) rather than a WHERE predicate: filtering here would make the
+	// loader's policy-set cache per-segment, which the design deliberately
+	// avoids (mirrors the "load broad, filter at the choke point" pattern).
 	l.queryRequestPhase = `
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, organization_id, metadata
+			enabled, priority, tenant_id, organization_id, segment_id, metadata
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -74,12 +80,12 @@ func (l *PolicyLoader) initQueries() {
 		ORDER BY priority DESC, created_at ASC
 	`
 
-	// Query for response-phase policies
+	// Query for response-phase policies (segment_id: see queryRequestPhase doc)
 	l.queryResponsePhase = `
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, organization_id, metadata
+			enabled, priority, tenant_id, organization_id, segment_id, metadata
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -144,11 +150,22 @@ func (l *PolicyLoader) loadFromDatabase(ctx context.Context, tenantID string, or
 	// Per-scope tenancy predicate: $1 is filled with the scope being read so
 	// the tenant pass and the global pass return disjoint sets even without
 	// RLS enforcement.
+	//
+	// segment_id is SELECTed but deliberately NOT filtered on (#3266): unlike
+	// StaticPolicyRepository.GetEffective (platform/agent/
+	// static_policy_repository.go), which filters `sp.segment_id IS NULL OR
+	// sp.segment_id = ANY($N)` in SQL because it is called per-caller, this
+	// loader's result is cached PER-(tenant, org) and shared across every
+	// caller in that scope regardless of segment membership — filtering here
+	// would fragment the cache key by segment set. Instead every row loads
+	// (segment-scoped or not) and UnifiedPolicyEngine.filterBySegments
+	// applies the identical applicability rule at evaluation time, per
+	// request, using each caller's own EvalOptions.Segments.
 	query := `
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, organization_id, metadata,
+			enabled, priority, tenant_id, organization_id, segment_id, metadata,
 			created_at
 		FROM static_policies
 		WHERE enabled = true
@@ -237,7 +254,7 @@ func (l *PolicyLoader) scopedPolicyRows(ctx context.Context, query, scopeOrg, te
 			if sErr := rows.Scan(
 				&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 				&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
-				&p.Enabled, &p.Priority, &p.TenantID, &p.OrganizationID, &p.Metadata,
+				&p.Enabled, &p.Priority, &p.TenantID, &p.OrganizationID, &p.SegmentID, &p.Metadata,
 				&p.CreatedAt,
 			); sErr != nil {
 				log.Printf("[PolicyLoader] Error scanning row: %v", sErr)
@@ -270,6 +287,7 @@ type policyRow struct {
 	Priority       int
 	TenantID       string
 	OrganizationID sql.NullString
+	SegmentID      sql.NullString
 	Metadata       json.RawMessage
 	CreatedAt      time.Time
 }
@@ -303,6 +321,13 @@ func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
 		orgID = &row.OrganizationID.String
 	}
 
+	// Parse segment ID (#3266): "" (NULL) means not segment-scoped, matching
+	// the zero-value contract CompiledPolicy.AppliesToSegments relies on.
+	segmentID := ""
+	if row.SegmentID.Valid {
+		segmentID = row.SegmentID.String
+	}
+
 	// Get description
 	description := ""
 	if row.Description.Valid {
@@ -326,6 +351,7 @@ func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
 		Priority:       row.Priority,
 		TenantID:       row.TenantID,
 		OrganizationID: orgID,
+		SegmentID:      segmentID,
 		Validator:      l.getValidatorForPolicy(row.PolicyID, PolicyCategory(row.Category)),
 	}, nil
 }
@@ -393,11 +419,15 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 		return nil, fmt.Errorf("database connection not available")
 	}
 
+	// segment_id is SELECTed for consistency with the other static_policies
+	// readers (#3266), though system-tier rows are never segment-scoped in
+	// practice — StaticPolicyRepository.GetEffective only applies the
+	// segment predicate to organization/tenant-tier rows.
 	query := `
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, organization_id, metadata
+			enabled, priority, tenant_id, organization_id, segment_id, metadata
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -418,7 +448,7 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 			if sErr := rows.Scan(
 				&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 				&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
-				&p.Enabled, &p.Priority, &p.TenantID, &p.OrganizationID, &p.Metadata,
+				&p.Enabled, &p.Priority, &p.TenantID, &p.OrganizationID, &p.SegmentID, &p.Metadata,
 			); sErr != nil {
 				continue
 			}
@@ -454,11 +484,14 @@ func (l *PolicyLoader) GetPolicyByID(ctx context.Context, policyID string) (*Com
 		return nil, fmt.Errorf("database connection not available")
 	}
 
+	// segment_id is SELECTed for consistency with the other static_policies
+	// readers (#3266); see loadFromDatabase's doc for why it is scanned, not
+	// filtered, at load time.
 	query := `
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, organization_id, metadata
+			enabled, priority, tenant_id, organization_id, segment_id, metadata
 		FROM static_policies
 		WHERE policy_id = $1
 		  AND deleted_at IS NULL
@@ -470,7 +503,7 @@ func (l *PolicyLoader) GetPolicyByID(ctx context.Context, policyID string) (*Com
 		return row.Scan(
 			&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 			&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
-			&p.Enabled, &p.Priority, &p.TenantID, &p.OrganizationID, &p.Metadata,
+			&p.Enabled, &p.Priority, &p.TenantID, &p.OrganizationID, &p.SegmentID, &p.Metadata,
 		)
 	}
 

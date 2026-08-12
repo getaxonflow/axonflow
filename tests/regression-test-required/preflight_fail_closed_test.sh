@@ -326,6 +326,29 @@ mutate_and_expect_red "unset-becomes-fatal" \
   '    if [[ -z "$raw" ]]; then MODE_CLASS="unset"; return 0; fi' \
   '    if [[ -z "$raw" ]]; then MODE_CLASS="unrecognised"; return 0; fi'
 
+# admin_auth_required (check 16) mirrors isAdminAuthRequired() in
+# ee/platform/customer-portal/middleware/admin_auth.go, and check 16 keys its
+# WARNING on the answer: whether a blank ADMIN_API_KEY means "every admin route
+# answers 500 and break-glass recovery is unusable" or "the admin API is being
+# served anonymously". Both statements are about the operator's deployment, so
+# each of the three ways the predicate could quietly stop discriminating gets a
+# mutant here.
+mutate_and_expect_red "production-no-longer-forces-auth" \
+  '    if [[ "$env_norm" == "production" ]]; then return 0; fi' \
+  '    if [[ "$env_norm" == "prod" ]]; then return 0; fi'
+# secretenv.Get trims the key once, so ADMIN_API_KEY="   " is BLANK to the
+# portal. Drop the trim and check 16 reports the recovery path as armed on a
+# deployment where every admin route answers 500.
+mutate_and_expect_red "whitespace-key-counts-as-configured" \
+  '    key_norm="$(trim_ws "$3")"' \
+  '    key_norm="$3"'
+# The platform's switch has a fail-CLOSED default: a mode nobody enumerated
+# requires auth. A substring matcher passes every enumerated case and, because
+# the list carries the empty-string arm, makes every unknown mode optional.
+mutate_and_expect_red "unknown-mode-fails-open" \
+  '        if [[ "$mode_norm" == "$m" ]]; then ADMIN_AUTH_REQUIRED=0; return 0; fi' \
+  '        if [[ "$mode_norm" == *"$m"* ]]; then ADMIN_AUTH_REQUIRED=0; return 0; fi'
+
 echo
 if [ "${fail}" -ne 0 ]; then
   echo "preflight_fail_closed_test.sh: FAILED"

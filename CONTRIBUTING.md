@@ -641,7 +641,7 @@ are executed by their own language's CI job, not by this runner.
 Per the QF epic post-mortem, a meaningful share of v7.x post-release bugs were
 caught in the next release cycle by a test that we hadn't written yet. Forcing
 the test into the same PR as the fix is the cheapest place to catch the next
-recurrence. See `axonflow-internal-docs/engineering/QUALITY_FREEZE_EPIC_2026-04-24.md`
+recurrence. See `axonflow-internal-docs/engineering/audits/QUALITY_FREEZE_EPIC_2026-04-24.md`
 for the full motivation.
 
 ### Runtime-E2E-per-user-facing-change

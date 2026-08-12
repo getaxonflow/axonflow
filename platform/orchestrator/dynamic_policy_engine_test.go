@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 )
 
 // TestNewDynamicPolicyEngine tests engine initialization
@@ -521,7 +522,7 @@ func TestGetApplicablePolicies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			applicable := engine.getApplicablePolicies(tt.req)
+			applicable := engine.getApplicablePolicies(tt.req, nil)
 
 			if len(applicable) != tt.expectedCount {
 				t.Errorf("Expected %d policies, got %d", tt.expectedCount, len(applicable))
@@ -876,9 +877,9 @@ func TestGenerateCacheKey(t *testing.T) {
 		Query:       "SELECT * FROM test",
 	}
 
-	key1 := engine.generateCacheKey(req1)
-	key2 := engine.generateCacheKey(req2)
-	key3 := engine.generateCacheKey(req3)
+	key1 := engine.generateCacheKey(req1, nil)
+	key2 := engine.generateCacheKey(req2, nil)
+	key3 := engine.generateCacheKey(req3, nil)
 
 	// Same requests should generate same keys
 	if key1 != key2 {
@@ -964,7 +965,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "description", "policy_type",
 					"category", "conditions", "actions", "priority", "enabled",
-					"tenant_id", "created_at", "updated_at",
+					"tenant_id", "segment_id", "created_at", "updated_at",
 				}).
 					AddRow(
 						"1", "policy_001", "Block SQL Injection", "Blocks SQL injection attempts",
@@ -972,6 +973,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 						[]byte(`[{"field": "risk_score", "operator": "greater_than", "value": 0.8}]`),
 						[]byte(`[{"type": "block", "config": {"reason": "SQL injection detected"}}]`),
 						100, true, sql.NullString{String: "tenant1", Valid: true},
+						sql.NullString{Valid: false},
 						time.Now(), time.Now(),
 					).
 					AddRow(
@@ -980,6 +982,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 						[]byte(`[{"field": "query", "operator": "contains", "value": "email"}]`),
 						[]byte(`[{"type": "redact", "config": {"fields": ["email", "ssn"]}}]`),
 						90, true, sql.NullString{Valid: false},
+						sql.NullString{Valid: false},
 						time.Now(), time.Now(),
 					)
 
@@ -1013,7 +1016,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "description", "policy_type",
 					"category", "conditions", "actions", "priority", "enabled",
-					"tenant_id", "created_at", "updated_at",
+					"tenant_id", "segment_id", "created_at", "updated_at",
 				})
 
 				mock.ExpectQuery("SELECT (.+) FROM dynamic_policies WHERE enabled = true").
@@ -1028,7 +1031,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "description", "policy_type",
 					"category", "conditions", "actions", "priority", "enabled",
-					"tenant_id", "created_at", "updated_at",
+					"tenant_id", "segment_id", "created_at", "updated_at",
 				}).
 					AddRow(
 						"3", "policy_003", "Bad Policy", "Has invalid JSON",
@@ -1036,6 +1039,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 						[]byte(`{invalid json}`),
 						[]byte(`{"action": "block"}`),
 						50, true, sql.NullString{Valid: false},
+						sql.NullString{Valid: false},
 						time.Now(), time.Now(),
 					)
 
@@ -1107,6 +1111,127 @@ func TestLoadPoliciesFromDB_NilDatabase(t *testing.T) {
 	}
 	if err.Error() != "database not available" {
 		t.Errorf("Expected 'database not available' error, got: %v", err)
+	}
+}
+
+// TestLoadPoliciesFromDB_SegmentIDMetadataSurvives (L10) drives a real,
+// non-NULL segment_id through the loader and asserts it lands on
+// DynamicPolicy.SegmentID — mutating that assignment to always be ""
+// (dropping segment scoping entirely) would still pass every other
+// TestLoadPoliciesFromDB case, since none of them plant a non-NULL value.
+func TestLoadPoliciesFromDB_SegmentIDMetadataSurvives(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "policy_id", "name", "description", "policy_type",
+		"category", "conditions", "actions", "priority", "enabled",
+		"tenant_id", "segment_id", "created_at", "updated_at",
+	}).
+		AddRow(
+			"9", "policy_seg", "Finance Segment Policy", "Segment-scoped",
+			"security", "dynamic-security",
+			[]byte(`[]`),
+			[]byte(`[]`),
+			100, true, sql.NullString{String: "tenant1", Valid: true},
+			sql.NullString{String: "seg-finance", Valid: true},
+			time.Now(), time.Now(),
+		)
+
+	mock.ExpectQuery("SELECT (.+) FROM dynamic_policies WHERE enabled = true").
+		WillReturnRows(rows)
+	mock.ExpectBegin()
+	mock.ExpectExec("set_config").WithArgs("system").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT INTO orchestrator_audit_logs").
+		WithArgs("orchestrator", "dynamic_policy_refresh", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	engine := &DynamicPolicyEngine{db: db, dbAvailable: true, policies: []DynamicPolicy{}}
+	if err := engine.loadPoliciesFromDB(); err != nil {
+		t.Fatalf("loadPoliciesFromDB failed: %v", err)
+	}
+
+	var found *DynamicPolicy
+	for i := range engine.policies {
+		if engine.policies[i].ID == "policy_seg" {
+			found = &engine.policies[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected policy_seg to be loaded")
+	}
+	if found.SegmentID != "seg-finance" {
+		t.Fatalf("expected SegmentID = %q, got %q", "seg-finance", found.SegmentID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled mock expectations: %v", err)
+	}
+}
+
+// TestLoadPoliciesFromDB_SegmentColumnMissing_RetriesSegmentLess is the H3
+// upgrade-ordering probe (#3239 round 2): if dynamic_policies.segment_id
+// doesn't exist yet (booted before migration 159 applied), loadPoliciesFromDB
+// must retry segment-less rather than failing the whole load.
+func TestLoadPoliciesFromDB_SegmentColumnMissing_RetriesSegmentLess(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT (.+) FROM dynamic_policies WHERE enabled = true").
+		WillReturnError(&pq.Error{Code: "42703", Message: `column "segment_id" does not exist`})
+
+	fallbackRows := sqlmock.NewRows([]string{
+		"id", "policy_id", "name", "description", "policy_type",
+		"category", "conditions", "actions", "priority", "enabled",
+		"tenant_id", "created_at", "updated_at",
+	}).
+		AddRow(
+			"10", "policy_premig", "Pre-migration Policy", "No segment column yet",
+			"security", "dynamic-security",
+			[]byte(`[]`),
+			[]byte(`[]`),
+			100, true, sql.NullString{String: "tenant1", Valid: true},
+			time.Now(), time.Now(),
+		)
+
+	mock.ExpectQuery("SELECT (.+) FROM dynamic_policies WHERE enabled = true").
+		WillReturnRows(fallbackRows)
+	mock.ExpectBegin()
+	mock.ExpectExec("set_config").WithArgs("system").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT INTO orchestrator_audit_logs").
+		WithArgs("orchestrator", "dynamic_policy_refresh", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	engine := &DynamicPolicyEngine{db: db, dbAvailable: true, policies: []DynamicPolicy{}}
+	if err := engine.loadPoliciesFromDB(); err != nil {
+		t.Fatalf("expected loadPoliciesFromDB to tolerate a missing segment_id column, got error: %v", err)
+	}
+
+	var found *DynamicPolicy
+	for i := range engine.policies {
+		if engine.policies[i].ID == "policy_premig" {
+			found = &engine.policies[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected the segment-less-retry policy to be loaded")
+	}
+	if found.SegmentID != "" {
+		t.Fatalf("expected SegmentID = \"\" (column not yet migrated), got %q", found.SegmentID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled mock expectations: %v", err)
 	}
 }
 

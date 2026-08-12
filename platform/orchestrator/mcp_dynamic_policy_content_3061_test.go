@@ -478,7 +478,7 @@ func TestMCP3061_DatabaseEngineSentinelTenantsGovernTheMCPPlane(t *testing.T) {
 			// if dbCachedPolicyAppliesToTenant ever changes, the expectation
 			// table must change with it or this fails.
 			raw := engine.policies["p-sentinel"].(map[string]interface{})
-			if canonical := dbCachedPolicyAppliesToTenant(raw, tc.callerTenant); canonical != tc.wantBlock {
+			if canonical := dbCachedPolicyAppliesToTenant(raw, tc.callerTenant, nil, "p-sentinel"); canonical != tc.wantBlock {
 				t.Fatalf("expectation drift: dbCachedPolicyAppliesToTenant = %v but this case wants block = %v (%s)",
 					canonical, tc.wantBlock, tc.why)
 			}

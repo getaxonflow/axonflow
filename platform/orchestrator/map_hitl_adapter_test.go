@@ -28,7 +28,7 @@ func (m *mockPolicyEngineForHITL) ListActivePolicies() []DynamicPolicy {
 	return nil
 }
 
-func (m *mockPolicyEngineForHITL) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+func (m *mockPolicyEngineForHITL) ListActivePoliciesForTenant(_ string, _ []string) []DynamicPolicy {
 	return nil
 }
 

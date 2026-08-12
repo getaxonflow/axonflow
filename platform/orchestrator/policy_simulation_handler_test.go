@@ -92,7 +92,7 @@ func (m *mockPolicyEngineForSim) ListActivePolicies() []DynamicPolicy {
 // mock therefore just needs a scope-sensitive answer; it deliberately uses a
 // simple own-plus-global rule so a wrong tenant argument produces a wrong
 // count.
-func (m *mockPolicyEngineForSim) ListActivePoliciesForTenant(tenantID string) []DynamicPolicy {
+func (m *mockPolicyEngineForSim) ListActivePoliciesForTenant(tenantID string, _ []string) []DynamicPolicy {
 	var scoped []DynamicPolicy
 	for _, p := range m.activePolicies {
 		if p.TenantID == "" || p.TenantID == tenantID || p.TenantID == "global" {
@@ -142,6 +142,48 @@ func TestSimulatePolicies_IgnoresBodyTenant(t *testing.T) {
 	// body must not be able to steer the scope through that field either.
 	if got := engine.lastReq.Client.TenantID; got != "caller-org" {
 		t.Errorf("evaluated Client.TenantID = %q, want %q — the metrics writer PREFERS this field, so leaving it body-controlled reopens the same hole", got, "caller-org")
+	}
+}
+
+// TestSimulatePolicies_IgnoresBodyOrgID is the /policies/simulate half of
+// TestTestPolicyHandlerIgnoresBodyOrgID, and it exists because the two
+// halves of that fix must not diverge.
+//
+// After P3b (ADR-060), EvaluateDynamicPolicies feeds User.OrgID and
+// User.Email straight into resolveSegmentsForPolicy, which resolves against
+// the LIVE SCIM directory of whichever org it is given (both the RLS GUC and
+// the query's WHERE clause are bound from that argument). A body-sourced
+// OrgID paired with a body-sourced Email would let a caller probe an
+// arbitrary org's SCIM group membership one hypothetical email at a time and
+// read the answer back out of Allowed/AppliedPolicies — a cross-org
+// information-disclosure oracle. This test fails if the OrgID-forcing line
+// is reverted.
+func TestSimulatePolicies_IgnoresBodyOrgID(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{
+		tier:             license.TierEvaluation,
+		policySimEnabled: true,
+		maxSimsPerDay:    300,
+	}
+	engine := &mockPolicyEngineForSim{activePolicies: make([]DynamicPolicy, 1)}
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
+	handler.rateLimiter = &simulationRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	body := []byte(`{"query":"hello","request_type":"chat","user":{"email":"victim@example.com","org_id":"victim-org","tenant_id":"victim-org"}}`)
+	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "caller-org")
+	req.Header.Set("X-Org-ID", "caller-org")
+	w := httptest.NewRecorder()
+
+	handler.SimulatePolicies(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := engine.lastReq.User.OrgID; got != "caller-org" {
+		t.Errorf("evaluated User.OrgID = %q, want %q — the body's user.org_id was honoured, letting a caller drive the segment resolver's SCIM lookup at an arbitrary org", got, "caller-org")
 	}
 }
 

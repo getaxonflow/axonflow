@@ -28,7 +28,7 @@
 // release. Use secretenv (not envcompat) for secrets — it has
 // different defensive semantics around whitespace trimming.
 //
-// See axonflow-internal-docs/engineering/RUNBOOK_DEPLOY_PATTERNS.md
+// See axonflow-internal-docs/engineering/runbooks/RUNBOOK_DEPLOY_PATTERNS.md
 // for the full rollout-pattern decision matrix.
 package envcompat
 

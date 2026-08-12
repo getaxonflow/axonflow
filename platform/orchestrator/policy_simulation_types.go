@@ -27,6 +27,14 @@ type SimulatePoliciesResponse struct {
 	SimulatedAt      time.Time             `json:"simulated_at"`
 	Tier             string                `json:"tier"`
 	DailyUsage       *SimulationDailyUsage `json:"daily_usage,omitempty"`
+
+	// SegmentsResolved is Signal B (#3239 round 2, M4) — mirrors
+	// PolicyEvaluationResult.SegmentsResolved: true only when a resolved,
+	// non-empty ADR-060 governance-segment set was actually factored into
+	// this simulated verdict. false covers every legitimate org-only case
+	// (no email supplied, no resolver wired, zero group memberships) — an
+	// admin must not mistake an org-only Allowed for a segment-aware one.
+	SegmentsResolved bool `json:"segments_resolved"`
 }
 
 // SimulationDailyUsage tracks simulation quota usage.

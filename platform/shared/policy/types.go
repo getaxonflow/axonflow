@@ -2,6 +2,7 @@ package policy
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -211,6 +212,18 @@ type CompiledPolicy struct {
 	TenantID       string
 	OrganizationID *string
 
+	// SegmentID is the governance-segment (org-unit/group) this policy is
+	// scoped to (ADR-060, #2989/#3266), or "" when the policy is NOT
+	// segment-scoped (applies to every member of the tenant/org, unchanged
+	// from pre-#2989 behavior). Mirrors static_policies.segment_id — see
+	// StaticPolicyRepository.GetEffective's `sp.segment_id IS NULL OR
+	// sp.segment_id = ANY($N)` predicate (platform/agent/
+	// static_policy_repository.go), which this field lets the shared engine
+	// apply the SAME applicability rule at evaluation time (see
+	// UnifiedPolicyEngine's segment gate) instead of not knowing about
+	// segments at all.
+	SegmentID string
+
 	// Optional validator for semantic validation
 	Validator ValidatorFunc
 }
@@ -246,6 +259,32 @@ func (p *CompiledPolicy) GetActionForPhase(phase Phase) Action {
 	}
 	// Default: log for audit trail
 	return ActionLog
+}
+
+// AppliesToSegments reports whether this policy is eligible to match/act/be
+// reported for a caller whose resolved governance-segment membership is
+// callerSegments (ADR-060, #2989/#3266). The rule mirrors
+// StaticPolicyRepository.GetEffective's SQL predicate (`sp.segment_id IS
+// NULL OR sp.segment_id = ANY($N)`):
+//   - p.SegmentID == "" (not segment-scoped): always applies, regardless of
+//     callerSegments — this is the pre-#2989 behavior, unrestricted by
+//     segment.
+//   - p.SegmentID != "" (segment-scoped): applies iff callerSegments
+//     contains it. A nil/empty callerSegments therefore excludes EVERY
+//     segment-scoped policy — fail-closed by construction, never fail-open,
+//     because the empty side of the OR can only narrow which SegmentID != ""
+//     rows apply, never widen it.
+//
+// Callers MUST gate matching, action, AND reporting (MatchedPolicies /
+// triggered-policy identifiers) on this — a policy that fails this check
+// must be skipped entirely, not merely left unenforced (#3266 symptom 1: a
+// segment-scoped policy leaking into a non-member's triggered_policies is a
+// disclosure bug even when it does not block).
+func (p *CompiledPolicy) AppliesToSegments(callerSegments []string) bool {
+	if p.SegmentID == "" {
+		return true
+	}
+	return slices.Contains(callerSegments, p.SegmentID)
 }
 
 // IsPIIPolicyCategory reports whether a category is a TEXT PII category, by
@@ -377,6 +416,24 @@ type EvalOptions struct {
 
 	// Redaction limits
 	MaxRedactions int // Maximum redactions per response (0 = unlimited)
+
+	// Segments is the caller's resolved governance-segment set (ADR-060,
+	// #2989/#3266) — the group/segment IDs the caller is a MEMBER of. It
+	// gates evaluation of segment-scoped static_policies rows (CompiledPolicy
+	// .SegmentID != ""): a segment-scoped policy applies iff its SegmentID is
+	// in this set, and is otherwise skipped entirely — not matched, not
+	// acted on, not reported (see UnifiedPolicyEngine's segment applicability
+	// gate). nil/empty means "the caller belongs to no segments" and is
+	// FAIL-CLOSED by construction: every segment-scoped row is excluded,
+	// which is always the SAFE default for a caller with no resolved
+	// identity (this is restriction-only — it can never cause a
+	// non-segment-scoped policy, SegmentID == "", to be skipped). Callers
+	// that have not yet resolved a segment set for their plane MUST pass nil
+	// explicitly rather than omit the field silently — see the call sites in
+	// agent/mcp_handler.go, agent/gateway_handlers.go,
+	// agent/openai_compat_handler.go, and orchestrator/response_processor.go
+	// for the documented per-plane deferral.
+	Segments []string
 }
 
 // RequestResult contains the results of request-phase policy evaluation.

@@ -104,6 +104,23 @@ func FindActiveOverride(ctx context.Context, db *sql.DB, scopeOrg, tenantID, use
 //     (tenant, user, policy, tool). First match wins.
 //   - On apply: sets OverrideApplied/OverrideID/OverrideReason on result,
 //     flips Allowed to true, emits override_used audit event.
+//
+// ADR-060 (#2989 P3b): a segment-scoped policy uses the SAME override
+// contract as a tenant policy here — it is eligible to flip back to allow
+// iff its own AppliedPolicyDetail.AllowOverride is true (i.e. the policy's
+// allow_override column is true and it is not critical-risk). There is no
+// segment-specific exclusion in this function. This is intentional and
+// distinct from ADR-060 Decision 1's additive-restriction-only guarantee,
+// which is a property of the applicable-policy COMBINER (segment matches can
+// only ADD to the applicable set, never relax a tier/tenant verdict) — that
+// guarantee says nothing about this function, which runs strictly AFTER a
+// verdict is reached and applies a separately-authorized, identity-keyed,
+// audited exception (ADR-044) to any eligible policy, segment-scoped or not.
+// A hard-floor segment policy (e.g. a compliance rule) stays un-overridable
+// simply by shipping with allow_override=false or risk_level=critical;
+// createOverrideHandler (overrides_handler.go) already refuses to create an
+// override against such a policy, so nothing here can honor one that was
+// never created. SegmentID on the detail is attribution/audit only.
 func ApplyOverrideToResult(
 	ctx context.Context,
 	db *sql.DB,

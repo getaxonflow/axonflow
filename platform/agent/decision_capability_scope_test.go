@@ -9,7 +9,6 @@ package agent
 // an unknown/absent target keeps full evaluation.
 
 import (
-	"time"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -53,14 +52,10 @@ func installSharedEngineWithPolicyRows(t *testing.T) {
 	mockSQL.MatchExpectationsInOrder(false)
 
 	// #3048: loader cols carry created_at; each load is two scoped passes.
-	cols := policytest.LoaderCols()
 	for i := 0; i < 8; i++ {
-		rows := sqlmock.NewRows(cols).AddRow(
-			"11111111-1111-1111-1111-111111111111", "sys_sqli_revoke", "REVOKE Privileges Statement",
-			"security-sqli", "system", `(?i)\bREVOKE\s+`, "critical",
-			"Detects REVOKE privilege statement", "request", "block", nil,
-			true, 100, "global", nil, []byte(`{}`), time.Now().UTC(),
-		)
+		rows := policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+			"11111111-1111-1111-1111-111111111111", "sys_sqli_revoke",
+			"security-sqli", `(?i)\bREVOKE\s+`, "critical", "request", "block", 100)
 		mockSQL.ExpectQuery("SELECT").WillReturnRows(rows)
 	}
 	policytest.ScopedTxPlumbing(mockSQL, 8)

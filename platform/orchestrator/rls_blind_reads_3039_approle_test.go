@@ -73,6 +73,20 @@ func setup3039Fixture(t *testing.T) *approleFixture {
 	if _, err := f.masterDB.Exec(string(migSQL)); err != nil {
 		t.Fatalf("apply migration 153: %v", err)
 	}
+
+	// Mig 159 (dynamic_policies.segment_id, ADR-060 #2989 P3b) is likewise
+	// outside approletest's core 001..111 range — apply it here so
+	// refreshPolicies' SELECT of segment_id resolves against the real column
+	// rather than failing with "column \"segment_id\" does not exist". The
+	// migration is table-guarded and self-contained, so it applies cleanly on
+	// top of the 111+153 fixture schema.
+	segMigSQL, err := os.ReadFile("../../migrations/core/159_dynamic_policies_segment_id.sql")
+	if err != nil {
+		t.Fatalf("read migration 159: %v", err)
+	}
+	if _, err := f.masterDB.Exec(string(segMigSQL)); err != nil {
+		t.Fatalf("apply migration 159: %v", err)
+	}
 	return f
 }
 

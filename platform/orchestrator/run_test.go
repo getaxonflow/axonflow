@@ -917,6 +917,50 @@ func TestTestPolicyHandlerIgnoresBodyTenant(t *testing.T) {
 	}
 }
 
+// TestTestPolicyHandlerIgnoresBodyOrgID pins that the policy dry-run scopes
+// itself to the org the GATEWAY stamped (X-Org-ID), never the one in the
+// request body.
+//
+// After P3b (ADR-060), EvaluateDynamicPolicies feeds User.OrgID and
+// User.Email straight into resolveSegmentsForPolicy, which resolves against
+// the LIVE SCIM directory of whichever org it is given (both the RLS GUC and
+// the query's WHERE clause are bound from that argument — there is no
+// independent org check downstream). A body-sourced OrgID paired with a
+// body-sourced Email would let a caller probe an arbitrary org's SCIM group
+// membership one hypothetical email at a time and read the answer back out
+// of Allowed/AppliedPolicies — a cross-org information-disclosure oracle.
+// This test fails if the OrgID-forcing line is reverted.
+func TestTestPolicyHandlerIgnoresBodyOrgID(t *testing.T) {
+	prev := dynamicPolicyEngine
+	defer func() { dynamicPolicyEngine = prev }()
+	rec := &mockPolicyEngineForWCP{}
+	dynamicPolicyEngine = rec
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"query":        "test query",
+		"request_type": "chat",
+		"user":         map[string]interface{}{"email": "victim@example.com", "org_id": "victim-org", "tenant_id": "victim-org"},
+	})
+	req := httptest.NewRequest("POST", "/policies/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "caller-org")
+	req.Header.Set("X-Org-ID", "caller-org")
+	w := httptest.NewRecorder()
+
+	testPolicyHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if rec.callCount != 1 {
+		t.Fatalf("policy engine called %d time(s), want 1 — the assertion below would be vacuous", rec.callCount)
+	}
+	if got := rec.lastReq.User.OrgID; got != "caller-org" {
+		t.Fatalf("evaluated org = %q, want %q — the body's user.org_id was honoured, letting a caller drive the segment resolver's SCIM lookup at an arbitrary org",
+			got, "caller-org")
+	}
+}
+
 // ============================================================================
 // Test Helper Functions
 // ============================================================================
@@ -3226,7 +3270,7 @@ func (m *mockPolicyEngineForMAP) ListActivePolicies() []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 
-func (m *mockPolicyEngineForMAP) ListActivePoliciesForTenant(_ string) []DynamicPolicy {
+func (m *mockPolicyEngineForMAP) ListActivePoliciesForTenant(_ string, _ []string) []DynamicPolicy {
 	return []DynamicPolicy{}
 }
 

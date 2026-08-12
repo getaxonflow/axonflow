@@ -259,6 +259,13 @@ func LLMProvidersSchema() string {
 // every integration test that creates a policy via the repository.
 // Kept in sync with the production migration shape — if migration 090
 // adds a new column, mirror it here.
+//
+// `segment_id` mirrors migration 159 (ADR-060 #2989 P3b): nullable,
+// orthogonal to tenant_id. L10 (#3239 round 2) added this — it was
+// missing here (divergent from db_policy_engine_integration_test.go's own
+// local dbPolicyEngineSchema(), which already carried it), so an
+// integration test using THIS shared fixture instead could not reproduce a
+// non-NULL segment_id row at all.
 func DynamicPoliciesSchema() string {
 	return `
 		CREATE TABLE IF NOT EXISTS dynamic_policies (
@@ -276,6 +283,7 @@ func DynamicPoliciesSchema() string {
 			-- legacy org column: TEXT (not UUID) to match prod after migration 133
 			-- (org ids are free-form license strings, not UUIDs). org_id is canonical.
 			organization_id TEXT,
+			segment_id VARCHAR(255),
 			priority INTEGER DEFAULT 100,
 			enabled BOOLEAN DEFAULT true,
 			version INTEGER DEFAULT 1,
