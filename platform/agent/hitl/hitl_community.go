@@ -186,3 +186,10 @@ type ApprovalRequest struct {
 func (s *Service) CreateApprovalRequest(_ context.Context, _ CreateApprovalInput) (*ApprovalRequest, error) {
 	return nil, ErrHITLApprovalDisabledByTier
 }
+
+// GetApprovalRequest mirrors the enterprise read path for symbol parity
+// (used by the agent's HITLBridge adapter, #3329). Community build always
+// rejects: there is no queue to read.
+func (s *Service) GetApprovalRequest(_ context.Context, _ uuid.UUID) (*ApprovalRequest, error) {
+	return nil, ErrHITLApprovalDisabledByTier
+}

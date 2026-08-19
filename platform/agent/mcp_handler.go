@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
@@ -721,6 +722,13 @@ type InputPolicyOutcome struct {
 	// StaticResult is the result of request-phase static policy evaluation.
 	// Nil when the static policy engine is disabled or the connector is excluded.
 	StaticResult *sharedpolicy.RequestResult
+
+	// FinCrime is the Fraud & Risk Add-on seam result (ADR-061 / #3329).
+	// Nil on community builds, when the fincrime engine is not wired, when
+	// the request carries no fincrime context and produced no score, or
+	// when an earlier engine already blocked. Advisory-shaped: it can only
+	// request needs_approval, never deny.
+	FinCrime *fincrime.Result
 }
 
 // evaluateInputPolicies runs dynamic + request-phase static policy checks without
@@ -808,6 +816,11 @@ func evaluateInputPolicies(
 			sharedpolicy.CategoryComplianceSEBI,
 			sharedpolicy.CategoryComplianceEUAIAct,
 			sharedpolicy.CategoryComplianceMASFEAT,
+			// ADR-061 / #3329: the FinCrime Policy Pack rows. Dedicated
+			// category so the pack is governed by neither the PII/SQLi
+			// posture levers nor capability scoping; rows exist only where
+			// the enterprise pack was seeded, so this is a no-op otherwise.
+			sharedpolicy.CategoryFinCrime,
 		}
 		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
@@ -843,6 +856,59 @@ func evaluateInputPolicies(
 			}
 			log.Printf("[MCP] Request blocked by static policy '%s': %s",
 				policyID, out.StaticResult.BlockReason)
+		}
+	}
+
+	// FinCrime seam (ADR-061 Decision 2 / #3329): Engine A evaluators +
+	// Engine B scorer, consulted AFTER the static engine so the pack
+	// policies (which the static engine evaluates like any other rows) have
+	// already spoken. Skipped when the request is already blocked: a deny is
+	// terminal and the seam is advisory-shaped (needs_approval at most), so
+	// consulting it could not change the outcome. fincrimeEngine is nil on
+	// community builds and when boot wiring did not construct it; the nil
+	// path and the no-fincrime-context path both return nil, keeping this a
+	// strict no-op for non-fincrime traffic.
+	//
+	// Gated on installed decision metadata: only the callers that WIRED the
+	// seam (decide + MCP query/execute/check-input, each installing
+	// fincrime.WithDecisionMeta with the id their audit rows carry) consult
+	// it. A caller without metadata (today: the JSON-RPC mcp-server
+	// check_policy plane, mcp_server_handler.go, which mints its decision id
+	// only after evaluation and consumes no seam result) gets NO half
+	// coverage: no scorer call the frozen contract could not attribute, no
+	// validation verdict its response would silently drop. The pack's
+	// static rows still enforce there like on every plane; wiring the seam
+	// itself for that plane is P2 alongside gateway/WCP (ADR-061 rollout
+	// checklist).
+	if fincrime.DecisionMetaFromContext(ctx) != nil &&
+		(out.StaticResult == nil || !out.StaticResult.Blocked) {
+		out.FinCrime = fincrimeEngine.Evaluate(ctx, fincrime.Input{
+			TenantID:      tenantID,
+			OrgID:         orgID,
+			UserID:        userID,
+			UserRole:      userRole,
+			ConnectorName: connectorName,
+			ToolIdentity:  toolIdentity,
+			Operation:     operation,
+			AgentID:       ClientIDFromContext(ctx),
+			SessionID:     clientSessionIDFromContext(ctx),
+			Parameters:    parameters,
+		})
+		// #3306 attribution for pack-row matches on planes whose
+		// terminal-allow audit rows do not carry request-phase match ids
+		// (mcp query/execute): stamp the fincrime-category matches onto the
+		// ctx audit holder so MergeAuditDetails appends them. Attribution
+		// only, deduplicated everywhere it merges; planes that already
+		// record the ids (decide, check-input) are unchanged.
+		if out.StaticResult != nil {
+			var packIDs, packNames []string
+			for _, m := range out.StaticResult.MatchedPolicies {
+				if m.Category == sharedpolicy.CategoryFinCrime {
+					packIDs = append(packIDs, m.PolicyID)
+					packNames = append(packNames, m.PolicyName)
+				}
+			}
+			fincrime.StampPackMatches(ctx, packIDs, packNames)
 		}
 	}
 
@@ -1860,6 +1926,10 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// #2581: per-org posture. orgID is the auth-derived org for this request; an
 	// org with no override row resolves to the deployment-global config.
 	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, user.OrgID)
+	// ADR-061 / #3329: decision metadata for the fincrime seam (frozen
+	// scorer contract plane vocabulary "mcp"). The same ctx flows into the
+	// audit writers below, which merge any fincrime attribution.
+	ctx = fincrime.WithDecisionMeta(ctx, "mcp", auditEntry.DecisionID)
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters,
@@ -2268,6 +2338,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// #2581: per-org posture. orgID is the auth-derived org for this request; an
 	// org with no override row resolves to the deployment-global config.
 	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, user.OrgID)
+	// ADR-061 / #3329: decision metadata for the fincrime seam ("mcp" plane);
+	// the audit writers merge any fincrime attribution off this ctx.
+	ctx = fincrime.WithDecisionMeta(ctx, "mcp", auditEntry.DecisionID)
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters,
@@ -2869,6 +2942,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		// #2581: per-org posture. orgID is the auth-derived org for this request; an
 		// org with no override row resolves to the deployment-global config.
 		mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, orgID)
+		// ADR-061 / #3329: decision metadata for the fincrime seam ("mcp"
+		// plane); the audit writers merge any fincrime attribution off this ctx.
+		ctx = fincrime.WithDecisionMeta(ctx, "mcp", decisionID)
 		outcome := evaluateInputPolicies(ctx,
 			tenantID, orgID, userID, userRole,
 			req.ConnectorType, req.Tool /* toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904) */, operation, req.Statement, req.Parameters,

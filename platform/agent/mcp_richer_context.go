@@ -14,6 +14,7 @@ import (
 
 	"github.com/lib/pq"
 
+	"axonflow/platform/agent/fincrime"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
@@ -621,7 +622,12 @@ func writeMCPDecisionAudit(
 		userIDInt = n
 	}
 
-	detailsJSON, err := json.Marshal(buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, toolIdentity...))
+	// ADR-061 / #3329: merge the fincrime attribution recorded on ctx (risk
+	// score, ml_inference_layer_status, fincrime policy ids/names/versions)
+	// so scored MCP-plane decisions satisfy the #3306 audit contract. No-op
+	// for every non-fincrime decision.
+	detailsJSON, err := json.Marshal(fincrime.MergeAuditDetails(ctx,
+		buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, toolIdentity...)))
 	if err != nil {
 		log.Printf("mcp decision audit: marshal failed: %v", err)
 		return
@@ -821,7 +827,10 @@ func writeExplainableAuditLog(
 		userIDInt = n
 	}
 
-	detailsJSON, err := json.Marshal(buildExplainableAuditDetails(decisionID, blockReason, topRisk, matches, correlationID, toolIdentity...))
+	// ADR-061 / #3329: merge any fincrime attribution recorded on ctx (see
+	// writeMCPDecisionAudit above). No-op for every non-fincrime decision.
+	detailsJSON, err := json.Marshal(fincrime.MergeAuditDetails(ctx,
+		buildExplainableAuditDetails(decisionID, blockReason, topRisk, matches, correlationID, toolIdentity...)))
 	if err != nil {
 		log.Printf("explainable audit log: marshal failed: %v", err)
 		return

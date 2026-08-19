@@ -41,6 +41,7 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/marketplace"
@@ -399,6 +400,19 @@ var (
 	// deployments), so no handler needs a nil-check. Signing happens in the
 	// tracker's async workers, OFF the decision hot path.
 	decisionChainTracker *DecisionChainTracker
+	// fincrimeEngine is the Fraud & Risk Add-on Engine A seam (ADR-061 /
+	// #3329): context validation, pluggable deterministic evaluators, and
+	// the Engine B scorer client. Constructed EXPLICITLY in Run() (never
+	// init() factory registration, #3268); nil on community builds and the
+	// nil path is a strict no-op inside evaluateInputPolicies, so no caller
+	// needs a nil-check.
+	fincrimeEngine *fincrime.Engine
+	// fincrimeHITLBridge routes scorer above-threshold decisions into the
+	// HITL approval queue on the /decide plane (the first real HITLBridge
+	// caller; see hitl_bridge.go #3065 note). nil-safe at the call site:
+	// when HITL wiring is unavailable the needs_approval verdict still
+	// returns, only the queue entry is skipped (logged).
+	fincrimeHITLBridge *HITLBridge
 )
 
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
@@ -1612,6 +1626,11 @@ func Run() {
 	// `hitl_approval_queue` table directly. Single enforcement chokepoint
 	// for the tier gate + pending cap + history.
 	mcpHITLService = hitlService
+	// ADR-061 / #3329: route FinCrime scorer above-threshold decisions into
+	// the same HITL Service chokepoint (tier gate + pending cap + history)
+	// via the bridge, so a scored needs_approval verdict is a REVIEWABLE
+	// queue entry, not just a wire verdict.
+	fincrimeHITLBridge = NewHITLBridge(hitlServiceBridgeAdapter{svc: hitlService})
 	hitlHandler := hitl.NewHandler(hitlService)
 	// HITL routes need apiAuthMiddleware so X-Org-ID/X-Tenant-ID headers are set
 	// from auth credentials (same pattern as circuit breaker).
@@ -1675,6 +1694,18 @@ func Run() {
 	if cbErrorThreshold != 10 || cbPolicyViolationThreshold != 20 {
 		log.Printf("[CB] thresholds overridden: error=%d policy_violation=%d (defaults are 10/20)", cbErrorThreshold, cbPolicyViolationThreshold)
 	}
+	// ADR-061 / #3329: Fraud & Risk Add-on Engine A seam. Explicit
+	// construction (never init() registration, #3268). Returns nil on
+	// community builds; on enterprise builds the engine is always present
+	// (context validation is the protocol-integrity control) and the Engine
+	// B scorer client attaches only when AXONFLOW_FINCRIME_SCORER_URL is
+	// set. Consulted from evaluateInputPolicies, which covers the decide +
+	// MCP query/execute/check-input planes from one seam.
+	fincrimeEngine = fincrime.NewEngineFromEnv()
+	if fincrimeEngine.ScorerConfigured() {
+		log.Printf("[FinCrime] Engine A seam wired with Engine B scorer client")
+	}
+
 	notifService := circuitbreaker.NewNotificationService(cbRepo)
 	circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
 	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
