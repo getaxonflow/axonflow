@@ -41,6 +41,171 @@ community mirror, **Enterprise** changes are EE-only.
   assumed.
 -->
 
+<!--
+  Version decision (Step 0): v9.18.0, MINOR. The train's headline is the
+  Fraud & Risk Add-on (ADR-061): Engine A (FinCrime Policy Pack + context
+  schema + evaluator seam + scorer client, #3335) and Engine B (the
+  axonflow-risk-scorer training pipeline + scoring service, #3337). Both are
+  additive and default-inert: the seam no-ops unless the Enterprise pack is
+  seeded and the scorer is explicitly configured, and the community build
+  compiles a nil-engine stub. The ops fixes (#3336, #3338, #3339, #3340,
+  #3342, #3343) remove no capability, add no required credential and add no
+  refusal. MINOR by the 2026-07-30 semver policy. No migrations.
+-->
+
+## [9.18.0] - 2026-08-19 (Fraud & Risk Add-on: FinCrime policy pack + ML risk scoring; alarm and deploy fixes)
+
+> Scope: first release of the Fraud & Risk Add-on (Enterprise add-on,
+> ADR-061) - deterministic financial-crime policy evaluation on the decide and
+> MCP planes plus an optional self-hosted ML risk scorer - and a set of
+> CloudFormation alarm/permission fixes on the marketplace template. No
+> migrations this train.
+
+### Security
+
+- **The indirect `github.com/moby/go-archive` dependency is bumped to 0.3.0**
+  (CVE-2026-17106, crafted tar archive can write outside the extraction
+  directory) *(Community: the platform Go module; Enterprise: also the
+  customer-portal and ee modules)*. The dependency enters the module graph
+  through the test-container tooling, not shipped request paths, so no
+  runtime behavior changes in either edition; the bump changes a
+  deployment's `go.mod`/`go.sum` and keeps its vulnerability-scan posture
+  honest and green. `go mod tidy` also lifts `moby/sys/sequential` to 0.7.0
+  and `moby/sys/user` to 0.4.1 as the 0.3.0 requirement set.
+
+### Community
+
+_No functional changes._ Released in lockstep with the Enterprise edition at
+v9.18.0. Unlike v9.16.0's lockstep note, the community `agent` binary is NOT
+byte-identical to v9.17.0: the Fraud & Risk Add-on's seam files
+(`platform/agent/fincrime` and its call sites) compile into both editions, but
+on a community build the engine constructor returns nil and the seam is a
+strict no-op - every request proceeds bit-identically to a build that never
+heard of the add-on. The new FinCrime policy category is only ever evaluated
+where the Enterprise policy pack was seeded (community deployments have no
+seeder for it), and the community HITL stub continues to reject approval-queue
+operations by tier. The community `orchestrator` is unchanged. The version is
+cut so the two editions never diverge in version number.
+
+### Enterprise
+
+#### Added
+
+- **Fraud & Risk Add-on Engine A: FinCrime Policy Pack, transaction context
+  schema, and evaluator seam** *(Enterprise add-on)* (#3335, ADR-061). A new
+  `platform/agent/fincrime` package adds typed extraction and validation of
+  the documented `fincrime_transaction` / `fincrime_cohort` context objects,
+  a pluggable evaluator seam consulted from the shared input-policy path
+  AFTER the static engine, and the Engine B scorer client. The FinCrime
+  Policy Pack v1 ships 10 seeded static policies under a dedicated
+  `fincrime` category (structuring bands, sanctioned-corridor geography with
+  alpha-2/alpha-3/subdivision forms, amount caps, velocity and exposure
+  step-ups over caller-supplied cohort aggregates) plus one code-backed
+  protocol-integrity policy, each row carrying public-source provenance
+  (FATF / OFAC / FFIEC / OWASP). Pattern evaluation is identical on the
+  decide and MCP planes because pack patterns bind to the canonical
+  serialization both planes scan; outcomes differ by plane by design. The
+  seam never denies: on the decide plane it can escalate an allow to
+  `needs_approval`, and that verdict always creates a reviewable HITL queue
+  entry; on the MCP planes the seam changes no verdict, and an
+  above-threshold score or step-up row is recorded as a non-blocking
+  attributed detection on the audit row (the request proceeds). A deny, on
+  any plane, can only come from blocking static rows through the ordinary
+  policy engine - the pack's own, or any other policy matching the scanned
+  context, since opted-in fincrime context is subject to the full static
+  category scan (PII, injection detection) like any other input. Audit rows for scored or flagged decisions carry
+  the fincrime policy ids/names/versions, the `risk_score`, and an
+  `ml_inference_layer_status` stamp on every plane.
+  Inert unless the pack is seeded; consulted only on planes that install
+  its decision metadata (decide + MCP query/execute/check-input at MVP).
+- **Fraud & Risk Add-on Engine B: self-hosted ML risk scorer**
+  *(Enterprise add-on)* (#3337, ADR-061). A new `axonflow-risk-scorer`
+  service (own container image, own CI) scores `fincrime_transaction`
+  context on the frozen `POST /v1/score` contract: HMAC service
+  authentication only (the community fallback token is rejected,
+  authentication is decided before request-shape validation), a
+  train/serve-identical feature transform, and per-feature contributions in
+  every response. The training pipeline ships with the service: train-only
+  encoders (pre-split encoding is reproduced and measured as leakage, not
+  assumed), chronological and random splits, validation-only selection, an
+  order-statistic review-rate threshold, and a reproducible bundle format
+  that hard-rejects older bundle versions; the model bundle is mounted at
+  deploy time, never baked into the image. The agent-side client enforces a
+  hard per-request budget via context cancellation (default 100ms,
+  configurable through `AXONFLOW_FINCRIME_SCORER_TIMEOUT_MS`) and the
+  scorer is advisory-only: scorer unavailability means the decision
+  proceeds and the audit row records the `unavailable` inference status,
+  never a block.
+  Disabled by default: the enterprise compose templates the scorer
+  environment with disabled defaults, and the agent's scoring layer refuses
+  to construct without a valid internal service secret.
+
+#### Fixed
+
+- **ECS alarm coverage: agent outage alarm added, and task-count alarms
+  fixed to watch a metric that exists** *(marketplace template +
+  AxonFlow-operated SaaS)* (#3336). Two defects of one class, an alarm whose
+  name promises coverage its metric cannot deliver, in opposite directions.
+  On the marketplace template, a total agent outage was invisible: the
+  unhealthy-host alarm counts registered targets failing health checks, and
+  a service at zero tasks has no targets to count, so it read healthy; the
+  template now gains an `AgentTaskCountAlarm` on
+  `ECS/ContainerInsights RunningTaskCount`, mirroring the orchestrator's
+  existing one. On the AxonFlow-operated community-SaaS sibling stack (never
+  shipped to customers), both task-count alarms were defined on
+  `AWS/ECS RunningCount`, a metric that namespace does not publish, so with
+  `TreatMissingData: breaching` they sat permanently in ALARM while the
+  services were healthy; both now watch the Container Insights metric. A
+  regression test pins the class: no ECS alarm may name a metric its
+  namespace does not publish, and every service deployment must carry
+  task-count coverage. `TreatMissingData: breaching` is kept deliberately - Container
+  Insights being disabled must page rather than silently resolve to OK.
+- **The marketplace ECS task role could not read the SAML SP keypair**
+  *(Enterprise)* (#3338). The customer-portal SAML service loads
+  `axonflow/saml/sp-keypair` from Secrets Manager through the TASK role at
+  runtime, but the marketplace template's task role shipped with no
+  `secretsmanager` permissions, so the load always failed and the service
+  fell back to generating a temporary keypair - SAML appeared to work while
+  the SP signing certificate changed on every portal restart, silently
+  breaking any IdP that had registered it. The template now grants
+  `GetSecretValue` scoped to that one secret name (the suffix pattern
+  matches only Secrets Manager's 6-char ARN suffix, not sibling secret
+  names). The silent-fallback behaviour itself is unchanged this train (a
+  new refusal is a semver MAJOR); making it fail loud is tracked separately.
+- **The telemetry salt staleness alarm was in ALARM 362 days a year by
+  construction** *(AxonFlow-operated infrastructure)* (#3343). The rotation
+  age metric was published exactly once per annual rotation while the alarm
+  treated a single missing day as breaching, so the alarm fired on emission
+  cadence, not staleness. A daily heartbeat now publishes the rotation age
+  computed from the secret's last-changed date, with the rotate job gated to
+  the annual cron alone so the shared workflow's new daily cron can never
+  trigger a rotation.
+
+#### Internal
+
+- prod-us now sends real forgot-password email: the environment config gains
+  the Resend key + from-address secrets wiring, and `update-stack.yml`
+  plumbs `FromEmailAddress` (#3339) and `PortalExternalBaseURL` (#3342)
+  through both the preview and apply jobs - the CloudFormation rule group
+  requires all three parameters together, and the first rollout proved it by
+  rolling back cleanly at parameter validation when only two were plumbed.
+- The daily ephemeral-stack reaper gained a second pass that removes what
+  stack deletion deliberately retains (final RDS snapshots, ALB-log buckets,
+  log groups) for throwaway benchmark stacks only, via a pure name-filter
+  script self-tested against 25 decoy cases before every use; an artifact is
+  approved only when its name embeds a full ephemeral-stack name AND that
+  stack no longer exists in any non-deleted CloudFormation status (#3340).
+
+### Migration
+
+- **No migrations this train.** No schema changes, no boot-requirement
+  changes, no mode-selector changes. The Fraud & Risk Add-on is opt-in
+  configuration: the FinCrime pack activates only where its Enterprise
+  policy-pack seed is applied, and the risk scorer only when its service is
+  deployed and the agent's scorer environment (endpoint + internal service
+  secret) is explicitly configured. A deployment that changes nothing
+  behaves identically to v9.17.0.
+
 ## [9.17.0] - 2026-08-12 (self-service password recovery; forgot-password security hardening; segment-scoped policy targeting)
 
 ### Migration

@@ -160,6 +160,13 @@ const (
 	CategoryComplianceEUAIAct PolicyCategory = "compliance-euaiact" // Issue #1081 - EU AI Act
 	CategoryComplianceMASFEAT PolicyCategory = "compliance-masfeat" // Issue #1081 - MAS FEAT Singapore
 
+	// Financial crime category (ADR-061 / #3329). Carries the FinCrime
+	// Policy Pack rows so they are governed neither by the PII/SQLi posture
+	// levers (BuildActionOverrides) nor by capability scoping, and are
+	// greppable as an add-on surface. Evaluated on the shared
+	// evaluateInputPolicies seam (decide + MCP planes).
+	CategoryFinCrime PolicyCategory = "fincrime"
+
 	// Media governance categories
 	CategoryMediaSafety    PolicyCategory = "media-safety"    // NSFW, violence content detection
 	CategoryMediaBiometric PolicyCategory = "media-biometric" // Face/biometric data detection (GDPR Art. 9)

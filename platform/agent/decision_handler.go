@@ -50,6 +50,7 @@ import (
 	"unicode/utf8"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/agent/fincrime"
 	"axonflow/platform/agent/telemetry"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
@@ -993,9 +994,18 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// detectors; unknown tools get full evaluation). toolServer/toolIdentity
 	// were already computed + stamped onto decisionAudit right after decode
 	// (#2904) so early-deny paths carry them too; reused here unchanged.
+	// ADR-061 / #3329: install the fincrime decision metadata (frozen scorer
+	// contract plane vocabulary "decide") and lift the documented
+	// fincrime_transaction / fincrime_cohort context objects into the
+	// parameters map, so the FinCrime Policy Pack rows and the fincrime seam
+	// see the same shapes here as on the MCP planes. For every request
+	// without those keys fincrimeParams is nil, which is bit-identical to
+	// the historical nil-parameters call.
+	ctx = fincrime.WithDecisionMeta(ctx, "decide", decisionID)
+	fincrimeParams := finCrimeParametersFromContext(req.Context)
 	outcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		"decision", toolIdentity, "decide", req.Query, nil,
+		"decision", toolIdentity, "decide", req.Query, fincrimeParams,
 		gwDetectionCfg, false /* runDynamicPolicy: M2, #2426 */)
 	// Defensive fail-closed: evaluateInputPolicies sets EvalUnavailable only when
 	// dynamic policy evaluation (runDynamicPolicy) hits a transient store error.
@@ -1045,6 +1055,21 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 				redactReason = fmt.Sprintf("Indonesia PII detected: %v", indonesiaPIIResult.DetectedTypes)
 			}
 			obligations = append(obligations, newRedactPIIObligation(redactReason))
+		}
+	}
+
+	// ADR-061 / #3329: fold the FinCrime seam result. Advisory-only mapping:
+	// it can escalate an allow to needs_approval (scorer above threshold or
+	// protocol-integrity validation), never deny, and it appends the
+	// fincrime policy attribution to the evaluated set. A scored or flagged
+	// decision then routes into the HITL approval queue via the bridge so
+	// the verdict is a reviewable queue entry, not just a wire response.
+	verdict, reasons, obligations, policyResult.TriggeredPolicies = applyFinCrimeToDecideVerdict(
+		outcome.FinCrime, verdict, reasons, obligations, policyResult.TriggeredPolicies, isCommunityMode())
+	if verdict == VerdictNeedsApproval {
+		if approvalID := createFinCrimeApprovalForDecision(ctx, client.OrgID, client.TenantID, client.ID,
+			fmt.Sprintf("%d", user.ID), req.Query, outcome.FinCrime, outcome.StaticResult); approvalID != "" {
+			reasons = append(reasons, finCrimeApprovalReason(approvalID))
 		}
 	}
 
@@ -1961,6 +1986,10 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	}
 
 	details := buildDecisionAuditDetails(decisionID, stage, policyIDs, reasons, reqContext, contextTruncated, audit)
+	// ADR-061 / #3329: merge the fincrime attribution recorded on ctx
+	// (risk_score, ml_inference_layer_status, fincrime policy
+	// ids/names/versions). No-op for every non-fincrime decision.
+	details = fincrime.MergeAuditDetails(ctx, details)
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		decideAuditWriteFailures.WithLabelValues("marshal").Inc()
