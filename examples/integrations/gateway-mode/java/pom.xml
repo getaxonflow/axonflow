@@ -37,7 +37,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>9.0.0</version>
+            <version>9.1.0</version>
         </dependency>
         <!-- Override transitive jackson-core/databind for CVE fix (CVE-2026-54512, CVE-2026-54513) -->
         <dependency>

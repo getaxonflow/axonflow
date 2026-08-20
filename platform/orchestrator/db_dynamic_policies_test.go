@@ -14,6 +14,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -225,6 +226,41 @@ func TestSeedDefaultData(t *testing.T) {
 				t.Errorf("Unfulfilled mock expectations: %v", err)
 			}
 		})
+	}
+}
+
+// TestInsertSamplePolicies_ConditionsAreAbsent pins the restored semantics
+// for the DB-seeded half of the platform's sample policies: none of the
+// three sample policyData payloads carries a "conditions" key, so
+// policyMap["conditions"] marshals to the JSON literal `null` —
+// deliberately. These rows are meant to apply unconditionally, and
+// null/absent conditions is exactly how that is expressed (see
+// condition_evaluator.go's "Withdrawn" doc section for why a synthetic
+// always-true condition briefly stood in for this and was removed).
+func TestInsertSamplePolicies_ConditionsAreAbsent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	for _, scope := range []string{"healthcare", "ecommerce", "global"} {
+		mock.ExpectBegin()
+		mock.ExpectExec("set_config").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("INSERT INTO dynamic_policies").
+			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+				"null", sqlmock.AnyArg(), scope, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+	}
+
+	engine := &DatabaseDynamicPolicyEngine{db: db}
+	if err := engine.insertSamplePolicies(); err != nil {
+		t.Fatalf("insertSamplePolicies failed: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled mock expectations (conditions column did not match the expected null literal): %v", err)
 	}
 }
 
@@ -556,6 +592,14 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 					"rules": map[string]interface{}{
 						"risk_score": 0.5,
 					},
+					// A real, trivially-satisfied condition rather than none —
+					// this fixture's actual point is tenant scoping, not
+					// condition evaluation, and a zero-condition policy would
+					// pass regardless of whether evaluation works at all
+					// (zero/absent conditions vacuously matches everything).
+					"conditions": []interface{}{
+						map[string]interface{}{"field": "query", "operator": "contains", "value": "test"},
+					},
 				}
 				engine.lastRefresh = time.Now()
 				engine.mu.Unlock()
@@ -581,6 +625,10 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 					"_metadata": map[string]interface{}{
 						"tenant_id": "global",
 						"priority":  1,
+					},
+					// See the "conditions" comment on tenant_policy above.
+					"conditions": []interface{}{
+						map[string]interface{}{"field": "query", "operator": "contains", "value": "test"},
 					},
 				}
 				engine.lastRefresh = time.Now()
@@ -610,6 +658,10 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 					"rules": map[string]interface{}{
 						"required_actions": []interface{}{"log", "alert"},
 						"risk_score":       0.8,
+					},
+					// See the "conditions" comment on tenant_policy above.
+					"conditions": []interface{}{
+						map[string]interface{}{"field": "query", "operator": "contains", "value": "test"},
 					},
 				}
 				engine.lastRefresh = time.Now()
@@ -651,6 +703,35 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 			expectedAllowed:  true,
 			expectedPolicies: 0,
 		},
+		{
+			// A policy with no "conditions" key at all (which parses to a
+			// zero-length conditions slice, the same shape as an explicit
+			// `"conditions": []`) vacuously matches — it applies to every
+			// tenant scope. See condition_evaluator.go's "Withdrawn" doc
+			// section.
+			name: "Zero-condition policy applies to everything",
+			setupEngine: func(engine *DatabaseDynamicPolicyEngine, mock sqlmock.Sqlmock) {
+				engine.mu.Lock()
+				engine.policies["no_conditions_policy"] = map[string]interface{}{
+					"name": "no_conditions_policy",
+					"_metadata": map[string]interface{}{
+						"tenant_id": "global",
+					},
+					// Deliberately no "conditions" key.
+				}
+				engine.lastRefresh = time.Now()
+				engine.mu.Unlock()
+
+				mock.ExpectExec("INSERT INTO policy_metrics").
+					WithArgs(sqlmock.AnyArg(), true, "").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+			},
+			req: OrchestratorRequest{
+				Query: "test query",
+			},
+			expectedAllowed:  true,
+			expectedPolicies: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -691,6 +772,62 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 			// Verify mock expectations (metrics may not be inserted due to goroutine timing)
 			// So we skip strict expectations check
 		})
+	}
+}
+
+// TestEvaluateDynamicPolicies_ZeroConditionPolicyAppliesToEveryTenant makes
+// the restored vacuous-truth semantics concrete rather than abstract: a
+// cached, condition-less policy applies to an arbitrary request regardless
+// of tenant scope. This is the platform-seeded shape (loadDefaultPolicies'
+// fallback, insertSamplePolicies' sample rows) — a customer cannot produce
+// one through the API, since both validateCreateRequest and
+// validateUpdateRequest reject an empty/cleared conditions array. See
+// condition_evaluator.go's "Withdrawn" doc section for why an intermediate
+// revision of this effort made this shape match NOTHING instead, and why
+// that was reverted.
+func TestEvaluateDynamicPolicies_ZeroConditionPolicyAppliesToEveryTenant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabaseDynamicPolicyEngine{
+		db:           db,
+		metricsDB:    db,
+		policies:     make(map[string]interface{}),
+		cacheTimeout: 30 * time.Second,
+	}
+
+	engine.mu.Lock()
+	engine.policies["unconditional_log_policy"] = map[string]interface{}{
+		"name": "unconditional_log_policy",
+		"_metadata": map[string]interface{}{
+			"tenant_id": "global",
+		},
+		// No "conditions" key — the platform-seeded shape, meaning "applies
+		// to everything."
+		"actions": []interface{}{
+			map[string]interface{}{"type": "log", "config": map[string]interface{}{"message": "logged"}},
+		},
+	}
+	engine.lastRefresh = time.Now()
+	engine.mu.Unlock()
+
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WithArgs(sqlmock.AnyArg(), true, "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	result := engine.EvaluateDynamicPolicies(context.Background(), OrchestratorRequest{Query: "any query at all"})
+
+	found := false
+	for _, name := range result.AppliedPolicies {
+		if name == "unconditional_log_policy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a zero-condition policy must match an arbitrary request (applies to everything), AppliedPolicies=%v", result.AppliedPolicies)
 	}
 }
 
@@ -1053,8 +1190,128 @@ func TestLoadDefaultPolicies(t *testing.T) {
 		if !dbCachedPolicyAppliesToTenant(policyMap, "any-tenant", nil, "default") {
 			t.Error("Expected the default fallback policy to apply to all tenants via the \"default\" sentinel")
 		}
+
+		// The fallback carries NO "conditions" key at all — it is meant to
+		// apply unconditionally, and absent/zero conditions is exactly how
+		// that is expressed (vacuous truth). See condition_evaluator.go's
+		// "Withdrawn" doc section for why a synthetic always-true condition
+		// briefly stood in for this and was removed.
+		if _, present := policyMap["conditions"]; present {
+			t.Fatalf("Expected the default fallback policy to carry no \"conditions\" key, got %#v", policyMap["conditions"])
+		}
 	} else {
 		t.Error("Expected default policy to be a map")
+	}
+}
+
+// TestEvaluateDynamicPolicies_DefaultFallbackConstraintsStillApply proves the
+// no-conditions fallback entry actually applies, end-to-end, through
+// EvaluateDynamicPolicies — not merely that loadDefaultPolicies built the
+// cache entry. This is the test that fails, by name, if the default model
+// allowlist / token ceiling / rate limit ever silently stop applying.
+//
+// loadDefaultPolicies' "default" fallback entry carries NO "conditions" key
+// at all, deliberately: zero/absent conditions vacuously matches everything
+// (condition_evaluator.go's "Withdrawn" doc section), which is exactly how
+// an unconditional platform default is meant to be expressed. A request
+// carrying an arbitrary query and no special context is exactly the shape
+// that must still be matched for the fallback to mean anything, so that is
+// what this test sends.
+func TestEvaluateDynamicPolicies_DefaultFallbackConstraintsStillApply(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabaseDynamicPolicyEngine{
+		db:           db,
+		metricsDB:    db,
+		policies:     make(map[string]interface{}),
+		cacheTimeout: 30 * time.Second,
+	}
+	engine.loadDefaultPolicies()
+	engine.mu.Lock()
+	engine.lastRefresh = time.Now()
+	engine.mu.Unlock()
+
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WithArgs(sqlmock.AnyArg(), true, "", "system").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	result := engine.EvaluateDynamicPolicies(context.Background(), OrchestratorRequest{Query: "any query at all"})
+
+	if !result.Allowed {
+		t.Fatalf("expected the fallback (log-only, no block action) to allow, got Allowed=false")
+	}
+	found := false
+	for _, name := range result.AppliedPolicies {
+		if name == "default" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the fallback policy (cache key %q) was NOT counted as applied — its zero-condition (applies-to-everything) match failed, which means the default model allowlist / token ceiling / rate limit are silently NOT being enforced. AppliedPolicies=%v", "default", result.AppliedPolicies)
+	}
+}
+
+// TestEvaluateDynamicPolicies_SamplePolicyConditionMatchesThroughEngine is
+// the sample-policy counterpart of
+// TestEvaluateDynamicPolicies_DefaultFallbackConstraintsStillApply: it proves
+// a seeded sample policy with a `null` conditions blob — the exact shape
+// insertSamplePolicies writes and refreshPolicies reads back as
+// json.RawMessage("null") — actually matches when evaluated through the
+// engine, not just that it round-trips through JSON. A cache entry built
+// this way is what insertSamplePolicies' rows look like once refreshPolicies
+// re-reads them from the database, so this is the shape that actually has to
+// match in production, not just the shape written at insert time.
+//
+// Uses the "global_rate_limiting" sample's tenant scope (_metadata.tenant_id
+// = "global", which dbCachedPolicyAppliesToTenant treats as applying to
+// every tenant) so the test does not also have to reproduce
+// insertSamplePolicies' per-sample tenant assignment to prove the point.
+func TestEvaluateDynamicPolicies_SamplePolicyConditionMatchesThroughEngine(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabaseDynamicPolicyEngine{
+		db:           db,
+		metricsDB:    db,
+		cacheTimeout: 30 * time.Second,
+	}
+	engine.mu.Lock()
+	engine.policies = map[string]interface{}{
+		"global_rate_limiting": map[string]interface{}{
+			"name":       "global_rate_limiting",
+			"conditions": json.RawMessage(`null`),
+			"actions":    json.RawMessage(`[]`),
+			"_metadata": map[string]interface{}{
+				"id":         "global_rate_limiting",
+				"tenant_id":  "global",
+				"segment_id": "",
+			},
+		},
+	}
+	engine.lastRefresh = time.Now()
+	engine.mu.Unlock()
+
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WithArgs(sqlmock.AnyArg(), true, "", "system").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	result := engine.EvaluateDynamicPolicies(context.Background(), OrchestratorRequest{Query: "any query at all, no special context"})
+
+	found := false
+	for _, name := range result.AppliedPolicies {
+		if name == "global_rate_limiting" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the seeded sample policy was NOT counted as applied — its null conditions blob, as stored by refreshPolicies' json.RawMessage shape, failed to vacuously match. AppliedPolicies=%v", result.AppliedPolicies)
 	}
 }
 
@@ -1422,6 +1679,119 @@ func TestEvaluateCondition_In(t *testing.T) {
 	}
 }
 
+// TestEvaluateCondition_GreaterThan_NumericStringParses covers the numeric
+// string path of #3296 convergence 3, which this engine already got right
+// and still does: a numeric-looking string parses via strconv.ParseFloat and
+// compares normally. Contrast with
+// TestEvaluateCondition_GreaterThan_UnparseableStringNoLongerCoercesToZero
+// immediately below for the path this engine got wrong (and which is now
+// fixed), and with TestEvaluateCondition_GreaterThan_NumericStringNowCompares
+// in dynamic_policy_engine_test.go for the in-memory engine's (1a) side —
+// which used to reject a numeric string outright and now also parses it.
+func TestEvaluateCondition_GreaterThan_NumericStringParses(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	// "context.custom_metric" is NOT one of getFieldValue's specially-cased
+	// fields (unlike "risk_score"/"cost_estimate", which themselves
+	// type-assert to float64 and would mask the parsing this test targets)
+	// — it flows through the generic context lookup, returning the RAW
+	// stored value. The field value is the numeric STRING "10" (as it would
+	// arrive from a context map/JSON decode); the condition value is the
+	// typed float64 5. The string parses via ParseFloat, so 10 > 5 is true.
+	got := engine.evaluateCondition(map[string]interface{}{
+		"field":    "context.custom_metric",
+		"operator": "greater_than",
+		"value":    float64(5),
+	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "10"}})
+	if !got {
+		t.Fatal("expected greater_than to parse a numeric-string field value on the database engine")
+	}
+}
+
+// TestEvaluateCondition_GreaterThan_UnparseableStringNoLongerCoercesToZero is
+// the #3296 convergence-3 regression test, named so the bug it closes is
+// obvious: this engine's deleted toFloat64 method silently coerced ANY
+// ParseFloat failure to 0.0 with no failure signal at all, so a non-numeric
+// string field value under `less_than <positive threshold>` (or
+// `greater_than <negative threshold>`) evaluated as a spurious match — on
+// what is, on this engine, frequently a BLOCKING rule (LLM/MAP/WCP planes).
+// The converged toFloat64 treats an unparseable string as NOT COMPARABLE, so
+// this must be false, not a silent 0.0 match.
+func TestEvaluateCondition_GreaterThan_UnparseableStringNoLongerCoercesToZero(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	got := engine.evaluateCondition(map[string]interface{}{
+		"field":    "context.custom_metric",
+		"operator": "less_than",
+		"value":    float64(100),
+	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "not-a-number"}})
+	if got {
+		t.Fatal("regression: an unparseable string field value must NOT satisfy less_than 100 on the database engine (was the legacy silent-0.0-coercion false positive) — expected false, got true")
+	}
+}
+
+// TestEvaluateCondition_ContainsAny_NonStringItemStringified is this
+// engine's (1b) #3296 convergence-2 test: a Value list item that is not a Go
+// string (e.g. a JSON number decoded into []interface{}) is now stringified
+// and matched like any other item, on every caller — this engine's legacy
+// silent-skip of a non-string item is gone. See
+// TestPolicyTestEvaluator_Operators in policy_api_service_test.go for the
+// same behavior on the policy-test call site, which already stringified.
+func TestEvaluateCondition_ContainsAny_NonStringItemStringified(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	// The list contains a non-string item (0.9) whose %v form ("0.9") IS
+	// present in the field value — before #3296 this engine silently
+	// skipped it and found no match; it must now stringify and match.
+	got := engine.evaluateCondition(map[string]interface{}{
+		"field":    "query",
+		"operator": "contains_any",
+		"value":    []interface{}{0.9, "unrelated-term"},
+	}, OrchestratorRequest{Query: "risk score is 0.9 today"})
+	if !got {
+		t.Fatal("expected contains_any to stringify and match a non-string list item on the database engine, got no match")
+	}
+}
+
+// TestEvaluateCondition_DatabaseEngine_AllTenOperatorsSupported is the #3296
+// convergence 5 proof for this call site. This engine's legacy switch was
+// already the ten-operator union, so this test is a straight regression
+// guard rather than evidence of newly-enabled behavior — it must keep
+// passing exactly as it always has.
+func TestEvaluateCondition_DatabaseEngine_AllTenOperatorsSupported(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+	req := OrchestratorRequest{Query: "hello world", RequestType: "query"}
+
+	tests := []struct {
+		operator string
+		cond     map[string]interface{}
+		want     bool
+	}{
+		{"equals", map[string]interface{}{"field": "request_type", "operator": "equals", "value": "query"}, true},
+		{"not_equals", map[string]interface{}{"field": "request_type", "operator": "not_equals", "value": "mutation"}, true},
+		{"contains", map[string]interface{}{"field": "query", "operator": "contains", "value": "wor"}, true},
+		{"not_contains", map[string]interface{}{"field": "query", "operator": "not_contains", "value": "zzz"}, true},
+		{"contains_any", map[string]interface{}{"field": "query", "operator": "contains_any", "value": []interface{}{"zzz", "wor"}}, true},
+		{"greater_than", map[string]interface{}{"field": "risk_score", "operator": "greater_than", "value": float64(-1)}, true}, // risk_score defaults to 0.0 with no Context
+		{"less_than", map[string]interface{}{"field": "risk_score", "operator": "less_than", "value": float64(10)}, true},
+		{"regex", map[string]interface{}{"field": "query", "operator": "regex", "value": "^hel+o"}, true},
+		{"in", map[string]interface{}{"field": "request_type", "operator": "in", "value": []interface{}{"query", "mutation"}}, true},
+		{"not_in", map[string]interface{}{"field": "request_type", "operator": "not_in", "value": []interface{}{"delete", "admin"}}, true},
+	}
+	if len(tests) != 10 {
+		t.Fatalf("expected exactly 10 operators under test, got %d", len(tests))
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operator, func(t *testing.T) {
+			got := engine.evaluateCondition(tt.cond, req)
+			if got != tt.want {
+				t.Errorf("operator %q: evaluateCondition = %v, want %v", tt.operator, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestDatabaseDynamicPolicyEngine_GetFieldValue tests field extraction from requests
 func TestDatabaseDynamicPolicyEngine_GetFieldValue(t *testing.T) {
 	engine := &DatabaseDynamicPolicyEngine{}
@@ -1502,35 +1872,16 @@ func TestEvaluateCondition_UnknownOperator(t *testing.T) {
 	}
 }
 
-// TestDatabaseDynamicPolicyEngine_ToFloat64 tests conversion of various types to float64
-func TestDatabaseDynamicPolicyEngine_ToFloat64(t *testing.T) {
-	engine := &DatabaseDynamicPolicyEngine{}
-
-	tests := []struct {
-		name     string
-		input    interface{}
-		expected float64
-	}{
-		{"float64", float64(3.14), 3.14},
-		{"float32", float32(2.5), 2.5},
-		{"int", int(42), 42.0},
-		{"int64", int64(100), 100.0},
-		{"string valid", "3.14159", 3.14159},
-		{"string invalid", "not a number", 0.0},
-		{"nil", nil, 0.0},
-		{"bool", true, 0.0},
-		{"struct", struct{}{}, 0.0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := engine.toFloat64(tt.input)
-			if result != tt.expected {
-				t.Errorf("toFloat64(%v) = %v, want %v", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
+// #3296: TestDatabaseDynamicPolicyEngine_ToFloat64 was removed here —
+// the (e *DatabaseDynamicPolicyEngine) toFloat64 method it covered was
+// deleted from db_dynamic_policies.go. Its replacement,
+// platform/shared/policy/condition_evaluator.go's toFloat64, does NOT
+// reproduce this method's own false-positive behavior (an unparseable
+// operand silently became 0.0); see
+// TestEvaluateCondition_GreaterThan_UnparseableStringNoLongerCoercesToZero
+// below for the regression test and TestEvaluateCondition_GreaterThan /
+// TestEvaluateCondition_LessThan for the still-correct numeric-string-parses
+// path, all exercised through the rewired evaluateCondition.
 
 // TestGetFieldValue_EdgeCases tests edge cases for field value extraction
 func TestGetFieldValue_EdgeCases(t *testing.T) {

@@ -42,4 +42,10 @@ type StaticPolicyResult struct {
 	// no obligation, but a matched policy must never be a silent bare allow
 	// (#2965) — these surface as verdict reasons so the match is self-documenting.
 	AdvisoryReasons []string
+	// PolicyNames maps each TriggeredPolicies id to the display name the engine
+	// matched at evaluation time (#3365), so the canonical audit writers can
+	// stamp policy_names alongside policy_ids without a write-time catalog
+	// lookup. Populated by convertSharedResultToStatic; nil on the engine-bypass
+	// constructor paths.
+	PolicyNames map[string]string
 }

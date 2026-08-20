@@ -156,6 +156,14 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 		match := e.evaluator.Evaluate(input, policy)
 		if match != nil {
 			action := policy.GetActionForPhase(PhaseRequest)
+			// #3360: keep the row's EXPLICIT stored action beside the
+			// posture-resolved one so a lever that silently WEAKENS a stored
+			// action is visible to consumers (audit advisories, metrics)
+			// instead of discarded. Deliberately the raw column value, NOT
+			// GetActionForPhase's output: a NULL phase column resolves through
+			// a category FALLBACK, which is not a stored value and must never
+			// be reported as displaced (StoredAction stays empty there).
+			match.StoredAction = policy.ActionRequest
 			if opts.ActionOverrides != nil {
 				if override, ok := opts.ActionOverrides[policy.Category]; ok {
 					action = override
@@ -223,6 +231,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 				match := e.evaluator.Evaluate(paramStr, policy)
 				if match != nil {
 					action := policy.GetActionForPhase(PhaseRequest)
+					match.StoredAction = policy.ActionRequest // #3360: explicit column only, see the query-scan site
 					if opts.ActionOverrides != nil {
 						if override, ok := opts.ActionOverrides[policy.Category]; ok {
 							action = override
@@ -339,6 +348,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		matches := e.evaluator.EvaluateAll(scannable, policy)
 		for _, match := range matches {
 			action := policy.GetActionForPhase(PhaseResponse)
+			match.StoredAction = policy.ActionResponse // #3360: explicit column only, see the request-phase site
 			if opts.ActionOverrides != nil {
 				if override, ok := opts.ActionOverrides[policy.Category]; ok {
 					action = override

@@ -1018,6 +1018,10 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	policyResult := convertSharedResultToStatic(outcome.StaticResult)
+	// #3365: thread the evaluation-time display names onto the audit input so
+	// the terminal write stamps policy_names for the same ids it records.
+	// FinCrime-appended ids get their names from the seam's MergeAuditDetails.
+	decisionAudit.policyNames = policyResult.PolicyNames
 	// Capture the blocking policy ID directly from the result so
 	// circuit-breaker violation recording targets the right rule regardless
 	// of which order the shared engine appended matches in (a request that
@@ -1842,6 +1846,20 @@ type decisionAuditInput struct {
 	// when Target.Type == "tool"; empty otherwise (e.g. llm/agent decisions).
 	toolServer string
 	toolName   string
+	// policyNames carries the EVALUATION-TIME id -> display-name map for the
+	// row's policy_ids (#3365), threaded from the engine's matched policies
+	// (StaticPolicyResult.PolicyNames / policyNamesFromMatches) so
+	// buildDecisionAuditDetails can stamp policy_names without a write-time
+	// catalog lookup (a rename between evaluation and write must never mint a
+	// name the evaluated policy did not carry). Ids absent from the map fall
+	// back to the code-defined builtin guard names; anything else stays
+	// unnamed. NOTE the portal's not-recorded marker is ROW-level: it renders
+	// only when NO id on the row resolves a name, so a partially-named row
+	// shows its resolved names without a marker and the unnamed ids appear
+	// only on the Policy IDs surface (per-id markers are a reader follow-up
+	// flagged on #3365). Nil on paths with no engine result in scope (early
+	// denies stamp only builtin-resolvable ids).
+	policyNames map[string]string
 }
 
 // maxGatewayIDLen bounds a recorded gateway_id. Gateway ids are short origin
@@ -1990,6 +2008,13 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	// (risk_score, ml_inference_layer_status, fincrime policy
 	// ids/names/versions). No-op for every non-fincrime decision.
 	details = fincrime.MergeAuditDetails(ctx, details)
+	// #3365: id-keyed policy_versions for the row's ids, best-effort, AFTER the
+	// fincrime merge so the seam's model/pack version strings win (missing-only
+	// add, mirroring MergeAuditDetails' existing-entry-wins rule). Acted rows
+	// only: an allow write must not pay the RLS-scoped batch read per request.
+	if actedAuditVerdict(verdict) {
+		stampMissingPolicyVersions(ctx, db, details)
+	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		decideAuditWriteFailures.WithLabelValues("marshal").Inc()
@@ -2013,6 +2038,10 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 		"policy_ids":  policyIDs,
 		"reasons":     reasons,
 	}
+	// #3365: display names for the ids above (evaluation-time map first, then
+	// the builtin guard table; a row with NO resolvable name keeps the
+	// reader's honest marker, a partially-named row shows the resolved names).
+	stampPolicyIdentityNames(details, policyIDs, audit.policyNames)
 	// gateway_id distinguishes the PEP origin (e.g. claude_desktop.<host>) so a
 	// query over Desktop traffic is a single JSONB filter. Omitted when unset.
 	if audit.gatewayID != "" {

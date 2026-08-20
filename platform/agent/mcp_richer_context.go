@@ -368,7 +368,16 @@ func lookupActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, 
 // This mirrors orchestrator.ApplyOverrideToResult for the WCP path — the
 // same semantics applied to the MCP check-input path so the plugin and
 // SDK see consistent behavior regardless of which surface fired the
-// request.
+// request. Deliberately NOT segment-aware: RicherPolicyMatch carries no
+// SegmentID, and none was added by #3296 Slice 2 — adding a segment
+// exclusion here would break the stated parity with
+// orchestrator.ApplyOverrideToResult, which was itself deliberately made
+// NOT segment-exclusive by #3239 (see platform/orchestrator/
+// override_enforcement.go's doc comment and platform/shared/policy/
+// override.go's package doc for the full rationale/evidence). The
+// SEPARATE admin tier-downgrade override mechanism
+// (StaticPolicyRepository.GetEffective) DOES exclude segment-scoped
+// policies — that is a different code path from this one.
 func applyOverrideToCheckInputBlock(
 	ctx context.Context,
 	db *sql.DB,
@@ -384,7 +393,10 @@ func applyOverrideToCheckInputBlock(
 	}
 	for i := range matches {
 		m := matches[i]
-		if m.RiskLevel == "critical" || !m.AllowOverride {
+		// Eligibility gate factored into the shared primitive (#3296 Slice 2)
+		// — identical logic to orchestrator.ApplyOverrideToResult /
+		// SelectOverridablePolicy. See platform/shared/policy/override.go.
+		if !sharedpolicy.IsOverrideEligible(m.RiskLevel, m.AllowOverride) {
 			continue
 		}
 		id, found, err := lookupActiveOverride(ctx, db, tenantID, userEmail, m.PolicyID)
@@ -413,7 +425,7 @@ func writeOverrideUsedEvent(
 	ctx context.Context,
 	db *sql.DB,
 	overrideID, decisionID, tenantID, orgID, clientID, userEmail string,
-	policyID string, policyVersion int,
+	policyID string, policyName string, policyVersion int,
 	correlationID string,
 ) {
 	if db == nil || overrideID == "" {
@@ -427,8 +439,24 @@ func writeOverrideUsedEvent(
 	if policyID != "" {
 		details["policy_id"] = policyID
 	}
+	// #3365: the overridden match's evaluation-time display name (scalar
+	// policy_name, the shared reader's first resolution arm). Previously the
+	// event carried the id alone, so the portal rendered it with the
+	// "(name not recorded)" marker.
+	if policyName != "" {
+		details["policy_name"] = policyName
+	}
 	if policyVersion > 0 {
 		details["policy_version"] = policyVersion
+		// #3365: the shared reader's version chain (extractVersion /
+		// PolicyVersionSQLExpr) resolves policy_versions[id] and
+		// policy_matches[0].policy_version but never a top-level scalar, so the
+		// scalar above was written and unreadable on every surface. Stamp the
+		// id-keyed map alongside it (scalar kept for back-compat readers of the
+		// raw JSONB).
+		if policyID != "" {
+			details["policy_versions"] = map[string]int{policyID: policyVersion}
+		}
 	}
 	// #2598: mirror the correlation key into JSONB (read-path resilience) and the
 	// first-class column below, so an override applied mid-chain groups with the
@@ -557,7 +585,7 @@ const mcpUnauthenticatedTenant = "unauthenticated"
 // (mirroring buildDecisionAuditDetails) so the content contract the compliance
 // exporters read -- policy_ids first of all (#3243 v9.16.1) -- is pinned by the
 // cross-plane writer/reader contract test without a database.
-func buildMCPDecisionAuditDetails(decisionID string, policyIDs, reasons, redactedFields []string, correlationID string, toolIdentity ...string) map[string]interface{} {
+func buildMCPDecisionAuditDetails(decisionID string, policyIDs, reasons, redactedFields []string, correlationID string, policyNames map[string]string, toolIdentity ...string) map[string]interface{} {
 	if policyIDs == nil {
 		policyIDs = []string{}
 	}
@@ -571,6 +599,10 @@ func buildMCPDecisionAuditDetails(decisionID string, policyIDs, reasons, redacte
 		"policy_ids":  policyIDs,
 		"reasons":     reasons,
 	}
+	// #3365: display names for the ids above (evaluation-time map first, then
+	// the builtin guard table; a row with NO resolvable name keeps the
+	// reader's honest marker, a partially-named row shows the resolved names).
+	stampPolicyIdentityNames(details, policyIDs, policyNames)
 	if len(reasons) > 0 {
 		// explain_handler.go + the portal read policy_details->>'reason' (scalar).
 		details["reason"] = strings.Join(reasons, "; ")
@@ -608,6 +640,7 @@ func writeMCPDecisionAudit(
 	requestType, query, queryHash, policyDecision string,
 	policyIDs, reasons, redactedFields []string,
 	correlationID string,
+	policyNames map[string]string,
 	toolIdentity ...string,
 ) {
 	if db == nil || decisionID == "" {
@@ -626,8 +659,15 @@ func writeMCPDecisionAudit(
 	// score, ml_inference_layer_status, fincrime policy ids/names/versions)
 	// so scored MCP-plane decisions satisfy the #3306 audit contract. No-op
 	// for every non-fincrime decision.
-	detailsJSON, err := json.Marshal(fincrime.MergeAuditDetails(ctx,
-		buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, toolIdentity...)))
+	details := fincrime.MergeAuditDetails(ctx,
+		buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, policyNames, toolIdentity...))
+	// #3365: id-keyed policy_versions, best-effort, AFTER the fincrime merge so
+	// the seam's model/pack version strings win (missing-only add). Acted rows
+	// only: allow writes must not pay the RLS-scoped batch read per request.
+	if actedAuditVerdict(policyDecision) {
+		stampMissingPolicyVersions(ctx, db, details)
+	}
+	detailsJSON, err := json.Marshal(details)
 	if err != nil {
 		log.Printf("mcp decision audit: marshal failed: %v", err)
 		return

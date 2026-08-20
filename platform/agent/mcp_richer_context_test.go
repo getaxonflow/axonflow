@@ -421,7 +421,7 @@ func TestWriteOverrideUsedEvent_Inserts(t *testing.T) {
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 5, "")
+		"pol-1", "Policy 1", 5, "")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -433,12 +433,12 @@ func TestWriteOverrideUsedEvent_Inserts(t *testing.T) {
 func TestWriteOverrideUsedEvent_NilDBOrEmptyOverride(t *testing.T) {
 	writeOverrideUsedEvent(context.Background(), nil,
 		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 5, "")
+		"pol-1", "Policy 1", 5, "")
 
 	db, mock := newMockDB(t)
 	writeOverrideUsedEvent(context.Background(), db,
 		"", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 5, "")
+		"pol-1", "Policy 1", 5, "")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("empty override_id should be a no-op; got: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestWriteOverrideUsedEvent_FallbackPlaceholders(t *testing.T) {
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"ov-1", "dec-1", "", "", "", "",
-		"", 0, "corr-fb-ovr")
+		"", "", 0, "corr-fb-ovr")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -1099,7 +1099,7 @@ func TestWriteOverrideUsedEvent_PolicyVersionInJSONB(t *testing.T) {
 
 	writeOverrideUsedEvent(context.Background(), db,
 		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
-		"pol-1", 4,
+		"pol-1", "Policy 1", 4,
 		"corr-pv",
 	)
 

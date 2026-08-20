@@ -17,8 +17,34 @@ import (
 	"github.com/gorilla/mux"
 
 	logutil "axonflow/platform/shared/logger"
+	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/tenantscope"
 )
+
+// mcpConditionEvaluator is the shared substrate (#3296,
+// platform/shared/policy/condition_evaluator.go). Before the #3296
+// convergence pass this handler was the narrowest legacy call site:
+// case-SENSITIVE contains (the one impl that diverged from the other three)
+// and only four of ten operators recognized. Both are gone — contains is now
+// case-insensitive like every other caller, and all ten operators evaluate
+// for real, closing the standing #3061 getPoliciesForMCP parity gap (a
+// policy using one of the other six operators used to be silently inert on
+// this plane while still enforcing on LLM/MAP/WCP). See the shared type's
+// doc comment for the full convergence record. A package-level value — not a
+// handler field — because it holds no per-handler state and
+// MCPDynamicPolicyHandler is constructed with only a policyEngine dependency
+// (NewMCPDynamicPolicyHandler); constructed once, never per-request — this
+// handler runs on every governed MCP tool call, so a per-request allocation
+// here would be a needless hot-path cost. Note this handler's original
+// zero-condition fail-safe (added #3061, evaluateConditions below) — the
+// one legacy call site that returned no-match instead of vacuously matching
+// on zero conditions — has been REMOVED, aligning this plane with the other
+// three. See evaluateConditions' doc comment for why. The
+// unresolved-field short-circuit in evaluateCondition below still reports
+// through mcpUnevaluableRecorder (condition_unevaluable_metrics.go) — the
+// #3296 Slice 2 catch-all for a policy that silently fails to enforce
+// (epic #3293).
+var mcpConditionEvaluator = sharedpolicy.ConditionEvaluator{}
 
 // rateLimitEntry tracks request counts for rate limiting.
 type rateLimitEntry struct {
@@ -446,45 +472,31 @@ func (h *MCPDynamicPolicyHandler) evaluatePolicy(policy DynamicPolicy, req MCPPo
 }
 
 // evaluateConditions evaluates policy conditions. All conditions must hold
-// (AND); a policy with no conditions never matches.
+// (AND); a policy with no conditions applies to everything — vacuous truth,
+// the same as an empty `WHERE` clause matching every row.
 //
-// #3061 fail-safe: the empty-conditions guard below is load-bearing. Without
-// it the loop body never runs, control falls through to "all conditions
-// matched", and a condition-less policy carrying a block action denies EVERY
-// governed tool call for its tenant. That was unreachable-ish while this path
-// only saw hand-authored mcp/connector policies; admitting `content` widens it
-// to the type the policy API defaults to.
+// This plane originally (#3061) diverged from the other three here: an
+// explicit empty-conditions guard returned no-match instead, as a fail-safe
+// against a condition-less policy carrying a block action denying EVERY
+// governed tool call for its tenant. That guard has been REMOVED, aligning
+// this plane with the LLM/MAP/WCP planes and the policy-test simulator,
+// all of which have always vacuously matched zero conditions. This reverses
+// a deliberate, long-standing safety guard — worth stating plainly, since it
+// is not simply undoing this stack's own work.
 //
-// A zero-condition policy is NOT unreachable. The create path rejects one:
-// validateCreateRequest fails `len(req.Conditions) == 0` with "At least one
-// condition is required". The update path does not — validateUpdateRequest
-// guards only on `req.Conditions != nil`, and a JSON `[]` unmarshals to a
-// non-nil, length-zero slice, so the validation loop runs zero times and
-// nothing is appended. PolicyRepository.Update (policy_api_repository.go)
-// persists it under that same `!= nil` guard, marshalling the slice back to
-// `[]`.
-// Both PUT /api/v1/policies/{id} and PUT /api/v1/dynamic-policies/{id} reach
-// it. So a tenant that cleared a policy's conditions through the API while
-// leaving a block action attached has exactly this row today.
-//
-// A stored conditions JSON the engine cannot unmarshal reaches this handler as
-// the same shape: cachedPolicyToDynamicPolicy discards the unmarshal error and
-// leaves Conditions nil, and this handler reads through
-// ListActivePoliciesForTenant, which shares that converter.
-//
-// Failing such a policy to "does not match" is the safe direction: a row with
-// no evaluable conditions must not be able to take governance down for a whole
-// tenant. Note the fail-safe is MCP-plane only. EvaluateDynamicPolicies gates
-// its AND-loop on `len(conditions) > 0`, so on the LLM/MAP/WCP planes a
-// zero-condition policy still falls through to "matched" and still denies.
-// (Those planes `continue` past a conditions JSON that fails to unmarshal, so
-// only the empty-array shape diverges between the planes.)
+// The exposure the guard existed to prevent — a zero-condition row nobody
+// meant to write, carrying a block action — is now closed upstream instead:
+// validateCreateRequest and validateUpdateRequest both reject an
+// empty/explicitly-cleared conditions array (a customer can never author one
+// on purpose), and cachedPolicyToDynamicPolicy (db_dynamic_policies.go, the
+// converter this handler reads through via ListActivePoliciesForTenant) now
+// refuses to surface a policy whose stored conditions JSON fails to
+// unmarshal at all, rather than passing it through with Conditions nil'd
+// out — the shape that used to be indistinguishable from a genuinely
+// condition-less policy. With both closed, the only zero-condition policy
+// this handler can ever see is a platform-seeded one that means exactly
+// that: "applies to everything."
 func (h *MCPDynamicPolicyHandler) evaluateConditions(policy DynamicPolicy, req MCPPolicyEvaluationRequest) (bool, bool, string) {
-	if len(policy.Conditions) == 0 {
-		log.Printf("[MCPDynamicPolicy] policy %s (%s) has no evaluable conditions — treating as no-match",
-			logutil.Sanitize(policy.ID), logutil.Sanitize(policy.Type))
-		return false, true, ""
-	}
 	for _, cond := range policy.Conditions {
 		if !h.evaluateCondition(cond, req) {
 			return false, true, ""
@@ -505,21 +517,29 @@ func (h *MCPDynamicPolicyHandler) evaluateConditions(policy DynamicPolicy, req M
 	return true, true, ""
 }
 
-// evaluateCondition evaluates a single condition.
-func (h *MCPDynamicPolicyHandler) evaluateCondition(cond PolicyCondition, req MCPPolicyEvaluationRequest) bool {
-	var fieldValue interface{}
-
-	switch cond.Field {
+// mcpFieldValue resolves cond.Field against req for evaluateCondition.
+// ok=false reproduces the legacy default-arm short-circuit EXACTLY: an
+// unrecognized field, or a "parameters.<key>" whose key is absent from
+// req.Parameters, made the legacy function return false immediately —
+// BEFORE ever looking at the operator. That is a real, reachable divergence
+// from "resolve to nil and let the operator switch run": not_equals and
+// regex, in particular, would otherwise be able to spuriously MATCH an
+// unresolvable field against certain condition values (e.g. not_equals
+// against anything, or a regex pattern that happens to match the literal
+// string "<nil>"). evaluateCondition below preserves the short-circuit by
+// checking ok itself, never inside ConditionEvaluator.Match.
+func mcpFieldValue(field string, req MCPPolicyEvaluationRequest) (value any, ok bool) {
+	switch field {
 	case "connector":
-		fieldValue = req.ConnectorName
+		return req.ConnectorName, true
 	case "operation":
-		fieldValue = req.Operation
+		return req.Operation, true
 	case "user.role":
-		fieldValue = req.UserRole
+		return req.UserRole, true
 	case "tenant_id":
-		fieldValue = req.TenantID
+		return req.TenantID, true
 	case "parameter_count":
-		fieldValue = len(req.Parameters)
+		return len(req.Parameters), true
 	case "query", "statement":
 		// #3061: the governed statement — the text the caller is about to run
 		// (agent/mcp_handler.go passes it as DynamicPolicyRequest.Statement on
@@ -528,56 +548,59 @@ func (h *MCPDynamicPolicyHandler) evaluateCondition(cond PolicyCondition, req MC
 		// orchestrator content engine uses (db_dynamic_policies.go), "statement"
 		// is the wire field's own name. Without this the field fell to the
 		// default arm, yielded a nil fieldValue and could only evaluate FALSE.
-		fieldValue = req.Statement
+		return req.Statement, true
 	default:
-		if strings.HasPrefix(cond.Field, "parameters.") {
-			key := strings.TrimPrefix(cond.Field, "parameters.")
+		if strings.HasPrefix(field, "parameters.") {
+			key := strings.TrimPrefix(field, "parameters.")
 			if req.Parameters != nil {
 				if v, ok := req.Parameters[key]; ok {
-					fieldValue = fmt.Sprintf("%v", v)
+					return fmt.Sprintf("%v", v), true
 				}
 			}
 		}
-		if fieldValue == nil {
-			return false
-		}
+		return nil, false
 	}
+}
 
-	switch cond.Operator {
-	case "equals":
-		return fmt.Sprintf("%v", fieldValue) == fmt.Sprintf("%v", cond.Value)
-	case "not_equals":
-		return fmt.Sprintf("%v", fieldValue) != fmt.Sprintf("%v", cond.Value)
-	case "contains":
-		return strings.Contains(fmt.Sprintf("%v", fieldValue), fmt.Sprintf("%v", cond.Value))
-	case "regex":
-		// #3061: semantics deliberately IDENTICAL to the orchestrator content
-		// engine's regex arm (db_dynamic_policies.go evaluateOperator) so one
-		// stored policy behaves the same on the MCP plane and the LLM/MAP/WCP
-		// planes: unanchored, case-sensitive RE2 search over the field's string
-		// form, a non-string pattern is a non-match, and a pattern that fails to
-		// COMPILE fails SAFE (logged, treated as "did not match") rather than
-		// erroring the whole evaluation — one malformed tenant policy must not
-		// take down governance for every other policy in the set.
-		fieldStr, ok := fieldValue.(string)
-		if !ok {
-			fieldStr = fmt.Sprintf("%v", fieldValue)
-		}
-		pattern, ok := cond.Value.(string)
-		if !ok {
-			return false
-		}
-		matched, err := regexp.MatchString(pattern, fieldStr)
-		if err != nil {
-			// Sanitized: the pattern is tenant-authored, so it must not be able
-			// to inject newlines/control characters into the log stream.
-			log.Printf("[MCPDynamicPolicy] Regex error for pattern %s: %v", logutil.Sanitize(pattern), err)
-			return false
-		}
-		return matched
-	default:
+// evaluateCondition evaluates a single condition.
+//
+// #3296: delegates the operator logic to mcpConditionEvaluator (the
+// shared substrate — case-insensitive contains, the full ten-operator union.
+// This plane used to be case-sensitive on contains/not_contains and cover
+// only four operators; convergences 1 and 5 in condition_evaluator.go's
+// package doc converged it onto the same semantics every other caller now
+// shares). The unresolvable-field short-circuit (see mcpFieldValue) runs BEFORE the
+// evaluator is consulted, exactly reproducing the legacy function's
+// early-return shape rather than letting a nil field value flow into the
+// operator switch.
+//
+// The shared evaluator's matchRegexCondition deliberately discards a regex
+// compile error rather than logging it (condition_evaluator.go: "outside
+// this pure-function evaluator's job") — legacy evaluateCondition logged a
+// sanitized "[MCPDynamicPolicy] Regex error for pattern %s: %v" on a bad,
+// string-typed pattern. Reproduced here with a side-effect-free pre-check so
+// that diagnostic stays intact; the verdict (false on a bad pattern) is
+// unaffected either way.
+func (h *MCPDynamicPolicyHandler) evaluateCondition(cond PolicyCondition, req MCPPolicyEvaluationRequest) bool {
+	fieldValue, ok := mcpFieldValue(cond.Field, req)
+	if !ok {
+		mcpUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonFieldUnresolved)
 		return false
 	}
+	if cond.Operator == "regex" {
+		if pattern, ok := cond.Value.(string); ok {
+			if _, err := regexp.Compile(pattern); err != nil {
+				// Sanitized: the pattern is tenant-authored, so it must not be
+				// able to inject newlines/control characters into the log stream.
+				log.Printf("[MCPDynamicPolicy] Regex error for pattern %s: %v", logutil.Sanitize(pattern), err)
+			}
+		}
+	}
+	return mcpConditionEvaluator.Match(
+		sharedpolicy.MatchCondition{Field: cond.Field, Operator: cond.Operator, Value: cond.Value},
+		func(string) (any, bool) { return fieldValue, true },
+		mcpUnevaluableRecorder,
+	)
 }
 
 // evaluateRateLimit checks rate limiting policies using sliding window counters.

@@ -19,7 +19,6 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +26,31 @@ import (
 	_ "github.com/lib/pq"
 
 	"axonflow/platform/agent"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
+
+// dbConditionEvaluator is the shared substrate (#3296,
+// platform/shared/policy/condition_evaluator.go). This engine's legacy
+// switch was already the ten-operator union, so convergence 5 (#3296) is a
+// no-op here; convergences 2 and 3 are not — contains_any now stringifies a
+// non-string list item instead of silently skipping it, and greater_than/
+// less_than no longer silently coerce an unparseable operand to 0.0 (a real
+// false-positive bug this engine had). See the shared type's doc comment for
+// the full convergence record. Slice 2 removed the last knob, the per-caller
+// unknown-operator log hook — this engine's unevaluable conditions (unknown
+// operator, non-numeric operand, non-string regex pattern, and a conditions
+// JSON that fails to unmarshal in cachedPolicyToDynamicPolicy below) now
+// report through dbUnevaluableRecorder (condition_unevaluable_metrics.go),
+// passed into Match per call instead of configured on the struct. A
+// zero-condition policy vacuously matches — see EvaluateDynamicPolicies below
+// and the shared type's "Withdrawn" doc section for why a brief attempt at
+// making that a non-match was reverted. A package-level value for the same
+// reason as memoryConditionEvaluator in dynamic_policy_engine.go: no
+// per-engine state, so every construction path (including the direct
+// `&DatabaseDynamicPolicyEngine{...}` struct literals used throughout this
+// package's tests) gets the same configured evaluator, constructed once
+// rather than per request.
+var dbConditionEvaluator = sharedpolicy.ConditionEvaluator{}
 
 type DatabaseDynamicPolicyEngine struct {
 	db        *sql.DB
@@ -369,6 +392,11 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 		var policyMap map[string]interface{}
 		_ = json.Unmarshal([]byte(p.policyData), &policyMap)
 
+		// None of these three sample payloads carries a "conditions" key, so
+		// policyMap["conditions"] is nil and marshals to the JSON literal
+		// `null` — deliberately: these platform-seeded rows are meant to
+		// apply unconditionally, and "no conditions" is exactly how that is
+		// expressed (see condition_evaluator.go's "Withdrawn" doc section).
 		conditions, _ := json.Marshal(policyMap["conditions"])
 		actions, _ := json.Marshal(policyMap["actions"])
 
@@ -718,6 +746,11 @@ func (e *DatabaseDynamicPolicyEngine) loadDefaultPolicies() {
 				"allowed_models":        []string{"gpt-4o-mini"},
 				"rate_limit_per_minute": 60,
 			},
+			// No "conditions" key, deliberately: this in-memory fallback is
+			// meant to apply unconditionally, and zero conditions is exactly
+			// how that is expressed (see condition_evaluator.go's
+			// "Withdrawn" doc section for why a synthetic always-true
+			// condition briefly stood in for this and was removed).
 			// _metadata mirrors the shape refreshPolicies writes (see
 			// _metadata there) so this is the SAME writer contract, not a
 			// second one. tenant_id: "default" routes the fallback's
@@ -824,6 +857,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		// CRITICAL: Evaluate conditions BEFORE applying actions
 		// Parse conditions from policy
 		var conditions []map[string]interface{}
+		explicitEmpty := false
 		switch condRaw := policyMap["conditions"].(type) {
 		case json.RawMessage:
 			if err := json.Unmarshal(condRaw, &conditions); err != nil {
@@ -836,6 +870,15 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				continue
 			}
 		case []interface{}:
+			// Pre-parsed shape: no current cache writer stores it
+			// (refreshPolicies stores json.RawMessage; loadDefaultPolicies
+			// omits the key), but if one ever does, an explicitly-empty
+			// slice must carry the SAME #3384 exclusion as `[]` bytes — a
+			// convention-only invariant here would silently invert the
+			// semantics under a future writer (R3 finding LOW-1).
+			if len(condRaw) == 0 {
+				explicitEmpty = true
+			}
 			for _, c := range condRaw {
 				if cm, ok := c.(map[string]interface{}); ok {
 					conditions = append(conditions, cm)
@@ -843,7 +886,36 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			}
 		}
 
-		// If policy has conditions, ALL must match (AND logic)
+		// #3384: an EXPLICITLY-EMPTY stored array is excluded from
+		// enforcement, mirroring cachedPolicyToDynamicPolicy's read-side
+		// skip. The two sides must stay in lockstep BY HAND: the list/
+		// enforce parity gate (TestDBCachedPolicyListEnforceParity_
+		// RealPostgres) canNOT see this hunk — its enforcement leg probes
+		// dbCachedPolicyAppliesToTenant, which runs before the conditions
+		// parse (R3 finding HIGH-2) — so the pin for THIS side is
+		// TestEvaluateDynamicPolicies_LegacyEmptyArrayNotEnforced. Only the
+		// RawMessage/[]byte arms distinguish `null` (nil slice, vacuous
+		// match, platform-seeded intent) from `[]` (empty non-nil slice,
+		// released-update-gap residue); the []interface{} arm sets
+		// explicitEmpty above.
+		if explicitEmpty || (conditions != nil && len(conditions) == 0) {
+			dbUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonEmptyConditions)
+			continue
+		}
+
+		// If policy has conditions, ALL must match (AND logic). No
+		// conditions means the policy applies to everything — vacuous truth,
+		// the same as an empty `WHERE` clause matching every row. See the
+		// shared evaluator's "Withdrawn" doc section (condition_evaluator.go)
+		// for why a stricter "zero conditions never matches" guard briefly
+		// lived here and was reverted: that exposure (a zero-condition row
+		// nobody meant to write, carrying a block action) is now closed at
+		// the authoring/load boundary instead of by making the construct
+		// itself unusable — validateCreateRequest/validateUpdateRequest both
+		// reject an empty/cleared conditions list, a conditions JSON that
+		// fails to unmarshal is skipped above (`continue`), and a legacy
+		// explicitly-empty `[]` is excluded by the #3384 guard directly
+		// above, never evaluated as indistinguishable from `null`.
 		if len(conditions) > 0 {
 			allMatch := true
 			for _, cond := range conditions {
@@ -1110,134 +1182,35 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 
 // evaluateCondition checks if a single condition matches the request.
 // Supports operators: equals, not_equals, contains, not_contains, contains_any, regex, greater_than, less_than, in, not_in
+//
+// #3296: delegates to dbConditionEvaluator (the shared substrate).
+// MapCondition reproduces this engine's exact untyped-map key lookup
+// (field/operator/value, missing-key-safe via type assertion), and
+// getFieldValue — untouched — supplies field resolution unconditionally
+// (ok=true always: this engine's legacy evaluateCondition never
+// short-circuited on field resolvability the way the MCP handler and
+// policy-test evaluator do).
+//
+// The shared evaluator's matchRegexCondition deliberately discards a regex
+// compile error rather than logging it (condition_evaluator.go: "outside
+// this pure-function evaluator's job") — legacy evaluateCondition logged
+// "[POLICY_EVAL] Regex error for pattern %s: %v" on a bad, string-typed
+// pattern (never for a non-string Value, which legacy never attempted to
+// compile at all). Reproduced here with a side-effect-free pre-check so that
+// diagnostic stays intact; the verdict (false on a bad pattern) is
+// unaffected either way.
 func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interface{}, req OrchestratorRequest) bool {
-	field, _ := cond["field"].(string)
-	operator, _ := cond["operator"].(string)
-	value := cond["value"]
-
-	// Get the field value from the request
-	fieldValue := e.getFieldValue(field, req)
-
-	switch operator {
-	case "equals":
-		return fmt.Sprintf("%v", fieldValue) == fmt.Sprintf("%v", value)
-
-	case "not_equals":
-		return fmt.Sprintf("%v", fieldValue) != fmt.Sprintf("%v", value)
-
-	case "contains":
-		fieldStr, ok := fieldValue.(string)
-		if !ok {
-			fieldStr = fmt.Sprintf("%v", fieldValue)
-		}
-		valueStr, ok := value.(string)
-		if !ok {
-			valueStr = fmt.Sprintf("%v", value)
-		}
-		return strings.Contains(strings.ToLower(fieldStr), strings.ToLower(valueStr))
-
-	case "not_contains":
-		fieldStr, ok := fieldValue.(string)
-		if !ok {
-			fieldStr = fmt.Sprintf("%v", fieldValue)
-		}
-		valueStr, ok := value.(string)
-		if !ok {
-			valueStr = fmt.Sprintf("%v", value)
-		}
-		return !strings.Contains(strings.ToLower(fieldStr), strings.ToLower(valueStr))
-
-	case "contains_any":
-		fieldStr, ok := fieldValue.(string)
-		if !ok {
-			fieldStr = fmt.Sprintf("%v", fieldValue)
-		}
-		fieldLower := strings.ToLower(fieldStr)
-		// Value should be an array of strings
-		switch v := value.(type) {
-		case []interface{}:
-			for _, item := range v {
-				if itemStr, ok := item.(string); ok {
-					if strings.Contains(fieldLower, strings.ToLower(itemStr)) {
-						return true
-					}
-				}
-			}
-		case []string:
-			for _, item := range v {
-				if strings.Contains(fieldLower, strings.ToLower(item)) {
-					return true
-				}
+	mc, _ := sharedpolicy.MapCondition(cond)
+	if mc.Operator == "regex" {
+		if pattern, ok := mc.Value.(string); ok {
+			if _, err := regexp.Compile(pattern); err != nil {
+				log.Printf("[POLICY_EVAL] Regex error for pattern %s: %v", pattern, err)
 			}
 		}
-		return false
-
-	case "regex":
-		fieldStr, ok := fieldValue.(string)
-		if !ok {
-			fieldStr = fmt.Sprintf("%v", fieldValue)
-		}
-		pattern, ok := value.(string)
-		if !ok {
-			return false
-		}
-		matched, err := regexp.MatchString(pattern, fieldStr)
-		if err != nil {
-			log.Printf("[POLICY_EVAL] Regex error for pattern %s: %v", pattern, err)
-			return false
-		}
-		return matched
-
-	case "greater_than":
-		fieldFloat := e.toFloat64(fieldValue)
-		valueFloat := e.toFloat64(value)
-		return fieldFloat > valueFloat
-
-	case "less_than":
-		fieldFloat := e.toFloat64(fieldValue)
-		valueFloat := e.toFloat64(value)
-		return fieldFloat < valueFloat
-
-	case "in":
-		fieldStr := fmt.Sprintf("%v", fieldValue)
-		switch v := value.(type) {
-		case []interface{}:
-			for _, item := range v {
-				if fmt.Sprintf("%v", item) == fieldStr {
-					return true
-				}
-			}
-		case []string:
-			for _, item := range v {
-				if item == fieldStr {
-					return true
-				}
-			}
-		}
-		return false
-
-	case "not_in":
-		fieldStr := fmt.Sprintf("%v", fieldValue)
-		switch v := value.(type) {
-		case []interface{}:
-			for _, item := range v {
-				if fmt.Sprintf("%v", item) == fieldStr {
-					return false
-				}
-			}
-		case []string:
-			for _, item := range v {
-				if item == fieldStr {
-					return false
-				}
-			}
-		}
-		return true
-
-	default:
-		log.Printf("[POLICY_EVAL] Unknown operator: %s", operator)
-		return false
 	}
+	return dbConditionEvaluator.Match(mc, func(field string) (any, bool) {
+		return e.getFieldValue(field, req), true
+	}, dbUnevaluableRecorder)
 }
 
 // getFieldValue extracts the value of a field from the request.
@@ -1354,24 +1327,19 @@ func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req Orchestrat
 	}
 }
 
-// toFloat64 converts various types to float64 for numeric comparisons
-func (e *DatabaseDynamicPolicyEngine) toFloat64(v interface{}) float64 {
-	switch val := v.(type) {
-	case float64:
-		return val
-	case float32:
-		return float64(val)
-	case int:
-		return float64(val)
-	case int64:
-		return float64(val)
-	case string:
-		f, _ := strconv.ParseFloat(val, 64)
-		return f
-	default:
-		return 0
-	}
-}
+// #3296: the (e *DatabaseDynamicPolicyEngine) toFloat64 method was
+// deleted here — its numeric-comparison logic now lives in
+// platform/shared/policy/condition_evaluator.go's toFloat64. That shared
+// version does NOT reproduce this method's own behavior: this method
+// silently coerced any ParseFloat failure (and any non-numeric type) to
+// 0.0, which was a live false positive — e.g. a non-numeric string field
+// value under `less_than 100` evaluated `0 < 100` = true, a spurious match
+// on a blocking rule. The converged toFloat64 treats an unparseable operand
+// as NOT COMPARABLE (false) instead; see the shared type's convergence
+// record for the full before/after. Grep confirmed this method's only
+// callers were the old evaluateCondition's greater_than/less_than arms
+// (db_dynamic_policies.go:1192-1193,1197-1198, deleted above) and its own
+// test, TestDatabaseDynamicPolicyEngine_ToFloat64 (deleted).
 
 // dbCachedPolicyAppliesToTenant decides whether one cached policy applies to
 // one tenant AND (ADR-060 #2989 P3b) one resolved segment set. It is the
@@ -1440,7 +1408,18 @@ func dbCachedPolicyAppliesToTenant(policyMap map[string]interface{}, tenantID st
 // cachedPolicyToDynamicPolicy converts one raw cache entry into the wire
 // struct. Shared by ListActivePolicies and ListActivePoliciesForTenant so the
 // two views can never drift in what they expose per policy.
-func cachedPolicyToDynamicPolicy(cacheKey string, policyMap map[string]interface{}) DynamicPolicy {
+//
+// ok is false when the stored conditions blob exists but fails to unmarshal —
+// the caller MUST drop the entry entirely rather than surface it with
+// Conditions left at its nil zero value. Now that zero/absent conditions
+// vacuously matches everything (condition_evaluator.go's "Withdrawn" doc
+// section), nil'ing out a corrupt blob and a genuinely condition-less policy
+// would be indistinguishable to every downstream consumer — including the
+// MCP handler, which reads through ListActivePoliciesForTenant and would
+// then enforce a corrupted row as if it were a legitimate, deliberately
+// unconditional one. A malformed policy must not be evaluated under any
+// semantics, so it is excluded at this single conversion point instead.
+func cachedPolicyToDynamicPolicy(cacheKey string, policyMap map[string]interface{}) (DynamicPolicy, bool) {
 	// The cache is keyed by policy_id (refreshPolicies uses policy_id as the
 	// map key to avoid cross-tenant name collisions), so the loop variable is
 	// the UUID, NOT a human-readable name. Default Name to the key only as a
@@ -1478,12 +1457,77 @@ func cachedPolicyToDynamicPolicy(cacheKey string, policyMap map[string]interface
 		}
 	}
 
-	// Extract conditions from stored JSON
-	if conditionsRaw, ok := policyMap["conditions"].(json.RawMessage); ok {
-		var conditions []PolicyCondition
-		if err := json.Unmarshal(conditionsRaw, &conditions); err == nil {
-			dp.Conditions = conditions
+	// Extract conditions from stored JSON. A failed unmarshal means this
+	// entry is corrupt and must not be evaluated under any semantics — the
+	// caller is told via the (DynamicPolicy{}, false) return and must skip
+	// the policy entirely rather than cache/surface it with Conditions nil
+	// (epic #3293; see this function's own doc for why that distinction is
+	// now load-bearing). dbUnevaluableRecorder is told separately
+	// (ReasonConditionsUnmarshalFailed) so the occurrence is counted.
+	// Shape handling mirrors the EvaluateDynamicPolicies conditions switch
+	// (RawMessage / []byte / pre-parsed []interface{}) so the two sides of
+	// the cache can never diverge on a shape one of them does not recognize
+	// (R3 round-2 NEW-2: a []byte or pre-parsed value used to fail the
+	// RawMessage-only assertion here, leave Conditions nil, and vacuously
+	// match on THIS side while enforcement excluded it). No current writer
+	// stores those shapes; the lockstep is defensive, like explicitEmpty.
+	var conditionsRaw json.RawMessage
+	preParsedEmpty := false
+	switch v := policyMap["conditions"].(type) {
+	case json.RawMessage:
+		conditionsRaw = v
+	case []byte:
+		conditionsRaw = json.RawMessage(v)
+	case []interface{}:
+		if len(v) == 0 {
+			preParsedEmpty = true
+		} else if b, err := json.Marshal(v); err == nil {
+			conditionsRaw = json.RawMessage(b)
+		} else {
+			dbUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonConditionsUnmarshalFailed)
+			return DynamicPolicy{}, false
 		}
+	}
+	if preParsedEmpty {
+		dbUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonEmptyConditions)
+		return DynamicPolicy{}, false
+	}
+	if conditionsRaw != nil {
+		var conditions []PolicyCondition
+		if err := json.Unmarshal(conditionsRaw, &conditions); err != nil {
+			dbUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonConditionsUnmarshalFailed)
+			return DynamicPolicy{}, false
+		}
+		// #3384: an EXPLICITLY-EMPTY stored array (`[]`) is skipped, while
+		// JSON `null` / an absent key passes through with Conditions nil.
+		// The two shapes are distinguishable here by construction —
+		// json.Unmarshal leaves the slice nil for `null` and allocates an
+		// empty non-nil slice for `[]` — and they carry OPPOSITE intent:
+		//
+		//   null = platform-seeded "applies to everything" (the seeders
+		//          write no conditions key; the restored vacuous-match
+		//          semantics exist FOR this shape), and
+		//   []   = residue of the released update-API gap. Every released
+		//          create rejected len==0 conditions; only the pre-9.19
+		//          validateUpdateRequest let a PUT clear conditions to `[]`
+		//          (verified against the v9.18.0 tag). So a stored `[]` can
+		//          ONLY be that bug's output — and under vacuous-match it
+		//          would go from "inert everywhere" (the old #3061 MCP
+		//          guard, gone since #3320) to matching every governed MCP
+		//          call for its tenant at upgrade, with a block-action row
+		//          becoming a tenant-wide denial nobody authored.
+		//
+		// Skipping `[]` here makes "zero-condition policies are
+		// platform-only" true by construction rather than by assumption.
+		// Same contract as the corrupt-skip above: the caller drops the
+		// policy, and the occurrence is counted under the reserved
+		// empty_conditions label so an operator can SEE that a legacy row
+		// was excluded instead of silently losing it.
+		if conditions != nil && len(conditions) == 0 {
+			dbUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonEmptyConditions)
+			return DynamicPolicy{}, false
+		}
+		dp.Conditions = conditions
 	}
 
 	// Extract actions from stored JSON
@@ -1504,7 +1548,7 @@ func cachedPolicyToDynamicPolicy(cacheKey string, policyMap map[string]interface
 		dp.Category = cat
 	}
 
-	return dp
+	return dp, true
 }
 
 // ListActivePolicies returns the raw, DEPLOYMENT-WIDE view of the in-memory
@@ -1524,7 +1568,11 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 		if !ok {
 			continue
 		}
-		policies = append(policies, cachedPolicyToDynamicPolicy(cacheKey, policyMap))
+		dp, ok := cachedPolicyToDynamicPolicy(cacheKey, policyMap)
+		if !ok {
+			continue
+		}
+		policies = append(policies, dp)
 	}
 	return policies
 }
@@ -1559,7 +1607,11 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(tenantID strin
 		if !dbCachedPolicyAppliesToTenant(policyMap, tenantID, segmentIDs, cacheKey) {
 			continue
 		}
-		scoped = append(scoped, cachedPolicyToDynamicPolicy(cacheKey, policyMap))
+		dp, ok := cachedPolicyToDynamicPolicy(cacheKey, policyMap)
+		if !ok {
+			continue
+		}
+		scoped = append(scoped, dp)
 	}
 	return scoped
 }

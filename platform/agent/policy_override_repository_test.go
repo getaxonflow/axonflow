@@ -332,142 +332,17 @@ func TestDeleteOverride(t *testing.T) {
 	}
 }
 
-// TestGetEffectiveAction tests the effective action resolution.
-func TestGetEffectiveAction(t *testing.T) {
-	orgID := "org-1"
-
-	tests := []struct {
-		name           string
-		policyID       string
-		tenantID       string
-		orgID          *string
-		setupMock      func(mock sqlmock.Sqlmock)
-		expectedAction OverrideAction
-		hasOverride    bool
-		wantErr        bool
-	}{
-		{
-			name:     "tenant override takes precedence",
-			policyID: "policy-1",
-			tenantID: "tenant-1",
-			orgID:    &orgID,
-			setupMock: func(mock sqlmock.Sqlmock) {
-				// Tenant override exists — org-scoped read (#3048).
-				mock.ExpectBegin()
-				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-					WithArgs("org-1").
-					WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
-					WithArgs("policy-1", "tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{
-						"action_override", "enabled_override", "expires_at",
-					}).AddRow("warn", nil, nil))
-				mock.ExpectCommit()
-			},
-			expectedAction: ActionWarn,
-			hasOverride:    true,
-			wantErr:        false,
-		},
-		{
-			name:     "org override when no tenant override",
-			policyID: "policy-1",
-			tenantID: "tenant-1",
-			orgID:    &orgID,
-			setupMock: func(mock sqlmock.Sqlmock) {
-				// No tenant override — org-scoped read (#3048).
-				mock.ExpectBegin()
-				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-					WithArgs("org-1").
-					WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
-					WithArgs("policy-1", "tenant-1").
-					WillReturnError(sql.ErrNoRows)
-				mock.ExpectRollback()
-
-				// Org override exists — same scope key.
-				mock.ExpectBegin()
-				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-					WithArgs("org-1").
-					WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
-					WithArgs("policy-1", "org-1").
-					WillReturnRows(sqlmock.NewRows([]string{
-						"action_override", "enabled_override", "expires_at",
-					}).AddRow("log", nil, nil))
-				mock.ExpectCommit()
-			},
-			expectedAction: ActionLog,
-			hasOverride:    true,
-			wantErr:        false,
-		},
-		{
-			name:     "no override",
-			policyID: "policy-1",
-			tenantID: "tenant-1",
-			orgID:    nil,
-			setupMock: func(mock sqlmock.Sqlmock) {
-				// No tenant override — org-scoped read (#3048): with orgID
-				// nil and no ctx org, the scope key falls back to the tenant.
-				mock.ExpectBegin()
-				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-					WithArgs("tenant-1").
-					WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
-					WithArgs("policy-1", "tenant-1").
-					WillReturnError(sql.ErrNoRows)
-				mock.ExpectRollback()
-			},
-			expectedAction: "",
-			hasOverride:    false,
-			wantErr:        false,
-		},
-		{
-			name:     "expired override ignored",
-			policyID: "policy-1",
-			tenantID: "tenant-1",
-			orgID:    nil,
-			setupMock: func(mock sqlmock.Sqlmock) {
-				// Query excludes expired, so no rows returned (#3048 scoped).
-				mock.ExpectBegin()
-				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-					WithArgs("tenant-1").
-					WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
-					WithArgs("policy-1", "tenant-1").
-					WillReturnError(sql.ErrNoRows)
-				mock.ExpectRollback()
-			},
-			expectedAction: "",
-			hasOverride:    false,
-			wantErr:        false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			require.NoError(t, err)
-			defer db.Close()
-
-			tt.setupMock(mock)
-
-			repo := NewPolicyOverrideRepository(db)
-			action, hasOverride, err := repo.GetEffectiveAction(context.Background(), tt.policyID, tt.tenantID, tt.orgID)
-
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.hasOverride, hasOverride)
-				if tt.hasOverride {
-					assert.Equal(t, tt.expectedAction, action)
-				}
-			}
-
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-	}
-}
+// GetEffectiveAction and its precedence tests (formerly here, "tenant
+// override takes precedence" / "org override when no tenant override" /
+// "no override" / "expired override ignored") were removed by #3296 Slice 2:
+// GetEffectiveAction had no live production caller (verified via
+// `grep -rn "GetEffectiveAction" --include='*.go' .`  — only this file and
+// the benchmark below referenced it), so the method was deleted as dead
+// code. Its precedence coverage was ported, case-for-case, onto
+// platform/shared/policy/override_test.go's TestEffectiveOverride_* suite,
+// which now pins the same tenant-beats-org-beats-none contract via the
+// shared EffectiveOverride primitive WS-3a adopts for
+// static_policy_repository.go's GetEffective.
 
 // TestGetByID tests override retrieval.
 func TestGetOverrideByID(t *testing.T) {
@@ -732,23 +607,6 @@ func TestOverrideLevel(t *testing.T) {
 		assert.False(t, override.IsTenantLevel())
 		assert.True(t, override.IsOrgLevel())
 	})
-}
-
-// Benchmark tests
-func BenchmarkGetEffectiveAction(b *testing.B) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer db.Close()
-
-	for i := 0; i < b.N; i++ {
-		mock.ExpectQuery(`SELECT action_override, enabled_override, expires_at FROM policy_overrides WHERE`).
-			WillReturnError(sql.ErrNoRows)
-
-		repo := NewPolicyOverrideRepository(db)
-		_, _, _ = repo.GetEffectiveAction(context.Background(), "policy-1", "tenant-1", nil)
-	}
 }
 
 func TestGetOverrideForPolicy(t *testing.T) {

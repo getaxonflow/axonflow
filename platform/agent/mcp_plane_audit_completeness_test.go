@@ -98,7 +98,8 @@ func TestWriteMCPDecisionAudit_RedactedPopulatesRedactedFields(t *testing.T) {
 		[]string{"pii-us-ssn"},
 		[]string{"response PII redacted: nik"},
 		[]string{"nik", "npwp"},
-		"corr-1")
+		"corr-1",
+		nil)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("redacted MCP decision row not written as expected: %v", err)
@@ -152,7 +153,8 @@ func TestWriteMCPDecisionAudit_NoRedactionNullColumn(t *testing.T) {
 		[]string{"dynamic_policy"},
 		[]string{"blocked"},
 		nil, // no redaction
-		"")
+		"",
+		nil)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("blocked MCP decision row not written as expected: %v", err)
@@ -165,7 +167,7 @@ func TestWriteMCPDecisionAudit_NoopGuards(t *testing.T) {
 	// nil db → no panic, no write.
 	writeMCPDecisionAudit(context.Background(), nil,
 		"dec", "req", "t", "o", "c", "e", "0", "r",
-		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "")
+		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "", nil)
 
 	// empty decision_id → no write (would fail the strict mock if it tried).
 	db, mock, err := sqlmock.New()
@@ -175,7 +177,7 @@ func TestWriteMCPDecisionAudit_NoopGuards(t *testing.T) {
 	defer db.Close()
 	writeMCPDecisionAudit(context.Background(), db,
 		"", "req", "t", "o", "c", "e", "0", "r",
-		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "")
+		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "", nil)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("empty decision_id must not write: %v", err)
 	}

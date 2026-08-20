@@ -146,11 +146,20 @@ func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
 	// Insert test policy directly using the actual schema
 	testPolicyID := "test_refresh_policy_" + time.Now().Format("20060102150405")
 	testPolicyName := "Test Refresh Policy"
+	// conditions/actions must be valid JSON arrays, not "{}" objects: since
+	// epic #3293, cachedPolicyToDynamicPolicy drops any row whose conditions
+	// blob fails to unmarshal into []PolicyCondition rather than silently
+	// keeping it with nil Conditions (a malformed policy must never be
+	// evaluated under the restored vacuous-truth semantics). "{}" is not a
+	// JSON array and used to be tolerated by accident. Since #3384 a
+	// condition-less-but-ACTIVE fixture must seed jsonb `null` ("null"), the
+	// platform-seeded shape: an explicitly-empty "[]" is released-update-gap
+	// residue and is EXCLUDED from both listing and enforcement.
 	_, err = db.Exec(`
 		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyID, testPolicyName, "Test policy for refresh", "test", "{}", "{}", "test-tenant", 100, true)
+	`, testPolicyID, testPolicyName, "Test policy for refresh", "test", "null", "[]", "test-tenant", 100, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
@@ -330,7 +339,7 @@ func TestDBCachedPolicyListEnforceParity_RealPostgres(t *testing.T) {
 			INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (policy_id) DO NOTHING
-		`, rw.id, rw.id, "#3059 parity fixture", "test", "[]", "[]", rw.tenant, 100, true)
+		`, rw.id, rw.id, "#3059 parity fixture", "test", "null", "[]", rw.tenant, 100, true)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", rw.id, err)
 		}
@@ -450,14 +459,20 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Insert test policy with valid conditions array
+	// Insert test policy with a real, trivially-satisfied condition rather
+	// than an empty array — an empty/absent conditions list now vacuously
+	// matches everything (see condition_evaluator.go's "Withdrawn" doc
+	// section), which would make this test pass regardless of whether
+	// condition evaluation actually works. Using a real condition keeps this
+	// an end-to-end check of evaluation, not just of policy applicability.
 	testPolicyID := "test_eval_policy_" + time.Now().Format("20060102150405")
 	testPolicyName := "Test Eval Policy"
+	conditionsJSON := `[{"field":"query","operator":"contains","value":"data"}]`
 	_, err = db.Exec(`
 		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyID, testPolicyName, "Test policy for evaluation", "test", "[]", "{}", "test-tenant", 100, true)
+	`, testPolicyID, testPolicyName, "Test policy for evaluation", "test", conditionsJSON, "{}", "test-tenant", 100, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}

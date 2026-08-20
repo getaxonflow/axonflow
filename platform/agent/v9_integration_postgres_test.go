@@ -78,7 +78,7 @@ func TestV9_AuditLogs_OrgIDPersistedAgainstRealPostgres(t *testing.T) {
 	writeOverrideUsedEvent(context.Background(), db,
 		overrideID, decisionID,
 		"acme-corp", "acme-corp", "client-acme", "bob@v9.test",
-		"v9-policy", 7,
+		"v9-policy", "V9 Policy", 7,
 		"corr-v9-ovr")
 
 	// writeExplainableAuditLog prefixes the row id with "audit_";

@@ -698,6 +698,147 @@ func TestMCPDynamicPolicyHandler_MCPPolicy_OperationContains(t *testing.T) {
 	}
 }
 
+// TestMCPDynamicPolicyHandler_ContainsIsNowCaseInsensitive is the #3296
+// convergence-1 test for this call site: `contains` used to be
+// case-SENSITIVE here, the one legacy impl that diverged from the other
+// three (in-memory engine, database engine, policy-test evaluator), which
+// all lowercased both sides before comparing
+// (mcp_dynamic_policy_handler.go legacy:551-552, no strings.ToLower). That
+// divergence is gone — this handler now matches case-insensitively like
+// every other caller, so a blocking policy on this shape fires MORE often
+// than it used to.
+func TestMCPDynamicPolicyHandler_ContainsIsNowCaseInsensitive(t *testing.T) {
+	policies := []DynamicPolicy{
+		{
+			ID:       "case-insensitive-1",
+			Name:     "Uppercase DELETE only",
+			Type:     "mcp",
+			Enabled:  true,
+			TenantID: "tenant-1",
+			Conditions: []PolicyCondition{
+				{Field: "operation", Operator: "contains", Value: "DELETE"},
+			},
+			Actions: []PolicyAction{{Type: "block", Config: map[string]interface{}{"reason": "blocked"}}},
+		},
+	}
+	engine := newTestEngine(policies)
+	defer engine.Close()
+	handler := NewMCPDynamicPolicyHandler(engine)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	// Lowercase "delete" now matches a condition value of "DELETE" — before
+	// #3296 this handler was the sole case-sensitive call site and would
+	// have allowed this request through.
+	body := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		Operation:     "bulk_delete",
+	}
+	jsonBody, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	var resp MCPPolicyEvaluationResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if resp.Allowed {
+		t.Error("expected Allowed=false: lowercase 'bulk_delete' must case-insensitively match condition value 'DELETE' on the MCP handler now (#3296 convergence 1)")
+	}
+}
+
+// TestMCPDynamicPolicyHandler_EvaluateCondition_AllTenOperatorsSupported is
+// the #3296 convergence 5 proof for this call site — the standing #3061
+// getPoliciesForMCP parity gap. The legacy handler recognized only 4 of 10
+// operators (equals, not_equals, contains, regex); a policy using any of the
+// other six was silently inert on the MCP plane while still enforcing on
+// LLM/MAP/WCP, violating the documented invariant that a policy is evaluated
+// here if and only if it would be enforced on those other planes. All ten
+// now evaluate for real, exercised directly through the handler's own
+// evaluateCondition (bypassing the empty-conditions fail-safe and HTTP
+// plumbing, neither of which this test is about).
+func TestMCPDynamicPolicyHandler_EvaluateCondition_AllTenOperatorsSupported(t *testing.T) {
+	handler := NewMCPDynamicPolicyHandler(nil)
+	req := MCPPolicyEvaluationRequest{
+		ConnectorName: "postgres",
+		Operation:     "select",
+		UserRole:      "admin",
+		TenantID:      "tenant-1",
+		Parameters:    map[string]interface{}{"a": 1, "b": 2},
+	}
+
+	tests := []struct {
+		operator string
+		cond     PolicyCondition
+		want     bool
+	}{
+		{"equals", PolicyCondition{Field: "operation", Operator: "equals", Value: "select"}, true},
+		{"not_equals", PolicyCondition{Field: "operation", Operator: "not_equals", Value: "delete"}, true},
+		{"contains", PolicyCondition{Field: "operation", Operator: "contains", Value: "sel"}, true},
+		{"not_contains", PolicyCondition{Field: "operation", Operator: "not_contains", Value: "del"}, true},
+		{"contains_any", PolicyCondition{Field: "operation", Operator: "contains_any", Value: []interface{}{"del", "sel"}}, true},
+		{"greater_than", PolicyCondition{Field: "parameter_count", Operator: "greater_than", Value: float64(1)}, true},
+		{"less_than", PolicyCondition{Field: "parameter_count", Operator: "less_than", Value: float64(10)}, true},
+		{"regex", PolicyCondition{Field: "operation", Operator: "regex", Value: "^sel"}, true},
+		{"in", PolicyCondition{Field: "operation", Operator: "in", Value: []interface{}{"select", "insert"}}, true},
+		{"not_in", PolicyCondition{Field: "operation", Operator: "not_in", Value: []interface{}{"delete", "drop"}}, true},
+	}
+	if len(tests) != 10 {
+		t.Fatalf("expected exactly 10 operators under test, got %d", len(tests))
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operator, func(t *testing.T) {
+			got := handler.evaluateCondition(tt.cond, req)
+			if got != tt.want {
+				t.Errorf("operator %q must evaluate for real on the MCP handler, got %v want %v", tt.operator, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMCPDynamicPolicyHandler_ZeroConditionPolicyMatchesEverything is this
+// handler's own version of the restored-vacuous-truth regression test — the
+// scenario every one of the four call sites now agrees on
+// (dynamic_policy_engine.go, db_dynamic_policies.go, policy_api_service.go,
+// and this handler). This handler used to be the ONE exception (#3061's
+// fail-safe, evaluateConditions); that guard is now removed, aligning it
+// with the other three planes. See condition_evaluator.go's "Withdrawn" doc
+// section for why: the exposure the guard existed to prevent is closed at
+// the authoring/load boundary instead (validateCreateRequest/
+// validateUpdateRequest reject a customer-authored zero-condition policy;
+// cachedPolicyToDynamicPolicy excludes a row whose conditions fail to
+// unmarshal rather than caching it as indistinguishable from a genuinely
+// empty one), so a zero-condition policy reaching this handler at all can
+// only be a deliberate, platform-seeded one.
+func TestMCPDynamicPolicyHandler_ZeroConditionPolicyMatchesEverything(t *testing.T) {
+	policy := DynamicPolicy{
+		ID:   "unconditional-log-policy",
+		Name: "unconditional-log-policy",
+		Type: "mcp",
+		// No Conditions — the platform-seeded shape, meaning "applies to
+		// everything."
+		Actions: []PolicyAction{
+			{Type: "log", Config: map[string]interface{}{"message": "logged"}},
+		},
+	}
+	handler := NewMCPDynamicPolicyHandler(nil)
+
+	matched, allowed, _ := handler.evaluatePolicy(policy, MCPPolicyEvaluationRequest{
+		ConnectorName: "postgres",
+		Operation:     "select",
+	})
+
+	if !matched {
+		t.Fatalf("a zero-condition policy must match (applies to everything), got matched=false")
+	}
+	if !allowed {
+		t.Fatalf("a zero-condition log-only policy must not deny, got allowed=false")
+	}
+}
+
 func TestMCPDynamicPolicyHandler_MCPPolicy_NotEquals(t *testing.T) {
 	policies := []DynamicPolicy{
 		{

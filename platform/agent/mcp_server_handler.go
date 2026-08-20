@@ -913,7 +913,7 @@ func auditMCPServerDeny(ctx context.Context, session *mcpSession, requestType, t
 		session.tenantID, session.orgID, session.clientID, session.userEmail,
 		session.userID, session.userRole,
 		requestType, fmt.Sprintf("mcp tools/call: %s", toolName), "",
-		verdict, policyIDs, []string{reason}, nil, "")
+		verdict, policyIDs, []string{reason}, nil, "", nil)
 }
 
 func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
@@ -936,7 +936,8 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 			[]string{"unauthenticated"},
 			[]string{"authentication required for tools/call"},
 			nil,
-			"")
+			"",
+			nil)
 		return
 	}
 
@@ -1559,6 +1560,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			[]string{reason},
 			nil,
 			"",                  // MCP-server session has no inbound traceparent → singleton
+			nil,                 // #3365: guard id resolves via the builtin table
 			connectorType, tool) // #2904: tool_server, tool_name
 		return map[string]interface{}{
 			"allowed":           false,
@@ -1631,7 +1633,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			// Canonical "redacted" audit row so the decision is portal-visible —
 			// a redact-and-allow is its own verdict, not a clean allow (#2641 MCPIN).
 			// query is a non-PII descriptor; raw statement MUST NOT land in audit_logs.query.
-			_, pids, _ := mcpInputDecisionVerdict(outcome, didRedact)
+			_, pids, _, pnames := mcpInputDecisionVerdict(outcome, didRedact)
 			writeMCPDecisionAudit(ctx, usageDB,
 				decisionID, uuid.New().String(),
 				session.tenantID, session.orgID, session.clientID, session.userEmail,
@@ -1642,6 +1644,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 				[]string{"request PII redacted"},
 				[]string{"statement"},
 				"",                  // MCP-server session has no inbound traceparent → singleton
+				pnames,              // #3365
 				connectorType, tool) // #2904: tool_server, tool_name
 		}
 		return resp, nil
@@ -1668,7 +1671,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			extractDynamicPolicyIDs(outcome.DynamicInfo),
 			[]string{outcome.DynamicBlockReason},
 			nil,
-			"",                  // MCP-server session has no inbound traceparent → singleton
+			"", // MCP-server session has no inbound traceparent → singleton
+			policyNamesFromDynamic(outcome.DynamicInfo), // #3365
 			connectorType, tool) // #2904: tool_server, tool_name
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
@@ -1697,14 +1701,16 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			ctx, usageDB, session.tenantID, session.userEmail, matches,
 		); applied {
 			var overriddenPolicyID string
+			var overriddenPolicyName string
 			var overriddenPolicyVersion int
 			if overriddenMatch != nil {
 				overriddenPolicyID = overriddenMatch.PolicyID
+				overriddenPolicyName = overriddenMatch.PolicyName
 				overriddenPolicyVersion = overriddenMatch.Version
 			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
 				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
-				overriddenPolicyID, overriddenPolicyVersion,
+				overriddenPolicyID, overriddenPolicyName, overriddenPolicyVersion,
 				"") // #2598: MCP-server session has no inbound traceparent → singleton
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
@@ -1821,7 +1827,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	// allow return. query is a non-PII descriptor — raw response_data MUST NOT land
 	// in audit_logs.query.
 	if !blocked && outcome.WasRedacted() {
-		_, redactPolicyIDs, redactReasons := mcpOutputDecisionVerdict(outcome)
+		_, redactPolicyIDs, redactReasons, redactPolicyNames := mcpOutputDecisionVerdict(outcome)
 		writeMCPDecisionAudit(ctx, usageDB,
 			decisionID, uuid.New().String(),
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
@@ -1829,6 +1835,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
 			mcpVerdictRedacted, redactPolicyIDs, redactReasons, outcome.RedactedFieldNames(),
 			"",                  // MCP-server session has no inbound traceparent → singleton
+			redactPolicyNames,   // #3365
 			connectorType, tool) // #2955: tool_server, tool_name
 	}
 
@@ -1856,6 +1863,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)},
 			nil,
 			"",                  // MCP-server session has no inbound traceparent → singleton
+			nil,                 // #3365: guard id resolves via the builtin table
 			connectorType, tool) // #2955: tool_server, tool_name
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
@@ -1874,14 +1882,16 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			ctx, usageDB, session.tenantID, session.userEmail, matches,
 		); applied {
 			var overriddenPolicyID string
+			var overriddenPolicyName string
 			var overriddenPolicyVersion int
 			if overriddenMatch != nil {
 				overriddenPolicyID = overriddenMatch.PolicyID
+				overriddenPolicyName = overriddenMatch.PolicyName
 				overriddenPolicyVersion = overriddenMatch.Version
 			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
 				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
-				overriddenPolicyID, overriddenPolicyVersion,
+				overriddenPolicyID, overriddenPolicyName, overriddenPolicyVersion,
 				"") // #2598: MCP-server session has no inbound traceparent → singleton
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID

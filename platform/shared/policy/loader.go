@@ -469,6 +469,147 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 	return policies, nil
 }
 
+// =============================================================================
+// Effective-policy read (#3296 Slice 2 Step B/E) -- the tier-hierarchy read
+// StaticPolicyRepository.GetEffective (platform/agent) needs.
+//
+// GetEffective additionally needs tags/version/audit-trail columns the
+// pattern-matching CompiledPolicy shape does not carry, and applies its own
+// tier-specific WHERE predicate per pass (system / organization+segment /
+// tenant+segment) plus SQL-level segment_id filtering (unlike loadFromDatabase
+// above, which selects but does not filter segment_id in SQL -- see that
+// method's doc for why: GetEffective is a per-caller read, not a
+// per-(tenant,org) cached read, so filtering in SQL here does not fragment
+// any cache). This is the SINGLE place static_policies is queried for the
+// effective-policy path -- StaticPolicyRepository must not issue its own SQL
+// against static_policies; policy_overrides (a DIFFERENT table) is read
+// separately by StaticPolicyRepository itself and reconciled via
+// EffectiveOverride (see override.go).
+// =============================================================================
+
+// effectivePolicyColumns lists, in order, the columns EffectivePolicyRow scans.
+const effectivePolicyColumns = `
+	sp.id, sp.policy_id, sp.name, sp.category, sp.pattern, sp.severity,
+	sp.description, sp.action, sp.tier, sp.priority, sp.enabled,
+	sp.organization_id, sp.tenant_id, sp.org_id, sp.segment_id,
+	sp.tags, sp.metadata, sp.version,
+	sp.created_at, sp.updated_at, sp.created_by, sp.updated_by
+`
+
+// effectivePolicyQueryTemplate is GetEffective's per-pass query shape. %s is
+// filled with the caller-supplied tier predicate (see ScanEffectivePolicyRows).
+const effectivePolicyQueryTemplate = `
+	SELECT` + effectivePolicyColumns + `
+	FROM static_policies sp
+	WHERE sp.deleted_at IS NULL
+	  AND sp.enabled = true
+	  AND %s
+`
+
+// EffectivePolicyRow is one static_policies row as read for the GetEffective
+// (tier-hierarchy admin/API) path. Column set and nullability mirror the
+// pre-#3296 StaticPolicyRepository.GetEffective query exactly, so existing
+// callers' sqlmock expectations (column order, arg order) keep matching
+// verbatim after the read moved here.
+type EffectivePolicyRow struct {
+	ID             string
+	PolicyID       string
+	Name           string
+	Category       string
+	Pattern        string
+	Severity       string
+	Description    sql.NullString
+	Action         string
+	Tier           string
+	Priority       int
+	Enabled        bool
+	OrganizationID *string // scanned via Go's Ptr-to-Ptr NULL handling, same as StaticPolicy.OrganizationID
+	TenantID       string
+	OrgID          sql.NullString
+	SegmentID      sql.NullString
+	Tags           sql.NullString
+	Metadata       sql.NullString
+	Version        int
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	CreatedBy      sql.NullString
+	UpdatedBy      sql.NullString
+}
+
+// ScanEffectivePolicyRows executes GetEffective's per-pass static_policies
+// query against an ALREADY-OPEN transaction and returns the scanned rows.
+// tierPredicate is the caller-supplied (hardcoded, never request-derived)
+// WHERE fragment selecting one tier scope (system / organization / tenant) --
+// GetEffective's tier semantics live at the call site, unchanged; only SQL
+// execution moved here.
+//
+// Deliberately tx-scoped rather than db-owning: the caller (StaticPolicyRepository
+// .GetEffective) wraps this in rls.WithOrgScope itself so it can read
+// policy_overrides (a different table) inside the SAME transaction/RLS scope,
+// exactly as the pre-#3296 single-file implementation did -- this preserves
+// that atomicity and, not incidentally, keeps every existing sqlmock
+// Begin/Query/Query/Commit expectation shape unchanged.
+func ScanEffectivePolicyRows(ctx context.Context, tx *sql.Tx, tierPredicate string, args ...interface{}) ([]EffectivePolicyRow, error) {
+	query := fmt.Sprintf(effectivePolicyQueryTemplate, tierPredicate)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EffectivePolicyRow
+	for rows.Next() {
+		var p EffectivePolicyRow
+		if sErr := rows.Scan(
+			&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Pattern, &p.Severity,
+			&p.Description, &p.Action, &p.Tier, &p.Priority, &p.Enabled,
+			&p.OrganizationID, &p.TenantID, &p.OrgID, &p.SegmentID,
+			&p.Tags, &p.Metadata, &p.Version,
+			&p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy,
+		); sErr != nil {
+			log.Printf("[PolicyLoader] Error scanning effective-policy row: %v", sErr)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// CountActive counts active (enabled=true) dynamic_policies rows for a
+// tenant, RLS-scoped identically to the bespoke read it replaces
+// (platform/agent/mcp_v1_pro_tools.go's deleted countActiveTenantPolicies).
+//
+// #3296 Step E / epic #3293 item #22: the substrate (this package) is a
+// shared library that spans the agent and orchestrator services, so this is
+// an IN-PROCESS method call from the agent, never a cross-service RPC. It
+// counts dynamic_policies (NOT static_policies -- the Free-tier
+// active_policies quota this backs is about custom dynamic policies, per the
+// original bespoke read's own doc comment), so it lives on PolicyLoader as an
+// additive capability rather than folding into the static effective-policy
+// read above.
+//
+// Callers MUST keep the fail-open contract the bespoke read had (return 0 on
+// error so a transient DB blip does not block a Free user) but MUST also
+// observe the returned error to emit a metric -- a silent fail-open is a
+// silent quota bypass (#3039/#2230 family). This method itself returns the
+// error rather than swallowing it, so the metric emission stays at the
+// call site (platform/agent, which owns the metric registration).
+func (l *PolicyLoader) CountActive(ctx context.Context, tenantID string) (int, error) {
+	if l.db == nil {
+		return 0, fmt.Errorf("database connection not available")
+	}
+	var count int
+	err := rls.WithOrgScope(ctx, l.db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND enabled = true`,
+			tenantID).Scan(&count)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // GetPolicyByID retrieves a single policy by ID.
 //
 // This is a by-id DISCOVERY read: the caller does not know which org owns the

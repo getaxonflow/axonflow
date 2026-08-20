@@ -556,21 +556,26 @@ func TestMCP3061_NonBlockActionMatchesWithoutDenying(t *testing.T) {
 	}
 }
 
-// A condition-less policy must NOT match. Admitting `content` widened this
-// path to the type the policy API defaults to, and without the guard the
-// condition loop is skipped, control falls through to "all conditions
-// matched", and a block action denies EVERY governed call for the tenant.
-//
-// The API requires at least one condition on create, so this shape only
-// arises as a data defect — most plausibly a row whose conditions JSON failed
-// to unmarshal (ListActivePolicies leaves Conditions nil on unmarshal error),
-// a shape this codebase has shipped before. A malformed row must not be able
-// to take governance down for a whole tenant.
-func TestMCP3061_ConditionlessPolicyCannotBlockEverything(t *testing.T) {
+// A condition-less policy matches everything, INCLUDING a benign call — this
+// is the restored, honest semantics (see condition_evaluator.go's
+// "Withdrawn" doc section) and a deliberate reversal of this test's own
+// former assertion. Admitting `content` widened this evaluation path to the
+// type the policy API defaults to, and the safety concern that originally
+// motivated a "never match" guard here — a row whose conditions JSON failed
+// to unmarshal reaching this handler with Conditions silently nil'd out,
+// indistinguishable from a genuinely condition-less policy — is now closed
+// one layer up: cachedPolicyToDynamicPolicy (db_dynamic_policies.go)
+// excludes a policy whose conditions fail to unmarshal from the cache
+// entirely, so it can never reach this handler as a bare `Conditions: nil`
+// DynamicPolicy in the first place. By the time a DynamicPolicy with nil
+// Conditions reaches evaluateConditions, it can only mean one thing: a
+// deliberately condition-less, platform-seeded policy. Blocking is therefore
+// the correct outcome for the fixture below, not a bug.
+func TestMCP3061_ConditionlessPolicyMatchesEverything(t *testing.T) {
 	policies := []DynamicPolicy{{
-		ID: "p-broken", Name: "malformed row", Type: "content", Enabled: true, TenantID: "tenant-1",
-		Conditions: nil, // what an unmarshal failure leaves behind
-		Actions:    []PolicyAction{{Type: "block", Config: map[string]interface{}{"reason": "should never fire"}}},
+		ID: "p-unconditional", Name: "unconditional policy", Type: "content", Enabled: true, TenantID: "tenant-1",
+		Conditions: nil,
+		Actions:    []PolicyAction{{Type: "block", Config: map[string]interface{}{"reason": "applies to everything"}}},
 	}}
 
 	resp := evaluateMCP(t, policies, MCPPolicyEvaluationRequest{
@@ -579,11 +584,11 @@ func TestMCP3061_ConditionlessPolicyCannotBlockEverything(t *testing.T) {
 		Statement:     "echo entirely benign",
 	})
 
-	if !resp.Allowed {
-		t.Fatalf("a condition-less policy blocked a benign call: %q", resp.BlockReason)
+	if resp.Allowed {
+		t.Fatalf("a condition-less block policy must deny (it applies to everything), got Allowed=true")
 	}
-	if len(resp.MatchedPolicies) != 0 {
-		t.Errorf("condition-less policy reported as matched: %+v", resp.MatchedPolicies)
+	if len(resp.MatchedPolicies) != 1 {
+		t.Errorf("condition-less policy not reported as matched: %+v", resp.MatchedPolicies)
 	}
 }
 

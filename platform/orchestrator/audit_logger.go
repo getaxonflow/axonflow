@@ -372,6 +372,7 @@ func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRe
 	if policyResult.AppliedPolicies != nil {
 		policyDetails["applied_policies"] = policyResult.AppliedPolicies
 	}
+	policyDetails = withAppliedPolicyIdentity(policyDetails, policyResult.AppliedPoliciesDetail)
 	var redactedFields []string
 	if info != nil {
 		if info.ValidationError != "" {
@@ -490,12 +491,12 @@ func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorReq
 		Query:          req.Query,
 		QueryHash:      hashQuery(req.Query),
 		PolicyDecision: sharedaudit.DecisionBlocked,
-		PolicyDetails: map[string]interface{}{
+		PolicyDetails: withAppliedPolicyIdentity(map[string]interface{}{
 			"applied_policies": policyResult.AppliedPolicies,
 			"risk_score":       policyResult.RiskScore,
 			"required_actions": policyResult.RequiredActions,
 			"processing_time":  policyResult.ProcessingTimeMs,
-		},
+		}, policyResult.AppliedPoliciesDetail),
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
 	}
@@ -1332,4 +1333,44 @@ func (b *BatchWriter) periodicFlush() {
 	for range b.flushTicker.C {
 		b.Flush()
 	}
+}
+
+// withAppliedPolicyIdentity stamps the shared reader's policy_names key
+// (platform/shared/audit/policy_identity.go) onto a blocked-row details map
+// from the evaluation-time AppliedPoliciesDetail (#3365). Until this,
+// orchestrator LLM-plane blocks carried identity only under applied_policies,
+// which NO reader resolves, so freshly-written acted rows rendered the
+// pre-9.16.1 placeholder ("Not recorded") on compliance exports and resolved
+// nothing in the portal.
+//
+// policy_ids is deliberately NOT stamped here, unlike the agent-side writers.
+// On this plane AppliedPolicyDetail.PolicyID is the dynamic policy's UUID
+// (db_dynamic_policies.go sources it from _metadata.id so it joins
+// policy_overrides.policy_id), and the shared identity chain resolves
+// policy_ids[0] BEFORE policy_names[0]. Stamping the UUID would therefore put
+// an opaque "550e8400-..." in the single Policy column of every SEBI / OJK /
+// EU-AI-Act export row, trading a false placeholder for an unreadable one.
+// Stamping names only lets the identity chain fall to policy_names[0], so the
+// export and the portal both render the human-readable policy name the
+// evaluation actually matched. Names come exclusively from the
+// evaluation-time detail (never a write-time catalog lookup); rows whose
+// evaluation produced no structured detail are left unchanged.
+func withAppliedPolicyIdentity(details map[string]interface{}, applied []AppliedPolicyDetail) map[string]interface{} {
+	if details == nil || len(applied) == 0 {
+		return details
+	}
+	names := make([]string, 0, len(applied))
+	seenName := make(map[string]bool, len(applied))
+	for _, p := range applied {
+		if p.PolicyName == "" || seenName[p.PolicyName] {
+			continue
+		}
+		seenName[p.PolicyName] = true
+		names = append(names, p.PolicyName)
+	}
+	if len(names) == 0 {
+		return details
+	}
+	details["policy_names"] = names
+	return details
 }

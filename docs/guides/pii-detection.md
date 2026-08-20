@@ -2,6 +2,8 @@
 
 AxonFlow's PII (Personally Identifiable Information) detection system provides comprehensive protection for sensitive data in LLM interactions. The system uses a hybrid approach combining fast regex-based pattern matching with intelligent validation to minimize false positives while maintaining sub-millisecond latency.
 
+> **What decides the runtime outcome of a PII match?** For `pii-*` policies the detection posture lever (`AXONFLOW_PROFILE`, `PII_ACTION`, or an org detection override) is authoritative on nearly every enforcement plane, NOT the policy row's `action` column. See [Policy Actions and the Detection Posture Lever](../governance/policy-action-authority.md) for the per-plane matrix and the #3360 displacement advisory.
+
 ## Overview
 
 ### Detection Approaches

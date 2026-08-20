@@ -70,7 +70,7 @@ func TestPolicyAttributionContract_MCPDecisionWriter(t *testing.T) {
 		"dec-2",
 		[]string{"prompt-injection-block"},
 		[]string{"blocked by policy"},
-		nil, "", "srv", "tool",
+		nil, "", nil, "srv", "tool",
 	)
 	id, _ := mustExtract(t, details)
 	if id != "prompt-injection-block" {
@@ -138,5 +138,70 @@ func TestPolicyAttributionContract_NoIdentityExtractsEmpty(t *testing.T) {
 	id, ver := mustExtract(t, details)
 	if id != "" || ver != "" {
 		t.Fatalf("fabricated attribution from a non-identity key: id=%q ver=%q", id, ver)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #3365: writer-side display-name stamping. Every canonical writer that
+// stamps policy_ids must ALSO stamp policy_names when a name is resolvable
+// (evaluation-time match map, or the builtin guard table for code-backed ids),
+// so the shared reader / portal resolver stops rendering the
+// "(name not recorded)" marker on freshly-written acted rows.
+// ---------------------------------------------------------------------------
+
+func TestPolicyAttributionContract_DecisionWriterStampsNames(t *testing.T) {
+	details := buildDecisionAuditDetails(
+		"dec-3", "llm",
+		[]string{"sys_pii_indonesia_ktp", "circuit_breaker"},
+		[]string{"matched"},
+		nil, false,
+		decisionAuditInput{policyNames: map[string]string{
+			"sys_pii_indonesia_ktp": "Indonesian KTP Detection",
+		}},
+	)
+	names, ok := details["policy_names"].([]string)
+	if !ok || len(names) != 2 {
+		t.Fatalf("decision writer must stamp policy_names for resolvable ids, got %v", details["policy_names"])
+	}
+	if names[0] != "Indonesian KTP Detection" || names[1] != "Circuit breaker guard" {
+		t.Fatalf("threaded name + builtin guard name in policy_ids order, got %v", names)
+	}
+	// The identity contract is unchanged: exporters still resolve the id.
+	id, _ := mustExtract(t, details)
+	if id != "sys_pii_indonesia_ktp" {
+		t.Fatalf("identity regressed: got %q", id)
+	}
+}
+
+func TestPolicyAttributionContract_DecisionWriterNoNames_NoKey(t *testing.T) {
+	// An id with no threaded name and no builtin entry stays honest: NO
+	// policy_names key, so the reader renders ids + its explicit marker
+	// rather than a fabricated name.
+	details := buildDecisionAuditDetails(
+		"dec-4", "llm",
+		[]string{"tenant_custom_rule_without_threaded_name"},
+		nil, nil, false, decisionAuditInput{},
+	)
+	if _, present := details["policy_names"]; present {
+		t.Fatalf("writer must not fabricate a name for an unthreaded id: %v", details["policy_names"])
+	}
+}
+
+func TestPolicyAttributionContract_MCPDecisionWriterStampsNames(t *testing.T) {
+	details := buildMCPDecisionAuditDetails(
+		"dec-5",
+		[]string{"sys_pii_iban", "sqli_response_scan"},
+		[]string{"blocked"},
+		nil, "",
+		map[string]string{"sys_pii_iban": "IBAN Detection"},
+		"srv", "tool",
+	)
+	names, ok := details["policy_names"].([]string)
+	if !ok || len(names) != 2 || names[0] != "IBAN Detection" || names[1] != "SQL injection response scan" {
+		t.Fatalf("MCP decision writer must stamp names (threaded + builtin), got %v", details["policy_names"])
+	}
+	id, _ := mustExtract(t, details)
+	if id != "sys_pii_iban" {
+		t.Fatalf("identity regressed: got %q", id)
 	}
 }
