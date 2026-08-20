@@ -24,9 +24,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
@@ -34,15 +39,61 @@ import (
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
+// activePolicyCountErrorsTotal counts countActiveTenantPolicies failures that
+// fell back to the fail-open default (count=0), per #3296 Step E / epic #3293
+// item #22 (folds in the #3039/#2230 family): the Free-tier active_policies
+// quota gate deliberately fails OPEN on a count error (a transient DB blip
+// must not block a legitimate Free user), but a silent fail-open is a silent
+// quota bypass if the underlying read is failing systematically (e.g. an
+// RLS-blind read on a mis-provisioned deployment, mirroring #3039). A
+// sustained nonzero rate on this counter means the quota is not actually
+// being enforced and needs operator attention.
+var activePolicyCountErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "axonflow_active_policy_count_errors_total",
+	Help: "Count of Free-tier active_policies quota checks (countActiveTenantPolicies) that failed and fell back to fail-open (count=0). A nonzero rate means the quota may be silently bypassed.",
+})
+
+// activePolicyCountLoader and activePolicyCountLoaderDB memoize the
+// sharedpolicy.PolicyLoader countActiveTenantPolicies uses, keyed on the
+// *sql.DB pointer it was built from. Every production call site passes the
+// same process-wide db handle (authDB), so this constructs the loader
+// exactly once and reuses it for the life of the process — the same
+// "construct once, not per-request" discipline as the other lazily-built
+// singletons in this package (e.g. gateway_handlers.go's
+// getRBIKillSwitchChecker). It is keyed on the db pointer, rather than a bare
+// sync.Once, only because countActiveTenantPolicies takes db as an explicit
+// parameter (unlike those singletons, which close over a package-level
+// handle directly) — a plain Once would permanently pin the loader to
+// whichever db happened to make the first call, which is also what makes
+// this function testable against an independent mock db per test case.
+var (
+	activePolicyCountLoaderMu sync.Mutex
+	activePolicyCountLoader   *sharedpolicy.PolicyLoader
+	activePolicyCountLoaderDB *sql.DB
+)
+
+// activePolicyCountLoaderFor returns the memoized PolicyLoader for db,
+// constructing (or replacing) it only when db differs from the last one
+// seen.
+func activePolicyCountLoaderFor(db *sql.DB) *sharedpolicy.PolicyLoader {
+	activePolicyCountLoaderMu.Lock()
+	defer activePolicyCountLoaderMu.Unlock()
+	if activePolicyCountLoader == nil || activePolicyCountLoaderDB != db {
+		activePolicyCountLoader = sharedpolicy.NewPolicyLoader(db, nil)
+		activePolicyCountLoaderDB = db
+	}
+	return activePolicyCountLoader
+}
+
 // V1 Plugin Pro MCP tool names. Used for switch-dispatch in handleMCPToolsCall
 // and as the canonical identifiers in tools/list. DO NOT rename without
 // updating per-plugin SKILL files (S3 lane of umbrella #1958).
 const (
-	mcpToolNameGetTenantID       = "axonflow_get_tenant_id"
-	mcpToolNameRequestApproval   = "axonflow_request_approval"
+	mcpToolNameGetTenantID        = "axonflow_get_tenant_id"
+	mcpToolNameRequestApproval    = "axonflow_request_approval"
 	mcpToolNameCreateTenantPolicy = "axonflow_create_tenant_policy"
-	mcpToolNameGetCostEstimate   = "axonflow_get_cost_estimate"
-	mcpToolNameListProFeatures   = "axonflow_list_pro_features"
+	mcpToolNameGetCostEstimate    = "axonflow_get_cost_estimate"
+	mcpToolNameListProFeatures    = "axonflow_list_pro_features"
 )
 
 // v1ProMCPTools returns the 5 V1 Plugin Pro tool definitions with their
@@ -309,25 +360,29 @@ func writeMCPGateError(w http.ResponseWriter, req *jsonRPCRequest, limitType, ti
 // PR2's initial query used a non-existent `deleted_at` column —
 // runtime-e2e/v1_pro_full_matrix caught the drift in matrix C5.
 //
+// #3296 Step E (epic #3293 item #22): delegates to the shared substrate's
+// PolicyLoader.CountActive (platform/shared/policy/loader.go) — an
+// IN-PROCESS call, never a cross-service RPC, since the substrate is a
+// library shared by the agent and orchestrator. The RLS org-scoping (mig 018)
+// that fixed #3039 is preserved verbatim inside CountActive.
+//
 // Returns 0 on DB error so a transient failure doesn't accidentally
-// block a Free user. Fail open on the count side — the actual create
-// has its own integrity checks.
+// block a Free user — the fail-open contract is UNCHANGED from the pre-#3296
+// bespoke read. What changed: an error now increments
+// activePolicyCountErrorsTotal before returning 0, so a systematically
+// failing count (which silently bypasses the quota, same bug class as
+// #3039) is observable instead of indistinguishable from "tenant has zero
+// active policies."
 func countActiveTenantPolicies(ctx context.Context, db *sql.DB, tenantID string) int {
 	if db == nil {
 		return 0
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	var count int
-	// Org-scoped: dynamic_policies is RLS-enabled (mig 018) and under
-	// axonflow_app_role a bare COUNT read 0 — combined with fail-open this
-	// meant the active_policies FreeUsageLimit never fired (#3039).
-	err := rls.WithOrgScope(queryCtx, db, tenantID, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(queryCtx,
-			`SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND enabled = true`,
-			tenantID).Scan(&count)
-	})
+	count, err := activePolicyCountLoaderFor(db).CountActive(queryCtx, tenantID)
 	if err != nil {
+		activePolicyCountErrorsTotal.Inc()
+		log.Printf("[V1Pro] active_policies count failed, fail-open to 0 (quota not enforced this check): %v", err)
 		return 0 // fail open
 	}
 	return count
@@ -469,15 +524,15 @@ func mcpToolRequestApproval(ctx context.Context, _ *sql.DB, session *mcpSession,
 		// `status: "pending"` as failure. The approval row IS pending
 		// human review — that's the success state for an approval
 		// request: created and awaiting reviewer action.
-		"success":          true,
-		"submitted":        true,
-		"awaiting_review":  true,
-		"approval_id":      req.RequestID.String(),
-		"status":           "pending", // wire-level HITL row status — kept for back-compat
-		"original_query":   originalQuery,
-		"request_type":     requestType,
-		"severity":         req.Severity, // post-Service normalisation
-		"message":          "Approval request submitted successfully. A reviewer must approve this request via the AxonFlow customer portal before the operation can proceed.",
+		"success":         true,
+		"submitted":       true,
+		"awaiting_review": true,
+		"approval_id":     req.RequestID.String(),
+		"status":          "pending", // wire-level HITL row status — kept for back-compat
+		"original_query":  originalQuery,
+		"request_type":    requestType,
+		"severity":        req.Severity, // post-Service normalisation
+		"message":         "Approval request submitted successfully. A reviewer must approve this request via the AxonFlow customer portal before the operation can proceed.",
 	}, nil
 }
 
@@ -513,8 +568,8 @@ func resolveHITLServiceForMCP() *hitl.Service {
 // Action mapping from user-facing names to engine action types:
 //   - block            -> block             (deny the request)
 //   - warn             -> alert             (engine handles `alert`,
-//                                            not `warn`, as the
-//                                            "log + surface" action)
+//     not `warn`, as the
+//     "log + surface" action)
 //   - audit            -> log               (enhanced audit logging)
 //   - require_approval -> require_approval  (HITL gate)
 //
@@ -919,44 +974,44 @@ func mcpToolListProFeatures(session *mcpSession) (interface{}, error) {
 		"success":      true, // explicit success flag for LLM consumers (#1986)
 		"current_tier": currentTier,
 		"pricing": map[string]interface{}{
-			"price_usd":      9.99,
-			"duration_days":  90,
-			"renewal":        "one-time (re-purchase to extend; no auto-renewal)",
+			"price_usd":     9.99,
+			"duration_days": 90,
+			"renewal":       "one-time (re-purchase to extend; no auto-renewal)",
 		},
 		"differentiators": []map[string]interface{}{
 			{
-				"id":          "daily_quota",
-				"capability":  "Daily quota",
-				"free":        "200 events/day",
-				"pro":         "2,000 events/day (10× Free)",
+				"id":         "daily_quota",
+				"capability": "Daily quota",
+				"free":       "200 events/day",
+				"pro":        "2,000 events/day (10× Free)",
 			},
 			{
-				"id":          "audit_retention",
-				"capability":  "Audit retention",
-				"free":        "3 days",
-				"pro":         "30 days (10× Free)",
+				"id":         "audit_retention",
+				"capability": "Audit retention",
+				"free":       "3 days",
+				"pro":        "30 days (10× Free)",
 			},
 			{
-				"id":          "active_policies",
-				"capability":  "Custom tenant policies",
-				"free":        "4 active max",
-				"pro":         "Up to 50",
+				"id":         "active_policies",
+				"capability": "Custom tenant policies",
+				"free":       "4 active max",
+				"pro":        "Up to 50",
 			},
 			{
-				"id":          "hitl_approvals",
-				"capability":  "HITL approval gating",
-				"free":        "2 per rolling 7 days",
-				"pro":         "Up to 20/week",
+				"id":         "hitl_approvals",
+				"capability": "HITL approval gating",
+				"free":       "2 per rolling 7 days",
+				"pro":        "Up to 20/week",
 			},
 			{
-				"id":          "cost_preflight",
-				"capability":  "LLM cost pre-flight",
-				"free":        "Not available",
-				"pro":         "Available",
+				"id":         "cost_preflight",
+				"capability": "LLM cost pre-flight",
+				"free":       "Not available",
+				"pro":        "Available",
 			},
 		},
-		"upgrade_url":   v1ProUpgradeCompareURL,
-		"buy_url":       v1ProUpgradeBuyURL,
-		"tone":          "Free validates the workflow. Pro raises the caps when AxonFlow becomes part of your real workflow.",
+		"upgrade_url": v1ProUpgradeCompareURL,
+		"buy_url":     v1ProUpgradeBuyURL,
+		"tone":        "Free validates the workflow. Pro raises the caps when AxonFlow becomes part of your real workflow.",
 	}, nil
 }

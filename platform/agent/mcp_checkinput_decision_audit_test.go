@@ -126,7 +126,7 @@ func TestMCPInputDecisionVerdict(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotVerdict, gotPolicy, gotReasons := mcpInputDecisionVerdict(tc.outcome, tc.didRedact)
+			gotVerdict, gotPolicy, gotReasons, _ := mcpInputDecisionVerdict(tc.outcome, tc.didRedact)
 			if gotVerdict != tc.wantVerdict {
 				t.Errorf("verdict: got %q, want %q", gotVerdict, tc.wantVerdict)
 			}

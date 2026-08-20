@@ -20,7 +20,33 @@ import (
 	"time"
 
 	"axonflow/platform/agent/license"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
+
+// policyTestEvaluator is the shared substrate (#3296,
+// platform/shared/policy/condition_evaluator.go). This evaluator's legacy
+// operator set (PolicyService.evaluateOperator) excluded greater_than/
+// less_than entirely; the #3296 convergence pass added them, along with the
+// other four convergences (case-insensitive contains, contains_any
+// stringifies every item, string-required regex, unparseable-numeric-never-
+// coerces-to-zero) — see the shared type's doc comment for the full
+// convergence record. This evaluator's own unknown-operator behavior was
+// always silent (previously a nil hook; now the same silence — no logging
+// hook exists to configure at all). Slice 2 gave this evaluator's
+// unevaluable conditions (unknown operator, non-numeric operand, non-string
+// regex pattern) a real signal despite that silence: they report through
+// policyTestUnevaluableRecorder (condition_unevaluable_metrics.go), passed
+// into Match per call. A zero-condition policy vacuously matches — see
+// evaluateConditions below and the shared type's "Withdrawn" doc section for
+// why a brief attempt at making that a non-match was reverted. A
+// package-level value — not a struct field — because it holds no per-service
+// state and every PolicyService constructor (NewPolicyService,
+// NewPolicyServiceWithRefresher, NewPolicyServiceWithLicense, and the bare
+// `&PolicyService{}` literals used throughout this package's tests) must get
+// the exact same configured evaluator; constructed once, never per-request —
+// TestPolicy runs this on every policy-test request, so a per-request
+// allocation here would be a needless cost.
+var policyTestEvaluator = sharedpolicy.ConditionEvaluator{}
 
 // PolicyEngineRefresher is an interface for policy engines that can refresh their cache.
 // This allows the PolicyService to trigger an immediate refresh after policy changes
@@ -226,7 +252,96 @@ func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID str
 	return nil
 }
 
-// TestPolicy evaluates a policy against test input
+// TestPolicy evaluates a policy against test input.
+//
+// # Segment-awareness (#3296, ADR-060 #2989/#3266)
+//
+// Before this change, TestPolicy did raw condition evaluation with zero
+// segment semantics: a segment-scoped policy (dynamic_policies.segment_id,
+// migration 159) would report Matched=true for a caller who is not a member
+// of that segment, exactly the enforcement/preview drift #3266 tracks.
+//
+// Two pieces of information this method would need to fully mirror
+// enforcement are not available through the types it is handed:
+//
+//   - A verified caller identity. TestPolicyRequest has no email/org field,
+//     and today's HTTP entry points that call TestPolicy never bind one onto
+//     ctx before calling it. verifiedTestIdentity below looks for the SAME
+//     ctxKeyUser value the /process governed-request path binds (run.go's
+//     applyAuthoritativePrincipal): today this is ALWAYS a miss in
+//     production, but the lookup costs nothing, lets a future caller that
+//     does thread a verified identity get real segment enforcement for
+//     free, and lets this be tested directly via context.WithValue.
+//   - The policy's own SegmentID. PolicyResource has no SegmentID field, and
+//     PolicyRepository.GetByID's SELECT does not fetch
+//     dynamic_policies.segment_id — a structural gap in those types, not
+//     something fixable from inside this method. The best-effort fallback is
+//     s.policyEngine.LookupSegmentID (dynamic_policy_engine.go), which reads
+//     the SAME dynamic_policies table via the in-memory engine's
+//     already-loaded cache. When policyEngine is nil or the cache does not
+//     have this policy, segment-scope status is UNKNOWN — never assumed
+//     absent.
+//
+// # Fail-closed / degrade-observably contract
+//
+//   - Verified identity present, segment resolution FAILS: fail closed like
+//     enforcement — Matched forced false, never silently treated as
+//     tenant-wide.
+//   - Verified identity present, resolution succeeds, policy IS
+//     segment-scoped, caller is NOT a member: Matched forced false
+//     regardless of condition evaluation — mirrors
+//     CompiledPolicy.AppliesToSegments / memPolicyAppliesToTenant's
+//     restriction-only rule. The Explanation note for this case never spells
+//     out the segment's identifier. It does NOT achieve full non-disclosure,
+//     though: the note's mere presence ("This policy does not apply to the
+//     caller.") versus its absence is itself a one-bit oracle — it tells a
+//     non-member that SOME scope excluded them, which a member (or a
+//     non-segment-scoped policy) never sees. #3320 review: this claim was
+//     previously overstated as "the caller learns nothing"; that is false as
+//     written. It is not fixed here because it is inert in production today
+//     (ctxKeyUser, which identityAvailable depends on, is bound only on the
+//     /process governed-request path — TestPolicy's HTTP entry points never
+//     bind it), so there is no live caller who can observe the bit; treat
+//     this as a documented weakness to hold in mind if TestPolicy ever gains
+//     a verified-identity entry point, not as something already closed.
+//   - Verified identity present and (caller IS a member, or policy is not
+//     segment-scoped, or scope status could not be determined): normal
+//     condition-only evaluation stands.
+//   - No verified identity at all (today's universal case on this path):
+//     condition-only evaluation proceeds UNCHANGED — this is the
+//     pre-existing, already-tested behavior — but Explanation is appended
+//     with an explicit note that segment scoping was NOT evaluated,
+//     degrading OBSERVABLY rather than silently presenting a possibly
+//     segment-restricted policy as an unqualified tenant-wide match (#3283's
+//     "silent misleading output" failure mode).
+//
+// testPolicyVerdictForStoredRow returns the #3384 exclusion verdict for a
+// stored row whose conditions list is EXPLICITLY empty, or nil when the row
+// evaluates normally. A stored `[]` is excluded from evaluation on every
+// engine plane (released-update-gap residue; see db_dynamic_policies.go's
+// cachedPolicyToDynamicPolicy), and this preview MUST agree with the
+// engines. TestPolicy reads the row via repo.GetByID rather than the cache
+// converter, so the exclusion has to be applied here too — without it the
+// R3 of this fix found the exact contradiction the #3266 lineage warns
+// about: the test endpoint told an operator a legacy row "matches
+// everything, would block" while no engine would ever enforce it. GetByID
+// unmarshals `[]` into a non-nil empty slice and JSON `null` into a nil
+// one, preserving the same distinction the engines key on; a condition-LESS
+// (nil) row returns nil here and vacuously matches, matching the engines'
+// restored semantics.
+func (s *PolicyService) testPolicyVerdictForStoredRow(policy *PolicyResource) *TestPolicyResponse {
+	if policy.Conditions == nil || len(policy.Conditions) != 0 {
+		return nil
+	}
+	policyTestUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonEmptyConditions)
+	return &TestPolicyResponse{
+		Matched: false,
+		Blocked: false,
+		Explanation: fmt.Sprintf("Policy '%s' is EXCLUDED from evaluation: its conditions list is explicitly empty, a legacy state no current API can author (pre-9.19 update-API residue, #3384). No engine plane enforces this policy. Give it real conditions via update, or delete it.",
+			policy.Name),
+	}
+}
+
 func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
 	// Get the policy
 	policy, err := s.repo.GetByID(ctx, tenantID, policyID)
@@ -239,8 +354,14 @@ func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, policyID strin
 
 	start := time.Now()
 
+	if v := s.testPolicyVerdictForStoredRow(policy); v != nil {
+		v.EvalTimeMs = float64(time.Since(start).Microseconds()) / 1000
+		return v, nil
+	}
+
 	// Evaluate conditions
 	matched := s.evaluateConditions(policy.Conditions, req)
+	matched, segNote := s.applySegmentScopeToTestVerdict(ctx, policyID, matched)
 
 	response := &TestPolicyResponse{
 		Matched:    matched,
@@ -265,14 +386,88 @@ func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, policyID strin
 			response.Actions = append(response.Actions, triggered)
 		}
 
-		response.Explanation = fmt.Sprintf("Policy '%s' matched: all %d conditions evaluated to true",
-			policy.Name, len(policy.Conditions))
+		response.Explanation = fmt.Sprintf("Policy '%s' matched: all %d conditions evaluated to true.%s",
+			policy.Name, len(policy.Conditions), segNote)
 	} else {
-		response.Explanation = fmt.Sprintf("Policy '%s' did not match: one or more conditions evaluated to false",
-			policy.Name)
+		response.Explanation = fmt.Sprintf("Policy '%s' did not match: one or more conditions evaluated to false.%s",
+			policy.Name, segNote)
 	}
 
 	return response, nil
+}
+
+// verifiedTestIdentity looks for a verified caller identity on ctx, keyed
+// under the SAME ctxKeyUser the /process governed-request path binds
+// (run.go's applyAuthoritativePrincipal + ctx construction). See TestPolicy's
+// doc for why today's TestPolicy entry points never set it, and why the
+// lookup exists anyway.
+func verifiedTestIdentity(ctx context.Context) (UserContext, bool) {
+	u, ok := ctx.Value(ctxKeyUser).(UserContext)
+	if !ok {
+		return UserContext{}, false
+	}
+	return u, true
+}
+
+// applySegmentScopeToTestVerdict layers ADR-060 segment scoping onto a
+// condition-only TestPolicy verdict, per the fail-closed / degrade-observably
+// contract documented on TestPolicy. Returns the (possibly overridden)
+// matched verdict and a human-readable note to append to Explanation.
+func (s *PolicyService) applySegmentScopeToTestVerdict(ctx context.Context, policyID string, matched bool) (bool, string) {
+	user, identityAvailable := verifiedTestIdentity(ctx)
+	if !identityAvailable {
+		// This disclaimer is uniform across every policy tested on this
+		// path (identity is never available here in production) — it is
+		// never informed by, and never reveals, whether THIS policy is
+		// actually segment-scoped.
+		return matched, " Segment scoping NOT evaluated: no verified caller identity is available on this path (ADR-060 #2989/#3266) — this result does not reflect any segment restriction the policy may carry."
+	}
+
+	segIDs, segOK := resolveSegmentsForPolicy(ctx, user.OrgID, user.Email)
+	if !segOK {
+		return false, " Segment resolution failed (fail-closed, ADR-060 #2989/#3266): treated as no match."
+	}
+
+	segID, found := s.lookupPolicySegmentID(policyID)
+	if !found || segID == "" {
+		// Not segment-scoped, or scope status could not be determined for
+		// this policy — condition-only evaluation stands. A lookup miss must
+		// never be treated as proof of "not segment-scoped" (that would risk
+		// exactly the #3266 over-disclosure this method exists to prevent);
+		// it is simply silent here because there is nothing more to say.
+		return matched, ""
+	}
+
+	if !segmentSetContains(segIDs, segID) {
+		// #3266: a caller who is not a member of segID must not learn the
+		// segment's identifier — the note below says nothing segment-
+		// specific, unlike a policy ID leaking into triggered_policies for a
+		// non-member. This is narrower than full non-disclosure, though:
+		// the note is appended only on this branch, so its presence is
+		// itself a one-bit signal that the caller was excluded by SOME
+		// scope, distinguishable from a member's or a non-segment-scoped
+		// policy's silent "" note. See TestPolicy's doc comment (Fail-closed
+		// / degrade-observably contract) for why this is left as-is: it is
+		// inert in production (identityAvailable is never true on today's
+		// call paths), not a claim that the bit is actually hidden.
+		return false, " This policy does not apply to the caller."
+	}
+	// Caller is a member: the condition-only verdict stands unmodified. No
+	// note — the segment identifier is internal bookkeeping, and there is no
+	// operational need to echo it back even to a member.
+	return matched, ""
+}
+
+// lookupPolicySegmentID returns the SegmentID of a policy from the in-memory
+// DynamicPolicyEngine's cache, and whether it was found there. See
+// TestPolicy's doc for why this indirection exists: PolicyResource itself
+// carries no SegmentID, and the policy-API repository does not fetch
+// dynamic_policies.segment_id.
+func (s *PolicyService) lookupPolicySegmentID(policyID string) (string, bool) {
+	if s.policyEngine == nil {
+		return "", false
+	}
+	return s.policyEngine.LookupSegmentID(policyID)
 }
 
 // GetPolicyVersions retrieves version history
@@ -397,7 +592,18 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req
 	return result, nil
 }
 
-// validateCreateRequest validates a create policy request
+// validateCreateRequest validates a create policy request.
+//
+// Zero conditions is rejected here even though the evaluators now treat it
+// as a legitimate "applies to everything" match (see
+// platform/shared/policy/condition_evaluator.go's "Withdrawn" doc section).
+// This is a deliberate asymmetry, not an oversight: the platform may seed a
+// condition-less policy meaning "applies to everything" (loadDefaultPolicies'
+// fallback, insertSamplePolicies' three sample rows), but a customer may not
+// author one through this API. Revisitable later if there is demand for a
+// customer-authored unconditional policy — today, rejecting it here is what
+// keeps a zero-condition row a platform-controlled, deliberate construct
+// instead of something any tenant can create by accident.
 func (s *PolicyService) validateCreateRequest(req *CreatePolicyRequest) error {
 	var errors []PolicyFieldError
 
@@ -473,7 +679,10 @@ func (s *PolicyService) validateCreateRequest(req *CreatePolicyRequest) error {
 	return nil
 }
 
-// validateUpdateRequest validates an update policy request
+// validateUpdateRequest validates an update policy request. Mirrors
+// validateCreateRequest's rejection of zero conditions (see that function's
+// doc for the platform-may-seed / customer-may-not-author asymmetry) — this
+// stays rejected on update too.
 func (s *PolicyService) validateUpdateRequest(req *UpdatePolicyRequest) error {
 	var errors []PolicyFieldError
 
@@ -498,13 +707,34 @@ func (s *PolicyService) validateUpdateRequest(req *UpdatePolicyRequest) error {
 		})
 	}
 
+	// An explicitly-provided empty conditions array must be rejected here the
+	// same way validateCreateRequest rejects one on create — mirroring that
+	// error message. `nil` (the field omitted from the request body
+	// entirely) stays the "leave conditions unchanged" signal and must NOT
+	// be rejected; only a present-but-empty JSON `[]` reaches the branch
+	// below. Without this guard, `req.Conditions != nil` lets `[]` straight
+	// through the loop (which runs zero times) with no error, so a caller
+	// could PUT a block-action policy down to zero conditions — and because
+	// zero/absent conditions now vacuously matches everything (see
+	// condition_evaluator.go's "Withdrawn" doc section), that row would
+	// deny every request for the tenant. This validation is the load-bearing
+	// guard against that shape now that the evaluators no longer neutralize
+	// it themselves; it stays in place regardless of authoring-restriction
+	// changes elsewhere.
 	if req.Conditions != nil {
-		for i, cond := range req.Conditions {
-			if condErr := s.validateCondition(cond); condErr != nil {
-				errors = append(errors, PolicyFieldError{
-					Field:   fmt.Sprintf("conditions[%d]", i),
-					Message: condErr.Error(),
-				})
+		if len(req.Conditions) == 0 {
+			errors = append(errors, PolicyFieldError{
+				Field:   "conditions",
+				Message: "At least one condition is required",
+			})
+		} else {
+			for i, cond := range req.Conditions {
+				if condErr := s.validateCondition(cond); condErr != nil {
+					errors = append(errors, PolicyFieldError{
+						Field:   fmt.Sprintf("conditions[%d]", i),
+						Message: condErr.Error(),
+					})
+				}
 			}
 		}
 	}
@@ -566,12 +796,22 @@ func (s *PolicyService) validateCondition(cond PolicyCondition) error {
 		return fmt.Errorf("invalid operator: %s", cond.Operator)
 	}
 
-	// Validate regex if operator is regex
+	// Validate regex if operator is regex. #3296 convergence 4: the shared
+	// ConditionEvaluator now requires a regex condition's Value to be a Go
+	// string at evaluation time (matching the majority legacy behavior) —
+	// a non-string Value used to compile-check successfully skipped here
+	// (`if str, ok := ...; ok` silently passed a non-string through) and
+	// then, on the in-memory engine (1a) only, matched via a
+	// fmt.Sprint-and-compile fallback that no longer exists. Rejecting it
+	// here closes that authoring gap: this shape can no longer be created
+	// going forward, on any engine.
 	if cond.Operator == "regex" {
-		if str, ok := cond.Value.(string); ok {
-			if _, err := regexp.Compile(str); err != nil {
-				return fmt.Errorf("invalid regex pattern: %v", err)
-			}
+		str, ok := cond.Value.(string)
+		if !ok {
+			return fmt.Errorf("regex pattern must be a string")
+		}
+		if _, err := regexp.Compile(str); err != nil {
+			return fmt.Errorf("invalid regex pattern: %v", err)
 		}
 	}
 
@@ -595,7 +835,14 @@ func (s *PolicyService) validateAction(action PolicyAction) error {
 	return nil
 }
 
-// evaluateConditions evaluates all conditions against the test request
+// evaluateConditions evaluates all conditions against the test request. No
+// conditions means the policy applies to everything — vacuous truth, the
+// same as an empty `WHERE` clause matching every row; see the shared
+// evaluator's "Withdrawn" doc section (condition_evaluator.go) for why a
+// stricter "zero conditions never matches" guard briefly lived here and was
+// reverted. Creation and update both reject an empty/cleared conditions
+// array, so a zero-condition policy reaching TestPolicy at all means a
+// platform-seeded, deliberately-unconditional row.
 func (s *PolicyService) evaluateConditions(conditions []PolicyCondition, req *TestPolicyRequest) bool {
 	for _, cond := range conditions {
 		if !s.evaluateCondition(cond, req) {
@@ -605,96 +852,85 @@ func (s *PolicyService) evaluateConditions(conditions []PolicyCondition, req *Te
 	return true
 }
 
-// evaluateCondition evaluates a single condition
-func (s *PolicyService) evaluateCondition(cond PolicyCondition, req *TestPolicyRequest) bool {
-	var fieldValue interface{}
-
-	// Get the field value from the request
+// policyTestFieldValue resolves cond.Field against req for evaluateCondition.
+// ok=false reproduces the legacy default-arm short-circuit EXACTLY: a field
+// that is not "query"/"request_type"/"user.*"/"context.*" fell to the
+// default arm, which only proceeded to evaluateOperator when
+// req.Context[field] produced a genuinely non-nil value — a nil Context, a
+// missing key, OR a key whose stored value is itself nil all made the
+// legacy function return false immediately, BEFORE ever looking at the
+// operator. That is a real, reachable divergence from "resolve to nil and
+// let the operator switch run": not_equals and regex, in particular, would
+// otherwise be able to spuriously MATCH an unresolvable field. evaluateCondition
+// below preserves the short-circuit by checking ok itself, never inside
+// ConditionEvaluator.Match.
+//
+// The "user."/"context." prefixed branches, by contrast, NEVER short-circuit
+// even when the underlying map is nil or the key is absent — ok=true always
+// there (value nil), exactly matching legacy's unconditional fall-through to
+// evaluateOperator(cond.Operator, nil, cond.Value) in those two cases.
+func policyTestFieldValue(field string, req *TestPolicyRequest) (value any, ok bool) {
 	switch {
-	case cond.Field == "query":
-		fieldValue = req.Query
-	case cond.Field == "request_type":
-		fieldValue = req.RequestType
-	case strings.HasPrefix(cond.Field, "user."):
-		userField := strings.TrimPrefix(cond.Field, "user.")
+	case field == "query":
+		return req.Query, true
+	case field == "request_type":
+		return req.RequestType, true
+	case strings.HasPrefix(field, "user."):
+		userField := strings.TrimPrefix(field, "user.")
 		if req.User != nil {
-			fieldValue = req.User[userField]
+			return req.User[userField], true
 		}
-	case strings.HasPrefix(cond.Field, "context."):
-		contextField := strings.TrimPrefix(cond.Field, "context.")
+		return nil, true
+	case strings.HasPrefix(field, "context."):
+		contextField := strings.TrimPrefix(field, "context.")
 		if req.Context != nil {
-			fieldValue = req.Context[contextField]
+			return req.Context[contextField], true
 		}
+		return nil, true
 	default:
 		// For fields like "step_input.recipient_count" or "tool_input.query",
 		// look them up directly in the context map (WCPPolicyAdapter stores them
 		// with dotted keys like "step_input.recipient_count" in OrchestratorRequest.Context).
 		if req.Context != nil {
-			fieldValue = req.Context[cond.Field]
-		}
-		if fieldValue == nil {
-			return false
-		}
-	}
-
-	// Evaluate the condition
-	return s.evaluateOperator(cond.Operator, fieldValue, cond.Value)
-}
-
-// evaluateOperator applies the operator to compare values
-func (s *PolicyService) evaluateOperator(operator string, fieldValue, conditionValue interface{}) bool {
-	fieldStr := fmt.Sprintf("%v", fieldValue)
-	condStr := fmt.Sprintf("%v", conditionValue)
-
-	switch operator {
-	case "equals":
-		return fieldStr == condStr
-	case "not_equals":
-		return fieldStr != condStr
-	case "contains":
-		return strings.Contains(strings.ToLower(fieldStr), strings.ToLower(condStr))
-	case "not_contains":
-		return !strings.Contains(strings.ToLower(fieldStr), strings.ToLower(condStr))
-	case "contains_any":
-		if values, ok := conditionValue.([]interface{}); ok {
-			for _, v := range values {
-				if strings.Contains(strings.ToLower(fieldStr), strings.ToLower(fmt.Sprintf("%v", v))) {
-					return true
-				}
+			if v := req.Context[field]; v != nil {
+				return v, true
 			}
 		}
-		return false
-	case "regex":
-		if pattern, ok := conditionValue.(string); ok {
-			re, err := regexp.Compile(pattern)
-			if err != nil {
-				return false
-			}
-			return re.MatchString(fieldStr)
-		}
-		return false
-	case "in":
-		if values, ok := conditionValue.([]interface{}); ok {
-			for _, v := range values {
-				if fieldStr == fmt.Sprintf("%v", v) {
-					return true
-				}
-			}
-		}
-		return false
-	case "not_in":
-		if values, ok := conditionValue.([]interface{}); ok {
-			for _, v := range values {
-				if fieldStr == fmt.Sprintf("%v", v) {
-					return false
-				}
-			}
-		}
-		return true
-	default:
-		return false
+		return nil, false
 	}
 }
+
+// evaluateCondition evaluates a single condition.
+//
+// #3296: delegates the operator logic to policyTestEvaluator (the
+// shared substrate — case-insensitive contains, contains_any stringifies
+// non-string items, the full ten-operator union. This plane's legacy switch
+// covered eight of the ten; convergence 5 in condition_evaluator.go's
+// package doc added the missing greater_than/less_than). The
+// unresolvable-field short-circuit (see policyTestFieldValue) runs BEFORE
+// the evaluator is consulted, exactly reproducing the legacy function's
+// early-return shape rather than letting a nil field value flow into the
+// operator switch.
+func (s *PolicyService) evaluateCondition(cond PolicyCondition, req *TestPolicyRequest) bool {
+	fieldValue, ok := policyTestFieldValue(cond.Field, req)
+	if !ok {
+		policyTestUnevaluableRecorder.RecordUnevaluable(sharedpolicy.ReasonFieldUnresolved)
+		return false
+	}
+	return policyTestEvaluator.Match(
+		sharedpolicy.MatchCondition{Field: cond.Field, Operator: cond.Operator, Value: cond.Value},
+		func(string) (any, bool) { return fieldValue, true },
+		policyTestUnevaluableRecorder,
+	)
+}
+
+// #3296: evaluateOperator was deleted here — its operator-comparison
+// logic now lives in platform/shared/policy/condition_evaluator.go
+// (policyTestEvaluator above). Grep confirmed its only callers were the old
+// evaluateCondition (policy_api_service.go, deleted above) and its own
+// tests (TestPolicyService_EvaluateOperator_Additional, relocated to
+// policy_api_service_test.go as TestPolicyTestEvaluator_Operators, which
+// exercises the exact preconfigured shared evaluator this service uses).
 
 // ValidationError represents validation failures
 type ValidationError struct {

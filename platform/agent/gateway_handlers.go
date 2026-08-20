@@ -727,6 +727,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		})
 		// Convert to StaticPolicyResult for backward compatibility
 		policyResult = convertSharedResultToStatic(requestResult)
+		// #3365: thread the evaluation-time display names onto the audit input
+		// so the terminal canonical row stamps policy_names for the ids it
+		// records. The earlier early-return denies (kill switch, PII
+		// validators, budget) carry only builtin-resolvable guard ids.
+		preCheckAudit.policyNames = policyResult.PolicyNames
 		log.Printf("[Gateway] Shared policy engine evaluated %d policies in %dms",
 			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
 	} else {
@@ -1268,7 +1273,7 @@ func fetchApprovedData(ctx context.Context, dataSources []string, query string, 
 			mcpVerdictBlocked,
 			[]string{readOnlyPosturePolicyID},
 			[]string{reason},
-			nil, "")
+			nil, "", nil)
 		return nil, fmt.Errorf("%s", reason)
 	}
 

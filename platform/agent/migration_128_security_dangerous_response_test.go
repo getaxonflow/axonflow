@@ -169,7 +169,7 @@ func TestMigration128_SecurityDangerousResponsePlane_RealPostgres(t *testing.T) 
 	}
 	// Audit verdict for an injection redaction is "redacted" (not allowed, not
 	// blocked) and the reason describes injection sanitization, NOT a PII redaction.
-	if verdict, ids, reasons := mcpOutputDecisionVerdict(inj); verdict != mcpVerdictRedacted ||
+	if verdict, ids, reasons, _ := mcpOutputDecisionVerdict(inj); verdict != mcpVerdictRedacted ||
 		len(reasons) == 0 || !strings.Contains(reasons[0], "prompt-injection sanitized") {
 		t.Fatalf("#2727 audit: want verdict=redacted + injection-sanitized reason; got verdict=%q ids=%v reasons=%v", verdict, ids, reasons)
 	}

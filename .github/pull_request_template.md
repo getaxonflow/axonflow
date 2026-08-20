@@ -2,8 +2,8 @@
 
 <!-- Required: choose one. See `runtime-e2e/README.md` for the convention. -->
 
-- [ ] **Yes** — includes a runtime-path test that exercises this from the user's actual surface (OpenClaw tool / Claude skill / Cursor tool / Codex tool / portal page / SDK example invoked end-to-end through the live stack). Examples that import the SDK client class directly do NOT count.
-- [ ] **No** — internal-only capability. Reason (must name a specific downstream consumer — a named test, a scheduled job, an internal CLI; "future PRs" or "wire later" is NOT acceptable): ___________
+- [ ] **Yes** - includes a runtime-path test that exercises this from the user's actual surface (OpenClaw tool / Claude skill / Cursor tool / Codex tool / portal page / SDK example invoked end-to-end through the live stack). Examples that import the SDK client class directly do NOT count.
+- [ ] **No** - internal-only capability. Reason (must name a specific downstream consumer - a named test, a scheduled job, an internal CLI; "future PRs" or "wire later" is NOT acceptable): ___________
 
 If user-facing, the wiring PR for every relevant runtime must land with this PR (or be linked and merged in the same release window). No "wire it later."
 
@@ -11,10 +11,26 @@ If user-facing, the wiring PR for every relevant runtime must land with this PR 
 
 See [`runtime-e2e/README.md`](../runtime-e2e/README.md) for the convention. The cross-plugin coverage matrix lives at `axonflow-internal-docs/engineering/FEATURE_RUNTIME_COVERAGE.md` (private; engineering team only).
 
+## Portal parity (required when touching `ee/platform/customer-portal-ui/` or a portal-serving handler)
+
+<!-- The portal's recurring bug class is two computations of one user-visible
+     value drifting apart (#3346, #3347, #3361, #3363, the 9.16.0 policy
+     column). The census of every such pair lives at
+     technical-docs/PORTAL_PARITY_CENSUS.md. Answer both, or state
+     "not a portal change". -->
+
+- **Which census pair(s) does this change touch?** (row IDs from
+  `technical-docs/PORTAL_PARITY_CENSUS.md`, e.g. `PL-1`, `AU-11`; or
+  "none - new surface"): ___________
+- **Does it create a NEW pair** (a tile, count, filter, badge, export or
+  detail field whose value is derived somewhere a second time)? If yes, this
+  PR must add the census row AND either share one computation or add a parity
+  leg to `runtime-e2e/3364_portal_parity/`: ___________
+
 The `Runtime E2E required for user-facing changes` gate is a **required** check.
 A PR that touches `platform/`, `ee/platform/`, `migrations/` or `docs/api/`
 without adding or updating a `runtime-e2e/` test fails it, unless the escape
-hatch below is claimed — which takes **both** `[skip-runtime-e2e]` in the PR
+hatch below is claimed - which takes **both** `[skip-runtime-e2e]` in the PR
 title **and** the filled-in section below. Per CLAUDE.md HARD RULE #9 the
 escape hatch also requires explicit operator approval; name it in the section.
 
@@ -24,7 +40,7 @@ escape hatch also requires explicit operator approval; name it in the section.
 
      Claiming it? REPLACE this comment with the reason, and name the operator
      who approved it. The gate reads this heading by name and requires real
-     text under it — a heading followed only by this comment does not count,
+     text under it - a heading followed only by this comment does not count,
      nor does an empty one, nor one followed only by a horizontal rule (#3144).
 
      e.g. "Build-only change to the Dockerfile base image; no shipped runtime
@@ -177,7 +193,7 @@ least one test file at the layer that failed.
 <!-- Not claiming the exemption? Leave this section as-is or delete it.
 
      Claiming it? REPLACE this comment with the reason. The gate reads this
-     heading by name and requires real text under it — a heading followed only
+     heading by name and requires real text under it - a heading followed only
      by this comment does not count, and neither does an empty one.
 
      e.g. "infra-only change to CFN template", "generated artifact regen",

@@ -516,6 +516,17 @@ type PolicyMatch struct {
 	Category   PolicyCategory
 	Severity   Severity
 	Action     Action
+	// StoredAction is the EXPLICIT action the policy row stores for the
+	// evaluated phase (the action_request/action_response column value),
+	// BEFORE any EvalOptions.ActionOverrides posture lever replaced it
+	// (#3360). Empty when the row stores NULL for the phase: the engine then
+	// resolves through GetActionForPhase's category fallback, which is not a
+	// stored value and is never reported as displaced. When non-empty and
+	// different from Action, the deployment/org posture displaced the stored
+	// value; consumers use the pair to make a silent weakening (stored block
+	// resolved to warn/redact) visible instead of leaving the row's action
+	// column an unexplained lie.
+	StoredAction Action
 
 	// Match details
 	MatchText  string  // The text that triggered the match

@@ -2107,6 +2107,61 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// 4. Apply static policy enforcement
 	// Uses UnifiedPolicyEngine (shared engine) as primary path, with fallbacks.
 	// Phase 2: Tenant-specific policies via tierAwarePolicyEngine (below).
+	//
+	// #3296: Phase 1 and Phase 2 remain TWO evaluation passes over
+	// static_policies here — the passes are not collapsed into one, because
+	// they implement genuinely different semantics, not a redundant re-scan.
+	// Both phases DO now read static_policies through the same converged
+	// substrate (sharedpolicy.PolicyLoader, platform/shared/policy/loader.go:
+	// Phase 1 via GetPolicies/EvaluateRequest, Phase 2 via
+	// sharedpolicy.ScanEffectivePolicyRows inside StaticPolicyRepository
+	// .GetEffective) — see that file's doc for how GetEffective's two-pass
+	// org+global scoping, segment filtering, and tier awareness now map onto
+	// the loader. What differs between the two evaluation passes, and why,
+	// file:line:
+	//
+	//   - platform/shared/policy/engine.go:100-181 (UnifiedPolicyEngine
+	//     .EvaluateRequest) evaluates every category-filtered/segment-filtered
+	//     policy and blocks on the FIRST ActionBlock match in
+	//     priority/created_at sort order. It applies NO tier-hierarchy
+	//     shadowing (system → org → tenant "most specific wins") and NO
+	//     Enterprise policy_overrides downgrade.
+	//   - platform/agent/tier_aware_policy_engine.go:217-231
+	//     (TierAwarePolicyEngine.EvaluatePolicy) walks the FULL tier-ordered
+	//     effective set (system → organization → tenant, first match wins —
+	//     sortPoliciesByTierAndPriority) with policy.EffectiveOverride
+	//     downgrade applied per-policy (static_policy_repository.go
+	//     GetEffective/applyEffectiveOverride), THEN combines the strictest
+	//     applicable segment-scoped match on top (ADR-060 Decision 1,
+	//     combineTierAndSegmentResults) — semantics engine.go does not
+	//     implement.
+	//   - Category coverage differs, not just combining semantics: Phase 1 is
+	//     restricted to proxyPolicyCategories (SQLi/dangerous/admin-access/
+	//     sensitive-data/compliance-RBI/compliance-SEBI/PII, see var
+	//     proxyPolicyCategories above) via EvalOptions.Categories, while
+	//     Phase 2's GetEffectivePolicies has NO category filter — it is the
+	//     tier+override authority for every category, including ones Phase 1
+	//     skips. Phase 2 is therefore not a redundant re-scan of Phase 1's
+	//     work; it is additionally authoritative for out-of-proxy-category
+	//     policies and for the override-downgrade/tier-shadow contract.
+	//
+	// Unifying this into a single pass means moving tier-hierarchy shadowing,
+	// override-downgrade, and the ADR-060 segment combiner into the shared
+	// engine (engine.go) itself, since that is the component every other
+	// verdict surface (gateway pre-check, MCP input/output scan, OpenAI-compat,
+	// the response processor) also calls — changing its combining semantics
+	// changes behavior for all of those surfaces at once, not just this one.
+	// That is a substrate-level change in its own right, not a tail-end of
+	// this read-convergence. Reimplementing the same tier/override/segment
+	// logic a second time directly in run.go was rejected as the opposite of
+	// consolidation: it would leave two independent copies of that logic to
+	// keep in sync instead of one.
+	//
+	// What DID collapse here: cross-phase duplicate identifiers in
+	// TriggeredPolicies (see appendTriggeredPolicyID below and its use at
+	// both append sites) — TestClientRequestHandler_NoDuplicateTriggeredPolicies
+	// and TestPolicyTestHandler_NoDuplicateTriggeredPolicies
+	// (run_dedup_triggered_policies_test.go) are the regression tests.
 	policyEvalStart := time.Now()
 	log.Printf("📋 Evaluating static policies for request type: %s", req.RequestType)
 	var policyResult *StaticPolicyResult
@@ -2216,6 +2271,10 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Segments: segmentIDs,
 		})
 		policyResult = convertSharedResultToStatic(requestResult)
+		// #3365: evaluation-time display names for the ids the deny/HITL audit
+		// rows below record. The pre-evaluation denies (circuit breaker,
+		// segment resolution) carry only builtin-resolvable guard ids.
+		proxyAudit.policyNames = policyResult.PolicyNames
 		log.Printf("[Proxy] Shared policy engine evaluated %d policies in %dms",
 			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
 	} else {
@@ -2238,12 +2297,22 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			// Tenant/segment policy triggered a block
 			policyResult.Blocked = true
 			policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			policyResult.TriggeredPolicies = appendTriggeredPolicyID(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			// #3365: the tier engine carries the matched row's display name.
+			if tierResult.PolicyID != "" && tierResult.PolicyName != "" {
+				proxyAudit.policyNames = mergePolicyNames(proxyAudit.policyNames,
+					map[string]string{tierResult.PolicyID: tierResult.PolicyName})
+			}
 			policyResult.Severity = tierResult.Severity
 			log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
 		} else if tierResult.Matched {
 			// Policy matched but action is not block (allow, warn, log, redact, require_approval)
-			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			policyResult.TriggeredPolicies = appendTriggeredPolicyID(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			// #3365: name the matched row on the HITL/deny audit paths below.
+			if tierResult.PolicyID != "" && tierResult.PolicyName != "" {
+				proxyAudit.policyNames = mergePolicyNames(proxyAudit.policyNames,
+					map[string]string{tierResult.PolicyID: tierResult.PolicyName})
+			}
 			log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
 
 			// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
@@ -3082,6 +3151,25 @@ func createClientHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// appendTriggeredPolicyID appends policyID to triggered, unless it is
+// already present. #3296 Slice 2 Step D: Phase 1 (the shared engine) and
+// Phase 2 (the tier-aware engine) both read static_policies and can each
+// independently match the SAME policy ID when their category coverage
+// overlaps (see the Step D doc comment above clientRequestHandler's Phase
+// 1/2 evaluation block for why the two phases were not collapsed into one
+// pass) — a bare append let that policy ID appear twice in
+// triggered_policies / matched_policies. This is a reporting-only dedupe: it
+// never changes Blocked/Reason/Severity, which are already set independently
+// by whichever phase produced them.
+func appendTriggeredPolicyID(triggered []string, policyID string) []string {
+	for _, id := range triggered {
+		if id == policyID {
+			return triggered
+		}
+	}
+	return append(triggered, policyID)
+}
+
 func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 	var testReq struct {
 		Query       string `json:"query"`
@@ -3221,10 +3309,10 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 			} else if tierResult.Matched && tierResult.Action == "block" {
 				result.Blocked = true
 				result.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
-				result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+				result.TriggeredPolicies = appendTriggeredPolicyID(result.TriggeredPolicies, tierResult.PolicyID)
 				result.Severity = tierResult.Severity
 			} else if tierResult.Matched {
-				result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+				result.TriggeredPolicies = appendTriggeredPolicyID(result.TriggeredPolicies, tierResult.PolicyID)
 			}
 		}
 	}

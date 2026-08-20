@@ -167,6 +167,9 @@ jobs:
       - name: Lint DEPLOYMENT_MODE pattern (Issue #1133)
         run: bash scripts/lint-deployment-mode.sh
 
+      - name: Lint policy-table choke point (epic #3293 / #3296)
+        run: bash scripts/lint-policy-table-choke-point.sh
+
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-latest

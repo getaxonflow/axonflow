@@ -13,6 +13,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // TestNewStaticPolicyRepository tests repository creation.
@@ -781,9 +783,9 @@ func TestGetEffective(t *testing.T) {
 	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
 		WithArgs("tenant-1", "org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason", "tenant_id",
 		}).AddRow(
-			"override-1", "sys-1", "warn", nil, nil, "Testing phase",
+			"override-1", "sys-1", "warn", nil, nil, "Testing phase", "tenant-1",
 		))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
@@ -864,11 +866,11 @@ func TestGetEffective_SegmentScoped(t *testing.T) {
 	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
 		WithArgs("tenant-1", "org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason",
+			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason", "tenant_id",
 		}).AddRow(
 			// A live override keyed to seg-1 — must never surface on the
 			// segment-scoped policy below (ADR-060 Decision 1).
-			"override-x", "seg-1", "warn", nil, nil, "should never apply to a segment policy",
+			"override-x", "seg-1", "warn", nil, nil, "should never apply to a segment policy", "tenant-1",
 		))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
@@ -890,6 +892,168 @@ func TestGetEffective_SegmentScoped(t *testing.T) {
 	assert.False(t, policies[0].HasOverride)
 
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetEffective_TenantOverrideBeatsLaterCreatedOrgOverride is the named
+// regression test for #3296's tenant-vs-org override precedence bug: the
+// pre-#3296 inline override map iterated policy_overrides rows in created_at
+// ASC order and overwrote a single map[policyUUID]override entry on every
+// hit, so a LATER-created org-level override silently beat an EARLIER
+// tenant-level override for the same policy — contradicting the
+// tenant-always-wins contract the (deleted, fully-tested)
+// PolicyOverrideRepository.GetEffectiveAction enforced. #3296 adopts
+// policy.EffectiveOverride (platform/shared/policy/override.go), which
+// resolves tenant-beats-org UNCONDITIONALLY, never by creation order.
+//
+// Fixture: a tenant-tier policy has two live overrides — a tenant-scoped
+// "warn" created FIRST, and an org-scoped "log" created SECOND (the query
+// orders by created_at ASC, so the org row is scanned last, reproducing the
+// exact ordering that broke the old map). The effective policy MUST carry
+// the tenant row's action ("warn"), not the later org row's ("log").
+func TestGetEffective_TenantOverrideBeatsLaterCreatedOrgOverride(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	now := time.Now()
+	orgID := "org-1"
+
+	policyCols := []string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WithArgs("tenant-1", "org-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
+			"pol-1", "tenant_policy_1", "Tenant Policy", "pii-global", `\bSSN\b`, "high",
+			nil, "block", "tenant", 80, true,
+			nil, "tenant-1", nil, nil,
+			nil, nil, 1,
+			now, now, nil, nil,
+		))
+	// Tenant-scoped row created FIRST (tenant_id populated), org-scoped row
+	// created SECOND (tenant_id NULL, so the org branch of the WHERE matched)
+	// — returned in created_at ASC order, org row last.
+	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
+		WithArgs("tenant-1", "org-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason", "tenant_id",
+		}).
+			AddRow("override-tenant", "pol-1", "warn", nil, nil, "tenant override (earlier)", "tenant-1").
+			AddRow("override-org", "pol-1", "log", nil, nil, "org override (later)", nil))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs(GlobalOrgSentinel).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows(policyCols))
+	mock.ExpectCommit()
+
+	repo := NewStaticPolicyRepository(db)
+	policies, err := repo.GetEffective(context.Background(), "tenant-1", &orgID, nil)
+
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.True(t, policies[0].HasOverride)
+	require.NotNil(t, policies[0].OverrideAction)
+	assert.Equal(t, OverrideAction("warn"), *policies[0].OverrideAction,
+		"tenant-level override must win even though the org-level override was created LATER")
+	assert.Equal(t, "tenant override (earlier)", policies[0].OverrideReason)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// --- #3320: applyEffectiveOverride per-attribute resolution --------------
+
+// TestApplyEffectiveOverride_DisableOnlyRowSetsHasOverride is the disable-only
+// regression: a row with action_override NULL and enabled_override=false
+// must still set HasOverride and resolve the policy as disabled, rather than
+// being dropped entirely (which used to leave the policy's own Enabled=true
+// standing, silently re-enforcing a policy the tenant deliberately turned
+// off).
+func TestApplyEffectiveOverride_DisableOnlyRowSetsHasOverride(t *testing.T) {
+	policy := StaticPolicy{ID: "pol-1", Action: "block", Enabled: true}
+	rows := []staticOverrideRow{
+		{
+			id:      "override-disable",
+			enabled: sql.NullBool{Bool: false, Valid: true},
+			reason:  sql.NullString{String: "BI false positives", Valid: true},
+			scope:   sharedpolicy.OverrideScopeTenant,
+		},
+	}
+
+	effective := applyEffectiveOverride(policy, rows)
+
+	require.True(t, effective.HasOverride, "a disable-only row must set HasOverride")
+	require.NotNil(t, effective.OverrideEnabled)
+	assert.False(t, *effective.OverrideEnabled)
+	assert.False(t, effective.EffectiveEnabled(), "the policy must resolve as disabled")
+	assert.Nil(t, effective.OverrideAction, "no row had an opinion on action")
+	assert.Equal(t, "block", effective.EffectiveAction(), "action falls back to the policy's own action")
+	require.Len(t, effective.OverrideContributions, 1)
+	assert.Equal(t, "override-disable", effective.OverrideContributions[0].RowID)
+}
+
+// TestApplyEffectiveOverride_OrgActionSurvivesActionlessTenantDisable is the
+// worked example from the #3320 review: an org-level "warn" action override
+// and a DIFFERENT tenant-level disable-only override both exist for the same
+// policy. The tenant's disable must win on Enabled, and the org's action must
+// still apply — the action-less tenant row must not force scope resolution
+// to "tenant" and discard the org's valid action.
+func TestApplyEffectiveOverride_OrgActionSurvivesActionlessTenantDisable(t *testing.T) {
+	policy := StaticPolicy{ID: "sys_sqli_or_true", Action: "block", Enabled: true}
+	rows := []staticOverrideRow{
+		{
+			id:     "org-tuning",
+			action: sql.NullString{String: "warn", Valid: true},
+			reason: sql.NullString{String: "tuning", Valid: true},
+			scope:  sharedpolicy.OverrideScopeOrg,
+		},
+		{
+			id:      "tenant-disable",
+			enabled: sql.NullBool{Bool: false, Valid: true},
+			reason:  sql.NullString{String: "BI FPs", Valid: true},
+			scope:   sharedpolicy.OverrideScopeTenant,
+		},
+	}
+
+	effective := applyEffectiveOverride(policy, rows)
+
+	require.True(t, effective.HasOverride)
+	require.NotNil(t, effective.OverrideAction)
+	assert.Equal(t, OverrideAction("warn"), *effective.OverrideAction)
+	assert.Equal(t, "warn", effective.EffectiveAction())
+	require.NotNil(t, effective.OverrideEnabled)
+	assert.False(t, *effective.OverrideEnabled)
+	assert.False(t, effective.EffectiveEnabled())
+	require.Len(t, effective.OverrideContributions, 2, "both rows must be attributed")
+}
+
+// TestApplyEffectiveOverride_TenantActionBeatsOrgAction pins plain
+// action-only tenant-beats-org precedence still holds under the per-attribute
+// resolution.
+func TestApplyEffectiveOverride_TenantActionBeatsOrgAction(t *testing.T) {
+	policy := StaticPolicy{ID: "pol-1", Action: "block", Enabled: true}
+	rows := []staticOverrideRow{
+		{id: "org-row", action: sql.NullString{String: "log", Valid: true}, reason: sql.NullString{String: "org", Valid: true}, scope: sharedpolicy.OverrideScopeOrg},
+		{id: "tenant-row", action: sql.NullString{String: "warn", Valid: true}, reason: sql.NullString{String: "tenant", Valid: true}, scope: sharedpolicy.OverrideScopeTenant},
+	}
+
+	effective := applyEffectiveOverride(policy, rows)
+
+	require.NotNil(t, effective.OverrideAction)
+	assert.Equal(t, OverrideAction("warn"), *effective.OverrideAction)
+	assert.Equal(t, "tenant", effective.OverrideReason)
 }
 
 // TestGetVersions tests version history retrieval with license-based limits.

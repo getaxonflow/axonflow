@@ -692,88 +692,12 @@ func TestPolicyCache(t *testing.T) {
 }
 
 // TestUtilityFunctions tests utility functions
-func TestCompareNumeric(t *testing.T) {
-	tests := []struct {
-		name     string
-		a        interface{}
-		b        interface{}
-		operator string
-		expected bool
-	}{
-		{"Greater than - true", 10, 5, ">", true},
-		{"Greater than - false", 5, 10, ">", false},
-		{"Less than - true", 5, 10, "<", true},
-		{"Less than - false", 10, 5, "<", false},
-		{"Greater or equal - true (greater)", 10, 5, ">=", true},
-		{"Greater or equal - true (equal)", 10, 10, ">=", true},
-		{"Less or equal - true (less)", 5, 10, "<=", true},
-		{"Less or equal - true (equal)", 10, 10, "<=", true},
-		{"Float comparison", 3.5, 2.1, ">", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := compareNumeric(tt.a, tt.b, tt.operator)
-			if result != tt.expected {
-				t.Errorf("compareNumeric(%v, %v, %s) = %v, expected %v",
-					tt.a, tt.b, tt.operator, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestToFloat64(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    interface{}
-		expected float64
-		shouldOk bool
-	}{
-		{"float64", float64(3.14), 3.14, true},
-		{"float32", float32(2.5), 2.5, true},
-		{"int", int(42), 42.0, true},
-		{"int64", int64(100), 100.0, true},
-		{"string - invalid", "not a number", 0, false},
-		{"nil - invalid", nil, 0, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, ok := toFloat64(tt.input)
-			if ok != tt.shouldOk {
-				t.Errorf("toFloat64(%v) ok = %v, expected %v", tt.input, ok, tt.shouldOk)
-			}
-			if ok && result != tt.expected {
-				t.Errorf("toFloat64(%v) = %v, expected %v", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestMatchRegex(t *testing.T) {
-	tests := []struct {
-		name     string
-		text     string
-		pattern  string
-		expected bool
-	}{
-		{"Simple match", "hello world", "world", true},
-		{"No match", "hello world", "goodbye", false},
-		{"Case insensitive match", "Hello World", "(?i)world", true},
-		{"Pattern with special chars", "user@example.com", `\w+@\w+\.\w+`, true},
-		{"Invalid regex - returns false", "any text", `[invalid(regex`, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := matchRegex(tt.text, tt.pattern)
-			if result != tt.expected {
-				t.Errorf("matchRegex(%q, %q) = %v, expected %v",
-					tt.text, tt.pattern, result, tt.expected)
-			}
-		})
-	}
-}
+// #3296: TestCompareNumeric, TestToFloat64, and TestMatchRegex were
+// removed here — the package-level compareNumeric/toFloat64/matchRegex they
+// covered were deleted from dynamic_policy_engine.go (logic now lives in
+// platform/shared/policy/condition_evaluator.go, exercised via
+// TestEvaluateCondition / TestEvaluateCondition_AdditionalOperators below,
+// which pin the same verdicts through the rewired evaluateCondition).
 
 func TestContains(t *testing.T) {
 	tests := []struct {
@@ -937,6 +861,37 @@ func TestEvaluatePolicy(t *testing.T) {
 			},
 			expected: false,
 		},
+		{
+			// AND over an empty set is vacuously true — zero conditions
+			// means the policy applies to everything. See
+			// TestEvaluatePolicy_ZeroConditionPolicyMatchesEverything below
+			// for the full end-to-end version of this scenario, and
+			// condition_evaluator.go's "Withdrawn" doc section for why a
+			// stricter "zero conditions never matches" behavior briefly
+			// shipped and was reverted.
+			name: "Zero conditions matches everything",
+			policy: DynamicPolicy{
+				ID:         "test_policy",
+				Name:       "Test Policy",
+				Conditions: []PolicyCondition{},
+			},
+			req: OrchestratorRequest{
+				Query: "anything at all",
+			},
+			expected: true,
+		},
+		{
+			name: "Nil conditions matches everything",
+			policy: DynamicPolicy{
+				ID:         "test_policy",
+				Name:       "Test Policy",
+				Conditions: nil,
+			},
+			req: OrchestratorRequest{
+				Query: "anything at all",
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -948,6 +903,48 @@ func TestEvaluatePolicy(t *testing.T) {
 				t.Errorf("Expected %v, got %v", tt.expected, matched)
 			}
 		})
+	}
+}
+
+// TestEvaluatePolicy_ZeroConditionPolicyMatchesEverything makes the restored
+// vacuous-truth semantics concrete rather than abstract, at the in-memory
+// engine's own top-level entry point: a policy with no conditions matches an
+// arbitrary request and is counted as applied. See
+// condition_evaluator.go's "Withdrawn" doc section for why an intermediate
+// revision of this effort made a zero-condition policy match NOTHING
+// instead, and why that was reverted — the exposure that guarded against (a
+// zero-condition row nobody meant to write, carrying a block action) is now
+// closed at the authoring/load boundary: validateCreateRequest and
+// validateUpdateRequest both reject an empty/cleared conditions array, so no
+// customer can produce this shape, and a corrupt stored conditions blob is
+// excluded at load (cachedPolicyToDynamicPolicy) rather than passed through
+// as indistinguishable from a genuinely empty one.
+func TestEvaluatePolicy_ZeroConditionPolicyMatchesEverything(t *testing.T) {
+	policies := []DynamicPolicy{
+		{
+			ID:      "unconditional-log-policy",
+			Name:    "unconditional-log-policy",
+			Enabled: true,
+			// No Conditions — the platform-seeded shape, meaning "applies to
+			// everything."
+			Actions: []PolicyAction{
+				{Type: "log", Config: map[string]interface{}{"message": "logged"}},
+			},
+		},
+	}
+	engine := newTestEngine(policies)
+	defer engine.Close()
+
+	result := engine.EvaluateDynamicPolicies(context.Background(), OrchestratorRequest{Query: "any query at all"})
+
+	found := false
+	for _, name := range result.AppliedPolicies {
+		if name == "unconditional-log-policy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a zero-condition policy must match an arbitrary request (applies to everything), AppliedPolicies=%v", result.AppliedPolicies)
 	}
 }
 
@@ -1811,6 +1808,88 @@ func TestEvaluateCondition_AdditionalOperators(t *testing.T) {
 			got := engine.evaluateCondition(tt.condition, req, result)
 			if got != tt.expected {
 				t.Errorf("evaluateCondition() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_GreaterThan_NumericStringNowCompares is the #3296
+// convergence-3 test for this call site: 1a's legacy strict typed-only
+// numeric comparison (float64/float32/int/int64 only — a numeric-LOOKING
+// string never compared, unconditionally false regardless of the other
+// operand) is gone. A numeric string now parses via strconv.ParseFloat and
+// compares like any other numeric operand, on every call site.
+func TestEvaluateCondition_GreaterThan_NumericStringNowCompares(t *testing.T) {
+	engine := &DynamicPolicyEngine{}
+	req := OrchestratorRequest{Context: map[string]interface{}{"cost_estimate": "10"}}
+	result := &PolicyEvaluationResult{}
+
+	// The field value is the numeric STRING "10", the condition value is the
+	// typed float64 5. Before #3296 this engine rejected a numeric string
+	// outright; it must now parse and compare, so 10 > 5 is true.
+	got := engine.evaluateCondition(PolicyCondition{
+		Field:    "context.cost_estimate",
+		Operator: "greater_than",
+		Value:    float64(5),
+	}, req, result)
+	if !got {
+		t.Fatal("expected greater_than to parse a numeric-string field value on the in-memory engine (#3296 convergence 3), got no match")
+	}
+}
+
+// TestEvaluateCondition_LessThan_NonNumericStringNeverMatches proves the
+// in-memory engine did not inherit 1b's converged-away false-positive bug:
+// an unparseable string field value is NOT COMPARABLE under the shared
+// evaluator's toFloat64, never silently coerced to 0.0.
+func TestEvaluateCondition_LessThan_NonNumericStringNeverMatches(t *testing.T) {
+	engine := &DynamicPolicyEngine{}
+	req := OrchestratorRequest{Context: map[string]interface{}{"cost_estimate": "not-a-number"}}
+	result := &PolicyEvaluationResult{}
+
+	got := engine.evaluateCondition(PolicyCondition{
+		Field:    "context.cost_estimate",
+		Operator: "less_than",
+		Value:    float64(100),
+	}, req, result)
+	if got {
+		t.Fatal("a non-numeric string field value must not satisfy less_than (that would be 1b's converged-away false-positive bug), got match=true")
+	}
+}
+
+// TestEvaluateCondition_MemoryEngine_AllTenOperatorsSupported is the #3296
+// convergence 5 proof for this call site: the in-memory engine's legacy
+// switch excluded not_contains, contains_any, and not_in (7 of 10
+// operators); every one of the ten now evaluates for real.
+func TestEvaluateCondition_MemoryEngine_AllTenOperatorsSupported(t *testing.T) {
+	engine := &DynamicPolicyEngine{}
+	req := OrchestratorRequest{Query: "hello world", RequestType: "query"}
+	result := &PolicyEvaluationResult{RiskScore: 5}
+
+	tests := []struct {
+		operator string
+		cond     PolicyCondition
+		want     bool
+	}{
+		{"equals", PolicyCondition{Field: "request_type", Operator: "equals", Value: "query"}, true},
+		{"not_equals", PolicyCondition{Field: "request_type", Operator: "not_equals", Value: "mutation"}, true},
+		{"contains", PolicyCondition{Field: "query", Operator: "contains", Value: "wor"}, true},
+		{"not_contains", PolicyCondition{Field: "query", Operator: "not_contains", Value: "zzz"}, true},
+		{"contains_any", PolicyCondition{Field: "query", Operator: "contains_any", Value: []interface{}{"zzz", "wor"}}, true},
+		{"greater_than", PolicyCondition{Field: "risk_score", Operator: "greater_than", Value: float64(1)}, true},
+		{"less_than", PolicyCondition{Field: "risk_score", Operator: "less_than", Value: float64(10)}, true},
+		{"regex", PolicyCondition{Field: "query", Operator: "regex", Value: "^hel+o"}, true},
+		{"in", PolicyCondition{Field: "request_type", Operator: "in", Value: []interface{}{"query", "mutation"}}, true},
+		{"not_in", PolicyCondition{Field: "request_type", Operator: "not_in", Value: []interface{}{"delete", "admin"}}, true},
+	}
+	if len(tests) != 10 {
+		t.Fatalf("expected exactly 10 operators under test, got %d", len(tests))
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operator, func(t *testing.T) {
+			got := engine.evaluateCondition(tt.cond, req, result)
+			if got != tt.want {
+				t.Errorf("operator %q must evaluate for real on the in-memory engine, got %v want %v", tt.operator, got, tt.want)
 			}
 		})
 	}

@@ -1396,98 +1396,9 @@ func TestPolicyService_ValidateCreateRequest(t *testing.T) {
 	}
 }
 
-func TestPolicyService_EvaluateCondition(t *testing.T) {
-	service := &PolicyService{}
-
-	tests := []struct {
-		name      string
-		condition PolicyCondition
-		request   *TestPolicyRequest
-		want      bool
-	}{
-		{
-			name:      "contains - match",
-			condition: PolicyCondition{Field: "query", Operator: "contains", Value: "password"},
-			request:   &TestPolicyRequest{Query: "Show me the password for admin"},
-			want:      true,
-		},
-		{
-			name:      "contains - no match",
-			condition: PolicyCondition{Field: "query", Operator: "contains", Value: "password"},
-			request:   &TestPolicyRequest{Query: "Show me the weather"},
-			want:      false,
-		},
-		{
-			name:      "equals - match",
-			condition: PolicyCondition{Field: "request_type", Operator: "equals", Value: "query"},
-			request:   &TestPolicyRequest{RequestType: "query"},
-			want:      true,
-		},
-		{
-			name:      "equals - no match",
-			condition: PolicyCondition{Field: "request_type", Operator: "equals", Value: "mutation"},
-			request:   &TestPolicyRequest{RequestType: "query"},
-			want:      false,
-		},
-		{
-			name:      "regex - match SSN pattern",
-			condition: PolicyCondition{Field: "query", Operator: "regex", Value: `\d{3}-\d{2}-\d{4}`},
-			request:   &TestPolicyRequest{Query: "Find record for 123-45-6789"},
-			want:      true,
-		},
-		{
-			name:      "regex - no match",
-			condition: PolicyCondition{Field: "query", Operator: "regex", Value: `\d{3}-\d{2}-\d{4}`},
-			request:   &TestPolicyRequest{Query: "Find record for John Doe"},
-			want:      false,
-		},
-		{
-			name:      "user field - match",
-			condition: PolicyCondition{Field: "user.role", Operator: "equals", Value: "admin"},
-			request:   &TestPolicyRequest{User: map[string]interface{}{"role": "admin"}},
-			want:      true,
-		},
-		{
-			name: "contains_any - match",
-			condition: PolicyCondition{
-				Field:    "query",
-				Operator: "contains_any",
-				Value:    []interface{}{"ssn", "password", "secret"},
-			},
-			request: &TestPolicyRequest{Query: "Show me the password"},
-			want:    true,
-		},
-		{
-			name: "in - match",
-			condition: PolicyCondition{
-				Field:    "request_type",
-				Operator: "in",
-				Value:    []interface{}{"query", "mutation"},
-			},
-			request: &TestPolicyRequest{RequestType: "query"},
-			want:    true,
-		},
-		{
-			name: "not_in - match",
-			condition: PolicyCondition{
-				Field:    "request_type",
-				Operator: "not_in",
-				Value:    []interface{}{"admin", "delete"},
-			},
-			request: &TestPolicyRequest{RequestType: "query"},
-			want:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := service.evaluateCondition(tt.condition, tt.request)
-			if got != tt.want {
-				t.Errorf("evaluateCondition() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+// #3296: TestPolicyService_EvaluateCondition was relocated to
+// policy_api_service_test.go — it exercises PolicyService.evaluateCondition
+// (policy_api_service.go), not anything in this handler file.
 
 func TestPolicyAPIHandler_CORSHeaders(t *testing.T) {
 	handler := &PolicyAPIHandler{}
@@ -1873,6 +1784,37 @@ func TestPolicyService_ValidateUpdateRequest(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// An explicitly-provided empty conditions array (a JSON `[]`
+			// body, which unmarshals to a non-nil, zero-length slice) must
+			// be rejected the same way validateCreateRequest rejects one on
+			// create — the platform may seed a condition-less policy, a
+			// customer may not author one. Without this guard,
+			// `req.Conditions != nil` lets this through with no error — the
+			// loop runs zero times — so a caller could PUT a block-action
+			// policy down to zero conditions, and since zero/absent
+			// conditions vacuously matches everything, that row would deny
+			// every request for the tenant.
+			name: "explicit empty conditions array is rejected",
+			req: UpdatePolicyRequest{
+				Conditions: []PolicyCondition{},
+			},
+			wantErr: true,
+		},
+		{
+			// The other half of the same fix: `Conditions` left nil (the
+			// field omitted from the request body) must still mean "leave
+			// conditions unchanged" and must NOT be rejected. This is the
+			// only field in UpdatePolicyRequest with three JSON-level
+			// states (omitted / explicit `[]` / explicit non-empty), and
+			// this test is what pins that omitted keeps working after the
+			// explicit-empty fix above.
+			name: "nil (omitted) conditions still means unchanged",
+			req: UpdatePolicyRequest{
+				Conditions: nil,
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid action in update",
 			req: UpdatePolicyRequest{
 				Actions: []PolicyAction{
@@ -1923,218 +1865,13 @@ func TestPolicyService_ValidateUpdateRequest(t *testing.T) {
 	}
 }
 
-func TestPolicyService_EvaluateConditions(t *testing.T) {
-	service := &PolicyService{}
-
-	tests := []struct {
-		name       string
-		conditions []PolicyCondition
-		request    *TestPolicyRequest
-		want       bool
-	}{
-		{
-			name: "all conditions match",
-			conditions: []PolicyCondition{
-				{Field: "query", Operator: "contains", Value: "password"},
-				{Field: "request_type", Operator: "equals", Value: "query"},
-			},
-			request: &TestPolicyRequest{
-				Query:       "show me the password",
-				RequestType: "query",
-			},
-			want: true,
-		},
-		{
-			name: "first condition fails",
-			conditions: []PolicyCondition{
-				{Field: "query", Operator: "contains", Value: "secret"},
-				{Field: "request_type", Operator: "equals", Value: "query"},
-			},
-			request: &TestPolicyRequest{
-				Query:       "show me the password",
-				RequestType: "query",
-			},
-			want: false,
-		},
-		{
-			name: "second condition fails",
-			conditions: []PolicyCondition{
-				{Field: "query", Operator: "contains", Value: "password"},
-				{Field: "request_type", Operator: "equals", Value: "mutation"},
-			},
-			request: &TestPolicyRequest{
-				Query:       "show me the password",
-				RequestType: "query",
-			},
-			want: false,
-		},
-		{
-			name:       "empty conditions matches",
-			conditions: []PolicyCondition{},
-			request: &TestPolicyRequest{
-				Query: "anything",
-			},
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := service.evaluateConditions(tt.conditions, tt.request)
-			if got != tt.want {
-				t.Errorf("evaluateConditions() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPolicyService_EvaluateOperator_Additional(t *testing.T) {
-	service := &PolicyService{}
-
-	tests := []struct {
-		name           string
-		operator       string
-		fieldValue     interface{}
-		conditionValue interface{}
-		want           bool
-	}{
-		{
-			name:           "not_equals match",
-			operator:       "not_equals",
-			fieldValue:     "foo",
-			conditionValue: "bar",
-			want:           true,
-		},
-		{
-			name:           "not_equals no match",
-			operator:       "not_equals",
-			fieldValue:     "foo",
-			conditionValue: "foo",
-			want:           false,
-		},
-		{
-			name:           "not_contains match",
-			operator:       "not_contains",
-			fieldValue:     "hello world",
-			conditionValue: "foo",
-			want:           true,
-		},
-		{
-			name:           "not_contains no match",
-			operator:       "not_contains",
-			fieldValue:     "hello world",
-			conditionValue: "world",
-			want:           false,
-		},
-		{
-			name:           "contains_any no match",
-			operator:       "contains_any",
-			fieldValue:     "hello world",
-			conditionValue: []interface{}{"foo", "bar"},
-			want:           false,
-		},
-		{
-			name:           "regex invalid pattern",
-			operator:       "regex",
-			fieldValue:     "test",
-			conditionValue: "[invalid",
-			want:           false,
-		},
-		{
-			name:           "regex non-string value",
-			operator:       "regex",
-			fieldValue:     "test",
-			conditionValue: 123,
-			want:           false,
-		},
-		{
-			name:           "in no match",
-			operator:       "in",
-			fieldValue:     "foo",
-			conditionValue: []interface{}{"bar", "baz"},
-			want:           false,
-		},
-		{
-			name:           "not_in match when value not in list",
-			operator:       "not_in",
-			fieldValue:     "foo",
-			conditionValue: []interface{}{"bar", "baz"},
-			want:           true,
-		},
-		{
-			name:           "not_in no match when value in list",
-			operator:       "not_in",
-			fieldValue:     "bar",
-			conditionValue: []interface{}{"bar", "baz"},
-			want:           false,
-		},
-		{
-			name:           "unknown operator",
-			operator:       "unknown_op",
-			fieldValue:     "foo",
-			conditionValue: "bar",
-			want:           false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := service.evaluateOperator(tt.operator, tt.fieldValue, tt.conditionValue)
-			if got != tt.want {
-				t.Errorf("evaluateOperator() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPolicyService_EvaluateCondition_Additional(t *testing.T) {
-	service := &PolicyService{}
-
-	tests := []struct {
-		name      string
-		condition PolicyCondition
-		request   *TestPolicyRequest
-		want      bool
-	}{
-		{
-			name:      "context field match",
-			condition: PolicyCondition{Field: "context.env", Operator: "equals", Value: "production"},
-			request: &TestPolicyRequest{
-				Context: map[string]interface{}{"env": "production"},
-			},
-			want: true,
-		},
-		{
-			name:      "context field no match",
-			condition: PolicyCondition{Field: "context.env", Operator: "equals", Value: "production"},
-			request: &TestPolicyRequest{
-				Context: map[string]interface{}{"env": "staging"},
-			},
-			want: false,
-		},
-		{
-			name:      "user field nil user",
-			condition: PolicyCondition{Field: "user.role", Operator: "equals", Value: "admin"},
-			request:   &TestPolicyRequest{User: nil},
-			want:      false,
-		},
-		{
-			name:      "unknown field",
-			condition: PolicyCondition{Field: "unknown_field", Operator: "equals", Value: "test"},
-			request:   &TestPolicyRequest{Query: "test"},
-			want:      false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := service.evaluateCondition(tt.condition, tt.request)
-			if got != tt.want {
-				t.Errorf("evaluateCondition() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
+// #3296: TestPolicyService_EvaluateConditions,
+// TestPolicyService_EvaluateOperator_Additional (relocated as
+// TestPolicyTestEvaluator_Operators — evaluateOperator itself was deleted;
+// its logic lives in the shared substrate now), and
+// TestPolicyService_EvaluateCondition_Additional were relocated to
+// policy_api_service_test.go for the same reason as
+// TestPolicyService_EvaluateCondition above.
 
 func TestPolicyService_ValidateCondition(t *testing.T) {
 	service := &PolicyService{}
@@ -2173,6 +1910,18 @@ func TestPolicyService_ValidateCondition(t *testing.T) {
 			name:      "valid contains",
 			condition: PolicyCondition{Field: "query", Operator: "contains", Value: "test"},
 			wantErr:   false,
+		},
+		{
+			// #3296 convergence 4's authoring-side pairing: a non-string
+			// regex Value used to silently skip the compile check here
+			// (`if str, ok := cond.Value.(string); ok` only ran the check
+			// when it was already a string) and could still match at
+			// evaluation time on the in-memory engine's now-deleted
+			// stringify-and-compile fallback. Reject it outright so this
+			// shape cannot be authored going forward.
+			name:      "non-string regex value is rejected",
+			condition: PolicyCondition{Field: "query", Operator: "regex", Value: 1.5},
+			wantErr:   true,
 		},
 	}
 

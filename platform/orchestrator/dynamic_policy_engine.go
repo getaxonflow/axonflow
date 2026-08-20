@@ -28,9 +28,34 @@ import (
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/sqli"
 	sharedidentity "axonflow/platform/shared/identity"
+	sharedpolicy "axonflow/platform/shared/policy"
 
 	_ "github.com/lib/pq"
 )
+
+// memoryConditionEvaluator is the shared substrate (#3296,
+// platform/shared/policy/condition_evaluator.go). The #3296 Slice 1
+// convergence pass deleted every per-caller behavior knob this engine used
+// to set (case sensitivity, numeric-string coercion, regex value type, and
+// the operator-subset restriction) — this engine now evaluates the full
+// ten-operator union with the same semantics as every other call site; see
+// the shared type's doc comment for the convergence record (what changed,
+// for which caller, in which direction). Slice 2 removed the last knob, the
+// per-caller unknown-operator log hook — this engine's condition of
+// unevaluability (unknown operator, non-numeric operand, non-string regex
+// pattern) now reports through memoryUnevaluableRecorder
+// (condition_unevaluable_metrics.go), passed into Match per call instead of
+// configured on the struct. A zero-condition policy vacuously matches — see
+// evaluatePolicy below and the shared type's "Withdrawn" doc section for why
+// a brief attempt at making that a non-match was reverted. It is a package-level
+// value — not a struct field — because it holds no per-engine state and
+// every construction path, including the direct `&DynamicPolicyEngine{...}`
+// struct literals used throughout this package's tests, must get the exact
+// same configured evaluator without having to remember to initialize a
+// field. Constructed once, never per-request — condition evaluation runs on
+// every policy check, so a per-request allocation here would be a needless
+// hot-path cost.
+var memoryConditionEvaluator = sharedpolicy.ConditionEvaluator{}
 
 // DynamicPolicyEngine evaluates policies based on request content and context.
 // It supports both in-memory and database-backed policy storage with automatic
@@ -604,7 +629,19 @@ func (e *DynamicPolicyEngine) logPolicyHit(orgID, policyID, userID string, allow
 	}
 }
 
-// evaluatePolicy checks if a policy's conditions are met
+// evaluatePolicy checks if a policy's conditions are met. No conditions
+// means the policy applies to everything — AND over an empty set is
+// vacuously true, the same as an empty `WHERE` clause matching every row.
+// See the shared evaluator's "Withdrawn" doc section (condition_evaluator.go)
+// for why a stricter "zero conditions never matches" guard briefly lived
+// here and was reverted: the platform's own condition-less seed/fallback
+// policies are meant to apply unconditionally, and the exposure that guard
+// existed to prevent (a zero-condition row nobody meant to write, carrying a
+// block action) is now closed at the authoring/load boundary instead —
+// validateCreateRequest and validateUpdateRequest both reject an
+// empty/explicitly-cleared conditions list, and a stored conditions blob
+// that fails to parse is skipped rather than cached as indistinguishable
+// from a genuinely empty one.
 func (e *DynamicPolicyEngine) evaluatePolicy(ctx context.Context, policy DynamicPolicy, req OrchestratorRequest, result *PolicyEvaluationResult) bool {
 	// All conditions must be met (AND logic)
 	for _, condition := range policy.Conditions {
@@ -615,29 +652,44 @@ func (e *DynamicPolicyEngine) evaluatePolicy(ctx context.Context, policy Dynamic
 	return true
 }
 
-// evaluateCondition checks if a single condition is met
+// evaluateCondition checks if a single condition is met.
+//
+// #3296: delegates the operator logic to memoryConditionEvaluator
+// (the shared substrate). Field resolution stays exactly as it was —
+// getFieldValue is untouched and always resolves (ok=true unconditionally,
+// matching 1a's legacy shape: this engine's evaluateCondition never
+// short-circuited to false based on field resolvability the way the MCP
+// handler and policy-test evaluator do; getFieldValue's own "unrecognized
+// field" path already collapses to a nil value here, and that nil is passed
+// into the operator switch exactly as before).
+//
+// The shared evaluator's matchRegexCondition deliberately discards a regex
+// compile error rather than logging it (condition_evaluator.go: "outside
+// this pure-function evaluator's job") — legacy matchRegex logged
+// "Regex error: %v" on a bad pattern. Reproduced here with a side-effect-free
+// pre-check so that diagnostic stays intact; the verdict (false on a bad
+// pattern) is unaffected either way. Before #3296's convergence 4, this
+// engine's own legacy regex arm compiled fmt.Sprint(condition.Value)
+// unconditionally, even for a non-string Value; the shared evaluator now
+// requires a Go string (matching the other three call sites), so the
+// pre-check below only attempts a compile when Value is actually a string —
+// otherwise there is nothing to diagnose, since matchRegexCondition never
+// attempts one either.
 func (e *DynamicPolicyEngine) evaluateCondition(condition PolicyCondition, req OrchestratorRequest, result *PolicyEvaluationResult) bool {
-	fieldValue := e.getFieldValue(condition.Field, req, result)
-
-	switch condition.Operator {
-	case "contains":
-		return strings.Contains(strings.ToLower(fmt.Sprint(fieldValue)), strings.ToLower(fmt.Sprint(condition.Value)))
-	case "equals":
-		return fmt.Sprint(fieldValue) == fmt.Sprint(condition.Value)
-	case "not_equals":
-		return fmt.Sprint(fieldValue) != fmt.Sprint(condition.Value)
-	case "greater_than":
-		return compareNumeric(fieldValue, condition.Value, ">")
-	case "less_than":
-		return compareNumeric(fieldValue, condition.Value, "<")
-	case "regex":
-		return matchRegex(fmt.Sprint(fieldValue), fmt.Sprint(condition.Value))
-	case "in":
-		return contains(condition.Value, fieldValue)
-	default:
-		log.Printf("Unknown operator: %s", condition.Operator)
-		return false
+	if condition.Operator == "regex" {
+		if pattern, ok := condition.Value.(string); ok {
+			if _, err := regexp.Compile(pattern); err != nil {
+				log.Printf("Regex error: %v", err)
+			}
+		}
 	}
+	return memoryConditionEvaluator.Match(
+		sharedpolicy.MatchCondition{Field: condition.Field, Operator: condition.Operator, Value: condition.Value},
+		func(field string) (any, bool) {
+			return e.getFieldValue(field, req, result), true
+		},
+		memoryUnevaluableRecorder,
+	)
 }
 
 // getFieldValue extracts a field value from the request or result
@@ -956,6 +1008,37 @@ func (e *DynamicPolicyEngine) ListActivePoliciesForTenant(tenantID string, segme
 		active = append(active, policy)
 	}
 	return active
+}
+
+// LookupSegmentID returns the SegmentID (ADR-060 #2989 P3b) of a cached
+// policy by its ID (policy_id — matching PolicyResource.ID and
+// dynamic_policies.policy_id, see loadPoliciesFromDB), and whether the policy
+// was found in this engine's cache.
+//
+// #3296: used by PolicyService.TestPolicy (policy_api_service.go) as a
+// best-effort source of a policy's segment scope. PolicyResource — the
+// policy-API's own representation of a policy — does not carry a SegmentID
+// field, and PolicyRepository.GetByID's SELECT does not fetch
+// dynamic_policies.segment_id; that is a structural gap in those types, not
+// something TestPolicy can fix locally. This engine's already-loaded cache
+// (populated from the SAME dynamic_policies table, including segment_id) is
+// the best available source until that gap is closed.
+//
+// found=false means "not cached on this engine" — NOT "not segment-scoped".
+// Callers MUST NOT conflate the two: treating a lookup miss as "definitely
+// unscoped" could let a segment-scoped policy's test-preview report a match
+// for a non-member, the exact #3266 disclosure class this epic exists to
+// close. See TestPolicy's doc for how a miss is handled (degrade
+// observably, never silently widen).
+func (e *DynamicPolicyEngine) LookupSegmentID(policyID string) (segmentID string, found bool) {
+	e.policyMutex.RLock()
+	defer e.policyMutex.RUnlock()
+	for _, p := range e.policies {
+		if p.ID == policyID {
+			return p.SegmentID, true
+		}
+	}
+	return "", false
 }
 
 // IsHealthy checks if the policy engine is healthy
@@ -1421,52 +1504,23 @@ func policyDebugEnabled() bool {
 }
 
 // Utility functions
-func compareNumeric(a, b interface{}, operator string) bool {
-	aFloat, aOk := toFloat64(a)
-	bFloat, bOk := toFloat64(b)
-
-	if !aOk || !bOk {
-		return false
-	}
-
-	switch operator {
-	case ">":
-		return aFloat > bFloat
-	case "<":
-		return aFloat < bFloat
-	case ">=":
-		return aFloat >= bFloat
-	case "<=":
-		return aFloat <= bFloat
-	default:
-		return false
-	}
-}
-
-func toFloat64(v interface{}) (float64, bool) {
-	switch val := v.(type) {
-	case float64:
-		return val, true
-	case float32:
-		return float64(val), true
-	case int:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	default:
-		return 0, false
-	}
-}
-
-func matchRegex(text, pattern string) bool {
-	matched, err := regexp.MatchString(pattern, text)
-	if err != nil {
-		log.Printf("Regex error: %v", err)
-		return false
-	}
-	return matched
-}
-
+//
+// #3296: compareNumeric, the package-level toFloat64, and matchRegex
+// were deleted here — their logic now lives in
+// platform/shared/policy/condition_evaluator.go (memoryConditionEvaluator
+// above), and grep confirmed no caller outside the old evaluateCondition
+// remained:
+//   - compareNumeric: only dynamic_policy_engine.go:630,632 (deleted) and its
+//     own test (deleted).
+//   - toFloat64 (package-level): only called from compareNumeric (deleted)
+//     and its own test (deleted). NOTE: DatabaseDynamicPolicyEngine.toFloat64
+//     in db_dynamic_policies.go is a DIFFERENT, method-scoped function and is
+//     handled separately in that file.
+//   - matchRegex: only dynamic_policy_engine.go:634 (deleted) and its own
+//     test (deleted).
+//
+// contains (below) is KEPT: response_processor.go:518,635,684 call it
+// directly, so it is not orphaned by this rewiring.
 func contains(slice interface{}, item interface{}) bool {
 	switch s := slice.(type) {
 	case []string:

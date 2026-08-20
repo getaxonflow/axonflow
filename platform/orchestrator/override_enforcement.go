@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"axonflow/platform/agent"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // ActiveOverride represents a single row from policy_overrides matched
@@ -121,6 +122,18 @@ func FindActiveOverride(ctx context.Context, db *sql.DB, scopeOrg, tenantID, use
 // createOverrideHandler (overrides_handler.go) already refuses to create an
 // override against such a policy, so nothing here can honor one that was
 // never created. SegmentID on the detail is attribution/audit only.
+//
+// #3296 (Slice 2): the per-policy eligibility check (risk_level != critical
+// AND allow_override) now routes through the single shared implementation,
+// platform/shared/policy.IsOverrideEligible — previously duplicated here,
+// in SelectOverridablePolicy below, and in the agent's
+// applyOverrideToCheckInputBlock. The shared/policy package also carries
+// EffectiveOverride, a DIFFERENT precedence primitive for the unrelated
+// admin tier-downgrade override mechanism (GetEffectiveAction /
+// static_policy_repository.go's inline map) — that one DOES exclude
+// segment-scoped policies, by design, unlike this function. See
+// platform/shared/policy/override.go's package doc for the full
+// divergence table; do not conflate the two mechanisms.
 func ApplyOverrideToResult(
 	ctx context.Context,
 	db *sql.DB,
@@ -136,7 +149,14 @@ func ApplyOverrideToResult(
 	}
 
 	for _, p := range result.AppliedPoliciesDetail {
-		if p.RiskLevel == "critical" || !p.AllowOverride {
+		// Eligibility gate factored into the shared primitive (#3296 Slice 2)
+		// — identical logic to SelectOverridablePolicy below and to the
+		// agent's applyOverrideToCheckInputBlock. See
+		// platform/shared/policy/override.go's doc comment for why this is
+		// the ONLY piece of ApplyOverrideToResult's decision that routes
+		// through the shared primitive: SegmentID is deliberately NOT
+		// consulted here (see this function's doc comment above).
+		if !sharedpolicy.IsOverrideEligible(p.RiskLevel, p.AllowOverride) {
 			continue
 		}
 
@@ -160,6 +180,7 @@ func ApplyOverrideToResult(
 			logger.LogOverrideEvent(ctx, AuditEventOverrideUsed, &OverrideAuditEntry{
 				OverrideID:    ov.ID,
 				PolicyIDs:     []string{p.PolicyID},
+				PolicyNames:   []string{p.PolicyName}, // #3365: evaluation-time name
 				TenantID:      tenantID,
 				OrgID:         orgID,
 				UserEmail:     userEmail,
@@ -179,7 +200,7 @@ func ApplyOverrideToResult(
 // qualify. Exposed for testing and for the explain handler.
 func SelectOverridablePolicy(policies []AppliedPolicyDetail) *AppliedPolicyDetail {
 	for i, p := range policies {
-		if p.RiskLevel != "critical" && p.AllowOverride {
+		if sharedpolicy.IsOverrideEligible(p.RiskLevel, p.AllowOverride) {
 			return &policies[i]
 		}
 	}

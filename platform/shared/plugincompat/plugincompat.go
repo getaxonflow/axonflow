@@ -84,6 +84,13 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - openclaw 2.8.5 -> 2.8.6 (openclaw-plugin#170/#171/#172, riding the
+//     v9.19.0 train): every surface that renders a remote-influenced endpoint
+//     or identity string on a terminal sanitises it, so a hostile registrar
+//     cannot rewrite the "governance is OFF" warning into a fabricated
+//     "governance active" line; and a 403 under onError:"allow" now emits the
+//     ungoverned-fail-open notice instead of running governed tools with no
+//     signal at all. Below the recommended version both remain unannounced.
 //   - openclaw 2.8.4 -> 2.8.5 (openclaw-plugin#167/#169, published 2026-07-30):
 //     the status surfaces report the endpoint and identity the governance
 //     runtime actually uses, a governed call that proceeds because the endpoint
@@ -95,7 +102,7 @@ var minVersion = map[string]string{
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.8.5",
+	"openclaw":       "2.8.6",
 	"claude-code":    "1.11.0",
 	"cursor":         "1.7.0",
 	"codex":          "1.7.0",

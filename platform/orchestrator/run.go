@@ -270,6 +270,29 @@ var (
 			Help: "Total number of expired plans cleaned up",
 		},
 	)
+	// promPolicyConditionUnevaluableTotal is the #3296 Slice 2 / epic #3293
+	// catch-all for the class of failure where a configured policy silently
+	// does not enforce: a dynamic-policy condition that could not be
+	// genuinely evaluated (as opposed to being evaluated and simply not
+	// matching) is otherwise indistinguishable from a legitimate no-match.
+	// reason is one of the sharedpolicy.Reason* constants (a closed set:
+	// unknown_operator, empty_conditions, non_numeric_operand,
+	// non_string_pattern, conditions_unmarshal_failed, field_unresolved) —
+	// never a policy ID, tenant ID, field name, or operator value, so this
+	// stays low-cardinality by construction. plane identifies the call site:
+	// "memory" (DynamicPolicyEngine), "database" (DatabaseDynamicPolicyEngine),
+	// "mcp" (MCPDynamicPolicyHandler), or "policy_test" (PolicyService.TestPolicy).
+	// See condition_unevaluable_metrics.go for the adapter that binds plane
+	// per call site and satisfies sharedpolicy.UnevaluableRecorder — that
+	// indirection is what keeps platform/shared/policy free of a Prometheus
+	// import.
+	promPolicyConditionUnevaluableTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_policy_condition_unevaluable_total",
+			Help: "Count of dynamic-policy conditions that could not be evaluated (unknown operator, non-numeric operand, non-string regex pattern, corrupt/empty conditions, or an unresolved field), labeled by reason and plane. A policy that silently fails to enforce is otherwise invisible (epic #3293).",
+		},
+		[]string{"reason", "plane"},
+	)
 )
 
 func init() {
@@ -280,6 +303,7 @@ func init() {
 	prometheus.MustRegister(promBlockedRequests)
 	prometheus.MustRegister(promLLMCalls)
 	prometheus.MustRegister(promPlanCleanups)
+	prometheus.MustRegister(promPolicyConditionUnevaluableTotal)
 }
 
 // Request structures

@@ -5,6 +5,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	sharedaudit "axonflow/platform/shared/audit"
@@ -26,8 +27,14 @@ const (
 // (at the AuditEntry level) discriminates which lifecycle transition
 // occurred.
 type OverrideAuditEntry struct {
-	OverrideID    string
-	PolicyIDs     []string
+	OverrideID string
+	PolicyIDs  []string
+	// PolicyNames are the evaluation-time display names for PolicyIDs
+	// (#3365), threaded from AppliedPolicyDetail.PolicyName at the
+	// override_used call site. Empty for created/revoked lifecycle events,
+	// which have no evaluation in flight (their rows honestly render ids
+	// only). Never populated from a write-time catalog lookup.
+	PolicyNames   []string
 	TenantID      string
 	OrgID         string
 	ClientID      string
@@ -55,6 +62,13 @@ func (l *AuditLogger) LogOverrideEvent(ctx context.Context, eventType string, en
 		"ttl_seconds":   entry.TTLSeconds,
 		"requested_ttl": entry.RequestedTTL,
 		"clamped":       entry.Clamped,
+	}
+	// #3365: display names beside the ids so the portal resolver and the
+	// exporters stop rendering raw ids for override_used rows (the agent-side
+	// writeOverrideUsedEvent stamps the same). Empty entries are dropped; a
+	// wholly-unnamed event omits the key so the reader's marker stays honest.
+	if names := nonEmptyStrings(entry.PolicyNames); len(names) > 0 {
+		policyDetails["policy_names"] = names
 	}
 	if entry.ToolSignature != "" {
 		policyDetails["tool_signature"] = entry.ToolSignature
@@ -98,4 +112,19 @@ func IsOverrideEventType(eventType string) bool {
 		return true
 	}
 	return false
+}
+
+// nonEmptyStrings returns in without empty/whitespace-only entries, nil when
+// none survive.
+func nonEmptyStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
