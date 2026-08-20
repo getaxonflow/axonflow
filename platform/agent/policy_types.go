@@ -6,6 +6,8 @@ package agent
 import (
 	"encoding/json"
 	"time"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // StaticPolicy represents a static policy with full tier/category support.
@@ -182,16 +184,16 @@ type StaticPolicyVersion struct {
 	Snapshot json.RawMessage `json:"snapshot" db:"snapshot"`
 
 	// Change metadata
-	ChangeType    string `json:"change_type" db:"change_type"`
-	ChangeSummary string `json:"change_summary,omitempty" db:"change_summary"`
-	ChangedBy     string `json:"changed_by,omitempty" db:"changed_by"`
+	ChangeType    string    `json:"change_type" db:"change_type"`
+	ChangeSummary string    `json:"change_summary,omitempty" db:"change_summary"`
+	ChangedBy     string    `json:"changed_by,omitempty" db:"changed_by"`
 	ChangedAt     time.Time `json:"changed_at" db:"changed_at"`
 }
 
 // EffectivePolicies represents the computed effective policies for a tenant.
 // This includes system, organization, and tenant policies with overrides applied.
 type EffectivePolicies struct {
-	Static  []EffectiveStaticPolicy `json:"static"`
+	Static  []EffectiveStaticPolicy  `json:"static"`
 	Dynamic []EffectiveDynamicPolicy `json:"dynamic"`
 
 	// Metadata
@@ -201,6 +203,18 @@ type EffectivePolicies struct {
 }
 
 // EffectiveStaticPolicy is a static policy with any overrides applied.
+//
+// action_override and enabled_override are independently-nullable columns on
+// policy_overrides (see platform/shared/policy/override.go's package doc):
+// a tenant row can disable a policy while a DIFFERENT org row downgrades its
+// action, both in effect at once. OverrideAction/OverrideEnabled below carry
+// the resolved value of each attribute independently (either may be set
+// without the other). OverrideReason/OverrideExpiresAt remain single legacy
+// fields for wire compatibility and are populated from ONE representative
+// contributing row (the action row if there is one, else the enabled row) —
+// they must not be read as "the" override when more than one row
+// contributed; OverrideContributions carries the full, per-row attribution
+// (one entry per contributing row, each with its own reason and expiry).
 type EffectiveStaticPolicy struct {
 	StaticPolicy
 
@@ -210,6 +224,13 @@ type EffectiveStaticPolicy struct {
 	OverrideEnabled   *bool           `json:"override_enabled,omitempty"`
 	OverrideExpiresAt *time.Time      `json:"override_expires_at,omitempty"`
 	OverrideReason    string          `json:"override_reason,omitempty"`
+	// OverrideContributions is every policy_overrides row that contributed
+	// to HasOverride/OverrideAction/OverrideEnabled above, each attributed
+	// with its own reason and expiry (see sharedpolicy.OverrideContribution).
+	// One or two entries when HasOverride is true (a policy has at most one
+	// contributing tenant-scope decision and one contributing org-scope
+	// decision, per attribute); empty otherwise.
+	OverrideContributions []sharedpolicy.OverrideContribution `json:"override_contributions,omitempty"`
 }
 
 // EffectiveAction returns the effective action considering any override.

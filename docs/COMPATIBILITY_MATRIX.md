@@ -2,9 +2,9 @@
 
 This document maps platform versions to minimum SDK versions and the features each release introduced.
 
-**Current (platform 9.14.0):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.1.0** (Rust **0.8.1**). These floors are what the platform `/health` endpoint advertises (`min_sdk_version` / `recommended_sdk_version`).
+**Current (platform 9.19.0):** minimum SDK **8.0.0** (Go/Python/TypeScript/Java; Rust **0.7.0**), recommended SDK **9.1.1** for Go and **9.1.0** for Python/TypeScript/Java (Rust **0.8.2**). These floors are what the platform `/health` endpoint advertises (`min_sdk_version` / `recommended_sdk_version`).
 
-> **Note on version numbers:** SDK versions are deliberately decoupled from platform versions. The Go SDK's module path tracks its major: SDK 8.x is `github.com/getaxonflow/axonflow-sdk-go/v8`, SDK 9.x is `.../v9`. The Rust SDK is on an independent 0.x line (currently 0.8.1) and does not carry the 9.0.0 LangGraph/computer-use adapters.
+> **Note on version numbers:** SDK versions are deliberately decoupled from platform versions. The Go SDK's module path tracks its major: SDK 8.x is `github.com/getaxonflow/axonflow-sdk-go/v8`, SDK 9.x is `.../v9`. The Rust SDK is on an independent 0.x line (currently 0.8.2) and does not carry the 9.0.0 LangGraph/computer-use adapters.
 
 ## Version Compatibility
 

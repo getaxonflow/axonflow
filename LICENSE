@@ -37,6 +37,39 @@ Additional Use Grant: You may make production use of the Licensed Work, provided
                       offering. AxonFlow considers your organization to include all
                       of your affiliates under common control.
 
+                      Production use of a copy of the original or modified
+                      Licensed Work, or of a derivative work of the Licensed
+                      Work, is permitted by this Additional Use Grant only
+                      while, in that copy or work:
+
+                      (a) license key functionality in the Licensed Work has
+                      not been moved, changed, disabled, removed, or
+                      circumvented; and
+
+                      (b) no value in the Licensed Work used by a usage-limit
+                      or feature-gating mechanism has been changed for the
+                      purpose or with the effect of raising or avoiding a
+                      usage limit, or enabling a feature, relative to the
+                      corresponding unmodified AxonFlow distribution from
+                      which that copy or work was made, given the same
+                      externally supplied configuration and license key; and
+                      no such mechanism has been changed, disabled, removed,
+                      obscured, or circumvented for that purpose or with that
+                      effect.
+
+                      Condition (b) does not apply to setting or supplying a
+                      configuration value through a mechanism that the
+                      Licensed Work, as distributed by AxonFlow, provides for
+                      that purpose.
+
+                      For clarity, the preceding paragraphs condition
+                      production use only. They do not limit the rights
+                      granted by the License to copy, modify, create
+                      derivative works, redistribute, or make non-production
+                      use of the Licensed Work. Nothing in this paragraph
+                      limits the operation of the termination provision in
+                      the License.
+
 Change Date:          Four years from the date the Licensed Work is published.
 Change License:       Apache License, Version 2.0
 

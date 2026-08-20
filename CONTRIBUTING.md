@@ -488,7 +488,7 @@ cd platform/agent && go test ./...
 make test-coverage
 
 # Test migrations
-./scripts/local-dev/test-migrations.sh
+docker compose up -d   # migrations apply automatically on boot; watch with: docker compose logs -f axonflow-agent
 ```
 
 ### Test Coverage Requirements
@@ -742,7 +742,7 @@ docker compose restart axonflow-agent
 touch migrations/NNN_description.sql
 
 # Test migration
-./scripts/local-dev/test-migrations.sh
+docker compose up -d   # migrations apply automatically on boot; watch with: docker compose logs -f axonflow-agent
 
 # Verify in database
 docker compose exec postgres psql -U axonflow -d axonflow -c "\\dt"

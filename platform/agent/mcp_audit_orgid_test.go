@@ -97,7 +97,7 @@ func TestWriteOverrideUsedEvent_OrgIDPersisted(t *testing.T) {
 	writeOverrideUsedEvent(context.Background(), db,
 		"override-1", "decision-1",
 		"travel_tenant", wantOrgID, "client-xyz", "bob@example.com",
-		"policy-1", 7,
+		"policy-1", "Policy One", 7,
 		"corr-trace-ovr-1")
 
 	if err := mock.ExpectationsWereMet(); err != nil {

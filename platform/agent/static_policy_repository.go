@@ -18,6 +18,7 @@ import (
 	"github.com/lib/pq"
 
 	"axonflow/platform/agent/license"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // Static policy limits
@@ -994,12 +995,15 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 	//     static overrides (both org-owned rows, same scope);
 	//   pass B ('global' scope): system-tier rows (org_id='global', mig 153).
 	// The per-pass tier predicates keep the sets disjoint on owner-pool
-	// deployments (no RLS), so nothing double-counts. Overrides are applied
-	// in Go from the pass-A map — the old LEFT JOIN could not see the
-	// org-owned override rows from inside the 'global' scope, and joining
-	// only on one posture would diverge between postures. (The map also
-	// collapses multiple live overrides on one policy to the latest-created,
-	// where the old join emitted duplicate rows.)
+	// deployments (no RLS), so nothing double-counts.
+	//
+	// #3296 Step B: the static_policies read for both passes now goes
+	// through sharedpolicy.ScanEffectivePolicyRows (platform/shared/policy/
+	// loader.go) — the SAME loader that backs the agent's Phase-1 shared
+	// engine read — so static_policies has exactly one reader across both
+	// evaluation paths. This method still owns the policy_overrides read
+	// (a DIFFERENT table) and the override-precedence resolution, now via
+	// policy.EffectiveOverride (#3296 Step C — see applyEffectiveOverride).
 	scopeOrg := orgIDStr
 	if scopeOrg == "" {
 		scopeOrg = OrgIDFromContext(ctx)
@@ -1017,89 +1021,12 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		segArg = []string{}
 	}
 
-	policyQuery := `
-		SELECT
-			sp.id, sp.policy_id, sp.name, sp.category, sp.pattern, sp.severity,
-			sp.description, sp.action, sp.tier, sp.priority, sp.enabled,
-			sp.organization_id, sp.tenant_id, sp.org_id, sp.segment_id,
-			sp.tags, sp.metadata, sp.version,
-			sp.created_at, sp.updated_at, sp.created_by, sp.updated_by
-		FROM static_policies sp
-		WHERE sp.deleted_at IS NULL
-		  AND sp.enabled = true
-		  AND %s
-	`
-
-	scanPolicies := func(tx *sql.Tx, tierPredicate string, args ...interface{}) ([]StaticPolicy, error) {
-		rows, qErr := tx.QueryContext(ctx, fmt.Sprintf(policyQuery, tierPredicate), args...)
-		if qErr != nil {
-			return nil, qErr
-		}
-		defer rows.Close()
-
-		var out []StaticPolicy
-		for rows.Next() {
-			var policy StaticPolicy
-			var description, createdBy, updatedBy sql.NullString
-			var policyOrgID sql.NullString
-			var segmentID sql.NullString
-			var tagsJSON, metadataJSON sql.NullString
-
-			if sErr := rows.Scan(
-				&policy.ID, &policy.PolicyID, &policy.Name, &policy.Category,
-				&policy.Pattern, &policy.Severity, &description, &policy.Action,
-				&policy.Tier, &policy.Priority, &policy.Enabled,
-				&policy.OrganizationID, &policy.TenantID, &policyOrgID, &segmentID,
-				&tagsJSON, &metadataJSON, &policy.Version,
-				&policy.CreatedAt, &policy.UpdatedAt, &createdBy, &updatedBy,
-			); sErr != nil {
-				continue
-			}
-
-			if description.Valid {
-				policy.Description = description.String
-			}
-			if policyOrgID.Valid {
-				policy.OrgID = policyOrgID.String
-			}
-			if segmentID.Valid && segmentID.String != "" {
-				sid := segmentID.String
-				policy.SegmentID = &sid
-			}
-			if createdBy.Valid {
-				policy.CreatedBy = createdBy.String
-			}
-			if updatedBy.Valid {
-				policy.UpdatedBy = updatedBy.String
-			}
-			if tagsJSON.Valid && tagsJSON.String != "" {
-				if uErr := json.Unmarshal([]byte(tagsJSON.String), &policy.Tags); uErr != nil {
-					policy.Tags = []string{}
-				}
-			}
-			if metadataJSON.Valid && metadataJSON.String != "" {
-				policy.Metadata = json.RawMessage(metadataJSON.String)
-			}
-
-			out = append(out, policy)
-		}
-		return out, rows.Err()
-	}
-
-	type overrideRow struct {
-		id        string
-		action    sql.NullString
-		enabled   sql.NullBool
-		expiresAt sql.NullTime
-		reason    sql.NullString
-	}
-	overrides := make(map[string]overrideRow)
+	overridesByPolicy := make(map[string][]staticOverrideRow)
 
 	// Pass A: the caller org's tenant/org-tier policies + live overrides.
 	var tenantPolicies []StaticPolicy
 	err := WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
-		var pErr error
-		tenantPolicies, pErr = scanPolicies(tx, `(
+		rows, pErr := sharedpolicy.ScanEffectivePolicyRows(ctx, tx, `(
 			(sp.tier = 'organization' AND sp.organization_id::text = $2)
 			OR (sp.tier = 'tenant' AND sp.tenant_id = $1)
 		  )
@@ -1107,15 +1034,25 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		if pErr != nil {
 			return pErr
 		}
+		tenantPolicies = make([]StaticPolicy, 0, len(rows))
+		for _, row := range rows {
+			tenantPolicies = append(tenantPolicies, effectiveRowToStaticPolicy(row))
+		}
 
-		// Live static overrides scoped to (tenant, org) — the same predicate
-		// the old LEFT JOIN carried. ORDER BY created_at so the map keeps the
-		// latest-created override per policy. Overrides carry no segment_id
-		// of their own — the segment exclusion (ADR-060 Decision 1) happens
-		// at the map-lookup site below, keyed on the policy's segment_id.
+		// Live static overrides scoped to (tenant, org). #3296 Step C: also
+		// selects po.tenant_id so each row's SCOPE (tenant vs org) can be
+		// determined — previously unread, which is exactly how the
+		// tenant-beats-org precedence bug (below) went unnoticed: the old
+		// code could not tell scopes apart and resolved precedence by
+		// created_at order alone. ORDER BY created_at is kept so a same-scope
+		// tie (two rows at the identical scope for one policy — should not
+		// happen given PolicyOverrideRepository.Create's duplicate check, but
+		// not schema-enforced) still prefers the latest row for the
+		// non-precedence metadata fields (enabled/expires_at/reason); see
+		// applyEffectiveOverride.
 		oRows, oErr := tx.QueryContext(ctx, `
 			SELECT po.id, po.policy_id::text, po.action_override, po.enabled_override,
-			       po.expires_at, po.override_reason
+			       po.expires_at, po.override_reason, po.tenant_id
 			FROM policy_overrides po
 			WHERE po.policy_type = 'static'
 			  AND (po.expires_at IS NULL OR po.expires_at > NOW())
@@ -1131,11 +1068,20 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		defer oRows.Close()
 		for oRows.Next() {
 			var policyUUID string
-			var o overrideRow
-			if sErr := oRows.Scan(&o.id, &policyUUID, &o.action, &o.enabled, &o.expiresAt, &o.reason); sErr != nil {
+			var o staticOverrideRow
+			var rowTenantID sql.NullString
+			if sErr := oRows.Scan(&o.id, &policyUUID, &o.action, &o.enabled, &o.expiresAt, &o.reason, &rowTenantID); sErr != nil {
 				continue
 			}
-			overrides[policyUUID] = o
+			// The WHERE clause above admits exactly two disjoint shapes: a
+			// tenant_id match (tenant scope) or an organization_id match with
+			// tenant_id IS NULL (org scope) — so tenant_id validity alone
+			// determines which branch produced this row.
+			o.scope = sharedpolicy.OverrideScopeOrg
+			if rowTenantID.Valid && rowTenantID.String != "" {
+				o.scope = sharedpolicy.OverrideScopeTenant
+			}
+			overridesByPolicy[policyUUID] = append(overridesByPolicy[policyUUID], o)
 		}
 		return oRows.Err()
 	})
@@ -1146,11 +1092,17 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 	// Pass B: shared system-tier baseline from the 'global' scope.
 	var systemPolicies []StaticPolicy
 	err = WithOrgScope(ctx, r.db, GlobalOrgSentinel, func(tx *sql.Tx) error {
-		var pErr error
-		systemPolicies, pErr = scanPolicies(tx,
+		rows, pErr := sharedpolicy.ScanEffectivePolicyRows(ctx, tx,
 			`sp.tier = 'system' AND (sp.segment_id IS NULL OR sp.segment_id = ANY($1::text[]))`,
 			pq.Array(segArg))
-		return pErr
+		if pErr != nil {
+			return pErr
+		}
+		systemPolicies = make([]StaticPolicy, 0, len(rows))
+		for _, row := range rows {
+			systemPolicies = append(systemPolicies, effectiveRowToStaticPolicy(row))
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get effective system policies: %w", err)
@@ -1182,30 +1134,175 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 
 	policies := make([]EffectiveStaticPolicy, 0, len(merged))
 	for _, policy := range merged {
-		effective := EffectiveStaticPolicy{StaticPolicy: policy}
-		// Segment-scoped policies never enter the override-downgrade path
-		// (ADR-060 Decision 1): the combiner treats their action as an
-		// unconditional, un-downgradable restriction candidate.
-		if o, ok := overrides[policy.ID]; ok && policy.SegmentID == nil {
-			effective.HasOverride = true
-			if o.action.Valid {
-				action := OverrideAction(o.action.String)
-				effective.OverrideAction = &action
-			}
-			if o.enabled.Valid {
-				effective.OverrideEnabled = &o.enabled.Bool
-			}
-			if o.expiresAt.Valid {
-				effective.OverrideExpiresAt = &o.expiresAt.Time
-			}
-			if o.reason.Valid {
-				effective.OverrideReason = o.reason.String
-			}
-		}
-		policies = append(policies, effective)
+		policies = append(policies, applyEffectiveOverride(policy, overridesByPolicy[policy.ID]))
 	}
 
 	return policies, nil
+}
+
+// effectiveRowToStaticPolicy converts one sharedpolicy.EffectivePolicyRow
+// (the shared loader's GetEffective read shape) into the agent's StaticPolicy
+// type, replicating the pre-#3296 inline scan's NULL-unwrapping exactly.
+func effectiveRowToStaticPolicy(row sharedpolicy.EffectivePolicyRow) StaticPolicy {
+	var policy StaticPolicy
+	policy.ID = row.ID
+	policy.PolicyID = row.PolicyID
+	policy.Name = row.Name
+	policy.Category = row.Category
+	policy.Pattern = row.Pattern
+	policy.Severity = row.Severity
+	if row.Description.Valid {
+		policy.Description = row.Description.String
+	}
+	policy.Action = row.Action
+	policy.Tier = PolicyTier(row.Tier)
+	policy.Priority = row.Priority
+	policy.Enabled = row.Enabled
+	policy.OrganizationID = row.OrganizationID
+	policy.TenantID = row.TenantID
+	if row.OrgID.Valid {
+		policy.OrgID = row.OrgID.String
+	}
+	if row.SegmentID.Valid && row.SegmentID.String != "" {
+		sid := row.SegmentID.String
+		policy.SegmentID = &sid
+	}
+	if row.Tags.Valid && row.Tags.String != "" {
+		if uErr := json.Unmarshal([]byte(row.Tags.String), &policy.Tags); uErr != nil {
+			policy.Tags = []string{}
+		}
+	}
+	if row.Metadata.Valid && row.Metadata.String != "" {
+		policy.Metadata = json.RawMessage(row.Metadata.String)
+	}
+	policy.Version = row.Version
+	policy.CreatedAt = row.CreatedAt
+	policy.UpdatedAt = row.UpdatedAt
+	if row.CreatedBy.Valid {
+		policy.CreatedBy = row.CreatedBy.String
+	}
+	if row.UpdatedBy.Valid {
+		policy.UpdatedBy = row.UpdatedBy.String
+	}
+	return policy
+}
+
+// staticOverrideRow is one policy_overrides row relevant to a static policy's
+// GetEffective override resolution (Mechanism A — admin tier-downgrade — see
+// platform/shared/policy/override.go's package doc for the mechanism split).
+type staticOverrideRow struct {
+	id        string
+	action    sql.NullString
+	enabled   sql.NullBool
+	expiresAt sql.NullTime
+	reason    sql.NullString
+	scope     sharedpolicy.OverrideScope
+}
+
+// applyEffectiveOverride resolves policy's override precedence from every
+// policy_overrides row known for it (rowsForPolicy, spanning both the tenant
+// and org scope, ORDER BY created_at ASC) and returns the EffectiveStaticPolicy.
+//
+// #3296 Step C / #3320: precedence is delegated to
+// sharedpolicy.EffectiveOverride, which resolves the action_override and
+// enabled_override columns as two INDEPENDENT attributes — each nullable,
+// each tenant-beats-org, each latest-within-scope — rather than assuming a
+// single row is "the" override for a policy. This fixes two live bugs the
+// single-winner model had:
+//   - a disable-only row (action_override NULL, enabled_override=false) used
+//     to be silently dropped (the old code only recognized rows with a
+//     non-empty action), so a tenant that deliberately disabled a policy saw
+//     it re-enabled;
+//   - an action-less tenant row used to force scope resolution to "tenant"
+//     and then fail to find any tenant row whose action matched, discarding
+//     a valid org-level action override in the process.
+//
+// Segment-scoped policies (policy.SegmentID != nil) never enter the
+// override-downgrade path at all (ADR-060 Decision 1) — checked here before
+// EffectiveOverride is even consulted, mirroring the pre-#3296 gate exactly;
+// EffectiveOverride's own segmentID!="" check is redundant defense-in-depth
+// for callers that do not pre-gate.
+//
+// OverrideReason/OverrideExpiresAt are legacy single-value fields kept for
+// wire compatibility; they are populated from ONE representative
+// contribution (the action contribution if there is one, else the enabled
+// contribution). OverrideContributions carries the full per-row attribution
+// and must be preferred by any new caller that needs it, since more than one
+// row may be in effect simultaneously — see
+// TestGetEffective_TenantOverrideBeatsLaterCreatedOrgOverride and the Fix-1
+// tests in static_policy_repository_test.go for the precedence coverage.
+func applyEffectiveOverride(policy StaticPolicy, rowsForPolicy []staticOverrideRow) EffectiveStaticPolicy {
+	effective := EffectiveStaticPolicy{StaticPolicy: policy}
+	if policy.SegmentID != nil || len(rowsForPolicy) == 0 {
+		return effective
+	}
+
+	orRows := make([]sharedpolicy.OverrideRow, 0, len(rowsForPolicy))
+	for _, o := range rowsForPolicy {
+		action := ""
+		if o.action.Valid {
+			action = o.action.String
+		}
+		var enabled *bool
+		if o.enabled.Valid {
+			b := o.enabled.Bool
+			enabled = &b
+		}
+		var expiresAt *time.Time
+		if o.expiresAt.Valid {
+			t := o.expiresAt.Time
+			expiresAt = &t
+		}
+		reason := ""
+		if o.reason.Valid {
+			reason = o.reason.String
+		}
+		orRows = append(orRows, sharedpolicy.OverrideRow{
+			PolicyID:  policy.ID,
+			RowID:     o.id,
+			Scope:     o.scope,
+			Action:    action,
+			Enabled:   enabled,
+			Reason:    reason,
+			ExpiresAt: expiresAt,
+		})
+	}
+
+	res := sharedpolicy.EffectiveOverride(policy.ID, "", orRows)
+	if !res.HasOverride {
+		return effective
+	}
+
+	effective.HasOverride = true
+	effective.OverrideContributions = res.Contributions
+	if res.HasAction {
+		action := OverrideAction(res.Action)
+		effective.OverrideAction = &action
+	}
+	if res.HasEnabled {
+		enabled := res.Enabled
+		effective.OverrideEnabled = &enabled
+	}
+
+	// Legacy single-value reason/expiry: prefer the contribution that
+	// supplied the action (matches pre-Fix-1 behavior when only one row was
+	// ever in effect), else fall back to the one that supplied enabled.
+	var primary *sharedpolicy.OverrideContribution
+	for i := range res.Contributions {
+		if res.Contributions[i].HasAction {
+			primary = &res.Contributions[i]
+			break
+		}
+	}
+	if primary == nil && len(res.Contributions) > 0 {
+		primary = &res.Contributions[0]
+	}
+	if primary != nil {
+		effective.OverrideReason = primary.Reason
+		effective.OverrideExpiresAt = primary.ExpiresAt
+	}
+
+	return effective
 }
 
 // GetVersions retrieves version history for a policy.

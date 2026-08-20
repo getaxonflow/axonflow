@@ -409,6 +409,8 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 			query:         queryText,
 			plane:         PlaneOpenAICompat,
 			correlationID: correlationID,
+			// #3365: evaluation-time display names for the denied ids.
+			policyNames: policyResult.PolicyNames,
 		}
 		traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny, policyIDs, time.Since(startTime).Milliseconds(), reasons, traceID, nil, false, auditInput)
 		w.Header().Set("X-AxonFlow-Trace-Id", traceID)

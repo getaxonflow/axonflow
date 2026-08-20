@@ -11,6 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // TestV1ProMCPTools_AllFiveListed asserts the V1 Plugin Pro tool list
@@ -28,11 +31,11 @@ func TestV1ProMCPTools_AllFiveListed(t *testing.T) {
 		hasLimit     bool
 		limitType    string
 	}{
-		mcpToolNameGetTenantID:       {"", false, ""},
-		mcpToolNameRequestApproval:   {"", true, LimitTypeHITLApprovalsWindow},
+		mcpToolNameGetTenantID:        {"", false, ""},
+		mcpToolNameRequestApproval:    {"", true, LimitTypeHITLApprovalsWindow},
 		mcpToolNameCreateTenantPolicy: {"", true, LimitTypeActivePolicies},
-		mcpToolNameGetCostEstimate:   {"Pro", false, ""},
-		mcpToolNameListProFeatures:   {"", false, ""},
+		mcpToolNameGetCostEstimate:    {"Pro", false, ""},
+		mcpToolNameListProFeatures:    {"", false, ""},
 	}
 
 	got := make(map[string]bool)
@@ -555,7 +558,7 @@ func TestDeriveProviderFromModel(t *testing.T) {
 		{"gemini-1.5-pro", "google"},
 		{"mistral-large", "mistral"},
 		{"some-unknown-model", "anthropic"}, // platform default
-		{"GPT-4", "openai"},                  // case-insensitive
+		{"GPT-4", "openai"},                 // case-insensitive
 		{"CLAUDE-SONNET", "anthropic"},
 	}
 	for _, tc := range cases {
@@ -574,7 +577,7 @@ func TestMCPToolRequestApproval_RequiredArgs(t *testing.T) {
 	session := &mcpSession{tenantID: "cs_test", tier: "Pro"}
 	cases := []map[string]interface{}{
 		{},
-		{"original_query": "rm -rf"}, // missing request_type
+		{"original_query": "rm -rf"},      // missing request_type
 		{"request_type": "shell_command"}, // missing original_query
 		{"original_query": "  ", "request_type": "shell_command"},
 		{"original_query": "rm -rf", "request_type": "  "},
@@ -943,5 +946,78 @@ func TestExtractPolicyFromResponse_Cases(t *testing.T) {
 				t.Errorf("extractPolicyFromResponse(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCountActiveTenantPolicies_NilDB is the pre-existing nil-db fast path
+// (no gate should ever construct a PolicyLoader against a nil *sql.DB).
+func TestCountActiveTenantPolicies_NilDB(t *testing.T) {
+	if got := countActiveTenantPolicies(context.Background(), nil, "tenant-1"); got != 0 {
+		t.Fatalf("countActiveTenantPolicies(nil db) = %d, want 0", got)
+	}
+}
+
+// TestCountActiveTenantPolicies_DelegatesToSharedLoader proves the #3296
+// Step E convergence: countActiveTenantPolicies now issues its COUNT through
+// sharedpolicy.PolicyLoader.CountActive (RLS-scoped exactly like the deleted
+// bespoke read) rather than its own SQL — same query text, same RLS wrap, so
+// this single mock sequence pins both.
+func TestCountActiveTenantPolicies_DelegatesToSharedLoader(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dynamic_policies WHERE tenant_id = \$1 AND enabled = true`).
+		WithArgs("tenant-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	mock.ExpectCommit()
+
+	got := countActiveTenantPolicies(context.Background(), db, "tenant-1")
+	if got != 3 {
+		t.Fatalf("countActiveTenantPolicies() = %d, want 3", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet mock expectations: %v", err)
+	}
+}
+
+// TestCountActiveTenantPolicies_FailOpenWithErrorMetric is the #3296 Step E
+// DoD test: on a count error the gate MUST still fail open (return 0, so a
+// transient DB blip never blocks a legitimate Free user) but MUST ALSO
+// increment activePolicyCountErrorsTotal so a systematically failing count —
+// which silently disables the quota, the #3039/#2230 failure class — is
+// observable instead of indistinguishable from "zero active policies."
+func TestCountActiveTenantPolicies_FailOpenWithErrorMetric(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-err").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dynamic_policies WHERE tenant_id = \$1 AND enabled = true`).
+		WithArgs("tenant-err").
+		WillReturnError(fmt.Errorf("connection reset"))
+	mock.ExpectRollback()
+
+	before := testutil.ToFloat64(activePolicyCountErrorsTotal)
+
+	got := countActiveTenantPolicies(context.Background(), db, "tenant-err")
+	if got != 0 {
+		t.Fatalf("countActiveTenantPolicies() on DB error = %d, want 0 (fail-open)", got)
+	}
+
+	after := testutil.ToFloat64(activePolicyCountErrorsTotal)
+	if after != before+1 {
+		t.Fatalf("activePolicyCountErrorsTotal did not increment: before=%v after=%v", before, after)
 	}
 }

@@ -51,7 +51,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v9.
 ### Java SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java)
-- **Install:** Maven `com.getaxonflow:axonflow-sdk:9.0.0`
+- **Install:** Maven `com.getaxonflow:axonflow-sdk:9.1.0`
 
 ### TypeScript SDK
 

@@ -34,9 +34,9 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 	wantRecommended := map[string]string{
 		"python":     "9.1.0",
 		"typescript": "9.1.0",
-		"go":         "9.1.0",
+		"go":         "9.1.1",
 		"java":       "9.1.0",
-		"rust":       "0.8.1",
+		"rust":       "0.8.2",
 	}
 
 	for lang, want := range wantMin {

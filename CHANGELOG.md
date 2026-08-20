@@ -42,6 +42,625 @@ community mirror, **Enterprise** changes are EE-only.
 -->
 
 <!--
+  Version decision (Step 0): the policy-evaluation consolidation (epic #3293
+  Slice 2, #3296) is MINOR in its own right. It does introduce two new
+  refusals, which the 2026-07-30 policy would ordinarily read as MAJOR, so
+  the reasoning is recorded rather than left implicit. This does NOT override
+  the pending-MAJOR decision above: that is driven by #2330 independently,
+  and a train's version is the maximum of its contents.
+
+  The two new refusals, and why each is judged niche:
+
+    1. A `regex` condition whose `value` is not a string is now rejected
+       (400) instead of being stored and silently never matching. Nothing
+       AxonFlow ships is affected - no seeded policy in policy_defaults.go
+       or any seed migration uses a non-string regex value - and the portal
+       cannot produce one, since its condition-value input is a text field.
+       The exposed population is callers who wrote such a value directly
+       against the API, where it was always meaningless: a numeric "pattern"
+       only ever matched by an accident of stringification.
+
+       The sharp edge, recorded so it is not rediscovered: validateUpdateRequest
+       re-validates conditions whenever an update supplies them, so a client
+       that round-trips a whole policy object can hit this on a pre-existing
+       row while editing an unrelated field. Operators wanting to check their
+       own corpus before upgrading:
+
+         SELECT policy_id, tenant_id FROM dynamic_policies
+         WHERE conditions @> '[{"operator":"regex"}]'
+           AND jsonb_typeof(conditions->0->'value') <> 'string';
+
+    2. An explicitly-empty `conditions` array on update is now rejected;
+       omitting the field still means "leave unchanged". This closes the one
+       path by which a caller could clear a policy's conditions, and is
+       load-bearing for the restored "no conditions means applies to
+       everything" semantics - it is what keeps that construct platform-only.
+       No customer-authored zero-condition rows exist, so nothing pre-existing
+       breaks.
+
+  ImportPolicies' all-or-nothing behavior (validation runs over the whole
+  batch and returns on the first failure) is PRE-EXISTING and unchanged here.
+  What changes is how often it can trigger: an export-import round-trip of a
+  corpus containing one non-string regex value now fails the batch where it
+  previously succeeded. Left as-is by decision.
+-->
+
+<!--
+  Version decision (Step 0): v9.19.0, MINOR. The train's headline is the
+  portal-truth wave (#3347 via #3359, #3363 via #3366, #3361/#3364 via #3382,
+  #3346 via #3377, #3365 via #3375, #3360 via #3376) and the policy-evaluation
+  consolidation (epic #3293 Slice 2, #3296 via #3320) with its
+  legacy-conditions follow-up (#3384 via #3387). It removes no operator-facing
+  capability, adds no required credential and adds no boot-time refusal.
+
+  The two new API refusals it carries (a non-string `regex` condition value,
+  and an explicitly-empty `conditions` array on update) are #3296's, already
+  judged niche in the Step-0 comment recorded above; that reasoning stands
+  unchanged and is what keeps this MINOR rather than MAJOR under the
+  2026-07-30 operator semver policy.
+
+  The one further item that argues for more than MINOR, recorded here rather
+  than left implicit: #3387 CHANGES ENFORCEMENT for stored rows whose
+  `conditions` column holds an explicitly-empty array. Those rows stop being
+  evaluated on the database-backed evaluation surfaces (the in-memory
+  fallback engine, in play only while the database is unreachable, still
+  loads them as stored). It is a narrowing of a state no
+  released create API could produce (only the pre-9.19 update API could), it
+  removes nothing an operator deliberately configured, and it is what stops
+  #3296's restored vacuous-match semantics from turning that residue into a
+  tenant-wide deny at upgrade. Treated as a defect fix, not a breaking
+  change; the operator audit query is in the Migration section below.
+
+  No migrations: `git diff v9.18.0..origin/main -- migrations/` is empty.
+-->
+
+## [9.19.0] - 2026-08-20 (portal truth across audit, approvals and policy surfaces; policy-evaluator consolidation)
+
+> Scope: the portal's read surfaces (audit, approvals, policies) now agree
+> with what the platform actually recorded, and the last four bespoke
+> policy-condition matchers are gone in favour of one shared evaluator.
+> Operators upgrading a database written before this release should read the
+> Migration section: policy rows stored with an explicitly-empty `conditions`
+> array stop being evaluated.
+
+### Licensing
+
+- **Beginning with v9.19.0, free production use under the BSL 1.1 Additional
+  Use Grant is conditioned on the integrity of the copy you run.** The
+  operative wording is in `LICENSE`; read it there rather than relying on this
+  summary. In outline: production use of a copy or derivative work is
+  permitted only while, in that copy, licence key functionality has not been
+  tampered with, and no limit or feature gate has been raised, avoided or
+  bypassed relative to the corresponding unmodified AxonFlow distribution it
+  was made from. The wording follows the anti-circumvention formulation the
+  Elastic License 2.0 has used since 2021, extended to cover mechanisms that
+  do not depend on the licence key.
+- **Setting configuration is expressly outside this.** The condition does not
+  apply to supplying a configuration value through a mechanism the shipped
+  software provides for that purpose, so environment variables and config
+  files you are documented to set, such as `MEDIA_GOVERNANCE_ENABLED`, are
+  unaffected.
+- **This is a new prospective condition on free production use, not a
+  restatement of the previous grant.** Earlier releases remain governed by the
+  terms distributed with them; the change is not retroactive. It does not
+  define, or attempt to define, the commercial boundary between the Community
+  build and AxonFlow's licensed offerings.
+- **The rights to copy, modify, create derivative works, redistribute and make
+  non-production use are unchanged.** The Additional Use Grant governs
+  production use only, and the new text says so expressly. The licence family
+  (BSL 1.1), the Change Date and the Change License are all unchanged. The
+  License's own termination provision is unaffected.
+- **New `COMMUNITY_LICENSE_BOUNDARY.md` documents what the Community build
+  includes.** It is product documentation: expressly **not** a licence term,
+  not incorporated into the Additional Use Grant, and not exhaustive. Most
+  entries point at where a limit or gate is defined in the published source so
+  you can check it; three name source that is not public and say so.
+
+### Security
+
+- **`golang.org/x/mod` raised from v0.37.0 to v0.40.0** (CVE-2026-56864,
+  CVE-2026-56865) in every module that declares it: `platform/go.mod`
+  *(Community)* and the five Enterprise modules `ee`,
+  `ee/platform/license-server`, `ee/platform/community-saas-bridge`,
+  `ee/platform/load-testing` and `ee/platform/customer-portal`
+  *(Enterprise)*. The package is transitive-only here (reached through
+  `golang.org/x/text`) and is never imported by AxonFlow code, so no
+  behavior changes; the bump exists so the shipped images stop carrying the
+  finding. Nothing else in the module graph requires the fixed version yet,
+  so it is pinned explicitly rather than acquired by bumping a parent.
+
+### Community
+
+#### Added
+
+- **Every audit row that names a policy now carries the policy's display
+  name, not just its id (#3365).** The decide-plane writer
+  (`writeDecisionAuditLog`) and the MCP-plane writer
+  (`buildMCPDecisionAuditDetails`, about 25 call sites covering every MCP
+  early-return deny and both redaction rows) stamped `policy_ids` and nothing
+  else, so no reader could ever render a name for those rows: they surfaced
+  as raw ids wherever a policy identity is displayed, including the portal
+  audit view and the compliance exports. Both builders now go through one
+  shared writer-side normalizer (`stampPolicyIdentityNames`,
+  `platform/agent/policy_identity_stamp.go`), so the two cannot drift apart.
+  Names resolve in a fixed order: first the evaluation-time name carried on
+  the match the engine actually made, then a compiled-in name for the 28
+  code-backed guard pseudo-policies that have no `static_policies` row
+  (`circuit_breaker`, `rbi_kill_switch`, `tenant_mismatch`, the
+  validator-backed detectors, and the rest). There is deliberately no
+  write-time catalog lookup: a policy renamed between evaluation and write
+  must not be stamped with a name the evaluated policy never carried, and an
+  id in neither source is left unnamed rather than guessed. The orchestrator's
+  blocked-request and blocked-response writers and the override-lifecycle
+  writer gained the same evaluation-time stamping (names only on that
+  plane, whose ids are internal UUIDs no reader should see). One residue
+  remains and is deliberate scope, not an omission: an orchestrator
+  response that was redacted rather than blocked still records only its
+  legacy applied-policies detail, which no reader resolves, so those rows
+  continue to render without a policy name. Rows written
+  before this release are unchanged and still render as ids; the reader side
+  labels them explicitly rather than blanking them (see the Enterprise
+  section).
+- **A stored policy `action` that the detection posture lever displaced is
+  now observable (#3360).** On every plane the detection posture lever
+  governs, the lever's action (`PII_ACTION` and its siblings, or the
+  governance profile's default) replaces whatever `action` a matched
+  `static_policies` row carries. That is the documented authority order, not
+  a fail-open, and it is why a row with `action=block` can match a request
+  that is nonetheless allowed with a redaction obligation. Until now the
+  displacement left no trace anywhere: the `action` column read as
+  authoritative in the CRUD API and the portal while being dead data at
+  evaluation time. Downward displacement (the stored action is stricter than
+  the resolved one) now increments
+  `axonflow_agent_policy_stored_action_displaced_total` and, on the decide
+  plane, appends an advisory reason to the response. **No verdict,
+  obligation, redaction or approval field changes**: the loop only appends to
+  `AdvisoryReasons` and increments a counter, and it is skipped entirely when
+  the result is blocked. Upward displacement (a strict profile tightening a
+  `warn` row) is the lever doing its job and is not flagged, and a NULL phase
+  column leaves the stored action empty on purpose, so the many seeded rows
+  that resolve through the category fallback do not emit an advisory on every
+  match. The resolution order, the per-plane action-to-outcome matrix and the
+  authoring guidance are written down in
+  `docs/governance/policy-action-authority.md`, linked from the PII detection
+  guide. The advisory currently surfaces on the decide plane only, because
+  that is the only plane that consumes `AdvisoryReasons`; the metric fires on
+  every plane that converts through the shared path.
+- **`PolicyService.TestPolicy` (the policy-simulator "test" action) is now
+  segment-aware**, closing the segment-blindness tracked in #3283. Where a
+  verified caller identity is available on the request context, a
+  segment-scoped policy's `Matched` result now honors segment membership the
+  same way enforcement does (restriction-only, fail-closed on a resolution
+  error), instead of unconditionally reporting a match to any caller. Where
+  no verified identity is available (today's only production shape, since no
+  HTTP entry point yet threads one onto this path), behavior is unchanged and
+  the response explanation says so explicitly rather than presenting a
+  possibly segment-restricted policy as an unqualified tenant-wide match.
+- **New metric: `axonflow_policy_condition_unevaluable_total{reason,plane}`
+  - a policy that silently fails to enforce is otherwise invisible.** Until
+  now, a dynamic-policy condition that could not be genuinely evaluated (a
+  typo'd operator, a numeric comparison against a non-numeric operand, a
+  regex value that isn't a string, a stored `conditions` blob that fails to
+  unmarshal, or a field the caller could not resolve) was indistinguishable
+  from a legitimate no-match: the two existing counters
+  (`axonflow_agent_policy_evaluations_total`,
+  `axonflow_orchestrator_policy_evaluations_total`) only ever counted how
+  many evaluations ran, never how many were structurally unable to run. This
+  counter closes that gap for the shared `ConditionEvaluator`
+  (`platform/shared/policy/condition_evaluator.go`) and its four callers.
+  `reason` is one of six closed constants (`unknown_operator`,
+  `empty_conditions`, `non_numeric_operand`, `non_string_pattern`,
+  `conditions_unmarshal_failed`, `field_unresolved`) and `plane` identifies
+  the caller (`memory`, `database`, `mcp`, `policy_test`) - both are fixed,
+  low-cardinality label sets, never a policy ID, tenant ID, field name, or
+  operator value. `platform/shared/policy` stays free of any Prometheus
+  dependency: the evaluator only ever sees a small `UnevaluableRecorder`
+  interface, injected per call, and the real Prometheus counter is wired up
+  one layer above, in the orchestrator. The per-caller `OnUnknownOperator`
+  logging hook this evaluator used to carry is removed - the evaluator runs
+  per request x per policy x per condition, so a single corrupt stored row
+  logging unboundedly was the wrong shape; a counted metric is.
+
+> Policy evaluation consolidation (epic #3293, Slice 2, #3296): the agent and
+> orchestrator had accumulated multiple independent implementations of the
+> same governance primitives - dynamic-condition matching, static-policy
+> reads, and override precedence - which had quietly drifted onto divergent
+> semantics and produced a real cross-segment enforcement leak (#3266). This
+> converges them onto one shared substrate (`platform/shared/policy`) and
+> adds the lint that keeps them converged. Core agent/orchestrator code, so
+> it ships in both editions from the same binaries.
+
+#### Changed
+
+- **One shared `ConditionEvaluator` replaces five independently-maintained
+  dynamic-policy condition matchers** (`DynamicPolicyEngine`,
+  `DatabaseDynamicPolicyEngine`, `MCPDynamicPolicyHandler`, and
+  `PolicyService.TestPolicy`'s `evaluateCondition` + `evaluateOperator`
+  pair) **and converges five behaviors the matchers had drifted onto,
+  onto one semantics.** A prior pass unified the five implementations behind
+  this type but preserved every difference as a caller-supplied option, so
+  it changed no behavior; this pass deletes those options. Each of the five
+  is a deliberate, customer-visible change - a stored policy can start or
+  stop matching after upgrading - documented as a convergence record (what
+  each implementation did, the converged semantics, and which caller changed
+  in which direction) in `platform/shared/policy/condition_evaluator.go`:
+  - **`contains`/`not_contains` are now case-insensitive on every plane**,
+    including MCP/connector/content-type policies, which previously required
+    an exact-case match. A blocking policy on this shape now fires on
+    additional requests it previously let through.
+  - **`contains_any` now matches on a non-string value-list item** (a JSON
+    number, bool, or null) on every plane. The database-backed engine
+    (all of LLM/MAP/WCP) previously skipped such an item silently, so a
+    condition like `contains_any: [0.9, "unrelated-term"]` never matched on
+    the `0.9` half; it now does.
+  - **`greater_than`/`less_than` false-positive fix.** An operand that is
+    neither a number nor a numeric-looking string no longer silently
+    compares as `0` - it now makes the condition NOT match. Concretely: a
+    non-numeric string field value under a `less_than <positive threshold>`
+    condition used to spuriously satisfy a BLOCKING rule; it no longer does.
+    Separately (and independently), a numeric-looking string (`"5"`) now
+    compares correctly on every plane, including the in-memory engine, which
+    previously rejected any numeric string outright and never matched.
+  - **A `regex` condition's value must now be a Go string on every plane.**
+    The in-memory engine previously accepted any value and stringified it
+    before compiling (`value: 1.5` compiled as the pattern `"1.5"`, where
+    `.` is a wildcard, not a literal dot); a policy authored that way stops
+    matching after upgrading. This is a narrowing - a blocking policy on
+    this shape fires LESS than before - and it is paired with an
+    authoring-time fix (see below) so the shape cannot be created going
+    forward.
+  - **Every plane now enforces all 10 policy operators**, closing a standing
+    MCP-plane parity gap (#3061): MCP/connector/content-type policies
+    previously recognized only 4 of 10 operators (`equals`, `not_equals`,
+    `contains`, `regex`), even though the portal has always offered all 10
+    and never indicated the other six were inert there. **A policy authored
+    with `not_contains`, `contains_any`, `greater_than`, `less_than`, `in`,
+    or `not_in` that looked live in the portal but silently never matched on
+    the MCP plane begins enforcing there for the first time.** The in-memory
+    engine and the policy-test simulator each gain a smaller subset of these
+    ten for the same reason.
+  - **A policy with zero conditions applies to everything, on every plane -
+    restored, not changed.** A condition-less policy vacuously matches: an
+    AND-loop with nothing to check has nothing to fail on, the same reason
+    an empty `WHERE` clause matches every row. This is, and always was,
+    every plane's real behavior except one: the MCP/connector/content-type
+    plane carried a deliberate fail-safe (#3061) that made a condition-less
+    policy match NOTHING instead, to stop a zero-condition `block` policy
+    from denying every governed tool call for a tenant. An earlier revision
+    of this same effort converged every plane onto that fail-safe's
+    semantics instead of the other way around - making zero conditions
+    unmatchable everywhere - and shipped it as convergence 6. **That
+    convergence is withdrawn.** Matching unconditionally is not a defect to
+    design around; it is what "no conditions" means, and it is what the
+    platform's own seed/fallback policies (`DatabaseDynamicPolicyEngine`'s
+    in-memory fallback and its three seeded sample rows, which have carried
+    no `conditions` key all along) rely on to apply unconditionally. The
+    MCP-plane fail-safe is removed too, aligning it with the other three
+    planes - this reverses a guard that predates this effort by several
+    releases, worth calling out on its own: **a zero-condition `block`
+    policy on the MCP plane now matches (and denies) again, where it
+    previously did not.** The exposure that guard, and convergence 6 after
+    it, existed to prevent - a zero-condition row nobody meant to write,
+    carrying a `block` action - is closed at the source instead: creation
+    has always rejected zero conditions, update now rejects an
+    explicitly-cleared `[]` too (see the `validateUpdateRequest` entry
+    below), and a stored `conditions` blob that fails to parse is refused at
+    load rather than cached as indistinguishable from a genuinely empty one
+    (`cachedPolicyToDynamicPolicy`, `db_dynamic_policies.go`). With every
+    path that could produce an accidental zero-condition row closed, the
+    only one that can exist at all is a platform-seeded row that means
+    exactly what it says.
+- **`PolicyService.validateCondition` now rejects a non-string `regex`
+  condition value at authoring time** (`"regex pattern must be a string"`),
+  closing the gap the regex convergence above narrows: previously a
+  non-string regex value silently skipped the compile-time check and could
+  be saved as a policy that would go on to never match.
+- **`PolicyService.validateUpdateRequest` now rejects an explicitly-provided
+  empty `conditions` array** (`PUT` with `"conditions": []`), mirroring the
+  error creation has always returned, and stays rejected: the platform may
+  seed a condition-less policy meaning "applies to everything," but a
+  customer may not author one through the API. Previously this field only
+  guarded on `!= nil`, so a JSON `[]` - a non-nil, zero-length slice - passed
+  straight through with no error, letting a caller clear a policy down to
+  zero conditions while leaving a `block` action attached: exactly the row
+  this validation, together with the create-time rejection, exists to keep
+  from ever being written by a customer. Omitting `conditions` from the
+  request body entirely is unaffected and still means "leave conditions
+  unchanged."
+- **One shared `EffectiveOverride` resolves policy-override precedence**,
+  replacing the second of two independent implementations
+  (`PolicyOverrideRepository.GetEffectiveAction` and the inline
+  `GetEffective` override map in `static_policy_repository.go`). See the
+  Fixed entry below for the precedence bug this closes. A separate,
+  unrelated ADR-044 session break-glass override mechanism is untouched -
+  `platform/shared/policy/override.go`'s package doc documents why the two
+  are not the same feature and must not be conflated.
+- **Static-policy evaluation reads converge onto the one shared loader**
+  (`platform/shared/policy/loader.go`). The agent's `GetEffective` (backing
+  both the Phase-1 shared engine and the tier-aware Phase-2 engine) now reads
+  `static_policies` exclusively through `sharedpolicy.ScanEffectivePolicyRows`
+  instead of its own parallel query, so the table has exactly one verdict-path
+  reader across both evaluation passes - the structural fix behind #3266's
+  segment-leak class, generalized past the one field that leaked.
+- **The community mirror now carries `scripts/local-dev/`.** `CONTRIBUTING.md`
+  has always pointed contributors at `./scripts/local-dev/start.sh`, but the
+  sync never copied the directory, so on the mirror that was a dangling
+  reference (reported as getaxonflow/axonflow#434). The three scripts are now
+  synced. Separately, `CONTRIBUTING.md` referenced
+  `scripts/local-dev/test-migrations.sh`, a script that exists on no branch;
+  that is replaced with the real local flow (migrations apply on boot, watch
+  them in the compose logs), and `start.sh`'s own reference to the same
+  nonexistent script is repaired.
+- **`/health` recommended client versions advance for the three clients
+  released on this train: Go SDK 9.1.0 to 9.1.1, Rust SDK 0.8.1 to 0.8.2, and
+  the openclaw plugin 2.8.5 to 2.8.6.** Python, TypeScript and Java stay at
+  9.1.0 and every minimum-version floor is unchanged, so a client below a
+  recommended version keeps working and only loses the up-to-date advisory.
+  Both planes advertise the same values: the plugin map has come from the
+  shared `plugincompat` package since #3229, and the SDK maps are still
+  per-file literals in the two `capabilities.go` files, so this release adds
+  the guard that was missing for them (see CI / Testing below).
+
+#### Fixed
+
+- **Legacy explicitly-empty policy conditions are excluded from evaluation
+  (#3384).** Every released create API rejected a policy with zero
+  conditions, but the pre-9.19 update API accepted `PUT conditions: []` - so
+  a live database can hold rows whose empty conditions list nobody could
+  author today. With the #3296 restored vacuous-match semantics those rows
+  would have gone from inert to matching every governed MCP call at upgrade
+  (a block-action row becoming a tenant-wide denial nobody wrote). A stored
+  `[]` is now excluded from every DATABASE-BACKED evaluation surface - the
+  engine cache's listing/read path, the `/api/request` enforcement loop,
+  and the policy-test preview; the orchestrator's in-memory fallback
+  engine, which serves only while the database is unreachable, still loads
+  such rows as stored (which now reports the exclusion explicitly instead
+  of "matches everything") - and each exclusion is counted under the
+  `empty_conditions` label of `axonflow_policy_condition_unevaluable_total`
+  (a per-evaluation rate signaling residue is PRESENT, not a row count).
+  The CRUD list API and portal still show such rows deliberately:
+  remediation needs visibility, and the test endpoint names the fix (give
+  the row real conditions, or delete it). A condition-LESS policy (JSON
+  `null`, the platform-seeded shape) keeps matching everything, as
+  designed. The two shapes are distinguishable at the parse layer by
+  construction.
+- **A later-created org-level policy override could beat an earlier,
+  more specific tenant-level one.** The admin tier-downgrade override path's
+  inline precedence resolution (`static_policy_repository.go`'s
+  `GetEffective`) ran one query across both scopes ordered by
+  `created_at ASC` and let a later row's map-write clobber an earlier one -
+  so if an org override was created after a tenant override on the same
+  policy, the broader org override silently won, contradicting the intended
+  "tenant is more specific, tenant always wins" contract (which the OTHER
+  pre-existing override-precedence implementation already enforced
+  correctly). `EffectiveOverride` now resolves tenant-beats-org
+  unconditionally, independent of creation order, for every caller.
+- **A tenant's deliberate policy-disable override could be silently dropped,
+  re-enforcing a policy the tenant had turned off; a valid org-level action
+  override could be discarded by an unrelated, action-less tenant row.**
+  `policy_overrides` carries two independently-nullable columns
+  (`action_override`, `enabled_override` - NULL means "no opinion," not
+  false), but `EffectiveOverride` resolved them as if a row always changed
+  the action: a disable-only row (`action_override` NULL,
+  `enabled_override=false`) never registered at all, and any action-less
+  tenant row forced scope resolution to "tenant" and then failed to find a
+  tenant row whose action matched, discarding a valid org-level action in the
+  process. `EffectiveOverride` now resolves `action` and `enabled`
+  independently (each tenant-beats-org, then latest-within-scope), so a
+  tenant disable and a different org's action downgrade can both be in
+  effect on the same policy at once, each attributed to its own row's reason
+  and expiry (`OverrideResolution.Contributions`).
+- **A silent Free-tier policy-quota bypass is now observable.** The agent's
+  bespoke `SELECT COUNT(*) FROM dynamic_policies` behind the Free-tier
+  `active_policies` quota is replaced by `PolicyLoader.CountActive`
+  (in-process call, same RLS scoping) and kept fail-open on a count error
+  exactly as before - a transient DB blip must not block a legitimate Free
+  user - but a failure now increments the new
+  `axonflow_active_policy_count_errors_total` metric. Previously a
+  systematically failing count (e.g. an RLS-blind read on a
+  mis-provisioned deployment) fell back to `0` with nothing to alert on, so
+  the quota could be silently unenforced indefinitely.
+
+#### CI / Testing
+
+- **The community mirror carries the policy-table choke-point lint it
+  runs.** The lint's workflow step reached the mirror one sync before the
+  script it invokes did, failing mirror CI with exit 127; the sync now
+  includes the script. The seeded-policy shadow census, which walks the
+  enterprise-only policy-pack tree, moved behind the enterprise build tag
+  so mirror CI never references trees the mirror does not carry.
+
+- **New lint: no evaluator may read `static_policies` or `dynamic_policies`
+  directly outside the shared substrate**
+  (`scripts/lint-policy-table-choke-point.sh`, wired into the `lint`
+  workflow). Guards the invariant this release converges onto: every verdict
+  path goes through `platform/shared/policy/loader.go`, so the next feature
+  cannot silently add a sixth bespoke reader and reopen #3266's drift.
+  Legitimate CRUD/admin/metadata/probe reads are allow-listed by file AND
+  exact expected occurrence count, so adding - or silently removing - a query
+  in an already-allow-listed file fails the lint until the count is
+  consciously updated in a reviewed diff. `platform/shared/policy/loader.go`
+  - the sanctioned choke point itself - now carries the same exact-count
+  ratchet as every other entry instead of being exempt by file identity: it
+  held 5 occurrences when the lint was written and holds 7 today, and an
+  identity exemption meant the single most-privileged file in the tree was
+  the only one a new query could be added to with zero CI signal.
+- **`evaluator-convergence-e2e.yml`'s path trigger now includes
+  `platform/shared/policy/loader.go`.** The suite exercises override
+  precedence (Leg 4), which resolves the `static_policies` rows it operates
+  over through `loader.go`'s `ScanEffectivePolicyRows` - a change there could
+  change what the suite observes without triggering it.
+- **New guard: the agent and orchestrator SDK compatibility maps must be
+  identical.** Both planes serve `/health` from their own copy of the SDK
+  min/recommended maps, and the release-prep runbook lists agent-vs-orchestrator
+  drift as a real, previously-observed failure mode. Nothing enforced it: the
+  orchestrator carried a literal pin test while the agent side only asserted
+  its maps were non-empty, so a bump applied to one file and not the other
+  made the two ports answer differently with zero CI signal, and the check
+  lived only in a human's checklist. `TestSDKCompatibilityMapsMatchOrchestrator`
+  compares the two source literals directly and fails on a drift introduced in
+  either file. The PLUGIN maps need no such guard: both planes have read them
+  from `platform/shared/plugincompat` since #3229, which closes that half
+  structurally.
+- **The Enterprise-Tagged + Real-PG job reclaims runner disk before it runs.**
+  This train's real-Postgres growth pushed `ubuntu-latest` past its
+  free-space floor, and the job went red on main for three consecutive runs
+  with testcontainers failures that read as three unrelated test bugs (`no
+  space left on device`, `database system is in recovery mode`, containers
+  exiting at startup) rather than as one environment problem. The job now
+  drops the preinstalled toolchains it never uses (about 25 GB of dotnet,
+  Android, GHC and CodeQL) and prunes stale images before anything else runs,
+  and prints `df` before and after, so a recurrence of this class is visible
+  in the log instead of inferred from downstream failures.
+
+### Enterprise
+
+#### Added
+
+- **Cowork / Claude Code storage-plane audit rows carry policy display names**
+  (the Enterprise half of #3365). The redact-at-collector path threads the
+  evaluation-time names from the same matches its ids come from, and guard
+  ids resolve through the same compiled-in table the decide and MCP planes
+  use, so this plane's rows render names in the portal and in the OJK / BI /
+  UU-PDP exports on the same terms as every other plane.
+
+#### Changed
+
+- Removed the dead `masfeat.KillSwitchService.CheckAndTrigger` (MAS FEAT
+  auto-trigger-on-threshold), which had no live caller.
+
+#### Fixed
+
+- **Blocked audit rows showed raw policy ids, or a blank, where step-up rows
+  showed names (#3347).** In the portal audit view the Policy column silently
+  fell back to joined ids while the expanded row's "Policy name" field
+  rendered an empty dash, so a decide-plane block (which stamped ids and no
+  names before #3365 above) displayed as an id in one place and as nothing in
+  the other. One shared resolver (`resolvePolicyIdentityDisplay`) now feeds
+  every audit surface that shows a policy identity: a stamped name renders as
+  a name; a row carrying no stamped name renders its ids with an explicit
+  `(name not recorded)` marker instead of a silent blank or an id styled as a
+  name; versions render as `id (vN)`. A name is never invented from a
+  catalog lookup, and the id and name arrays are never zipped positionally,
+  because they are not index-parallel on merged rows.
+- **The audit page could show a 0.0% block rate above visible blocked rows,
+  and could hide or leak end-date rows depending on the viewer's timezone
+  (#3363).** Two separate defects on one page. First, the Compliance Summary
+  tiles were fetched on page load and date change only, while the table
+  refetched on every filter change, so tiles could sit at their page-load
+  values while the rows beneath them changed: blocked rows on screen under a
+  0.0% block rate, on a compliance surface. The summary now refetches
+  whenever the table does, and dims rather than skeletons while it does, so
+  pagination cannot reopen the same staleness. Its window stays dates-only,
+  so the caption's "not narrowed by the user, action, or tenant filters"
+  claim stays true. Second, timestamps render in local time but the range was
+  computed as a UTC day: west of UTC an evening row on the end date fell
+  outside the window in both the list and the summary, east of UTC rows
+  stamped with the next day's local date leaked in, the end date's final
+  999 ms were always dropped, and the default range itself was derived from
+  the UTC date. One shared helper
+  (`ee/platform/customer-portal-ui/lib/dateRange.ts`) now converts a picked
+  date to a local start-of-day through local end-of-day window for every
+  consumer, and the same UTC-today class was swept out of the compliance,
+  usage, export, policies and evidence-export surfaces. Deep-link
+  `start`/`end`/`action` parameters are validated at init.
+- **The policies page's filters, pagination totals and summary tiles could
+  each disagree with the others and with the platform (#3361).** The portal
+  aggregator forwarded `tier`, `category` and `enabled` to both upstreams and
+  trusted each to filter, but the agent's `/static-policies/effective`
+  honours none of them: the dynamic half filtered while static rows rendered
+  regardless, and the tiles were computed from pre-filter slices. Rows,
+  pagination totals and tiles now derive from one filtered collection through
+  one authoritative predicate. Converging that surfaced nine further defects
+  in the same aggregator, all fixed here: the Enabled tile counted raw
+  `enabled` while the badges counted `effective_enabled`; the Type dropdown
+  was a no-op end to end (`policy_type` was sent and only `type` was read);
+  `/unified-policies/effective` returned a permanently empty static half as
+  clean non-partial truth, because a second decoder read a `policies` key the
+  agent never emits; `GET /unified-policies/{id}` returned a 200 carrying an
+  all-zero policy for every dynamic id, by decoding the orchestrator's
+  wrapped `{"policy":{...}}` flat, and the write dispatcher then resolved on
+  it; a `page_size` of 1000 is rejected by the orchestrator, which silently
+  truncated the dynamic half to its default 20 rows; `?enabled=TRUE` filtered
+  the dynamic half to *disabled* rows while static stayed unfiltered; and an
+  override's `created_at` was fabricated as the fetch time, so every override
+  reported "created just now". In each decoder case a unit-test mock served
+  the wrong shape and certified the bug; the mocks are corrected. The parity
+  contract this converges onto is written down as
+  `technical-docs/PORTAL_PARITY_CENSUS.md`, which classifies every
+  summary/list/detail/export pair in the portal and is now referenced by the
+  pull-request template.
+- **Decide-plane (agent HITL) approvals never appeared in the portal Approvals
+  page (#3346).** The page read the workflow-step queue only, so a decide-plane
+  step-up (for example a fraud-and-risk `needs_approval` verdict routing an
+  above-threshold score into the agent HITL queue) created a pending approval
+  that rendered nowhere in the portal: an operator watched an empty queue
+  while oversight work sat waiting, and had to drive the agent HITL API
+  directly to see or act on it. The Approvals page now renders both planes as
+  ONE merged list with plane badges, plane-routed approve and reject actions
+  and per-plane detail panels, and the sidebar badge counts the same merged
+  fetch. Expired-but-unswept rows are marked and their actions disabled
+  rather than failing on click, and a plane that cannot be reached is named
+  in the banner instead of being silently counted as empty. Enforcement is
+  unchanged and stays on the agent: the new portal proxy is list, approve and
+  reject only, rebuilds its upstream query with `status` pinned to `pending`,
+  and cannot pass browser-supplied identity headers through. Reviewer
+  attribution on the decide plane records the internal-service credential
+  unless `AXONFLOW_TRUST_IDENTITY_HEADERS` is set, which is the agent's
+  existing by-id binding contract, not a change made here.
+- **A newly-created MAS FEAT kill switch no longer defaults
+  `auto_trigger_enabled` to `true`.** MAS FEAT ships a manual-only kill
+  switch - every trigger is an explicit, human-initiated API call - but
+  `GetOrCreateKillSwitch` defaulted this field to `true`, asserting an
+  automatic-disable behavior the system does not implement. The evaluator
+  that would have read it and the thresholds alongside it
+  (`KillSwitchService.CheckAndTrigger`) had no production caller and was
+  already removed as dead code; the default now matches that reality
+  (`false`). The threshold columns and `auto_trigger_enabled` itself remain
+  on the schema, the Go types, and the Configure API for wire/persisted
+  compatibility - they are currently inert, not removed.
+
+### Migration
+
+- **No schema migrations.** `git diff v9.18.0..origin/main -- migrations/` is
+  empty, so the migration runner applies nothing new on upgrade and the
+  deploy delta from v9.18.0 is images only.
+- **Behavior change with no schema change: stored policies whose `conditions`
+  column holds an explicitly-empty array stop being evaluated (#3384).** No
+  released create API ever accepted a zero-condition policy, but the pre-9.19
+  update API accepted `PUT` with `"conditions": []`, so a live database can
+  hold rows nobody could author today. With this release's restored
+  vacuous-match semantics those rows would have gone from inert to matching
+  every governed request at upgrade, turning a `block`-action row into a
+  tenant-wide denial nobody wrote. They are now excluded from every
+  evaluation surface instead. Such a row remains visible in the CRUD list API
+  and the portal on purpose, because remediation needs visibility, and the
+  policy-test endpoint reports the exclusion explicitly and names the fix
+  (give the row real conditions, or delete it). A condition-LESS policy (JSON
+  `null`, the platform-seeded shape) is a different shape and still applies
+  to everything, as designed.
+  - Operators can enumerate the affected rows before or after upgrading:
+
+    ```sql
+    SELECT policy_id, tenant_id, action, enabled
+    FROM dynamic_policies
+    WHERE jsonb_typeof(conditions) = 'array'
+      AND jsonb_array_length(conditions) = 0;
+    ```
+
+  - Post-upgrade, residue is also visible as a rate rather than a row count:
+    every exclusion increments
+    `axonflow_policy_condition_unevaluable_total{reason="empty_conditions"}`.
+    A non-zero rate means at least one such row is being skipped on a live
+    evaluation path; the query above identifies which.
+- **Upgrading from a release older than v9.19.0 also carries the
+  condition-matcher convergence** described in the Community section: five
+  named behaviors change, and a stored policy can start or stop matching. The
+  convergence record (what each implementation did, the converged semantics,
+  and which caller moved in which direction) is kept beside the code in
+  `platform/shared/policy/condition_evaluator.go`.
+
+<!--
   Version decision (Step 0): v9.18.0, MINOR. The train's headline is the
   Fraud & Risk Add-on (ADR-061): Engine A (FinCrime Policy Pack + context
   schema + evaluator seam + scorer client, #3335) and Engine B (the

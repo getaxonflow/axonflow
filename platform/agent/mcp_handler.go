@@ -134,7 +134,8 @@ func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseK
 				[]string{"mcp_permission_denied"},
 				[]string{fmt.Sprintf("service permission denied for %s:%s", connector, op)},
 				nil,
-				"")
+				"",
+				nil)
 			sendErrorResponse(w, fmt.Sprintf("Permission denied: %v", err), http.StatusForbidden, nil)
 			return false, fmt.Errorf("permission denied: %v", err)
 		}
@@ -1602,17 +1603,27 @@ func blockedPolicyIDs(r *sharedpolicy.ResponseResult) []string {
 // from a clean allow) so the portal feed shows Redacted, not Allowed, for a
 // NIK/NPWP response mask; the caller routes a "redacted" verdict to
 // writeMCPDecisionAudit so redacted_fields lands on the canonical row.
-func mcpOutputDecisionVerdict(outcome OutputPolicyOutcome) (verdict string, policyIDs, reasons []string) {
+func mcpOutputDecisionVerdict(outcome OutputPolicyOutcome) (verdict string, policyIDs, reasons []string, policyNames map[string]string) {
+	// #3365: derive the display-name map beside the ids, in the same function
+	// that picks them, so the two can never disagree about which policies a
+	// row attributes. Synthetic ids (sqli_response_scan, exfiltration_limit)
+	// resolve through the builtin table at stamp time.
+	if outcome.StaticResult != nil {
+		policyNames = policyNamesFromMatches(outcome.StaticResult.MatchedPolicies)
+		if b := outcome.StaticResult.BlockedBy; b != nil && b.PolicyID != "" && b.Name != "" {
+			policyNames = mergePolicyNames(policyNames, map[string]string{b.PolicyID: b.Name})
+		}
+	}
 	switch {
 	case outcome.SQLiBlocked:
 		return mcpVerdictBlocked, []string{"sqli_response_scan"},
-			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)}
+			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)}, nil
 	case outcome.StaticResult != nil && outcome.StaticResult.Blocked:
 		return mcpVerdictBlocked, blockedPolicyIDs(outcome.StaticResult),
-			[]string{outcome.StaticResult.BlockReason}
+			[]string{outcome.StaticResult.BlockReason}, policyNames
 	case outcome.ExfilResult != nil && outcome.ExfilResult.Exceeded:
 		return mcpVerdictBlocked, []string{"exfiltration_limit"},
-			[]string{outcome.ExfilResult.BlockReason}
+			[]string{outcome.ExfilResult.BlockReason}, nil
 	}
 	// Non-blocking terminal. Static redactions carry their matched policy ids; surface
 	// the redacted field names so a redact is distinguishable from a clean allow.
@@ -1632,9 +1643,9 @@ func mcpOutputDecisionVerdict(outcome OutputPolicyOutcome) (verdict string, poli
 		} else {
 			reasons = []string{label}
 		}
-		return mcpVerdictRedacted, policyIDs, reasons
+		return mcpVerdictRedacted, policyIDs, reasons, policyNames
 	}
-	return mcpVerdictAllowed, policyIDs, reasons
+	return mcpVerdictAllowed, policyIDs, reasons, policyNames
 }
 
 // redactionInvolvesInjection reports whether any matched response-phase policy is
@@ -1692,20 +1703,23 @@ func extractDynamicPolicyIDs(info *sharedpolicy.DynamicPolicyInfo) []string {
 // the caller, but recording it as "allowed" hid the redaction from the portal
 // (#2641 MCPIN — "redaction landing as allowed"). The redact reason is still
 // surfaced so /explain stays self-describing.
-func mcpInputDecisionVerdict(outcome InputPolicyOutcome, didRedact bool) (verdict string, policyIDs, reasons []string) {
+func mcpInputDecisionVerdict(outcome InputPolicyOutcome, didRedact bool) (verdict string, policyIDs, reasons []string, policyNames map[string]string) {
 	if outcome.DynamicBlocked {
+		// #3365: dynamic matches carry their display names; the aggregate
+		// "dynamic_policy" sentinel resolves through the builtin table.
 		return mcpVerdictBlocked, extractDynamicPolicyIDs(outcome.DynamicInfo),
-			[]string{outcome.DynamicBlockReason}
+			[]string{outcome.DynamicBlockReason}, policyNamesFromDynamic(outcome.DynamicInfo)
 	}
 	// A non-blocking static (redact) policy carries its matched ids; surface them so
 	// the portal feed attributes the decision correctly.
 	if outcome.StaticResult != nil {
 		policyIDs = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
+		policyNames = policyNamesFromMatches(outcome.StaticResult.MatchedPolicies)
 	}
 	if didRedact {
-		return mcpVerdictRedacted, policyIDs, []string{"request PII redacted"}
+		return mcpVerdictRedacted, policyIDs, []string{"request PII redacted"}, policyNames
 	}
-	return mcpVerdictAllowed, policyIDs, reasons
+	return mcpVerdictAllowed, policyIDs, reasons, policyNames
 }
 
 // applyResponseRedactionAudit records response-side redactions into the audit
@@ -1894,14 +1908,15 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// via the preserved StatementHash.
 	queryDescriptor := fmt.Sprintf("mcp resources/query: %s", req.Connector)
 	correlationID := traceIDFromHeader(r.Header.Get("traceparent"))
-	emitDecisionAudit := func(verdict string, policyIDs, reasons, redactedFields []string) {
+	emitDecisionAudit := func(verdict string, policyIDs, reasons, redactedFields []string, policyNames map[string]string) {
 		writeMCPDecisionAudit(ctx, usageDB,
 			auditEntry.DecisionID, auditEntry.AuditID,
 			user.TenantID, auditEntry.OrgID, auth.Client.ID, user.Email,
 			auditEntry.UserID, user.Role,
 			"mcp_resources_query", queryDescriptor, auditEntry.StatementHash,
 			verdict, policyIDs, reasons, redactedFields,
-			correlationID)
+			correlationID,
+			policyNames)
 	}
 
 	// Read-only enforcement posture (#2720, epic #2716). resources/query hands the
@@ -1916,7 +1931,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RequestBlockReason = reason
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		emitDecisionAudit(mcpVerdictBlocked, []string{readOnlyPosturePolicyID}, []string{reason}, nil)
+		emitDecisionAudit(mcpVerdictBlocked, []string{readOnlyPosturePolicyID}, []string{reason}, nil, nil)
 		sendErrorResponse(w, "Request blocked: "+reason, http.StatusForbidden, nil)
 		return
 	}
@@ -1940,7 +1955,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		// "error" row so the unevaluated attempt is portal-visible (#2679).
 		emitDecisionAudit(mcpVerdictError,
 			[]string{"dynamic_policy_unavailable"},
-			[]string{"dynamic policy evaluation unavailable"}, nil)
+			[]string{"dynamic policy evaluation unavailable"}, nil, nil)
 		sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
 		return
 	}
@@ -1952,8 +1967,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		logMCPQueryAudit(auditEntry)
 		// #2679: a dynamic-policy block previously wrote ONLY the satellite, so the
 		// portal feed showed it as "Logged", not "Blocked". Emit the canonical deny.
-		v, pids, reasons := mcpInputDecisionVerdict(inputOutcome, false)
-		emitDecisionAudit(v, pids, reasons, nil)
+		v, pids, reasons, pnames := mcpInputDecisionVerdict(inputOutcome, false)
+		emitDecisionAudit(v, pids, reasons, nil, pnames)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1977,7 +1992,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			// this is the only canonical row; no double-write.
 			emitDecisionAudit(mcpVerdictBlocked,
 				extractMatchedPolicyIDs(inputOutcome.StaticResult.MatchedPolicies),
-				[]string{inputOutcome.StaticResult.BlockReason}, nil)
+				[]string{inputOutcome.StaticResult.BlockReason}, nil,
+				policyNamesFromMatches(inputOutcome.StaticResult.MatchedPolicies))
 			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", inputOutcome.StaticResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
@@ -1996,7 +2012,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		// fulfilled. Record a canonical "error" row (never the raw err string,
 		// which may echo statement/PII).
 		emitDecisionAudit(mcpVerdictError,
-			[]string{"connector_error"}, []string{"query execution failed"}, nil)
+			[]string{"connector_error"}, []string{"query execution failed"}, nil, nil)
 
 		sendErrorResponse(w, "Query execution failed", http.StatusInternalServerError, nil)
 		return
@@ -2012,7 +2028,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// redact → redacted; else allowed). Computed once; mcpOutputDecisionVerdict's
 	// branch order mirrors the early-return order below, so the recorded verdict
 	// always matches the HTTP branch that fires.
-	outVerdict, outPolicyIDs, outReasons := mcpOutputDecisionVerdict(outputOutcome)
+	outVerdict, outPolicyIDs, outReasons, outPolicyNames := mcpOutputDecisionVerdict(outputOutcome)
 
 	// Use redacted row data if PII was redacted
 	responseData := result.Rows
@@ -2030,7 +2046,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RowCount = result.RowCount
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil) // #2679: response SQLi block
+		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil, outPolicyNames) // #2679: response SQLi block
 		sendErrorResponse(w,
 			fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", outputOutcome.SQLiPattern),
 			http.StatusForbidden, nil)
@@ -2043,7 +2059,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RowCount = result.RowCount
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil) // #2679: response static block
+		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil, outPolicyNames) // #2679: response static block
 		sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", outputOutcome.StaticResult.BlockReason),
 			http.StatusForbidden, nil)
 		return
@@ -2055,7 +2071,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RowCount = result.RowCount
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil) // #2679: exfiltration-limit block
+		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil, outPolicyNames) // #2679: exfiltration-limit block
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2119,7 +2135,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// satellite, so an allowed/redacted governance decision never reached the
 	// portal feed. A response redaction is its OWN verdict ("redacted") carrying
 	// redacted_fields — recording it as "allowed" would hide the mask.
-	emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, outputOutcome.RedactedFieldNames())
+	emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, outputOutcome.RedactedFieldNames(), outPolicyNames)
 
 	log.Printf("[MCP] Query executed: connector=%s, rows=%d, duration=%v",
 		req.Connector, result.RowCount, result.Duration)
@@ -2261,7 +2277,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{readOnlyPosturePolicyID},
 			[]string{reason},
 			nil,
-			traceIDFromHeader(r.Header.Get("traceparent")))
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil)
 		sendErrorResponse(w, "Request blocked: "+reason, http.StatusForbidden, nil)
 		return
 	}
@@ -2323,14 +2340,15 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// NON-PII descriptor (the raw statement MUST NOT land in audit_logs.query).
 	execDescriptor := fmt.Sprintf("mcp tools/execute: %s", req.Connector)
 	correlationID := traceIDFromHeader(r.Header.Get("traceparent"))
-	emitDecisionAudit := func(verdict string, policyIDs, reasons, redactedFields []string) {
+	emitDecisionAudit := func(verdict string, policyIDs, reasons, redactedFields []string, policyNames map[string]string) {
 		writeMCPDecisionAudit(ctx, usageDB,
 			auditEntry.DecisionID, auditEntry.AuditID,
 			user.TenantID, auditEntry.OrgID, auth.Client.ID, user.Email,
 			auditEntry.UserID, user.Role,
 			"mcp_tools_execute", execDescriptor, auditEntry.StatementHash,
 			verdict, policyIDs, reasons, redactedFields,
-			correlationID)
+			correlationID,
+			policyNames)
 	}
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
@@ -2350,7 +2368,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		// Fail-closed: governance could not be rendered (503) → canonical error row.
 		emitDecisionAudit(mcpVerdictError,
 			[]string{"dynamic_policy_unavailable"},
-			[]string{"dynamic policy evaluation unavailable"}, nil)
+			[]string{"dynamic policy evaluation unavailable"}, nil, nil)
 		sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
 		return
 	}
@@ -2360,8 +2378,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RequestBlockReason = inputOutcome.DynamicBlockReason
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		v, pids, reasons := mcpInputDecisionVerdict(inputOutcome, false) // #2679: dynamic block
-		emitDecisionAudit(v, pids, reasons, nil)
+		v, pids, reasons, pnames := mcpInputDecisionVerdict(inputOutcome, false) // #2679: dynamic block
+		emitDecisionAudit(v, pids, reasons, nil, pnames)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2382,7 +2400,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			logMCPQueryAudit(auditEntry)
 			emitDecisionAudit(mcpVerdictBlocked, // #2679: request static block
 				extractMatchedPolicyIDs(inputOutcome.StaticResult.MatchedPolicies),
-				[]string{inputOutcome.StaticResult.BlockReason}, nil)
+				[]string{inputOutcome.StaticResult.BlockReason}, nil,
+				policyNamesFromMatches(inputOutcome.StaticResult.MatchedPolicies))
 			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", inputOutcome.StaticResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
@@ -2399,7 +2418,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		logMCPQueryAudit(auditEntry)
 		// #2679: tool-error fail-closed → canonical error row (never the raw err).
 		emitDecisionAudit(mcpVerdictError,
-			[]string{"connector_error"}, []string{"command execution failed"}, nil)
+			[]string{"connector_error"}, []string{"command execution failed"}, nil, nil)
 
 		sendErrorResponse(w, "Command execution failed", http.StatusInternalServerError, nil)
 		return
@@ -2414,7 +2433,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	// #2679: response-phase verdict, computed once; branch order mirrors the
 	// early-return order below so the recorded verdict matches the HTTP branch.
-	outVerdict, outPolicyIDs, outReasons := mcpOutputDecisionVerdict(outputOutcome)
+	outVerdict, outPolicyIDs, outReasons, outPolicyNames := mcpOutputDecisionVerdict(outputOutcome)
 
 	// Use redacted message if PII was redacted
 	responseMessage := result.Message
@@ -2431,7 +2450,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RowCount = int(result.RowsAffected)
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil) // #2679: response SQLi block
+		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil, outPolicyNames) // #2679: response SQLi block
 		sendErrorResponse(w,
 			fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", outputOutcome.SQLiPattern),
 			http.StatusForbidden, nil)
@@ -2444,7 +2463,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.RowCount = int(result.RowsAffected)
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil) // #2679: response static block
+		emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, nil, outPolicyNames) // #2679: response static block
 		sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", outputOutcome.StaticResult.BlockReason),
 			http.StatusForbidden, nil)
 		return
@@ -2488,7 +2507,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// #2679: terminal allow (clean or redacted) → canonical row keyed by the same
 	// decision_id. A response redaction is its OWN verdict ("redacted") carrying
 	// redacted_fields, distinct from a clean allow.
-	emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, outputOutcome.RedactedFieldNames())
+	emitDecisionAudit(outVerdict, outPolicyIDs, outReasons, outputOutcome.RedactedFieldNames(), outPolicyNames)
 
 	log.Printf("[MCP] Command executed: connector=%s, action=%s, rows_affected=%d, duration=%v",
 		logutil.Sanitize(req.Connector), logutil.Sanitize(req.Action), result.RowsAffected, result.Duration)
@@ -2675,6 +2694,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"authentication failed: " + authErr.Message},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
@@ -2715,6 +2735,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"no redaction detector registered for content_type: " + req.ContentType},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 		sendErrorResponse(w, "no redaction detector registered for content_type: "+req.ContentType, http.StatusUnsupportedMediaType, nil)
 		return
@@ -2779,6 +2800,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"resolved user tenant does not match authenticated client tenant"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 		return
@@ -2825,6 +2847,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"tenant_id is required"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
 		return
@@ -2885,7 +2908,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		// 101), so this plain insert succeeds under AXONFLOW_DB_USE_APP_ROLE on AND off
 		// — identical to the production /decide path. query is a non-PII descriptor
 		// (connector type) — the raw statement MUST NOT land in audit_logs.query.
-		emitInputDecision := func(verdict string, policyIDs, reasons []string) {
+		emitInputDecision := func(verdict string, policyIDs, reasons []string, policyNames map[string]string) {
 			recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageTool,
 				verdict, policyIDs, time.Since(startTime).Milliseconds(), reasons,
 				"", nil, false, &decisionAuditInput{
@@ -2902,6 +2925,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 					correlationID: traceIDFromHeader(r.Header.Get("traceparent")),
 					toolServer:    req.ConnectorType, // #2904
 					toolName:      req.Tool,          // #2904
+					policyNames:   policyNames,       // #3365
 				})
 		}
 
@@ -2927,6 +2951,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				[]string{reason},
 				nil,
 				traceIDFromHeader(r.Header.Get("traceparent")),
+				nil,                         // #3365: guard ids resolve via the builtin table
 				req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -2968,6 +2993,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				[]string{"dynamic policy evaluation unavailable"},
 				nil,
 				traceIDFromHeader(r.Header.Get("traceparent")),
+				nil,                         // #3365: guard ids resolve via the builtin table
 				req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
 			return
@@ -2981,8 +3007,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			// #2627: a dynamic-policy block previously wrote ONLY the
 			// mcp_query_audits satellite, so the portal feed showed it as
 			// "Logged", not "Blocked". Emit the canonical audit_logs deny row.
-			v, pids, reasons := mcpInputDecisionVerdict(outcome, false)
-			emitInputDecision(v, pids, reasons)
+			v, pids, reasons, pnames := mcpInputDecisionVerdict(outcome, false)
+			emitInputDecision(v, pids, reasons, pnames)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
@@ -3031,14 +3057,16 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 					// explain can answer "which version of which policy was
 					// overridden."
 					var overriddenPolicyID string
+					var overriddenPolicyName string
 					var overriddenPolicyVersion int
 					if overriddenMatch != nil {
 						overriddenPolicyID = overriddenMatch.PolicyID
+						overriddenPolicyName = overriddenMatch.PolicyName
 						overriddenPolicyVersion = overriddenMatch.Version
 					}
 					writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
 						decisionID, tenantID, orgID, auth.Client.ID, userEmail,
-						overriddenPolicyID, overriddenPolicyVersion,
+						overriddenPolicyID, overriddenPolicyName, overriddenPolicyVersion,
 						traceIDFromHeader(r.Header.Get("traceparent"))) // #2598 correlation
 					log.Printf("[MCP] Override %s applied — flipping deny to allow for decision %s",
 						usedOverrideID, decisionID)
@@ -3145,7 +3173,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		// "allowed" hid the mask from the portal (#2641 MCPIN). query is a non-PII
 		// descriptor (connector type) — the raw statement MUST NOT land in
 		// audit_logs.query.
-		v, pids, reasons := mcpInputDecisionVerdict(outcome, didRedact)
+		v, pids, reasons, pnames := mcpInputDecisionVerdict(outcome, didRedact)
 		if v == mcpVerdictRedacted {
 			// A redaction MUST carry redacted_fields on the canonical row (AUDIT-C
 			// DoD). recordDecideDecision → writeDecisionAuditLog omits that column, so
@@ -3159,9 +3187,10 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				"mcp_check_input", inputDescriptor, computeStatementHash(inputDescriptor),
 				mcpVerdictRedacted, pids, reasons, auditEntry.ResponseRedactedFields,
 				traceIDFromHeader(r.Header.Get("traceparent")),
+				pnames,                      // #3365
 				req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
 		} else {
-			emitInputDecision(v, pids, reasons)
+			emitInputDecision(v, pids, reasons, pnames)
 		}
 
 		resp := MCPCheckInputResponse{
@@ -3231,6 +3260,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"authentication failed: " + authErr.Message},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
@@ -3303,6 +3333,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"resolved user tenant does not match authenticated client tenant"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 		return
@@ -3337,6 +3368,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"tenant_id is required"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                         // #3365: guard ids resolve via the builtin table
 			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
 		return
@@ -3398,7 +3430,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	// mcpOutputDecisionVerdict mirrors the branch order so the recorded verdict
 	// matches the branch that fires. query is a non-PII descriptor (connector +
 	// operation) — raw response_data MUST NOT land in audit_logs.query.
-	outVerdict, outPolicyIDs, outReasons := mcpOutputDecisionVerdict(outcome)
+	outVerdict, outPolicyIDs, outReasons, outPolicyNames := mcpOutputDecisionVerdict(outcome)
 	if outVerdict == mcpVerdictRedacted {
 		// #2641 (AUDIT-C): a response redaction (e.g. an OJK NIK/NPWP mask) is its
 		// OWN verdict and MUST carry redacted_fields on the canonical row. The
@@ -3414,6 +3446,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			"mcp_check_output", fmt.Sprintf("mcp check-output: %s", req.ConnectorType), "",
 			mcpVerdictRedacted, outPolicyIDs, outReasons, outcome.RedactedFieldNames(),
 			traceIDFromHeader(r.Header.Get("traceparent")),
+			outPolicyNames,              // #3365
 			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
 	} else {
 		recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageTool,
