@@ -162,7 +162,7 @@ All connectors can be registered in all tiers. Connectors with custom policies a
 
 **Ready for production?** Get a free Evaluation license at: https://getaxonflow.com/evaluation-license
 
-**Need Enterprise features?** Contact sales@getaxonflow.com
+**Need a sponsored production path?** The paid [Design Partner Program](https://getaxonflow.com/design-partner/?utm_source=github_getting_started&utm_medium=docs) takes one governed workflow into scoped production over 60 or 75 days, with an executive sponsor and fixed decision date. Public track starts at $2,000; confidential track starts at $4,000, subject to eligibility and a signed agreement.
 
 If you have an Evaluation or Enterprise license, set it:
 

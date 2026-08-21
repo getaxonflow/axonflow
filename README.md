@@ -376,7 +376,7 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 | Policy Simulation | — | 300/day | Unlimited |
 | Evidence Export | — | 14-day window, 3/day | Unlimited |
 
-[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Apply for Design Partner](https://getaxonflow.com/design-partner?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
+[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Run a paid production program](https://getaxonflow.com/design-partner?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
 
 ### Stay on Community if:
 - Single team prototyping AI features
@@ -392,17 +392,18 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 
 **Get your free Evaluation license:** https://getaxonflow.com/evaluation-license
 
-### Need Enterprise sooner?
+### Need a sponsored production decision?
 
-If you already know you need full enterprise features, a managed deployment option, or direct rollout help, apply for the [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_eval). Selected partners get:
+If you have one real workflow, a dated security or business requirement, written controls, and an executive sponsor, use the paid [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_eval). It is a bounded production path rather than another open-ended evaluation:
 
-- Enterprise access for the scoped design-partner engagement, covering PoC through initial rollout
-- Founder-led architecture and rollout support
-- Direct access to the founding team
-- Priority influence on roadmap during the engagement
-- Preferential pricing after successful rollout — a meaningful preferred rate, locked for an initial term
+- **Core:** 60 days, $2,000 public track or $4,000 confidential track
+- **Core + Fraud & Risk:** 75 days, $3,000 public track or $6,000 confidential track
+- Enterprise access for the single workflow and footprint agreed in the signed program plan
+- Weekly founder session, next-business-day acknowledgment and triage for production-impacting issues, and a fixed evidence readout
+- Expected production footprint, indicative conversion price, and procurement path established before the program begins
+- 100% of the fee credited against the first quarterly invoice when a commercial licence is signed within 30 days of program end
 
-Plus priority support, architecture review, incident-readiness review, and roadmap input.
+The public track includes deployment-story collaboration subject to mutual written approval. The confidential paid pilot has no marketing obligations. All prices are subject to eligibility and a signed agreement.
 
 ### You need Enterprise when:
 
@@ -632,9 +633,9 @@ AxonFlow SDKs, plugins, and platform binaries (agent + orchestrator) emit an ano
 >
 > Choose the path that fits:
 > - **Self-serve:** free 90-day [Evaluation License](https://getaxonflow.com/evaluation-license?utm_source=readme_platform_eval)
-> - **Hands-on:** [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_platform) — Enterprise access for the scoped engagement, founder-led architecture and rollout support, and preferential pricing after successful rollout
+> - **Sponsored production decision:** paid [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_platform)  -  one scoped workflow over 60 or 75 days, founder-led rollout support, upfront conversion pricing, and a fixed decision date; public track from $2,000 or confidential track from $4,000
 >
-> Priority support, architecture review, incident-readiness review, and roadmap input are included for selected partners. We reply within 48 hours.
+> Programs require a dated forcing event, written control requirements, a named executive sponsor, and a technical owner. Prices are subject to eligibility and a signed agreement. We reply within two business days.
 
 > **Questions or feedback?**
 >
