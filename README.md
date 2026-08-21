@@ -100,7 +100,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **Product demos (Platform + Fraud & Risk):** See runtime enforcement, HITL approvals, audit evidence, cost visibility, and agentic payment controls: [Watch the demos](https://getaxonflow.com/demo/?utm_source=github&utm_medium=readme&utm_campaign=product_demo&utm_content=axonflow)
 
-**Community Quickstart walkthrough (2.5 min):** See governed calls, PII blocking, Gateway Mode with LangChain/CrewAI, and MAP from YAML: [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
+**Community Quickstart walkthrough (2 min):** See governed calls, PII blocking, Gateway Mode with LangChain/CrewAI, and MAP from YAML: [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
 
 **Architecture deep dive (12 min):** How the control plane works, policy enforcement flow, and multi-agent planning: [Watch on YouTube](https://youtu.be/Q2CZ1qnquhg)
 
@@ -143,7 +143,7 @@ This creates a WCP workflow, runs step-level gate checks, records a step ledger,
 
 ## Quick Start
 
-If you want to see how this looks before setting it up, watch the [Community Quickstart walkthrough (2.5 min)](https://youtu.be/BSqU1z0xxCo).
+If you want to see how this looks before setting it up, watch the [Community Quickstart walkthrough (2 min)](https://youtu.be/BSqU1z0xxCo).
 
 **Prerequisites:** [Docker Desktop](https://docs.docker.com/get-docker/) installed and running.
 
