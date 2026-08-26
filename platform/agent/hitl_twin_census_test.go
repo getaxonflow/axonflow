@@ -8,6 +8,7 @@
 package agent
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,27 +46,108 @@ func readRepoFile(t *testing.T, root, rel string) (string, bool) {
 	return string(b), true
 }
 
-// funcBody returns the source of one function, from its signature to the next
-// top-level declaration. Deliberately crude: it exists so a clause census
-// cannot be satisfied by a DIFFERENT function in the same file, which is a
-// specific hole a mutation run found, not a general parsing ambition.
-func funcBody(t *testing.T, src, signature string) string {
+// syncStrip names the mechanism by which .github/workflows/sync-community-repo.yml
+// removes a file from the PUBLIC community mirror. It is the only reason a
+// census site is ever allowed to be absent.
+//
+// The bug this type exists to prevent: the census used to treat an "ee/" path
+// prefix as the definition of "not in the community build". The sync strips by
+// TWO independent mechanisms, and the second one operates on files that live
+// under platform/ and have no ee/ prefix at all, so the prefix test could not
+// see them. platform/agent/hitl/{service,repository}.go are exactly that case,
+// and the mirror's own unit-test job went red on them.
+type syncStrip int
+
+const (
+	// stripNever: the file ships to BOTH editions. It is present in every
+	// checkout, so absence is drift - a move or a rename - and must fail
+	// wherever it is observed.
+	stripNever syncStrip = iota
+	// stripEEDir: removed by the sync's rsync --exclude='ee/'.
+	stripEEDir
+	// stripEnterpriseTag: removed by the sync's `^//go:build enterprise` scan
+	// (#3270). NOTE these files live under platform/, not under ee/.
+	stripEnterpriseTag
+)
+
+var enterpriseBuildTag = regexp.MustCompile(`(?m)^//go:build enterprise|^// \+build enterprise`)
+
+// hitlSyncShape reports which of the community sync's strip mechanisms have
+// ALREADY been applied to the tree the test is running against.
+//
+// Both fields are direct observations of the mechanism itself, not proxies for
+// an edition name:
+//
+//   - ee/ exists if and only if the rsync exclusion has not run.
+//   - an enterprise-tagged .go file exists if and only if the build-tag scan has
+//     not run. The scan is backed by a fail-closed leak gate
+//     (.github/scripts/check-enterprise-leak.sh) that aborts the sync if even one
+//     such file survives, so "zero" is guaranteed on the mirror and never
+//     accidental.
+//
+// So permission to be absent is only ever granted when the specific mechanism
+// that would have removed that specific file is demonstrably in effect here.
+// Nothing is inferred from an edition label or a build tag on the test binary.
+type hitlSyncShape struct {
+	eeStripped  bool
+	tagStripped bool
+}
+
+// unsynced reports whether NOTHING has been stripped from this tree, which is
+// the enterprise repo and is the only place a rename actually lands. On such a
+// tree every census site must be present and the strict census is never
+// relaxed.
+func (s hitlSyncShape) unsynced() bool { return !s.eeStripped && !s.tagStripped }
+
+func hitlDetectSyncShape(t *testing.T, root string) hitlSyncShape {
 	t.Helper()
-	i := strings.Index(src, signature)
-	if i < 0 {
-		t.Fatalf("signature %q not found; the census would otherwise pass over nothing", signature)
+	shape := hitlSyncShape{}
+
+	if fi, err := os.Stat(filepath.Join(root, "ee")); err != nil || !fi.IsDir() {
+		shape.eeStripped = true
 	}
-	rest := src[i+len(signature):]
-	// The next line that starts a top-level declaration ends this body.
-	for _, marker := range []string{"\nfunc ", "\ntype ", "\nvar ", "\nconst "} {
-		if j := strings.Index(rest, marker); j >= 0 {
-			rest = rest[:j]
+
+	found := false
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// An unreadable subtree must not be read as "no enterprise source
+			// here": that would hand out an absence permission the tree has not
+			// earned. Fail the walk instead.
+			return err
 		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules", "vendor":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		b, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		// A build constraint must precede the package clause, so only that
+		// prefix can carry one. Truncating there keeps a doc comment or a test
+		// fixture further down the file from being mistaken for a real tag.
+		src := string(b)
+		if i := strings.Index(src, "\npackage "); i >= 0 {
+			src = src[:i]
+		}
+		if enterpriseBuildTag.MatchString(src) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning %s for enterprise-tagged source: %v; the census cannot decide "+
+			"which absences are legitimate without it", root, err)
 	}
-	if strings.TrimSpace(rest) == "" {
-		t.Fatalf("extracted an empty body for %q", signature)
-	}
-	return rest
+	shape.tagStripped = !found
+	return shape
 }
 
 // TestPolicyStepUpRequestTypeIsIdenticalInEveryBuild.
@@ -83,8 +165,16 @@ func funcBody(t *testing.T, src, signature string) string {
 // unspendable, which is the exact defect #3509 exists to remove, arriving
 // under a different cause. This reads the SOURCE, so it sees all four
 // regardless of tags.
+//
+// This test is deliberately NOT build-tagged: two of its four sites (the
+// agent-side constant and the //go:build !enterprise community stub) survive
+// the community sync and remain a genuinely comparable pair there, so it does
+// real work on the mirror. The two enterprise-only sites are classified by the
+// mechanism that removes them and are permitted to be absent only on a tree
+// where that mechanism has demonstrably run.
 func TestPolicyStepUpRequestTypeIsIdenticalInEveryBuild(t *testing.T) {
 	root := hitlRepoRoot(t)
+	shape := hitlDetectSyncShape(t, root)
 	const want = "policy_step_up"
 
 	if HITLRequestTypePolicyStepUp != want {
@@ -92,143 +182,87 @@ func TestPolicyStepUpRequestTypeIsIdenticalInEveryBuild(t *testing.T) {
 	}
 
 	decl := regexp.MustCompile(`RequestTypePolicyStepUp\s*=\s*"([^"]*)"`)
-	sites := []string{
-		"platform/agent/hitl_policy_enqueue.go", // agent side (HITLRequestTypePolicyStepUp)
-		"platform/agent/hitl/service.go",        // //go:build enterprise
-		"platform/agent/hitl/hitl_community.go", // //go:build !enterprise
-		"ee/platform/agent/hitl/service.go",     // the Docker overlay copy
+	sites := []struct {
+		rel   string
+		strip syncStrip
+	}{
+		// Agent side (HITLRequestTypePolicyStepUp). Untagged: ships everywhere.
+		{"platform/agent/hitl_policy_enqueue.go", stripNever},
+		// //go:build enterprise, under platform/. The sync's build-tag scan
+		// removes it. This is the site the old ee/-prefix test could not see.
+		{"platform/agent/hitl/service.go", stripEnterpriseTag},
+		// //go:build !enterprise. The sync KEEPS the community half of a tag
+		// pair, so this one is present in every checkout.
+		{"platform/agent/hitl/hitl_community.go", stripNever},
+		// The Docker overlay copy, removed by rsync --exclude='ee/'.
+		{"ee/platform/agent/hitl/service.go", stripEEDir},
 	}
-	seen := 0
-	for _, rel := range sites {
-		src, ok := readRepoFile(t, root, rel)
+
+	seen, wantSeen := 0, 0
+	for _, site := range sites {
+		mayBeAbsent := (site.strip == stripEEDir && shape.eeStripped) ||
+			(site.strip == stripEnterpriseTag && shape.tagStripped)
+		if !mayBeAbsent {
+			wantSeen++
+		}
+
+		src, ok := readRepoFile(t, root, site.rel)
 		if !ok {
-			if strings.HasPrefix(rel, "ee/") {
-				// The community mirror strips ee/; nothing to compare there.
+			if mayBeAbsent {
 				continue
 			}
-			t.Fatalf("%s not readable", rel)
+			t.Fatalf("%s not readable, and this checkout still contains everything the community "+
+				"sync would have stripped, so it was moved or renamed rather than excluded: a rename "+
+				"in one twin while the other keeps working is exactly the silent drift this census exists "+
+				"to catch", site.rel)
 		}
+
+		// Keep the classification honest. A file marked as removed-by-build-tag
+		// that has LOST its tag now ships to the public mirror, so its absence
+		// would no longer be legitimate and the row must be reclassified. Without
+		// this the census could quietly hand out a permission the sync no longer
+		// grants, which is the same class of stale assumption as the original bug.
+		if site.strip == stripEnterpriseTag && !enterpriseBuildTag.MatchString(src) {
+			t.Fatalf("%s is classified stripEnterpriseTag but no longer carries `//go:build enterprise`; "+
+				"it now syncs to the public mirror, so its absence is no longer legitimate and this row "+
+				"must be reclassified stripNever", site.rel)
+		}
+
 		m := decl.FindStringSubmatch(src)
 		if m == nil {
 			t.Fatalf("%s declares no RequestTypePolicyStepUp: a rename here is a silent drift, "+
-				"because whichever build compiles the OTHER copy keeps working", rel)
+				"because whichever build compiles the OTHER copy keeps working", site.rel)
 		}
 		if m[1] != want {
 			t.Fatalf("%s declares %q, want %q: entries written under one value would never be "+
-				"matched by the consume predicate, so every approval would be unspendable", rel, m[1], want)
+				"matched by the consume predicate, so every approval would be unspendable", site.rel, m[1], want)
 		}
 		seen++
 	}
-	// Anti-vacuity: a rename that made every path unreadable would otherwise
-	// pass over nothing.
-	if seen < 3 {
-		t.Fatalf("only %d of the declaration sites were checked; this guard is not covering what it claims", seen)
-	}
-}
 
-// TestConsumeGrantPredicateIsIdenticalInBothTwins.
-//
-// platform/agent/Dockerfile copies ee/platform/agent/hitl/* OVER
-// platform/agent/hitl/ for EDITION=enterprise, so the ee/ copy is what runs in
-// the shipped image while the platform/ copy is what the unit tests exercise.
-// The repo's existing lockstep guard (platform/shared/egress/conformance_test.go
-// TestEETwinsAreInLockstep) is explicitly scoped to the two egress-bearing
-// files and its own comment says not to read it as covering the overlay.
-//
-// So a fix applied to one ConsumeGrant and not the other would pass every test
-// and ship the unfixed predicate. This compares the security-bearing clauses
-// of the two copies directly.
-func TestConsumeGrantPredicateIsIdenticalInBothTwins(t *testing.T) {
-	root := hitlRepoRoot(t)
-	platformFile, ok := readRepoFile(t, root, "platform/agent/hitl/repository.go")
-	if !ok {
-		t.Fatal("platform/agent/hitl/repository.go not readable")
-	}
-	eeFile, ok := readRepoFile(t, root, "ee/platform/agent/hitl/repository.go")
-	if !ok {
-		t.Skip("ee/ not present in this checkout (community mirror strips it)")
-	}
-	// Scoped to ConsumeGrant's OWN body, not to the whole file.
-	//
-	// A whole-file substring check is satisfied by the clause appearing
-	// ANYWHERE, and FindOpenPolicyStepUp in the same file matches on the same
-	// dimensions - so deleting `AND client_id = ...` from the consume predicate
-	// left the census green, because the sibling function still contained the
-	// string. A mutation run caught it; a reviewer reading the test would not
-	// have.
-	platformSrc := funcBody(t, platformFile, "func (r *Repository) ConsumeGrant(")
-	eeSrc := funcBody(t, eeFile, "func (r *Repository) ConsumeGrant(")
-
-	// Every clause below is load-bearing: dropping any one of them widens the
-	// match across users, across orgs, across planes, past the single-use
-	// guard, or past the TTL.
-	clauses := []string{
-		"WHERE org_id = $1",
-		"AND tenant_id = $2",
-		"AND client_id = $3",
-		"AND user_id = $4",
-		"AND triggered_policy_id = $5",
-		// A LITERAL, not a bound parameter: it has to match the partial index's
-		// own literal predicate (migration 167) or the planner cannot use the
-		// index under a generic plan.
-		"AND request_type = 'policy_step_up'",
-		"AND status = 'approved'",
-		"AND consumed_at IS NULL",
-		"AND reviewed_at IS NOT NULL",
-		"AND reviewed_at > CURRENT_TIMESTAMP - $6::interval",
-		// THE APPROVAL MUST NAME A PERSON. The HITL approve route has no role
-		// gate, AND on the organization-license path client_id is an
-		// unvalidated Basic-auth username - so a clause comparing only
-		// reviewer_id to the caller's credential is defeated by re-presenting
-		// the same licence under a different username. Only the role clause is
-		// not defeatable that way.
-		"AND reviewer_role IS NOT NULL",
-		"AND reviewer_role <> 'service'",
-		"AND reviewer_id IS NOT NULL",
-		"AND reviewer_id <> $3",
-		"AND reviewer_id <> $4",
-		// The grant admits the request the reviewer SAW, not the next one the
-		// same rule holds.
-		"AND request_context->>'query_hash' = $7",
-		"ORDER BY reviewed_at ASC",
-		"FOR UPDATE SKIP LOCKED",
-		"SET consumed_at = CURRENT_TIMESTAMP",
-	}
-	for _, c := range clauses {
-		// Reported INDEPENDENTLY, not as a switch: if both twins lose the same
-		// clause the ee/ message is the one that matters (that copy is what
-		// ships), and a switch would print only the platform one and hide it.
-		if !strings.Contains(platformSrc, c) {
-			t.Errorf("platform/agent/hitl/repository.go is missing the clause %q", c)
+	// Anti-vacuity, keyed to the edition the census is actually running on. A
+	// census that compared nothing has become a test that cannot fail.
+	if shape.unsynced() {
+		// Nothing has been stripped from this tree, so there is no legitimate
+		// absence: the FULL census runs and a one-sided rename still fails hard.
+		// This is the arm that runs in the enterprise repo, which is where every
+		// rename lands, so the strict check is never lost - only relaxed on a
+		// tree where it cannot apply.
+		if seen != len(sites) {
+			t.Fatalf("this checkout has nothing stripped (ee/ present, enterprise-tagged source present) "+
+				"yet only %d of %d declaration sites were checked; the full census must run here", seen, len(sites))
 		}
-		if !strings.Contains(eeSrc, c) {
-			t.Errorf("ee/platform/agent/hitl/repository.go is missing the clause %q; the ee/ copy is what "+
-				"runs in the Enterprise image, so this ships the weaker predicate", c)
-		}
+	} else if seen < 2 {
+		// The two untagged sites always survive the sync, so a synced tree still
+		// compares a real pair. Fewer than two means the census is measuring
+		// nothing on this edition.
+		t.Fatalf("this checkout is community-synced but only %d declaration site(s) were checked; "+
+			"the agent-side constant and the //go:build !enterprise stub both survive the sync, so "+
+			"at least 2 must be compared or this guard is vacuous here", seen)
 	}
-
-	// The guard clause on ConsumeGrant's own arguments must be present in both
-	// too: without it a missing dimension matches across users or orgs.
-	// Also body-scoped: FindOpenPolicyStepUp carries an identical guard, so a
-	// whole-file check would be satisfied by the sibling.
-	const failClosed = `if subj.OrgID == "" || subj.TenantID == "" || subj.ClientID == "" || subj.UserID == "" ||
-		policyID == "" || queryHash == "" {`
-	if !strings.Contains(platformSrc, failClosed) {
-		t.Error("platform ConsumeGrant lost its fail-closed argument guard")
-	}
-	if !strings.Contains(eeSrc, failClosed) {
-		t.Error("ee ConsumeGrant lost its fail-closed argument guard")
-	}
-
-	// The partial index the consume relies on must key on the same dimensions
-	// the predicate matches, or the lookup falls back to scanning the org's
-	// whole queue history on the latency path of a held decision.
-	migration, ok := readRepoFile(t, root, "migrations/core/167_hitl_grant_consumption.sql")
-	if !ok {
-		t.Fatal("migration 167 not readable")
-	}
-	if !strings.Contains(migration, "(org_id, tenant_id, client_id, user_id, triggered_policy_id, reviewed_at DESC)") {
-		t.Error("idx_hitl_unconsumed_grant does not cover the dimensions ConsumeGrant matches on")
+	if seen != wantSeen {
+		t.Fatalf("checked %d declaration sites but %d are present-by-construction in this checkout shape "+
+			"(ee stripped=%v, enterprise tag stripped=%v)", seen, wantSeen, shape.eeStripped, shape.tagStripped)
 	}
 }
 
@@ -277,6 +311,19 @@ func TestMigration167DeclaresWhatTheCodeDependsOn(t *testing.T) {
 	}
 	if !strings.Contains(src, "WHERE status = 'pending'\n              AND request_type = 'policy_step_up'") {
 		t.Error("idx_hitl_open_policy_step_up is not predicated on the rows the dedup lookup matches")
+	}
+
+	// The partial index the consume relies on must key on the same dimensions
+	// the predicate matches, or the lookup falls back to scanning the org's
+	// whole queue history on the latency path of a held decision.
+	//
+	// This assertion used to live in TestConsumeGrantPredicateIsIdenticalInBothTwins,
+	// which is now `//go:build enterprise` because both halves of the twin pair it
+	// compares are enterprise-only. Its subject here is a migrations/core file,
+	// which SHIPS to the community mirror and is applied by community deployments,
+	// so it belongs on the untagged side or the coverage would simply be lost.
+	if !strings.Contains(src, "(org_id, tenant_id, client_id, user_id, triggered_policy_id, reviewed_at DESC)") {
+		t.Error("idx_hitl_unconsumed_grant does not cover the dimensions ConsumeGrant matches on")
 	}
 
 	down, ok := readRepoFile(t, root, "migrations/core/167_hitl_grant_consumption_down.sql")
