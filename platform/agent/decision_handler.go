@@ -51,6 +51,7 @@ import (
 
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/fincrime"
+	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/telemetry"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
@@ -643,11 +644,15 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		correlationID: traceID,
 		origin:        origin, // WS-5 caller bucket, mirrored onto the decision span
 		// #2896: pre-seed the trusted attribution email (empty when absent or
-		// untrusted) so even the early-return denies below — decode failure,
-		// impersonation attempt, rejected token — attribute to the asserted
-		// principal when the deployment trusts its identity source. Refined
-		// against the validated identity once ResolveUser runs.
-		userEmail: attributedEmail,
+		// untrusted). It is recorded as a CLAIM, never as this row's
+		// attribution: audit attribution must always name the principal the
+		// decision was evaluated against, and on the early-return denies below
+		// — decode failure, impersonation attempt, rejected token, token
+		// required — no per-user principal was ever verified, so no human may
+		// be named as though one had been. The asserted value survives at
+		// policy_details->>'attempted_user_email'; the user_email column falls
+		// back to the writer's placeholder until ResolveUser sets it.
+		attemptedUserEmail: attributedEmail,
 	}
 
 	// auditEarlyDeny persists the canonical plane=decision audit row for an
@@ -785,7 +790,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		// (line ~1640) -- synthesize a service user so the decision flow
 		// proceeds and the audit row carries a service identity. A caller
 		// that DOES supply a valid token still gets the validated record.
-		if authKind == AuthKindEnterprise && req.UserToken == "" {
+		if authKind == AuthKindEnterprise && req.UserToken == "" && !ResolveRequireUserToken(ctx, client.OrgID) {
 			user = &User{
 				ID:       0,
 				Email:    effectiveClientID + "@axonflow.local",
@@ -796,6 +801,16 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 				// instead of failing the WITH CHECK with empty org_id.
 				Role: "service",
 			}
+		} else if authKind == AuthKindEnterprise && req.UserToken == "" {
+			// #3476: no token was presented AND the org's posture requires one
+			// (the synthetic-identity condition above already ruled out "flag
+			// off"). Reject at authentication instead of synthesizing a service
+			// identity. Distinct audit marker from user_token_rejected (a
+			// PRESENTED-but-invalid token) so the two causes never collapse.
+			decisionAudit.securityEvent = "user_token_required"
+			auditEarlyDeny(VerdictDeny, stage, []string{"user_token_required"}, []string{userErr.Message})
+			sendDecideError(w, userErr.Message, userErr.HTTPStatus, decisionID, traceID)
+			return
 		} else {
 			// SECURITY (#2643): a supplied user_token that fails to resolve is a
 			// rejected access attempt — audit it as a blocked decision before
@@ -818,15 +833,42 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 
 	// User identity is now resolved — complete the audit row so the terminal
 	// allow/deny path (and the policy-driven early returns below) carry the
-	// validated/synthesized user. #2896: when the deployment trusts identity
-	// headers and the caller asserted one, the asserted principal wins the
-	// user_email ATTRIBUTION slot (the desktop proxy's per-leader identity —
-	// its Basic org:license credential resolves to a fleet-wide service user);
-	// role and numeric id stay validated — the header carries identity, never
-	// authorization.
+	// principal this decision is evaluated against.
+	//
+	// INVARIANT: audit attribution names the principal whose VERIFIED identity
+	// the decision was evaluated against. Enforcement and attribution read the
+	// SAME resolved identity — segment-scoped policy (ADR-060) makes the
+	// principal decide WHICH policies apply, so a row naming a different
+	// principal would not merely misname the caller, it would misdescribe what
+	// was governed in the artifact the compliance exports and the decisions
+	// feed read.
+	//
+	// A caller-asserted X-User-Email supplies attribution ONLY where no
+	// per-user identity was verified (#2896: a PEP fronting many principals
+	// behind one shared credential). Where one WAS verified, the asserted value
+	// is recorded as a claim at policy_details->>'attempted_user_email' — never
+	// as this row's principal, since it is forgeable by any governed caller
+	// under a deployment-wide trust gate.
 	decisionAudit.userEmail = user.Email
+	decisionAudit.attemptedUserEmail = ""
 	if attributedEmail != "" {
-		decisionAudit.userEmail = attributedEmail
+		if callerHasVerifiedUserIdentity(authKind, userErr, req.UserToken) {
+			// A VALIDATED per-user identity: the header may not displace it.
+			// Record the disagreement as a claim instead.
+			if attributedEmail != user.Email {
+				decisionAudit.attemptedUserEmail = attributedEmail
+			}
+		} else {
+			// NO verified per-user identity (community / community-SaaS /
+			// internal-service / the token-ABSENT enterprise fallback).
+			// Nothing principal-specific was evaluated for this caller, so the
+			// header does not misdescribe what was governed — and it is
+			// strictly better than naming a synthetic service email. This is
+			// #2896's actual case and is deliberately UNCHANGED: the invariant
+			// constrains DISPLACEMENT of a verified identity, not attribution
+			// in its absence.
+			decisionAudit.userEmail = attributedEmail
+		}
 	}
 	decisionAudit.userRole = user.Role
 	decisionAudit.userID = user.ID
@@ -1003,10 +1045,60 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// the historical nil-parameters call.
 	ctx = fincrime.WithDecisionMeta(ctx, "decide", decisionID)
 	fincrimeParams := finCrimeParametersFromContext(req.Context)
+	// #3456 R3: resolved HERE, immediately before its only consumer, and
+	// deliberately NOT right after the identity is settled. The circuit
+	// breaker and the RBI kill switch above are GLOBAL, org-scoped controls
+	// that do not depend on this caller's identity; resolving earlier let a
+	// per-caller resolution failure preempt them, so an open breaker or a
+	// tripped kill switch would surface as a segment deny and report the
+	// wrong cause to the operator. Resolving at the point of use also skips
+	// the lookup entirely for requests those controls already refused.
+	// #3456 (ADR-060 Slice 3): resolve this caller's governance-segment set
+	// ONCE, here, where the identity is settled and BEFORE any policy
+	// evaluation can run. /decide used to pass a hardcoded nil into
+	// evaluateInputPolicies, so a segment-scoped static_policies row could
+	// never enforce on this URL: the same content a segment-scoped policy
+	// blocks on a segment-aware plane was ALLOWED here, for the same caller,
+	// on the credential they already hold — a one-URL edit, no second
+	// credential, no privilege change.
+	//
+	// The key is user.OrgID + the VALIDATED token's email claim (user.Email),
+	// never attributedEmail. attributedEmail wins the audit ATTRIBUTION slot
+	// just above (#2896) but is caller-supplied and trusted deployment-wide;
+	// keying policy scoping on it would let a human shed their segments by
+	// naming a non-member colleague — the reported bypass recreated one level
+	// down. user.OrgID is populated on BOTH branches above (the validated
+	// token's org_id claim, falling back to its tenant per validateUserToken;
+	// client.OrgID on the synthesized service identity), which is also the key
+	// every other human-actor plane uses (run.go, gateway_handlers.go, the four
+	// MCP REST routes), so one human cannot resolve to different sets on
+	// different routes. See human_actor_segment_gate.go for the full contract.
+	segmentIDs, segOK := resolveHumanActorSegmentsForPolicy(ctx, user.OrgID, authResult.OrgID, user.Email,
+		callerIsVerifiedHuman(authResult, userErr, req.UserToken))
+	if !segOK {
+		// A resolver error for a caller who HAS a principal denies, on its OWN
+		// channel: guard id segment_resolution_failed + 403, in the same
+		// early-deny shape as the user_token_rejected / tenant_mismatch /
+		// user_token_required denies above. Deliberately NOT folded into
+		// InputPolicyOutcome.EvalUnavailable (the 503 "policy evaluation
+		// temporarily unavailable" channel guarded below): a deliberate
+		// policy-side deny must stay distinguishable from an evaluator outage
+		// in both the audit row and the operator dashboard. And it must happen
+		// HERE, before evaluateInputPolicies — that call's trailing `segments`
+		// parameter is a plain slice whose nil means "resolved to none / no
+		// identity", never "resolution failed".
+		decisionAudit.securityEvent = segmentResolutionFailedPolicyID
+		auditEarlyDeny(VerdictDeny, stage, []string{segmentResolutionFailedPolicyID},
+			[]string{segmentResolutionFailedReason})
+		sendDecideError(w, segmentResolutionFailedReason, http.StatusForbidden, decisionID, traceID)
+		return
+	}
+
 	outcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		"decision", toolIdentity, "decide", req.Query, fincrimeParams,
-		gwDetectionCfg, false /* runDynamicPolicy: M2, #2426 */)
+		gwDetectionCfg, false, /* runDynamicPolicy: M2, #2426 */
+		segmentIDs /* #3456: resolved once above, fail-closed; nil here means "resolved to none", never "resolution failed" */)
 	// Defensive fail-closed: evaluateInputPolicies sets EvalUnavailable only when
 	// dynamic policy evaluation (runDynamicPolicy) hits a transient store error.
 	// /decide passes runDynamicPolicy=false, so this is never set today — but
@@ -1030,6 +1122,47 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	if outcome.StaticResult != nil && outcome.StaticResult.BlockedBy != nil {
 		blockingPolicyID = outcome.StaticResult.BlockedBy.PolicyID
 		blockingPolicyTier = outcome.StaticResult.BlockedBy.Tier
+	}
+
+	// #3509 defect 2: spend an outstanding single-use approval BEFORE the
+	// verdict is mapped, never after.
+	//
+	// Flipping needs_approval to allow downstream would produce an allow that
+	// skipped mapPolicyResultToVerdict's obligation attachment entirely, so a
+	// policy that requires BOTH approval and redaction would be admitted with
+	// no redact_pii obligation and the PEP would forward raw content. Clearing
+	// the flag here instead lets the admitted request take the ORDINARY allow
+	// path, obligations and advisory reasons included.
+	//
+	// Scoped to a policy-authored step-up. A FinCrime step-up is a function of
+	// the risk score computed for THIS request, so an approval of one scored
+	// transaction must never admit the next one; decideApprovalIsPolicyAuthored
+	// also guarantees the seam cannot re-escalate this verdict after we have
+	// spent a grant on it, which would burn the grant and hold the caller
+	// anyway.
+	//
+	// `!policyResult.Blocked` is load-bearing and not defensive padding. Blocked
+	// and RequiresApproval can BOTH be true - one matched policy denies while
+	// another requires approval - and mapPolicyResultToVerdict short-circuits on
+	// Blocked, so the verdict is deny either way. Spending the caller's one
+	// approval on a request that is about to be denied anyway destroys it for
+	// nothing: single use means they do not get it back.
+	approvalGrantID := ""
+	if policyResult.RequiresApproval && !policyResult.Blocked && !isCommunityMode() &&
+		decideApprovalIsPolicyAuthored(outcome.FinCrime, outcome.StaticResult) {
+		// The FULL principal, not just the user. A token-less enterprise PEP is
+		// given a synthetic identity whose ID is 0, so `user_id` alone is the
+		// string "0" for every such caller in the org and a grant keyed on it
+		// would cross credentials.
+		if grantID, admitted := consumeApprovalGrant(ctx, hitlPlaneDecide, hitl.GrantSubject{
+			OrgID:    client.OrgID,
+			TenantID: client.TenantID,
+			ClientID: client.ClientID,
+			UserID:   fmt.Sprintf("%d", user.ID),
+		}, approvalPolicyKey(policyResult.ApprovalPolicyID), req.Query); admitted {
+			approvalGrantID = grantID
+			policyResult.RequiresApproval = false
+		}
 	}
 
 	// Map StaticPolicyResult onto the Decision API verdict/reasons/obligations
@@ -1074,7 +1207,62 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		if approvalID := createFinCrimeApprovalForDecision(ctx, client.OrgID, client.TenantID, client.ID,
 			fmt.Sprintf("%d", user.ID), req.Query, outcome.FinCrime, outcome.StaticResult); approvalID != "" {
 			reasons = append(reasons, finCrimeApprovalReason(approvalID))
+		} else if policyResult.RequiresApproval {
+			// #3509: a policy-authored require_approval - the EU AI Act
+			// human-oversight case the seam comment above names and explicitly
+			// declines to handle. It reached here as a verdict with no queue
+			// entry and no way for a reviewer to act, which is a strictly worse
+			// outcome than a block: refused, with no override flow and no
+			// reviewer surface.
+			//
+			// The `else` is load-bearing. createFinCrimeApprovalForDecision
+			// already wrote an entry when it returned an id, and a fincrime
+			// step-up on a request that ALSO trips a plain require_approval
+			// policy must not raise two entries for one decision. The seam owns
+			// the attribution in that case (its precedence rules pick the ML
+			// score or the protocol-integrity check over a pack row);
+			// policyResult.RequiresApproval is what distinguishes "the seam
+			// declined" from "the seam is not involved at all".
+			res := enqueuePolicyStepUp(ctx, policyStepUpInput{
+				Plane:    hitlPlaneDecide,
+				OrgID:    client.OrgID,
+				TenantID: client.TenantID,
+				// client.ClientID, not client.ID: ADR-052 makes ClientID the
+				// credential identity and it is what audit_logs.client_id
+				// records, so the queue row joins to its audit row - and it is
+				// what the grant consume above matches on.
+				ClientID:   client.ClientID,
+				UserID:     fmt.Sprintf("%d", user.ID),
+				UserEmail:  user.Email,
+				PolicyID:   policyResult.ApprovalPolicyID,
+				PolicyName: policyResult.ApprovalPolicyName,
+				Reason:     "human approval required by policy",
+				Severity:   policyResult.Severity,
+				DecisionID: decisionID,
+				Stage:      stage,
+				Query:      req.Query,
+				Target:     decideTargetDescriptor(toolServer, toolIdentity, req.Target.Type),
+			})
+			if res.RequestID != "" {
+				reasons = append(reasons, policyStepUpReason(res.RequestID))
+			} else {
+				// The hold stands, but it is no longer a SILENT dead end: the
+				// PEP is told a review was owed and not raised, and the same
+				// text lands on the canonical audit row below.
+				reasons = append(reasons, res.Detail)
+			}
+			decisionAudit.approvalEnqueue = res.Outcome
+			decisionAudit.approvalRequestID = res.RequestID
 		}
+	}
+	// #3509 defect 2: a spent grant is recorded as a REASON on the allow, so an
+	// admission authorised by a human is never a silent bare allow. The
+	// consumption itself happened before the verdict was mapped (see
+	// approvalGrantID above) precisely so this request takes the ordinary allow
+	// path, obligations included.
+	if approvalGrantID != "" {
+		reasons = append(reasons, approvalGrantReason(approvalGrantID))
+		decisionAudit.approvalGrantID = approvalGrantID
 	}
 
 	// On deny verdict, record ONE policy violation against the circuit
@@ -1819,8 +2007,13 @@ type decisionAuditInput struct {
 	// securityEvent, when set, classifies this row as a security-relevant denial
 	// (#2643): "tenant_impersonation" / "org_impersonation" (a body
 	// caller_identity that disagrees with the authenticated credentials),
-	// "tenant_mismatch" (the resolved user's tenant ≠ the client tenant), or
-	// "user_token_rejected" (a supplied user_token that failed to resolve). Lands
+	// "tenant_mismatch" (the resolved user's tenant ≠ the client tenant),
+	// "user_token_rejected" (a supplied user_token that failed to resolve),
+	// "user_token_required" (#3476: none supplied where the org's posture
+	// demands one), or "segment_resolution_failed" (#3456: the caller HAS a
+	// principal and governance-segment resolution errored, so this plane fails
+	// closed at the resolution site rather than evaluating against an
+	// undetermined set). Lands
 	// at policy_details->>'security_event' so the audit feed can filter every
 	// impersonation attempt with one JSONB predicate. Empty for normal rows.
 	securityEvent string
@@ -1832,6 +2025,15 @@ type decisionAuditInput struct {
 	// Empty when not applicable.
 	attemptedTenantID string
 	attemptedOrgID    string
+	// attemptedUserEmail holds a caller-ASSERTED per-user identity
+	// (X-User-Email, under the trust gate) that did NOT become this row's
+	// attribution — because attribution names the principal the decision was
+	// actually evaluated against, never a claim the system did not act on.
+	// Lands at policy_details->>'attempted_user_email', the same
+	// attempted-vs-actual shape as attemptedTenantID/attemptedOrgID: the row's
+	// user_email COLUMN holds the principal enforcement used; this holds what
+	// the caller said. Empty when absent or when it agrees with the column.
+	attemptedUserEmail string
 	// redactedFields → audit_logs.redacted_fields JSONB (#2643). Empty → NULL.
 	// /decide is a PDP — it emits redact_pii OBLIGATIONS (what the PEP must do) but
 	// does not itself redact content — so this is NULL on the decision plane
@@ -1846,6 +2048,28 @@ type decisionAuditInput struct {
 	// when Target.Type == "tool"; empty otherwise (e.g. llm/agent decisions).
 	toolServer string
 	toolName   string
+	// approvalEnqueue / approvalRequestID / approvalGrantID record what happened
+	// to the human-oversight surface for this decision (#3509).
+	//
+	//   approvalEnqueue   - one of the hitlEnqueue* outcomes when this decision
+	//                       held the caller and a reviewable entry was owed.
+	//                       `cap_reached` / `tier_disabled` / `error` are the
+	//                       values that matter: they mean the request is held
+	//                       and NO reviewer will see it, which is the invisible
+	//                       dead end #3509 exists to remove, and the audit row
+	//                       is the only durable record that it happened.
+	//   approvalRequestID - the created entry's UUID, so an auditor can join
+	//                       this decision to the queue row and its history.
+	//   approvalGrantID   - the approval that ADMITTED this request, when a
+	//                       single-use grant was spent. An allow that a human
+	//                       authorised must never be indistinguishable from an
+	//                       allow no policy ever questioned.
+	//
+	// All three land under policy_details; empty on every decision that never
+	// touched the approval path.
+	approvalEnqueue   string
+	approvalRequestID string
+	approvalGrantID   string
 	// policyNames carries the EVALUATION-TIME id -> display-name map for the
 	// row's policy_ids (#3365), threaded from the engine's matched policies
 	// (StaticPolicyResult.PolicyNames / policyNamesFromMatches) so
@@ -1926,7 +2150,15 @@ func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stag
 	// collector is down. Best-effort: a DB hiccup never changes the verdict
 	// the PEP already holds (the write logs and returns on error).
 	if audit != nil {
-		writeDecisionAuditLog(ctx, usageDB, decisionID, orgID, tenantID, stage, verdict, policyIDs, reasons, reqContext, contextTruncated, *audit)
+		// #3424: latencyMs is the SAME enforcement duration this function
+		// already hands to the signed decision chain (below) and to the OTel
+		// span + the axonflow_decision_duration_milliseconds histogram. It was
+		// measured, carried this far, and then dropped on the floor for
+		// audit_logs, which is why the portal's Avg Latency tile had nothing to
+		// average. Threading the existing value rather than taking a second
+		// measurement here is what keeps the tile, the metric and the chain
+		// from reporting three different numbers for one decision.
+		writeDecisionAuditLog(ctx, usageDB, decisionID, orgID, tenantID, stage, verdict, policyIDs, reasons, reqContext, contextTruncated, latencyMs, *audit)
 	}
 
 	// Non-repudiation (#2732): sign + prev_hash-chain this decision into
@@ -1987,7 +2219,13 @@ func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stag
 // path. A failure on a DENY path does NOT weaken the deny (the request is
 // already denied); we deliberately do not additionally hard-fail the response,
 // which would convert a clean security deny into a confusing 5xx for the PEP.
-func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, reqContext map[string]string, contextTruncated bool, audit decisionAuditInput) {
+//
+// latencyMs is the handler's own enforcement duration (#3424), persisted to
+// audit_logs.response_time_ms so the portal's Compliance Summary has something
+// to average. Pass sharedaudit.LatencyUnmeasured, never a hand-rolled 0, if a
+// caller ever has nothing to measure: on this plane a 0 is a real result (a
+// decision that finished inside a millisecond) and is stored as one.
+func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, reqContext map[string]string, contextTruncated bool, latencyMs int64, audit decisionAuditInput) {
 	if db == nil {
 		decideAuditWriteFailures.WithLabelValues("nodb").Inc()
 		return
@@ -2022,7 +2260,7 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		return
 	}
 
-	writeDecisionAuditRow(ctx, db, detailsJSON, decisionID, orgID, tenantID, stage, verdict, audit)
+	writeDecisionAuditRow(ctx, db, detailsJSON, decisionID, orgID, tenantID, stage, verdict, latencyMs, audit)
 }
 
 // buildDecisionAuditDetails assembles the policy_details JSONB payload for one
@@ -2077,6 +2315,9 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 	if audit.attemptedOrgID != "" {
 		details["attempted_org_id"] = audit.attemptedOrgID
 	}
+	if audit.attemptedUserEmail != "" {
+		details["attempted_user_email"] = audit.attemptedUserEmail
+	}
 	if audit.toolServer != "" {
 		details["tool_server"] = audit.toolServer
 	}
@@ -2096,12 +2337,35 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 		details["suppressed_obligations"] = suppressed
 		details["obligation_fallback"] = audit.obligationFallback
 	}
+	// #3509: the human-oversight surface for this decision. approval_enqueue is
+	// the one an operator alerts on - anything other than "created" means the
+	// caller was held and no reviewer will ever see the request, and this row is
+	// the only durable record of it. approval_grant_id names the human whose
+	// approval admitted an allow, so an authorised admission is never
+	// indistinguishable from an unquestioned one.
+	if audit.approvalEnqueue != "" {
+		details["approval_enqueue"] = audit.approvalEnqueue
+	}
+	if audit.approvalRequestID != "" {
+		details["approval_request_id"] = audit.approvalRequestID
+	}
+	if audit.approvalGrantID != "" {
+		details["approval_grant_id"] = audit.approvalGrantID
+	}
 	return details
 }
 
 // writeDecisionAuditRow performs the canonical audit_logs INSERT for one
 // decision, given the already-marshalled policy_details payload.
-func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, decisionID, orgID, tenantID, stage, verdict string, audit decisionAuditInput) {
+//
+// latencyMs is the caller's measured enforcement duration; it reaches
+// response_time_ms through sharedaudit.MeasuredLatencyMs. Both live callers
+// (the Decision API and the Gateway pre-check) always measure, so this is
+// always a real sample -- INCLUDING a 0, which on these planes means the
+// decision completed in under the column's 1ms resolution and is recorded as
+// such rather than discarded. Only sharedaudit.LatencyUnmeasured stores NULL
+// (#3424).
+func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, decisionID, orgID, tenantID, stage, verdict string, latencyMs int64, audit decisionAuditInput) {
 	// audit_logs NOT-NULL columns: fall back to placeholders rather than
 	// fail the insert (mirrors writeExplainableAuditLog).
 	userEmail := audit.userEmail
@@ -2207,29 +2471,30 @@ func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, 
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, decision_id, plane, obligations,
-			correlation_id, redacted_fields, session_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+			correlation_id, redacted_fields, session_id, response_time_ms
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 	`,
-		"decide_"+decisionID, // id (PK; one row per decision)
-		requestID,            // request_id
-		time.Now().UTC(),     // timestamp
-		audit.userID,         // user_id
-		userEmail,            // user_email
-		userRole,             // user_role
-		clientID,             // client_id
-		tenantID,             // tenant_id
-		orgID,                // org_id (nullable)
-		"decision_"+stage,    // request_type — bounded: decision_llm|tool|agent
-		query,                // query
-		queryHash,            // query_hash
-		policyDecision,       // policy_decision — CANONICAL: allowed|blocked|redacted|needs_approval|error (#2643)
-		detailsJSON,          // policy_details (JSONB) — decision_id still mirrored here
-		decisionID,           // decision_id (first-class column; #2592)
-		plane,                // plane (surface discriminator; #2592)
-		obligationsJSON,      // obligations (JSONB or NULL; #2592)
-		correlationIDArg,     // correlation_id (first-class column or NULL; #2598)
-		redactedFieldsArg,    // redacted_fields (JSONB array or NULL; #2643)
-		sessionIDArg,         // session_id (first-class column or NULL; #2896)
+		"decide_"+decisionID,                     // id (PK; one row per decision)
+		requestID,                                // request_id
+		time.Now().UTC(),                         // timestamp
+		audit.userID,                             // user_id
+		userEmail,                                // user_email
+		userRole,                                 // user_role
+		clientID,                                 // client_id
+		tenantID,                                 // tenant_id
+		orgID,                                    // org_id (nullable)
+		"decision_"+stage,                        // request_type — bounded: decision_llm|tool|agent
+		query,                                    // query
+		queryHash,                                // query_hash
+		policyDecision,                           // policy_decision — CANONICAL: allowed|blocked|redacted|needs_approval|error (#2643)
+		detailsJSON,                              // policy_details (JSONB) — decision_id still mirrored here
+		decisionID,                               // decision_id (first-class column; #2592)
+		plane,                                    // plane (surface discriminator; #2592)
+		obligationsJSON,                          // obligations (JSONB or NULL; #2592)
+		correlationIDArg,                         // correlation_id (first-class column or NULL; #2598)
+		redactedFieldsArg,                        // redacted_fields (JSONB array or NULL; #2643)
+		sessionIDArg,                             // session_id (first-class column or NULL; #2896)
+		sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (NULL only for LatencyUnmeasured; #3424)
 	)
 	if err != nil {
 		decideAuditWriteFailures.WithLabelValues("insert").Inc()

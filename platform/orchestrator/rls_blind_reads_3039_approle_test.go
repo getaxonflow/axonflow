@@ -62,7 +62,7 @@ func setup3039Fixture(t *testing.T) *approleFixture {
 	approletest.AssertCurrentUser(t, f.appRoleDB, "axonflow_app_role")
 
 	// Mig 153 (org_id='global' backfill on the mig-031 system policy seeds)
-	// is outside approletest's core 001..111 range — apply it here so the
+	// is outside approletest's core-only pass, so apply it here so the
 	// 'global'-scope reads see the REAL production global rows, not a
 	// synthetic probe. (Pre-153 those rows have org_id NULL and are
 	// invisible to every scoped read — R3 finding on the first round.)
@@ -75,7 +75,7 @@ func setup3039Fixture(t *testing.T) *approleFixture {
 	}
 
 	// Mig 159 (dynamic_policies.segment_id, ADR-060 #2989 P3b) is likewise
-	// outside approletest's core 001..111 range — apply it here so
+	// outside approletest's core-only pass, so apply it here so
 	// refreshPolicies' SELECT of segment_id resolves against the real column
 	// rather than failing with "column \"segment_id\" does not exist". The
 	// migration is table-guarded and self-contained, so it applies cleanly on
@@ -131,6 +131,10 @@ func TestPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 		Priority:    900,
 		Enabled:     true,
 		TenantID:    org,
+		// #3490: org_id is what selects this row, so Create requires it. The
+		// fixture's org and tenant are the same string here by construction
+		// (single-tenant org), which is why omitting it used to look harmless.
+		OrganizationID: org,
 	}
 	if err := repo.Create(ctx, policy); err != nil {
 		t.Fatalf("Create under app_role: %v", err)
@@ -142,7 +146,7 @@ func TestPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 	}
 
 	t.Run("GetByID_reads_back_created_policy", func(t *testing.T) {
-		got, err := repo.GetByID(ctx, org, policy.ID)
+		got, err := repo.GetByID(ctx, org, org, policy.ID)
 		if err != nil {
 			t.Fatalf("GetByID: %v", err)
 		}
@@ -155,7 +159,7 @@ func TestPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 	})
 
 	t.Run("List_includes_tenant_and_global_rows", func(t *testing.T) {
-		policies, total, err := repo.List(ctx, org, ListPoliciesParams{Page: 1, PageSize: 100})
+		policies, total, err := repo.List(ctx, org, org, ListPoliciesParams{Page: 1, PageSize: 100})
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -184,7 +188,7 @@ func TestPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 	})
 
 	t.Run("CountByTenant_counts_tenant_rows", func(t *testing.T) {
-		n, err := repo.CountByTenant(ctx, org)
+		n, err := repo.CountByTenant(ctx, org, org)
 		if err != nil {
 			t.Fatalf("CountByTenant: %v", err)
 		}
@@ -232,26 +236,44 @@ func TestDynamicPolicyEngineGateCacheUnderAppRole(t *testing.T) {
 		Priority:   900,
 		Enabled:    true,
 		TenantID:   org,
+		// #3490: see the note on the read-back probe above: org_id selects.
+		OrganizationID: org,
 	}
 	if err := repo.Create(ctx, policy); err != nil {
 		t.Fatalf("Create under app_role: %v", err)
 	}
 
 	// Vacuity control: an engine whose refresh pool is the app-role pool —
-	// the pre-fix wiring — loads an EMPTY cache. This is the exact defect
-	// that let an over-threshold wire bypass require_approval in production.
+	// the pre-fix wiring — sees ZERO rows through RLS. Pre-#3322-item-3,
+	// that zero-row read was accepted as a successful (if empty) load and
+	// PROMOTED, silently swapping away whatever was previously enforced —
+	// the exact defect that let an over-threshold wire bypass
+	// require_approval in production. #3322 item 3 changes the outcome: a
+	// zero-row load on a pool this engine KNOWS is RLS-scoped with no
+	// dedicated BYPASSRLS admin pool (refreshPoolIsRLSScoped, set here to
+	// simulate the production fallback connectDB performs when the admin
+	// pool is unavailable under the app-role gate) is now refused as a
+	// FAILED refresh rather than silently accepted — see refreshPolicies'
+	// item-3 guard, immediately before the swap-only-on-success cache
+	// update.
 	broken := &DatabaseDynamicPolicyEngine{
-		db:       f.appRoleDB,
-		policies: make(map[string]interface{}),
+		db:                     f.appRoleDB,
+		policies:               make(map[string]interface{}),
+		policySetSource:        policySetSourceDefaults,
+		refreshPoolIsRLSScoped: true,
 	}
-	if err := broken.refreshPolicies(); err != nil {
-		t.Fatalf("refreshPolicies (app-role pool): %v", err)
+	if err := broken.refreshPolicies(); err == nil {
+		t.Fatalf("refreshPolicies (app-role pool, no admin pool) unexpectedly succeeded — a zero-row RLS-scoped read must be refused, not promoted (#3039 class)")
 	}
 	broken.mu.RLock()
 	brokenCount := len(broken.policies)
+	brokenSource := broken.policySetSource
 	broken.mu.RUnlock()
 	if brokenCount != 0 {
 		t.Fatalf("fixture not faithful: app-role-pool refresh loaded %d policies (RLS not enforced — the vacuity control proves nothing)", brokenCount)
+	}
+	if brokenSource != policySetSourceDefaults {
+		t.Fatalf("a refused zero-row RLS-scoped load must not promote policySetSource, got %q", brokenSource)
 	}
 
 	// Fixed wiring: refresh through the BYPASSRLS admin pool.

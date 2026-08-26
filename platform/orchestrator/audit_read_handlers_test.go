@@ -4,6 +4,7 @@
 package orchestrator
 
 import (
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -497,19 +498,32 @@ func TestReportByAction_SeedsFullVerdictSetAndFolds(t *testing.T) {
 	defer done()
 
 	// count query: legacy spelling "denied" must fold into canonical "blocked".
-	countRows := sqlmock.NewRows([]string{"policy_decision", "count", "sum"}).
-		AddRow("allowed", 8, int64(80)).
-		AddRow("denied", 2, int64(40)) // legacy spelling of blocked
+	//
+	// #3424: the 4th column is how many of those rows carried a real latency
+	// measurement, and this fixture deliberately makes it differ from the row
+	// count -- only 4 of the 8 allowed rows were measured. That is the normal
+	// production shape (HITL and workflow-lifecycle rows have no latency), and
+	// it is what discriminates the fix: dividing the 120ms sum by all 10 folded
+	// rows gives 12ms, dividing it by the 6 measured rows gives the truthful
+	// 20ms. A fixture where every row is measured cannot tell the two apart.
+	countRows := sqlmock.NewRows([]string{"policy_decision", "count", "sum", "measured"}).
+		AddRow("allowed", 8, int64(80), 4).
+		AddRow("denied", 2, int64(40), 2) // legacy spelling of blocked
 	mock.ExpectQuery("GROUP BY policy_decision").
 		WillReturnRows(countRows)
-	topRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}).
-		AddRow("sys_dangerous", 2, 2)
-	mock.ExpectQuery("GROUP BY policy_details").
+	topRows := sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}).
+		AddRow("sys_dangerous", false, 2, 2, 1)
+	// #3426: the aggregation resolves identity through the shared chain and
+	// expands EVERY policy on the row, so the mock matches on the LATERAL
+	// expansion. Matching on "GROUP BY policy_details" is what this
+	// expectation used to do, and that string only exists in the defective
+	// query: a mock pinned to it certifies the bug it is supposed to catch.
+	mock.ExpectQuery("CROSS JOIN LATERAL unnest").
 		WillReturnRows(topRows)
 
 	start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	rep, err := al.ReportByAction("acme", "", "", "", start, end)
+	rep, err := al.ReportByAction(context.Background(), "acme", "", "", "", start, end)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -528,8 +542,17 @@ func TestReportByAction_SeedsFullVerdictSetAndFolds(t *testing.T) {
 			t.Fatalf("verdict %q missing from ByAction (should be seeded to 0)", v)
 		}
 	}
-	if rep.AvgLatencyMs != 12.0 { // (80+40)/10
-		t.Fatalf("avg latency wrong: %v", rep.AvgLatencyMs)
+	// (80+40) over the 6 MEASURED rows = 20. Pre-#3424 this divided by all 10
+	// folded rows and reported 12, so every unmeasured row silently voted the
+	// mean towards zero.
+	if rep.AvgLatencyMs == nil {
+		t.Fatalf("avg latency is null; want 20 over 6 measured rows")
+	}
+	if *rep.AvgLatencyMs != 20.0 {
+		t.Fatalf("avg latency wrong: want 20 (120/6 measured), got %v", *rep.AvgLatencyMs)
+	}
+	if rep.LatencySampleCount != 6 {
+		t.Fatalf("latency_sample_count = %d, want 6", rep.LatencySampleCount)
 	}
 	if len(rep.TopPolicies) != 1 || rep.TopPolicies[0].PolicyName != "sys_dangerous" {
 		t.Fatalf("top policies wrong: %+v", rep.TopPolicies)
@@ -538,7 +561,7 @@ func TestReportByAction_SeedsFullVerdictSetAndFolds(t *testing.T) {
 
 func TestReportByAction_NilDB_ReturnsSeededEmpty(t *testing.T) {
 	al := &AuditLogger{db: nil}
-	rep, err := al.ReportByAction("acme", "", "", "", time.Now().Add(-time.Hour), time.Now())
+	rep, err := al.ReportByAction(context.Background(), "acme", "", "", "", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -588,9 +611,14 @@ func TestAuditReportHandler_Success_200(t *testing.T) {
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	mock.ExpectQuery("GROUP BY policy_decision").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_decision", "count", "sum"}).AddRow("allowed", 3, int64(30)))
-	mock.ExpectQuery("GROUP BY policy_details").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_decision", "count", "sum", "measured"}).AddRow("allowed", 3, int64(30), 3))
+	// #3426: the aggregation resolves identity through the shared chain and
+	// expands EVERY policy on the row, so the mock matches on the LATERAL
+	// expansion. Matching on "GROUP BY policy_details" is what this
+	// expectation used to do, and that string only exists in the defective
+	// query: a mock pinned to it certifies the bug it is supposed to catch.
+	mock.ExpectQuery("CROSS JOIN LATERAL unnest").
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 	withGlobalAuditLogger(al, func() {
 		body := `{"start_time":"2026-06-01T00:00:00Z","end_time":"2026-07-01T00:00:00Z","user_email":"dev@acme.com"}`
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/report", strings.NewReader(body))
@@ -730,12 +758,17 @@ func TestReportByAction_WithUserAndActionFilters(t *testing.T) {
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	mock.ExpectQuery("GROUP BY policy_decision").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_decision", "count", "sum"}).AddRow("blocked", 4, int64(40)))
-	mock.ExpectQuery("GROUP BY policy_details").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_decision", "count", "sum", "measured"}).AddRow("blocked", 4, int64(40), 4))
+	// #3426: the aggregation resolves identity through the shared chain and
+	// expands EVERY policy on the row, so the mock matches on the LATERAL
+	// expansion. Matching on "GROUP BY policy_details" is what this
+	// expectation used to do, and that string only exists in the defective
+	// query: a mock pinned to it certifies the bug it is supposed to catch.
+	mock.ExpectQuery("CROSS JOIN LATERAL unnest").
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 	start := time.Now().Add(-24 * time.Hour)
 	end := time.Now()
-	rep, err := al.ReportByAction("acme", "", "dev@acme.com", "blocked", start, end)
+	rep, err := al.ReportByAction(context.Background(), "acme", "", "dev@acme.com", "blocked", start, end)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -929,12 +962,17 @@ func TestReportByAction_ExcludesOverrideLifecycle(t *testing.T) {
 	al, mock, done := newMockAuditLogger(t)
 	defer done()
 	mock.ExpectQuery("GROUP BY policy_decision").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_decision", "count", "sum"}).
-			AddRow("blocked", 2, int64(40)).
-			AddRow("override_lifecycle", 5, int64(0))) // non-verdict: must be skipped
-	mock.ExpectQuery("GROUP BY policy_details").
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
-	rep, err := al.ReportByAction("acme", "", "", "", time.Now().Add(-time.Hour), time.Now())
+		WillReturnRows(sqlmock.NewRows([]string{"policy_decision", "count", "sum", "measured"}).
+			AddRow("blocked", 2, int64(40), 2).
+			AddRow("override_lifecycle", 5, int64(0), 0)) // non-verdict: must be skipped
+	// #3426: the aggregation resolves identity through the shared chain and
+	// expands EVERY policy on the row, so the mock matches on the LATERAL
+	// expansion. Matching on "GROUP BY policy_details" is what this
+	// expectation used to do, and that string only exists in the defective
+	// query: a mock pinned to it certifies the bug it is supposed to catch.
+	mock.ExpectQuery("CROSS JOIN LATERAL unnest").
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
+	rep, err := al.ReportByAction(context.Background(), "acme", "", "", "", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -947,7 +985,13 @@ func TestReportByAction_ExcludesOverrideLifecycle(t *testing.T) {
 	if len(rep.ByAction) != 5 {
 		t.Fatalf("by_action must have exactly the 5 canonical verdicts, got %d: %+v", len(rep.ByAction), rep.ByAction)
 	}
-	if rep.AvgLatencyMs != 20.0 { // 40/2, NOT 40/7
-		t.Fatalf("AvgLatencyMs diluted by lifecycle rows: want 20, got %v", rep.AvgLatencyMs)
+	if rep.AvgLatencyMs == nil {
+		t.Fatalf("AvgLatencyMs is null; want 20 (40 over the 2 measured blocked rows)")
+	}
+	if *rep.AvgLatencyMs != 20.0 { // 40/2, NOT 40/7
+		t.Fatalf("AvgLatencyMs diluted by lifecycle rows: want 20, got %v", *rep.AvgLatencyMs)
+	}
+	if rep.LatencySampleCount != 2 {
+		t.Fatalf("latency_sample_count = %d, want 2 (the lifecycle rows are not samples)", rep.LatencySampleCount)
 	}
 }

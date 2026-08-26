@@ -65,13 +65,18 @@ func TestStaticPolicyWrite_TenantIsolation_RealPostgres(t *testing.T) {
 	const orgA, orgB = "org-a", "org-b"
 	seed := func(id, policyID, org, tier string) {
 		t.Helper()
+		// #3334 / core/166: the legacy `organization_id` column is dropped. This
+		// seed carried it as a literal NULL, so it never contributed a scope key
+		// -- org scoping here has always come from org_id ($4). Naming a dropped
+		// column in the column list is a hard INSERT error, so it is removed
+		// rather than left NULL.
 		_, err := db.Exec(`
 			INSERT INTO static_policies
 			  (id, policy_id, name, category, pattern, severity, description, action,
-			   tier, priority, enabled, organization_id, tenant_id, org_id,
+			   tier, priority, enabled, tenant_id, org_id,
 			   version, created_at, updated_at, created_by, updated_by)
 			VALUES ($1,$2,$3,'pii-global','X-[0-9]+','high','', 'block',
-			        $5, 50, true, NULL, $4, $4,
+			        $5, 50, true, $4, $4,
 			        1, now(), now(), $4, $4)`,
 			id, policyID, "pol-"+org, org, tier)
 		if err != nil {

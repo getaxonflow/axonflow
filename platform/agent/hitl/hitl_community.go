@@ -33,7 +33,7 @@ import (
 // caller is rejected at this gate so the same error can be translated
 // to user-facing wording at the call site, identical to the
 // enterprise-build's tier rejection on Community-tier processes.
-var ErrHITLApprovalDisabledByTier = errors.New("HITL approvals require an Evaluation or higher license tier; current tier is Community")
+var ErrHITLApprovalDisabledByTier = errors.New("HITL approvals require a Professional, Enterprise or Enterprise Plus license tier")
 
 // ErrPendingApprovalLimitExceeded is exposed for symbol parity with the
 // enterprise build. Community build never returns it because no rows
@@ -177,12 +177,13 @@ type ApprovalRequest struct {
 }
 
 // CreateApprovalRequest is the in-process entry point used by the MCP
-// tool path. Community build always rejects with
-// ErrHITLApprovalDisabledByTier — the call site translates this into a
-// user-visible message pointing at the Evaluation license URL. The
-// enterprise build implementation in service.go enforces the same gate
-// for Community-tier processes plus does the real DB write for
-// Evaluation+ tiers.
+// tool path. The community build always rejects with
+// ErrHITLApprovalDisabledByTier; the call site turns that into a
+// user-visible message pointing at the pricing page. The enterprise build
+// implementation in service.go applies the same gate and does the real DB
+// write for the entitled tiers - Professional, Enterprise and Enterprise
+// Plus since the 2026-08-26 decision, which is why this comment no longer
+// says Evaluation+.
 func (s *Service) CreateApprovalRequest(_ context.Context, _ CreateApprovalInput) (*ApprovalRequest, error) {
 	return nil, ErrHITLApprovalDisabledByTier
 }
@@ -192,4 +193,29 @@ func (s *Service) CreateApprovalRequest(_ context.Context, _ CreateApprovalInput
 // rejects: there is no queue to read.
 func (s *Service) GetApprovalRequest(_ context.Context, _ uuid.UUID) (*ApprovalRequest, error) {
 	return nil, ErrHITLApprovalDisabledByTier
+}
+
+// RequestTypePolicyStepUp mirrors the enterprise constant for symbol parity so
+// callers in agent/ compile under both builds.
+const RequestTypePolicyStepUp = "policy_step_up"
+
+// ConsumeApprovalGrant mirrors the enterprise signature for symbol parity.
+// Community build always rejects: there is no queue, so there is no approval
+// to spend and every held request stays held.
+func (s *Service) ConsumeApprovalGrant(_ context.Context, _ GrantSubject, _, _ string, _ time.Duration) (string, error) {
+	return "", ErrHITLApprovalDisabledByTier
+}
+
+// GrantSubject mirrors the enterprise struct for symbol parity.
+type GrantSubject struct {
+	OrgID    string
+	TenantID string
+	ClientID string
+	UserID   string
+}
+
+// FindOpenPolicyStepUp mirrors the enterprise signature for symbol parity.
+// Community build has no queue, so there is never an open entry.
+func (s *Service) FindOpenPolicyStepUp(_ context.Context, _ GrantSubject, _, _, _ string) (string, error) {
+	return "", ErrHITLApprovalDisabledByTier
 }

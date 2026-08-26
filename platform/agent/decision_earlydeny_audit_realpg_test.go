@@ -45,8 +45,16 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 
 	// audit_logs with the exact columns writeDecisionAuditLog's INSERT targets
 	// (the union of migrations 059 + 119 + 121 + 129 + redacted_fields +
-	// #2896's session_id). A minimal faithful shape keeps the test independent
-	// of the full chain while exercising the real INSERT verbatim.
+	// #2896's session_id + #3424's response_time_ms). A minimal faithful shape
+	// keeps the test independent of the full chain while exercising the real
+	// INSERT verbatim.
+	//
+	// This DDL is load-bearing and must track the INSERT: a column the writer
+	// names but this table lacks makes the INSERT error, and the writer is
+	// best-effort by design (it logs and returns so a DB hiccup never turns an
+	// enforced deny into a 5xx), so the symptom is silently zero rows rather
+	// than an error. #3424 was caught here exactly that way, after sqlmock --
+	// which validates argument lists, not schemas -- passed.
 	if _, err := db.Exec(`
 		CREATE TABLE audit_logs (
 			id              VARCHAR(255) PRIMARY KEY,
@@ -68,7 +76,8 @@ func TestHandleDecide_EarlyDeny_PersistsToRealPostgres(t *testing.T) {
 			obligations     JSONB,
 			correlation_id  VARCHAR(255),
 			redacted_fields JSONB,
-			session_id      VARCHAR(255)
+			session_id      VARCHAR(255),
+			response_time_ms BIGINT
 		)`); err != nil {
 		t.Fatalf("create audit_logs: %v", err)
 	}

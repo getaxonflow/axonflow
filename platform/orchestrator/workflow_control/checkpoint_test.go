@@ -281,7 +281,7 @@ func TestResumeFromLastCheckpoint_Success(t *testing.T) {
 	}
 
 	// Resume from last checkpoint
-	resp, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1")
+	resp, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1", "")
 	if err != nil {
 		t.Fatalf("ResumeFromLastCheckpoint failed: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestResumeFromLastCheckpoint_NoCheckpoint(t *testing.T) {
 	workflowID := createTestWorkflow(t, svc)
 	ctx := context.Background()
 
-	_, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1")
+	_, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1", "")
 	if err == nil {
 		t.Fatal("expected error for no checkpoints")
 	}
@@ -319,7 +319,7 @@ func TestResumeFromLastCheckpoint_CompletedWorkflow(t *testing.T) {
 
 	_ = svc.CompleteWorkflow(ctx, workflowID, "tenant-1", "org-1")
 
-	_, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1")
+	_, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1", "")
 	if err == nil {
 		t.Fatal("expected error for completed workflow")
 	}
@@ -348,7 +348,7 @@ func TestResumeFromCheckpoint_SpecificCheckpoint(t *testing.T) {
 	step1CP := checkpoints[0]
 
 	// Resume from step-1 (not the last)
-	resp, err := svc.ResumeFromCheckpoint(ctx, workflowID, step1CP.ID, "tenant-1", "org-1")
+	resp, err := svc.ResumeFromCheckpoint(ctx, workflowID, step1CP.ID, "tenant-1", "org-1", "")
 	if err != nil {
 		t.Fatalf("ResumeFromCheckpoint failed: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestResumeFromCheckpoint_NonResumable(t *testing.T) {
 	}
 	repo.CreateCheckpoint(ctx, cp)
 
-	_, err := svc.ResumeFromCheckpoint(ctx, workflowID, cp.ID, "tenant-1", "org-1")
+	_, err := svc.ResumeFromCheckpoint(ctx, workflowID, cp.ID, "tenant-1", "org-1", "")
 	if err == nil {
 		t.Fatal("expected error for non-resumable checkpoint")
 	}
@@ -391,7 +391,7 @@ func TestResumeFromCheckpoint_WrongWorkflow(t *testing.T) {
 	repo.CreateCheckpoint(ctx, cp)
 
 	// Try to resume wf2 using wf1's checkpoint
-	_, err := svc.ResumeFromCheckpoint(ctx, wf2.WorkflowID, cp.ID, "t1", "o1")
+	_, err := svc.ResumeFromCheckpoint(ctx, wf2.WorkflowID, cp.ID, "t1", "o1", "")
 	if err == nil {
 		t.Fatal("expected error for checkpoint from different workflow")
 	}
@@ -408,8 +408,8 @@ func TestResumeFromCheckpoint_IncrementsCount(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Resume twice
-	svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1")
-	resp, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1")
+	svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1", "")
+	resp, err := svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1", "")
 	if err != nil {
 		t.Fatalf("second resume failed: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestResumeFromCheckpoint_PreservesFullContext(t *testing.T) {
 	evaluator.lastCtx = nil
 
 	// Resume from last checkpoint
-	_, err = svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1")
+	_, err = svc.ResumeFromLastCheckpoint(ctx, workflowID, "tenant-1", "org-1", "")
 	if err != nil {
 		t.Fatalf("ResumeFromLastCheckpoint failed: %v", err)
 	}

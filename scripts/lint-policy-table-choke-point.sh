@@ -21,9 +21,13 @@
 # GetEffective filtered segment_id while the OTHER reader over the same
 # static_policies table did not, so segment-scoped policies leaked to
 # non-members. Slice 1 fixed that leak; Slice 2 (#3296) converged the
-# evaluation-path readers of static_policies onto loader.go. This script is
-# the guard that keeps them converged: without it, the next feature adds a
-# sixth bespoke reader and #3266's drift starts over.
+# evaluation-path readers of static_policies onto loader.go. #3319 finished
+# the job on the dynamic side: DynamicPolicyEngine (the in-memory engine) is
+# deleted outright, and DatabaseDynamicPolicyEngine's dynamic_policies reads
+# moved into loader.go, so both policy tables now have exactly one verdict-path
+# reader. This script is the guard that keeps them converged: without it, the
+# next feature adds a bespoke reader over either table and #3266's drift
+# starts over.
 #
 # WHAT THIS LINT DOES. Flags any `FROM static_policies` / `FROM
 # dynamic_policies` (SQL keyword FROM, upper-case — see "why FROM is
@@ -39,7 +43,7 @@
 # tree the only one with no ratchet, so a query could be added to it with no
 # CI signal at all — exactly the silent-growth failure mode every other entry
 # below is guarded against. loader.go held 5 occurrences when this lint was
-# written and holds 7 today (see its own entry below for what changed); that
+# written and holds 8 today (see its own entry below for what changed); that
 # drift is legitimate — loader.go growing IS how the choke point is supposed
 # to absorb new reads — but it must still be a deliberate, reviewed act, not
 # a silent one. The distinct justification (unlike the CRUD/admin/known-gap
@@ -75,20 +79,20 @@
 #     itself.
 #   - platform/orchestrator/ojk/readiness.go is a readiness PROBE (a COUNT
 #     for a health-check endpoint), not a request-evaluation path.
-#   - Two engines — DynamicPolicyEngine (platform/orchestrator/
-#     dynamic_policy_engine.go) and DatabaseDynamicPolicyEngine
-#     (platform/orchestrator/db_dynamic_policies.go) — still load
-#     dynamic_policies directly to build their in-memory evaluation cache.
-#     THIS IS A GENUINE, KNOWN GAP against the invariant as stated, not a
-#     clean disposition: epic #3293's Accounting section scopes Slice 2's
-#     work on these two engines (#29/#30) to "extract the one shared
-#     ConditionEvaluator" only — condition-MATCHING converged (see
-#     platform/shared/policy/condition_evaluator.go), the table LOAD did
-#     not. Static loaders got an explicit convergence bullet in #3296
-#     ("the two loaders over static_policies ... converge to one"); dynamic
-#     loaders did not. Allow-listed here so the lint reflects the tree as
-#     it stands, called out loudly rather than silently absorbed — see the
-#     #3296 WS-4 report for the recommendation to open a follow-up.
+#
+# THE DYNAMIC-SIDE GAP IS CLOSED (#3319). Through #3296, two engines —
+# DynamicPolicyEngine (platform/orchestrator/dynamic_policy_engine.go) and
+# DatabaseDynamicPolicyEngine (platform/orchestrator/db_dynamic_policies.go)
+# — still loaded dynamic_policies directly to build their own in-memory
+# evaluation caches; #3296 Accounting had scoped that slice to "extract the
+# one shared ConditionEvaluator" only (condition-MATCHING converged, see
+# platform/shared/policy/condition_evaluator.go), not the table LOAD. #3319
+# closed that gap: DynamicPolicyEngine is deleted (there is exactly one
+# dynamic-policy engine now, DatabaseDynamicPolicyEngine), and its
+# dynamic_policies reads moved into platform/shared/policy/loader.go. The
+# invariant is therefore fully enforced for BOTH static_policies and
+# dynamic_policies — loader.go is the single sanctioned choke point for
+# each — and the allow-list below carries no unconverged-engine entry.
 #
 # WHY `FROM` IS MATCHED CASE-SENSITIVELY (upper-case only). Every real query
 # in this codebase spells the SQL keyword `FROM` upper-case; grep confirms
@@ -157,14 +161,12 @@ LOADER_FILE="platform/shared/policy/loader.go"
 # #3293's Accounting section for the disposition of each class.
 # ════════════════════════════════════════════════════════════════════════════
 ALLOW_LIST_TABLE='
-platform/shared/policy/loader.go|7|THE sanctioned choke point (epic #3293/#3296), not an exception to the invariant. Counted like every other entry so a NEW query added here also trips CI until a human bumps this number in a reviewed diff. Was 5 when this lint was written; is 7 now: initQueries queryRequestPhase + queryResponsePhase, the loadFromDatabase per-scope query, LoadSystemPolicies, effectivePolicyQueryTemplate (GetEffective pass A/B via ScanEffectivePolicyRows), CountActive (dynamic_policies), GetPolicyByID.
+platform/shared/policy/loader.go|8|THE sanctioned choke point (epic #3293/#3296), not an exception to the invariant. Counted like every other entry so a NEW query added here also trips CI until a human bumps this number in a reviewed diff -- and so does DELETING one, which is why this number moved DOWN. Was 5 when this lint was written, grew to 10, and is 8 since #3490 (Decision 5) deleted the two initQueries templates queryRequestPhase and queryResponsePhase: both carried the retired tenant_id predicate and neither was ever executed (set in initQueries, read nowhere), so they were removed rather than re-keyed -- rewriting a query no caller runs would leave a second, untested definition of the selection rule. The 8 that remain: the loadFromDatabase per-scope query, LoadSystemPolicies, effectivePolicyQueryTemplate (GetEffective pass A/B via ScanEffectivePolicyRows), CountActive (dynamic_policies), GetPolicyByID, dynamicPoliciesQueryWithSegment + dynamicPoliciesQueryWithoutSegment (RefreshDynamicPolicies) and CountAllDynamicPolicies.
 platform/agent/mcp_richer_context.go|3|ADR-044 session break-glass: lookupPolicyMeta (audit risk_level/allow_override/version), lookupPolicyVersionsByID (audit policy_version stamping), lookupActiveOverride (slug->UUID resolve before reading policy_overrides) — metadata for the audit trail, never a block/allow verdict itself.
 platform/agent/static_policy_repository.go|5|Agent static-policy CRUD (epic #3293 Accounting "#23/#37/#38 CRUD/metadata/override-create loaders -> #3055"): GetByID, List (scopedList + scopedListBare), GetVersions (parent-ownership EXISTS subquery), countTenantPolicies (Community tenant-policy quota). No verdict produced.
 platform/orchestrator/overrides_handler.go|4|Orchestrator override-create admin lookups (#3293 Accounting, same #23/#37/#38 -> #3055 disposition): resolvePolicyUUID (static then dynamic) + invalidateCachedDeniedDecisions (static then dynamic) — override-CREATE-time admin reads, not verdict paths.
 platform/orchestrator/ojk/readiness.go|1|OJK readiness probe: a health-check COUNT (countIndonesiaPIIPolicies), not a request-evaluation path.
 platform/orchestrator/policy_api_repository.go|8|Orchestrator dynamic-policy CRUD (#3293 Accounting "#23/#37/#38" -> #3055): Create, GetByID, List, Delete, GetVersions, findByNameTx, findByName, CountByTenant/CountOrgPolicies. Admin policy-management API, not a verdict path.
-platform/orchestrator/dynamic_policy_engine.go|3|KNOWN GAP (reported, not silently absorbed): DynamicPolicyEngine (#29) still loads dynamic_policies directly for its in-memory verdict cache (getTenantSpecificPolicies COUNT + loadPoliciesFromDB x2). #3296 Accounting scoped #29 to "extract the ConditionEvaluator" only (done) — the table load was never in scope. See the #3296 WS-4 report for the follow-up recommendation.
-platform/orchestrator/db_dynamic_policies.go|3|KNOWN GAP, same class as dynamic_policy_engine.go: DatabaseDynamicPolicyEngine (#30) still loads dynamic_policies directly (seedDefaultData boot COUNT + refreshPolicies x2 feeding the verdict-path cache). Same #3296 Accounting disposition and follow-up recommendation.
 '
 
 # is_comment_line CONTENT: true if CONTENT, once leading whitespace is

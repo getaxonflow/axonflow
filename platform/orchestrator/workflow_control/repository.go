@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"axonflow/platform/shared/tenantscope"
 )
 
@@ -79,7 +77,7 @@ func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 // Create inserts a new workflow
 func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) error {
 	if workflow.WorkflowID == "" {
-		workflow.WorkflowID = fmt.Sprintf("wf_%s", uuid.New().String()[:8])
+		workflow.WorkflowID = NewWorkflowID()
 	}
 
 	if workflow.Source == "" {

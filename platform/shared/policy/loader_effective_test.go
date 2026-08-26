@@ -23,7 +23,7 @@ func effectivePolicyTestCols() []string {
 	return []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tenant_id", "org_id", "segment_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -31,8 +31,9 @@ func effectivePolicyTestCols() []string {
 
 // TestScanEffectivePolicyRows_ScansAllColumns proves every column round-trips
 // through EffectivePolicyRow, including the nullable ones GetEffective's
-// pre-#3296 inline scan handled (organization_id via the Ptr-to-Ptr NULL
-// scan, segment_id/tags/metadata/created_by/updated_by via sql.NullString).
+// pre-#3296 inline scan handled (segment_id/tags/metadata/created_by/
+// updated_by via sql.NullString). #3334 retired organization_id, whose
+// Ptr-to-Ptr NULL scan this test also used to cover.
 func TestScanEffectivePolicyRows_ScansAllColumns(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -48,7 +49,7 @@ func TestScanEffectivePolicyRows_ScansAllColumns(t *testing.T) {
 			AddRow(
 				"pol-1", "custom_1", "Custom Policy", "pii-global", `\bSSN\b`, "high",
 				"a description", "block", "tenant", 80, true,
-				"org-1", "tenant-1", "org-1", "finance",
+				"tenant-1", "org-1", "finance",
 				`["a","b"]`, `{"k":"v"}`, 3,
 				now, now, "alice", "bob",
 			))
@@ -73,9 +74,6 @@ func TestScanEffectivePolicyRows_ScansAllColumns(t *testing.T) {
 	if row.ID != "pol-1" || row.PolicyID != "custom_1" || row.Name != "Custom Policy" {
 		t.Errorf("unexpected identity fields: %+v", row)
 	}
-	if row.OrganizationID == nil {
-		t.Fatal("expected OrganizationID to round-trip non-NULL via Ptr-to-Ptr scan")
-	}
 	if row.TenantID != "tenant-1" {
 		t.Errorf("TenantID = %q, want tenant-1", row.TenantID)
 	}
@@ -93,10 +91,10 @@ func TestScanEffectivePolicyRows_ScansAllColumns(t *testing.T) {
 	}
 }
 
-// TestScanEffectivePolicyRows_NullOrganizationID proves the organization_id
+// TestScanEffectivePolicyRows_NullOrgID proves the org_id
 // NULL case (tenant-tier rows, which do not carry an organization_id) scans
 // to a nil *string rather than a pointer to an empty string.
-func TestScanEffectivePolicyRows_NullOrganizationID(t *testing.T) {
+func TestScanEffectivePolicyRows_NullOrgID(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -110,7 +108,7 @@ func TestScanEffectivePolicyRows_NullOrganizationID(t *testing.T) {
 			AddRow(
 				"pol-2", "custom_2", "Tenant-only Policy", "pii-global", `\bSSN\b`, "high",
 				nil, "block", "tenant", 80, true,
-				nil, "tenant-1", nil, nil,
+				"tenant-1", nil, nil,
 				nil, nil, 1,
 				now, now, nil, nil,
 			))
@@ -131,8 +129,8 @@ func TestScanEffectivePolicyRows_NullOrganizationID(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0].OrganizationID != nil {
-		t.Errorf("expected OrganizationID nil, got %q", *rows[0].OrganizationID)
+	if rows[0].OrgID.Valid {
+		t.Errorf("expected OrgID NULL, got %+v", rows[0].OrgID)
 	}
 	if rows[0].SegmentID.Valid {
 		t.Errorf("expected SegmentID NULL, got %+v", rows[0].SegmentID)

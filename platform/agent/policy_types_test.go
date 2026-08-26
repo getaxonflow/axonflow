@@ -138,27 +138,37 @@ func TestPolicyOverride_IsExpired(t *testing.T) {
 	}
 }
 
+// #3334: IsOrgLevel used to read `OrganizationID != nil && TenantID == nil`,
+// so this table varied BOTH pointers. The retired column is gone, and the
+// scope axis is now the tenant alone: a NULL tenant IS the org-scoped shape.
+//
+// The "neither set" row changed answer, and that is the point rather than an
+// accommodation. It used to be false because organization_id was nil; it is
+// true now because a NULL tenant is an org-scoped row. That is not a widening:
+// migration core/165 makes org_id NOT NULL on every row, so "neither set" -
+// no tenant AND no organisation - is a shape the schema no longer admits. The
+// case is kept, renamed, to pin what the function answers for it rather than
+// to leave a gap where a reader would wonder.
 func TestPolicyOverride_IsOrgLevel(t *testing.T) {
 	orgID := "org-123"
 	tenantID := "tenant-456"
 
 	tests := []struct {
-		name           string
-		organizationID *string
-		tenantID       *string
-		expect         bool
+		name     string
+		orgID    string
+		tenantID *string
+		expect   bool
 	}{
-		{"org-level override", &orgID, nil, true},
-		{"tenant-level override", nil, &tenantID, false},
-		{"both set (invalid but tenant takes precedence)", &orgID, &tenantID, false},
-		{"neither set", nil, nil, false},
+		{"org-scoped: NULL tenant", orgID, nil, true},
+		{"tenant-scoped: tenant set", orgID, &tenantID, false},
+		{"no tenant and no org (unrepresentable since core/165)", "", nil, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			o := &PolicyOverride{
-				OrganizationID: tt.organizationID,
-				TenantID:       tt.tenantID,
+				OrgID:    tt.orgID,
+				TenantID: tt.tenantID,
 			}
 			if got := o.IsOrgLevel(); got != tt.expect {
 				t.Errorf("PolicyOverride.IsOrgLevel() = %v, want %v", got, tt.expect)
@@ -172,22 +182,21 @@ func TestPolicyOverride_IsTenantLevel(t *testing.T) {
 	tenantID := "tenant-456"
 
 	tests := []struct {
-		name           string
-		organizationID *string
-		tenantID       *string
-		expect         bool
+		name     string
+		orgID    string
+		tenantID *string
+		expect   bool
 	}{
-		{"org-level override", &orgID, nil, false},
-		{"tenant-level override", nil, &tenantID, true},
-		{"both set (tenant takes precedence)", &orgID, &tenantID, true},
-		{"neither set", nil, nil, false},
+		{"org-scoped: NULL tenant", orgID, nil, false},
+		{"tenant-scoped: tenant set", orgID, &tenantID, true},
+		{"no tenant and no org (unrepresentable since core/165)", "", nil, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			o := &PolicyOverride{
-				OrganizationID: tt.organizationID,
-				TenantID:       tt.tenantID,
+				OrgID:    tt.orgID,
+				TenantID: tt.tenantID,
 			}
 			if got := o.IsTenantLevel(); got != tt.expect {
 				t.Errorf("PolicyOverride.IsTenantLevel() = %v, want %v", got, tt.expect)
@@ -364,5 +373,3 @@ func TestPolicyOverride_MatchesTool(t *testing.T) {
 		t.Error("non-matching tool signature must not match")
 	}
 }
-
-

@@ -68,7 +68,7 @@ func TestHandleListStaticPolicies(t *testing.T) {
 				listCols := []string{
 					"id", "policy_id", "name", "category", "pattern", "severity",
 					"description", "action", "tier", "priority", "enabled",
-					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"tenant_id", "org_id", "tags", "metadata",
 					"version", "created_at", "updated_at", "created_by", "updated_by",
 				}
 				mock.ExpectBegin()
@@ -79,7 +79,7 @@ func TestHandleListStaticPolicies(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows(listCols).AddRow(
 						"uuid-2", "pii_ssn", "PII SSN Detection", "pii-us", "\\d{3}-\\d{2}-\\d{4}", "high",
 						"Detects SSN patterns", "redact", "tenant", 50, true,
-						nil, "test-tenant", "", "[]", "{}",
+						"test-tenant", "", "[]", "{}",
 						1, testTime, testTime, "user", "user",
 					))
 				mock.ExpectCommit()
@@ -91,7 +91,7 @@ func TestHandleListStaticPolicies(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows(listCols).AddRow(
 						"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "union\\s+select", "critical",
 						"Blocks UNION-based SQL injection", "block", "system", 100, true,
-						nil, "global", "", "[]", "{}",
+						"global", "", "[]", "{}",
 						1, testTime, testTime, "system", "system",
 					))
 				mock.ExpectCommit()
@@ -108,7 +108,7 @@ func TestHandleListStaticPolicies(t *testing.T) {
 				listCols := []string{
 					"id", "policy_id", "name", "category", "pattern", "severity",
 					"description", "action", "tier", "priority", "enabled",
-					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"tenant_id", "org_id", "tags", "metadata",
 					"version", "created_at", "updated_at", "created_by", "updated_by",
 				}
 				mock.ExpectBegin()
@@ -186,12 +186,12 @@ func TestHandleGetStaticPolicy(t *testing.T) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "category", "tier", "pattern",
 					"severity", "description", "action", "priority", "enabled",
-					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"tenant_id", "org_id", "tags", "metadata",
 					"version", "created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 				}).AddRow(
 					"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "system", "union\\s+select",
 					"critical", "Blocks UNION-based SQL injection", "block", 100, true,
-					nil, "global", "", "[]", "{}",
+					"global", "", "[]", "{}",
 					1, testTime, testTime, "system", "system", nil,
 				)
 
@@ -555,7 +555,7 @@ func TestHandleGetEffectivePolicies(t *testing.T) {
 				effCols := []string{
 					"id", "policy_id", "name", "category", "pattern", "severity",
 					"description", "action", "tier", "priority", "enabled",
-					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"tenant_id", "org_id", "tags", "metadata",
 					"version", "created_at", "updated_at", "created_by", "updated_by",
 				}
 				mock.ExpectBegin()
@@ -577,7 +577,7 @@ func TestHandleGetEffectivePolicies(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 						"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "union\\s+select", "critical",
 						"Blocks UNION-based SQL injection", "block", "system", 100, true,
-						nil, "global", "", "[]", "{}",
+						"global", "", "[]", "{}",
 						1, testTime, testTime, "system", "system",
 					))
 				mock.ExpectCommit()
@@ -922,7 +922,7 @@ func TestHandleListOverrides(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(`SELECT.*FROM policy_overrides`).
 					WillReturnRows(sqlmock.NewRows([]string{
-						"id", "policy_id", "policy_type", "organization_id", "tenant_id",
+						"id", "policy_id", "policy_type", "tenant_id",
 						"action_override", "enabled_override", "override_reason", "expires_at",
 						"created_by", "created_at", "updated_by", "updated_at",
 					}))
@@ -934,11 +934,11 @@ func TestHandleListOverrides(t *testing.T) {
 			tenantID: "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "policy_type", "organization_id", "tenant_id",
+					"id", "policy_id", "policy_type", "tenant_id",
 					"action_override", "enabled_override", "override_reason", "expires_at",
 					"created_by", "created_at", "updated_by", "updated_at",
 				}).AddRow(
-					"override-1", "test-policy", "static", nil, "test-tenant",
+					"override-1", "test-policy", "static", "test-tenant",
 					"warn", true, "Testing", nil,
 					"user", testTime, "user", testTime,
 				)

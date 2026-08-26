@@ -137,17 +137,31 @@ Both approve and reject endpoints return an `ApprovalActionResponse` with the st
 
 ## Tier Availability
 
-HITL Approval Gates are available on the following license tiers:
+Creating HITL approval entries requires a Professional, Enterprise or Enterprise
+Plus license:
 
-| Tier | Availability | Max Pending Approvals |
-|------|-------------|----------------------|
-| Community | Blocked (no queue, steps requiring approval are blocked) | N/A |
-| Evaluation | Available | 100 |
-| Enterprise | Available | Configurable per license |
+| Tier | Creating approvals | Resolving existing approvals | Max pending approvals |
+|------|-------------------|------------------------------|-----------------------|
+| Community, Free, Pro, Premium | Refused | Not reachable | n/a |
+| Evaluation | Refused | Reachable (approve, reject, pending list) | n/a |
+| Professional | Available, API only | Available | Unlimited |
+| Enterprise, Enterprise Plus | Available | Available | Unlimited |
 
-On Community tier, steps that match a `require_approval` policy are blocked rather than queued. The Approval Dashboard is only accessible on Evaluation and Enterprise tiers.
+On an unentitled tier a step matching a `require_approval` policy is **held**,
+not admitted, but no reviewer entry is created: the response carries
+`approval_enqueue: "tier_disabled"` with no `approval_id`.
 
-For Evaluation tier, pending approvals expire when the evaluation license expires. Expired approvals are automatically rejected, and their associated workflows are aborted.
+Evaluation keeps the resolve endpoints deliberately. A deployment that held
+pending approvals before the tier lost the creation entitlement must still be
+able to drain them, and its expiry sweeper still runs; otherwise those entries
+could never be cleared and their workflows could never proceed.
+
+The Approval Dashboard itself is a Customer Portal surface and is accessible on
+Enterprise and Enterprise Plus. Professional is API-only.
+
+Pending approvals expire on the tier's configured window and are recorded as
+`expired` rather than `rejected` - a timeout is not a human decision - and their
+associated workflows are aborted.
 
 ## Screenshots
 

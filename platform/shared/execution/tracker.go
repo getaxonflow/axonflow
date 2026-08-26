@@ -166,8 +166,24 @@ func (t *BaseExecutionTracker) StartExecution(ctx context.Context, req CreateExe
 
 	now := t.clock.Now()
 
+	// #3442: a subsystem that already owns the run's identity supplies it;
+	// everyone else gets one minted. The empty check is not defensive
+	// decoration - an empty ExecutionID would be written as the PRIMARY KEY of
+	// execution_history, so falling back to a generated id is what keeps a
+	// caller that forgot to set it from writing an unaddressable row (or, on
+	// the second such row, failing a unique violation).
+	executionID := req.ExecutionID
+	if executionID == "" {
+		executionID = generateExecutionID(req.ExecutionType)
+	}
+	externalID := req.ExternalID
+	if externalID == "" {
+		externalID = executionID
+	}
+
 	exec := &ExecutionStatus{
-		ExecutionID:      generateExecutionID(req.ExecutionType),
+		ExecutionID:      executionID,
+		ExternalID:       externalID,
 		ExecutionType:    req.ExecutionType,
 		Name:             req.Name,
 		Source:           req.Source,
@@ -484,6 +500,24 @@ func (t *BaseExecutionTracker) SetEstimatedCost(ctx context.Context, executionID
 // --- ID Generation ---
 
 // generateExecutionID generates a unique execution ID with type prefix.
+//
+// ENTROPY: 96 random bits (12 crypto/rand bytes, hex-encoded to 24
+// characters). That is far past any birthday bound a deployment can reach.
+//
+// #3442 removed a `wf_<UnixNano>` fallback that this function returned when
+// rand.Read reported an error. It was not merely an untested failure path, it
+// was UNREACHABLE: since Go 1.24 `crypto/rand.Read` "never returns an error,
+// and always fills b entirely" - on an operating-system RNG failure it
+// crashes the program irrecoverably rather than returning. The branch could
+// therefore never run, and what it would have produced was a guessable,
+// clock-derived id that is not even unique under concurrency on a coarse
+// clock. Deleting it removes a fallback that could only ever have been a
+// liability, with no behaviour change, and the errcheck-silenced discard
+// below records why the error is not handled.
+//
+// The `wf` case is now reached only if a WCP caller fails to supply the
+// control-plane workflow id; the WCP tracker always supplies it (see
+// CreateExecutionRequest.ExecutionID).
 func generateExecutionID(execType ExecutionType) string {
 	prefix := "exec"
 	switch execType {
@@ -494,10 +528,8 @@ func generateExecutionID(execType ExecutionType) string {
 	}
 
 	bytes := make([]byte, 12)
-	if _, err := rand.Read(bytes); err != nil {
-		// Fallback to timestamp-based ID
-		return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
-	}
+	// crypto/rand.Read cannot fail; see the entropy note above.
+	_, _ = rand.Read(bytes)
 
 	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(bytes))
 }

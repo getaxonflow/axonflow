@@ -7,10 +7,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // fakeSegmentGateResolver is a minimal IdentityAttributeResolver double for
-// exercising ResolveSegmentsForPolicy directly, independent of either
+// exercising ResolveUserSegments directly, independent of either
 // service's own resolver wiring.
 type fakeSegmentGateResolver struct {
 	resolved ResolvedIdentity
@@ -28,15 +29,16 @@ func (f *fakeSegmentGateResolver) ResolveRole(_ context.Context, _, _ string) (s
 	return "", nil
 }
 
-func (f *fakeSegmentGateResolver) InvalidateUserSegments(_, _ string) {}
-
 // fakeSegmentPolicyMetrics records every call made through the
 // SegmentPolicyMetrics interface so a test can assert exactly what
-// ResolveSegmentsForPolicy reported.
+// ResolveUserSegments reported.
 type fakeSegmentPolicyMetrics struct {
-	results       []string
-	durations     []float64
-	failClosedInc int
+	results        []string
+	durations      []float64
+	failClosedInc  int
+	loggedErrors   int
+	loggedSuccess  int
+	lastSuccessIDs []string
 }
 
 func (m *fakeSegmentPolicyMetrics) ObserveResolutionResult(result string) {
@@ -51,9 +53,18 @@ func (m *fakeSegmentPolicyMetrics) IncFailClosed() {
 	m.failClosedInc++
 }
 
-func TestResolveSegmentsForPolicy_NilResolver_OrgOnlyNotFailure(t *testing.T) {
+func (m *fakeSegmentPolicyMetrics) LogResolutionError(string, time.Duration, error) {
+	m.loggedErrors++
+}
+
+func (m *fakeSegmentPolicyMetrics) LogResolutionSuccess(_ string, _ time.Duration, segmentIDs []string) {
+	m.loggedSuccess++
+	m.lastSuccessIDs = segmentIDs
+}
+
+func TestResolveUserSegments_NilResolver_OrgOnlyNotFailure(t *testing.T) {
 	metrics := &fakeSegmentPolicyMetrics{}
-	ids, ok := ResolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com", nil, metrics)
+	ids, ok := ResolveUserSegments(context.Background(), "org-a", "a@example.com", nil, metrics)
 	if !ok {
 		t.Fatal("no resolver wired (community / no SCIM) must NOT be treated as a failure")
 	}
@@ -63,9 +74,12 @@ func TestResolveSegmentsForPolicy_NilResolver_OrgOnlyNotFailure(t *testing.T) {
 	if len(metrics.results) != 0 {
 		t.Fatalf("expected no metrics observed when resolver is nil, got %v", metrics.results)
 	}
+	if metrics.loggedErrors != 0 || metrics.loggedSuccess != 0 {
+		t.Fatalf("expected neither log hook called when resolver is nil, got errors=%d success=%d", metrics.loggedErrors, metrics.loggedSuccess)
+	}
 }
 
-func TestResolveSegmentsForPolicy_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T) {
+func TestResolveUserSegments_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T) {
 	resolver := &fakeSegmentGateResolver{resolved: ResolvedIdentity{Segments: []Segment{{ID: "grp-finance"}}}}
 	metrics := &fakeSegmentPolicyMetrics{}
 
@@ -74,7 +88,7 @@ func TestResolveSegmentsForPolicy_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T
 		{"org-a", ""},
 		{"", ""},
 	} {
-		ids, ok := ResolveSegmentsForPolicy(context.Background(), tc.org, tc.email, resolver, metrics)
+		ids, ok := ResolveUserSegments(context.Background(), tc.org, tc.email, resolver, metrics)
 		if !ok {
 			t.Fatalf("org=%q email=%q: no verified identity to resolve against must not be a failure", tc.org, tc.email)
 		}
@@ -87,10 +101,10 @@ func TestResolveSegmentsForPolicy_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T
 	}
 }
 
-func TestResolveSegmentsForPolicy_EmptySet_OrgOnly(t *testing.T) {
+func TestResolveUserSegments_EmptySet_OrgOnly(t *testing.T) {
 	resolver := &fakeSegmentGateResolver{resolved: ResolvedIdentity{Segments: []Segment{}}}
 	metrics := &fakeSegmentPolicyMetrics{}
-	ids, ok := ResolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com", resolver, metrics)
+	ids, ok := ResolveUserSegments(context.Background(), "org-a", "a@example.com", resolver, metrics)
 	if !ok {
 		t.Fatal("zero group memberships is a legitimate success, not a failure")
 	}
@@ -100,15 +114,21 @@ func TestResolveSegmentsForPolicy_EmptySet_OrgOnly(t *testing.T) {
 	if len(metrics.results) != 1 || metrics.results[0] != "empty" {
 		t.Fatalf("expected a single 'empty' observation, got %v", metrics.results)
 	}
+	if metrics.loggedSuccess != 1 || metrics.lastSuccessIDs != nil {
+		t.Fatalf("expected LogResolutionSuccess called once with nil ids, got count=%d ids=%v", metrics.loggedSuccess, metrics.lastSuccessIDs)
+	}
+	if metrics.loggedErrors != 0 {
+		t.Fatalf("a success must never call LogResolutionError, got %d", metrics.loggedErrors)
+	}
 }
 
-// TestResolveSegmentsForPolicy_Error_FailsClosed pins the ADR-060
+// TestResolveUserSegments_Error_FailsClosed pins the ADR-060
 // §Fail-closed contract: a genuine resolver ERROR must deny (ok=false) —
 // unconditionally, on both planes, after #3239 round 2's convergence.
-func TestResolveSegmentsForPolicy_Error_FailsClosed(t *testing.T) {
+func TestResolveUserSegments_Error_FailsClosed(t *testing.T) {
 	resolver := &fakeSegmentGateResolver{err: errors.New("segment query failed")}
 	metrics := &fakeSegmentPolicyMetrics{}
-	ids, ok := ResolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com", resolver, metrics)
+	ids, ok := ResolveUserSegments(context.Background(), "org-a", "a@example.com", resolver, metrics)
 	if ok {
 		t.Fatal("a genuine segment resolution error must DENY (ok=false), never fall back to org-only")
 	}
@@ -121,24 +141,33 @@ func TestResolveSegmentsForPolicy_Error_FailsClosed(t *testing.T) {
 	if len(metrics.results) != 1 || metrics.results[0] != "error" {
 		t.Fatalf("expected a single 'error' observation, got %v", metrics.results)
 	}
+	if metrics.loggedErrors != 1 {
+		t.Fatalf("expected LogResolutionError to be called once, got %d", metrics.loggedErrors)
+	}
+	if metrics.loggedSuccess != 0 {
+		t.Fatalf("an error must never call LogResolutionSuccess, got %d", metrics.loggedSuccess)
+	}
 }
 
-func TestResolveSegmentsForPolicy_Success_ReturnsIDs(t *testing.T) {
+func TestResolveUserSegments_Success_ReturnsIDs(t *testing.T) {
 	want := []Segment{{ID: "grp-finance", DisplayName: "finance"}, {ID: "grp-ml", DisplayName: "ml-platform"}}
 	resolver := &fakeSegmentGateResolver{resolved: ResolvedIdentity{Segments: want}}
 	metrics := &fakeSegmentPolicyMetrics{}
-	ids, ok := ResolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com", resolver, metrics)
+	ids, ok := ResolveUserSegments(context.Background(), "org-a", "a@example.com", resolver, metrics)
 	if !ok {
 		t.Fatal("a successful resolution must never fail closed")
 	}
 	if len(ids) != 2 || ids[0] != "grp-finance" || ids[1] != "grp-ml" {
-		t.Fatalf("ResolveSegmentsForPolicy ids = %v, want [grp-finance grp-ml]", ids)
+		t.Fatalf("ResolveUserSegments ids = %v, want [grp-finance grp-ml]", ids)
 	}
 	if len(metrics.results) != 1 || metrics.results[0] != "resolved" {
 		t.Fatalf("expected a single 'resolved' observation, got %v", metrics.results)
 	}
 	if len(metrics.durations) != 1 {
 		t.Fatalf("expected one duration observation, got %v", metrics.durations)
+	}
+	if metrics.loggedSuccess != 1 || len(metrics.lastSuccessIDs) != 2 {
+		t.Fatalf("expected LogResolutionSuccess called once with the resolved ids, got count=%d ids=%v", metrics.loggedSuccess, metrics.lastSuccessIDs)
 	}
 }
 

@@ -7,7 +7,7 @@
 # Generated at,2026-07-01T09:30:00Z,,,
 # Data state,populated - the period contains governed activity,,,
 # Records,3,,,
-# Retention,OJK / UU PDP: records retained 5 years.,,,
+# Retention,"OJK / UU PDP require these records to be retained 5 years. This line states the REQUIREMENT, not this deployment's configured period.",,,
 ,,,,
 ## Policy violations,,,,
 # Governance policy violations recorded in the reporting period.,,,,

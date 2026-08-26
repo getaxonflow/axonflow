@@ -36,7 +36,21 @@ type StaticPolicyResult struct {
 	Severity          string
 	RequiresRedaction bool // True if PII detected and should be redacted (Issue #891)
 	RequiresApproval  bool // True if HITL approval is required (Issue #1081 - EU AI Act Article 14)
-	EvaluationError   bool // True when Blocked is a fail-closed availability failure (could-not-scan), not a policy verdict (#2862)
+	// ApprovalPolicyID / ApprovalPolicyName name the policy whose RESOLVED
+	// action was require_approval, so the HITL queue entry the planes raise
+	// (#3509) is attributed to the rule that actually held the request rather
+	// than to TriggeredPolicies[0], which is merely the first match in
+	// evaluation order and is frequently an unrelated advisory PII rule.
+	//
+	// Attribution is FIRST-MATCH-WINS and mirrors RequiresApproval's own
+	// `break`: where two rules both resolve to require_approval the request is
+	// held once, and the entry names the first. Empty is a legitimate state -
+	// the engine-bypass constructor paths set RequiresApproval on neither, and
+	// enqueuePolicyStepUp substitutes an explicitly unattributed placeholder
+	// rather than inventing a policy id.
+	ApprovalPolicyID   string
+	ApprovalPolicyName string
+	EvaluationError    bool // True when Blocked is a fail-closed availability failure (could-not-scan), not a policy verdict (#2862)
 	// AdvisoryReasons carries governance reasons for PII policies that MATCHED
 	// but resolved to a non-blocking, non-redacting action (warn/log). They emit
 	// no obligation, but a matched policy must never be a silent bare allow

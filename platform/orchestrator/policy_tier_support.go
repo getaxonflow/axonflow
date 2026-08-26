@@ -424,3 +424,48 @@ const (
 	ErrCodeEvidenceExportLimitExceeded  = "EVIDENCE_EXPORT_LIMIT_EXCEEDED"
 	ErrCodeFeatureRequiresEvaluation    = "FEATURE_REQUIRES_EVALUATION_LICENSE"
 )
+
+// hitlResolveAllowed reports whether a caller may RESOLVE existing HITL
+// approvals - approve, reject, or list what is pending - as distinct from
+// CREATING new ones.
+//
+// THE TWO QUESTIONS ARE DIFFERENT AND MUST NOT SHARE A PREDICATE.
+//
+// The 2026-08-26 operator decision made HITL approvals Enterprise-only. That
+// is a decision about who may CREATE approval entries; it is enforced at the
+// chokepoint in platform/agent/hitl/queue, per call, where a licence renewed
+// at runtime takes effect at the next gate.
+//
+// Applying the same predicate to resolution strands rows. A deployment that
+// holds pending approvals at upgrade time - every Evaluation deployment that
+// used WCP step gates, and any deployment whose rows were written by the
+// unlicensed direct INSERT this change removes - would lose approve, reject
+// AND the pending list in the same release, leaving entries that can never be
+// cleared and workflows that can never proceed. That is verbatim the
+// phantom-row defect #3408 exists to close, reintroduced by the entitlement
+// change itself.
+//
+// R3 round 2: this predicate exists because the two planes had already drifted
+// once. Round 1 fixed the WCP registration (run.go) and left the three MAP
+// handlers on IsHITLApprovalEnabled, so on DEPLOYMENT_MODE=community with an
+// Evaluation licence WCP drained and MAP returned 403 - and the MAP comments
+// still claimed "both planes accept Evaluation+". One predicate, one place to
+// change, and a test that asserts the planes agree.
+//
+// A nil checker is refused: no tier resolved is not a licence to act.
+//
+// The parameter is the NARROWEST interface this predicate reads, not
+// LicenseChecker. Tier() is the only method involved, and a wider parameter
+// would force every future test double to implement a dozen unrelated methods
+// just to assert a tier - friction that is how gates end up with bespoke,
+// drifting checks instead of a shared one. Any LicenseChecker satisfies it.
+type hitlTierSource interface {
+	Tier() license.Tier
+}
+
+func hitlResolveAllowed(c hitlTierSource) bool {
+	if c == nil {
+		return false
+	}
+	return license.IsEvaluationOrHigher(c.Tier())
+}

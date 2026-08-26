@@ -37,7 +37,11 @@ const dupTestPolicyID = "dup_test_policy"
 // proxyPolicyCategories and, per run_shared_engine_segment_gate_test.go,
 // unmodified by ModeDetectionConfig.BuildActionOverrides), plus the mandatory
 // system-tier row (#3048 zero-system-tier fail-closed guard).
-func installSharedEngineWithNonBlockingWarnPolicy(t *testing.T, tenantID, pattern string) {
+// Decision 5 (#3490): the loader's non-global pass binds the caller ORG, so
+// this helper takes the org (scopeOrg) rather than the tenant. The row it
+// serves still carries tenantID in the tenant_id column - that column is
+// attribution now, and the loader still SELECTs it.
+func installSharedEngineWithNonBlockingWarnPolicy(t *testing.T, tenantID, scopeOrg, pattern string) {
 	t.Helper()
 	mockDB, mockSQL, err := sqlmock.New()
 	if err != nil {
@@ -46,20 +50,20 @@ func installSharedEngineWithNonBlockingWarnPolicy(t *testing.T, tenantID, patter
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mockSQL.MatchExpectationsInOrder(false)
 
-	// The loader issues TWO disjoint scoped passes per load (#3048): tenant
-	// scope (tenant_id = $1 = tenantID) and 'global' scope (tenant_id =
-	// 'global'). Each pass's expectation is pinned by .WithArgs to its own
-	// scope's row set — returning the dup_test_policy tenant row from BOTH
+	// The loader issues TWO disjoint scoped passes per load (#3048): the
+	// caller org scope (org_id = $1 = scopeOrg) and the 'global' scope
+	// (org_id = 'global'). Each pass's expectation is pinned by .WithArgs to
+	// its own scope's row set - returning the dup_test_policy tenant row from BOTH
 	// passes (as an args-blind mock would) would make the loader itself
 	// double-load it, an artifact this test must not manufacture.
 	for i := 0; i < 4; i++ { // headroom: allow up to 4 loads of each scope
 		tenantRows := sqlmock.NewRows(policytest.LoaderCols()).AddRow(
 			"dup-uuid-1", dupTestPolicyID, "Dup Test Policy", "compliance-rbi", "tenant",
 			pattern, "low", nil, "request", "warn", nil,
-			true, 100, tenantID, nil, nil, []byte(`{}`),
+			true, 100, tenantID, nil, []byte(`{}`),
 			time.Now().UTC(),
 		)
-		mockSQL.ExpectQuery("SELECT").WithArgs(tenantID).WillReturnRows(tenantRows)
+		mockSQL.ExpectQuery("SELECT").WithArgs(scopeOrg).WillReturnRows(tenantRows)
 
 		globalRows := policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
 			"sys-never-matches", "sys_test_never_matches",
@@ -80,13 +84,13 @@ func installSharedEngineWithNonBlockingWarnPolicy(t *testing.T, tenantID, patter
 
 // effectiveWarnRowForDupTest builds the Phase-2 (GetEffective) row matching
 // dupTestPolicyID with the same non-blocking "warn" action, non-segment-scoped.
-func effectiveWarnRowForDupTest(tenantID, pattern string) *sqlmock.Rows {
+func effectiveWarnRowForDupTest(tenantID, orgID, pattern string) *sqlmock.Rows {
 	now := time.Now()
 	return sqlmock.NewRows(effectiveCols()).AddRow(
 		"dup-uuid-1", dupTestPolicyID, "Dup Test Policy", "compliance-rbi",
 		pattern, "low",
 		"", "warn", "tenant", 100, true,
-		nil, tenantID, nil, nil,
+		tenantID, orgID, nil,
 		"[]", "{}", 1,
 		now, now, "admin", "admin",
 	)
@@ -105,14 +109,14 @@ func TestClientRequestHandler_NoDuplicateTriggeredPolicies(t *testing.T) {
 	tenantID, orgID, email := "dup-tp-tenant", "dup-tp-org", "frank@corp.example"
 	const pattern = "confidential_ledger"
 	userToken := segmentPolicyTestSetup(t, tierDB, tenantID, orgID, email)
-	installSharedEngineWithNonBlockingWarnPolicy(t, tenantID, pattern)
+	installSharedEngineWithNonBlockingWarnPolicy(t, tenantID, orgID, pattern)
 
 	// Org-only: zero group memberships (a legitimate, successfully-resolved
 	// empty segment set) — isolates the assertion from segment behavior.
 	fake := &fakeSegmentResolver{}
 	withFleetSegmentResolver(t, fake)
 
-	tenantRows := effectiveWarnRowForDupTest(tenantID, pattern)
+	tenantRows := effectiveWarnRowForDupTest(tenantID, orgID, pattern)
 	globalRows := sqlmock.NewRows(effectiveCols())
 	expectEffectiveTwoPass(tierMock, orgID, tenantRows, emptyOverrideRows(), globalRows, nil)
 
@@ -170,12 +174,12 @@ func TestPolicyTestHandler_NoDuplicateTriggeredPolicies(t *testing.T) {
 
 	const orgID = "dup-tp-preview-org"
 	const pattern = "confidential_ledger"
-	installSharedEngineWithNonBlockingWarnPolicy(t, orgID, pattern)
+	installSharedEngineWithNonBlockingWarnPolicy(t, orgID, orgID, pattern)
 
 	fake := &fakeSegmentResolver{}
 	withFleetSegmentResolver(t, fake)
 
-	tenantRows := effectiveWarnRowForDupTest(orgID, pattern)
+	tenantRows := effectiveWarnRowForDupTest(orgID, orgID, pattern)
 	globalRows := sqlmock.NewRows(effectiveCols())
 	expectEffectiveTwoPass(tierMock, orgID, tenantRows, emptyOverrideRows(), globalRows, nil)
 

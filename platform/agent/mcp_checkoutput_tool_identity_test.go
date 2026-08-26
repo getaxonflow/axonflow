@@ -176,6 +176,7 @@ func TestCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 			sqlmock.AnyArg(), // correlation_id
 			sqlmock.AnyArg(), // redacted_fields
 			sqlmock.AnyArg(), // session_id
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -289,6 +290,7 @@ func TestMcpToolCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 			toolIdentityDetails{wantServer: "claude_code", wantTool: "Bash"}, // policy_details (14th)
 			sqlmock.AnyArg(), sqlmock.AnyArg(), // decision_id, plane
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // correlation_id, redacted_fields, session_id
+			sqlmock.AnyArg(), // response_time_ms (#3424): mcpToolCheckOutput's own elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

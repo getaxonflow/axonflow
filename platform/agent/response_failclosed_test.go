@@ -47,8 +47,8 @@ func installLoadErroringEngine(t *testing.T) {
 func TestEvaluateOutputPolicies_FailsClosedOnLoadError(t *testing.T) {
 	installLoadErroringEngine(t)
 	rows := []map[string]interface{}{{"email": "andi@example.com", "note": "customer record"}}
-	out := evaluateOutputPolicies(context.Background(), "unseeded-tenant", "u1",
-		"gw.test", "gw.test", rows, "", nil, len(rows), false, true /* isGateway (check-output) */)
+	out := evaluateOutputPolicies(context.Background(), "unseeded-tenant", "", "u1",
+		"gw.test", "gw.test", rows, "", nil, len(rows), false, true /* isGateway (check-output) */, nil)
 
 	if out.StaticResult == nil || !out.StaticResult.Blocked {
 		t.Fatal("load error must fail closed (blocked/withheld), not forward the rows")

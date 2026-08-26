@@ -25,7 +25,7 @@ import (
 //
 // This test closes that gap by:
 //
-//   - Setting up a full postgres:15 testcontainer with migrations 001..111
+//   - Setting up a full postgres:15 testcontainer with every core migration
 //     (which provisions axonflow_app_role + axonflow_platform_admin via mig
 //     098 and the SECURITY DEFINER helpers via mig 104/108).
 //   - Provisioning login passwords on both RLS roles, mirroring
@@ -50,7 +50,7 @@ func TestDatabaseDynamicPolicyEngine_AppRoleGate_RealPostgres(t *testing.T) {
 	//
 	// `NewDatabaseDynamicPolicyEngine` invokes seedSystemMediaPolicies +
 	// loadDefaultPolicies + refreshPolicies internally. Under
-	// AXONFLOW_DB_USE_APP_ROLE=true + the testcontainer's migration 001..111
+	// AXONFLOW_DB_USE_APP_ROLE=true + the testcontainer's full core migration
 	// schema, the seed-path INSERTs against `dynamic_policies` fail because
 	// the seed code doesn't `SET LOCAL app.current_org_id` before inserting
 	// and the table's RLS WITH CHECK policy rejects the rows. (`dynamic_policies`
@@ -98,17 +98,34 @@ func TestDatabaseDynamicPolicyEngine_AppRoleGate_RealPostgres(t *testing.T) {
 
 	// Mutation guard: with the gate ON but no app-role DSN set, the helper
 	// falls back to DATABASE_URL (master), then asserts current_user matches
-	// axonflow_app_role — which FAILS for the master role. The constructor
-	// must surface that as an error, NOT silently connect as master.
+	// axonflow_app_role — which FAILS for the master role. Under #3319,
+	// NewDatabaseDynamicPolicyEngine never fails construction on a boot-time
+	// database problem (see its doc comment) — it always returns a usable
+	// engine serving the built-in default policy set. The safety property
+	// this test guards therefore no longer surfaces as a constructor error;
+	// it surfaces as connectDB returning before e.db/e.metricsDB are ever
+	// assigned (db_dynamic_policies.go connectDB opens both role-asserted
+	// pools before touching e.mu) and the engine staying on
+	// policySetSourceDefaults. What MUST still be true: the engine must NOT
+	// silently connect as master and serve database-loaded policies through
+	// that connection.
 	t.Run("RejectsMasterFallbackUnderGateOn", func(t *testing.T) {
 		t.Setenv("DATABASE_URL", env.MasterDSN)
 		t.Setenv(agent.EnvUseAppRole, "true")
 		_ = os.Unsetenv(agent.EnvAppRoleURL)
 
 		engine, err := NewDatabaseDynamicPolicyEngine()
-		if err == nil {
-			_ = engine.Close()
-			t.Fatalf("NewDatabaseDynamicPolicyEngine unexpectedly succeeded with master fallback under gate=on — assertion bypass regression")
+		if err != nil {
+			t.Fatalf("NewDatabaseDynamicPolicyEngine returned an unexpected error: %v", err)
+		}
+		defer func() { _ = engine.Close() }()
+
+		db, metricsDB := engine.UnsafePoolsForTests()
+		if db != nil || metricsDB != nil {
+			t.Fatalf("engine connected its pools despite a role-assertion failure under gate=on — assertion bypass regression (db=%v, metricsDB=%v)", db, metricsDB)
+		}
+		if got := engine.PolicySetSource(); got != policySetSourceDefaults {
+			t.Fatalf("engine promoted to policy-set source %q despite never completing a role-asserted connection — assertion bypass regression", got)
 		}
 	})
 

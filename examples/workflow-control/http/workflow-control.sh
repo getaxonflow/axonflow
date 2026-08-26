@@ -387,7 +387,7 @@ else
     pending_http=$(echo "$pending_response" | tail -n 1)
 
     if [ "$pending_http" = "403" ] || [ "$pending_http" = "404" ] || echo "$pending_body" | jq -r '.error // ""' 2>/dev/null | grep -qi "enterprise\|license\|not available"; then
-        echo -e "   ${YELLOW}SKIPPED: Pending approvals is an Evaluation+ feature${NC}"
+        echo -e "   ${YELLOW}SKIPPED: Pending approvals is a Professional-and-above feature${NC}"
     else
         pending_count=$(echo "$pending_body" | jq -r '.pending_approvals | length // 0')
         pending_total=$(echo "$pending_body" | jq -r '.count // 0')
@@ -498,7 +498,7 @@ all_pending_body=$(echo "$all_pending_response" | sed '$d')
 all_pending_http=$(echo "$all_pending_response" | tail -n 1)
 
 if [ "$all_pending_http" = "403" ] || [ "$all_pending_http" = "404" ] || echo "$all_pending_body" | jq -r '.error // ""' 2>/dev/null | grep -qi "enterprise\|license\|not available"; then
-    echo -e "   ${YELLOW}SKIPPED: Pending approvals is an Evaluation+ feature${NC}"
+    echo -e "   ${YELLOW}SKIPPED: Pending approvals is a Professional-and-above feature${NC}"
 else
     items_count=$(echo "$all_pending_body" | jq -r '.pending_approvals | length // 0')
     total_count=$(echo "$all_pending_body" | jq -r '.count // 0')

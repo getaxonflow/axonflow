@@ -43,7 +43,23 @@ type approle3048Fixture struct {
 func setup3048Fixture(t *testing.T) *approle3048Fixture {
 	t.Helper()
 	approletest.SkipUnlessEnabled(t)
-	env := approletest.Setup(t, "../../migrations/core")
+	// PRE-153 ON PURPOSE. This fixture's premise is the data shape that
+	// existed BEFORE migration 153 backfilled org_id onto the seeded global
+	// rows: the test asserts the scoped load fails CLOSED on that shape, then
+	// applies 153/154 itself and re-evaluates. A full-schema fixture would
+	// make the first leg vacuous -- it loads 92 policies and the fail-closed
+	// assertion can no longer fail.
+	//
+	// 111 specifically, because this fixture turns out to be pinned on a
+	// SECOND axis as well: the second leg asserts a seeded policy BLOCKS
+	// `DROP TABLE`, and core/124 (align sqli phase/action with base) changes
+	// that policy's action, so the assertion stops firing at any bound >= 124
+	// even though 92 policies load. Measured: at bound 152 leg one passes and
+	// leg two fails with "DROP TABLE must be blocked ...; evaluated=92".
+	// Both couplings predate #3490 and neither is this change's to renegotiate
+	// -- 111 is the schema the test was written and verified against, and it
+	// is now an explicit, explained choice rather than an inherited default.
+	env := approletest.SetupAtVersion(t, "../../migrations/core", 111)
 
 	open := func(dsn, label string) *sql.DB {
 		db, err := sql.Open("postgres", dsn)
@@ -293,7 +309,10 @@ func TestStaticPolicyRepositoryReadsUnderAppRole(t *testing.T) {
 	})
 
 	t.Run("countTenantPolicies_counts_scoped", func(t *testing.T) {
-		n, err := repo.countTenantPolicies(ctx, org)
+		// #3490: the org is an explicit parameter now. This fixture's policy
+		// carries TenantID == OrgID == org (see the Create above), so both
+		// arguments are `org` and the count this asserts is unchanged.
+		n, err := repo.countTenantPolicies(ctx, org, org)
 		if err != nil {
 			t.Fatalf("countTenantPolicies: %v", err)
 		}
@@ -471,7 +490,7 @@ func TestOrgTenantSplitEnforcementUnderAppRole(t *testing.T) {
 	// With the org plumbed (what the gates now do): the policy enforces.
 	engine.InvalidateCache(tenantID, sharedpolicy.OrgScopePtr(orgID))
 	with := engine.EvaluateRequest(context.Background(), "run SPLIT_ORG_MARKER now",
-		sharedpolicy.EvalOptions{TenantID: tenantID, OrgID: orgID, OrganizationID: sharedpolicy.OrgScopePtr(orgID)})
+		sharedpolicy.EvalOptions{TenantID: tenantID, OrgID: orgID, OrgScope: sharedpolicy.OrgScopePtr(orgID)})
 	if with.EvaluationError {
 		t.Fatalf("load failed with the org scope: blocked=%v", with.Blocked)
 	}

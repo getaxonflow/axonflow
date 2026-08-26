@@ -323,6 +323,30 @@ endpoints:
       evaluation: {status: 200, reason: "same"}
       enterprise: {status: 200, reason: "same"}
 
+  # #1431 successors of the two rows above. The handlers are shared, so these
+  # SHOULD be identical by construction - which is exactly why they are pinned
+  # here. This manifest is the one contract test that would notice if the two
+  # spellings ever stopped agreeing on a per-tier status code, and it is
+  # manifest-driven with no completeness check, so a successor that is not
+  # written down is a successor nothing checks.
+  - id: orchestrator-tenant-policies-list
+    method: GET
+    port: 8081
+    path: /api/v1/tenant-policies
+    expected:
+      community:  {status: 200, reason: "same handler as /dynamic-policies, registered in the same function"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-tenant-policies-effective
+    method: GET
+    port: 8081
+    path: /api/v1/tenant-policies/effective
+    expected:
+      community:  {status: 200, reason: "same handler as /dynamic-policies/effective"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
   - id: orchestrator-policies-export
     method: GET
     port: 8081
@@ -457,6 +481,27 @@ endpoints:
     method: GET
     port: 8080
     path: /api/v1/static-policies/effective
+    expected:
+      community:  {status: 200, reason: "auth permissive in community mode"}
+      evaluation: {status: 401, reason: "Basic auth required in licensed builds"}
+      enterprise: {status: 401, reason: "same"}
+
+  # #1431 successors. Same handlers, same apiAuthMiddleware, registered from
+  # the one shared route table - so the per-tier codes must match their twins
+  # above, and a divergence here is the alias having lost a guard.
+  - id: agent-system-policies-list
+    method: GET
+    port: 8080
+    path: /api/v1/system-policies
+    expected:
+      community:  {status: 200, reason: "same subrouter middleware as /static-policies"}
+      evaluation: {status: 401, reason: "Basic auth required once a license is present"}
+      enterprise: {status: 401, reason: "same"}
+
+  - id: agent-system-policies-effective
+    method: GET
+    port: 8080
+    path: /api/v1/system-policies/effective
     expected:
       community:  {status: 200, reason: "auth permissive in community mode"}
       evaluation: {status: 401, reason: "Basic auth required in licensed builds"}

@@ -4,6 +4,7 @@
 package agent
 
 import (
+	sharedaudit "axonflow/platform/shared/audit"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -377,7 +378,8 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 			"dec-1",           // decision_id (first-class column; #2592)
 			PlaneMCP,          // plane — MCP check-input surface
 			"corr-trace-1",    // correlation_id (#2598)
-			nil, // session_id (#2753)
+			nil,               // session_id (#2753)
+			sqlmock.AnyArg(),  // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -389,6 +391,7 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 		"blocked", "high",
 		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "Name"}},
 		"corr-trace-1",
+		sharedaudit.LatencyUnmeasured,
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -401,12 +404,12 @@ func TestWriteExplainableAuditLog_Inserts(t *testing.T) {
 func TestWriteExplainableAuditLog_NilDBOrEmptyDecisionID(t *testing.T) {
 	writeExplainableAuditLog(context.Background(), nil,
 		"dec-1", "req-1", "t1", "o1", "c1", "u", "0", "user",
-		"t", "q", "h", "r", "high", nil, "")
+		"t", "q", "h", "r", "high", nil, "", sharedaudit.LatencyUnmeasured)
 
 	db, mock := newMockDB(t)
 	writeExplainableAuditLog(context.Background(), db,
 		"", "req-1", "t1", "o1", "c1", "u", "0", "user",
-		"t", "q", "h", "r", "high", nil, "")
+		"t", "q", "h", "r", "high", nil, "", sharedaudit.LatencyUnmeasured)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("empty decision_id should be a no-op; got: %v", err)
 	}
@@ -467,7 +470,7 @@ func TestWriteOverrideUsedEvent_FallbackPlaceholders(t *testing.T) {
 			"dec-1",                  // decision_id (first-class column; #2592)
 			PlaneMCP,                 // plane — MCP check-input override surface
 			"corr-fb-ovr",            // correlation_id (#2598)
-			nil, // session_id (#2753)
+			nil,                      // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -500,10 +503,11 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 			"h",
 			"blocked",
 			sqlmock.AnyArg(),
-			"dec-1",       // decision_id (first-class column; #2592)
-			PlaneMCP,      // plane — MCP check-input surface
-			"corr-fb-exp", // correlation_id (#2598)
-			nil, // session_id (#2753)
+			"dec-1",          // decision_id (first-class column; #2592)
+			PlaneMCP,         // plane - MCP check-input surface
+			"corr-fb-exp",    // correlation_id (#2598)
+			nil,              // session_id (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -515,6 +519,7 @@ func TestWriteExplainableAuditLog_FallbackPlaceholders(t *testing.T) {
 		"blocked", "high",
 		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "n1"}},
 		"corr-fb-exp",
+		sharedaudit.LatencyUnmeasured,
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1007,10 +1012,11 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 					"u@e.com", "user", "c1", "t1", "o1",
 					"mcp_check_input", "SELECT 1", "h1", "blocked",
 					jsonCaptureArg{dst: &capturedJSON},
-					"dec-1",   // decision_id (first-class column; #2592)
-					PlaneMCP,  // plane — MCP check-input surface
-					"corr-tc", // correlation_id (#2598)
-					nil, // session_id (#2753)
+					"dec-1",          // decision_id (first-class column; #2592)
+					PlaneMCP,         // plane - MCP check-input surface
+					"corr-tc",        // correlation_id (#2598)
+					nil,              // session_id (#2753)
+					sqlmock.AnyArg(), // response_time_ms (#3424)
 				).
 				WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1022,6 +1028,7 @@ func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
 				"blocked", "high",
 				tc.matches,
 				"corr-tc",
+				sharedaudit.LatencyUnmeasured,
 			)
 
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -1091,9 +1098,9 @@ func TestWriteOverrideUsedEvent_PolicyVersionInJSONB(t *testing.T) {
 			"override_used", "override applied", "none", "allowed",
 			jsonCaptureArg{dst: &capturedJSON},
 			"dec-1",   // decision_id (first-class column; #2592)
-			PlaneMCP,  // plane — MCP check-input override surface
+			PlaneMCP,  // plane - MCP check-input override surface
 			"corr-pv", // correlation_id (#2598)
-			nil, // session_id (#2753)
+			nil,       // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1191,10 +1198,11 @@ func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 			"none",              // statementHash fallback
 			"blocked",
 			sqlmock.AnyArg(),
-			"dec-1",    // decision_id (first-class column; #2592)
-			PlaneMCP,   // plane — MCP check-input surface
-			"corr-out", // correlation_id (#2598)
-			nil, // session_id (#2753)
+			"dec-1",          // decision_id (first-class column; #2592)
+			PlaneMCP,         // plane - MCP check-input surface
+			"corr-out",       // correlation_id (#2598)
+			nil,              // session_id (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1206,6 +1214,7 @@ func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
 		"blocked", "high",
 		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "n", Version: 1}},
 		"corr-out",
+		sharedaudit.LatencyUnmeasured,
 	)
 
 	if err := mock.ExpectationsWereMet(); err != nil {

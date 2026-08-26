@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,6 +91,29 @@ func resolveTenantOrFail(w http.ResponseWriter, r *http.Request, endpoint string
 		return ""
 	}
 	return tenantID
+}
+
+// resolveOrgOrFail is resolveTenantOrFail's org-keyed twin: it resolves the
+// gateway-stamped X-Org-ID and writes a 401 itself when there is none, so a
+// handler that needs an org scope can refuse an unbound caller in one line
+// rather than inventing a fallback.
+//
+// Decision 5 (#3490) introduced it because policy selection moved off
+// tenant_id: X-Tenant-ID carries the Basic-auth username, which the caller
+// picks, while X-Org-ID carries the licence org, which it cannot. There is
+// deliberately no context fallback of the kind resolveTenantOrFail carries
+// for "tenant_id" - no middleware in this service puts an org on the request
+// context today, so a fallback would be a lookup that always misses and a
+// future writer's chance to introduce a second, weaker source of org.
+func resolveOrgOrFail(w http.ResponseWriter, r *http.Request, endpoint string) string {
+	orgID := strings.TrimSpace(r.Header.Get("X-Org-ID"))
+	if orgID == "" {
+		log.Printf("[%s] BLOCKED: org scope missing from X-Org-ID header", endpoint)
+		writeJSONError(w, http.StatusUnauthorized, "ORG_REQUIRED",
+			"X-Org-ID header is required for this endpoint (set by the AxonFlow Agent gateway).")
+		return ""
+	}
+	return orgID
 }
 
 // NewEvidenceExportHandler creates a new evidence export handler.

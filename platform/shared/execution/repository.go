@@ -9,9 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"axonflow/platform/agent/rls"
+	"axonflow/platform/shared/tenantscope"
 )
 
 // Common errors
@@ -40,6 +44,14 @@ type PostgresRepository struct {
 	// the SECURITY DEFINER portal_session_lookup (mig 118). Falls back to db
 	// when unset (tests, non-app-role deployments where db sees everything).
 	lookupDB *sql.DB
+
+	// appRoleFn reports whether reads run through axonflow_app_role; see
+	// appRoleEnabled. Nil means "assume not", which keeps owner-pool
+	// deployments on the warning path.
+	appRoleFn func() bool
+	// adminPoolWarnOnce bounds the #3367 org-wide fallback diagnostic to one
+	// line per process. See warnIfNoAdminPoolOnce.
+	adminPoolWarnOnce sync.Once
 }
 
 // NewPostgresRepository creates a new PostgreSQL repository.
@@ -53,11 +65,63 @@ func (r *PostgresRepository) SetCrossOrgDB(db *sql.DB) {
 	r.lookupDB = db
 }
 
+// appRoleEnabled reports whether this process reads through the restricted
+// axonflow_app_role (and is therefore subject to mig 042's tenant-keyed RLS).
+// It is a hook rather than a direct call into platform/agent because this
+// package sits below the agent in the import graph; run.go injects the real
+// predicate at wiring time and the zero value stays conservative (false), so
+// an owner-pool deployment keeps the harmless warning path.
+func (r *PostgresRepository) appRoleEnabled() bool {
+	if r.appRoleFn == nil {
+		return false
+	}
+	return r.appRoleFn()
+}
+
+// SetAppRolePredicate injects the app-role check (see appRoleEnabled).
+func (r *PostgresRepository) SetAppRolePredicate(fn func() bool) {
+	r.appRoleFn = fn
+}
+
 func (r *PostgresRepository) lookup() *sql.DB {
 	if r.lookupDB != nil {
 		return r.lookupDB
 	}
 	return r.db
+}
+
+// warnIfNoAdminPoolOnce emits ONE diagnostic when an org-wide read (#3367) has
+// to fall back to the main pool because no BYPASSRLS admin pool was installed.
+//
+// R3 round 1: the fallback is NOT equivalent to the pre-#3367 connection. The
+// old org-only read at least ran inside WithOrgAndTenantScope, so the GUC was
+// pinned; the org-wide read runs bare. On a deployment that enabled
+// axonflow_app_role but left AXONFLOW_DB_PLATFORM_ADMIN_URL unset (a posture
+// the orchestrator's RequirePlatformAdminOrFatal guard actually refuses to
+// boot, so what follows is the shape this code defends against rather than
+// one a running deployment reaches),
+// mig 042's COALESCE fallback on app.current_tenant_id matches nothing and
+// the tile renders 0 again: the original bug, restored silently by a
+// deployment gap rather than by code.
+//
+// R3 MAJOR-2: that case is now a REFUSAL, not a warning. A 200 carrying a
+// well-formed empty list is precisely the confident zero this fix exists to
+// remove, and a server-side log line is not something the operator reading
+// the dashboard will ever see. On an owner or superuser pool the fallback is
+// genuinely harmless, so that case stays a one-time warning; the two are
+// distinguishable at runtime through the appRoleEnabled hook.
+// Once, because List is a per-page-load read.
+func (r *PostgresRepository) warnIfNoAdminPoolOnce() {
+	if r.lookupDB != nil {
+		return
+	}
+	r.adminPoolWarnOnce.Do(func() {
+		log.Printf("[execution] WARN: org-wide execution list has no BYPASSRLS admin pool " +
+			"(SetCrossOrgDB was never called). Under axonflow_app_role this read is filtered by " +
+			"mig 042's tenant-keyed RLS and will return ZERO rows, so the dashboard 'Workflows Run' " +
+			"tile and the Executions page will look empty (#3367). Set AXONFLOW_DB_PLATFORM_ADMIN_URL. " +
+			"On an owner/superuser pool this warning is harmless.")
+	})
 }
 
 // Create inserts a new execution record.
@@ -102,9 +166,21 @@ func (r *PostgresRepository) Create(ctx context.Context, exec *ExecutionStatus) 
 		)
 	`
 
+	// #3442: external_id is the SOURCE system's id (migration core/042:
+	// "Original ID from source system (plan_id or workflow_id)"), and this
+	// INSERT used to bind exec.ExecutionID to it - an indexed correlation
+	// column that only ever correlated a row with itself. Callers now set
+	// ExternalID; StartExecution defaults it to the execution id, so a caller
+	// that does not writes exactly what it wrote before. The column is NOT
+	// NULL, hence the second belt here.
+	externalID := exec.ExternalID
+	if externalID == "" {
+		externalID = exec.ExecutionID
+	}
+
 	err = rls.WithOrgAndTenantScope(ctx, r.db, exec.OrgID, exec.TenantID, func(tx *sql.Tx) error {
 		_, exErr := tx.ExecContext(ctx, query,
-			exec.ExecutionID, exec.ExecutionType, exec.ExecutionID, exec.Name, exec.Source,
+			exec.ExecutionID, exec.ExecutionType, externalID, exec.Name, exec.Source,
 			nullableString(exec.TenantID), nullableString(exec.OrgID), nullableString(exec.UserID), nullableString(exec.ClientID),
 			exec.Status, exec.CurrentStepIndex, exec.TotalSteps,
 			exec.StartedAt, exec.EstimatedCostUSD, exec.ActualCostUSD,
@@ -293,6 +369,67 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 	// with the same dual-key scope whenever the caller supplied a tenant/org
 	// filter. A filterless call is a deliberate cross-tenant listing
 	// (ops/admin path) and keeps the legacy bare read.
+	//
+	// #3367 adds the third shape: an ORG-WIDE read (org supplied, no tenant).
+	// It cannot use the dual-key wrap, because mig 042's USING predicate is
+	// `tenant_id = current_setting('app.current_tenant_id')` and the only
+	// tenant value an org-scoped caller has is the org id itself - so under
+	// app_role the wrap would re-apply, in RLS, exactly the credential
+	// narrowing the caller just dropped, and the read would return the same
+	// confident zero with the SQL predicate gone. Dropping the WHERE clause
+	// alone therefore fixes a superuser/owner-pool stack (local docker, where
+	// relforcerowsecurity is off and the pool is BYPASSRLS) and leaves
+	// production broken - the failure mode this branch exists to avoid.
+	//
+	// Instead it runs on the BYPASSRLS lookup pool with a MANDATORY org
+	// predicate, which is the shape the sibling org-scoped queue already uses
+	// (ee/platform/agent/hitl Repository.List, #3048/#3065): BYPASSRLS means
+	// the SQL layer owns tenancy, so the org key is validated here rather than
+	// merely appended when non-empty. The #3065 fail-open was precisely an org
+	// predicate that was conditional on non-emptiness, so this one is not.
+	//
+	// The branch is gated on req.OrgWide -- the caller's explicit statement
+	// that it holds org-wide authority -- and NOT on the filter shape
+	// "org set, tenant empty". R3 round 1 caught that: the shape is reachable
+	// by omitting a header, the authority is not, so keying a BYPASSRLS read
+	// on it would have handed the org-wide read to any caller that simply left
+	// X-Tenant-ID off, and would have silently converted the previously
+	// RLS-narrowed org-only read into a bypassing one. Guard by capability,
+	// not by shape.
+	orgWide := req.OrgWide
+	if orgWide {
+		if err := tenantscope.ValidateOrgKey(req.OrgID); err != nil {
+			return nil, 0, fmt.Errorf("cannot list executions org-wide without an authenticated org: %w", err)
+		}
+		// R3 round 2: the GUARD and the PREDICATE must judge the same string.
+		// tenantscope.usable() trims before deciding a key is present, while
+		// the `org_id = $n` bind above is raw, so " acme" would clear the guard
+		// and then match nothing - a silent zero of exactly the class this fix
+		// removes. Refusing is deliberate rather than trimming here: the WRITER
+		// (Create) stamps the key raw, so a reader that silently normalized
+		// would be the second call site normalizing one value differently, and
+		// those two WILL diverge. One rule, enforced loudly, at both ends.
+		if strings.TrimSpace(req.OrgID) != req.OrgID {
+			return nil, 0, fmt.Errorf("cannot list executions org-wide with an unnormalized org key (%q has leading or trailing whitespace)", req.OrgID)
+		}
+		if req.TenantID != "" {
+			// An org-wide read that also carries a credential narrowing is a
+			// contradiction, and silently honouring one of the two would make
+			// the result depend on which. Refuse.
+			return nil, 0, fmt.Errorf("cannot list executions org-wide and tenant-scoped at once (org=%q tenant=%q)", req.OrgID, req.TenantID)
+		}
+		if r.lookupDB == nil && r.appRoleEnabled() {
+			// Under axonflow_app_role this read WOULD be filtered to nothing by
+			// mig 042's tenant-keyed RLS. Returning the empty page would restore
+			// the exact defect this fix removes, so name it instead: the handler
+			// maps this to a 500 the operator can actually act on.
+			return nil, 0, fmt.Errorf("cannot list executions org-wide: no BYPASSRLS admin pool is configured " +
+				"while axonflow_app_role is in use, so this read would be filtered to zero rows by RLS; " +
+				"set AXONFLOW_DB_PLATFORM_ADMIN_URL")
+		}
+		r.warnIfNoAdminPoolOnce()
+	}
+
 	scopeOrg, scopeTenant := req.OrgID, req.TenantID
 	if scopeOrg == "" {
 		scopeOrg = scopeTenant
@@ -301,8 +438,20 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 		scopeTenant = scopeOrg
 	}
 	runQuery := func(fn func(q queryer) error) error {
+		if orgWide {
+			// The org predicate above is unconditional in this branch, so the
+			// BYPASSRLS pool can never serve an unfiltered read here.
+			return fn(r.lookup())
+		}
 		if scopeOrg == "" {
-			return fn(r.db)
+			// R3 MAJOR-1: this arm used to run `FROM execution_history WHERE 1=1`
+			// on the owner pool, i.e. every org's executions, justified by a
+			// comment naming an "ops/admin path" that does not exist: the only
+			// caller is ListExecutions, which sources both keys from headers.
+			// A request carrying neither key is a caller bug or a degenerate
+			// session, never a deliberate cross-tenant listing, so refuse rather
+			// than serve the whole table.
+			return fmt.Errorf("cannot list executions without a tenant or org key")
 		}
 		return rls.WithOrgAndTenantScope(ctx, r.db, scopeOrg, scopeTenant, func(tx *sql.Tx) error {
 			return fn(tx)

@@ -171,6 +171,7 @@ func TestAuthorizeOrgOnlyCallSitesArePinned(t *testing.T) {
 		"platform/agent/policy_override_repository.go":              "policy_overrides: rows are keyed on org_id (mig 110 RLS key); the table's tenant_id is a legacy nullable scope-narrowing column, not an ownership key",
 		"platform/agent/hitl/service.go":                            "hitl_approval_queue: rejectCrossOrg keys on the request's org_id, the same key mig 110-era RLS and the #3048 R3 forgery guard use",
 		"ee/platform/agent/hitl/service.go":                         "enterprise copy of the above — kept in lockstep because ee/ overrides platform/ at Docker build",
+		"platform/orchestrator/unified_execution_handler.go":        "execution_history: the row HAS a reliable tenant_id, and the credential-scoped caller is still authorized on BOTH dimensions. The org-only form is reached only for a caller carrying the trusted X-Axonflow-Tenancy-Scope: org assertion (#3367), whose authority IS the org and which holds no credential id to compare: the row's tenant_id is the EXECUTING caller's Basic-auth username (mig 049 dropped the organizations FK for that reason; mig 092 calls it a deprecated alias of client_id), so comparing it to a portal session's display-default tenant 404'd every execution the session was entitled to open. Read paths only: the write path (CancelExecution) uses checkTenantOwnershipStrict and keeps the two-dimension compare",
 	}
 
 	found := map[string]int{}

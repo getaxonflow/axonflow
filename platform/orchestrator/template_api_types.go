@@ -143,7 +143,7 @@ var ValidTemplateCategories = []string{
 type TemplateServicer interface {
 	GetTemplate(ctx context.Context, templateID string) (*PolicyTemplate, error)
 	ListTemplates(ctx context.Context, params ListTemplatesParams) (*TemplatesListResponse, error)
-	ApplyTemplate(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error)
+	ApplyTemplate(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error)
 	GetCategories(ctx context.Context) ([]string, error)
 	GetUsageStats(ctx context.Context, tenantID string) ([]TemplateUsageStatsResponse, error)
 }

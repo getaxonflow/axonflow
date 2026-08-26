@@ -34,14 +34,20 @@ type StaticPolicy struct {
 	RiskLevel     string `json:"risk_level" db:"risk_level"`         // low|medium|high|critical. Default "medium".
 	AllowOverride bool   `json:"allow_override" db:"allow_override"` // Session override allowed? Forced false for critical risk.
 
-	// Multi-tenancy
-	OrganizationID *string `json:"organization_id,omitempty" db:"organization_id"`
-	TenantID       string  `json:"tenant_id" db:"tenant_id"`
-	OrgID          string  `json:"org_id,omitempty" db:"org_id"` // RLS column
+	// Multi-tenancy.
+	//
+	// #3334: the legacy `organization_id` column and its field are gone
+	// (migration core/166). It was a second, differently-typed organisation
+	// key that no shipped migration ever populated, and since #3490 nothing
+	// selects on it. OrgID is the organisation key - for isolation AND for
+	// selection - and TenantID is attribution.
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	OrgID    string `json:"org_id,omitempty" db:"org_id"` // RLS column
 
 	// SegmentID is the ADR-060 (#2989 P3) governance-segment targeting key:
 	// the stable scim_groups.id (never display_name), scoped under OrgID
-	// above (never the deprecated OrganizationID/TenantID columns — #2791).
+	// above (never the retired organization_id column or TenantID - #2791,
+	// #3334).
 	// Orthogonal to Tier (Decision 2, locked): nil means "not segment-scoped"
 	// — the pre-P3, backward-compatible default, independent of which tier
 	// the policy is authored at. Populated only by GetEffective's segment
@@ -110,9 +116,10 @@ type PolicyOverride struct {
 	PolicyID   string     `json:"policy_id" db:"policy_id"`
 	PolicyType PolicyType `json:"policy_type" db:"policy_type"`
 
-	// Scope of the override
-	OrganizationID *string `json:"organization_id,omitempty" db:"organization_id"`
-	TenantID       *string `json:"tenant_id,omitempty" db:"tenant_id"`
+	// Scope of the override. #3334 retired the legacy organization_id column
+	// (migration core/166); OrgID below is the organisation key, and a NULL
+	// TenantID is what makes a row org-scoped rather than tenant-scoped.
+	TenantID *string `json:"tenant_id,omitempty" db:"tenant_id"`
 	// OrgID is the multi-tenant scope key for RLS. Mig 110 (v9 Phase 8
 	// PR-C2) added policy_overrides.org_id NOT NULL + switched the RLS
 	// policy from app.tenant_id to app.current_org_id; callers must
@@ -165,8 +172,15 @@ func (o *PolicyOverride) IsExpired() bool {
 }
 
 // IsOrgLevel returns true if this is an organization-level override.
+//
+// #3334: this used to read `OrganizationID != nil && TenantID == nil`, which
+// tested the retired legacy column. The two conjuncts were never independent
+// in practice - the schema's own valid_override_scope CHECK required an
+// organization_id exactly when tenant_id was NULL - so a NULL tenant IS the
+// org-scoped shape, and migration core/165 guarantees OrgID is populated on
+// every row besides.
 func (o *PolicyOverride) IsOrgLevel() bool {
-	return o.OrganizationID != nil && o.TenantID == nil
+	return o.TenantID == nil
 }
 
 // IsTenantLevel returns true if this is a tenant-level override.
@@ -263,9 +277,8 @@ type EffectiveDynamicPolicy struct {
 	Priority    int             `json:"priority"`
 	Enabled     bool            `json:"enabled"`
 
-	// Multi-tenancy
-	OrganizationID *string `json:"organization_id,omitempty"`
-	TenantID       string  `json:"tenant_id"`
+	// Multi-tenancy. #3334: organization_id retired with migration core/166.
+	TenantID string `json:"tenant_id"`
 
 	// Override information (if any)
 	HasOverride       bool            `json:"has_override"`
@@ -277,17 +290,24 @@ type EffectiveDynamicPolicy struct {
 
 // CreateStaticPolicyRequest is the request body for creating a static policy.
 type CreateStaticPolicyRequest struct {
-	Name           string     `json:"name"`
-	Description    string     `json:"description"`
-	Category       string     `json:"category"` // security-sqli, pii-global, etc.
-	Tier           PolicyTier `json:"tier"`     // Only 'organization' or 'tenant' allowed via API
-	OrganizationID string     `json:"organization_id,omitempty"`
-	Pattern        string     `json:"pattern"`
-	Action         string     `json:"action"`
-	Severity       string     `json:"severity"`
-	Priority       int        `json:"priority,omitempty"`
-	Enabled        bool       `json:"enabled"`
-	Tags           []string   `json:"tags,omitempty"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Category    string     `json:"category"` // security-sqli, pii-global, etc.
+	Tier        PolicyTier `json:"tier"`     // Only 'organization' or 'tenant' allowed via API
+	// #3334 (BREAKING): the organization_id request field is removed. It was
+	// the only writer the retired legacy column ever had, and migration
+	// core/166 drops that column. A policy's organisation is the AUTHENTICATED
+	// caller's, resolved from the licence - it was never something a request
+	// body should have been able to name, which is the sharper reason to drop
+	// the field rather than quietly ignore it. A body that still sends it is
+	// accepted and the value is ignored, exactly as any other unknown field
+	// is; nothing 400s on it.
+	Pattern  string   `json:"pattern"`
+	Action   string   `json:"action"`
+	Severity string   `json:"severity"`
+	Priority int      `json:"priority,omitempty"`
+	Enabled  bool     `json:"enabled"`
+	Tags     []string `json:"tags,omitempty"`
 }
 
 // UpdateStaticPolicyRequest is the request body for updating a static policy.

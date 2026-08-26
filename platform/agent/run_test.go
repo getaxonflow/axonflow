@@ -912,7 +912,7 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id", "segment_id",
+			"tenant_id", "org_id", "segment_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
 		}
@@ -921,12 +921,12 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 			WithArgs("test-tenant").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "", sqlmock.AnyArg()).
+			WithArgs("test-tenant", sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 				"policy-uuid", "custom_test123", "Block Pattern", "security-admin",
 				"blocked_pattern", "high",
 				"Blocks blocked_pattern", "block", "tenant", 50, true,
-				nil, "tenant_1", nil, nil,
+				"tenant_1", "test-tenant", nil,
 				"[]", "{}", 1,
 				time.Now(), time.Now(), "admin", "admin",
 			))
@@ -992,7 +992,7 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id", "segment_id",
+			"tenant_id", "org_id", "segment_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
 		}
@@ -1001,12 +1001,12 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 			WithArgs("test-tenant").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "", sqlmock.AnyArg()).
+			WithArgs("test-tenant", sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 				"policy-uuid", "custom_test456", "Warn Pattern", "security-admin",
 				"warn_pattern", "medium",
 				"Warns on pattern", "warn", "tenant", 50, true, // action is "warn" not "block"
-				nil, "tenant_1", nil, nil,
+				"tenant_1", "test-tenant", nil,
 				"[]", "{}", 1,
 				time.Now(), time.Now(), "admin", "admin",
 			))
@@ -1093,7 +1093,7 @@ func TestPolicyTestHandler_SegmentScopedPolicy_Blocks(t *testing.T) {
 		"seg-policy-1", "finance_ledger_block", "Finance Ledger Block", "sensitive-data",
 		"confidential_ledger", "critical",
 		"Segment-scoped block on the finance ledger keyword", "block", "tenant", 50, true,
-		nil, "test-tenant", nil, "finance",
+		"test-tenant", nil, "finance",
 		"[]", "{}", 1,
 		time.Now(), time.Now(), "admin", "admin",
 	)
@@ -2891,7 +2891,7 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id", "segment_id",
+			"tenant_id", "org_id", "segment_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
 		}
@@ -2899,13 +2899,16 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
 			WithArgs("test-tenant").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		// Decision 5 (#3490): pass A binds (scopeOrg, segments). The row it
+		// returns carries org_id = "test-tenant" for the same reason the GUC
+		// does - the org == tenant identity this fixture models.
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "", sqlmock.AnyArg()).
+			WithArgs("test-tenant", sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 				"policy-uuid", "custom_tenant123", "Block Secret Pattern", "security-admin",
 				"secret_pattern", "high",
 				"Block secret patterns", "block", "tenant", 50, true,
-				nil, "test-tenant", nil, nil,
+				"test-tenant", "test-tenant", nil,
 				"[]", "{}", 1,
 				time.Now(), time.Now(), "admin", "admin",
 			))
@@ -2954,7 +2957,7 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 		effCols := []string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id", "segment_id",
+			"tenant_id", "org_id", "segment_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by",
 		}
@@ -2963,12 +2966,12 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 			WithArgs("test-tenant").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("test-tenant", "", sqlmock.AnyArg()).
+			WithArgs("test-tenant", sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows(effCols).AddRow(
 				"policy-uuid", "custom_tenant456", "Block Secret Pattern", "security-admin",
 				"secret_pattern", "high",
 				"Block secret patterns", "block", "tenant", 50, true,
-				nil, "test-tenant", nil, nil,
+				"test-tenant", "test-tenant", nil,
 				"[]", "{}", 1,
 				time.Now(), time.Now(), "admin", "admin",
 			))

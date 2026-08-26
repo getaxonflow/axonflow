@@ -443,7 +443,7 @@ func TestPolicyTestHandler_SegmentsResolvedSignal(t *testing.T) {
 
 		// Zero-value fakeSegmentResolver: resolution SUCCEEDS (no err) with an
 		// empty Segments slice — the "legitimate org-only" outcome per
-		// resolveSegmentsForPolicy's contract, distinct from a resolver error.
+		// resolveUserSegments's contract, distinct from a resolver error.
 		fake := &fakeSegmentResolver{}
 		withFleetSegmentResolver(t, fake)
 

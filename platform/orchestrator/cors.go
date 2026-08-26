@@ -37,6 +37,13 @@ func resolveCORSOptions() cors.Options {
 	return policy.Apply(cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"*"},
+		// #1431. See the identical note on the agent: AllowedHeaders is about
+		// REQUEST headers, and a response header that is not CORS-safelisted
+		// is unreadable to a browser client unless it is exposed here. The
+		// tenant-policy family is stamped on this plane and the header is
+		// copied back through the agent's reverse proxy, so this is where its
+		// visibility is decided.
+		ExposedHeaders: []string{"Deprecation", "Link"},
 	})
 }
 

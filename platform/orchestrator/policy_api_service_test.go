@@ -72,7 +72,7 @@ func TestNewPolicyServiceWithRefresher_NilRefresher(t *testing.T) {
 
 func TestNewPolicyServiceWithLicense(t *testing.T) {
 	repo := &PolicyRepository{}
-	engine := &DynamicPolicyEngine{}
+	engine := &fakeSegmentLookuper{}
 	lc := NewEnvLicenseChecker()
 
 	service := NewPolicyServiceWithLicense(repo, engine, lc)
@@ -546,12 +546,29 @@ func sharedidentityResolvedIdentityWithSegment(segmentID string) sharedidentity.
 	}
 }
 
-func testPolicyEngineWithSegment(policyID, segmentID string) *DynamicPolicyEngine {
-	return &DynamicPolicyEngine{
-		policies: []DynamicPolicy{
-			{ID: policyID, Enabled: true, SegmentID: segmentID},
-		},
+// fakeSegmentLookuper is a minimal SegmentLookuper (policy_api_service.go)
+// test double.
+//
+// #3319: replaces the retired in-memory DynamicPolicyEngine this file used
+// to construct directly (`&DynamicPolicyEngine{policies: []DynamicPolicy{...}}`)
+// purely to exercise PolicyService.lookupPolicySegmentID / TestPolicy's
+// segment-awareness (#3296). PolicyService now depends on the narrow
+// SegmentLookuper interface, not a concrete engine type, so this double only
+// needs to answer LookupSegmentID.
+type fakeSegmentLookuper struct {
+	policyID  string
+	segmentID string
+}
+
+func (f *fakeSegmentLookuper) LookupSegmentID(policyID string) (string, bool) {
+	if policyID == f.policyID {
+		return f.segmentID, true
 	}
+	return "", false
+}
+
+func testPolicyEngineWithSegment(policyID, segmentID string) SegmentLookuper {
+	return &fakeSegmentLookuper{policyID: policyID, segmentID: segmentID}
 }
 
 func TestApplySegmentScopeToTestVerdict_NoVerifiedIdentity_DegradesObservably(t *testing.T) {

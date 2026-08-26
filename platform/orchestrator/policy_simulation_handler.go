@@ -115,6 +115,19 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 		return // resolveTenantOrFail already wrote a 401
 	}
 
+	// Decision 5 (#3490) R3 round 2: resolved through the shared refusal
+	// helper rather than read raw off the header, for two reasons. It trims,
+	// so " acme" does not scope the simulation to an organisation that matches
+	// nothing while CreatePolicy writes "acme"; and it refuses an unbound
+	// caller instead of silently simulating against the global baseline alone.
+	// A simulation that evaluated a different policy set from the live path
+	// would be worse than no simulation, and it looks convincing either way:
+	// the verdict and the policy count are both self-consistent.
+	orgID := resolveOrgOrFail(w, r, "policy/simulate")
+	if orgID == "" {
+		return // resolveOrgOrFail already wrote a 401
+	}
+
 	// Rate limit check
 	limit := h.tierChecker.MaxSimulationsPerDay()
 	allowed, current := h.rateLimiter.tryConsume(tenantID, limit)
@@ -158,29 +171,53 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 	// the same way, and for the same reason as the /policies/test fix in
 	// run.go (kept identical so the two evaluation endpoints cannot diverge):
 	// after P3b (ADR-060), EvaluateDynamicPolicies feeds User.OrgID and
-	// User.Email straight into resolveSegmentsForPolicy, which resolves
+	// User.Email straight into resolveUserSegments, which resolves
 	// against the LIVE SCIM directory of whichever org it is given. A
 	// body-sourced OrgID paired with a body-sourced Email would let a caller
 	// probe an arbitrary org's SCIM group membership one hypothetical email at
 	// a time and read the answer back out of Allowed/AppliedPolicies — a
 	// cross-org information-disclosure oracle. Email stays caller-supplied,
 	// same as the tenant fix above; OrgID does not.
+	//
+	// Decision 5 (#3490) R3 BLOCKER: Client.OrgID must be forced here too, and
+	// was not. ClientContext.OrgID is on the wire (`json:"org_id"`) and
+	// EvaluateDynamicPolicies now reads it FIRST, so a body carrying
+	// {"client":{"org_id":"<victim>"}} chose which organisation's policies were
+	// evaluated - over a gate cache loaded ALL-TENANTS through the BYPASSRLS
+	// pool. That is precisely the cross-org oracle the block above closed for
+	// the TENANT dimension; moving the selection key without moving the
+	// stamping re-opened it one dimension over. Verified by driving the real
+	// handler with a body org that differed from the header.
+	//
+	// It also bound the policy_metrics write: EvaluateDynamicPolicies derives
+	// its org scope from the same value, so the RLS WITH CHECK passed by
+	// construction and the caller wrote analytics rows attributed to the
+	// victim org.
 	orchReq.User.TenantID = tenantID
-	orchReq.User.OrgID = r.Header.Get("X-Org-ID")
+	orchReq.User.OrgID = orgID
 	orchReq.Client.TenantID = tenantID
+	orchReq.Client.OrgID = orgID
 	if orchReq.Client.ID == "" {
 		orchReq.Client.ID = tenantID
 	}
 
 	// Evaluate
 	result := h.engine.EvaluateDynamicPolicies(r.Context(), orchReq)
-	// Count only the policies visible to the CALLER's tenant. The raw
+	// Count only the policies visible to the CALLER's org. The raw
 	// ListActivePolicies cache is deployment-wide, so counting it leaked how
 	// many policies exist across ALL tenants in every simulate response.
 	// ADR-060 (#2989 P3b): nil segments — this is only a COUNT for usage
 	// info, not the policies themselves, and no verified per-user email is
-	// available here (resolveTenantOrFail resolves tenant only).
-	totalPolicies := len(h.engine.ListActivePoliciesForTenant(tenantID, nil))
+	// available here.
+	//
+	// Decision 5 (#3490): keyed on orchReq.Client.OrgID - the SAME field
+	// EvaluateDynamicPolicies selects by, not merely the same header. Both are
+	// forced from X-Org-ID above, but reading the other one would make this a
+	// claim about a value rather than about the set actually evaluated, and
+	// the two would silently diverge the moment a caller populated one and not
+	// the other. That is not hypothetical: it is exactly how the body-org hole
+	// above went unnoticed.
+	totalPolicies := len(h.engine.ListActivePoliciesForTenant(orchReq.Client.OrgID, nil))
 
 	// Build usage info
 	var usage *SimulationDailyUsage
@@ -215,7 +252,7 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 //
 // SEGMENT-BLIND (ADR-060 #2989 P3b, M4, #3239 round 2): unlike SimulatePolicies
 // above, this handler evaluates the named policy directly rather than going
-// through EvaluateDynamicPolicies/resolveSegmentsForPolicy, so it never
+// through EvaluateDynamicPolicies/resolveUserSegments, so it never
 // resolves or reports a caller's segment membership — a segment-scoped
 // policy's impact is reported identically to an unscoped one. Documented
 // now rather than fixed here (loud, not silent); the fix is tracked as
@@ -259,6 +296,16 @@ func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Re
 	if tenantID == "" {
 		return // resolveTenantOrFail already wrote a 401
 	}
+	// Decision 5 (#3490) R3 round 2: an impact report runs the same evaluation
+	// the live plane runs, and the policy set is chosen by org. Resolved through
+	// the shared refusal helper rather than a bare header read, so an unbound
+	// caller is refused instead of being quietly reported against the global
+	// baseline alone - a report computed over a different policy set from the
+	// live path is worse than no report.
+	orgID := resolveOrgOrFail(w, r, "policy/impact-report")
+	if orgID == "" {
+		return // resolveOrgOrFail already wrote a 401
+	}
 
 	if h.policyService == nil {
 		writeJSONError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Policy service not available")
@@ -277,7 +324,7 @@ func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Re
 			Context:     input.Context,
 		}
 
-		testResp, err := h.policyService.TestPolicy(r.Context(), tenantID, req.PolicyID, testReq)
+		testResp, err := h.policyService.TestPolicy(r.Context(), tenantID, orgID, req.PolicyID, testReq)
 		if err != nil {
 			log.Printf("[ImpactReport] Error testing input %d: %v", i, err)
 			writeJSONError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to evaluate input "+strconv.Itoa(i))
@@ -357,6 +404,16 @@ func (h *PolicySimulationHandler) DetectConflicts(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Decision 5 (#3490) R3 round 2: conflict detection lists the policies it
+	// compares, and that list is now org-keyed. Without this the report was
+	// built from whatever ListPolicies returned for an empty org - the global
+	// baseline - and reported "no conflicts" over a set that excluded every
+	// policy the organisation actually authored.
+	orgID := resolveOrgOrFail(w, r, "policy/conflicts")
+	if orgID == "" {
+		return // resolveOrgOrFail already wrote a 401
+	}
+
 	// Rate limit check
 	limit := h.tierChecker.MaxSimulationsPerDay()
 	allowed, current := h.rateLimiter.tryConsume(tenantID, limit)
@@ -374,7 +431,7 @@ func (h *PolicySimulationHandler) DetectConflicts(w http.ResponseWriter, r *http
 		}
 	}
 
-	resp, err := h.conflictService.DetectConflicts(r.Context(), tenantID, req.PolicyID)
+	resp, err := h.conflictService.DetectConflicts(r.Context(), tenantID, orgID, req.PolicyID)
 	if err != nil {
 		log.Printf("[DetectConflicts] Error: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to detect conflicts")

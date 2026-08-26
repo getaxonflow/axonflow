@@ -51,7 +51,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -66,36 +65,34 @@ import (
 
 const prC2RLSViolationCode = "42501"
 
-// prC2Setup spins a postgres:15 container, runs migs 1..111, provisions
-// app-role + admin login passwords. mig 110 (which PR-C2 ships) is now
-// inside approletest.Setup's range — the dedicated re-apply below is a
-// no-op after the bump but kept for legacy compat. Returns an env handle
-// whose DSN trio is ready to use.
+// prC2Setup spins a postgres:15 container, runs the FULL core migration
+// chain, and provisions app-role + admin login passwords. Returns an env
+// handle whose DSN trio is ready to use.
+//
+// DO NOT RE-APPLY migrations 109/110 HERE. This fixture used to hand-apply
+// them after approletest.Setup, from a time when Setup was pinned at
+// 001..108. Once Setup became unbounded, both were already applied by the
+// chain and the re-apply was dead weight - its own comment said so ("a
+// no-op after the bump but kept for legacy compat"). It stopped being a
+// no-op the moment a LATER migration superseded what 110 reads: core/166
+// drops policy_overrides.organization_id, while 110's backfill selects
+// `po.organization_id` (110:61-62, 83-85), so the replay fails with
+//
+//	pq: column po.organization_id does not exist
+//
+// A fixture that replays an early migration on top of a chain that has
+// already moved past it is pinned to a schema that no longer exists. The
+// migrations this test depends on are applied by approletest.Setup.
 func prC2Setup(t *testing.T) *approletest.Env {
 	t.Helper()
 	approletest.SkipUnlessEnabled(t)
 	env := approletest.Setup(t, "../../migrations/core")
 
-	// Apply mig 109 (PR-A helpers — needed because mig 110's tests of
-	// policy_overrides rely on the SECURITY DEFINER ecosystem already
-	// being in place) + mig 110 (PR-C2's policy_overrides normalization).
 	masterDB, err := sql.Open("postgres", env.MasterDSN)
 	if err != nil {
 		t.Fatalf("open masterDSN: %v", err)
 	}
 	t.Cleanup(func() { _ = masterDB.Close() })
-	for _, mig := range []string{
-		"../../migrations/core/109_v9_phase8_pr_a_security_definer_helpers.sql",
-		"../../migrations/core/110_v9_phase8_pr_c2_policy_overrides_org_id.sql",
-	} {
-		body, err := os.ReadFile(mig)
-		if err != nil {
-			t.Fatalf("read %s: %v", mig, err)
-		}
-		if _, err := masterDB.Exec(string(body)); err != nil {
-			t.Fatalf("apply %s: %v", mig, err)
-		}
-	}
 
 	// Schema fixups. connector_configs is enterprise-mode-only (created by
 	// enterprise migrations, not core/) — mig 107 gates its FORCE step on

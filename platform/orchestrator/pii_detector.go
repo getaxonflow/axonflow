@@ -1035,7 +1035,7 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 	result := engine.EvaluateResponse(ctx, content, sharedpolicy.EvalOptions{
 		TenantID:        tenantID,
 		OrgID:           orgID,
-		OrganizationID:  sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3
+		OrgScope:        sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3
 		Categories:      piiCats,
 		SkipCategories:  gwCfg.SkipCategories,
 		ActionOverrides: gwCfg.BuildActionOverrides(),

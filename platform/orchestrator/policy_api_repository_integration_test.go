@@ -73,11 +73,15 @@ func TestPolicyRepository_Integration_Create(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "block", Config: map[string]interface{}{"message": "Blocked"}},
 		},
-		Priority:  100,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 100,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 
 	err := repo.Create(ctx, policy)
@@ -120,11 +124,15 @@ func TestPolicyRepository_Integration_GetByID(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "log", Config: map[string]interface{}{"level": "info"}},
 		},
-		Priority:  50,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 50,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 
 	err := repo.Create(ctx, policy)
@@ -133,7 +141,7 @@ func TestPolicyRepository_Integration_GetByID(t *testing.T) {
 	}
 
 	// Retrieve the policy
-	retrieved, err := repo.GetByID(ctx, tenantID, policy.ID)
+	retrieved, err := repo.GetByID(ctx, tenantID, tenantID, policy.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -160,7 +168,7 @@ func TestPolicyRepository_Integration_GetByID_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Try to get a non-existent policy
-	retrieved, err := repo.GetByID(ctx, "non-existent-tenant", "non-existent-policy-id")
+	retrieved, err := repo.GetByID(ctx, "non-existent-tenant", "non-existent-tenant", "non-existent-policy-id")
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -191,11 +199,14 @@ func TestPolicyRepository_Integration_List(t *testing.T) {
 			Actions: []PolicyAction{
 				{Type: "block", Config: map[string]interface{}{}},
 			},
-			Priority:  i * 10,
-			Enabled:   i%2 == 0, // Alternate enabled/disabled
-			TenantID:  tenantID,
-			CreatedBy: "test-user",
-			UpdatedBy: "test-user",
+			Priority: i * 10,
+			Enabled:  i%2 == 0, // Alternate enabled/disabled
+			TenantID: tenantID,
+			// #3490: the authenticated org. Create refuses an empty one, because
+			// org_id is what selects the policy.
+			OrganizationID: tenantID,
+			CreatedBy:      "test-user",
+			UpdatedBy:      "test-user",
 		}
 		if err := repo.Create(ctx, policy); err != nil {
 			t.Fatalf("Create() error = %v", err)
@@ -207,7 +218,7 @@ func TestPolicyRepository_Integration_List(t *testing.T) {
 		Page:     1,
 		PageSize: 10,
 	}
-	policies, total, err := repo.List(ctx, tenantID, params)
+	policies, total, err := repo.List(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -243,11 +254,14 @@ func TestPolicyRepository_Integration_List_WithFilters(t *testing.T) {
 			Actions: []PolicyAction{
 				{Type: "block", Config: map[string]interface{}{}},
 			},
-			Priority:  i * 10,
-			Enabled:   true,
-			TenantID:  tenantID,
-			CreatedBy: "test-user",
-			UpdatedBy: "test-user",
+			Priority: i * 10,
+			Enabled:  true,
+			TenantID: tenantID,
+			// #3490: the authenticated org. Create refuses an empty one, because
+			// org_id is what selects the policy.
+			OrganizationID: tenantID,
+			CreatedBy:      "test-user",
+			UpdatedBy:      "test-user",
 		}
 		if err := repo.Create(ctx, policy); err != nil {
 			t.Fatalf("Create() error = %v", err)
@@ -260,7 +274,7 @@ func TestPolicyRepository_Integration_List_WithFilters(t *testing.T) {
 		Page:     1,
 		PageSize: 10,
 	}
-	policies, total, err := repo.List(ctx, tenantID, params)
+	policies, total, err := repo.List(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -298,11 +312,14 @@ func TestPolicyRepository_Integration_List_WithEnabledFilter(t *testing.T) {
 			Actions: []PolicyAction{
 				{Type: "block", Config: map[string]interface{}{}},
 			},
-			Priority:  i * 10,
-			Enabled:   i < 2, // First 2 enabled, last 2 disabled
-			TenantID:  tenantID,
-			CreatedBy: "test-user",
-			UpdatedBy: "test-user",
+			Priority: i * 10,
+			Enabled:  i < 2, // First 2 enabled, last 2 disabled
+			TenantID: tenantID,
+			// #3490: the authenticated org. Create refuses an empty one, because
+			// org_id is what selects the policy.
+			OrganizationID: tenantID,
+			CreatedBy:      "test-user",
+			UpdatedBy:      "test-user",
 		}
 		if err := repo.Create(ctx, policy); err != nil {
 			t.Fatalf("Create() error = %v", err)
@@ -316,7 +333,7 @@ func TestPolicyRepository_Integration_List_WithEnabledFilter(t *testing.T) {
 		Page:     1,
 		PageSize: 10,
 	}
-	policies, total, err := repo.List(ctx, tenantID, params)
+	policies, total, err := repo.List(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -354,11 +371,14 @@ func TestPolicyRepository_Integration_List_WithSearch(t *testing.T) {
 			Actions: []PolicyAction{
 				{Type: "block", Config: map[string]interface{}{}},
 			},
-			Priority:  i * 10,
-			Enabled:   true,
-			TenantID:  tenantID,
-			CreatedBy: "test-user",
-			UpdatedBy: "test-user",
+			Priority: i * 10,
+			Enabled:  true,
+			TenantID: tenantID,
+			// #3490: the authenticated org. Create refuses an empty one, because
+			// org_id is what selects the policy.
+			OrganizationID: tenantID,
+			CreatedBy:      "test-user",
+			UpdatedBy:      "test-user",
 		}
 		if err := repo.Create(ctx, policy); err != nil {
 			t.Fatalf("Create() error = %v", err)
@@ -371,7 +391,7 @@ func TestPolicyRepository_Integration_List_WithSearch(t *testing.T) {
 		Page:     1,
 		PageSize: 10,
 	}
-	policies, total, err := repo.List(ctx, tenantID, params)
+	policies, total, err := repo.List(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -406,11 +426,14 @@ func TestPolicyRepository_Integration_List_Pagination(t *testing.T) {
 			Actions: []PolicyAction{
 				{Type: "block", Config: map[string]interface{}{}},
 			},
-			Priority:  i,
-			Enabled:   true,
-			TenantID:  tenantID,
-			CreatedBy: "test-user",
-			UpdatedBy: "test-user",
+			Priority: i,
+			Enabled:  true,
+			TenantID: tenantID,
+			// #3490: the authenticated org. Create refuses an empty one, because
+			// org_id is what selects the policy.
+			OrganizationID: tenantID,
+			CreatedBy:      "test-user",
+			UpdatedBy:      "test-user",
 		}
 		if err := repo.Create(ctx, policy); err != nil {
 			t.Fatalf("Create() error = %v", err)
@@ -422,7 +445,7 @@ func TestPolicyRepository_Integration_List_Pagination(t *testing.T) {
 		Page:     1,
 		PageSize: 5,
 	}
-	policies, total, err := repo.List(ctx, tenantID, params)
+	policies, total, err := repo.List(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -436,7 +459,7 @@ func TestPolicyRepository_Integration_List_Pagination(t *testing.T) {
 
 	// Get second page
 	params.Page = 2
-	policies2, _, err := repo.List(ctx, tenantID, params)
+	policies2, _, err := repo.List(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -466,11 +489,15 @@ func TestPolicyRepository_Integration_Update(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "log", Config: map[string]interface{}{}},
 		},
-		Priority:  50,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 50,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 
 	err := repo.Create(ctx, policy)
@@ -488,7 +515,7 @@ func TestPolicyRepository_Integration_Update(t *testing.T) {
 		Priority:    &newPriority,
 	}
 
-	updated, err := repo.Update(ctx, tenantID, policy.ID, updateReq, "updater-user")
+	updated, err := repo.Update(ctx, tenantID, tenantID, policy.ID, updateReq, "updater-user")
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -522,7 +549,7 @@ func TestPolicyRepository_Integration_Update_NotFound(t *testing.T) {
 		Name: &newName,
 	}
 
-	updated, err := repo.Update(ctx, "non-existent-tenant", "non-existent-policy", updateReq, "user")
+	updated, err := repo.Update(ctx, "non-existent-tenant", "non-existent-tenant", "non-existent-policy", updateReq, "user")
 	if err != nil {
 		t.Fatalf("Update() unexpected error = %v", err)
 	}
@@ -552,11 +579,15 @@ func TestPolicyRepository_Integration_Delete(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "block", Config: map[string]interface{}{}},
 		},
-		Priority:  100,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 100,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 
 	err := repo.Create(ctx, policy)
@@ -565,13 +596,13 @@ func TestPolicyRepository_Integration_Delete(t *testing.T) {
 	}
 
 	// Delete the policy
-	err = repo.Delete(ctx, tenantID, policy.ID, "deleter-user")
+	err = repo.Delete(ctx, tenantID, tenantID, policy.ID, "deleter-user")
 	if err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
 	// Verify it's deleted
-	retrieved, err := repo.GetByID(ctx, tenantID, policy.ID)
+	retrieved, err := repo.GetByID(ctx, tenantID, tenantID, policy.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -601,11 +632,15 @@ func TestPolicyRepository_Integration_GetVersions(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "block", Config: map[string]interface{}{}},
 		},
-		Priority:  100,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 100,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 
 	err := repo.Create(ctx, policy)
@@ -615,13 +650,13 @@ func TestPolicyRepository_Integration_GetVersions(t *testing.T) {
 
 	// Update it a couple times
 	newName := "Updated Name v2"
-	_, err = repo.Update(ctx, tenantID, policy.ID, &UpdatePolicyRequest{Name: &newName}, "user")
+	_, err = repo.Update(ctx, tenantID, tenantID, policy.ID, &UpdatePolicyRequest{Name: &newName}, "user")
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
 	newName = "Updated Name v3"
-	_, err = repo.Update(ctx, tenantID, policy.ID, &UpdatePolicyRequest{Name: &newName}, "user")
+	_, err = repo.Update(ctx, tenantID, tenantID, policy.ID, &UpdatePolicyRequest{Name: &newName}, "user")
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -666,11 +701,14 @@ func TestPolicyRepository_Integration_ExportAll(t *testing.T) {
 			Actions: []PolicyAction{
 				{Type: "block", Config: map[string]interface{}{}},
 			},
-			Priority:  i * 10,
-			Enabled:   true,
-			TenantID:  tenantID,
-			CreatedBy: "test-user",
-			UpdatedBy: "test-user",
+			Priority: i * 10,
+			Enabled:  true,
+			TenantID: tenantID,
+			// #3490: the authenticated org. Create refuses an empty one, because
+			// org_id is what selects the policy.
+			OrganizationID: tenantID,
+			CreatedBy:      "test-user",
+			UpdatedBy:      "test-user",
 		}
 		if err := repo.Create(ctx, policy); err != nil {
 			t.Fatalf("Create() error = %v", err)
@@ -678,7 +716,7 @@ func TestPolicyRepository_Integration_ExportAll(t *testing.T) {
 	}
 
 	// Export all
-	policies, err := repo.ExportAll(ctx, tenantID)
+	policies, err := repo.ExportAll(ctx, tenantID, tenantID)
 	if err != nil {
 		t.Fatalf("ExportAll() error = %v", err)
 	}
@@ -728,7 +766,7 @@ func TestPolicyRepository_Integration_ImportBulk(t *testing.T) {
 		},
 	}
 
-	result, err := repo.ImportBulk(ctx, tenantID, policies, "skip", "import-user")
+	result, err := repo.ImportBulk(ctx, tenantID, tenantID, policies, "skip", "import-user")
 	if err != nil {
 		t.Fatalf("ImportBulk() error = %v", err)
 	}
@@ -765,11 +803,15 @@ func TestPolicyRepository_Integration_ImportBulk_SkipExisting(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "block", Config: map[string]interface{}{}},
 		},
-		Priority:  10,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 10,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 	if err := repo.Create(ctx, policy); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -792,7 +834,7 @@ func TestPolicyRepository_Integration_ImportBulk_SkipExisting(t *testing.T) {
 		},
 	}
 
-	result, err := repo.ImportBulk(ctx, tenantID, policies, "skip", "import-user")
+	result, err := repo.ImportBulk(ctx, tenantID, tenantID, policies, "skip", "import-user")
 	if err != nil {
 		t.Fatalf("ImportBulk() error = %v", err)
 	}
@@ -826,11 +868,15 @@ func TestPolicyRepository_Integration_ImportBulk_OverwriteExisting(t *testing.T)
 		Actions: []PolicyAction{
 			{Type: "log", Config: map[string]interface{}{}},
 		},
-		Priority:  10,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 10,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 	if err := repo.Create(ctx, policy); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -853,7 +899,7 @@ func TestPolicyRepository_Integration_ImportBulk_OverwriteExisting(t *testing.T)
 		},
 	}
 
-	result, err := repo.ImportBulk(ctx, tenantID, policies, "overwrite", "import-user")
+	result, err := repo.ImportBulk(ctx, tenantID, tenantID, policies, "overwrite", "import-user")
 	if err != nil {
 		t.Fatalf("ImportBulk() error = %v", err)
 	}
@@ -863,7 +909,7 @@ func TestPolicyRepository_Integration_ImportBulk_OverwriteExisting(t *testing.T)
 	}
 
 	// Verify the policy was updated
-	retrieved, err := repo.GetByID(ctx, tenantID, policy.ID)
+	retrieved, err := repo.GetByID(ctx, tenantID, tenantID, policy.ID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
@@ -896,11 +942,15 @@ func TestPolicyRepository_Integration_ImportBulk_ErrorMode(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "block", Config: map[string]interface{}{}},
 		},
-		Priority:  10,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 10,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 	if err := repo.Create(ctx, policy); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -923,7 +973,7 @@ func TestPolicyRepository_Integration_ImportBulk_ErrorMode(t *testing.T) {
 		},
 	}
 
-	result, err := repo.ImportBulk(ctx, tenantID, policies, "error", "import-user")
+	result, err := repo.ImportBulk(ctx, tenantID, tenantID, policies, "error", "import-user")
 	if err != nil {
 		t.Fatalf("ImportBulk() unexpected error = %v", err)
 	}
@@ -954,11 +1004,15 @@ func TestPolicyRepository_Integration_FindByName(t *testing.T) {
 		Actions: []PolicyAction{
 			{Type: "block", Config: map[string]interface{}{}},
 		},
-		Priority:  100,
-		Enabled:   true,
-		TenantID:  tenantID,
-		CreatedBy: "test-user",
-		UpdatedBy: "test-user",
+		Priority: 100,
+		Enabled:  true,
+		TenantID: tenantID,
+		// #3490: the authenticated org. Create refuses an empty one, because
+		// org_id is what selects the policy and a tenant-derived value would
+		// stamp a row nobody is governed by.
+		OrganizationID: tenantID,
+		CreatedBy:      "test-user",
+		UpdatedBy:      "test-user",
 	}
 	if err := repo.Create(ctx, policy); err != nil {
 		t.Fatalf("Create() error = %v", err)

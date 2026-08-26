@@ -35,7 +35,7 @@ var errAssertSegmentResolutionFailed = errors.New("segment query failed (test)")
 // generateTestJWTWithOrgEmail mirrors generateTestJWT (same signing
 // approach, same testJWTSecret) but additionally sets the "org_id" and
 // "email" claims validateUserToken reads (run.go) — generateTestJWT itself
-// carries neither, so resolveSegmentsForPolicy would otherwise be called
+// carries neither, so resolveUserSegments would otherwise be called
 // with an empty email/an org_id that merely falls back to tenantID.
 func generateTestJWTWithOrgEmail(userID interface{}, tenantID, orgID, email string, permissions []string, role string) string {
 	jwtSecret = []byte(testJWTSecret)
@@ -209,7 +209,7 @@ func TestClientRequestHandler_SegmentOnlyPolicy_BlocksWhenTierWouldAllow(t *test
 		"seg-policy-1", "finance_ledger_block", "Finance Ledger Block", "sensitive-data",
 		"confidential_ledger", "critical",
 		"Segment-scoped block on the finance ledger keyword", "block", "tenant", 50, true,
-		nil, tenantID, nil, "finance",
+		tenantID, nil, "finance",
 		"[]", "{}", 1,
 		now, now, "admin", "admin",
 	)

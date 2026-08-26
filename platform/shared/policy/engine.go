@@ -111,7 +111,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	}
 
 	// Load policies from cache or database
-	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrganizationID, PhaseRequest)
+	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrgScope, PhaseRequest)
 	if err != nil {
 		e.recordLoadError(err)
 		// #2862: fail CLOSED on the request plane, symmetric with #2820's
@@ -290,7 +290,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	}
 
 	// Load policies from cache or database
-	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrganizationID, PhaseResponse)
+	policies, err := e.loader.GetPolicies(ctx, opts.TenantID, opts.OrgScope, PhaseResponse)
 	if err != nil {
 		e.recordLoadError(err)
 		// #2820: mark couldn't-scan regardless of the degradation mode so a
@@ -538,6 +538,55 @@ func (e *UnifiedPolicyEngine) PoliciesLoadable(ctx context.Context, tenantID str
 	}
 	_, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
 	return err
+}
+
+// HasSegmentScopedPolicies reports whether the effective policy set for
+// (tenant, org, phase) contains at least one ENABLED segment-scoped row
+// (SegmentID != "", ADR-060 #2989/#3266) - that is, whether the verdict for
+// this (tenant, org, phase) can depend on the caller's governance-segment
+// membership at all.
+//
+// It exists for the fail-closed question filterBySegments cannot answer on
+// its own: a caller whose segment membership is INDETERMINATE (no validated
+// per-user identity to resolve against) must not be evaluated against a
+// silently narrowed policy set, because a nil Segments excludes every
+// segment-scoped row (AppliesToSegments) and that exclusion is
+// indistinguishable from "resolved to no segments". A plane that cannot
+// determine the caller's segments must therefore DENY when this returns
+// true, and may proceed org-only when it returns false. #3430 wires exactly
+// that on the agent MCP-server JSON-RPC plane
+// (resolveMCPServerSegmentsForPolicy, platform/agent/mcp_identity.go).
+//
+// Two returns, deliberately: ok == false means the policy set could not be
+// LOADED, so the answer is unknown and the caller MUST fail closed - the
+// same trap PoliciesLoadable exists for above (a single bool would collapse
+// "no segment-scoped rows" and "could not tell" into the fail-OPEN answer).
+//
+// Deliberately conservative on ONE axis: it inspects the whole enabled
+// policy set for the phase, BEFORE the category / tool-capability filters a
+// given caller's evaluation would additionally apply. A segment-scoped row
+// in a category this particular plane does not evaluate therefore still
+// answers true. That direction is the safe one (a spurious deny, never a
+// spurious allow), and segment-scoped rows are deliberately operator-created
+// and rare; modelling each caller's category set here would duplicate the
+// evaluation path's filters and drift from them.
+//
+// Cache-backed (the same loader cache the subsequent EvaluateRequest /
+// EvaluateResponse call hits), so it warms rather than duplicates that load.
+func (e *UnifiedPolicyEngine) HasSegmentScopedPolicies(ctx context.Context, tenantID string, orgID *string, phase Phase) (present bool, ok bool) {
+	if tenantID == "" {
+		tenantID = e.config.DefaultTenant
+	}
+	policies, err := e.loader.GetPolicies(ctx, tenantID, orgID, phase)
+	if err != nil {
+		return false, false
+	}
+	for i := range policies {
+		if policies[i].Enabled && policies[i].SegmentID != "" {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // InvalidateCache forces a cache refresh for a tenant.

@@ -120,6 +120,7 @@ func TestClientRequestHandler_BudgetDeny_WritesCanonicalAgentAudit(t *testing.T)
 			sqlmock.AnyArg(),    // correlation_id
 			sqlmock.AnyArg(),    // redacted_fields
 			nil,                 // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(),    // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

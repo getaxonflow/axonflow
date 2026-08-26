@@ -22,6 +22,7 @@ import (
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
+	sharedpolicy "axonflow/platform/shared/policy"
 
 	"axonflow/platform/shared/serviceauth"
 	"github.com/google/uuid"
@@ -181,14 +182,6 @@ type mcpSession struct {
 	userEmail string // per-user identity from X-User-Email header; distinct from userID so Plugin Batch 1 endpoints scope by real email, not synthetic "0".
 	userRole  string
 	clientID  string
-
-	// userSegments carries the #2989 (ADR-060 P2) resolved governance-segment
-	// set for this session's validated identity (mirrors auth.Segments at
-	// session-create time — see authenticateMCPServerRequest). nil for every
-	// session without a validated per-user token (community, legacy
-	// shared-credential fleet). Observability-only in this phase: NOT
-	// consumed for any policy decision, NOT written to the audit row.
-	userSegments []sharedidentity.Segment
 
 	// clientSessionID is the AI-tool session id the caller forwards via the
 	// X-Session-Id header (Claude Code / Desktop session_id) — issue #2753.
@@ -721,6 +714,11 @@ func handleMCPPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
+	// #3424: the authz refusals below are governed denies that land in the
+	// portal decisions feed, so they carry the same measured duration as every
+	// other MCP-plane row rather than an unexplained blank.
+	startTime := time.Now()
+
 	sessionID := r.Header.Get(mcpSessionHeaderKey)
 	if sessionID == "" {
 		http.Error(w, "Bad Request: missing session ID", http.StatusBadRequest)
@@ -741,7 +739,8 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 		// against an existing session is a denied attempt. Record it against the
 		// TARGET session's tenant (the resource being protected) for security audit.
 		auditMCPServerDeny(r.Context(), session, "mcp_session_delete", "delete_session",
-			mcpVerdictBlocked, "unauthenticated session delete attempt", []string{"unauthenticated"})
+			mcpVerdictBlocked, "unauthenticated session delete attempt", []string{"unauthenticated"},
+			time.Since(startTime).Milliseconds())
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -750,7 +749,8 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 		// an authz refusal that previously left no audit trail. Record the "blocked"
 		// decision against the target session's tenant.
 		auditMCPServerDeny(r.Context(), session, "mcp_session_delete", "delete_session",
-			mcpVerdictBlocked, "cross-client session delete denied", []string{"session_authz"})
+			mcpVerdictBlocked, "cross-client session delete denied", []string{"session_authz"},
+			time.Since(startTime).Milliseconds())
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -792,11 +792,9 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 	// handle.
 	var sessClient *Client
 	var sessAuthKind AuthKind
-	var sessSegments []sharedidentity.Segment
 	if auth != nil {
 		sessClient = auth.Client
 		sessAuthKind = auth.Kind
-		sessSegments = auth.Segments // #2989 (ADR-060 P2), observability-only
 	}
 	session := &mcpSession{
 		id:              sessionID,
@@ -807,7 +805,6 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		userID:          userID,
 		userEmail:       userEmail,
 		userRole:        userRole,
-		userSegments:    sessSegments,
 		clientID:        clientID,
 		tier:            tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
 		client:          sessClient,
@@ -904,7 +901,11 @@ func handleMCPPing(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) 
 // MCPSRV-SESSIONDELETE-AUTHZ). Identity comes from the authenticated session, so
 // the row lands in that tenant's portal decisions feed. Best-effort; mints its own
 // decision_id. query is a non-PII descriptor — no tool arguments are recorded.
-func auditMCPServerDeny(ctx context.Context, session *mcpSession, requestType, toolName, verdict, reason string, policyIDs []string) {
+// latencyMs (#3424) is the calling handler's elapsed time at the moment of the
+// refusal. Every call site is a JSON-RPC deny reached by agent-local work only
+// (auth, daily-cap, tier gate, or a governance tool that evaluates in-process),
+// so the span is enforcement duration with no proxy hop inside it.
+func auditMCPServerDeny(ctx context.Context, session *mcpSession, requestType, toolName, verdict, reason string, policyIDs []string, latencyMs int64) {
 	if session == nil {
 		return
 	}
@@ -913,7 +914,7 @@ func auditMCPServerDeny(ctx context.Context, session *mcpSession, requestType, t
 		session.tenantID, session.orgID, session.clientID, session.userEmail,
 		session.userID, session.userRole,
 		requestType, fmt.Sprintf("mcp tools/call: %s", toolName), "",
-		verdict, policyIDs, []string{reason}, nil, "", nil)
+		verdict, policyIDs, []string{reason}, nil, "", nil, latencyMs)
 }
 
 func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
@@ -937,7 +938,8 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 			[]string{"authentication required for tools/call"},
 			nil,
 			"",
-			nil)
+			nil,
+			time.Since(startTime).Milliseconds())
 		return
 	}
 
@@ -978,7 +980,8 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	if enforceMCPSessionDailyCap(w, req, session) {
 		// #2641 (MCPSRV-DAILYCAP-DENY): the daily-cap 429 was portal-invisible.
 		auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
-			mcpVerdictBlocked, "daily usage cap exceeded", []string{"daily_cap"})
+			mcpVerdictBlocked, "daily usage cap exceeded", []string{"daily_cap"},
+			time.Since(startTime).Milliseconds())
 		return
 	}
 
@@ -999,7 +1002,8 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 				// #2641 (MCPSRV-TIERGATE-DENY): the tier/usage-limit rejection was
 				// portal-invisible.
 				auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
-					mcpVerdictBlocked, "tier/usage gate denied tool access", []string{"tier_gate"})
+					mcpVerdictBlocked, "tier/usage gate denied tool access", []string{"tier_gate"},
+					time.Since(startTime).Milliseconds())
 				return
 			}
 			break
@@ -1068,7 +1072,11 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		if params.Name == "check_policy" || params.Name == "check_output" {
 			auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
 				mcpVerdictError, "governance tool error (fail-closed): "+toolErr.Error(),
-				[]string{"tool_error"})
+				[]string{"tool_error"},
+				// Scoped to check_policy / check_output, both of which evaluate
+				// in-process (mcpToolCheckPolicy / mcpToolCheckOutput), so this
+				// elapsed time contains no proxy hop.
+				time.Since(startTime).Milliseconds())
 		}
 		writeJSONRPCResult(w, req.ID, mcpToolCallResult{
 			Content: []mcpContent{{Type: "text", Text: toolErr.Error()}},
@@ -1324,14 +1332,46 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 			// "@"; ResolveToken checks nothing), so vid.Email CAN be a reserved
 			// spelling and CAN reach the shared-identity refusal.
 			idInputs.tokenResolvedIdentity = true
-			// #2989 (ADR-060 P2): resolve + thread governance Segments onto
-			// the returned AuthResult now that identity is VALIDATED (never
-			// before — see resolveUserSegments's Real-World-Path doc).
-			// Covers both Path A (HS256) and Path B (OIDC) uniformly, since
-			// both reach this one success branch. Observability-only in
-			// this phase: not consumed for policy, not written to audit.
-			auth.Segments = resolveUserSegments(r.Context(), auth.OrgID, vid.Email)
+			// #2989 (ADR-060 P2) / #3473: resolve governance segments now
+			// that identity is VALIDATED (never before — see
+			// resolveUserSegments's Real-World-Path doc), covering both
+			// Path A (HS256) and Path B (OIDC) uniformly since both reach
+			// this one success branch. Nothing on this plane consumes the
+			// return value anymore (mcpSession.userSegments and
+			// AuthResult.Segments were deleted as write-only fields, #3473)
+			// — this call exists purely so the resolution outcome stays
+			// OBSERVABLE (segmentResolutionTotal{phase="session_auth"},
+			// segment_resolution_metrics.go), never so a caller reads a
+			// session-scoped segment set back. check_policy/check_output
+			// still enforce segments via a SEPARATE, independently
+			// fail-closed resolution performed fresh at each tools/call
+			// (resolveMCPServerSegmentsForPolicy, mcp_identity.go) — never
+			// by consuming this call's result.
+			_, _ = resolveUserSegmentsForObservability(r.Context(), auth.OrgID, vid.Email)
 			return auth.TenantID, auth.OrgID, vid.Email, vid.Email, vid.Role, auth.ClientID, resolvedTier, auth, idInputs, nil
+		}
+		// #3476: reaching here with vid == nil means NO VALIDATED per-user
+		// identity was produced, and the caller is about to fall through to
+		// the pseudo-identity/header path below. When the org's posture
+		// requires a user token, reject at authentication instead — that
+		// fallback path IS the identity-suppression route this flag exists to
+		// close.
+		//
+		// The condition is `vid == nil`, deliberately NOT `perUserToken == ""`.
+		// ResolveToken returns (nil, nil) for TWO distinct inputs: no token
+		// presented at all, and a token presented in a deployment where no
+		// validator is registered (the #2932 misconfig, fail-safe: the token
+		// is ignored → least-privilege). Gating only on the empty-token case
+		// would leave the second one open, so an org that opted in could still
+		// be suppressed by sending any junk string on a deployment whose
+		// validators failed to register — a plane that LOOKS like it enforces
+		// while it does not. Rejecting both is what makes "suppression is
+		// impossible" true by construction rather than by configuration.
+		//
+		// A presented-but-REJECTED token never reaches here; it already
+		// returned above via resolveErr, keeping that cause distinct.
+		if vid == nil && ResolveRequireUserToken(r.Context(), auth.OrgID) {
+			return "", "", "", "", "", "", "", nil, idInputs, fmt.Errorf("user token is required for this organization")
 		}
 	}
 
@@ -1467,11 +1507,9 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 	}
 	var sessClient *Client
 	var sessAuthKind AuthKind
-	var sessSegments []sharedidentity.Segment
 	if auth != nil {
 		sessClient = auth.Client
 		sessAuthKind = auth.Kind
-		sessSegments = auth.Segments // #2989 (ADR-060 P2), observability-only
 	}
 	return &mcpSession{
 		tenantID:        tenantID,
@@ -1479,7 +1517,6 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		userID:          userID,
 		userEmail:       userEmail,
 		userRole:        userRole,
-		userSegments:    sessSegments,
 		clientID:        clientID,
 		tier:            tier,
 		client:          sessClient,
@@ -1511,6 +1548,20 @@ func getSessionByID(id string) *mcpSession {
 // to render a useful block message; without them every plugin block comes
 // back as a terse 'blocked' string.
 func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	// #3424: this tool evaluates policy inside the Agent (evaluateInputPolicies,
+	// no orchestrator proxy hop), so wall clock from here to each terminal
+	// verdict IS this decision's enforcement duration -- the same quantity
+	// /api/v1/decide records. Before this, its ALLOW rows were measured (they
+	// route through recordDecideDecision) while the blocks and redactions
+	// beside them, which do MORE work, recorded nothing.
+	startTime := time.Now()
+	// #3430 R3: an absent session is unreachable from a served request
+	// (requireMCPAuth refuses before dispatch) but every line below reads
+	// session fields, and the segment gate must never be handed one either.
+	// Refuse explicitly rather than panic if that invariant ever changes.
+	if session == nil {
+		return nil, fmt.Errorf("unauthenticated MCP session")
+	}
 	connectorType, _ := args["connector_type"].(string)
 	tool, _ := args["tool"].(string) // #2904: caller-sent tool identity, distinct from connector_type/server
 	statement, _ := args["statement"].(string)
@@ -1559,9 +1610,10 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			[]string{readOnlyPosturePolicyID},
 			[]string{reason},
 			nil,
-			"",                  // MCP-server session has no inbound traceparent → singleton
-			nil,                 // #3365: guard id resolves via the builtin table
-			connectorType, tool) // #2904: tool_server, tool_name
+			"",                                   // MCP-server session has no inbound traceparent → singleton
+			nil,                                  // #3365: guard id resolves via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
+			connectorType, tool)                  // #2904: tool_server, tool_name
 		return map[string]interface{}{
 			"allowed":           false,
 			"decision_id":       decisionID,
@@ -1579,7 +1631,59 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
 	// #2581: per-org posture. orgID is the auth-derived org for this request; an
 	// org with no override row resolves to the deployment-global config.
+	//
+	// Resolved BEFORE the segment gate below (it was resolved after, pre-R3)
+	// because the gate needs to know whether the static pass is going to run
+	// for this request at all: if it is not, no segment-scoped row can fire and
+	// an indeterminate segment set must not deny. This expression is the exact
+	// gate evaluateInputPolicies applies to its own static pass; the pairing is
+	// pinned by TestMCPToolCheckPolicy_DetectionDisabled_IndeterminateIdentityAllowed.
 	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, session.orgID)
+	staticEvaluationWillRun := mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorType)
+
+	// #3430 (ADR-060 P3 fleet-plane promotion): resolve the caller's
+	// governance-segment set fail-closed, BEFORE evaluation, so neither a
+	// genuine resolution failure NOR an indeterminate principal reaches the
+	// engine with a set that looks identical to "resolved to none". This is a
+	// SEPARATE, fresh, enforcement-phase resolution from the session-auth
+	// resolution authenticateMCPSession performs purely for observability
+	// (#3473 — that call's result is discarded; there is no longer any
+	// session-scoped segment set to read back) - see
+	// resolveMCPServerSegmentsForPolicy's doc (mcp_identity.go) for why a
+	// caller with no validated per-user token is DENIED (when segment-scoped
+	// policies exist) rather than silently evaluated against a narrowed set.
+	segmentIDs, segGate := resolveMCPServerSegmentsForPolicy(ctx, session, sharedpolicy.PhaseRequest, staticEvaluationWillRun)
+	if segGate != mcpSegmentGateProceed {
+		decisionID := uuid.New().String()
+		policyID, reason := mcpSegmentGateRefusal(segGate, mcpSegmentPhaseRequest)
+		if segGate == mcpSegmentGateDenyIdentityUnresolved {
+			segmentIdentityUnresolvedTotal.WithLabelValues("check_policy").Inc()
+		}
+		log.Printf("🛡️ [MCP-Server] check_policy denied by the segment gate (%s, fail-closed) for org %s", policyID, logutil.Sanitize(session.orgID))
+		// Canonical "blocked" audit row (#2684) so the fail-closed deny is
+		// portal-visible, mirroring run.go's clientRequestHandler deny (the
+		// canonical pattern for this contract on the agent static plane).
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
+			mcpVerdictBlocked,
+			[]string{policyID},
+			[]string{reason},
+			nil,
+			"",                                   // MCP-server session has no inbound traceparent → singleton
+			nil,                                  // #3365: guard id resolves via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
+			connectorType, tool)                  // #2904: tool_server, tool_name
+		return map[string]interface{}{
+			"allowed":      false,
+			"decision_id":  decisionID,
+			"block_reason": reason,
+			"blocked_by":   policyID,
+		}, nil
+	}
+
 	outcome := evaluateInputPolicies(
 		ctx,
 		session.tenantID,
@@ -1593,6 +1697,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		params,
 		mcpDetectionCfg,
 		true, // runDynamicPolicy
+		segmentIDs,
 	)
 
 	if outcome.EvalUnavailable {
@@ -1643,9 +1748,10 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 				pids,
 				[]string{"request PII redacted"},
 				[]string{"statement"},
-				"",                  // MCP-server session has no inbound traceparent → singleton
-				pnames,              // #3365
-				connectorType, tool) // #2904: tool_server, tool_name
+				"",                                   // MCP-server session has no inbound traceparent → singleton
+				pnames,                               // #3365
+				time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
+				connectorType, tool)                  // #2904: tool_server, tool_name
 		}
 		return resp, nil
 	}
@@ -1673,7 +1779,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			nil,
 			"", // MCP-server session has no inbound traceparent → singleton
 			policyNamesFromDynamic(outcome.DynamicInfo), // #3365
-			connectorType, tool) // #2904: tool_server, tool_name
+			time.Since(startTime).Milliseconds(),        // #3424: agent-local check_policy evaluation, no proxy hop
+			connectorType, tool)                         // #2904: tool_server, tool_name
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
 		var blockedByID string
@@ -1730,8 +1837,9 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 			session.userID, session.userRole,
 			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), computeStatementHash(statement),
 			outcome.StaticResult.BlockReason, topRisk, matches,
-			"",                  // #2598: MCP-server session has no inbound traceparent → singleton
-			connectorType, tool) // #2904: tool_server, tool_name
+			"",                                   // #2598: MCP-server session has no inbound traceparent → singleton
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
+			connectorType, tool)                  // #2904: tool_server, tool_name
 	}
 
 	if topRisk != "" {
@@ -1752,6 +1860,13 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 
 // check_output: uses Agent-internal evaluateOutputPolicies() directly.
 func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	// #3424: agent-local response evaluation (evaluateOutputPolicies), no proxy
+	// hop -- see mcpToolCheckPolicy above.
+	startTime := time.Now()
+	// #3430 R3: see mcpToolCheckPolicy's identical guard.
+	if session == nil {
+		return nil, fmt.Errorf("unauthenticated MCP session")
+	}
 	connectorType, _ := args["connector_type"].(string)
 	tool, _ := args["tool"].(string) // #2955: caller-sent tool identity, distinct from connector_type/server
 	if connectorType == "" {
@@ -1772,9 +1887,60 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	rowCount := len(rows)
 	checkExfil := rows != nil
 
+	// #3430 (ADR-060 P3 fleet-plane promotion): same fail-closed gate as
+	// mcpToolCheckPolicy above, applied to the response phase. The response
+	// phase is restriction-only (redact/withhold, never grant), so enforcing
+	// segment scoping here only ever makes the response MORE restrictive than
+	// the pre-#3430 unconditional nil - see evaluateOutputPolicies' doc for
+	// why the response phase is in scope for this issue rather than deferred
+	// alongside it.
+	//
+	// staticEvaluationWillRun mirrors evaluateOutputPolicies' own detectionGate
+	// for an isGateway caller (check_output IS one, so the connector allowlist
+	// does not apply and only .Enabled remains) - resolved from the same
+	// ResolveMCPDetectionConfig(ctx, OrgIDFromContext(ctx)) expression that
+	// function uses, so the two cannot mean different things. The pairing is
+	// pinned by TestMCPToolCheckOutput_DetectionDisabled_IndeterminateIdentityAllowed.
+	// #3447: evaluateOutputPolicies now takes the org scope explicitly rather
+	// than reading it back out of ctx. Bind it once here so the detection
+	// config, the gate and the evaluator below all name the SAME expression
+	// (OrgIDFromContext(ctx)) — the exact value this plane used before, so
+	// nothing about its scope changes.
+	outEvalOrgID := OrgIDFromContext(ctx)
+	outDetectionCfg := ResolveMCPDetectionConfig(ctx, outEvalOrgID)
+	segmentIDs, segGate := resolveMCPServerSegmentsForPolicy(ctx, session, sharedpolicy.PhaseResponse, outDetectionCfg.Enabled)
+	if segGate != mcpSegmentGateProceed {
+		decisionID := uuid.New().String()
+		policyID, reason := mcpSegmentGateRefusal(segGate, mcpSegmentPhaseResponse)
+		if segGate == mcpSegmentGateDenyIdentityUnresolved {
+			segmentIdentityUnresolvedTotal.WithLabelValues("check_output").Inc()
+		}
+		log.Printf("🛡️ [MCP-Server] check_output denied by the segment gate (%s, fail-closed) for org %s", policyID, logutil.Sanitize(session.orgID))
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
+			mcpVerdictBlocked,
+			[]string{policyID},
+			[]string{reason},
+			nil,
+			"",                                   // MCP-server session has no inbound traceparent → singleton
+			nil,                                  // #3365: guard id resolves via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_output evaluation, no proxy hop
+			connectorType, tool)                  // #2955: tool_server, tool_name
+		return map[string]interface{}{
+			"allowed":      false,
+			"decision_id":  decisionID,
+			"block_reason": reason,
+			"blocked_by":   policyID,
+		}, nil
+	}
+
 	outcome := evaluateOutputPolicies(
 		ctx,
 		session.tenantID,
+		outEvalOrgID, // #3447: explicit org scope, same value the ctx carried
 		session.userID,
 		connectorType,
 		tool, // toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904, #2955) — distinct from connector_type/server; empty ⇒ full (fail-closed) evaluation, no fallback
@@ -1784,6 +1950,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		rowCount,
 		checkExfil,
 		true, // isGateway: check_output is a PEP/gateway caller (no managed connector)
+		segmentIDs,
 	)
 
 	blocked := outcome.SQLiBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)
@@ -1834,9 +2001,10 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			session.userID, session.userRole,
 			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
 			mcpVerdictRedacted, redactPolicyIDs, redactReasons, outcome.RedactedFieldNames(),
-			"",                  // MCP-server session has no inbound traceparent → singleton
-			redactPolicyNames,   // #3365
-			connectorType, tool) // #2955: tool_server, tool_name
+			"",                                   // MCP-server session has no inbound traceparent → singleton
+			redactPolicyNames,                    // #3365
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_output evaluation, no proxy hop
+			connectorType, tool)                  // #2955: tool_server, tool_name
 	}
 
 	// Allowed — no richer context or override flow needed.
@@ -1862,9 +2030,10 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			[]string{"sqli_response_scan"},
 			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)},
 			nil,
-			"",                  // MCP-server session has no inbound traceparent → singleton
-			nil,                 // #3365: guard id resolves via the builtin table
-			connectorType, tool) // #2955: tool_server, tool_name
+			"",                                   // MCP-server session has no inbound traceparent → singleton
+			nil,                                  // #3365: guard id resolves via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_output evaluation, no proxy hop
+			connectorType, tool)                  // #2955: tool_server, tool_name
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
 		resp["block_reason"] = outcome.StaticResult.BlockReason
 	}
@@ -1914,8 +2083,9 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			session.userID, session.userRole,
 			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), computeStatementHash(hashed),
 			outcome.StaticResult.BlockReason, topRisk, matches,
-			"",                  // #2598: MCP-server session has no inbound traceparent → singleton
-			connectorType, tool) // #2955: tool_server, tool_name
+			"",                                   // #2598: MCP-server session has no inbound traceparent → singleton
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_output evaluation, no proxy hop
+			connectorType, tool)                  // #2955: tool_server, tool_name
 	}
 
 	if topRisk != "" {

@@ -177,6 +177,24 @@ func mapHITLActorIdentity(r *http.Request) string {
 	return ""
 }
 
+// mapHITLResolveRefusal names the tier that would actually let the caller
+// through, which is NOT the tier that lets them create approvals.
+//
+// These three handlers guard RESOLUTION, and since R3 round 2 they gate on
+// hitlResolveAllowed - Evaluation and above. The message they used to carry
+// said "requires a Professional, Enterprise or Enterprise Plus license",
+// which was true of the creation entitlement and false of the gate that had
+// just refused. Only Community can reach this refusal, and Community is being
+// told to buy Professional when the free Evaluation licence would let them
+// drain the queue they are trying to reach. A refusal that names the wrong
+// remedy is worse than one that names none: it sells an upgrade the caller
+// does not need.
+func mapHITLResolveRefusal(action string) string {
+	return action + " requires an Evaluation or higher license. " +
+		"Approving, rejecting and listing existing approvals is available from Evaluation upward; " +
+		"CREATING new approval entries requires Professional, Enterprise or Enterprise Plus."
+}
+
 // mapStepApproveHandler handles POST /api/v1/plans/{id}/steps/{step_id}/approve
 //
 // Two code paths, same response shape (Issue #1677):
@@ -212,12 +230,17 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tier gating matches WCP /approve (Evaluation+ via tier checker, Enterprise via
-	// DEPLOYMENT_MODE). Prior to v7.4.0 this was blanket-blocked in community mode
-	// even when an Evaluation license was present — a pre-existing inconsistency
-	// with WCP that the parity work surfaced. Now both planes accept Evaluation+.
-	if isCommunityMode() && (tierChecker == nil || !tierChecker.IsHITLApprovalEnabled()) {
-		sendErrorResponse(w, "MAP step approval requires Evaluation or Enterprise license", http.StatusForbidden)
+	// RESOLUTION, NOT CREATION - see hitlResolveAllowed. Approving an existing
+	// step is not creating an approval entry, so this is deliberately NOT gated
+	// on the Enterprise-only HITL entitlement: a deployment holding pending MAP
+	// approvals must be able to drain them after upgrading.
+	//
+	// Shares one predicate with the WCP registration in run.go. It previously
+	// read IsHITLApprovalEnabled while WCP read IsEvaluationOrHigher, so the
+	// planes disagreed for an Evaluation licensee in community mode - while
+	// this comment still asserted they agreed.
+	if isCommunityMode() && !hitlResolveAllowed(tierChecker) {
+		sendErrorResponse(w, mapHITLResolveRefusal("MAP step approval"), http.StatusForbidden)
 		return
 	}
 
@@ -411,9 +434,9 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tier gating matches WCP /reject — see mapStepApproveHandler for the context.
-	if isCommunityMode() && (tierChecker == nil || !tierChecker.IsHITLApprovalEnabled()) {
-		sendErrorResponse(w, "MAP step rejection requires Evaluation or Enterprise license", http.StatusForbidden)
+	// Resolution, not creation - see mapStepApproveHandler and hitlResolveAllowed.
+	if isCommunityMode() && !hitlResolveAllowed(tierChecker) {
+		sendErrorResponse(w, mapHITLResolveRefusal("MAP step rejection"), http.StatusForbidden)
 		return
 	}
 
@@ -520,8 +543,8 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 //   - plan_id=<id> — optional filter to a single plan
 //   - limit=<n>   — optional result cap (default 20, same as WCP)
 //
-// Tier gate matches the MAP approve/reject handlers: Evaluation+ via
-// IsHITLApprovalEnabled(), Enterprise via !isCommunityMode().
+// Tier gate matches the MAP approve/reject handlers and the WCP registration:
+// hitlResolveAllowed in community mode, unconditional via !isCommunityMode().
 func mapPendingApprovalsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -531,10 +554,12 @@ func mapPendingApprovalsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tier gating — matches mapStepApproveHandler. Evaluation+ via IsHITLApprovalEnabled,
-	// Enterprise via !isCommunityMode. Community-without-eval blocked with 403.
-	if isCommunityMode() && (tierChecker == nil || !tierChecker.IsHITLApprovalEnabled()) {
-		sendErrorResponse(w, "Listing plan-scoped pending approvals requires Evaluation or Enterprise license", http.StatusForbidden)
+	// Listing what is pending is a read over work that already exists, so it
+	// follows the same resolve rule as approve/reject - see hitlResolveAllowed.
+	// Revoking it would leave an operator unable to even SEE the entries the
+	// entitlement change stops them adding to.
+	if isCommunityMode() && !hitlResolveAllowed(tierChecker) {
+		sendErrorResponse(w, mapHITLResolveRefusal("Listing plan-scoped pending approvals"), http.StatusForbidden)
 		return
 	}
 

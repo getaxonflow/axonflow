@@ -254,7 +254,7 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 			wantHTTPCode: http.StatusOK,
 		},
 		{
-			name:         "community + evaluation license allowed",
+			name: "community + evaluation license allowed",
 			// #3096: was "" relying on unset==community. Named explicitly.
 			deployment:   "community",
 			licenseTier:  license.TierEvaluation,
@@ -267,7 +267,7 @@ func TestMAPPendingApprovals_TierGateMatrix(t *testing.T) {
 			licenseTier:  license.TierCommunity,
 			hitlEnabled:  false,
 			wantHTTPCode: http.StatusForbidden,
-			wantBodyHint: "Evaluation or Enterprise",
+			wantBodyHint: "Professional, Enterprise or Enterprise Plus",
 		},
 		{
 			name:         "community with nil tier checker blocked",

@@ -329,19 +329,24 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// (ProcessPendingExports/CleanupExpiredExports are unwired), so no live
 		// path reads zero rows; wiring either one MUST construct the repository
 		// with the admin pool. Documented in full on the methods themselves.
-		"platform/orchestrator/rbi/auditexport_repository.go::GetPending":    "cross-org worker sweep (status='pending', no org predicate by design) — admin-pool only; unwired today (#3103).",
-		"platform/orchestrator/rbi/auditexport_repository.go::GetExpired":    "cross-org retention sweep (expires_at < NOW(), no org predicate by design) — admin-pool only; unwired today (#3103).",
+		"platform/orchestrator/rbi/auditexport_repository.go::GetPending": "cross-org worker sweep (status='pending', no org predicate by design) — admin-pool only; unwired today (#3103).",
+		"platform/orchestrator/rbi/auditexport_repository.go::GetExpired": "cross-org retention sweep (expires_at < NOW(), no org predicate by design) — admin-pool only; unwired today (#3103).",
 
 		// ── BYPASSRLS lookup/refresh pools by construction: the receiver is
 		// an accessor that resolves to the platform-admin pool when wired
 		// (SetCrossOrgDB / refreshDB / crossOrgDB — #3039/#3048 pattern);
 		// the AST walker cannot see through the accessor.
-		"platform/shared/execution/repository.go::Get":                             "BYPASSRLS lookup pool via r.lookup() — #3039 discovery reads, callers post-authorize.",
-		"platform/shared/execution/repository.go::getByMetadataHardcoded":          "BYPASSRLS lookup pool via r.lookup() — #3039 discovery reads, callers post-authorize.",
-		"platform/orchestrator/policy_api_repository.go::CountOrgPolicies":         "BYPASSRLS pool via r.crossOrg() — #3039 deliberate cross-tenant count.",
-		"platform/orchestrator/db_dynamic_policies.go::refreshPolicies":            "BYPASSRLS refresh pool via e.crossOrgDB() — #3039 all-tenants gate-cache load, boot-guarded by RequirePlatformAdminOrFatal.",
-		"platform/orchestrator/db_dynamic_policies.go::seedDefaultData":            "BYPASSRLS pool via e.crossOrgDB() — #3039 cross-org boot COUNT before sample seeding.",
-		"platform/orchestrator/dynamic_policy_engine.go::loadPoliciesFromDB":       "BYPASSRLS refresh pool (engine.refreshDB, #3048) — all-tenants load for the fallback engine; falls back to the runtime pool only where RLS is not enforced.",
+		"platform/shared/execution/repository.go::Get":                     "BYPASSRLS lookup pool via r.lookup() — #3039 discovery reads, callers post-authorize.",
+		"platform/shared/execution/repository.go::getByMetadataHardcoded":  "BYPASSRLS lookup pool via r.lookup() — #3039 discovery reads, callers post-authorize.",
+		"platform/orchestrator/policy_api_repository.go::CountOrgPolicies": "BYPASSRLS pool via r.crossOrg() — #3039 deliberate cross-tenant count.",
+		// #3319: the bare reads that used to live directly in refreshPolicies /
+		// seedDefaultData moved into the shared loader (sharedpolicy.
+		// RefreshDynamicPolicies / CountAllDynamicPolicies below); these two
+		// call sites now only select the pool (e.crossOrgDB()) and pass it in,
+		// so the walker no longer sees a Query call to flag here — the
+		// allowlist entry lives at the loader functions instead.
+		"platform/shared/policy/loader.go::CountAllDynamicPolicies":                "BYPASSRLS-by-caller-contract, not by construction: takes db *sql.DB directly, so the walker can't see through the accessor. Sole caller is DatabaseDynamicPolicyEngine.seedDefaultData (platform/orchestrator/db_dynamic_policies.go), which passes e.crossOrgDB() — verified by grep, no other caller exists. #3319 moved this cross-org boot COUNT out of the engine into the shared loader; #3039.",
+		"platform/shared/policy/loader.go::RefreshDynamicPolicies":                 "Same BYPASSRLS-by-caller-contract shape as CountAllDynamicPolicies above, same sole caller: DatabaseDynamicPolicyEngine.refreshPolicies (platform/orchestrator/db_dynamic_policies.go) passes e.crossOrgDB() at both call sites (segment and segment-less retry) — verified by grep, no other caller exists. Not flagged by the walker today (the SQL is reached through a package-level query-string identifier the binding resolver doesn't follow, not a local literal), but carries the identical exposure, so it's allowlisted alongside CountAllDynamicPolicies rather than left implicitly safe. #3319/#3039.",
 		"platform/agent/hitl/repository.go::GetByRequestID":                        "BYPASSRLS lookup pool via r.lookup() (#3048) — by-uuid discovery read; the SERVICE post-authorizes (rejectCrossOrg compares the row's OrgID to the authenticated caller before any result leaves or any write runs; R3 BLOCKER-2).",
 		"platform/agent/hitl/repository.go::GetHistory":                            "BYPASSRLS lookup pool via r.lookup() (#3048) — the service resolves + org-checks the parent request before this read (R3 BLOCKER-2).",
 		"ee/platform/agent/hitl/repository.go::GetByRequestID":                     "BYPASSRLS lookup pool via r.lookup() (#3048) — EE mirror; service rejectCrossOrg post-authorizes (R3 BLOCKER-2).",

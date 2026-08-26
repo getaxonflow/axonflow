@@ -631,6 +631,26 @@ func buildMCPDecisionAuditDetails(decisionID string, policyIDs, reasons, redacte
 	return details
 }
 
+// writeMCPDecisionAudit persists the canonical audit_logs row for one MCP-plane
+// decision.
+//
+// latencyMs (#3424) is the CALLER's already-measured enforcement duration, or
+// sharedaudit.LatencyUnmeasured when this call site has no honest span to
+// report. The distinction is per CALL SITE, not per plane and not per verdict:
+//
+//   - The advisory tool planes -- check-input, check-output, check_policy --
+//     evaluate policy inside the Agent with no downstream hop, so the handler's
+//     own clock IS the enforcement duration. All of them thread it. Before this,
+//     an MCP ALLOW was measured (it routes through recordDecideDecision) while
+//     the static BLOCKS and REDACTIONS beside it, which run MORE work, were not
+//     -- so the plane's slower half was silently absent from the portal's
+//     average while still inflating the row count it is shown against.
+//   - The connector-exec planes (mcp resources/query, tools/execute) share ONE
+//     emitDecisionAudit closure between verdicts reached before connector.Query
+//     / connector.Execute and verdicts reached after them. A single elapsed
+//     value there would be an enforcement duration on some rows and an
+//     enforcement duration plus a third-party connector round trip on others.
+//     They pass LatencyUnmeasured and stay NULL until that closure is split.
 func writeMCPDecisionAudit(
 	ctx context.Context,
 	db *sql.DB,
@@ -641,6 +661,7 @@ func writeMCPDecisionAudit(
 	policyIDs, reasons, redactedFields []string,
 	correlationID string,
 	policyNames map[string]string,
+	latencyMs int64,
 	toolIdentity ...string,
 ) {
 	if db == nil || decisionID == "" {
@@ -737,28 +758,29 @@ func writeMCPDecisionAudit(
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, decision_id, plane, correlation_id,
-			redacted_fields, session_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			redacted_fields, session_id, response_time_ms
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 	`,
-		"audit_mcp_"+decisionID, // id (distinct prefix → no PK collision with audit_/audit_used_/decide_)
-		requestID,               // request_id
-		time.Now().UTC(),        // timestamp
-		userIDInt,               // user_id
-		userEmail,               // user_email
-		userRole,                // user_role
-		clientID,                // client_id
-		tenantID,                // tenant_id
-		orgID,                   // org_id (nullable)
-		requestType,             // request_type — e.g. "mcp_check_output"
-		query,                   // query — non-PII descriptor (NEVER raw statement/response)
-		queryHash,               // query_hash
-		policyDecision,          // policy_decision — canonical past-tense vocab (#2641/#2638)
-		detailsJSON,             // policy_details (JSONB)
-		decisionID,              // decision_id (first-class column; #2592)
-		PlaneMCP,                // plane (#2592)
-		correlationIDArg,        // correlation_id (first-class column or NULL; #2598)
-		redactedFieldsArg,       // redacted_fields (JSONB array or NULL; #2641)
-		sessionIDArg,            // session_id (first-class column or NULL; #2753)
+		"audit_mcp_"+decisionID,                  // id (distinct prefix → no PK collision with audit_/audit_used_/decide_)
+		requestID,                                // request_id
+		time.Now().UTC(),                         // timestamp
+		userIDInt,                                // user_id
+		userEmail,                                // user_email
+		userRole,                                 // user_role
+		clientID,                                 // client_id
+		tenantID,                                 // tenant_id
+		orgID,                                    // org_id (nullable)
+		requestType,                              // request_type - e.g. "mcp_check_output"
+		query,                                    // query - non-PII descriptor (NEVER raw statement/response)
+		queryHash,                                // query_hash
+		policyDecision,                           // policy_decision - canonical past-tense vocab (#2641/#2638)
+		detailsJSON,                              // policy_details (JSONB)
+		decisionID,                               // decision_id (first-class column; #2592)
+		PlaneMCP,                                 // plane (#2592)
+		correlationIDArg,                         // correlation_id (first-class column or NULL; #2598)
+		redactedFieldsArg,                        // redacted_fields (JSONB array or NULL; #2641)
+		sessionIDArg,                             // session_id (first-class column or NULL; #2753)
+		sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (#3424)
 	)
 	if err != nil {
 		log.Printf("mcp decision audit: insert failed: %v", err)
@@ -844,6 +866,10 @@ func buildExplainableAuditDetails(decisionID, blockReason, topRisk string, match
 // legacy mcp_query_audits entry is written separately and unaffected.
 // toolIdentity is variadic — [0]=server, [1]=tool (#2904) — matching
 // writeMCPDecisionAudit's convention so unrelated callers don't need updating.
+// latencyMs (#3424) is the caller's measured enforcement duration for this
+// static block, or sharedaudit.LatencyUnmeasured. All three call sites are
+// agent-internal policy evaluation with no downstream hop, so all three measure;
+// see writeMCPDecisionAudit for why that is decided per call site.
 func writeExplainableAuditLog(
 	ctx context.Context,
 	db *sql.DB,
@@ -853,6 +879,7 @@ func writeExplainableAuditLog(
 	requestType, statement, statementHash, blockReason, topRisk string,
 	matches []RicherPolicyMatch,
 	correlationID string,
+	latencyMs int64,
 	toolIdentity ...string,
 ) {
 	if db == nil || decisionID == "" {
@@ -924,8 +951,8 @@ func writeExplainableAuditLog(
 			id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, decision_id, plane, correlation_id,
-			session_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			session_id, response_time_ms
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`,
 		"audit_"+decisionID, // id
 		requestID,           // request_id
@@ -946,12 +973,13 @@ func writeExplainableAuditLog(
 		// special-case and which the audit-page action filter ('blocked') never
 		// matched. All three callers of this writer are static-block paths, so the
 		// literal is unconditionally "blocked".
-		mcpVerdictBlocked, // policy_decision
-		detailsJSON,       // policy_details (JSONB) — decision_id still mirrored here
-		decisionID,        // decision_id (first-class column; #2592)
-		PlaneMCP,          // plane
-		correlationIDArg,  // correlation_id (#2598)
-		sessionIDArg,      // session_id (#2753)
+		mcpVerdictBlocked,                        // policy_decision
+		detailsJSON,                              // policy_details (JSONB) - decision_id still mirrored here
+		decisionID,                               // decision_id (first-class column; #2592)
+		PlaneMCP,                                 // plane
+		correlationIDArg,                         // correlation_id (#2598)
+		sessionIDArg,                             // session_id (#2753)
+		sharedaudit.MeasuredLatencyMs(latencyMs), // response_time_ms (#3424)
 	)
 	if err != nil {
 		log.Printf("explainable audit log: insert failed: %v", err)

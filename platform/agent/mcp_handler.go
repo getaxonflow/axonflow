@@ -50,6 +50,7 @@ import (
 	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
+	sharedaudit "axonflow/platform/shared/audit"
 	"axonflow/platform/shared/idempotency"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
@@ -89,7 +90,10 @@ func init() {
 // permission-denied deny (#2684); they are NOT the service-license identity
 // (ValidationResult.OrgID is the licensee/deployment, which must never land in a
 // customer-data row).
-func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseKey, connector, operation, fallbackOperation, auditTenantID, auditOrgID, auditClientID string) (bool, error) {
+// latencyMs (#3424) is the CALLING handler's elapsed time. This gate runs
+// before the connector is touched, so it is a pure enforcement duration on
+// both call sites.
+func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseKey, connector, operation, fallbackOperation, auditTenantID, auditOrgID, auditClientID string, latencyMs int64) (bool, error) {
 	if licenseKey == "" || isCommunityMode() || isCommunitySaasMode() {
 		return false, nil
 	}
@@ -135,7 +139,8 @@ func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseK
 				[]string{fmt.Sprintf("service permission denied for %s:%s", connector, op)},
 				nil,
 				"",
-				nil)
+				nil,
+				latencyMs)
 			sendErrorResponse(w, fmt.Sprintf("Permission denied: %v", err), http.StatusForbidden, nil)
 			return false, fmt.Errorf("permission denied: %v", err)
 		}
@@ -762,12 +767,29 @@ type InputPolicyOutcome struct {
 // "jira_get_issue" would otherwise classify text-document and silently lose
 // SQLi enforcement on statements that genuinely execute. Empty = full
 // evaluation (fail-closed).
+// segments is the caller's fail-closed-resolved governance-segment set
+// (ADR-060) to apply to this evaluation, or nil when the calling plane has
+// not resolved one - see the Segments field doc (shared/policy/types.go)
+// for exactly which callers pass a real set as of #3430/#3447 and which
+// still pass nil, and why. This is a plain slice, never a status: a caller
+// that resolves fail-closed and gets ok==false MUST deny before ever
+// reaching this function, not translate the failure into an empty/nil
+// segments argument here - nil/empty here always means "resolved to no
+// segments / not resolved on this plane", never "resolution failed".
+//
+// #3447: the set is applied to BOTH planes this function touches, not just
+// the local static pass. It is relayed to the orchestrator's dynamic
+// evaluator as DynamicPolicyRequest.SegmentIDs (see the dynamicReq literal
+// below) so a verified member does not get segment-scoped DYNAMIC policies
+// silently skipped while the static half enforces them. Threading it into
+// the static EvalOptions alone would close only half the bypass.
 func evaluateInputPolicies(
 	ctx context.Context,
 	tenantID, orgID, userID, userRole, connectorName, toolIdentity, operation, statement string,
 	parameters map[string]interface{},
 	detectionCfg ModeDetectionConfig,
 	runDynamicPolicy bool,
+	segments []string,
 ) InputPolicyOutcome {
 	var out InputPolicyOutcome
 
@@ -776,13 +798,39 @@ func evaluateInputPolicies(
 		dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
 		if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(connectorName) {
 			dynamicReq := sharedpolicy.DynamicPolicyRequest{
-				TenantID:      tenantID,
-				UserID:        userID,
-				UserRole:      userRole,
-				ConnectorName: connectorName,
-				Operation:     operation,
-				Statement:     statement,
-				Parameters:    parameters,
+				TenantID: tenantID,
+				// Decision 5 (#3490): the orchestrator's dynamic gate keys
+				// on org_id now, and this hop carries NO tenancy headers
+				// (dynamic_evaluator.go sets only Content-Type,
+				// X-Request-Source and the internal-service token), so
+				// carriesStampedTenancy is false there and the org can only
+				// come from this field. Leaving it unset would have made
+				// every tenant-authored dynamic policy silently inapplicable
+				// on the MCP planes - a total, quiet loss of enforcement,
+				// not a refusal. orgID here is the validated caller org the
+				// static half one screen below already scopes by.
+				OrganizationID: orgID,
+				UserID:         userID,
+				UserRole:       userRole,
+				ConnectorName:  connectorName,
+				Operation:      operation,
+				Statement:      statement,
+				Parameters:     parameters,
+				// #3447: RELAY the set the agent already resolved; the
+				// orchestrator deliberately does NOT resolve independently.
+				// The two processes hold SEPARATE segment caches with
+				// separate TTL clocks (segmentCache, default 60s,
+				// instantiated once per process at
+				// identity_attribute_resolver.go), so independent resolution
+				// would let them observe different sets on the SAME request
+				// - the static half enforcing a segment-scoped policy while
+				// the dynamic half does not. Relaying one resolution makes
+				// that split verdict impossible by construction, and costs
+				// one resolution per request instead of two. The trust
+				// argument is a wash either way: the orchestrator already
+				// trusts what the agent asserts across the HMAC-authenticated
+				// internal plane (requireInternalProxyAuth, #3068).
+				SegmentIDs: segments,
 			}
 			dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
 			out.DynamicInfo = info
@@ -829,11 +877,11 @@ func evaluateInputPolicies(
 			OrgID:    orgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
 			// validated caller org (org_id may differ from tenant_id).
-			OrganizationID: sharedpolicy.OrgScopePtr(orgID),
-			ConnectorName:  connectorName,
-			UserID:         userID,
-			Parameters:     parameters,
-			Categories:     inputCats,
+			OrgScope:      sharedpolicy.OrgScopePtr(orgID),
+			ConnectorName: connectorName,
+			UserID:        userID,
+			Parameters:    parameters,
+			Categories:    inputCats,
 			// #2801: capability-scoped evaluation. Advisory planes pass the
 			// caller-sent tool identity (e.g.
 			// claude_code.mcp__atlassian__editJiraIssue); managed-connector
@@ -842,13 +890,14 @@ func evaluateInputPolicies(
 			ToolIdentity:    toolIdentity,
 			SkipCategories:  detectionCfg.SkipCategories,
 			ActionOverrides: detectionCfg.BuildActionOverrides(),
-			// #3266: this plane has no resolved governance-segment set on
-			// hand yet, so Segments is left nil — a segment-scoped
-			// static_policies row is excluded here (fail-closed, leak
-			// closed), same as every other caller of the shared engine.
-			// Real segment enforcement on the MCP plane is tracked
-			// in #3312 (agent MCP scan; machine-actor → #3279-gated).
-			Segments: nil,
+			// #3430/#3447: the caller-supplied, already
+			// fail-closed-resolved segment set (nil for planes that don't
+			// resolve one - see this function's own doc and the Segments
+			// field doc in shared/policy/types.go). A segment-scoped
+			// static_policies row is excluded whenever the caller is not a
+			// member (fail-closed, #3266 leak closed). This is the STATIC
+			// half only; the dynamic half is the SegmentIDs relay above.
+			Segments: segments,
 		})
 		if out.StaticResult.Blocked {
 			policyID := "unknown"
@@ -1006,8 +1055,8 @@ func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, 
 	piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseRequest)
 	if len(piiCats) > 0 {
 		result := policyEngine.EvaluateResponse(ctx, []map[string]interface{}{{"statement": working}}, sharedpolicy.EvalOptions{
-			TenantID:       tenantID,
-			OrganizationID: sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), // #3048 R3 HIGH-3
+			TenantID: tenantID,
+			OrgScope: sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), // #3048 R3 HIGH-3
 
 			ConnectorName:   connectorName,
 			UserID:          userID,
@@ -1215,16 +1264,46 @@ func indonesiaPIIRemainsAfterMask(rows []map[string]interface{}, message string)
 // connector_type; managed-connector planes (query/execute responses) pass ""
 // because the connector NAME is tenant-chosen free-form text, not a
 // capability statement. Empty = full evaluation.
+// orgID is the caller's authenticated org scope (#3447). It was previously
+// read back out of ctx at nine separate points inside this function
+// (OrgIDFromContext), which made the response phase the only evaluator on
+// either plane whose org scope was implicit — evaluateInputPolicies has taken
+// an explicit orgID since #2384. Every call site passes the same value its
+// ctx already carried, so this is a plumbing change, not a scope change; it
+// exists so a caller whose authoritative org is NOT the ctx-stamped one
+// (any future plane) cannot silently evaluate the response phase under a
+// different org than the request phase.
+//
+// segments carries the same fail-closed-resolved governance-segment set
+// (ADR-060) as evaluateInputPolicies' identically-named parameter - see its
+// doc comment. Response-phase evaluation is restriction-only (redact/
+// withhold, never grant), so applying the same fail-closed set here only
+// ever makes the response MORE restrictive, never less; see the #3430
+// call-site comments in mcpToolCheckOutput for why the response phase is in
+// scope for this issue, not deferred alongside it. As of #3447 the four
+// legacy MCP REST handlers in this file pass a real set here too
+// (resolveHumanActorSegmentsForPolicy, human_actor_segment_gate.go).
 func evaluateOutputPolicies(
 	ctx context.Context,
-	tenantID, userID, connectorName, toolIdentity string,
+	tenantID, orgID, userID, connectorName, toolIdentity string,
 	rows []map[string]interface{},
 	message string,
 	messageMetadata map[string]interface{},
 	rowCount int,
 	checkExfiltration bool,
 	isGateway bool, // true for PEP/gateway callers (check-output) → bypass the connector allowlist for PII detection
+	segments []string,
 ) OutputPolicyOutcome {
+	// #3447 R3: orgID became an explicit parameter here (the response-phase
+	// census needs it). Before that, every org-derived read in this function
+	// took OrgIDFromContext(ctx). Fall back to that when the parameter is
+	// empty, so threading the value stays a PLUMBING change rather than a
+	// behaviour change for a caller that has ctx but passes "" — otherwise a
+	// per-org detection posture silently stops applying and a response that
+	// should BLOCK merely redacts.
+	if orgID == "" {
+		orgID = OrgIDFromContext(ctx)
+	}
 	var out OutputPolicyOutcome
 
 	// #2801: capability scoping must be plane-consistent. The SQLi response
@@ -1268,10 +1347,10 @@ func evaluateOutputPolicies(
 		}
 	}
 
-	// #2581: per-org posture. check-output stamps orgID into ctx; the managed-
-	// connector query/execute paths may not, in which case orgID is empty →
-	// deployment-global (fail-safe, identical to pre-#2581).
-	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, OrgIDFromContext(ctx))
+	// #2581: per-org posture. #3447: orgID is now the explicit parameter
+	// rather than a ctx read-back; an empty value still resolves to the
+	// deployment-global config (fail-safe, identical to pre-#2581).
+	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, orgID)
 	// Connector-agnostic gateway path: a PEP/gateway caller (isGateway, e.g.
 	// check-output submitting pre-executed output) has no managed connector, so
 	// the MCP connector allowlist (IsConnectorEnabled, permissive-when-empty)
@@ -1291,7 +1370,7 @@ func evaluateOutputPolicies(
 	// Indonesia checksum masker (step 2) is NOT sufficient on its own — it cannot
 	// clear generic PII — so a load error must block, not fall through to it.
 	if policyEngine := sharedpolicy.GetGlobalEngine(); policyEngine != nil && detectionGate {
-		if err := policyEngine.PoliciesLoadable(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse); err != nil {
+		if err := policyEngine.PoliciesLoadable(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseResponse); err != nil {
 			log.Printf("[MCP] Response withheld: policy engine could not load response-phase policies (fail-closed, #2820): %v", err)
 			out.StaticResult = &sharedpolicy.ResponseResult{
 				Blocked:         true,
@@ -1353,7 +1432,7 @@ func evaluateOutputPolicies(
 				// missing: input-side NIK governance was already visible via the
 				// decision row, output-side governance was invisible everywhere.
 				// Best-effort; the block above is already held. No-op in community.
-				recordIndonesiaPIIEvents(ctx, OrgIDFromContext(ctx), tenantID, "", "",
+				recordIndonesiaPIIEvents(ctx, orgID, tenantID, "", "",
 					PlaneMCP, indonesiaPIIActionBlocked, idResult)
 				return out
 			}
@@ -1414,7 +1493,7 @@ func evaluateOutputPolicies(
 			// most needs.
 			if idResult.HasPII {
 				cleanAfterMask := anyMasked && !indonesiaPIIRemainsAfterMask(rows, message)
-				recordIndonesiaPIIEvents(ctx, OrgIDFromContext(ctx), tenantID, "", "",
+				recordIndonesiaPIIEvents(ctx, orgID, tenantID, "", "",
 					PlaneMCP, indonesiaPIIActionForEnforcedPlane(false, cleanAfterMask), idResult)
 			}
 		}
@@ -1434,12 +1513,12 @@ func evaluateOutputPolicies(
 		// had silently omitted pii-indonesia). nil => no enabled PII policies =>
 		// skip the static PII pass; must NOT pass empty Categories, which would
 		// evaluate ALL policies (the whitelist short-circuits on empty).
-		piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
+		piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseResponse)
 		// #2705: also evaluate the sensitive-data (secrets) category so a credential-
 		// shaped connector RESPONSE is warn/block-enforced per the profile lever (the
 		// block is already honored below via out.StaticResult.Blocked). nil+nil => skip
 		// (must NOT pass empty Categories — the whitelist footgun evaluates ALL).
-		sensCats := policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
+		sensCats := policyEngine.EnabledSensitiveDataCategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseResponse)
 		// #2727: also evaluate the security-dangerous category (dangerous commands +
 		// indirect prompt-injection patterns, migrations 059/116) against the tool
 		// OUTPUT. These policies seeded phase='request', so a malicious instruction
@@ -1453,7 +1532,7 @@ func evaluateOutputPolicies(
 		// warn/block), and the outcome is audited through the existing
 		// out.StaticResult redacted/blocked path. nil => no enabled security-dangerous
 		// policy for this phase => skip (must NOT pass empty Categories, the footgun).
-		dangerCats := policyEngine.EnabledSecurityDangerousCategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseResponse)
+		dangerCats := policyEngine.EnabledSecurityDangerousCategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseResponse)
 		outCats := append(append(append([]sharedpolicy.PolicyCategory{}, piiCats...), sensCats...), dangerCats...)
 		if responseContent != nil && len(outCats) > 0 {
 			// #2727: the security-dangerous (injection) category is REDACTED on the
@@ -1464,13 +1543,13 @@ func evaluateOutputPolicies(
 			// so we replace that entry for the response pass only. ResolveResponseInjectionAction
 			// returns the org override when set, else the REDACT default.
 			actionOverrides := mcpDetectionCfg.BuildActionOverrides()
-			actionOverrides[sharedpolicy.CategorySecurityDangerous] = ResolveResponseInjectionAction(ctx, OrgIDFromContext(ctx)).ToPolicyAction()
+			actionOverrides[sharedpolicy.CategorySecurityDangerous] = ResolveResponseInjectionAction(ctx, orgID).ToPolicyAction()
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
-				TenantID:       tenantID,
-				OrganizationID: sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), // #3048 R3 HIGH-3
-				ConnectorName:  connectorName,
-				UserID:         userID,
-				Categories:     outCats,
+				TenantID:      tenantID,
+				OrgScope:      sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3
+				ConnectorName: connectorName,
+				UserID:        userID,
+				Categories:    outCats,
 				// #2801: capability scoping on the response plane. For the
 				// categories evaluated here it only affects a text-document
 				// tool's security-dangerous EXECUTION-class policies (the
@@ -1480,11 +1559,12 @@ func evaluateOutputPolicies(
 				SkipCategories:  mcpDetectionCfg.SkipCategories,
 				ActionOverrides: actionOverrides,
 				MaxRedactions:   100,
-				// #3266: no resolved governance-segment set on this plane yet
-				// — nil excludes segment-scoped static_policies rows
-				// (fail-closed, leak closed). Real segment enforcement on the
-				// MCP plane is tracked in #3312 (agent MCP scan; machine-actor → #3279-gated).
-				Segments: nil,
+				// #3430/#3447: caller-supplied, already fail-closed-resolved
+				// segment set (nil for planes that don't resolve one - see
+				// this function's doc). Excludes segment-scoped
+				// static_policies rows the caller is not a member of
+				// (fail-closed, #3266 leak closed).
+				Segments: segments,
 			})
 			// #2820: second line of defense — a load race between the
 			// PoliciesLoadable gate above and here (cache expiry mid-request)
@@ -1804,7 +1884,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		// already weaken the audit value, and the email is human-readable
 		// rather than load-bearing for any per-credential audit query.
 		// Do NOT change to client.ClientID without an audit-query review.
-		if auth.Kind == AuthKindEnterprise {
+		if auth.Kind == AuthKindEnterprise && req.UserToken == "" && !ResolveRequireUserToken(ctx, auth.OrgID) {
 			user = &User{
 				ID:          0,
 				Email:       client.ID + "@axonflow.local",
@@ -1814,6 +1894,47 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				Permissions: client.Permissions,
 			}
 		} else {
+			// #3472: a PRESENTED token that fails validation (malformed, expired,
+			// wrong alg, bad signature, jti-revoked) is a rejected access attempt,
+			// not a compatibility case. Audit it, then 401. Parity with
+			// decision_handler.go's /decide arm.
+			//
+			// #3476: with the org's posture requiring a token, a token-ABSENT
+			// caller now also reaches this branch. The req.UserToken != "" guard
+			// below is what keeps the two causes distinct: a presented-and-invalid
+			// token still audits as user_token_rejected (#3472, unchanged); an
+			// absent-and-required token audits under its own marker,
+			// user_token_required, so the two causes never collapse.
+			if req.UserToken != "" {
+				writeMCPDecisionAudit(ctx, usageDB,
+					auditEntry.DecisionID, auditEntry.AuditID,
+					client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_resources_query", fmt.Sprintf("mcp resources/query: %s", req.Connector), "",
+					mcpVerdictBlocked,
+					[]string{"user_token_rejected"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,
+					// #3472: reached before any connector.Query hop, so this IS an
+					// honest enforcement duration (unlike the shared emitDecisionAudit
+					// closure below, whose LatencyUnmeasured rationale doesn't apply here).
+					time.Since(startTime).Milliseconds())
+			} else {
+				writeMCPDecisionAudit(ctx, usageDB,
+					auditEntry.DecisionID, auditEntry.AuditID,
+					client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_resources_query", fmt.Sprintf("mcp resources/query: %s", req.Connector), "",
+					mcpVerdictBlocked,
+					[]string{"user_token_required"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,
+					time.Since(startTime).Milliseconds())
+			}
 			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
@@ -1836,7 +1957,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	// In community mode, skip license validation entirely - these are community features
-	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, "query", user.TenantID, client.OrgID, client.ClientID)
+	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, "query", user.TenantID, client.OrgID, client.ClientID, time.Since(startTime).Milliseconds())
 	if err != nil {
 		return // response already sent by validateServiceLicense
 	}
@@ -1916,7 +2037,17 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			"mcp_resources_query", queryDescriptor, auditEntry.StatementHash,
 			verdict, policyIDs, reasons, redactedFields,
 			correlationID,
-			policyNames)
+			policyNames,
+			// #3424: NULL, deliberately. This ONE closure is invoked for
+			// verdicts reached BEFORE connector.Query (policy blocks) and for
+			// verdicts reached AFTER it (response SQLi / static / exfiltration
+			// blocks and the redaction row), so a single time.Since(startTime)
+			// would be an enforcement duration on some of its rows and an
+			// enforcement duration plus a third-party connector round trip on
+			// others. Averaging those together is the mixed-semantics defect
+			// LatencyEnforcementPredicate exists to keep out of the tile.
+			// Splitting the closure per verdict is filed as #3432.
+			sharedaudit.LatencyUnmeasured)
 	}
 
 	// Read-only enforcement posture (#2720, epic #2716). resources/query hands the
@@ -1936,6 +2067,41 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3447 (ADR-060 Slice 3): resolve this caller's governance-segment set
+	// ONCE, fail-closed, and reuse it for BOTH the request phase below and
+	// the response phase further down. Two resolutions in one request could
+	// observe two different cache states and enforce two different sets on
+	// one logical call. Keyed on the VALIDATED token email (user.Email),
+	// never the trust-gated X-User-Email header. See
+	// human_actor_segment_gate.go for the full contract.
+	segmentIDs, segOK := resolveHumanActorSegmentsForPolicy(ctx, user.OrgID, auth.OrgID, user.Email,
+		callerIsVerifiedHuman(auth, userErr, req.UserToken))
+	if !segOK {
+		// A resolver error for a caller who HAS a principal denies, on its
+		// OWN channel: guard id segment_resolution_failed + 403. Deliberately
+		// NOT InputPolicyOutcome.EvalUnavailable, which surfaces as 503
+		// "Dynamic policy evaluation unavailable" — folding the two together
+		// would make a deliberate policy-side deny indistinguishable from a
+		// real orchestrator outage in both the audit row and the dashboard.
+		writeMCPDecisionAudit(ctx, usageDB,
+			auditEntry.DecisionID, auditEntry.AuditID,
+			user.TenantID, auditEntry.OrgID, auth.ClientID, user.Email,
+			auditEntry.UserID, "",
+			"mcp_resources_query", queryDescriptor, "",
+			mcpVerdictBlocked,
+			[]string{mcpSegmentResolutionFailedPolicyID},
+			[]string{segmentResolutionFailedReason},
+			nil,
+			correlationID,
+			nil, // #3365: guard id resolves via the builtin table
+			// Reached before connector.Query, so this IS an honest
+			// enforcement duration (unlike the shared emitDecisionAudit
+			// closure, whose LatencyUnmeasured rationale does not apply here).
+			time.Since(startTime).Milliseconds())
+		sendErrorResponse(w, "Request blocked: "+segmentResolutionFailedReason, http.StatusForbidden, nil)
+		return
+	}
+
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
 	// v9 Phase 8 #2384 PR-C1: orgID is on the legacy *User struct as OrgID.
 	// #2581: per-org posture. orgID is the auth-derived org for this request; an
@@ -1948,7 +2114,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters,
-		mcpDetectionCfg, true /* runDynamicPolicy */)
+		mcpDetectionCfg, true, /* runDynamicPolicy */
+		segmentIDs /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503). Record a canonical
@@ -2020,9 +2187,16 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Response-phase policy evaluation: SQLi scan, PII redaction, exfiltration (Issue #1258)
 	outputOutcome := evaluateOutputPolicies(ctx,
-		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
-		"", /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */
-		result.Rows, "", nil, result.RowCount, true, false /* isGateway: managed connector */)
+		user.TenantID, auditEntry.OrgID, fmt.Sprintf("%d", user.ID), req.Connector,
+		// toolIdentity: agent-executed plane, never capability-scoped (#2801)
+		"",
+		result.Rows, "", nil, result.RowCount, true,
+		// isGateway: managed connector
+		false,
+		// #3447: the SAME set resolved once above for the request phase -- not
+		// a second resolution, so the two phases of one call can never
+		// disagree about membership.
+		segmentIDs)
 
 	// #2679: the response-phase verdict (SQLi/static-block/exfil-block → blocked;
 	// redact → redacted; else allowed). Computed once; mcpOutputDecisionVerdict's
@@ -2226,7 +2400,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	if userErr != nil {
 		// Synthetic service-user email is org-scoped by design. See sibling
 		// fallback in handleMCPQueryAccess for the full rationale.
-		if auth.Kind == AuthKindEnterprise {
+		if auth.Kind == AuthKindEnterprise && req.UserToken == "" && !ResolveRequireUserToken(ctx, auth.OrgID) {
 			user = &User{
 				ID:          0,
 				Email:       client.ID + "@axonflow.local",
@@ -2236,6 +2410,47 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 				Permissions: client.Permissions,
 			}
 		} else {
+			// #3472: a PRESENTED token that fails validation (malformed, expired,
+			// wrong alg, bad signature, jti-revoked) is a rejected access attempt,
+			// not a compatibility case. Audit it, then 401. Parity with
+			// decision_handler.go's /decide arm.
+			//
+			// #3476: with the org's posture requiring a token, a token-ABSENT
+			// caller now also reaches this branch. The req.UserToken != "" guard
+			// below keeps the two causes distinct: a presented-and-invalid token
+			// still audits as user_token_rejected (#3472, unchanged); an
+			// absent-and-required token audits under its own marker,
+			// user_token_required, so the two causes never collapse.
+			if req.UserToken != "" {
+				writeMCPDecisionAudit(ctx, usageDB,
+					auditEntry.DecisionID, auditEntry.AuditID,
+					client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_tools_execute", fmt.Sprintf("mcp tools/execute: %s", req.Connector), "",
+					mcpVerdictBlocked,
+					[]string{"user_token_rejected"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,
+					// #3472: reached before any connector.Execute hop, so this IS an
+					// honest enforcement duration (unlike the shared emitDecisionAudit
+					// closure below, whose LatencyUnmeasured rationale doesn't apply here).
+					time.Since(startTime).Milliseconds())
+			} else {
+				writeMCPDecisionAudit(ctx, usageDB,
+					auditEntry.DecisionID, auditEntry.AuditID,
+					client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_tools_execute", fmt.Sprintf("mcp tools/execute: %s", req.Connector), "",
+					mcpVerdictBlocked,
+					[]string{"user_token_required"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,
+					time.Since(startTime).Milliseconds())
+			}
 			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
@@ -2278,14 +2493,18 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{reason},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil)
+			nil,
+			// #3424: measured. Unlike the emitDecisionAudit closure below, this
+			// gate is a direct call that always fires BEFORE connector
+			// resolution, so the elapsed time is enforcement only.
+			time.Since(startTime).Milliseconds())
 		sendErrorResponse(w, "Request blocked: "+reason, http.StatusForbidden, nil)
 		return
 	}
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	// In community mode, skip license validation entirely - these are community features
-	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, strings.ToLower(req.Action), user.TenantID, auth.OrgID, client.ClientID)
+	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, strings.ToLower(req.Action), user.TenantID, auth.OrgID, client.ClientID, time.Since(startTime).Milliseconds())
 	if err != nil {
 		return // response already sent by validateServiceLicense
 	}
@@ -2348,7 +2567,35 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			"mcp_tools_execute", execDescriptor, auditEntry.StatementHash,
 			verdict, policyIDs, reasons, redactedFields,
 			correlationID,
-			policyNames)
+			policyNames,
+			// #3424: NULL, deliberately -- same shared-closure reason as
+			// mcpQueryHandler above (verdicts on both sides of
+			// connector.Execute share this one call site). Filed as #3432.
+			sharedaudit.LatencyUnmeasured)
+	}
+
+	// #3447 (ADR-060 Slice 3): one fail-closed segment resolution per request,
+	// reused by the request phase below and the response phase further down.
+	// See mcpQueryHandler's sibling block and human_actor_segment_gate.go.
+	segmentIDs, segOK := resolveHumanActorSegmentsForPolicy(ctx, user.OrgID, auth.OrgID, user.Email,
+		callerIsVerifiedHuman(auth, userErr, req.UserToken))
+	if !segOK {
+		// Own channel (segment_resolution_failed + 403), never EvalUnavailable
+		// /503 -- see mcpQueryHandler's sibling block.
+		writeMCPDecisionAudit(ctx, usageDB,
+			auditEntry.DecisionID, auditEntry.AuditID,
+			user.TenantID, auditEntry.OrgID, client.ClientID, user.Email,
+			auditEntry.UserID, "",
+			"mcp_tools_execute", execDescriptor, "",
+			mcpVerdictBlocked,
+			[]string{mcpSegmentResolutionFailedPolicyID},
+			[]string{segmentResolutionFailedReason},
+			nil,
+			correlationID,
+			nil,                                  // #3365: guard id resolves via the builtin table
+			time.Since(startTime).Milliseconds()) // reached before connector.Execute -- enforcement only
+		sendErrorResponse(w, "Request blocked: "+segmentResolutionFailedReason, http.StatusForbidden, nil)
+		return
 	}
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
@@ -2362,7 +2609,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters,
-		mcpDetectionCfg, true /* runDynamicPolicy */)
+		mcpDetectionCfg, true, /* runDynamicPolicy */
+		segmentIDs /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503) → canonical error row.
@@ -2427,9 +2675,14 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// Response-phase policy evaluation: SQLi scan, PII redaction (Issue #1258)
 	// Exfiltration checking is not applied to execute results (execute returns rows_affected, not data rows).
 	outputOutcome := evaluateOutputPolicies(ctx,
-		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
-		"", /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */
-		nil, result.Message, result.Metadata, int(result.RowsAffected), false, false /* isGateway: managed connector */)
+		user.TenantID, auditEntry.OrgID, fmt.Sprintf("%d", user.ID), req.Connector,
+		// toolIdentity: agent-executed plane, never capability-scoped (#2801)
+		"",
+		nil, result.Message, result.Metadata, int(result.RowsAffected), false,
+		// isGateway: managed connector
+		false,
+		// #3447: the SAME set resolved once above for the request phase.
+		segmentIDs)
 
 	// #2679: response-phase verdict, computed once; branch order mirrors the
 	// early-return order below so the recorded verdict matches the HTTP branch.
@@ -2694,8 +2947,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"authentication failed: " + authErr.Message},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
 	}
@@ -2735,8 +2989,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"no redaction detector registered for content_type: " + req.ContentType},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 		sendErrorResponse(w, "no redaction detector registered for content_type: "+req.ContentType, http.StatusUnsupportedMediaType, nil)
 		return
 	}
@@ -2772,7 +3027,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	// Resolve user and extract identity fields
 	user, userErr := ResolveUser(auth, req.UserToken)
 	if userErr != nil {
-		if auth.Kind == AuthKindEnterprise {
+		if auth.Kind == AuthKindEnterprise && req.UserToken == "" && !ResolveRequireUserToken(r.Context(), auth.OrgID) {
 			user = &User{
 				ID:       0,
 				Email:    auth.Client.ID + "@axonflow.local",
@@ -2781,6 +3036,46 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				Role:     "service",
 			}
 		} else {
+			// #3472: a PRESENTED token that fails validation (malformed, expired,
+			// wrong alg, bad signature, jti-revoked) is a rejected access attempt,
+			// not a compatibility case. Audit it, then 401. Parity with
+			// decision_handler.go's /decide arm.
+			//
+			// #3476: with the org's posture requiring a token, a token-ABSENT
+			// caller now also reaches this branch. The req.UserToken != "" guard
+			// below keeps the two causes distinct: a presented-and-invalid token
+			// still audits as user_token_rejected (#3472, unchanged); an
+			// absent-and-required token audits under its own marker,
+			// user_token_required, so the two causes never collapse.
+			if req.UserToken != "" {
+				writeMCPDecisionAudit(r.Context(), usageDB,
+					uuid.New().String(), "",
+					auth.Client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_check_input", "mcp check-input: user token rejected", "",
+					mcpVerdictBlocked,
+					[]string{"user_token_rejected"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,                                  // #3365: guard ids resolve via the builtin table
+					time.Since(startTime).Milliseconds(), // #3472: agent-local check-input evaluation, no downstream hop
+					req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
+			} else {
+				writeMCPDecisionAudit(r.Context(), usageDB,
+					uuid.New().String(), "",
+					auth.Client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_check_input", "mcp check-input: user token required", "",
+					mcpVerdictBlocked,
+					[]string{"user_token_required"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,
+					time.Since(startTime).Milliseconds(),
+					req.ConnectorType, req.Tool)
+			}
 			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
@@ -2800,8 +3095,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"resolved user tenant does not match authenticated client tenant"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 		return
 	}
@@ -2830,7 +3126,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	// both attribution and override scope fall back to the validated
 	// identity. Resolved before the missing-tenant early deny so that row
 	// attributes consistently with the decide plane's early denies.
-	userEmail := attributedUserEmail(r, user.Email)
+	userEmail := attributedUserEmail(r, user.Email, callerIsVerifiedHuman(auth, userErr, req.UserToken))
 
 	// Validate tenant_id after auth (Basic auth derives it from client)
 	if tenantID == "" {
@@ -2847,8 +3143,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"tenant_id is required"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
 		return
 	}
@@ -2867,7 +3164,28 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	if idempOrgID == "" {
 		idempOrgID = tenantID
 	}
-	idempotency.Wrap(w, r, mcpIdempStore, idempOrgID, tenantID, "mcp.check-input", func(w http.ResponseWriter, r *http.Request) {
+	// #3447 SECURITY: the idempotency cache key is (org, tenant, Idempotency-Key,
+	// endpoint) and carries NO principal, while Wrap replays a hit WITHOUT
+	// invoking the handler — so the segment gate below never runs on a replay.
+	//
+	// That was authorization-neutral before this issue: Segments was passed
+	// unconditionally nil here, so every caller in the org received the same
+	// verdict and a replay could only return a verdict the replaying caller
+	// would have got anyway. Making the verdict a function of segment
+	// membership is what turns a shared cache row into a bypass: a member of a
+	// targeted segment replaying a NON-member's cached allow would be served an
+	// allow on a statement their segment's policy blocks, on a key the caller
+	// chooses. The same applies in reverse to the segment_resolution_failed 403
+	// (4xx is cached), which would replay one caller's transient resolution
+	// failure to everyone sharing that key for the TTL.
+	//
+	// So the principal is folded into the endpoint discriminator: a different
+	// enforcement subject is a different cache row, and a genuine retry by the
+	// same caller still dedups. It is the caller's VALIDATED identity, the same
+	// value the gate resolves segments from — keying on anything the caller can
+	// assert would reintroduce the bypass through the other door. Hashed, so the
+	// idempotency_keys.endpoint column carries no identity material.
+	idempotency.Wrap(w, r, mcpIdempStore, idempOrgID, tenantID, mcpCheckInputIdempEndpoint(user.Email), func(w http.ResponseWriter, r *http.Request) {
 		// Generate a stable decision_id up front so it can be attached to both
 		// the audit entry and the response body. The explain endpoint
 		// (GET /api/v1/decisions/:id/explain) resolves by this id.
@@ -2951,13 +3269,60 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				[]string{reason},
 				nil,
 				traceIDFromHeader(r.Header.Get("traceparent")),
-				nil,                         // #3365: guard ids resolve via the builtin table
-				req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+				nil,                                  // #3365: guard ids resolve via the builtin table
+				time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+				req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
 				Allowed:     false,
 				BlockReason: reason,
+				DecisionID:  decisionID,
+			})
+			return
+		}
+
+		// #3447 (ADR-060 Slice 3): one fail-closed segment resolution for this
+		// request. Keyed on user.Email -- the VALIDATED token claim -- and
+		// deliberately NOT on userEmail above, which folds in the trust-gated
+		// X-User-Email header: keying resolution on a caller-supplied header
+		// would let the same human shed their segments by naming a non-member
+		// colleague. See human_actor_segment_gate.go.
+		// user.OrgID, not the credential's auth.OrgID: the segment set is a
+		// property of the USER's org, and this is the key every already-merged
+		// human-actor plane resolves on (/api/v1/process run.go:2184, gateway
+		// pre-check gateway_handlers.go:696). Keeping one key across the planes
+		// is what stops the same human resolving to different sets on different
+		// routes. (The MCP-server plane uses auth.OrgID only because it has no
+		// resolved User at all there -- identity arrives as a ValidatedIdentity.)
+		segmentIDs, segOK := resolveHumanActorSegmentsForPolicy(ctx, user.OrgID, auth.OrgID, user.Email,
+			callerIsVerifiedHuman(auth, userErr, req.UserToken))
+		if !segOK {
+			// Own channel (segment_resolution_failed + 403), never
+			// outcome.EvalUnavailable / 503 "Dynamic policy evaluation
+			// unavailable": a policy-side deny is not an availability failure.
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = segmentResolutionFailedReason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+			writeMCPDecisionAudit(ctx, usageDB,
+				decisionID, auditEntry.AuditID,
+				tenantID, orgID, auth.Client.ID, user.Email,
+				userID, "",
+				"mcp_check_input", fmt.Sprintf("mcp check-input: %s", req.ConnectorType), auditEntry.StatementHash,
+				mcpVerdictBlocked,
+				[]string{mcpSegmentResolutionFailedPolicyID},
+				[]string{segmentResolutionFailedReason},
+				nil,
+				traceIDFromHeader(r.Header.Get("traceparent")),
+				nil,                                  // #3365: guard id resolves via the builtin table
+				time.Since(startTime).Milliseconds(), // agent-local check-input evaluation, no downstream hop
+				req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+				Allowed:     false,
+				BlockReason: segmentResolutionFailedReason,
 				DecisionID:  decisionID,
 			})
 			return
@@ -2973,7 +3338,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		outcome := evaluateInputPolicies(ctx,
 			tenantID, orgID, userID, userRole,
 			req.ConnectorType, req.Tool /* toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904) */, operation, req.Statement, req.Parameters,
-			mcpDetectionCfg, true /* runDynamicPolicy */)
+			mcpDetectionCfg, true, /* runDynamicPolicy */
+			segmentIDs /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */)
 
 		if outcome.EvalUnavailable {
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
@@ -2993,8 +3359,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				[]string{"dynamic policy evaluation unavailable"},
 				nil,
 				traceIDFromHeader(r.Header.Get("traceparent")),
-				nil,                         // #3365: guard ids resolve via the builtin table
-				req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+				nil,                                  // #3365: guard ids resolve via the builtin table
+				time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+				req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
 			return
 		}
@@ -3108,7 +3475,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 					"mcp_check_input", fmt.Sprintf("mcp check-input: %s", req.ConnectorType), auditEntry.StatementHash,
 					outcome.StaticResult.BlockReason, topRisk, matches,
 					traceIDFromHeader(r.Header.Get("traceparent")), // #2598 correlation
-					req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+					time.Since(startTime).Milliseconds(),           // #3424: agent-local check-input evaluation, no downstream hop
+					req.ConnectorType, req.Tool)                    // #2904: tool_server, tool_name
 
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -3187,8 +3555,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				"mcp_check_input", inputDescriptor, computeStatementHash(inputDescriptor),
 				mcpVerdictRedacted, pids, reasons, auditEntry.ResponseRedactedFields,
 				traceIDFromHeader(r.Header.Get("traceparent")),
-				pnames,                      // #3365
-				req.ConnectorType, req.Tool) // #2904: tool_server, tool_name
+				pnames,                               // #3365
+				time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
+				req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 		} else {
 			emitInputDecision(v, pids, reasons, pnames)
 		}
@@ -3260,8 +3629,9 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"authentication failed: " + authErr.Message},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-output evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
 	}
@@ -3308,7 +3678,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, userErr := ResolveUser(auth, req.UserToken)
 	if userErr != nil {
-		if auth.Kind == AuthKindEnterprise {
+		if auth.Kind == AuthKindEnterprise && req.UserToken == "" && !ResolveRequireUserToken(r.Context(), auth.OrgID) {
 			user = &User{
 				ID:       0,
 				Email:    auth.Client.ID + "@axonflow.local",
@@ -3317,6 +3687,46 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 				Role:     "service",
 			}
 		} else {
+			// #3472: a PRESENTED token that fails validation (malformed, expired,
+			// wrong alg, bad signature, jti-revoked) is a rejected access attempt,
+			// not a compatibility case. Audit it, then 401. Parity with
+			// decision_handler.go's /decide arm.
+			//
+			// #3476: with the org's posture requiring a token, a token-ABSENT
+			// caller now also reaches this branch. The req.UserToken != "" guard
+			// below keeps the two causes distinct: a presented-and-invalid token
+			// still audits as user_token_rejected (#3472, unchanged); an
+			// absent-and-required token audits under its own marker,
+			// user_token_required, so the two causes never collapse.
+			if req.UserToken != "" {
+				writeMCPDecisionAudit(r.Context(), usageDB,
+					uuid.New().String(), "",
+					auth.Client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_check_output", "mcp check-output: user token rejected", "",
+					mcpVerdictBlocked,
+					[]string{"user_token_rejected"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,                                  // #3365: guard ids resolve via the builtin table
+					time.Since(startTime).Milliseconds(), // #3472: agent-local check-output evaluation, no downstream hop
+					req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
+			} else {
+				writeMCPDecisionAudit(r.Context(), usageDB,
+					uuid.New().String(), "",
+					auth.Client.TenantID, auth.OrgID, auth.ClientID, "",
+					"", "",
+					"mcp_check_output", "mcp check-output: user token required", "",
+					mcpVerdictBlocked,
+					[]string{"user_token_required"},
+					[]string{userErr.Message},
+					nil,
+					traceIDFromHeader(r.Header.Get("traceparent")),
+					nil,
+					time.Since(startTime).Milliseconds(),
+					req.ConnectorType, req.Tool)
+			}
 			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
@@ -3333,8 +3743,9 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"resolved user tenant does not match authenticated client tenant"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-output evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
 		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 		return
 	}
@@ -3353,7 +3764,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	// per-leader identity attributed to the fleet service user. Honored ONLY
 	// under AXONFLOW_TRUST_IDENTITY_HEADERS; falls back to the validated
 	// user.Email. Attribution only — the policy evaluation below never sees it.
-	userEmail := attributedUserEmail(r, user.Email)
+	userEmail := attributedUserEmail(r, user.Email, callerIsVerifiedHuman(auth, userErr, req.UserToken))
 
 	// Validate tenant_id after auth (Basic auth derives it from client)
 	if tenantID == "" {
@@ -3368,8 +3779,9 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			[]string{"tenant_id is required"},
 			nil,
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			nil,                         // #3365: guard ids resolve via the builtin table
-			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
+			nil,                                  // #3365: guard ids resolve via the builtin table
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-output evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
 		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
 		return
 	}
@@ -3397,10 +3809,59 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	// execute-style responses (message only) — consistent with mcpExecuteHandler.
 	checkExfiltration := len(req.ResponseData) > 0
 
+	// #3447 (ADR-060 Slice 3): one fail-closed segment resolution for this
+	// request. Keyed on user.Email -- the VALIDATED token claim -- never on
+	// userEmail above, which folds in the trust-gated X-User-Email header (a
+	// caller-supplied value must never decide which segment-scoped policies
+	// apply). This handler has only the response phase, so the single
+	// resolution has a single consumer. See human_actor_segment_gate.go.
+	// user.OrgID, not the credential's auth.OrgID -- see the sibling comment in
+	// mcpCheckInputHandler: one resolution key across every merged human-actor
+	// plane, so the same human cannot resolve to different sets per route.
+	segmentIDs, segOK := resolveHumanActorSegmentsForPolicy(ctx, user.OrgID, auth.OrgID, user.Email,
+		callerIsVerifiedHuman(auth, userErr, req.UserToken))
+	if !segOK {
+		// Own channel (segment_resolution_failed + 403). The response plane
+		// has no EvalUnavailable/503 channel at all, and must not grow one
+		// here: a resolver-error deny is a policy decision, not an outage.
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = segmentResolutionFailedReason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, auditEntry.AuditID,
+			tenantID, orgID, auth.ClientID, user.Email,
+			userID, "",
+			"mcp_check_output", fmt.Sprintf("mcp check-output: %s", req.ConnectorType), "",
+			mcpVerdictBlocked,
+			[]string{mcpSegmentResolutionFailedPolicyID},
+			[]string{segmentResolutionFailedReason},
+			nil,
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,                                  // #3365: guard id resolves via the builtin table
+			time.Since(startTime).Milliseconds(), // agent-local check-output evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
+			Allowed:     false,
+			BlockReason: segmentResolutionFailedReason,
+			DecisionID:  decisionID,
+		})
+		return
+	}
+
 	outcome := evaluateOutputPolicies(ctx,
-		tenantID, userID, req.ConnectorType,
-		req.Tool, /* toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904, #2955) — distinct from ConnectorType/server; empty ⇒ full (fail-closed) evaluation, no fallback */
-		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration, true /* isGateway: check-output is a PEP/gateway caller */)
+		tenantID, orgID, userID, req.ConnectorType,
+		// toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904,
+		// #2955) - distinct from ConnectorType/server; empty means full
+		// (fail-closed) evaluation, no fallback
+		req.Tool,
+		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration,
+		// isGateway: check-output is a PEP/gateway caller
+		true,
+		// #3447: the caller's fail-closed-resolved governance-segment set.
+		segmentIDs)
 
 	auditEntry.ExfilRowsReturned = req.RowCount
 	applyResponseRedactionAudit(&auditEntry, outcome)
@@ -3446,8 +3907,9 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			"mcp_check_output", fmt.Sprintf("mcp check-output: %s", req.ConnectorType), "",
 			mcpVerdictRedacted, outPolicyIDs, outReasons, outcome.RedactedFieldNames(),
 			traceIDFromHeader(r.Header.Get("traceparent")),
-			outPolicyNames,              // #3365
-			req.ConnectorType, req.Tool) // #2955: tool_server, tool_name
+			outPolicyNames,                       // #3365
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check-output evaluation, no downstream hop
+			req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
 	} else {
 		recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageTool,
 			outVerdict, outPolicyIDs, time.Since(startTime).Milliseconds(), outReasons,

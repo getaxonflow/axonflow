@@ -438,11 +438,11 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	if wrapErr := agent.WithOrgScope(r.Context(), usageDB, overrideOrgScope, func(tx *sql.Tx) error {
 		_, execErr := tx.ExecContext(r.Context(), `
 			INSERT INTO policy_overrides (
-				id, policy_id, policy_type, organization_id, tenant_id, org_id, tool_signature,
+				id, policy_id, policy_type, tenant_id, org_id, tool_signature,
 				action_override, override_reason, expires_at, created_by, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, 'allow', $8, $9, $10, $11, $11)
+			) VALUES ($1, $2, $3, $4, $5, $6, 'allow', $7, $8, $9, $10, $10)
 		`, overrideID, canonicalUUID, req.PolicyType,
-			nullableUUID(orgID), nullableString(tenantID), overrideOrgScope, toolSig,
+			nullableString(tenantID), overrideOrgScope, toolSig,
 			req.OverrideReason, expiresAt, userEmail, now)
 		return execErr
 	}); wrapErr != nil {
@@ -676,7 +676,7 @@ func getOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	var row overrideRow
 	err := agent.WithOrgScope(r.Context(), usageDB, getScope, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(r.Context(), `
-			SELECT id, policy_id, policy_type, tenant_id, organization_id, tool_signature,
+			SELECT id, policy_id, policy_type, tenant_id, org_id, tool_signature,
 			       override_reason, expires_at, created_by, created_at, revoked_at, revoked_by
 			FROM policy_overrides WHERE id = $1 AND tenant_id = $2
 		`, overrideID, tenantID).Scan(
@@ -827,16 +827,23 @@ func nullableString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
 }
 
-// nullableUUID returns a sql.NullString holding the input only if it parses
-// as a UUID. Non-UUID identifiers (e.g. community-mode slugs like
-// "local-dev-org") return an invalid NullString so the driver inserts NULL
-// rather than erroring with "invalid input syntax for type uuid".
-func nullableUUID(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{}
-	}
-	if _, err := uuid.Parse(s); err != nil {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: s, Valid: true}
-}
+// nullableUUID was deleted here by #3334.
+//
+// It existed for ONE caller: the policy_overrides INSERT, whose
+// organization_id column was typed uuid until migration core/133 retyped it
+// to text. AxonFlow org ids are free-form strings from a signed licence
+// ("local-dev-org"), so binding one into a uuid column threw
+// `pq: invalid input syntax for type uuid` - shipped as a hard 500 in 9.3.0 -
+// and this helper silently wrote NULL instead of erroring.
+//
+// That is a coping mechanism for a column with the wrong type, and it has an
+// edge no reader would predict: an org id that HAPPENS to be UUID-shaped was
+// stored, while every other org id became NULL, so the column's population
+// depended on how a customer chose to name their organisation. Migration
+// core/166 drops the column; the INSERT now writes org_id, which has been
+// VARCHAR since core/110 and needs no coercion.
+//
+// The unit tests that pinned its three branches went with it. They tested a
+// helper, not a behaviour, and the behaviour they protected - a non-UUID org
+// id must not 500 the override create path - is now a property of the schema
+// rather than of a function that can be called from somewhere new.

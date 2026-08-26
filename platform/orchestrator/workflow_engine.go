@@ -166,6 +166,47 @@ type StepExecution struct {
 	ProcessTime string                 `json:"process_time"`
 }
 
+// EngineExecutionIDPrefix is the prefix carried by every in-process
+// declarative workflow-engine run (POST /api/v1/workflows/execute).
+//
+// #3442: this was `wf_`, the SAME prefix as a control-plane workflow_id, and
+// the two are not the same kind of thing. A control-plane workflow is an
+// EXTERNAL orchestrator's run registered with AxonFlow for governance: it is a
+// row in `workflows`, it is addressed by /api/v1/workflows/{id}, its steps are
+// approved from the portal Approvals queue, and it has a 1:1 execution_history
+// projection. An engine execution is AxonFlow's own declarative engine running
+// a workflow spec it was handed in the request body: it lives in
+// WorkflowStorage (InMemoryWorkflowStorage in the shipped wiring), it is
+// reachable through none of those routes, and it appears in `workflows`,
+// `workflow_steps` and `execution_history` nowhere at all. Its only persisted
+// trace is the replay recorder's request_id (#763).
+//
+// Two concepts, so two prefixes. `wf_` stays with the identifier that the API
+// routes, the audit trail and the operator's Approvals screen all key on;
+// this one moved. Nothing parses either prefix except
+// UnifiedExecutionHandler.resolveExecution, for which the change is strictly
+// an improvement: an engine id handed to /api/v1/unified/executions/{id} no
+// longer sends it hunting for a WCP workflow that cannot exist.
+const EngineExecutionIDPrefix = "wfe_"
+
+// newEngineExecutionID mints an in-process workflow-engine execution id.
+//
+// ENTROPY: a whole-second timestamp plus 8 characters drawn from a 36-symbol
+// alphabet by generateRandomString, which is crypto/rand backed - about 41
+// bits of randomness, and a collision additionally requires the same second.
+// The shape is unchanged from before #3442 (only the prefix moved): the
+// timestamp is load-bearing for sorting and log correlation, and 41 bits
+// within one second is not the defect #3442 is about. Contrast the
+// control-plane minter (workflow_control.NewWorkflowID, 122 bits), whose ids
+// are a database-wide PRIMARY KEY over a table nothing prunes.
+//
+// One helper for three call sites (ExecuteWorkflow,
+// executeWorkflowWithStepGroups, HITLWorkflowEngine.createExecution) so they
+// cannot drift - the way the two control-plane copies did.
+func newEngineExecutionID() string {
+	return fmt.Sprintf("%s%d_%s", EngineExecutionIDPrefix, time.Now().Unix(), generateRandomString(8))
+}
+
 // StepProcessor interface for different step types
 type StepProcessor interface {
 	ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error)
@@ -646,7 +687,7 @@ func (e *WorkflowEngine) GetCostEstimator() PlanCostEstimator {
 func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext) (*WorkflowExecution, error) {
 	// Create execution instance
 	execution := &WorkflowExecution{
-		ID:           fmt.Sprintf("wf_%d_%s", time.Now().Unix(), generateRandomString(8)),
+		ID:           newEngineExecutionID(),
 		WorkflowName: workflow.Metadata.Name,
 		Status:       "running",
 		Input:        input,
@@ -1002,7 +1043,7 @@ func (e *WorkflowEngine) executeWorkflowWithStepGroups(ctx context.Context, work
 
 	// Create execution instance
 	execution := &WorkflowExecution{
-		ID:           fmt.Sprintf("wf_%d_%s", time.Now().Unix(), generateRandomString(8)),
+		ID:           newEngineExecutionID(),
 		WorkflowName: workflow.Metadata.Name,
 		Status:       "running",
 		Input:        input,

@@ -65,18 +65,22 @@ var builtinPolicyDisplayNames = map[string]string{
 	"client_disabled":       "Client enablement guard",
 
 	// Platform protection guards
-	"circuit_breaker":            "Circuit breaker guard",
-	"rbi_kill_switch":            "RBI kill switch",
-	"budget_exceeded":            "Budget limit guard",
-	"daily_cap":                  "Daily usage cap guard",
-	"tier_gate":                  "Tier access gate",
-	"exfiltration_limit":         "Exfiltration volume guard",
-	"segment_resolution_failed":  "Governance segment resolution guard",
-	"dynamic_policy_unavailable": "Dynamic policy availability guard",
-	"content_type_unsupported":   "Content type guard",
-	"connector_error":            "Connector execution guard",
-	"tool_error":                 "Tool execution guard",
-	readOnlyPosturePolicyID:      "MCP read-only posture",
+	"circuit_breaker":           "Circuit breaker guard",
+	"rbi_kill_switch":           "RBI kill switch",
+	"budget_exceeded":           "Budget limit guard",
+	"daily_cap":                 "Daily usage cap guard",
+	"tier_gate":                 "Tier access gate",
+	"exfiltration_limit":        "Exfiltration volume guard",
+	"segment_resolution_failed": "Governance segment resolution guard",
+	// #3430: distinct from the guard above - resolution did not FAIL, there
+	// was no per-user principal to resolve against while segment-scoped
+	// policies exist. Different operator remedy, so a different name.
+	"segment_identity_unresolved": "Governance segment identity guard",
+	"dynamic_policy_unavailable":  "Dynamic policy availability guard",
+	"content_type_unsupported":    "Content type guard",
+	"connector_error":             "Connector execution guard",
+	"tool_error":                  "Tool execution guard",
+	readOnlyPosturePolicyID:       "MCP read-only posture",
 
 	// Validator-backed detectors (code-backed, not static_policies rows)
 	"indonesia_pii_protection": "Indonesia PII protection (validator)",

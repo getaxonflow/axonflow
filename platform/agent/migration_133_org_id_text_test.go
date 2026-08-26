@@ -16,6 +16,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// #3334 (2026-08-25): THIS TEST DELIBERATELY PINS A PRE-166 SCHEMA. Migration
+// core/166 drops `organization_id` from the policy tables and drops
+// `valid_override_scope` with it, so the present tense below describes the
+// schema as of core/133 and NOT the schema a current deployment runs. The test
+// is hermetic -- it applies its own bounded migration range and still passes --
+// and it is left pinned on purpose: 133's regression (a free-form org id in a
+// uuid column throwing `pq: invalid input syntax for type uuid`) is only
+// observable while the column exists, and re-pointing the test at org_id would
+// silently retire the coverage instead of moving it.
+//
+// It is called out because after 166 this is the ONLY place still asserting BY
+// NAME that `organization_id` and `valid_override_scope` exist, so a reader
+// finding it is entitled to think the column is live. It is not.
+//
 // TestMigration133_OrganizationIDUUIDToText_RealPostgres proves migration 133
 // against a REAL Postgres: it retypes the legacy `organization_id` column from
 // uuid to text on all four policy tables, and — the actual regression — a

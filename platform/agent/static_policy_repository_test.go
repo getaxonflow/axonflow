@@ -126,7 +126,7 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("tenant-1").
+					WithArgs("tenant-1", "tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 				mock.ExpectCommit()
 
@@ -164,6 +164,13 @@ func TestCreate(t *testing.T) {
 				Action:   "block",
 				Severity: "high",
 				TenantID: "tenant-1",
+				// #3490: countTenantPolicies takes the org explicitly and
+				// refuses an empty one, so this case must carry an OrgID to
+				// keep testing what it is named for -- the tenant-policy
+				// LIMIT. Without it the Create fails on the org guard instead
+				// and never reaches the limit check, which would silently turn
+				// a limit assertion into a guard assertion.
+				OrgID: "tenant-1",
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Check license tier (Community)
@@ -177,7 +184,7 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("tenant-1").
+					WithArgs("tenant-1", "tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(30))
 				mock.ExpectCommit()
 			},
@@ -225,14 +232,14 @@ func TestCreate(t *testing.T) {
 		{
 			name: "organization tier requires enterprise",
 			policy: &StaticPolicy{
-				Name:           "Test Policy",
-				Category:       "security-sqli",
-				Tier:           TierOrganization,
-				Pattern:        `\btest\b`,
-				Action:         "block",
-				Severity:       "high",
-				TenantID:       "tenant-1",
-				OrganizationID: strPtr("org-1"),
+				Name:     "Test Policy",
+				Category: "security-sqli",
+				Tier:     TierOrganization,
+				Pattern:  `\btest\b`,
+				Action:   "block",
+				Severity: "high",
+				TenantID: "tenant-1",
+				OrgID:    "org-1",
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Check license tier (Community - should fail)
@@ -245,16 +252,15 @@ func TestCreate(t *testing.T) {
 		{
 			name: "organization tier success - enterprise",
 			policy: &StaticPolicy{
-				Name:           "Org Policy",
-				Category:       "security-sqli",
-				Tier:           TierOrganization,
-				Pattern:        `\btest\b`,
-				Action:         "block",
-				Severity:       "high",
-				TenantID:       "tenant-1",
-				OrgID:          "tenant-1",
-				OrganizationID: strPtr("org-1"),
-				Enabled:        true,
+				Name:     "Org Policy",
+				Category: "security-sqli",
+				Tier:     TierOrganization,
+				Pattern:  `\btest\b`,
+				Action:   "block",
+				Severity: "high",
+				TenantID: "tenant-1",
+				OrgID:    "tenant-1",
+				Enabled:  true,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Check license tier (Enterprise)
@@ -292,7 +298,10 @@ func TestCreate(t *testing.T) {
 				Action:   "block",
 				Severity: "high",
 				TenantID: "tenant-1",
-				// Missing OrganizationID
+				// #3334: OrgID deliberately unset. The guard used to read the
+				// retired organization_id column; it reads org_id now, which
+				// is the key that actually decides isolation and selection -
+				// so an org-tier policy without one is an unselectable row.
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Check license tier (Enterprise)
@@ -300,7 +309,7 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 			},
-			errContains: "organization_id is required",
+			errContains: "org_id is required",
 		},
 		{
 			// Issue #1081: Test that require_approval action (HITL) properly sets phase and action columns
@@ -395,14 +404,14 @@ func TestUpdate(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "sys_test", "System Policy", "security-sqli", `\btest\b`, "critical",
 						sql.NullString{}, "block", "system", 100, true,
-						nil, "global", sql.NullString{},
-						nil, nil, 1,
+						"global", "global",
+						sql.NullString{}, nil, 1,
 						time.Now(), time.Now(), sql.NullString{}, sql.NullString{}, nil,
 					))
 			},
@@ -424,13 +433,13 @@ func TestUpdate(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						"Test description", "block", "tenant", 50, true,
-						nil, "tenant-1", "tenant-1",
+						"tenant-1", "tenant-1",
 						nil, nil, 1,
 						now, now, "user1", "user1", nil,
 					))
@@ -446,12 +455,12 @@ func TestUpdate(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"version", "created_at", "updated_at", "created_by", "updated_by",
 					}).AddRow(
 						"policy-1", "custom_test", "Updated Name", "security-sqli", `\btest\b`, "high",
 						"Updated description", "block", "tenant", 50, true,
-						nil, "tenant-1", "tenant-1",
+						"tenant-1", "tenant-1",
 						2, now, now, "user1", "test-user",
 					))
 				mock.ExpectCommit()
@@ -481,13 +490,13 @@ func TestUpdate(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						nil, "block", "tenant", 50, true,
-						nil, "tenant-1", nil,
+						"tenant-1", nil,
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
@@ -552,13 +561,13 @@ func TestDelete(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "sys_test", "System Policy", "security-sqli", `\btest\b`, "critical",
 						nil, "block", "system", 100, true,
-						nil, "global", nil,
+						"global", nil,
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
@@ -575,13 +584,13 @@ func TestDelete(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						nil, "block", "tenant", 50, true,
-						nil, "tenant-1", "tenant-1",
+						"tenant-1", "tenant-1",
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
@@ -655,13 +664,13 @@ func TestGetByID(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "name", "category", "pattern", "severity",
 			"description", "action", "tier", "priority", "enabled",
-			"organization_id", "tenant_id", "org_id",
+			"tenant_id", "org_id",
 			"tags", "metadata", "version",
 			"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 		}).AddRow(
 			"policy-1", "custom_test", "Test Policy", "security-sqli", `\btest\b`, "high",
 			sql.NullString{Valid: true, String: "Test description"}, "block", "tenant", 50, true,
-			nil, "tenant-1", sql.NullString{},
+			"tenant-1", sql.NullString{},
 			`["tag1", "tag2"]`, `{"key": "value"}`, 1,
 			now, now, sql.NullString{Valid: true, String: "user1"}, sql.NullString{Valid: true, String: "user2"}, nil,
 		))
@@ -693,7 +702,7 @@ func TestList(t *testing.T) {
 	listCols := []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id",
+		"tenant_id", "org_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -709,13 +718,13 @@ func TestList(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(listCols).AddRow(
 			"policy-1", "custom_1", "Policy 1", "security-sqli", `\btest1\b`, "high",
 			nil, "block", "tenant", 50, true,
-			nil, "tenant-1", nil,
+			"tenant-1", nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		).AddRow(
 			"policy-2", "custom_2", "Policy 2", "security-sqli", `\btest2\b`, "medium",
 			nil, "warn", "tenant", 40, true,
-			nil, "tenant-1", nil,
+			"tenant-1", nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
@@ -756,7 +765,7 @@ func TestGetEffective(t *testing.T) {
 	policyCols := []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tenant_id", "org_id", "segment_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -772,16 +781,16 @@ func TestGetEffective(t *testing.T) {
 		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
-		WithArgs("tenant-1", "org-1", sqlmock.AnyArg()).
+		WithArgs("org-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"org-pol-1", "org_policy_1", "Org Policy", "pii-global", `\bSSN\b`, "high",
 			nil, "block", "organization", 80, true,
-			"org-1", "tenant-1", nil, nil,
+			"tenant-1", "org-1", nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
 	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-		WithArgs("tenant-1", "org-1").
+		WithArgs("org-1", "tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason", "tenant_id",
 		}).AddRow(
@@ -797,7 +806,7 @@ func TestGetEffective(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"sys-1", "sys_sqli_1", "System SQLi Policy", "security-sqli", `\bDROP\b`, "critical",
 			nil, "block", "system", 100, true,
-			nil, "global", nil, nil,
+			"global", "global", nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
@@ -845,7 +854,7 @@ func TestGetEffective_SegmentScoped(t *testing.T) {
 	policyCols := []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tenant_id", "org_id", "segment_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -855,16 +864,16 @@ func TestGetEffective_SegmentScoped(t *testing.T) {
 		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
-		WithArgs("tenant-1", "org-1", sqlmock.AnyArg()).
+		WithArgs("org-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"seg-1", "finance_block", "Finance Segment Block", "pii-global", `\bSSN\b`, "critical",
 			nil, "block", "tenant", 80, true,
-			nil, "tenant-1", nil, "finance",
+			"tenant-1", "org-1", "finance",
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
 	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-		WithArgs("tenant-1", "org-1").
+		WithArgs("org-1", "tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason", "tenant_id",
 		}).AddRow(
@@ -921,7 +930,7 @@ func TestGetEffective_TenantOverrideBeatsLaterCreatedOrgOverride(t *testing.T) {
 	policyCols := []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tenant_id", "org_id", "segment_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -931,11 +940,11 @@ func TestGetEffective_TenantOverrideBeatsLaterCreatedOrgOverride(t *testing.T) {
 		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT .* FROM static_policies sp`).
-		WithArgs("tenant-1", "org-1", sqlmock.AnyArg()).
+		WithArgs("org-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(policyCols).AddRow(
 			"pol-1", "tenant_policy_1", "Tenant Policy", "pii-global", `\bSSN\b`, "high",
 			nil, "block", "tenant", 80, true,
-			nil, "tenant-1", nil, nil,
+			"tenant-1", "org-1", nil,
 			nil, nil, 1,
 			now, now, nil, nil,
 		))
@@ -943,7 +952,7 @@ func TestGetEffective_TenantOverrideBeatsLaterCreatedOrgOverride(t *testing.T) {
 	// created SECOND (tenant_id NULL, so the org branch of the WHERE matched)
 	// — returned in created_at ASC order, org row last.
 	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).
-		WithArgs("tenant-1", "org-1").
+		WithArgs("org-1", "tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "action_override", "enabled_override", "expires_at", "override_reason", "tenant_id",
 		}).
@@ -1093,13 +1102,19 @@ func TestGetVersions(t *testing.T) {
 
 			// Get versions — org-scoped with a parent-ownership predicate
 			// (#3048); ctx has no org so the scope key falls back to the
-			// tenant.
+			// tenant (the org == tenant identity).
+			//
+			// Decision 5 (#3490): the query binds THREE args, not four. The
+			// caller tenant is no longer one of them - the predicate is
+			// `tier='system' OR org_id = $2` - and $2 is the same value the
+			// set_config above binds, so a future edit that let the GUC and
+			// the predicate diverge fails this expectation.
 			mock.ExpectBegin()
 			mock.ExpectExec(`SELECT set_config`).
 				WithArgs("tenant-1").
 				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectQuery(`SELECT v.id, v.policy_id, v.version, v.snapshot, v.change_type, v.change_summary, v.changed_by, v.changed_at`).
-				WithArgs("policy-1", "tenant-1", "", tt.expectedLimit).
+				WithArgs("policy-1", "tenant-1", tt.expectedLimit).
 				WillReturnRows(sqlmock.NewRows([]string{
 					"id", "policy_id", "version", "snapshot", "change_type",
 					"change_summary", "changed_by", "changed_at",
@@ -1143,13 +1158,13 @@ func TestToggleEnabled(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "sys_test", "System Policy", "security-sqli", `\btest\b`, "critical",
 						nil, "block", "system", 100, true,
-						nil, "global", nil,
+						"global", nil,
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
@@ -1167,13 +1182,13 @@ func TestToggleEnabled(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						nil, "block", "tenant", 50, true,
-						nil, "tenant-1", "tenant-1",
+						"tenant-1", "tenant-1",
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
@@ -1268,21 +1283,50 @@ func TestCountTenantPolicies(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	// #3048: org-scoped count.
+	// #3048: org-scoped count. #3490: the org is an explicit parameter and is
+	// DELIBERATELY different from the tenant here -- the pre-#3490 code took
+	// one identifier and used it as both, so a test that passed the same
+	// string for both could not tell the GUC apart from the row predicate and
+	// would still pass if the two were swapped.
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-		WithArgs("tenant-1").
+		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-		WithArgs("tenant-1").
+		WithArgs("tenant-1", "org-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
 	mock.ExpectCommit()
 
 	repo := NewStaticPolicyRepository(db)
-	count, err := repo.countTenantPolicies(context.Background(), "tenant-1")
+	count, err := repo.countTenantPolicies(context.Background(), "org-1", "tenant-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, 15, count)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestCountTenantPolicies_RefusesWithoutOrg pins the fail-closed direction of
+// #3490. The removed code fell back to `scopeOrg = tenantID` when no org was
+// available, which under app-role set the RLS GUC to a string that is not an
+// organisation -- the USING clause then matched nothing, COUNT(*) came back 0,
+// and the Community tenant-policy limit silently authorised the write it
+// exists to refuse. An uncountable quota must be an error, not a zero.
+//
+// The assertion is that NO statement is issued at all: a refusal that still
+// opened a transaction would mean the guard ran after the scope was taken.
+func TestCountTenantPolicies_RefusesWithoutOrg(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	repo := NewStaticPolicyRepository(db)
+	count, err := repo.countTenantPolicies(context.Background(), "", "tenant-1")
+
+	require.Error(t, err, "an empty org must refuse rather than count in an unknown organisation")
+	assert.Contains(t, err.Error(), "orgID must be non-empty")
+	assert.Equal(t, 0, count)
+	// No Begin, no Exec, no Query were expected, so this also proves the
+	// refusal happened before any database work.
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

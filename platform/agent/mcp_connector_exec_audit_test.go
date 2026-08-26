@@ -86,6 +86,7 @@ func expectCanonicalDecisionRow(mock sqlmock.Sqlmock, requestType, verdict strin
 			nil,              // correlation_id (no traceparent → NULL → singleton)
 			nil,              // redacted_fields NULL — block/error/clean allow
 			nil,              // session_id NULL — no X-Session-Id on ctx (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }
@@ -115,6 +116,7 @@ func expectRedactedDecisionRow(mock sqlmock.Sqlmock, requestType string, dst *[]
 			nil,                  // correlation_id NULL
 			captureArg{dst: dst}, // redacted_fields populated (#2641 DoD)
 			nil,                  // session_id NULL — no X-Session-Id on ctx (#2753)
+			sqlmock.AnyArg(),     // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }

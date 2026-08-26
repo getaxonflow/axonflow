@@ -114,6 +114,2588 @@ community mirror, **Enterprise** changes are EE-only.
   No migrations: `git diff v9.18.0..origin/main -- migrations/` is empty.
 -->
 
+<!--
+  TAG-TIME ACTION (Step 0): the date on the heading below, 2026-08-22, is
+  STALE and is deliberately left that way until the tag is cut. It is not an
+  oversight and it should not be "fixed" in a review pass.
+
+  WHY IT IS LEFT ALONE: the version string is atomic across nine sites in this
+  file plus the heading, and moving the date alone would split that set and
+  make the next reader trust a half-updated block. The whole set moves in one
+  commit, at tag time, and not before.
+
+  WHAT TO DO WHEN CUTTING THE TAG: set this date to the ACTUAL release date in
+  the same commit that settles the version string everywhere else, then delete
+  this comment. If you are reading this in a released tag, the date is wrong
+  and this step was missed.
+-->
+## [10.0.0] - 2026-08-26 (segment enforcement reaches five more planes; identity suppression closed at authentication; one dynamic-policy engine; audit and compliance surfaces stop fabricating values)
+
+> Scope: every operator upgrading from 9.19.0. This release removes two boot
+> fallbacks and one request-time identity fallback, adds new refusals on the
+> segment-enforcement, authentication, execution-read and audit-report paths,
+> ships eight migrations (`core/160` through `core/167`), and changes what
+> several read APIs put on the wire when they have nothing to report. FIVE
+> consequences need a decision before you upgrade, not after:
+>
+> 1. On the four MCP REST routes, an enterprise caller presenting a per-user
+>    token that FAILS to validate is now `401` instead of being served under a
+>    synthetic service identity. Revocation, expiry and key rotation begin
+>    taking effect on those routes for the first time. Nothing is opt-in about
+>    this one. Inventory the tokens your MCP callers present before upgrading.
+> 2. Migrations `core/161` and `core/162` rewrite `audit_logs` whole-table, and
+>    a `statement_timeout` too tight for them is a BOOT LOOP rather than a
+>    skipped step, because the migration runner answers a migration error with
+>    a fatal exit. Size the timeout against your own `audit_logs` row count
+>    before upgrading.
+> 3. The legacy `POST /api/v1/sebi/audit/export` gains a `partial` status and
+>    omits `compliance_score` when SOME but not all requested sections could be
+>    served, or a served one carries a scope gap; an all-types request hits that
+>    on a stock deployment. If NO requested section could be produced it is
+>    `failed`, not `partial` (Enterprise). The
+>    `POST /api/v1/compliance/reports` facade's status vocabulary is UNCHANGED
+>    and never returns `partial`; on that route completeness is visible only
+>    inside the document and in the portal's completeness caveat.
+> 4. A deployment running `axonflow_app_role` with no
+>    `AXONFLOW_DB_PLATFORM_ADMIN_URL` **does not boot**, and has not since
+>    before 9.19.0. The orchestrator refuses at startup rather than serving the
+>    portal Executions list. If you are upgrading from 9.19.0 you are already
+>    past this, by construction; set the variable before upgrading only if you
+>    are also turning the app role on.
+>
+> 5. **Human-in-the-Loop approvals become Enterprise-only.** `Evaluation` was
+>    entitled and is not any more. An Evaluation deployment using WCP
+>    step-gate approvals has them today and will lose them: the step is still
+>    HELD, but no reviewer entry is created. **Entries you already hold are not
+>    lost** - they stay listable, approvable and rejectable on Evaluation, and
+>    the expiry sweeper still runs, so nothing is stranded. What stops is the
+>    creation of NEW ones. If you run Evaluation and rely on workflow
+>    approvals, this is a capability removal, not a refinement - inventory your
+>    queue before upgrading (query in the Breaking changes section).
+>
+> Read the Breaking changes and Migration sections in full.
+
+### Breaking changes at a glance
+
+- **Per-tenant policy targeting is dropped: policy is selected by
+  organisation, not by `tenant_id` (#3490).** `tenant_id` is the username half
+  of the Basic-auth credential, assigned from whatever the client typed and
+  validated by nothing, so the set of policies governing a caller was a set
+  the caller chose. Selection now keys on the organisation id from the signed
+  licence. **For one tenant per organisation this is a no-op**; where one
+  organisation owns several tenants with different rows, those rows start
+  applying organisation-wide. `./preflight.sh` checks 23 and 24 name the
+  affected rows before you upgrade, including the case that is easiest to miss
+  - an organisation whose one policy row is scoped to one of its several
+  tenants, which carries no divergence among its own rows and still starts
+  governing every sibling. Read the Security section: the removed boundary was
+  never enforceable. Overrides are deliberately NOT made organisation-wide,
+  because that is the one direction of this change that would loosen
+  enforcement.
+  *(Community / Enterprise)*
+- **A policy row with no resolvable organisation stops being selectable
+  (#3490, migration `core/165`).** `org_id` becomes `NOT NULL` and non-empty on
+  `static_policies`, `dynamic_policies` and `policy_overrides`. The migration
+  resolves what it can and stamps whatever is left with `__axonflow_unowned__`,
+  a sentinel the platform refuses on both sides of every comparison, so a
+  stamped row is selectable by nobody. **This is the one change in the release
+  that REMOVES enforcement rather than widening it.** The migration names the
+  rows in the agent's boot log, which is during the upgrade; `./preflight.sh`
+  check 24 names the same rows read-only beforehand.
+  *(Community / Enterprise)*
+- **Seven orchestrator policy-authoring routes answer `401 ORG_REQUIRED`
+  without an `X-Org-ID` header (#3490).** `POST /api/v1/templates/{id}/apply`
+  (which answered `201`), `POST /api/v1/policies/import`,
+  `POST /api/v1/dynamic-policies/import`, `POST /api/v1/policies/simulate`,
+  `/api/v1/policies/impact-report`, `/api/v1/policies/conflicts` and the
+  dynamic-policy list. Each of them authors or evaluates a policy, and a policy
+  is now selected by its organisation. **Refused rather than defaulted to the
+  tenant**: stamping the row with the Basic-auth username is precisely what
+  this release removes, so on any deployment whose licence organisation differs
+  from that string the policy would be created, return `201`, list correctly
+  and govern nobody. These routes are NOT proxied by the agent, so no gateway
+  sets the header for you; an operator calling the orchestrator directly must
+  send it.
+  *(Community / Enterprise)*
+- **The legacy `organization_id` column is dropped from the policy tables
+  (#3334, migration `core/166`).** `static_policies`, `dynamic_policies` and
+  `policy_overrides` lose it. It was the pre-v9 organisation key, superseded by
+  `org_id`, and `core/165` resolves the last rows that depended on it before it
+  goes. Anything reading that column directly in SQL against these three tables
+  breaks; nothing on the wire changes.
+  *(Community / Enterprise)*
+- **Governance segments are enforced on five more planes, and an unresolvable
+  segment set now DENIES** where it previously passed: the gateway pre-check
+  (#3312), the WCP HTTP step-gate (#3281), the MCP-server `check_policy` /
+  `check_output` tools (#3430), the MCP REST plane's four routes (#3447), and
+  `POST /api/v1/decide` (#3456). **On the last two, enforcement is conditional
+  on the caller presenting a per-user token** unless the organisation sets
+  `require_user_token`. **The WCP step-gate is conditional too, and
+  `require_user_token` has no gate point there**; read the Security section
+  before relying on any of the three.
+  *(Enterprise)*
+- **`X-User-Token` becomes required** on the MCP-server `check_policy` /
+  `check_output` tools for any organisation holding an enabled segment-scoped
+  policy for that phase (#3430). *(Enterprise)*
+- **A per-user token that FAILS to validate is now `401` on the four MCP REST
+  routes** instead of being silently downgraded to a synthetic service identity
+  and served (#3472). This is a removed fallback and it is not opt-in:
+  revocation, expiry, algorithm pinning and signature checks begin taking
+  effect on those routes. *(Enterprise)*
+- **`require_user_token` lets an organisation refuse a token-less enterprise
+  caller at authentication**, on six gate points, with migration `core/163`
+  and `AXONFLOW_REQUIRE_USER_TOKEN` (#3476). Opt-in, default off; an
+  unparseable env value is a BOOT FATAL. *(Enterprise)*
+- **`axonflow_segment_resolution_total` gains a `phase` label** (#3473), so
+  every existing series of that counter is replaced by phase-split ones and an
+  exact-series dashboard selector goes empty. *(Enterprise)*
+- **`POST /api/v1/mcp/check-input` idempotency entries are scoped to the
+  calling principal** (#3447), so the `idempotency_keys.endpoint` value changes
+  shape and keys cached before the upgrade no longer replay. *(Enterprise)*
+- **Audit attribution on `POST /api/v1/mcp/check-input` and
+  `POST /api/v1/mcp/check-output` now names the validated per-user identity, not
+  a trusted `X-User-Email`** (#3447), so rows for token-bearing callers under
+  `AXONFLOW_TRUST_IDENTITY_HEADERS` will name a different email than they did
+  before. *(Enterprise)*
+- **The SAML SP signing keypair is no longer fabricated** when Secrets Manager
+  cannot be read; affected tenants are refused at configuration-load time
+  instead (#3341). *(Enterprise)*
+- **Two previously-`200` execution-read shapes now fail** (#3367). A
+  `/api/v1/unified/executions` list carrying neither a tenant nor an org key is
+  `401`; a portal org-wide list under `axonflow_app_role` with no BYPASSRLS
+  admin pool is `500`. The second is a backstop rather than something you will
+  meet on upgrade: that configuration has been refused at BOOT since before
+  9.19.0. *(Community / Enterprise)*
+- **The in-memory `DynamicPolicyEngine` is deleted and boot no longer falls back
+  to it** (#3319). `AXONFLOW_DEBUG_POLICIES` is removed entirely, and
+  `axonflow_policy_condition_unevaluable_total` no longer emits
+  `plane="memory"`. *(Community)*
+- **`avg_latency_ms` is now nullable** on `POST /api/v1/audit/report` and
+  `POST /api/v1/audit/summary`, and on `GET /api/v1/audit/session-summary`
+  (#3424, #3436). *(Community / Enterprise)*
+- **`tokens_used`, `cost` and `response_time_ms` are OMITTED rather than sent as
+  `0`** on `POST /api/v1/audit/search`, `POST /api/v1/audit/export` and
+  `GET /api/v1/audit/{id}`, and the CSV export writes an empty cell (#3424,
+  #3427). *(Community)*
+- **`POST /api/v1/audit/report` returns `500`** where it previously returned a
+  silently short top-policies table (#3426). *(Community)*
+- **The legacy `POST /api/v1/sebi/audit/export` gains `status: "partial"` and
+  omits `summary.compliance_score`** when SOME but not all requested sections
+  could be served, or a served one carries a scope gap, which an all-types
+  request hits on a stock deployment (#3435). A subset request that hits
+  neither still returns `completed` with a score; a request whose sections ALL
+  failed is `failed`, not `partial`. The `POST /api/v1/compliance/reports`
+  facade's status vocabulary is unchanged and never returns `partial`.
+  *(Enterprise)*
+- **The declarative workflow engine's run ids change prefix from `wf_` to
+  `wfe_`** on `POST /api/v1/workflows/execute` (#3442). *(Community)*
+- **Two seeded dynamic policies begin evaluating on a real signal for the first
+  time since January**, and migration `core/160` deletes the never-tuned
+  duplicate that would otherwise have started blocking (#3321). *(Community)*
+- **`GET /api/v1/usage` and `GET /api/v1/usage/summary` return `null` latency**
+  where they previously returned `0`, and raw rows that were silently dropped
+  now appear (#3436). *(Enterprise)*
+- **Human-in-the-Loop approvals are Enterprise-only.** Entitled:
+  `Professional`, `Enterprise`, `Enterprise Plus`. Refused: `Community`,
+  `Free`, `Pro`, `Premium` and - newly - `Evaluation`. **An Evaluation
+  deployment using WCP step-gate approvals has them today and will not after
+  upgrading.** The step is still held, with `approval_enqueue: "tier_disabled"`
+  and no reviewer entry. Existing rows are untouched and stay reviewable
+  (#3408, #3517). *(Community)*
+- **The Workflow Control Plane no longer writes the approval queue directly**,
+  so a workflow approval is now subject to the licence-tier gate and the
+  `hitl_approval_history` trail every other entry point applies. On an
+  unlicensed or unentitled deployment that is a new refusal where rows used to
+  be written (#3517). *(Community)*
+
+### BREAKING CHANGES
+
+- **Human-in-the-Loop approvals are now Enterprise-only (#3408, #3517).**
+  *(Community)*
+
+  **`Evaluation` deployments lose Human-in-the-Loop approvals.** The entitled
+  set becomes `Professional`, `Enterprise` and `Enterprise Plus`. `Community`,
+  `Free`, `Pro`, `Premium` and now `Evaluation` are refused.
+
+  Evaluation licensees have workflow step-gate approvals TODAY - partly by
+  entitlement and partly through the bypass this release closes - and will not
+  after upgrading. A `require_approval` step gate on an Evaluation deployment
+  still **holds** the step (admitting it because the tier is unentitled would
+  be a governance bypass) but creates no reviewer entry, and reports
+  `approval_enqueue: "tier_disabled"` on the wire, on the audit row and on
+  `axonflow_hitl_enqueue_total`. The same refusal applies on the agent's
+  `POST /api/v1/hitl/queue` and on the policy step-up paths, so the planes
+  agree.
+
+  The orchestrator says so at boot:
+
+  ```
+  WCP HITL adapter initialized but DISABLED by licence tier "Evaluation" -
+  require_approval actions will block and report approval_enqueue=tier_disabled,
+  creating no reviewer entry
+  ```
+
+  **Before upgrading**, find out whether any of your tenants is relying on it.
+
+  **Run this as the table owner or `axonflow_platform_admin`.**
+  `hitl_approval_queue` is ENABLE ROW LEVEL SECURITY (mig `core/025`) with
+  `USING (org_id = get_current_org_id())`, and `get_current_org_id()` reads
+  `current_setting('app.current_org_id', TRUE)`, which is NULL when unset.
+  `org_id = NULL` is NULL, so on `axonflow_app_role` with no GUC this returns
+  ZERO ROWS AND NO ERROR: an all-clear built from nothing, the same shape as
+  #3490's preflight check 23. To run it on the app role, set the scope first
+  with `SET LOCAL app.current_org_id = '<your-org-id>';`.
+
+  ```sql
+  SELECT org_id, request_type, status, count(*)
+    FROM hitl_approval_queue
+   GROUP BY org_id, request_type, status
+   ORDER BY count DESC;
+  ```
+
+  Existing rows are untouched: nothing is deleted, and pending entries stay
+  reviewable and resolvable. What stops is the creation of NEW ones.
+
+  **Not affected:** `Professional` licensees. `GetTierLimits` maps Professional
+  onto `EnterpriseLimits`, so it is entitled - a point worth stating because
+  the pre-existing `IsEnterpriseTier` predicate in the licence package excludes
+  Professional (#3416 item 3), and a fix that reached for that name would have
+  denied them silently.
+
+  **The per-tenant pending-approval cap is now unreachable by any tier**, and
+  that is deliberate rather than an oversight. Every entitled tier maps onto
+  `EnterpriseLimits` with `MaxPendingApprovals: -1` (unlimited); every tier
+  declaring a finite cap is refused by the tier gate first. The machinery is
+  kept as defence-in-depth for a future finite-cap tier and is guarded by a
+  test that fails the moment one appears. `EvaluationLimits.MaxPendingApprovals`
+  is now inert; it was also the subject of a live divergence (100 in the
+  community tier table, 25 in both enterprise ones, #3416 item 2) and both are
+  set to 25 so two dead numbers do not disagree.
+
+- **Governance segments are enforced on the gateway pre-check plane, and an
+  unresolvable segment set denies fail-closed (#3312).** *(Enterprise)*
+  `POST /api/policy/pre-check` passed a hardcoded empty segment set into the
+  shared engine, which excludes every segment-scoped `static_policies` row, so a
+  policy that blocked a member on `/api/request` was silently unenforced here
+  and the query passed. The plane now resolves the caller's segments once,
+  before static evaluation, through the same shared resolver the agent proxy and
+  MAP planes already use. **When the resolver errors the request is refused**:
+  the response is `Approved: false`, `Policies: ["segment_resolution_failed"]`,
+  and a reason opening "segment resolution unavailable" and citing ADR-060 and
+  #2989. **That reason is deliberately NOT quoted here as a literal**: this
+  plane's copy of the string separates its clauses with a character the WCP and
+  MCP-response planes do not use, so a quotation would send a reader grepping
+  for text their own plane never emits (see the punctuation census under the
+  MCP-server item, and #3465). It is an HTTP `200` carrying a deny verdict, not
+  an HTTP error, so a client must key on `approved` and on the reserved
+  `segment_resolution_failed` identifier, never on the human-readable reason. A
+  successful resolution that returns no segments is the ordinary case and
+  proceeds org-only. No new credential is required on this plane. Community
+  builds have no identity-attribute resolver at all
+  (`NewIdentityAttributeResolver` returns an Enterprise-only error), so a
+  Community deployment cannot reach the deny and sees no change.
+- **Governance segments are enforced on the WCP HTTP step-gate, and an
+  unresolvable segment set denies fail-closed (#3281).** *(Enterprise)*
+  The step-gate built its policy request with a tenant and nothing else, so the
+  shared gate's "no verified identity" early return fired on every step and a
+  segment-scoped dynamic policy was unenforced there while the same policy was
+  enforced on `/api/v1/process` and MAP. The gate now carries the organisation
+  and the caller email through to evaluation. **A segment-resolution failure
+  returns `decision: "block"`** with `policy_ids: ["segment_resolution_failed"]`
+  and the reason `segment resolution unavailable - request denied (fail-closed,
+  ADR-060 #2989 P3b)`, again as an HTTP `200` body. The refusal cannot be
+  cleared by an ADR-044 override: it is checked before the generic
+  not-allowed handling and carries no applied-policy detail for an override to
+  match. `X-User-Email` is newly read on the step-gate and on both resume
+  routes; omitting it is not an error and degrades to org-only, and the header
+  is honoured only behind the existing internal-service proxy-auth gate.
+  Two in-repo service signatures gained `orgID, email` parameters
+  (`ResumeFromLastCheckpoint`, `ResumeFromCheckpoint`).
+- **Governance segments are enforced on the MCP-server plane, with two distinct
+  refusals, and `X-User-Token` becomes required for some organisations
+  (#3430).** *(Enterprise)*
+  The `check_policy` and `check_output` MCP-server tools evaluated with an empty
+  segment set, so every segment-scoped policy was filtered out before evaluation
+  and the call passed. Both tools now resolve segments before evaluating, and
+  refuse in two separate cases. **Be precise about which one is conditional:**
+  - **`segment_resolution_failed` is UNCONDITIONAL.** A caller presenting a
+    validated per-user token whose segment resolution fails is denied, whether
+    or not the organisation holds a single segment-scoped policy. The stable
+    thing to match on is the `blocked_by` identifier
+    `segment_resolution_failed`; the human-readable reason opens "segment
+    resolution unavailable" and then says the request was denied on the request
+    phase, or the response withheld on the response phase, citing ADR-060 and
+    #2989.
+  - **`segment_identity_unresolved` IS conditional.** A caller with no
+    validated per-user principal is denied only when the effective policy set
+    for that org and phase actually holds an enabled segment-scoped row, or
+    when that policy set could not be read at all. The stable identifier is
+    `segment_identity_unresolved`; the reason opens "segment membership
+    indeterminate for a caller with no validated per-user token", citing
+    ADR-060 and #3430.
+
+  **Do not pattern-match these reason strings across planes.** The punctuation
+  separating the two clauses is not consistent between the planes that emit
+  them, so a grep or a string equality check written against one plane's text
+  silently misses another's. Of the SEVEN production sites in the "segment
+  resolution unavailable" family, five separate the clauses with an em dash
+  (`platform/agent/run.go:2200`, `run.go:3272`,
+  `human_actor_segment_gate.go:119`, `gateway_handlers.go:698`,
+  `mcp_identity.go:322`) and two with a hyphen (`mcp_identity.go:320`,
+  `platform/orchestrator/wcp_policy_adapter.go:361`). Both
+  `segment_identity_unresolved` sites use a hyphen. **Match on `blocked_by`,
+  which is a stable identifier, not on the reason text.** Normalising the
+  punctuation is tracked as #3465.
+
+  Two of those seven differ on purpose and will not be normalised away: the
+  MCP-server RESPONSE-phase wording says the response was withheld rather than
+  that a request was denied, because `check_output` governs content already
+  produced, and the policy-test preview says what WOULD happen, because it
+  denies nothing. **Within the agent this is now a checked fact rather than a
+  convention (#3456):** a test parses that package's sources and fails any
+  occurrence of the refusal text that is not byte-identical to one of three
+  pinned spellings, plus a per-file census so a new plane must reuse the shared
+  constant instead of respelling it. That check deliberately does not reach the
+  orchestrator's copy, which is the seventh site and the one that still carries
+  its own spelling. **None of this changes the advice**: the identifier is the
+  interface, the reason text is not.
+
+  Both refusals are an HTTP `200` JSON-RPC result carrying `allowed: false`,
+  `block_reason`, `decision_id` and `blocked_by`, and both write a canonical
+  blocked `audit_logs` row. **The consequence for callers:** where an
+  organisation holds a segment-scoped policy, `X-User-Token` (ADR-043/044 Path A
+  or Path B) is now mandatory on those two tools. `X-User-Email` is explicitly
+  refused as a substitute even under `AXONFLOW_TRUST_IDENTITY_HEADERS`, and a
+  token naming a shared synthetic identity is refused too.
+
+  **`resolveMCPServerSegmentsForPolicy`
+  (`platform/agent/mcp_identity.go:459-490`) proceeds without resolving in two
+  places, and neither is a posture escape hatch for a token-bearing caller.**
+  The first is no identity-attribute resolver being wired, which is every
+  Community build (`:466-468`). The second is the fall-through at the end
+  (`:489`), reached only by a caller with NO per-user principal on an org whose
+  effective policy set holds no in-scope segment-scoped row, which is the
+  conditional arm described above. **Detection posture does NOT buy you out of
+  the first refusal.** The `staticEvaluationWillRun` short circuit is consumed
+  only inside `segmentScopedPoliciesInScope`
+  (`platform/agent/mcp_identity.go:401-403`), which is reached only AFTER the
+  per-user-principal branch has returned (`:470-476`), so it narrows the
+  conditional `segment_identity_unresolved` arm and nothing else. A caller
+  presenting a validated per-user token resolves unconditionally and is denied
+  on a resolver failure **even on an Enterprise organisation with detection
+  disabled and zero segment-scoped policies**. If your MCP callers hold
+  per-user tokens, a resolver outage denies them regardless of posture.
+- **Governance segments are enforced on the four MCP REST routes and on
+  `POST /api/v1/decide`, and an unresolvable segment set denies fail-closed
+  (#3447, #3456).** *(Enterprise)*
+  `POST /mcp/resources/query`, `POST /mcp/tools/execute`,
+  `POST /api/v1/mcp/check-input`, `POST /api/v1/mcp/check-output` and
+  `POST /api/v1/decide` each passed an unconditional empty segment set into
+  policy evaluation, so every segment-scoped `static_policies` row was excluded
+  before evaluation. A verified SCIM member of a governance segment was
+  therefore restricted on the MCP-server JSON-RPC plane and unrestricted on the
+  same organisation's REST routes, **on the same credential**. Changing one URL
+  evaded the control; no second credential and no privilege change were needed.
+  All five now resolve the caller's segments once per request, through one
+  shared gate, and reuse that single resolution for the request phase, the
+  response phase where the plane has one, and the dynamic relay where the plane
+  has one. Resolving twice in one request could observe two cache states and
+  enforce two different sets on one logical call.
+
+  **The refusal.** A resolver error for a caller who HAS a principal denies with
+  `403` and the reserved guard id `segment_resolution_failed`, and writes a
+  canonical blocked `audit_logs` row. It is deliberately kept off the
+  `503` "policy evaluation temporarily unavailable" channel, so a policy-side
+  deny stays distinguishable from an evaluator outage in both the audit row and
+  the dashboard. **Key on the identifier, never on the reason text**: see the
+  punctuation census under the MCP-server item above.
+
+  **Three cases that are NOT a refusal, and an operator sizing this needs all
+  three.** A caller with no validated per-user token, a caller whose token names
+  one of the platform's shared synthetic identities, and a verified human with
+  zero group memberships all resolve to the org-only outcome, unchanged from
+  ADR-060's baseline: org-tier and system-tier policies still evaluate, only
+  segment-scoped rows are skipped, and nothing is denied. **On these five
+  planes that means a member can still evade a segment-scoped policy by not
+  presenting a token** unless the organisation turns on `require_user_token`
+  (below), which is where the refusal for that case deliberately lives. This is
+  the one behaviour that differs from the MCP-server JSON-RPC plane, which
+  refuses a principal-less caller outright whenever the phase's policy set can
+  depend on membership.
+
+  **Resolution is keyed on the validated token's `email` claim, never on
+  `X-User-Email`**, even under `AXONFLOW_TRUST_IDENTITY_HEADERS`. That header is
+  caller-supplied, so keying segment resolution on it would let the same person
+  shed their segments by naming a non-member colleague, which is the reported
+  bypass recreated one level down. The header keeps its attribution and ADR-044
+  override roles.
+
+  **The dynamic half crosses a service boundary.** The MCP planes' dynamic
+  evaluation runs in the orchestrator, so the agent's one resolved set is
+  relayed to it: `POST /api/v1/mcp/evaluate-policies` gains a `segment_ids`
+  array on its request body. The orchestrator deliberately does NOT resolve
+  segments itself, because the two services hold separate segment caches on
+  separate TTL clocks and a second independent resolution could produce a split
+  verdict on one request. That route is on the internal-service plane, reachable
+  only with the internal proxy-auth credential, and **the field passes through
+  unauthenticated**: it is used only to NARROW the policy set, so a forged value
+  on that plane could suppress a segment-scoped policy but can never widen one
+  onto a caller. Community builds have no identity-attribute resolver, so a
+  Community deployment resolves to the org-only outcome everywhere and sees no
+  change.
+- **A per-user token that fails to validate is refused rather than downgraded,
+  on the four MCP REST routes (#3472).** *(Enterprise)*
+  Those four handlers answered ANY `ResolveUser` failure in enterprise mode by
+  synthesizing a service identity and proceeding. Because that one branch
+  covered both an ABSENT token and a PRESENTED one that failed validation, a
+  token that was malformed, expired, signed with the wrong algorithm, carrying a
+  bad signature, **or explicitly revoked by `jti`** was silently discarded and
+  the request was served as `<client-id>@axonflow.local` with `Role: "service"`.
+  Revoking a per-user token did not revoke anything on these routes.
+
+  A token that is PRESENTED and fails to validate is now audited and answered
+  `401`. The compatibility branch survives, narrowed to exactly the case it was
+  written for: an enterprise caller that presented NO token at all, on an
+  organisation that has not opted in to `require_user_token`. An infrastructure
+  gateway acting as a Policy Enforcement Point, which has no end-user token to
+  forward, is unaffected.
+
+  **This is not opt-in and there is no flag that restores the old behaviour.**
+  The population it changes is any caller currently presenting a token that does
+  not validate, which by construction is a caller that believes it is
+  authenticating and is not. `POST /api/v1/decide` already refused this shape
+  before the release; the four MCP REST routes are what changes.
+
+  The refusal is audited under the reserved identifier `user_token_rejected`,
+  and is kept strictly distinct from `user_token_required` below. **Never
+  collapse the two.** They have opposite operator remedies: `user_token_rejected`
+  means a caller's token is bad, and `user_token_required` means a caller sent
+  none where the organisation requires one. Query them with JSONB containment
+  (`policy_details->'policy_ids' @> '["user_token_rejected"]'::jsonb`), never
+  with `LIKE`: `_` is a single-character wildcard, so `'%user_token_required%'`
+  also matches unrelated prose in the same row.
+- **`require_user_token`: an organisation can refuse a token-less enterprise
+  caller at authentication (#3476, migration `core/163`).** *(Enterprise)*
+  Segment-scoped policy is only meaningful if a caller cannot CHOOSE to arrive
+  without an identity. With the flag off, a segment-scoped policy is not inert:
+  a caller who presents a validated token is blocked exactly as authored. It is
+  **evadable**: a member who does not want to be in scope can decline to forward
+  the token and be served under the shared service identity instead. Turning the
+  flag on for an organisation is what makes that evasion impossible, by moving
+  the refusal to authentication, before any policy is evaluated.
+
+  **Two levers, and an explicit per-org row wins over the deployment default in
+  EITHER direction** (an organisation can opt OUT of a `true` default just as it
+  can opt IN over a `false` one):
+  - `organizations.require_user_token`, `BOOLEAN NOT NULL DEFAULT false`,
+    added by migration `core/163`. No backfill.
+  - `AXONFLOW_REQUIRE_USER_TOKEN`, the deployment-wide default. Accepted values
+    are `true` / `1` / `yes` and `false` / `0` / `no`, case-insensitive and
+    surrounding whitespace ignored. Unset means `false`.
+
+  **A set-but-unrecognised `AXONFLOW_REQUIRE_USER_TOKEN` is a BOOT FATAL, not a
+  warning.** `True!`, `enabled` or `yes please` refuses to start rather than
+  silently resolving to the default, because both guesses are wrong in a way
+  that is invisible afterwards: one silently disables a security control, the
+  other silently denies every token-less caller. A deployment that never sets
+  the variable is unaffected, and an empty or whitespace-only value is not
+  fatal. The check runs only where a database is wired.
+
+  **Six gate points, all reached only in enterprise auth mode.** Five refuse
+  with `401` and an audited `user_token_required`: `POST /api/v1/decide`,
+  `POST /mcp/resources/query`, `POST /mcp/tools/execute`,
+  `POST /api/v1/mcp/check-input` and `POST /api/v1/mcp/check-output`. The sixth
+  is the MCP-server JSON-RPC plane, which refuses at session authentication with
+  `401` and a `WWW-Authenticate: Basic` challenge. **On that plane the refusal
+  is NOT audited under `user_token_required`.** `initialize`, `tools/list` and
+  `ping` write no `audit_logs` row for an authentication failure at all;
+  `tools/call` does write one, but under the reserved `unauthenticated` tenant
+  sentinel with `policy_ids: ["unauthenticated"]`, not under the caller's tenant
+  and not under `user_token_required`, because the row is written before any
+  caller identity is established. Do not expect a `user_token_required` row from
+  this plane. `tools/call` also collapses every authentication failure into one
+  generic error, so a caller cannot probe for the cause; the specific cause is
+  visible to an operator only in the message the `initialize` handshake returns.
+
+  **On the MCP-server plane the condition is "no validated identity was
+  produced", not "no token was sent".** Token resolution returns no identity for
+  two distinct inputs: no token at all, and a token presented on a deployment
+  where no per-user-token validator registered. Gating on the empty-token case
+  alone would leave the second open, so an organisation that had opted in could
+  still be suppressed by sending any junk string on a misconfigured deployment.
+
+  **Two planes are deliberately NOT gate points, and a third is
+  uncovered.** The gateway pre-check
+  (#3312) never had the synthetic-identity fallback in the first place, so there
+  is nothing for this flag to change there. `POST /v1/chat/completions` is
+  excluded because it has no per-user token field on the wire at all: every
+  other gate point refuses a caller who COULD have presented a token and did
+  not, which a caller can comply with, whereas a refusal there would be a wall
+  no caller could comply with. **The WCP HTTP step-gate is the third, and it
+  is not a deliberate exclusion:** it has no gate point at all, so a governed
+  caller that omits its per-user token reaches it with no email and is
+  evaluated org-only with no refusal. `require_user_token` does not reach
+  that plane. See the Security section.
+
+  **Posture changes are cached and are not instantaneous.**
+  `AXONFLOW_REQUIRE_USER_TOKEN_TTL_SECONDS` controls how long a resolved per-org
+  posture is held, default 60 seconds, clamped to `[5, 600]`. An unparseable or
+  non-positive value logs a warning and uses the 60 second default rather than
+  clamping. Expect a column flip to be live everywhere within one TTL window.
+
+  **A posture that cannot be READ resolves to "required", never to "not
+  required".** A database outage, a missing table or column, or a scan error
+  fails CLOSED and is cached for at most 15 seconds regardless of the configured
+  TTL. This is the opposite direction from the detection-posture lever it
+  otherwise resembles, and deliberately so: this is an authentication gate, and
+  resolving it to `false` under uncertainty would let a database blip quietly
+  switch the control off for every request in the window. A genuinely ABSENT org
+  row is NOT an error and falls through to the env default, which is what keeps
+  an organisation that never touched this lever behaving exactly as before. A
+  deployment with no database wired resolves to the env default too, and is not
+  failed closed.
+- **`axonflow_segment_resolution_total` gains a `phase` label (#3473).**
+  *(Enterprise)*
+  The counter previously carried `result` alone, pooling two call populations
+  with opposite error contracts: the observability-only resolution at
+  MCP-server session authentication, whose result is read by nothing, and the
+  policy-affecting resolution that denies on failure. A `phase` label now
+  separates them, with values `session_auth`, `enforcement` and `preview`.
+  **Adding a label changes series identity**, so a dashboard panel, recording
+  rule or alert that selects the old unlabelled series will go permanently
+  empty; re-point it at the phase you actually mean, or aggregate the label
+  away. The companion histogram
+  `axonflow_segment_resolution_duration_seconds` is deliberately NOT split,
+  because latency is a property of the resolver and its cache rather than of the
+  call site.
+
+  Two signals are corrected alongside it.
+  `axonflow_segment_policy_fail_closed_total` and its paired "DENYING" log line
+  now come from the enforcement phase **only**. The counter's help text says it
+  counts requests DENIED, and the portal's policy-test preview returns `200` and
+  denies nothing, so **clicking Test during a segment-store outage used to add
+  to a denial counter and log a denial per click**, and anyone alerting on it
+  paged on button presses. **Expect this counter to read lower**; the difference
+  is denials that never happened. The session-authentication phase is exempted
+  by the same rule, but it never incremented this counter to begin with (it
+  reached the shared resolver by a different path), so nothing changes for it
+  beyond the exemption now being structural rather than incidental.
+- **`POST /api/v1/mcp/check-input` idempotency entries are scoped to the calling
+  principal (#3447).** *(Enterprise)*
+  The idempotency store keys on `(key, tenant_id, endpoint)` and answers a hit
+  by returning the cached body **without invoking the handler**, so the new
+  segment gate would never run on a replay. Segment-scoped policy makes the
+  verdict depend on the principal, so the principal is now part of the key: the
+  endpoint component changes from the literal `mcp.check-input` to
+  `mcp.check-input|p=<hash>`, where the hash is taken over the caller's
+  validated email. It is hashed rather than embedded because
+  `idempotency_keys.endpoint` is a plain text column read by operators and
+  sweeps, and has no business holding an address.
+
+  **Two consequences.** An `Idempotency-Key` cached before the upgrade will not
+  replay after it, because the endpoint component no longer matches; the request
+  re-executes, which for this route means it is re-evaluated rather than
+  replayed. And an operator query or sweep matching
+  `endpoint = 'mcp.check-input'` stops matching; match on the prefix instead.
+  Two different principals reusing one `Idempotency-Key` now get their own
+  entries rather than one replaying the other's verdict, which is the defect
+  being closed.
+- **A verified per-user identity is no longer displaced by `X-User-Email` in
+  audit attribution (#3447).** *(Enterprise)*
+  On `POST /api/v1/mcp/check-input` and `POST /api/v1/mcp/check-output` the
+  trusted `X-User-Email` header won unconditionally, so under
+  `AXONFLOW_TRUST_IDENTITY_HEADERS` a caller who had presented a validated
+  per-user token could still have the audit row named after the header value.
+  Once segment-scoped policy keys enforcement on the validated identity, a row
+  naming a different principal does not merely mislabel the caller, it
+  misdescribes what was governed in the artifact the compliance exports read.
+  The header now applies only where NO per-user identity was verified, which is
+  the shared-credential case it was introduced for and which is unchanged.
+  **Audit rows for token-bearing callers on those two routes will name a
+  different email than they did before**, and that email is the one enforcement
+  actually used. On `POST /api/v1/decide` the displaced header value survives as
+  a claim at `policy_details->>'attempted_user_email'`; on these two routes it
+  is not recorded.
+- **A `/api/v1/unified/executions` list with neither a tenant nor an org key is
+  now `401`, and an org-wide list with no BYPASSRLS admin pool is now `500`
+  (#3367).** *(Community / Enterprise)*
+  The first shape used to fall through to an unscoped `WHERE 1=1` read of every
+  organisation's executions and return `200`. It now returns `401 UNAUTHORIZED`
+  with `Tenant or org identity required`, matching what the by-id half of the
+  same handler already returned for the same input. The second shape is new:
+  the portal's org-wide read is refused with `500 INTERNAL_ERROR` when
+  `axonflow_app_role` is in use and no BYPASSRLS admin pool was installed,
+  because that read would otherwise be filtered to zero rows by RLS and restore
+  the confident-empty page this change exists to remove. **The remedy is to set
+  `AXONFLOW_DB_PLATFORM_ADMIN_URL`.**
+
+  **That arm is defence in depth, and in practice unreachable, because the
+  deployment it describes does not boot.** `initializeComponents` calls the
+  platform-admin boot guard unconditionally, and the guard fires on exactly this
+  configuration, because an UNSET `AXONFLOW_DB_USE_APP_ROLE` counts as ENABLED
+  (only `false`, `FALSE`, `False` or `0` disable it) and a blank or
+  whitespace-only admin URL is the other half of its predicate. The deployment
+  crash-loops at startup; the route
+  is never served. The guard is not new in this release and is not
+  edition-specific: there is no Enterprise overlay of the orchestrator's
+  `run.go`, and the call has been on that boot path since at least 9.16.1
+  (#3319 renamed the caller label it reports under, nothing more). **The `500`
+  arm stays in the code and is documented here on purpose**, because a guard
+  and the thing it guards are separately maintained, and the route must not
+  quietly go back to a confident empty page if the guard is ever relaxed. Two
+  further `500` arms guard an unnormalized org key and a
+  request asserting org-wide and tenant-scoped reads at once. The org-wide
+  branch is reached only over the new trusted-hop header
+  `X-Axonflow-Tenancy-Scope: org`, which the agent strips from every inbound
+  client request, so no governed caller can assert it.
+- **The in-memory `DynamicPolicyEngine` is deleted; boot no longer falls back to
+  it, and `AXONFLOW_DEBUG_POLICIES` is removed (#3319).** *(Community)*
+  `DatabaseDynamicPolicyEngine` is now the only dynamic-policy engine.
+  Previously a database failure at boot constructed a second, in-memory engine
+  and left enforcement permanently on built-in defaults until a restart. The one
+  engine now starts on the built-in defaults and promotes itself to
+  database-loaded on the first successful load thereafter, with no restart. A
+  later failed refresh is a no-op: the loaded policy set keeps enforcing and is
+  never reverted to defaults, so a transient blip cannot silently widen what is
+  enforced. **`AXONFLOW_DEBUG_POLICIES` no longer exists**: it only ever
+  controlled the deleted engine's verbose logging, and setting it now does
+  nothing. **The `plane="memory"` label value of
+  `axonflow_policy_condition_unevaluable_total` is no longer emitted**; the
+  remaining values (`database`, `mcp`, `policy_test`) are unchanged, so a
+  dashboard or alert matching on `plane="memory"` will go permanently empty.
+- **`avg_latency_ms` is nullable on the audit report and audit summary, and the
+  mean is taken over measured rows only (#3424).** *(Community)*
+  `POST /api/v1/audit/report` and `POST /api/v1/audit/summary` used to compute
+  `COALESCE(AVG(response_time_ms), 0)` and return a non-nullable float, so a
+  window with nothing measured reported a confident `0ms`. Both now select the
+  real average and a sample count, and return an explicit JSON `null` when there
+  is nothing to average, alongside a new `latency_sample_count`. On
+  `/audit/report` the divisor also changed from every verdict row to the
+  measured rows only. **This is a deliberate consumer-visible contract change**
+  and is recorded as such in `.github/oasdiff-err-ignore.txt`; the companion
+  change on `/audit/summary` is additive there because the property was
+  previously undocumented. A client binding `avg_latency_ms` to a non-optional
+  float will break. The measured predicate also relaxed from
+  `response_time_ms > 0` to `response_time_ms IS NOT NULL`, so a genuine
+  sub-millisecond decision is now a sample rather than a discarded row.
+- **`tokens_used`, `cost` and `response_time_ms` are omitted rather than sent as
+  `0`, and the CSV writes an empty cell (#3424, #3427).** *(Community)*
+  On `POST /api/v1/audit/search`, `POST /api/v1/audit/export` (JSON and CSV) and
+  `GET /api/v1/audit/{id}`, these three fields were read from nullable columns
+  without checking validity, so a row that recorded nothing was published as a
+  measured zero. They are now pointers with `omitempty`, so the key is absent on
+  a row with nothing recorded and present with its real value otherwise. In the
+  CSV, the `tokens` and `response_time_ms` cells are empty rather than `0`,
+  which is what stops a spreadsheet `AVERAGE()` from counting them. A genuine
+  measured `0` still renders as `0`. **A consumer that indexes these keys
+  unconditionally, or that treats a missing key as an error, must handle
+  absence.**
+- **`POST /api/v1/audit/report` returns `500` where it previously returned a
+  partial table (#3426).** *(Community)*
+  A failure scanning a top-policy row used to be logged and skipped, so the
+  report disclosed "showing top 9 of 12" while holding 8 rows. A scan failure is
+  now fatal to the response, and the aggregation is additionally bounded by a
+  15 second timeout that fails the same way. The error body is explicit that no
+  report was produced and that this is not a report that nothing was found. The
+  sibling `POST /api/v1/audit/summary` deliberately does NOT fail: it degrades
+  with a new `top_policies_unavailable` flag instead, because a summary tile
+  going quiet is not the same as a compliance report going short.
+- **The legacy SEBI export gains `status: "partial"` and omits
+  `summary.compliance_score` on an incomplete export (#3435).** *(Enterprise)*
+  See the Enterprise section for the full item. **This applies to
+  `POST /api/v1/sebi/audit/export` only.** In contract terms, on that route:
+  `compliance_score` is now a nullable field that is ABSENT rather than `null`
+  or `0` whenever a section could not be produced, `status` gains `partial`
+  alongside `completed` and `failed`, and `summary.report_state` plus
+  `summary.sections` are the fields a caller must read instead. **An
+  integration on that route keying on `status === "completed"`, or binding
+  `compliance_score` to a non-optional float, breaks on upgrade.** The
+  nullability is recorded in `.github/oasdiff-err-ignore.txt` with the
+  measurement behind it.
+
+  **`POST /api/v1/compliance/reports` is a different contract and does not
+  change.** Its status vocabulary is `pending` / `processing` / `completed` /
+  `failed` (`platform/orchestrator/compliancereport/types.go`) and gains no
+  fifth value, so a facade caller will keep seeing `completed` and **must not
+  wait for a status transition to learn that a pack is incomplete**. On that
+  route completeness is carried inside the document, in the SEBI pack's
+  "Report completeness" block, and surfaced in the portal by the new
+  completeness caveat described under Enterprise.
+- **The declarative workflow engine's run ids are `wfe_`, not `wf_` (#3442).**
+  *(Community)*
+  Ids returned by `POST /api/v1/workflows/execute` change prefix. That route
+  runs a spec handed to it in the request body and appears in `workflows`,
+  `workflow_steps` and `execution_history` nowhere at all, so it is a different
+  thing from a governed control-plane workflow and no longer shares its prefix.
+  The ids are opaque and nothing in the platform parses them, but **a caller
+  that stored one and matches on the `wf_` prefix stops matching**. Ids minted
+  before this release keep their old prefix; no migration, no row rewritten.
+- **Two seeded dynamic policies begin evaluating, and a never-tuned duplicate is
+  deleted (#3321, migration `core/160`).** *(Community)*
+  `risk_score` is computed by the platform again rather than read out of the
+  caller's own request body, so `sys_dyn_high_risk_block` (`risk_score >
+  0.8`, action `warn`) and `sys_dyn_anomalous_access` (`risk_score > 0.6`,
+  action `alert`) start firing on matching requests that previously passed
+  unconditionally. **Neither newly blocks**: both are allow-but-annotate.
+  Migration `core/160` deletes `high_risk_block`, a 2025 duplicate of
+  `sys_dyn_high_risk_block` that migration 036's downgrade to `warn` never
+  touched and which would therefore have started BLOCKING production traffic on
+  upgrade beside its tuned twin. **Review the 0.6 and 0.8 thresholds against the
+  new weights before rolling out.**
+- **`GET /api/v1/usage`, `GET /api/v1/usage/summary` and
+  `GET /api/v1/audit/session-summary` return nullable latency (#3436).**
+  *(Enterprise)*
+  `avg_latency_ms` and the raw `latency_ms` become pointers, returning explicit
+  `null` rather than a fabricated `0`, with new `latency_sample_count` and
+  `latency_bucket_count` companions on `/usage/summary` and a
+  `latency_sample_count` on each session-summary bucket and tool. **A separate,
+  larger consequence on `/api/v1/usage`:** because the scan loop skipped rows it
+  could not decode into a non-nullable int, every `claude_code_metric` row was
+  silently dropped from the response and the CSV behind a `200 OK`. Those rows
+  now appear, so response and export row counts can rise on upgrade.
+- **The SAML SP signing keypair is never fabricated; affected tenants are
+  refused instead (#3341).** *(Enterprise)*
+  When the customer portal could not read its SP signing keypair from Secrets
+  Manager, it logged a warning and **minted a throwaway RSA keypair per process
+  start**, then installed it as the deployment-default SP signing identity. SAML
+  then looked healthy: metadata served, logins worked, nothing was refused. But
+  the SP certificate changed on every portal restart, so any identity provider
+  pinning it began rejecting logins with a signature mismatch **reported at the
+  IdP**, uncorrelated with a boot-time warning line nobody was watching.
+
+  The temporary-keypair path is deleted. A load failure is recorded, the default
+  keypair stays unset, and the failure is scoped to exactly the tenants it
+  affects: a tenant is refused at SSO-configuration-load time, and its SP
+  metadata is refused, **only when that tenant does not store a COMPLETE keypair
+  of its own**. Note the completeness: a tenant missing its `sp_private_key`,
+  its `sp_certificate`, or both is refused, because a half-configured tenant
+  used to silently inherit the fabricated half. A tenant storing both is
+  completely unaffected, which is why this is a per-tenant refusal rather than a
+  boot failure.
+
+  **Where the diagnostic text goes, and where it deliberately does not.** The
+  refusal's full text names the Secrets Manager secret, wraps the underlying
+  load error and states both remedies, because an operator cannot act on it
+  otherwise. **That text is served only on operator surfaces**: the boot log,
+  the portal log line written on every refused route, and the
+  session-authenticated `POST /api/v1/sso/config/test`. The **pre-auth** SAML
+  routes get a generic body instead. `GET /auth/saml/{tenant}/login` answers
+  `400` and the callback answers `401` with "SAML is unavailable for this
+  tenant; contact your administrator", and SP metadata answers a generic `500`.
+  This is not cosmetic: the underlying load error is the raw cloud SDK error,
+  which on the access-denied shape carries the portal's own IAM principal and
+  account identifier, so echoing it to an unauthenticated caller on a login URL
+  would be infrastructure reconnaissance. The refusal is classified by an
+  exported sentinel rather than by matching its message, and **every other error
+  on those routes keeps its existing echo unchanged**, since those texts are
+  benign tenant-facing diagnostics.
+
+  **The portal still starts, and that is deliberate.** Its only caller treats a
+  SAML constructor error as graceful degradation: it logs, keeps the service nil
+  and registers no SAML route at all. Failing at construction would therefore
+  have removed SAML for every tenant, including the ones that never needed the
+  deployment default.
+
+  **A new administrator-facing surface says so before any user finds out.**
+  `POST /api/v1/sso/config/test` returns `400` with a failing result for a SAML
+  configuration that would be refused at login for this reason, and reports the
+  underlying load error in the detail field. An OIDC configuration, and any SAML
+  configuration carrying both halves of its own keypair, are unaffected and test
+  as before.
+  **An operator whose deployment has been running on a fabricated keypair will
+  see SAML stop working for affected tenants on upgrade rather than continue to
+  half-work**; grant the portal read access to the secret and restart, or store
+  a per-tenant keypair in each affected tenant's SSO configuration.
+
+### Security
+
+- **The Workflow Control Plane no longer bypasses the HITL enforcement
+  chokepoint (#3517).** *(Community)*
+  `platform/orchestrator/hitl_wcp_community.go` and `hitl_wcp_enterprise.go`
+  each wrote `INSERT INTO hitl_approval_queue` directly, so a workflow approval
+  skipped the licence-tier gate, the pending cap and the history trail that
+  every other entry point applies. This is the same class #1998 closed for the
+  MCP tool `axonflow_request_approval` in v7.8.0 (2026-05-07), and that fix
+  shipped without a ratchet. These two were not a later regression:
+  `git log --diff-filter=A` puts both files at `9f19c3531`, 2026-01-25
+  (#1082), so they already existed when #1998 landed and its fix passed over
+  them. They went undetected for seven months. Both writers now route through
+  `platform/agent/hitl/queue`, which holds the only
+  `INSERT INTO hitl_approval_queue` in the non-test tree, and
+  a lint job in this repository's CI fails the build if a second one appears.
+  (The guard script itself lives under `scripts/`, which is not part of the
+  community mirror, so it is named in the CI / Testing section rather than
+  here - a community reader would find nothing at that path.)
+
+- **Policy selection was keyed on a value the caller supplies, and the boundary
+  it expressed was never enforceable (#3490).** *(Community / Enterprise)*
+
+  **This is an admission, not a simplification.** Until this release, which
+  policies applied to a caller was decided by `tenant_id`. That value is the
+  username half of the Basic-auth credential: `platform/agent/db_auth.go`
+  assigns it verbatim with the comment *"From Basic auth username"*, and
+  nothing validates it against a directory, a credential record or the
+  licence. **Any caller could therefore select another tenant's policy set
+  inside its organisation by choosing that tenant's name, and a caller that
+  chose a name no policy targeted was governed by no tenant-tier policy at
+  all.**
+
+  Measured on a live stack before the fix, with ONE Enterprise licence and
+  three usernames differing in nothing else:
+
+  ```
+  username=alpha   alpha's rule: blocked   beta's rule: ALLOWED
+  username=beta    alpha's rule: ALLOWED   beta's rule: blocked
+  username=zzz     alpha's rule: ALLOWED   beta's rule: ALLOWED
+  ```
+
+  The dynamic-policy plane behaved the same way and had less protecting it: its
+  cache is loaded across every tenant through the platform-admin
+  (`BYPASSRLS`) pool, so that string comparison was the only boundary behind
+  it. Row-level security never keyed on `tenant_id` at all - it keys on
+  `org_id` - so no deployment posture, app-role included, ever enforced the
+  boundary that per-tenant policy targeting appeared to draw.
+
+  Selection now keys on `org_id`, which comes from the signed licence payload
+  and which the caller cannot choose. `tenant_id` remains on every row and in
+  every audit record as **attribution** - which credential produced a decision.
+  It no longer selects.
+
+  **What this means for you, in the direction it changes.**
+
+  - **One tenant per organisation: nothing changes.** Measured as a set
+    difference in both directions over a seeded database: the same 94 policies
+    before and after, none gained, none lost.
+  - **Several tenants in one organisation, with different POLICY rows:** those
+    rows begin applying organisation-wide. The direction is over-blocking - a
+    restriction applies more broadly and nothing stops being enforced.
+  - **Several tenants in one organisation, with policy rows covering only SOME
+    of them:** the same thing, and it is the easier case to miss. An
+    organisation with one rule scoped to one of its three tenants has no
+    divergence among its own rows, and that rule still starts governing the
+    other two. `./preflight.sh` check 23 reports this shape separately.
+  - **Override rows do NOT become organisation-wide, deliberately.** A
+    `policy_overrides` row downgrades an action or disables a policy, so
+    applying one across an organisation would be the only part of this change
+    that LOOSENS enforcement - which is exactly why it is the one part that was
+    not made organisation-wide. Override selection still narrows to the
+    caller's own tenant plus the organisation's own rows, on the reasoning that
+    an override is an exception granted to a caller rather than a policy
+    targeted at one. `./preflight.sh` check 23 still lists organisations that
+    authored divergent per-tenant overrides, because that is worth knowing
+    before a tenancy change and those rows are the ones to revisit if
+    per-tenant overrides are ever retired too.
+
+    **One override shape does start applying, and it is the only loosening in
+    this release.** A `policy_overrides` row with a NULL `tenant_id` is an
+    organisation-wide grant by construction. Until now it was inert on the
+    enforcement path for two compounding reasons, both defects. That plane's
+    org leg required `organization_id IS NOT NULL` and compared that column
+    against the caller's organisation - and `organization_id` is the legacy key
+    no shipped migration ever populated, so it is NULL on every row a shipped
+    writer produced (0 of 101 on a fully-migrated seeded database). The leg
+    therefore matched nothing on **every** caller path, not only the one where
+    the agent passed the argument as a literal nil and it arrived empty.
+    Selection is keyed on `org_id` now and the row applies. Neither shipped writer produces such a row - both set
+    `tenant_id` - so this reaches hand-inserted and pre-v9 rows, and check 23
+    counts them by name of shape rather than predicting there are none.
+
+    **One override shape stops applying, in the safe direction.** Where the
+    enforcement plane cannot resolve an organisation it falls back to the
+    tenant, and an override authored through the portal carries the real
+    `org_id`, so on such a deployment the two no longer meet and a deliberate
+    `block` to `warn` downgrade silently stops working. The result is
+    over-blocking rather than under-blocking, but it is a behaviour change and
+    not an intended one; the fix is to make the organisation resolvable, which
+    on any licensed deployment it already is.
+
+    **One related fix ships in the same clause, and it TIGHTENS.** This read
+    never filtered `revoked_at`, while the session-override matcher always
+    has, so a **revoked** override went on being applied indefinitely. The
+    enforcement read filters it now. If anything on your deployment was
+    depending on a revoked override still taking effect - a downgrade someone
+    revoked but whose workload kept running on it - that stops here, in the
+    direction of more enforcement rather than less. It makes revoking work the
+    way you would already have assumed it did.
+
+  **Before upgrading**, run `./preflight.sh`. Check 23 reports three
+  populations, and the second is the one to read carefully: organisations that
+  target policy or overrides at more than one tenant, named by
+  `org_id / tenant_id / policy_id`; organisations whose policy rows cover only
+  SOME of the organisation's tenants, which carries no divergence among its own
+  rows, can be a single rule, and still starts governing every sibling tenant;
+  and a count of org-scoped override rows (`tenant_id` unset), which were inert
+  on the enforcement path before this release and apply now. Check 24 names
+  every policy row that migration `core/165` will make unselectable. The
+  re-authoring path is in the v10 upgrade guide: a rule that genuinely belongs
+  to a subset of your people becomes segment-scoped (ADR-060, the verified
+  sub-org dimension resolved from your SCIM directory), and a rule whose
+  per-tenant scoping was incidental is consciously accepted as
+  organisation-wide.
+
+  **The tenant-scoped override rows need no action for this upgrade.** They are
+  deliberately not made organisation-wide, because applying a `block` to `warn`
+  downgrade across an organisation is the one direction of this change that
+  would LOOSEN enforcement. Check 23 lists the ones that diverge per tenant so
+  you can confirm that is what you intended. Revoking one is not a remediation
+  step here, and revoking a deliberate downgrade would put a production
+  workload into hard `block` for no reason.
+
+  **Why this was dropped rather than rebuilt on a verified key.** Keeping
+  per-tenant targeting would mean maintaining two sub-org dimensions, one
+  verified and one forgeable, with every enforcement plane forever answering
+  which of them wins. Per-application policy on a verified key is not
+  foreclosed: the building block is a real credential-to-tenant binding
+  validated at authentication, recorded as unblocked and unscheduled.
+
+  **One operational consequence.** Roll the agent and the orchestrator
+  together. The agent now sends the organisation id on its internal
+  policy-evaluation call, and an orchestrator on this release refuses that call
+  with `403` when it arrives without one. That refusal is deliberate:
+  evaluating without an organisation would silently drop every tenant-authored
+  dynamic policy behind a `200`, and a governed tool call must fail closed
+  rather than quietly stop being governed.
+
+  **A second operational consequence, on the orchestrator's operator routes.**
+  Seven of them now answer `401` with the code `ORG_REQUIRED` when the request
+  carries no `X-Org-ID`: `POST /api/v1/templates/{id}/apply`,
+  `POST /api/v1/policies/import`, `POST /api/v1/dynamic-policies/import`, the
+  dynamic-policy list, and the three policy-simulation routes
+  (`/api/v1/policies/simulate`, `/api/v1/policies/impact-report`,
+  `/api/v1/policies/conflicts`), the last four through one shared
+  `resolveOrgOrFail` helper so the refusal cannot drift between them. The
+  template route is the one whose status changes for a previously working
+  caller: it answered `201`. Applying a template CREATES a policy, and after this release
+  a policy is selected by its organisation, so `PolicyRepository.Create`
+  refuses a blank one; this route was its second caller and the one that
+  carried no organisation at all. **It is refused rather than defaulted to the
+  tenant**, and that choice is the point: stamping the new row with the
+  Basic-auth username is exactly what this release removes, so on any
+  deployment whose licence organisation differs from that string the template
+  would apply, return `201`, list correctly, and govern nobody. A `401` naming
+  the header it wants is the honest answer; a `201` that enforces on no one is
+  not. Unlike the policy-CRUD prefixes this route is NOT proxied by the agent,
+  so no gateway sets the header on the caller's behalf: it is reached directly
+  on the orchestrator, which is an operator plane, and the operator supplies
+  the organisation the policy is being authored for.
+
+  **And one refusal on the internal plane, deliberately `403` rather than
+  `400`.** The orchestrator's MCP dynamic-policy evaluation route refuses a
+  header-less internal-service caller that sends `tenant_id` but no
+  `organization_id`. The status is chosen, not incidental: the agent's
+  `EvaluateWithGracefulDegradation` absorbs a `400` by degrading to allow-all
+  and refuses to absorb `401` or `403` (#3068). A `400` here would have turned
+  a version-skew window into silent allow-all on every governed tool call,
+  which is the exact failure this release exists to close.
+
+- **The policy-simulation dry run evaluated an unvalidated, body-supplied
+  organisation (#3490).** *(Community / Enterprise)*
+  `POST /api/v1/policies/simulate` forced the caller's tenant from the
+  gateway-stamped header onto both `User` and `Client`, but left
+  `client.org_id` exactly as the request body sent it. That field is not inert:
+  the dynamic-policy evaluator resolves `client.org_id` (and its bare `org_id`
+  alias) directly to it as a policy-condition field, so a caller could name any
+  organisation string and change which conditions matched in the simulation
+  result the route handed back. The handler now forces both `User.OrgID` and
+  `Client.OrgID` from the authenticated request, and refuses with
+  `401 ORG_REQUIRED` when there is no organisation to force.
+
+  **Scope, stated narrowly, because the narrow version is the accurate one.**
+  This did not let a caller reach another organisation's policies. Policy
+  SELECTION on this route was keyed on the tenant rather than the organisation,
+  through `ListActivePoliciesForTenant`, and the tenant was already forced from
+  the gateway header before evaluation; the `policy_metrics` row the dry run
+  writes was scoped by that same forced tenant, never by the body value. What
+  the request body could reach was CONDITION EVALUATION inside a dry run, on a
+  route that authors no policy and changes what nobody else is served. No
+  released version evaluated one organisation's policy set on another
+  organisation's behalf through this route.
+
+  The sibling routes `/api/v1/policies/impact-report` and
+  `/api/v1/policies/conflicts` were never exposed to this, for a duller reason
+  than a better-resolved scope: neither builds a `Client` block at all, so
+  neither has a body-supplied organisation to validate.
+
+- **A policy row with no resolvable organisation stops being selectable
+  (#3490, migration `core/165`).** *(Community / Enterprise)*
+
+  `core/165` makes `org_id` `NOT NULL` with a non-empty `CHECK` on
+  `static_policies`, `dynamic_policies` and `policy_overrides`, because after
+  this release that column is the only thing that selects a policy row. A
+  column that selects everything cannot be allowed to be empty.
+
+  The migration resolves what it can, in six steps: the `global` wildcard;
+  then, on `dynamic_policies` only, rows with no tenant at all are mapped to
+  `global`, because on that table an absent tenant is the apply-to-everyone
+  shape; then the `tenants` mapping, the only step that can move a row from one
+  organisation to another; then the legacy `org_id == tenant_id` collapse; then,
+  on `policy_overrides` only, the `organizations` lookup through the legacy
+  `organization_id`, which is how org-scoped override rows are reached at all;
+  and finally anything still unresolved is stamped `__axonflow_unowned__`.
+
+  **Step 5 is narrower than it reads, and the difference decides which rows
+  survive.** It joins `organizations.id::text` against
+  `policy_overrides.organization_id::text`, and those were never the same kind
+  of value: `organizations.id` is `SERIAL`, an integer, while
+  `organization_id` was declared `UUID` and stayed `UUID` until `core/133`
+  retyped it to `text`. An integer's text form cannot equal a UUID's, so step 5
+  resolves only INTEGER-shaped legacy values and a UUID-shaped one falls
+  through to the sentinel. Preflight check 23 counts the rows step 5 can
+  rescue; check 24 reports the ones it cannot, as rows that stop firing. The
+  two partition the population rather than overlapping on it.
+
+  **A stamped row stops being able to fire**, because the platform refuses that
+  sentinel on both sides of every comparison. **This is the one change in
+  v10.0.0 that REMOVES enforcement rather than widening it**, which is why it
+  is called out here rather than left in the migration list. The migration
+  raises a warning naming the affected rows, but it raises it during the
+  upgrade in the agent's boot log, which is the wrong moment to learn it.
+  `./preflight.sh` check 24 reports the same rows read-only beforehand, using
+  the migration's own resolution chain, so the two agree.
+
+  Decide per row: `UPDATE` `org_id` with the owning organisation if the rule
+  should keep applying, or accept that it stops. A rule with no owner was
+  already unreachable under row-level security on any app-role deployment, so
+  accepting is usually correct - but it should be a decision rather than a
+  discovery.
+
+- **The legacy `organization_id` column is dropped from the policy tables
+  (#3334, migration `core/166`).** *(Community / Enterprise)*
+
+  **The headline is that this WIDENS what you can write, and the schema was
+  incoherent with the new model until it did.** `policy_overrides` carried
+  `core/030`'s `valid_override_scope` CHECK,
+  `(organization_id IS NOT NULL AND tenant_id IS NULL) OR (tenant_id IS NOT NULL)`,
+  so an org-scoped override in the shape this release's own model implies -
+  `organization_id` NULL, `tenant_id` NULL, `org_id` set - was REJECTED on
+  insert. Since `core/133` the shipped writer deliberately leaves the legacy
+  column NULL, so the only way to author an org-scoped override was to populate
+  a column already documented as deprecated. `core/166` drops the column and
+  the CHECK falls with it as a dependency; the shape becomes writable for the
+  first time. It is deliberately not replaced - `core/165`'s `NOT NULL` on
+  `org_id` covers what it was for, unconditionally and on all three tables.
+
+  `static_policies`, `dynamic_policies` and `policy_overrides` lose
+  `organization_id`. It was the pre-v9 organisation key, superseded by `org_id`
+  and carried since only for the rows that had not been migrated off it -
+  which is why `core/166` runs after `core/165`, the migration that resolves
+  the last of those rows. What breaks is SQL that reads the column directly
+  against these three tables, and any external report or dashboard built on it;
+  move such queries to `org_id`, which carries the same meaning and is now
+  guaranteed non-empty.
+
+  **No API field is removed, and an integrator should not assume otherwise.**
+  `EffectivePolicies` and its response type keep `organization_id`
+  (`platform/agent/policy_types.go:215`), as do `DynamicPolicyRequest` and the
+  policy API's own resource type. Only the database COLUMN goes. What does
+  change on the wire is the opposite of a removal: the policy API's
+  `organization_id` was populated FROM the legacy column, so it was blank on
+  every row, and it now carries the real organisation key. An integrator that
+  coded around the field always being empty will start seeing a value.
+
+- **An unscoped cross-organisation execution read is refused (#3367).**
+  *(Community / Enterprise)* A `/api/v1/unified/executions` list carrying neither a tenant
+  nor an org key ran `FROM execution_history WHERE 1=1` across every
+  organisation and answered `200`. It is now `401`, and the repository refuses
+  the same shape independently rather than relying on the handler. See the
+  Breaking changes section.
+- **Segment-scoped policies were silently unenforced on five enforcement
+  planes (#3312, #3281, #3430, #3447, #3456).** *(Enterprise)* On the gateway
+  pre-check, the WCP HTTP step-gate, the MCP-server tools, the four MCP REST
+  routes and `POST /api/v1/decide`, a segment-scoped policy that blocked a
+  member on `/api/request` was filtered out before evaluation and the request
+  passed. All five now resolve segments through the one shared, fail-closed
+  resolver.
+
+  **DELIBERATE DISCLOSURE, and it has TWO parts. Do not assume segment coverage
+  is now complete.**
+
+  **Part one: TWO enforcement paths still evaluate org-only, and they are
+  different shapes.**
+
+  The first is `POST /v1/chat/completions`, the OpenAI-compatible endpoint
+  (#3410), on its request-phase evaluation. A segment-scoped policy does not
+  restrict a member who reaches your platform through it, and
+  **`require_user_token` does not close it either.** That endpoint mirrors
+  OpenAI's wire shape, which carries nowhere to put a per-user identity: it
+  resolves every caller with an empty per-user token and synthesises a service
+  email from the authenticated client id. On every other plane a refusal is
+  something a caller can comply with by presenting the token it already has;
+  here it would be a wall no caller could comply with, so refusing would simply
+  make the endpoint unusable rather than make identity mandatory. Closing it
+  needs a verified machine principal, tracked as #3410 behind #3279.
+
+  The second is the RESPONSE phase of `POST /api/v1/process`, the Gateway Mode
+  plane. Its REQUEST phase is segment-aware and unchanged by this release; the
+  response-phase scan passes an unconditionally empty segment set, so a
+  segment-scoped response-phase policy is skipped there. Its exposure is
+  NARROWER than the OpenAI-compatible endpoint's: that scan evaluates only the
+  PII and sensitive-data categories your detection config has enabled, not the
+  general policy set. It is still an enforcement gate rather than a detection
+  scan, because a policy whose effective response-phase action is `block`
+  withholds the LLM response on that route. Not tracked under the ADR-060
+  slices that closed the five planes above.
+
+  **Part two, and this is the part an operator is most likely to get wrong: on
+  the four MCP REST routes and `/api/v1/decide`, enforcement is CONDITIONAL on
+  the caller presenting a per-user token.** A caller who presents none is
+  evaluated org-only, with no refusal, exactly as before. So a member can still
+  evade a segment-scoped policy on those five routes by declining to send the
+  token that identifies them, **unless the organisation sets
+  `require_user_token`** (see BREAKING CHANGES), which refuses a token-less
+  enterprise caller at authentication. The two newly-covered plane families are
+  therefore a real fix for a caller who identifies themselves and NOT, on their
+  own, a closed door.
+
+  **Two of the other three planes are not exposed to that choice; the third
+  is.** The MCP-server JSON-RPC plane refuses a principal-less caller outright
+  whenever the phase's policy set can depend on membership, with no flag
+  required. The gateway pre-check refuses any enterprise caller whose per-user
+  token is absent or invalid, which is why `require_user_token` has nothing to
+  change there. **The WCP HTTP step-gate IS exposed to it, and
+  `require_user_token` does not reach that plane at all.** Its identity header
+  cannot be forged (it is honoured only behind the internal-service proxy-auth
+  gate, and the agent strips a client-supplied `X-User-Email` under the
+  default-off trust gate), but it can be OMITTED: a governed caller that sends
+  no `X-User-Token` reaches the step-gate with no email, resolves to the
+  org-only outcome, and is not refused. Treat the WCP step-gate the same way as
+  the MCP REST routes for now, and keep an edge gate or an org-scoped policy in
+  front of it.
+
+  This is published rather than left to be discovered because an operator who
+  believes a segment-scoped policy covers every plane is worse off than one who
+  knows where it does not. **What to do, stated as the concrete change from the
+  9.19.0 advice:**
+  - **Keep gating `POST /v1/chat/completions` at the edge.** Nothing in this
+    release changes that route.
+  - **Keep gating the response phase of `POST /api/v1/process` at the edge if
+    you rely on segment-scoped response-phase PII or sensitive-data policy.**
+    Nothing in this release changes that path either.
+  - **Do NOT treat the WCP HTTP step-gate as covered.** It degrades to org-only
+    for any caller that omits its per-user token, and `require_user_token` has
+    no gate point on that plane.
+  - **Do NOT drop an edge gate on the MCP REST routes or `/api/v1/decide` on
+    the strength of this release alone.** Turn on `require_user_token` for the
+    organisations that rely on segment scoping first; that is what converts
+    conditional enforcement into an unconditional one, and only then is the
+    edge gate redundant.
+  - **Keeping an org-scoped policy behind the segment-scoped one still works,
+    and is still the answer that depends on nothing else.** It costs nothing to
+    leave in place and it covers the OpenAI-compatible endpoint, the
+    `/api/v1/process` response phase and the WCP step-gate, which none of
+    the above does.
+- **The MCP-server plane no longer accepts a shared credential where a
+  per-user identity is required (#3430).** *(Enterprise)* A caller with no
+  validated per-user token, or holding a token that names a shared synthetic
+  identity, is refused on `check_policy` and `check_output` when the
+  organisation holds an enabled segment-scoped policy for that phase, rather
+  than being evaluated as though no segment restriction existed. **It is
+  refused on a second trigger too, which an operator sizing blast radius needs:
+  a policy set that could NOT BE READ at all also denies**
+  (`platform/agent/mcp_identity.go:478-483`), because whether the verdict
+  depends on segments is then unknown. A database or policy-plane outage
+  therefore refuses these callers even on an organisation that holds no
+  segment-scoped policy.
+
+  **New metric `axonflow_agent_mcp_segment_identity_unresolved_total{tool}`
+  (#3430)** counts exactly that refusal, per tool. It is deliberately separate
+  from the existing `axonflow_segment_policy_fail_closed_total`, which counts
+  resolver failures for a caller who did have a principal: the two have
+  different operator remedies (provision per-user tokens, versus repair the
+  identity store). **This metric is Enterprise, and it is filed here rather
+  than under Community even though the counter is compiled into both
+  editions.** In a Community build there is no identity-attribute resolver, so
+  `resolveMCPServerSegmentsForPolicy` proceeds at its first branch
+  (`platform/agent/mcp_identity.go:466-468`), the refusal it counts is
+  unreachable, and the series never acquires a label value. A Community
+  operator will not see it appear.
+- **Revoking a per-user token now revokes it on the MCP REST plane (#3472).**
+  *(Enterprise)* Those four routes discarded any per-user token that failed to
+  validate and served the request under a synthetic service identity, so `jti`
+  revocation, expiry, algorithm pinning and signature verification had no effect
+  on them. A revoked token kept working. See the Breaking changes section: this
+  is a removed fallback, not an opt-in, and the refusal is audited under
+  `user_token_rejected`.
+- **Identity suppression is closable at authentication (#3476).** *(Enterprise)*
+  Segment-scoped policy is only as strong as the platform's ability to insist on
+  an identity. Before this release, on every gate point that had a
+  synthetic-identity fallback, the caller chose: forwarding a per-user token was
+  optional, and declining it turned every segment-scoped restriction off for the
+  one person it was written to restrict. `require_user_token` makes that choice
+  the organisation's rather than the caller's. **It is off by default and must
+  be turned on deliberately**, per organisation or deployment-wide; see the
+  Breaking changes and Migration sections for the levers, the six gate points,
+  the boot fatal, and the fail-closed behaviour on an unreadable posture.
+
+  **New audit marker `user_token_required`**, kept distinct from
+  `user_token_rejected` so an alert can tell a caller who never tried to prove
+  who they were from one who tried and failed. The two have different remedies.
+  Query both with JSONB containment rather than `LIKE`.
+
+  **New audit field `attempted_user_email`** on `POST /api/v1/decide`, at
+  `policy_details->>'attempted_user_email'`. It records an `X-User-Email` a
+  caller asserted that did NOT become the row's attribution, in the same
+  attempted-versus-actual shape as the existing `attempted_tenant_id` and
+  `attempted_org_id`. The `user_email` column continues to name the principal
+  the decision was actually evaluated against. It is absent when no header was
+  asserted, and when the asserted value agrees with the column.
+- **New metric `axonflow_segment_subject_org_mismatch_total` (#3447).**
+  *(Enterprise)* Counts segment resolutions where the validated token's `org_id`
+  claim disagreed with the authenticated credential's organisation. **This
+  cannot escalate**: segment ids are org-scoped group identifiers, so groups in
+  the asserted organisation can never match a policy targeting the governing
+  one. What it can do is UNDER-enforce in a way that leaves no other trace: the
+  lookup joins to zero rows, which is correctly reported as a successful empty
+  resolution, and a verified member of a targeted segment is then evaluated
+  org-only with no refusal, no audit row, and a metric indistinguishable from a
+  genuine non-member.
+
+  It is reached when a token is minted with no `org_id` claim, or with one
+  defaulted to the tenant id, on a deployment where the organisation and tenant
+  identifiers genuinely differ. **A non-zero value on this counter means some of
+  your segment-scoped policies are silently not applying**; mint per-user tokens
+  with an `org_id` matching the credential's organisation. A rate-limited
+  warning carries the diagnosis and this counter carries the volume. It is
+  reported rather than refused because refusing would break exactly the
+  deployments whose tokens default the claim, and because the already-shipped
+  `/api/v1/process` and gateway pre-check planes use the same subject key, so
+  refusing on one plane would diverge the three.
+- **Gateway Mode LLM call records now carry the organisation that made the
+  call (#3435).** *(Community)* `llm_call_audits.org_id` has existed since
+  migration 089, and the writers disagreed about it in two different ways.
+  **The Gateway Mode writer (`storeLLMCallAudit`) omitted the column from its
+  INSERT entirely**, so every Gateway Mode row landed with a NULL organisation
+  and could be scoped only by the client credential. **The OpenAI-compatible
+  writer already bound the column**, but bound a bare string, so a request with
+  no resolved organisation planted an empty string, which is a value no org
+  predicate can subsequently claim. All three writers now stamp `org_id` from
+  the authenticated identity, and all three route a blank organisation through
+  the same helper so it is written as SQL NULL rather than as an empty string,
+  so one predicate reaches every row. **This can lengthen how long those rows
+  are kept, and only lengthen it:** the retention sweep buckets by `org_id`, a
+  NULL-org row falls into the default window, and per-org overrides are clamped
+  upward to the regulatory floor. An operator with no overrides configured sees
+  no change in timing. **Nothing is backfilled**, so pre-release rows keep
+  whatever their writer stored: NULL from Gateway Mode, and either a real
+  organisation or an empty string from the OpenAI-compatible path.
+
+### Community
+
+- **#3408 - a workflow approval no longer leaves a phantom pending entry.** The
+  WCP step gate writes a decide-plane `hitl_approval_queue` row (the EU AI Act
+  Article 14 oversight record; the Evaluation-tier auto-expiry loop drives
+  workflow abortion from it, and the SEBI and OJK exports read this family).
+  Nothing ever resolved it: the workflow step was approved, the re-gate
+  returned allow, the workflow ran, and the row still advertised an outstanding
+  decision - permanently inflating the portal's Approvals badge and telling a
+  compliance reader that a review never concluded. Approving **or rejecting**
+  the step on the workflow plane now resolves the mirror and writes its history
+  entry, in one transaction, using the same `UPDATE` the agent's own
+  approve/reject API runs. The plan-resume reject path is included: it
+  previously called `AbortWorkflow`, which resolved neither the step nor the
+  mirror.
+- **#3408 - the `approval_id` a WCP approve/reject response returns now
+  resolves to a row on every edition.** The response projects a deterministic
+  UUID v5 derived from `(workflow_id, step_id)`; the community/Evaluation write
+  path minted a random one, so on that edition the id was unusable and every
+  re-gate of a step appended another pending row. Both editions now derive the
+  same id, and a re-gate reports `approval_enqueue: "reused"` instead of
+  creating a duplicate.
+
+  **`reused` appears only on a re-gate that RE-EVALUATES**
+  (`retry_policy: "reevaluate"`, or a gate override). The default
+  `retry_policy: "idempotent"` replays the stored decision through
+  `buildCachedResponse`, which carries `cached: true` and neither
+  `approval_id` nor `approval_enqueue` - unchanged by this release, and the
+  reason the fields are `omitempty`. Absent means "this response is a replay,
+  not a fresh enqueue".
+- **#3408 - workflow approvals are recorded in `hitl_approval_history`.**
+  Neither edition wrote a `created` entry for an approval raised by a workflow
+  gate, so the human-oversight trail - the store `audit_cleanup.go` prunes
+  under the `hitl_oversight` data type, and the family the SEBI and OJK exports
+  read - had a hole exactly where the automated planes met human oversight.
+
+  This does NOT put workflow gates into the `eu_ai_act_hitl_metrics` view:
+  that view filters `eu_ai_act_article IS NOT NULL`, and the WCP plane has
+  never populated that column. It did not before this change either; the
+  behaviour is unchanged and is noted only because the surrounding code
+  comments used to describe it too broadly.
+- `POST /api/v1/workflows/{id}/steps/{step_id}/gate` responses carry a new
+  `approval_enqueue` field on `require_approval` decisions: `created`,
+  `reused`, `cap_reached`, `tier_disabled` or `error`. It is how a client tells
+  "held, and there is something to approve" from "held, and there is nothing to
+  approve" - before this change those were the same response. Omitted entirely
+  when no enqueue was attempted.
+- New metrics `axonflow_hitl_enqueue_total{plane,outcome}` and
+  `axonflow_hitl_mirror_resolve_total{outcome}`.
+
+> Dynamic-policy engine consolidation (epic #3293 Slice 2's last KNOWN GAP,
+> #3319): the orchestrator's in-memory `DynamicPolicyEngine` is retired in
+> favour of the single `DatabaseDynamicPolicyEngine`, closing the two-engine
+> split the 9.19.0 convergence left open. `risk_score` becomes a computed
+> platform signal again (#3321), and the audit read APIs stop publishing
+> fabricated zeroes (#3424, #3426, #3427).
+
+#### Added
+
+- **New metrics for the dynamic-policy engine's health (#3319):**
+  `axonflow_policy_set_source{source}` (whether the engine is currently serving
+  `defaults` or `database`), `axonflow_policy_cache_age_seconds` (time since the
+  last successful load), `axonflow_policy_refresh_failures_total{reason}`, and
+  `axonflow_policy_zero_row_loads_total`. These replace the `policy_metrics`
+  table's fake `system_health` row, which wrote refresh staleness into a column
+  named `execution_time_ms`, a value that was never an execution time and
+  misled any operator or dashboard reading it literally.
+- **New audit-report and audit-summary fields (#3426, #3424):**
+  `total_policies` (the pre-truncation distinct policy count, so a truncated top
+  ten discloses what it truncated), `identity_is_name` on each top-policy entry
+  (so a renderer can tell a display name from a raw id), `top_policies_unavailable`
+  on `/audit/summary`, and `latency_sample_count` on both. All additive.
+- **`X-Axonflow-Tenancy-Scope` (#3367)**, a fourth trusted-hop header carrying
+  "the caller I am forwarding for is bound to the org, and the tenant header on
+  this request is a display default rather than an authorization narrowing". It
+  is honoured only over a valid internal-service proxy-auth token, is listed in
+  the closed set of headers a client may never assert, and its absence means
+  "narrow by the tenant header as before", so every existing caller keeps its
+  current per-credential narrowing untouched.
+
+#### Changed
+
+- **The policy API paths say `system` and `tenant` (#1431).**
+  `/api/v1/static-policies` is now also served at `/api/v1/system-policies`,
+  and `/api/v1/dynamic-policies` at `/api/v1/tenant-policies`. Everything else
+  in the product already used that vocabulary: the tier column in the database,
+  the portal UI and the published docs all say system and tenant. Only the wire
+  paths still said static and dynamic, and "dynamic" reads as "changes by
+  itself", which is not what it means. Those are simply the policies a tenant
+  writes.
+  **Nothing is removed and nothing changes about a request except the path you
+  send it to.** Each pair is one handler registered under two prefixes on the
+  same plane, so the authentication, the permissions, the request and response
+  bodies and the status codes are the same by construction rather than by
+  parallel maintenance. Both spellings are served on every plane that served
+  the old one: the agent (system policies, 13 routes), the orchestrator (tenant
+  policies, 7 routes), and the agent reverse proxy that makes the tenant family
+  reachable at the ADR-026 single entry point.
+  Responses served from an old path carry `Deprecation: true` and a `Link`
+  header naming the exact successor of the path that served them, suffix
+  preserved, so a client can follow it mechanically; both are CORS-exposed so
+  a browser client can read them. Two responses do not carry it, and its
+  absence is therefore not proof that a path is current: a `404` for a path or
+  method matching no route under the family, and a refusal produced by a
+  gateway ahead of the endpoint rather than by the endpoint itself. Sample a
+  successful response. **There is deliberately no
+  `Sunset` header and no removal date is published**: a `Sunset` value is a
+  promise that the path stops working on a given day, and whether these paths
+  are ever removed has not been decided. Treat the old spellings as supported,
+  migrate when convenient, and watch these notes rather than a header.
+  The policy CATEGORY vocabulary is unchanged - a tenant policy's category
+  still starts with `dynamic-` or `media-`. That is a stored value on every
+  existing policy row, so renaming it would be a data migration rather than an
+  alias, and this change adds no migration.
+- **One dynamic-policy engine, not two (#3319).** See the Breaking changes
+  section for the boot and metric consequences. Two further behaviours change
+  with it. **Built-in default dynamic policies are no longer appended to a
+  database-loaded set:** the retired engine unioned the two on every load, so
+  five built-ins (for example `pol_high_risk_block`) were enforced twice under
+  two ids, the in-process default and its seeded `sys_dyn_*` database
+  equivalent, and the in-process copy could not be disabled by editing or
+  deleting the database row. The engine now serves EITHER the built-in defaults
+  OR a database-loaded set, never both. **`dynamic_policies` reads converge onto
+  the one shared loader**, the dynamic-side twin of 9.19.0's `static_policies`
+  convergence, so the policy-table choke-point lint now covers both tables and
+  drops the two allow-list entries the split created.
+- **`risk_score` is a platform-computed signal again, not a caller-supplied one
+  (#3321).** The database-backed engine's dynamic-condition resolver never had a
+  computed risk score to read, so the bare `risk_score` condition field silently
+  fell back to reading `context.risk_score` straight out of the caller's own
+  request body, and two seeded, enabled policies have been unable to fire on a
+  real signal since January. `risk_score` is now computed from the request
+  itself on every evaluation: SQL-injection patterns via the shared scanner
+  (+0.9), a word-boundary-anchored sensitive-data keyword match (+0.7), and a
+  `select *` query (+0.3). `context.risk_score` is unaffected and continues to
+  resolve the caller-supplied value under its own explicitly namespaced field
+  name. Two deliberate departures from a byte-for-byte restoration of the
+  retired engine's calculator: the sensitive-data pattern is anchored, so "what
+  is a monkey" and "tell me about tokenization" no longer score for containing
+  "key" or "token" inside a longer word, and **role no longer contributes**,
+  because role is an authorization signal rather than a risk signal and as built
+  it meant the more trusted the caller the more likely they were blocked.
+- **The dynamic-policy engine's action switch now handles `warn`, `alert`, `log`
+  and `redact` (#3319, #3321).** Six of the ten built-in default dynamic
+  policies had inert actions: the switch parsed but never executed `alert`,
+  `redact` and `log`, and three defaults configured `modify_risk` with a
+  `modifier` key the switch never read (it has always read `add`, additively,
+  matching the real seeded `sys_dyn_llm_cost` system policy). `warn` had no case
+  at all, so `sys_dyn_high_risk_block` has been silently inert since migration
+  036 in January 2026. All four arms are now implemented as allow-but-annotate:
+  `log` and `alert` record a structured line (`alert` also adds a
+  `RequiredActions` entry so it reaches the audit trail), `warn` records a
+  `warn:` entry, and `redact` records the requested fields, the same signal-only
+  pattern `require_approval` already uses, since this evaluator has no response
+  content to redact in place. The two defaults using `modifier` are corrected to
+  `add`.
+- **`RiskScore` is clamped to `[0,1]` once, after the policy loop.** Nothing
+  re-clamped after a matched policy's `modify_risk` action added to the running
+  score, so an SQL-injection-detected 0.9 floor plus one enabled `modify_risk
+  +0.2` policy produced `RiskScore=1.1`, outside the documented range, which
+  flowed verbatim into audit rows and the compliance evidence export. Clamping
+  after the loop rather than inside `modify_risk`'s own arm lets multiple
+  `modify_risk` policies compose additively and THEN clamps the total.
+- **Dynamic-policy evaluation order is now deterministic** (`priority DESC,
+  created_at DESC`, policy id ascending as a final tiebreak). The engine caches
+  policies in a map and evaluated them with a plain range, which randomizes
+  iteration order on every call. Once a matched policy's `modify_risk` action
+  can raise the running score a later policy's own `risk_score` condition reads,
+  "later" being randomized meant **the same request could reach a different
+  allow or block verdict from one call to the next**. Evaluation now walks the
+  cache in the same fixed order the retired engine's slice-backed cache always
+  used, sourced from the query's own previously computed and discarded
+  `ORDER BY`.
+- **The unified execution read gained an org-scoped mode, and by-id reads
+  authorize on the organisation alone for a caller carrying the new tenancy-scope
+  assertion (#3367).** `execution_history` stamps `tenant_id` from the executing
+  caller's credential, while a portal session has no credential identity at all
+  and is handed an arbitrary tenant of its org as a display default. Comparing
+  those two is a category error that rendered a confident zero over data the
+  session was fully authorized to see. Cancel deliberately does NOT honour the
+  assertion and keeps the strict tenant-ownership check.
+- **`execution_history.external_id` holds the source system's id again
+  (#3442).** Migration `core/042` documents the column as the original id from
+  the source system and indexes it; the writer bound the execution's own primary
+  key into it, so an indexed correlation column correlated each row only with
+  itself. It now receives the workflow id on the WCP plane and the plan id on
+  the MAP plane, and falls back to the execution id for any caller that sets
+  neither, which is byte-for-byte the old value. The field is write-side only
+  and is deliberately not serialized until a reader adds it to the SELECT lists.
+- **`docs/getting-started.md` now points at the paid Design Partner Program**
+  rather than a sales mailbox for readers who need a sponsored production path
+  (#3418). The README's evaluation and program sections were rewritten on the
+  same terms. Details are on the program page rather than restated here.
+- **The README's video section now leads with the product demos page**, keeps
+  the Community Quickstart walkthrough and the architecture deep dive, and
+  corrects the Quickstart runtime to 2 minutes (#3420, #3423).
+- **Example `go.mod` pins move to the published Go SDK v9.1.1** across 61
+  example modules (#3407), completing the v9.19.0 train's client releases. Each
+  `go.sum` moved with it.
+
+#### Fixed
+
+- **Cross-origin browser access to every orchestrator-backed route family was
+  broken by duplicated CORS headers, and is fixed at the proxy (#3511).** The
+  agent's CORS middleware writes the response headers, and then
+  `httputil.ReverseProxy` copies the orchestrator's own CORS headers on top of
+  them. THREE headers came back twice, not one:
+  `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials` and
+  `Access-Control-Expose-Headers`. Two of those break a browser
+  independently. Per the Fetch spec a response carrying more than one
+  `Access-Control-Allow-Origin` fails the CORS check outright, and the
+  credentials check accepts only the exact string `true`, which `true, true` is
+  not, so credentialed cross-origin requests failed on their own account. The
+  agent now strips the backend's `Access-Control-*` response headers in the
+  proxy's `ModifyResponse`, making its own middleware the only thing that sets
+  them, in line with ADR-026's single-entry-point rule: the edge owns the CORS
+  contract. Everything behind `RegisterProxyRoutes` is affected, which is
+  policies, audit, plans, budgets, usage, executions, connectors, webhooks and
+  every compliance module. **Only browsers were affected.** A CORS check exists
+  nowhere else, so curl, the SDKs, every server-side client and the runtime-e2e
+  suites saw a perfectly good response with a duplicated header and were
+  unaffected throughout. `Vary` is deliberately not stripped: it is not a CORS
+  header, a backend may legitimately vary on something else, and repeated field
+  lines are equivalent to one comma-joined line under RFC 9110.
+- **One governed workflow no longer carries two identifiers, and the
+  control-plane one is no longer 32 bits (#3442; see ADR-062).** Three
+  generators minted ids under the same `wf_` prefix for three different things.
+  The control-plane workflow id was a UUID truncated to its first 8 hex
+  characters, in TWO places (the service and the repository's empty-id
+  fallback), which keeps 32 bits. Truncating a UUID does not preserve its
+  collision properties: by the birthday bound that space reaches about 1%
+  collision probability at roughly 9,300 ids and about 50% at roughly 77,000,
+  and `workflows.workflow_id` is a database-wide primary key over a table
+  nothing prunes. Both sites now route through one generator minting `wf_` plus
+  a full v4 UUID (122 bits). **Be precise about what the old collision did:** the
+  plain INSERT has no conflict clause, so two live runs could not silently
+  merge; the second create failed on the primary key. The silent merge is across
+  TIME, because `workflow_id` is stamped into `audit_logs` policy details whose
+  retention outlives both the deletable `workflows` row and the 90-day
+  execution-history cleanup, so a reused id re-points historical audit
+  correlation at a different run.
+- **The unified execution record for a WCP workflow carries the workflow's own
+  id instead of minting a second one (#3442).** A `workflows` row IS the run and
+  its execution-history row is a 1:1 projection created synchronously from it
+  and resolved by the same metadata key on every read, so the portal Approvals
+  queue showed an operator one id while the Executions page showed another for
+  the same run, with nothing on either screen saying they were different kinds
+  of thing. **No migration and no row is rewritten:** rows written before this
+  keep their minted ids and stay addressable by primary key and by the unchanged
+  metadata key. MAP deliberately keeps two ids, because a plan is a proposal
+  with a TTL, a version history and a confirm step, so a plan and a run of it
+  really are two things. A related consequence: the step-approval reconciliation
+  that previously ran only for a caller passing the workflow id now runs for the
+  execution id too, so the portal Executions timeline reflects live approval
+  state for the first time.
+- **A guessable clock-derived execution id can no longer be minted (#3442).**
+  The id generator fell back to a Unix-nanosecond string when the random read
+  reported an error. On Go 1.24 and later that branch is unreachable rather than
+  merely untested, because `crypto/rand.Read` never returns an error and crashes
+  the program on an OS RNG failure instead, and forcing the branch showed it
+  producing duplicate ids within a single run. The dead fallback is deleted and
+  ids stay 96-bit.
+- **Top-policy chips resolve a policy's identity through the shared chain
+  (#3426).** The audit report and summary grouped on a single
+  `policy_details->>'policy_name'` key, so every row whose writer stamps arrays
+  (the decide, MCP and FinCrime planes) was dropped before grouping and never
+  appeared in the top-policy list at all. Both surfaces now resolve identity
+  through the same shared expression the rest of the audit stack uses, and
+  report whether what they resolved is a name or an id. Override lifecycle
+  events are excluded by request type rather than by verdict, which is the
+  column that actually distinguishes them.
+- **Decision, gateway, MCP-tool and OpenAI-compatible audit writers record their
+  measured latency (#3424).** These planes wrote nothing into
+  `audit_logs.response_time_ms`, so their rows were indistinguishable from a
+  measured zero once the reader coalesced. Each now threads its own elapsed time
+  from the same clock the decision-duration histogram reads, so the tile and the
+  metric cannot disagree, and the HITL writer records an explicit unmeasured
+  marker rather than a literal `0`.
+- **`/health`'s `policy_engine` component no longer reports `false` for a
+  legitimate defaults-mode deployment (#3319).** The check used to key off
+  whether the engine had a live database handle, which is false for the entire
+  lifetime of a deployment with no `DATABASE_URL` and for any window in which
+  the engine is correctly serving the built-in defaults. It now reflects whether
+  a usable, non-empty policy set is being served: a defaults-sourced engine is
+  healthy on that alone, while a database-promoted engine additionally requires
+  a live pool and a cache refreshed within the last 5 minutes, so the one
+  operationally meaningful case stays reported as unhealthy exactly as before.
+- **`axonflow_policy_refresh_failures_total{reason="database_not_configured"}`
+  no longer climbs forever on a no-database deployment (#3319).** Every 30
+  second refresh tick on a deployment with no `DATABASE_URL` used to increment
+  this counter, so a naive rate alert fired permanently for every intentional
+  no-database install. Not configured is a steady, intentional state, already
+  exposed continuously by `axonflow_policy_set_source{source="defaults"}`.
+  Genuine failures are unchanged.
+- **A zero-row dynamic-policy load on an RLS-scoped pool is no longer promoted
+  (#3319).** The refresh used to swap in and promote any successful load,
+  including a zero-row result read through the application role's RLS
+  restriction with no BYPASSRLS admin pool behind it, which is the exact shape a
+  missing org GUC produces: no error, no rows. That load is now refused as a
+  failed refresh rather than accepted as an empty success, the last-good policy
+  set keeps enforcing, and the refusal is counted separately under
+  `reason="zero_row_rls_blind"`. A zero-row load on a pool the engine trusts
+  still promotes exactly as before. The static plane already failed closed on
+  the equivalent shape; this brings the dynamic plane in line.
+- **`step_gate` audit rows carry the organisation and the reviewer email
+  (#3281).** The organisation was never set on this writer, so every step-gate
+  row landed with a NULL `org_id`. The row now also carries the evaluation's
+  policy ids when there are any.
+- **The demo seed data stamps the enforcement plane on its audit rows (#3424).**
+  The latency tile averages only rows that name a plane, because an unstamped
+  measured row can only be a pre-migration-119 provider round trip and is a
+  different quantity, so without this the whole demo dataset dropped out of the
+  tile.
+
+#### CI / Testing
+
+- **New guard: no unaudited second caller of the cross-org dynamic-policy
+  readers (#3319).** The shared loader's two cross-org entry points take a
+  database handle directly, so their safety is a caller contract that the RLS
+  read audit's AST walker cannot verify through a parameter. A new test walks
+  the same tree and fails if either function is ever called from anywhere other
+  than its one known call site, so a second caller passing an app-role-scoped
+  pool turns CI red instead of shipping unnoticed.
+- **The community pull workflow no longer resurrects deleted files by default.**
+  A file existing only in the community mirror is usually a file the enterprise
+  repository deliberately deleted rather than a contribution it is missing,
+  because the mirror lags by design; with the old default a routine pull would
+  have silently re-introduced the in-memory `DynamicPolicyEngine` and four of
+  its tests. A real community contribution is still importable by opting in
+  after reading the dry run.
+- **Removed `accept-community-pr.yml`**, which had zero runs since February and
+  is superseded by the pull workflow.
+
+- **`policy_overrides.tenant_id` can no longer be the empty string** *(Community)* - a policy override is scoped one of exactly two ways: `tenant_id` holding a real tenant (tenant scope), or `tenant_id` NULL with `org_id` carrying the organisation (org scope). An empty or whitespace-only `tenant_id` is neither, and every read path in `platform/agent/policy_override_repository.go` is built from those two shapes (`tenant_id = $N`, or `org_id = $N AND tenant_id IS NULL`), so such a row can never be applied, listed, superseded, or deleted through any scoped predicate. It simply accumulates, invisibly. Until now nothing rejected it: `core/030`'s `valid_override_scope` CHECK was satisfied by an empty string on its `tenant_id IS NOT NULL` arm, `core/165` deliberately constrains `org_id` only, and the application layer validates only the override reason and action on create. Migration `core/166` adds `policy_overrides_tenant_id_not_empty`, the same CHECK migration `core/155` already gave `static_policies` and `dynamic_policies` - `policy_overrides` was simply the table it left out, because `valid_override_scope` looked at the time as though it covered the same ground. **The migration deletes any such rows before adding the constraint**, because `ADD CONSTRAINT` validates existing rows and an install already carrying one would otherwise fail the upgrade with no way to clear it - the row is unreachable by every product path, so it cannot be found or removed through the portal or the API. Each deleted row is named by primary key and `policy_id` in a `WARNING` so it can be recreated with a real tenant. Deleting rather than normalising is deliberate: on this table NULL is not an inert value, it IS org scope, so rewriting the empty string to NULL would take a row that has never applied to anything and make it a live organisation-wide override. `core/155` defused that same hazard on `dynamic_policies` by also disabling the rows, which is not available here - `policy_overrides` has no enabled switch, and `enabled_override` is the override's payload rather than a control on the row. (#3334)
+
+### Enterprise
+
+- **#3408 - one workflow gate no longer renders as two rows.** The mirror is
+  excluded from the agent's *actionable* pending queue - from both the page
+  and the `meta.total` the portal's sidebar badge reads, which is the only
+  count the portal consumes (`HandleListQueue` rebuilds the upstream query and
+  sends no `request_type`) - because approving it there flips a status and
+  releases nothing: the workflow engine re-gates on `workflow_steps`. It
+  remains fully readable via
+  `GET /api/v1/hitl/queue?request_type=wcp_step_gate`, and approving, rejecting
+  or overriding it on the decide plane is now refused `409` with the
+  workflow-plane route named. (The agent's HITL API is enterprise-only.)
+
+  **Not changed, and worth knowing:** `GET /api/v1/hitl/stats` and the
+  `hitl_pending_summary` view still count `wcp_step_gate` entries. They arrive
+  there by different routes: the stats endpoint calls the SQL function
+  `get_hitl_pending_count()` (`platform/agent/hitl/repository.go:512`), while
+  the view is a plain `SELECT ... FROM hitl_approval_queue WHERE status =
+  'pending' GROUP BY ...` and calls no function at all
+  (`migrations/core/025_hitl_oversight_queue.sql:298`). Neither filters
+  `request_type`, so aligning them still needs a migration this release does
+  not allocate. The portal does not proxy that route today. Tracked in #3520.
+
+> SEBI audit export tells the truth about its own coverage (#3435). The export
+> read columns its tables do not have, swallowed the failure, and printed a
+> confident complete artifact over it. Every affirmative claim the document
+> makes is now one the export can support, and where it cannot the document
+> says so. Alongside it, five portal surfaces stop stating something the system
+> did not mean (#3441), and the audit, usage and approvals tables stop
+> reporting fabricated zeroes.
+>
+> Separately, the ADR-060 governance-segment work reaches five more planes
+> (#3312, #3281, #3430, #3447, #3456) and stops a caller choosing
+> to
+> arrive without an identity (#3472, #3476). Those items are breaking and are
+> written up in full in the Breaking changes and Security sections; what
+> follows here is the additive surface they bring with them.
+
+#### Added
+
+- **`docs/security/require-user-token.md`**, the operator contract for #3476:
+  both levers and which wins, the full resolution decision table including the
+  two cases that resolve in opposite directions, the six gate points and their
+  refusal shapes, why the gateway pre-check and the OpenAI-compatible endpoint
+  are out of scope, the two audit markers and how to query them, and the TTL
+  knob's effect on how long a posture flip takes to become live.
+- **`approval_request_id` on the `POST /api/request` and
+  `POST /api/policy/pre-check` responses (#3509).** Additive and omitted when
+  empty. On a `require_approval` hold it names the reviewable entry raised for
+  the request, so the caller can say what is pending rather than only that it
+  was refused. It is a SEPARATE field rather than an addition to
+  `block_reason`, because every shipped SDK matches the `require_approval`
+  sentinel literally to enter its HITL branch and that string is unchanged. An
+  EMPTY value on a held response is meaningful: it means no reviewer will see
+  the request (the pending cap was reached, the tier has no queue, or the write
+  failed), and a caller should treat it as a refusal rather than as something
+  pending.
+- **`AXONFLOW_HITL_GRANT_TTL_SECONDS` (#3509).** How long an approved entry
+  stays spendable, measured from the moment the reviewer actioned it. Default
+  900 seconds, clamped to 60 to 86400 and reported when clamped. An
+  UNPARSEABLE value **refuses the boot** rather than silently substituting the
+  default: the operator's intent is unknown, both guesses are wrong in a way
+  that is invisible afterwards, and a deployment that never sets the variable
+  is unaffected. A value outside the 60 to 86400 range is clamped rather than
+  fatal, because both bounds are defensible postures and the operator is told
+  which applied. **Zero and negative values are fatal, not clamped**: they are
+  not "a shorter window", they would make every approval unspendable the
+  instant it was granted, which is indistinguishable from the defect this
+  control exists to fix, so the deployment refuses to start rather than serve
+  it. An operator setting `0` to mean "disable grants" gets a boot refusal that
+  says so, not a silent one-minute window.
+- **Two counters for the human-oversight path (#3509).**
+  `axonflow_hitl_policy_enqueue_total{plane,outcome}` counts every attempt to
+  raise a reviewable entry; anything other than `outcome="created"` means the
+  caller was held and no reviewer will see the request, which is what an
+  operator should alert on. `axonflow_hitl_grant_consume_total{plane,outcome}`
+  counts grant lookups, distinguishing a spent grant from the ordinary
+  no-approval-waiting case and from a lookup refused for want of an attributed
+  principal. The pre-existing Fraud and Risk enqueue was best-effort and
+  silent; it is counted through the same chokepoint now.
+- **`segment_ids` on the `POST /api/v1/mcp/evaluate-policies` request body
+  (#3447).** Additive and optional. It relays the governance-segment set the
+  calling agent already resolved fail-closed, so the MCP planes' dynamic
+  evaluation scopes to the same set the static evaluation used. Absent or empty
+  means org-only. This is an internal-service route; see the Breaking changes
+  section for its trust properties.
+- **`attempted_user_email` in `policy_details` on `POST /api/v1/decide`
+  (#3476).** Additive. See the Security section.
+- **New metric `axonflow_segment_subject_org_mismatch_total` (#3447)**, and a
+  new `phase` label on `axonflow_segment_resolution_total` (#3473). Both are
+  described in the Security and Breaking changes sections respectively; the
+  label is listed here as well because a dashboard that selects the old series
+  needs editing, not just reading.
+- **`retention_configured` (boolean) on each `GET /api/v1/sebi/audit/retention`
+  row, and `not_configured` as a fourth `error_kind` (#3435).** Additive; no
+  existing field changes type.
+- **`summary.report_state`, `summary.sections`, `summary.scope_gap`,
+  `summary.section_row_total`, `summary.overlapping_records` and
+  `metadata.scope_key` on the SEBI export response (#3435).** Additive. A
+  governed LLM call is genuinely a member of both the LLM-calls and
+  decision-chain sections, so summing the section counts reported more records
+  than exist; the overlap is now computed by intersecting row ids, subtracted
+  from the total, and disclosed in the artifact rather than in a source comment.
+- **`posture_lever` on a unified policy (#3441)**, naming the detection-posture
+  lever that replaces that policy's stored action at evaluation time, resolved
+  server-side from the same shared function the agent's displacement advisory
+  uses. Empty means no lever governs the category, which is deliberately NOT a
+  claim that the stored `action` column is what runs.
+- **`derived`, `partial` and `source_errors` on `GET /api/v1/policy-categories`
+  (#3441).** The registry is now unioned with the categories a tenant's rows
+  actually carry, so a curated list lagging the data is structurally survivable;
+  `derived` tells a renderer it is looking at a raw identifier with no editorial
+  name and must not style it as one.
+
+#### Changed
+
+- **The portal's policy API answers to the new path spellings too (#1431).**
+  The wire-path rename described under Community also lands on the customer
+  portal's session-authenticated API: `/api/v1/system-policies` and
+  `/api/v1/tenant-policies` are served alongside the old names, by the same
+  handlers, with **the same RBAC permission on every verb**.
+  That last clause is the substance rather than a detail. The portal's
+  orchestrator catch-all authenticates a session and does not authorize it, so
+  a policy-mutating path its permission gates do not name is not refused - it
+  is forwarded on the session's behalf. Aliasing the routes without aliasing
+  the gates would have given every viewer and developer session a second,
+  unguarded route to the create, update, delete and import they are refused on
+  the first. The gates, the fail-closed prefix guards and the orchestrator
+  proxy allowlist were all aliased in the same change, and the anti-drift
+  census that exists to catch that class now covers both spellings.
+  One portal-specific consequence worth knowing: the portal reaches the agent
+  on the path spelling the CALLER used, so a client on the new name is not
+  handed a deprecation header pointing at the name it just called.
+
+- **OPERATOR-VISIBLE, READ THIS ONE: the legacy SEBI export reports
+  `status: "partial"` and OMITS `summary.compliance_score` on an incomplete
+  export (#3435).** Previously `POST /api/v1/sebi/audit/export` set
+  `status: "completed"` unconditionally and always computed a score, so an
+  artifact missing two of five sections reported 100.00.
+
+  **Which route, and when.** Two SEBI surfaces exist and they behave
+  differently. Be precise about which one your integration uses:
+  - **`POST /api/v1/sebi/audit/export` (legacy) is the route that gains
+    `partial`.** The roll-up is conditional, not universal
+    (`rollUpSEBIReportState`,
+    `platform/orchestrator/sebi/sebi_audit_export_service.go:2465-2492`), and
+    it has THREE outcomes, not two. `partial` means SOME but not every
+    requested section could be served, or a served one carries a scope gap.
+    **If NO requested section could be produced the status is `failed`, not
+    `partial`** (`anyFailed && !anyServed` rolls up to `not_available`, which
+    `sebiExportStatus` maps to `failed`). Everything else is `completed` with
+    a score. So an ALL-TYPES request reports `partial` on a stock deployment,
+    because the `hitl_oversight` and `pii_redactions` sections read
+    `hitl_queue` and `pii_redaction_log`, which no migration in this
+    repository creates, so both report `not_available` / `store_absent` while
+    the other three serve. **A SUBSET request that hits neither a failure nor a
+    scope gap still returns `completed` with a score** and is the documented
+    example in the public API spec. **A request for ONLY those two sections
+    returns `failed`**, since nothing it asked for could be produced, so an
+    integration must handle all three values rather than treating `partial` as
+    the only new one.
+  - **`POST /api/v1/compliance/reports` (the async facade) NEVER returns
+    `partial`.** Its status vocabulary is exactly `pending` / `processing` /
+    `completed` / `failed`
+    (`platform/orchestrator/compliancereport/types.go:133-136`) and this
+    release does not widen it. On an Enterprise build the portal always takes
+    this route, so **on a real stack every SEBI pack lands as `completed`,
+    including the incomplete ones.**
+
+  **If you poll the facade, do not wait for a status change.** Completeness on
+  that route is carried inside the document, as a section titled **"Report
+  completeness"** whose summary opens with a `Complete` / `NO` pair and which
+  names the affected sections and their verbatim causes. **PRESENCE of that
+  section is the signal, and so is its ABSENCE**: it is prepended only when at
+  least one section failed or carries a scope gap, so a complete pack does not
+  contain it at all. Test for the section, not for a sentence. The job record
+  itself carries no completeness signal: `report_state` is a persisted column
+  whose CHECK constraint (`migrations/enterprise/136`) admits `not_available`,
+  `enabled_empty`, `populated` and the empty-string default, and no value that
+  means incomplete. Giving the facade a first-class completeness field is a
+  cross-regulator migration, filed as #3455.
+
+  **The disclosure itself is deliberate.** A score of 100.00 computed over
+  sections the query could not read is an affirmative regulatory claim
+  manufactured out of a read that did not happen; disclosing an incomplete
+  scope is strictly better than printing a confident number over it. **On the
+  legacy route, an integration that keys on `status === "completed"`, or that
+  binds `compliance_score` to a non-optional float, will break on upgrade** and
+  must move to reading `summary.report_state` and `summary.sections`;
+  `compliance_score` is ABSENT rather than null or zero. Plan for BOTH
+  `partial` and `failed` as normal terminal states on that route, regardless of
+  what those two sections do later.
+
+  **What the two unserved sections do next is an open question, not a settled
+  one (#3459).** They are unserved because of a store-naming mismatch, not
+  because human-oversight and PII-redaction evidence is unavailable in
+  principle, and it is not a rename: three of the columns the HITL query selects
+  have no counterpart on the live approval queue, and the status value it
+  filters on is one that table's constraint forbids, so a name-only change would
+  turn `store_absent` into a permanently empty section, which is strictly worse.
+  A deployment that has those sections served will produce fewer incomplete
+  packs, and correspondingly fewer `partial` responses on the legacy route.
+- **The portal Compliance page stops claiming a SEBI pack is complete, and for
+  a PORTAL OPERATOR this is now the primary way to learn it is not (#3435,
+  #3455).** Because `POST /api/v1/compliance/reports` never reports `partial`,
+  the job status cannot carry the news, so the panel stops making the claim
+  instead. **A programmatic facade caller never sees this panel**, and for them
+  the only in-band signal remains the document itself. Where a finished SEBI
+  report used to say **"Report ready."** full stop, an affirmative statement of
+  completeness the code could not support, the sentence is now qualified rather
+  than removed: it still opens "Report ready." and then points at the part of
+  the document that CAN answer the question, saying that a SEBI pack opens with
+  a "Report completeness" block, that on a deployment missing the
+  human-oversight or PII-redaction stores it will read "Complete: NO", and that
+  the job status cannot tell you that. **On an Enterprise build this renders on
+  every facade-served SEBI pack**
+  (`completenessCaveatFor`,
+  `ee/platform/customer-portal-ui/components/compliance/GenerateReportPanel.tsx`),
+  because the portal always takes the facade route there. A terminal `partial`,
+  reachable only on the legacy fallback path, gets a blunter notice naming the
+  report as INCOMPLETE.
+
+  The caveat is DERIVED from the job rather than pushed into the transient
+  notice channel, because the download handler clears that channel: an earlier
+  round put it there and the caveat was **deleted by the operator's own
+  download click**, replaced by an unqualified success line at the exact moment
+  they were holding the pack. The caveat is deliberately scoped to SEBI, since
+  the completeness block is built by the SEBI provider alone and pointing a
+  reader at a block that is not in their document would be a second wrong
+  sentence. **It is a blanket caveat, not a data-driven one**, because the job
+  record carries no completeness signal to drive it from; #3455 adds the
+  persisted field, and when it lands this narrows to the packs that are
+  actually incomplete.
+- **A section is disclosed as incomplete whether or not it returned rows
+  (#3435).** A scope gap used to be reported only where a section reads a
+  tenancy dimension the earlier fix happened to check, which left `llm_calls`
+  and `decision_chain` silent under the production-default portal shape, where
+  the portal forwards the org identifier as the client identifier too and the
+  client-dimension arm of those queries is dead. Measured on one stack over one
+  period: the portal shape returned `llm_calls` 2 and `decision_chain` 3 where
+  the agent shape returned 4 and 4, and the CSV rendered those rows with no
+  caveat at all. The rendered artifact now carries a `SCOPE GAP` note on a
+  POPULATED section too, which is the more dangerous of the two cases, because a
+  section with rows reads as the complete record.
+- **The SEBI export's section queries read the columns their tables actually
+  have, and each identity column is matched only against the caller's
+  identifiers in that column's dimension (#3435).** The LLM-calls section
+  selected fourteen columns from `llm_call_audits`, eleven of which have never
+  existed on that table, and a substring classifier read the missing-column
+  error as a missing table, so the section returned clean, empty and apparently
+  successful: a regulator artifact reported "no LLM calls in this period" when
+  it had failed to look. The policy-violations section had the same defect on
+  two of its columns, which are recorded in the details JSON rather than as
+  columns. The section now reads both recording planes, with each row naming its
+  source, because they are disjoint populations. Missing-relation errors are
+  classified by SQLSTATE rather than by substring, so schema drift is reported
+  as an operator-visible fault instead of as a capability this deployment lacks.
+  **One residual is documented rather than claimed closed:** `org_id` carries
+  two namespaces on this platform (the gateway boundary resolves it to the
+  client credential, other planes to the licence org), so a foreign row whose
+  `org_id` happens to be the string this caller holds as a client credential is
+  selectable. That exposure exists on 9.19.0 through the same column, is not
+  introduced here, requires a caller genuinely holding another organisation's
+  name as a client credential, and is zero under the production-default portal
+  shape. Closing it means giving the column one meaning, which is a writer-side
+  change this exporter deliberately does not make.
+- **A CSV export no longer reports on sections the caller did not request
+  (#3435).** The rendered artifact built all six sections regardless of the
+  requested data types, so a single-section CSV request returned a document
+  whose unrequested sections each read "No policy violations are recorded for
+  this period. Searched under: client=..., org=..." over queries that were never
+  issued. The qualifier is what makes it a false claim rather than an
+  unsupported one: it states affirmatively that a search ran and found nothing.
+  The JSON body was always correct here, so only the regulator-facing rendering
+  was affected, and a subset request is the documented example in the public
+  OpenAPI spec. A requested section that could NOT be produced is still
+  rendered, with its cause.
+- **Retention rows no longer report `COMPLIANT` over a configuration nobody set
+  (#3435).** `GET /api/v1/sebi/audit/retention` mapped "no
+  `audit_retention_config` row" to the platform's 1825-day default and a
+  success, so every data type reported `retention_days: 1825,
+  compliance_status: "COMPLIANT"`. That table ships EMPTY on a stock
+  migration-applied database, and two of the five SEBI keys can never have a row
+  at all, so this was every deployment. Those rows now report
+  `compliance_status: "UNKNOWN"` with `error_kind: "not_configured"`, and the
+  overall status follows. The 1825 figure is still reported, because the default
+  really is what would be applied, and it now travels with `retention_configured:
+  false` so a reader can tell a configured period from a compiled-in one.
+- **The SEBI readiness pack no longer asserts that PAN and Aadhaar detection is
+  enabled on the strength of a query against a table that does not exist
+  (#3435).** The check returned success when the relation was missing, on the
+  reasoning that static policies are enabled by default, and the caller rendered
+  that as `status: "pass"`, `details: "PAN and Aadhaar detection enabled"`. The
+  relation does not exist on a stock deployment. SEBI's pack is specifically
+  about PAN and Aadhaar handling, so this was the single most load-bearing
+  sentence in the document and it was manufactured. The check now reports that
+  it could not verify, in wording that states explicitly that this is neither a
+  claim that detection is off nor a claim that it is on, and it fails closed on
+  the overall Ready verdict, because a control nobody could inspect must not
+  count toward readiness. Four further fail-quiet reads in the same pack were
+  fixed alongside it: three swallowed scan errors and a retention check that
+  reported COMPLIANT from an empty config table.
+- **The portal Policies page consumes the server's category registry instead of
+  a hardcoded four-entry list (#3441).** The local list was keyed on the
+  migration-010 underscored spellings while the server emits the hyphenated
+  canonical ids, so every lookup missed and fell through to a title-caser that
+  rendered `security-sqli` as "Security-sqli". That was the default path, not an
+  unknown-category edge case, and it is why FinCrime could not be selected at
+  all. The curated server-side list was also badly incomplete: six entries
+  covered a database whose seeded and packed rows carry at least fifteen
+  categories. It is now bound to the shared category constants at compile time,
+  widened, and unioned with the categories a tenant's rows actually carry.
+- **The portal Policies page no longer presents a stored action as the operative
+  one where a posture lever displaces it (#3441).** The page already modelled
+  effective versus stored for overrides; it now covers the other displacement
+  mechanism, using the vocabulary the engine already emits. Verdicts are
+  unchanged. `docs/governance/policy-action-authority.md` gained the
+  two-disjoint-column-sets table that makes "stored action" unambiguous: the
+  runtime loader reads the phase columns and never selects the base `action`
+  column, which only the proxy plane's tier engine reads.
+- **The portal Approvals page renders an approval's compliance framework and its
+  EU AI Act article as two labelled facts (#3441).** Concatenated, a FinCrime
+  approval read "AML/CFT (Article 14)", which states that the AML/CFT obligation
+  arises from the EU AI Act. It does not: Article 14 attaches to the
+  human-oversight queue mechanism, not to the policy that triggered the review.
+  The sub-line asserting it is now conditional on the value actually naming
+  Article 14, matched strictly so that "Article 141" and "Section 2.4" do not
+  satisfy it.
+
+#### Fixed
+
+- **A `require_approval` policy on the agent planes produced a hold nobody
+  could act on, and approving one changed nothing (#3509, migration
+  `core/167`).** Two defects, and closing only the first would have made things
+  worse.
+
+  **Nothing enqueued.** Three planes read the `require_approval` action and
+  held the caller: `POST /api/v1/decide` answered `200` with
+  `verdict: needs_approval`, `POST /api/request` answered `403` with
+  `block_reason: require_approval`, and `POST /api/policy/pre-check` answered
+  `200` with `approved: false`. None of them wrote a `hitl_approval_queue` row.
+  The only writer on a `needs_approval` verdict was the Fraud and Risk seam,
+  which says so in its own comment and deliberately returns nothing for a
+  step-up it did not cause. So an organisation that chose `require_approval`
+  over `block` got a **strictly worse block**: the caller was refused, and
+  unlike a block there was no override flow and no reviewer surface either.
+  All three planes now raise a reviewable entry, each verified individually
+  against a running stack rather than inferred from a sibling.
+
+  **Approving did not unblock.** `ApproveRequest` was a status flip plus a
+  webhook; nothing on the enforcement path consulted it. The flow was held,
+  approved, retry, **held again**, minting a fresh entry each time. An approved
+  entry is now a single-use grant: the first retry by the same user, held by
+  the same policy, in the same organisation, is admitted, and the entry is
+  marked spent in the same statement that spends it.
+
+  **The safety property is single use, not the TTL.** The consume is one
+  `UPDATE ... WHERE consumed_at IS NULL ... RETURNING`, so two concurrent
+  retries serialise on the row and exactly one is admitted. Nothing reads first
+  and writes second. That is what makes a generous default window sound: the
+  caller does not poll, so a reviewer who approves and then tells the user to
+  try again must not be racing a short timer.
+  `AXONFLOW_HITL_GRANT_TTL_SECONDS` (default 15 minutes, clamped to 1 minute to
+  24 hours) is the backstop, not the control. Single use is deliberately NOT
+  configurable: making it optional would recreate the standing-exemption hole a
+  generous window is only safe without.
+
+  **What a grant cannot do, stated against the identity the caller actually
+  has.** It is bound to (organisation, tenant, credential, user, policy) and to
+  entries this release creates. An approval of one policy does not admit a
+  request held by another; one issued to a different credential, tenant or user
+  does not admit this caller; an entry from a different organisation is not
+  visible at all;
+  and a Fraud and Risk entry is never spendable, because that verdict is a
+  judgement about the risk score computed for one transaction and admitting the
+  next request would authorise something no reviewer saw. A workflow step gate
+  is likewise untouched: it resolves its own approvals and always has.
+
+  **The credential is part of the key for a reason, and it is why the per-user
+  guarantee is conditional.** An enterprise caller presenting no per-user token
+  is given a synthetic service identity whose user id is `0` - the documented
+  PEP shape, since an infrastructure gateway has no end-user JWT to forward.
+  Every such caller in an organisation therefore shares one user id, so a grant
+  keyed on the user alone would let one gateway's approval admit another
+  gateway's request. Binding the credential means a grant never leaves the
+  caller it was granted to. It does NOT make it per-PERSON for a token-less
+  caller: two humans behind one gateway share one credential. **If you need an
+  approval to name a person, set `require_user_token`** - the same lever that
+  makes segment enforcement real on the planes in the Security section.
+
+  **An approval only releases a held request when it NAMES A PERSON, and that
+  needs `AXONFLOW_TRUST_IDENTITY_HEADERS`. Read this before expecting
+  approvals to unblock anything.** The agent's HITL approve route is behind
+  credential authentication with no role gate, the recorded reviewer falls back
+  to the caller's own client id, and on the organization-licence path that
+  client id is the **Basic-auth username, which is never validated** - the
+  licence key is the only secret. So a held caller can approve its own hold by
+  re-presenting the same licence under any other username. That was harmless
+  while nothing on the enforcement path consulted an approval; it stops being
+  harmless the moment an approval admits a retry.
+
+  A single-use grant is therefore spendable only when the approval was recorded
+  against a non-service identity, which the platform produces only from the
+  trusted-hop identity headers. **The consequence, stated plainly: on a
+  deployment without those headers a `require_approval` policy is still
+  queued, still reviewable and still resolvable in the portal - the reviewable
+  queue works everywhere - but approving does not auto-admit the retry.**
+  Admission is conditional on identity strength, which is the safe direction:
+  a weaker identity gets less, never more.
+
+  The missing role gate on those routes is a separate defect, filed as one. It
+  is not fixed here, and this release does not depend on it being fixed: an
+  approval a held caller can mint for itself is a service-role approval, and a
+  service-role approval is not spendable.
+
+  **A grant admits the request the reviewer saw**, not the next request the
+  same rule happens to hold. The entry carries one request's descriptor,
+  decision id and hash; letting it admit a different one would be the same
+  thing this release refuses to do with a Fraud and Risk entry.
+
+  **A retry joins the review already open for it - a retry, and nothing else.**
+  Repeated holds for the same caller, policy, **plane and request** attach to
+  the pending entry instead of raising a new one, so a PEP retry loop does not
+  bury the reviewer under copies of one decision. That matters most on
+  Enterprise, where `MaxPendingApprovals` is unlimited and nothing else bounds
+  the table. A different plane or a different request gets its own entry: the
+  entry carries the descriptor, decision id and query hash of ONE request, and
+  joining a different one would have a reviewer approve metadata describing
+  something else. The dedup is a lookup, so two SIMULTANEOUS first-time holds
+  can still produce two entries; a sequential retry loop, which is the shape
+  that actually grows the queue, is fully collapsed.
+
+  **A full review queue holds rather than admits.** The pending-approval cap is
+  25 on Evaluation and unlimited on Enterprise. At the cap the entry cannot be
+  created, and the caller **stays held** with the reason on the wire and on the
+  audit row, plus a counted metric. Admitting the request because the queue was
+  full would turn a capacity limit into a governance bypass; dropping the entry
+  silently, which is what the pre-existing Fraud and Risk path did, would
+  reproduce the invisible dead end this change removes under a different cause.
+
+  **What the entry carries, and what it does not.** The triggering policy and
+  its display name, the trigger reason, the attributed user, the plane, the
+  stage, the target, the decision id and a SHA-256 of the request. It does NOT
+  carry the request text. `hitl_approval_queue.original_query` is copied
+  verbatim into the outbound `notify_url` webhook on every approve, reject and
+  expiry, so it leaves the platform's retention and row-level-security boundary
+  in a way `audit_logs.query` does not; the entry stores a descriptor and the
+  hash that joins it back to the audit row instead. The Fraud and Risk path
+  keeps storing the raw query, unchanged, because altering the row it writes is
+  the one thing this work must not do.
+  *(Enterprise: every call site is gated on the deployment not running in
+  community mode, and the community build's approval service rejects both
+  creation and consumption outright, so a Community deployment observes none of
+  this.)*
+- **`POST /api/policy/pre-check` reported `require_approval` for a request a
+  BLOCK also refused, and no approval could ever release it (#3509).** A
+  request can be blocked by one policy and held by another - the two flags come
+  from independent matches - and this plane put the hold first in its reporting
+  precedence. It answered `block_reason: require_approval`, the exact sentinel
+  every shipped SDK matches to enter its HITL wait, while `approved` stayed
+  `false` because the block is an OR. The caller was told to wait for an
+  approval that could not help, since approving does not remove the block.
+  `/decide` has always denied this case and `POST /api/request` returns `403`
+  before its HITL branch is reached; this plane now agrees with both. **A
+  caller that was reading `require_approval` for such a request now reads the
+  block reason.** *(Enterprise: the hold itself is gated on the deployment not
+  running in community mode.)*
+- **The EU AI Act compliance examples printed an empty request id on every HITL
+  hold.** All four (`ee/examples/compliance/eu-ai-act/{go,python,typescript,java}`)
+  printed a Request ID read from a response field the agent has never
+  populated, falling back to the multi-agent-planning `plan_id`, which is null
+  on a held chat request. Every run printed an empty value or `None` directly
+  under "HITL Triggered", which reads as the platform having lost the request.
+  They now print what is true and where to find the entry.
+- **Onboarding a customer failed with a `500` when their org id was long
+  enough, and the cliff was invisible (#3341, migration `core/164`).**
+  `organizations.license_key` has been `VARCHAR(512)` since migration
+  `core/002`, but the platform's own keygen mints a V2 licence key whose length
+  grows with the org id, the permission grants and the expiry payload. Measured
+  with the repository's keygen at Enterprise tier with the standard permission
+  set, a 16-character org id yields a 512-character key that fits by luck and a
+  17-character one yields a 515-character key that does not. **The key passes
+  licence validation first**, so `POST /api/v1/admin/onboard-customer` answered
+  `500` with a raw driver length error after the licence had already been proven
+  genuine, and whether a given customer could be onboarded at all depended on
+  how long they had named themselves. The column is now `TEXT`.
+
+  **Filed here rather than under Community, and the reasoning matters because
+  the migration itself is not edition-scoped.** `migrations/core/164` ships to
+  every edition and every deployment runs it. But every writer that can put a
+  LICENCE KEY in `organizations.license_key` lives in the Enterprise customer
+  portal (`ee/platform/customer-portal/api/`). The only other writers are
+  migrations that seed or upsert the row (`core/062`, `094`, `100`, `104`,
+  `117`, `142`); each inserts a constant empty string and leaves the column
+  untouched on update, so no Community deployment can reach the length cliff at
+  all, and a Community deployment applies the migration and observes no
+  behaviour change. Same reasoning as the MCP-server segment metric above.
+- **The Compliance Summary rendered four verdict buckets while the wire carried
+  five, so deferred and errored requests were invisible (#3441).** The backend
+  split `needs_approval` and `error` out of `allowed_requests` precisely so they
+  would stop being miscounted; the display never followed, which turned a
+  miscount into an omission, and the visible tiles simply did not add up to
+  Total with nothing on screen naming the difference. The FinCrime seam raises
+  `needs_approval` by design, so the hole is routinely non-zero on a governed
+  stack. All five now render, and the caption states the invariant so the
+  arithmetic is checkable by the reader rather than merely correct in the
+  payload.
+- **A category-registry failure is disclosed on the view an operator lands on
+  (#3441).** The notice existed but was gated behind a filter the default view
+  does not select, so a failed registry rendered as gray raw slugs with nothing
+  on screen, making "no name recorded" indistinguishable from "could not load".
+- **The audit page pins a locale on both the filter inputs and the rendered
+  timestamps, and names the timezone once (#3441).** The date half of a rendered
+  timestamp used the JavaScript runtime's default locale while the Start and End
+  controls beside it are native date inputs using the browser locale, so the
+  same numeric date meant two different days depending on which half of the
+  screen it came from, and the pairing was unstable across machines. The
+  timezone is resolved on the client only, so the pre-hydration frame does not
+  name the container's zone.
+- **The portal Workflows Run tile and Executions page count the organisation's
+  executions (#3367).** A portal session's tenancy authority is the org, and the
+  arbitrary display-default tenant it is handed was being compared against a
+  column that stamps the executing caller's credential, which rendered a
+  confident zero over data the session was fully authorized to see. The portal
+  now asserts org-wide tenancy over the trusted hop. See the Breaking changes
+  section for the `500` this introduces on a deployment with no BYPASSRLS admin
+  pool.
+- **The audit and approvals tables no longer clip their content (#3427).** Cells
+  that could not fit were truncated with no affordance to read the whole value.
+- **The audit and usage latency tiles report absence rather than a fabricated
+  `0ms` (#3424, #3436).** An average over no measured rows rendered as `0ms`,
+  which reads as a real measurement of an extremely fast system. The tiles now
+  render `N/A` when there is nothing to average, `<1ms` for a genuine
+  sub-millisecond mean, and `-` for an unmeasured row, and each tile carries the
+  basis it was computed over, so an average over a small self-selected subset of
+  the rows on screen no longer reads exactly like an average over all of them.
+- **`GET /api/v1/usage` no longer silently drops rows it cannot decode
+  (#3436).** `usage_events.latency_ms` is nullable with no default and the
+  OpenTelemetry metrics writer never names the column, so every
+  `claude_code_metric` row failed the scan into a non-nullable int and was
+  skipped, disappearing from both the response and the CSV behind a `200 OK`.
+- **`docs/api/orchestrator-api.yaml` documented a SEBI status vocabulary the
+  server cannot emit (#3435).** `SEBIAuditExportResponse.status` was
+  `[pending, processing, completed, failed]`, which is the ASYNC facade's
+  vocabulary. This export is synchronous, so it can never be `pending` or
+  `processing`: before this release it set `completed` unconditionally, and as
+  of this release it returns `completed`, `partial` or `failed`. A generated
+  strict client therefore could not deserialise the common response. Corrected,
+  along with the operation's `processing` example and its "or queued (async)"
+  description.
+  Several sibling enums were widened in the same pass to include values the
+  server emits routinely (`partial`, `UNKNOWN`, `unknown`).
+
+### CI / Testing (this repository only)
+
+- New lint job `Lint - one writer for the HITL approval queue`
+  (`scripts/lint-hitl-queue-choke-point.sh`), wired into `lint.yml` as its own
+  job and held to `success` - with no `skipped` tolerance - by the required
+  `Lint Summary` check. It carries a `--self-test` that asserts both
+  directions, including that the real repository scan actually finds the choke
+  point rather than matching nothing.
+- New runtime-e2e suite `3408_wcp_hitl_chokepoint`, executed by
+  `wcp-hitl-chokepoint-e2e.yml`, including a community-binary arm that builds
+  and runs the `!enterprise` build.
+
+> These assets are not part of the community distribution: `runtime-e2e/`,
+> `.github/workflows/test.yml` and every `*-e2e.yml` workflow are excluded from
+> the community mirror by `sync-community-repo.yml`. They are recorded here so
+> the release's test coverage is stated, not because a community reader can run
+> them.
+
+- **The SEBI export's tenancy-isolation guards now execute in CI (#3435).**
+  They had never run on either job that could have run them: the job with a
+  migrated database invoked `go test` without the enterprise tag or a recursive
+  package list, and the enterprise-tagged real-Postgres job withholds
+  `DATABASE_URL` on purpose, so 14 tests in the package skipped, including all
+  three cross-tenant guards. A dedicated step now runs that one package against
+  the already-migrated service, scoped so no other suite's branches move.
+- **New runtime suites** for gateway segment enforcement (#3312), MAP segment
+  enforcement (#3297), the WCP step-gate (#3281), the MCP-server plane (#3430),
+  the single policy engine (#3319), the computed risk score (#3321), the
+  Workflows Run counter (#3367), the audit and usage latency tiles (#3424,
+  #3436), top-policy identity (#3426), the workflow identifier (#3442), the SEBI
+  LLM export (#3435) and the policy-category vocabulary (#3441), each with its
+  own workflow. #3297 is coverage of behaviour that already shipped, not a
+  behaviour change.
+- **Further runtime suites** for MCP REST segment enforcement (#3447),
+  `/api/v1/decide` segment enforcement (#3456), the rejected-token refusal
+  (#3472), `require_user_token` (#3476) and the SAML SP keypair refusal (#3341),
+  each with its own workflow, plus an extension of the existing
+  segment-resolution suite for the new `phase` label. **The #3341 suite found a
+  defect nobody was looking for**: booting a pristine stack and onboarding a
+  customer surfaced the `organizations.license_key` length cliff that migration
+  `core/164` fixes, which is unrelated to SAML and had been latent since
+  migration `core/002`.
+- **The cross-plane refusal literal is now enforced rather than conventional
+  (#3456).** Five doc comments claimed the segment-refusal text was
+  byte-identical across planes and nothing compared the sites, so normalising
+  one dash would have left every other plane's test green. A test now parses the
+  agent package's sources, fails any occurrence of that text that is not
+  byte-identical to one of three pinned spellings, and pins where the
+  request-deny spelling may appear by file and count, so a new caller must reuse
+  the shared constant rather than respell it.
+
+- **A CI guard now blocks reintroducing a second organization-scope column on
+  the policy tables (#3334).** The Decision-5 chain retires the legacy
+  `organization_id` from `static_policies`, `dynamic_policies` and
+  `policy_overrides` (`migrations/core/166`), and nothing prevented the next
+  migration from simply adding it back: the existing policy-table lint reads Go
+  source only, the migrations gate proves the chain APPLIES rather than what
+  shape it leaves behind, and `scripts/validate-schema-completeness.sh` is wired
+  into no workflow at all. `scripts/lint-no-second-org-column.sh` scans every
+  forward migration for an `ADD [COLUMN]` (the keyword is optional in the
+  Postgres grammar), a `CREATE TABLE` column list, a `RENAME COLUMN ... TO`, a
+  `format()`-indirected equivalent, or a rebuild-and-swap in which a shadow
+  table carrying the column is renamed over a policy table, for any of
+  `organization_id`, `organisation_id` or `org_uuid` on those three tables. It is statement-oriented rather than line-oriented because the house
+  DDL style splits `ALTER TABLE` from `ADD COLUMN` across two lines
+  (`migrations/core/030_policy_tier_columns.sql:18-19`), which a line grep
+  cannot match at all - it would report a clean tree while sitting on the very
+  statement it was written to find. It runs as its own `lint.yml` job rather
+  than a step inside `Lint All Modules`, which is skipped on a pull request with
+  no Go changes - precisely the shape of a migration-only PR - and is wired into
+  the required `Lint Summary` check so a red guard cannot merge behind a green
+  aggregate. `--self-test` asserts both directions over 64 fixtures (38 rejected
+  vectors, 22 accepted survivors including `customers.organization_id`,
+  `policy_evaluations.organization_id`, retypes, drops, `ADD CONSTRAINT`,
+  comments and `*_down.sql`, plus 4 allow-list and non-vacuity assertions) and
+  runs in the same job, so a scanner that silently matched nothing would fail CI
+  rather than pass it. Nine fixtures are regression pins for defects
+  found by hostile review; the worst was a `/*` occurring inside a `--` comment,
+  which opened a block-comment state that never closed and silently discarded
+  the rest of the file. Two migrations already on `main` carry path globs in
+  their header comments and were swallowing 303 lines between them, so a column
+  appended to either passed the guard. A second review round then caught a
+  false positive introduced by the fix for the first: the identifier-quote strip
+  is not string-literal aware, so a `jsonb` DEFAULT such as
+  `'{"tenant": 1, "organization_id" : 2}'` lost its quotes and its JSON comma
+  read as a column-list separator, failing an innocent migration. Blanking
+  literals would have been the obvious answer and was rejected: the
+  dynamic-SQL detector exists precisely because that DDL lives inside a
+  single-quoted literal. The column matcher now requires a type token after the
+  name instead, which a JSON key followed by a colon cannot satisfy. A third
+  round then found that the type class had to admit a leading underscore, since
+  Postgres array shorthand types are spelled `_text`. A fourth found the shape
+  that has no type token at all: `CREATE TABLE ... AS SELECT` takes its column
+  names from the query, so both `CREATE TABLE policy_overrides (id,
+  organization_id) AS SELECT ...` and a bare `AS organization_id` alias created
+  the column while satisfying no matcher - and the same shape defeated the
+  rebuild-and-swap vector too. Covered by a dedicated arm gated on the
+  statement really being a CTAS, so an ordinary table carrying a
+  `GENERATED ALWAYS AS (...)` column never enters it. A fifth round scored an
+  independent mutation matrix at 67 of 82 and every one of the 15 failures was a
+  false negative in one of three vectors, all now closed and pinned on all three
+  tables. The worst was that the rebuild-and-swap vector only ever recognised a
+  shadow table BORN with the column: created bare and then given the column by
+  `ALTER TABLE ... ADD COLUMN`, the swap exited 0, because the flag marking a
+  table as carrying the column was set only inside the `CREATE TABLE` arms and
+  the `ADD` returned at the target-table filter before reaching it - a hole the
+  file header positively asserted was covered. The other two are the shapes in
+  which the column name appears in the statement nowhere at all because the
+  column set is copied from another relation: `CREATE TABLE x (LIKE donor
+  INCLUDING ALL)`, which is the canonical Postgres rebuild idiom and so the form
+  a competent author reaches for first, and `CREATE TABLE x (...) INHERITS
+  (parent)`. `AS TABLE donor` and `AS SELECT * FROM donor` are the same problem
+  wearing two more keywords and were closed with them rather than left as fresh
+  bypasses one word away. The donor's real shape is deliberately not chased:
+  the derived table is treated as possibly carrying the column, which fails
+  closed and costs nothing measurable here, since across the 207 forward
+  migrations the table-element `LIKE` appears 5 times, `INHERITS` 4 and
+  `AS TABLE` once and all ten are prose inside `--` comments. What remains open
+  - a mid-select-list star, `PARTITION OF`, and the unresolved donor - is now
+  written into the file's own `WHAT THIS DOES NOT CATCH` block, which is framed
+  as exhaustive and so makes an undocumented bypass a defect in itself.
+- **ADR-019 no longer describes a schema that exists.** Its `organization_id`
+  SQL and the `valid_override_scope` CHECK built on it now carry a dated
+  superseding note, at the top of the ADR and beside each affected SQL block;
+  the recorded decision itself is untouched. Its H1 also said `ADR-020`, which
+  is a different ADR (LLM Provider Routing Control), and one cross-reference
+  pointed at a filename that does not exist.
+
+### Migration
+
+- **EIGHT new migrations: `core/160` through `core/167`.** All eight ship to
+  every edition. Run them with the usual boot-time runner; the deploy delta
+  from 9.19.0 is images plus these eight. Only `161` and `162` carry a sizing
+  risk; see the joint operator note below. `163`, `164` and `166` are cheap and
+  none of them rewrites a table. `165` takes `ACCESS EXCLUSIVE` on three
+  config-scale tables and does not rewrite them either, but it is the only one
+  that can change what your deployment ENFORCES - read its entry.
+- **`core/165` makes the organisation key mandatory on the policy tables, and
+  a row it cannot resolve one for stops firing.** `static_policies`,
+  `dynamic_policies` and `policy_overrides` get `NOT NULL` plus a non-empty
+  `CHECK` on `org_id`, because after #3490 that column is the only thing that
+  selects a policy row. The migration resolves what it can - the `global`
+  wildcard; then, on `dynamic_policies` only, rows with no tenant at all, which
+  map to `global` rather than to the sentinel because on that table an absent
+  tenant is the apply-to-every-tenant shape; then your `tenants` mapping; then
+  the legacy `org_id == tenant_id` collapse; then the `organizations` lookup
+  for an org-scoped override - and stamps anything left with
+  `__axonflow_unowned__`,
+  a sentinel the platform refuses on both sides of every comparison. **A
+  stamped policy row is then selectable by nobody, which is the one change in
+  this release that REMOVES enforcement rather than widening it.** It raises a
+  `WARNING` naming those rows, but it raises it during the upgrade in the
+  agent's boot log; `./preflight.sh` check 24 reports the same rows read-only
+  beforehand, using the migration's own resolution chain. A paired down
+  migration relaxes the constraints; it deliberately leaves the sentinel stamps
+  and the resolved backfills in place, on the same reasoning migration 156's
+  rollback records - a rollback must not restore rows that carry no tenancy key
+  at all.
+- **`core/166` drops the legacy `organization_id` column from the policy
+  tables. Expect its WARNING on some deployments, and do not read it as lost
+  scope.** The migration counts rows still carrying a value in the column and
+  raises a `WARNING` naming the count, because a dropped value cannot be
+  restored by the down migration. A row can appear in that count and still
+  carry a perfectly good `org_id` - some shipped policy bundles populate both -
+  so the warning is an inventory of what the drop discarded, not a list of
+  policies that stop working. The check that tells you what stops being
+  enforced is preflight check 24, and it is a different question.
+
+  It was a second, differently-typed organisation key that shipped
+  migrations largely never populated (0 of 101 rows on a fully-migrated seeded
+  database, though a policy bundle can populate it),
+  and it is what made the two keys easy to confuse - it had already produced
+  wrong conclusions in two pieces of work. Metadata-only; no deployment data
+  depends on it.
+- **`core/167` adds one nullable column and widens one CHECK (#3509).**
+  `hitl_approval_queue.consumed_at TIMESTAMPTZ`, nullable with no default and
+  **no backfill**: every existing row, including the Fraud and Risk entries
+  already in the field and every workflow step gate the orchestrator writes,
+  reads NULL, which is the correct "never consumed" state. Alongside it, two partial indexes - one over the rows the consume predicate can match and
+  one over the rows the retry-dedup lookup can match, which ask opposite
+  questions (`approved` versus `pending`) and cannot share an index - and
+  `hitl_approval_history`'s `action` CHECK widened to admit `consumed` (without
+  it, every consumption history write fails the constraint).
+
+  **The locks, stated rather than implied.** The migration is one transaction,
+  so every lock it takes is held until COMMIT, and both tables are locked at
+  ACCESS EXCLUSIVE: `hitl_approval_queue` from the `ADD COLUMN`, and
+  `hitl_approval_history` from the moment the CHECK is dropped. **Reads to both
+  are blocked for the duration** - for the approval queue that means the portal
+  Approvals page and the evidence and readiness exporters - so plan it as a
+  short write-AND-read pause, not a writers-only one. The WORK is small: no
+  table is rewritten, the column add is constant time, the CHECK is added `NOT VALID`
+  and validated as a separate statement so its scan is explicit rather than
+  buried in the ADD, and both indexes are partial - one over approvals waiting to be
+  spent, one over holds waiting for a reviewer - rather than over queue
+  history. Nothing consumes anything until the
+  agent images are upgraded.
+
+  The down migration removes the column and both indexes, and narrows the CHECK
+  back **only when no `consumed` row exists** - the history table is an
+  immutable audit trail, and deleting recorded evidence to satisfy a rollback
+  is not a trade this migration makes. Rolling the schema back WITHOUT rolling
+  the images back is the unsupported direction; roll the images first.
+- **`core/160` deletes one seeded policy row.** It removes `high_risk_block`,
+  seeded by migration `core/010` (2025-11-20) and **superseded by** the
+  near-duplicate `sys_dyn_high_risk_block` that migration `core/031`
+  (2025-12-24) seeded later under the same name, conditions, priority and
+  tenant. `high_risk_block` is the older of the two, and it is the one deleted:
+  migration 036's `block` to `warn` downgrade tuned only the `sys_dyn_` row,
+  which is also the id `platform/agent/detection_config.go` treats as
+  canonical. With `risk_score` now computed (#3321), the
+  never-tuned duplicate would have started BLOCKING production traffic on
+  upgrade while its intentionally-tuned twin sat at `warn` right beside it. A
+  paired down-migration restores it verbatim. The threshold this policy pair
+  enforces lives in `sys_dyn_high_risk_block`'s `conditions` JSON and is tunable
+  through the policy API and the portal like any other dynamic policy; it is NOT
+  the `dynamic_policies.risk_threshold` column both rows also carry, which is
+  read by nothing in this codebase.
+- **`core/161` and `core/162` are WHOLE-TABLE backfills of `audit_logs`.**
+  `161` sets `response_time_ms = NULL` on every historical row holding a
+  fabricated `0`; `162` sets `tokens_used` and `cost` to NULL on every
+  historical row where both coalesce to zero, **at least one of the two is not
+  already NULL** (the limb is `tokens_used IS NOT NULL OR cost IS NOT NULL`, an
+  OR, so a row with one NULL and one fabricated `0` still matches), and the row
+  carries no provider and no model. Both are one statement in one transaction,
+  so each takes ROW EXCLUSIVE on `audit_logs` for its duration and writes a new
+  row version for every matched row; expect bloat proportional to the match
+  count until autovacuum catches up. Readers are not blocked.
+
+  **Both are bounded to `timestamp < NOW()`** and pin `SET LOCAL TimeZone =
+  'UTC'` so that bound means the same thing on every deployment; "whole-table"
+  is the description before the bound, and the bound exists for correctness,
+  not for speed. **Expect a sequential scan anyway.** `idx_audit_logs_timestamp`
+  does exist (`migrations/core/059_runtime_tables_to_migrations.sql:55`) and
+  `timestamp` is a predicate column in both statements, but `timestamp < NOW()`
+  selects essentially the whole table, so the planner seq-scans regardless; the
+  remaining predicate columns carry no index at all.
+
+  **`162` matched fewer rows than `161` when measured**, and the migration
+  headers state that as a measurement on seeded history rather than as a
+  property of the predicates: seeded as the pre-release writers actually stored
+  history, `161` matched 140 rows and `162` matched 100 of those same rows,
+  with none matching `162` alone. The predicates do not imply the relation.
+  `162` never references `response_time_ms`, so it cannot entail `161`'s
+  predicate; what the headers argue is the narrower point that `162`'s extra
+  guards exclude writers `161` catches, such as the HITL approval writer, which
+  binds a literal `0` into `response_time_ms` and names neither usage column.
+  **`161` was the larger on that measurement and runs first, so it is the
+  natural one to size against, but do not take the ordering on faith for your
+  own data: measure both** with the counts below.
+
+  **Both down-migrations are deliberate no-ops**, because a fabricated zero is
+  not recoverable from a NULL.
+- **`core/163` adds one nullable-free boolean column and changes nothing on its
+  own.** `organizations.require_user_token BOOLEAN NOT NULL DEFAULT false`
+  (#3476). **Additive, default false, no backfill and no data migration**, so
+  every existing organisation keeps today's behaviour until an operator opts it
+  in. It is cheap regardless of table size: `ADD COLUMN` with a constant
+  default has not rewritten the table since PostgreSQL 11, and the platform
+  ships against 15. The table's presence is probed through
+  `pg_catalog` rather than `information_schema`, which is privilege-filtered and
+  would let a role without a privilege on `organizations` read "table absent",
+  skip and commit having done nothing. A verification block fails the migration
+  loudly if the table was present and the column did not appear. A paired
+  down-migration drops it.
+
+  **Turning the column on is the behaviour change, not running the migration.**
+  Read the `require_user_token` item in Breaking changes before you set it on
+  any organisation, and expect a flip to take up to one cache TTL (60 seconds by
+  default) to be live everywhere.
+- **`core/164` widens `organizations.license_key` from `VARCHAR(512)` to
+  `TEXT`, and it is a metadata-only change (#3341).** No table rewrite, no data
+  change, no value altered. It fixes a real onboarding failure whose trigger was
+  the length of a customer's own org id: the platform's keygen mints a V2 licence
+  key whose length grows with the org id, the permission grants and the expiry
+  payload, so a 16-character org id produced a 512-character key that fitted by
+  luck and a 17-character one produced a 515-character key that did not.
+  `POST /api/v1/admin/onboard-customer` then answered `500` with a raw driver
+  error, **after** the key had already passed licence validation, so the refusal
+  came from storage and looked nothing like a licensing problem. The column
+  holds an opaque signed token whose length the schema cannot know, which is
+  what makes `TEXT` the honest type. The look-alike columns that store
+  fixed-length hashes are correct at `VARCHAR(512)` and are untouched.
+
+  **Its down-migration is a deliberate no-op**, matching the convention `161`
+  and `162` set. Narrowing back to `VARCHAR(512)` would either fail outright or,
+  with a `USING` clause, truncate exactly the rows the up-migration exists to
+  admit, and a licence key truncated at 512 characters no longer validates.
+  Rolling the CODE back needs no narrowing: every reader treats the column as an
+  opaque string.
+- **JOINT OPERATOR NOTE: a tight `statement_timeout` on a large `audit_logs` is
+  a BOOT LOOP, not a skipped step.** The migration runner answers a migration
+  error with a fatal exit, so a `161` or `162` that trips a per-session or
+  per-role `statement_timeout` will fail the container, which will restart, and
+  fail again. **Size the timeout against your own `audit_logs` row count before
+  upgrading**, or raise it for the migration role for the duration of the
+  upgrade. This is the first release in which a migration's runtime scales with
+  audit history rather than with schema size.
+
+  **The sizing basis, so this is actionable rather than a warning.** Each
+  migration costs one sequential scan of the whole table (the planner will not
+  use `idx_audit_logs_timestamp`; see above), plus one new row version written
+  per MATCHED row, plus the bloat those versions leave until autovacuum catches
+  up. The scan is fixed by your table size and the write cost is fixed by the
+  match count, so **measure both on your own data rather than inferring them
+  from the seeded numbers above**. All three are read-only and safe to run
+  before the upgrade:
+
+  ```sql
+  SET LOCAL TimeZone = 'UTC';
+  -- scan size
+  SELECT count(*) FROM audit_logs;
+  -- rows migration 161 will rewrite
+  SELECT count(*) FROM audit_logs
+   WHERE response_time_ms = 0 AND timestamp < NOW();
+  -- rows migration 162 will rewrite
+  SELECT count(*) FROM audit_logs
+   WHERE COALESCE(tokens_used, 0) = 0 AND COALESCE(cost, 0) = 0
+     AND (tokens_used IS NOT NULL OR cost IS NOT NULL)
+     AND (provider IS NULL OR provider = '') AND (model IS NULL OR model = '')
+     AND timestamp < NOW();
+  ```
+
+  Size the `statement_timeout` against the larger of the two match counts and
+  against a full-table scan. If `audit_logs` is large, take an actual timing on
+  a restored copy rather than extrapolating; a `statement_timeout` that already
+  suits a full-table scan of it will suit these two.
+- **Do NOT re-run `161` by hand after upgrading.** Its predicate is
+  `response_time_ms = 0`, which is precisely the shape the new writers produce
+  for a genuine sub-millisecond decision. Running it again after the new writers
+  are live would erase real measurements.
+- **A migration edited in place after it lands is silently skipped wherever it
+  already applied.** `161` was edited after first landing on main. The runner's
+  applied-migration lookup keys on `(version, name)` and never compares a
+  checksum, so a database that already recorded `161` will not re-run the edited
+  file. This is harmless here, because `161` is in no released tag and every
+  deployment will apply the final text once. **State the rule anyway: once a
+  migration is in a released tag, correct it with a NEW migration, never in
+  place.**
+- **Behaviour change with no schema change: two seeded dynamic policies start
+  evaluating (#3321).** `sys_dyn_high_risk_block` (`risk_score > 0.8`, `warn`)
+  and `sys_dyn_anomalous_access` (`risk_score > 0.6`, `alert`) have been unable
+  to fire on a real signal since January, because the engine read the score out
+  of the caller's own request body rather than computing it. Both are
+  allow-but-annotate, so neither newly blocks. **Review the two thresholds
+  against the new weights** (SQL injection +0.9, an anchored sensitive-data
+  keyword +0.7, a `select *` query +0.3) before rolling out.
+- **Boot-requirement change: `AXONFLOW_DEBUG_POLICIES` no longer exists
+  (#3319).** It controlled only the deleted in-memory engine's verbose logging.
+  Setting it now does nothing; remove it from your deployment configuration to
+  avoid implying a behaviour that is gone.
+- **Boot-requirement change: `AXONFLOW_DB_PLATFORM_ADMIN_URL` becomes
+  load-bearing for the portal Executions read (#3367).** A deployment running
+  `axonflow_app_role` (the default since v9.0.0, disabled only by an explicit
+  false) with no BYPASSRLS admin pool now gets a `500` on that route instead of
+  a confident empty page.
+
+  **Nothing to run, and for most operators nothing to do.** The orchestrator
+  already refuses to BOOT on exactly this configuration, and has since before
+  9.19.0: the platform-admin guard runs unconditionally at startup and fires
+  when the app role is enabled (which an UNSET `AXONFLOW_DB_USE_APP_ROLE` is)
+  and the admin URL is blank. So the `500` arm is a backstop behind a boot
+  refusal rather than the failure an upgrading deployment will meet, and a
+  deployment that boots on 9.19.0 is by definition already configured for it.
+  **The variable still matters if you are turning the app role on**, in which
+  case set it in the same change, or the orchestrator will crash-loop. A
+  one-time warning is logged when the fallback is taken on a pool where it is
+  harmless.
+- **Behaviour change with no schema change: `plane="memory"` is no longer
+  emitted (#3319).** Any recording rule, dashboard panel or alert matching
+  `axonflow_policy_condition_unevaluable_total{plane="memory"}` will go
+  permanently empty. The remaining values are unchanged.
+- **Behaviour change with no schema change, and WHICH ROUTE YOU CALL DECIDES
+  WHAT YOU DO: the legacy SEBI export gains `partial`; the compliance-reports
+  facade gains nothing (#3435).** Nothing to run, but this is the item most
+  likely to be discovered by a regulator rather than by an operator. Read the
+  Enterprise section before your next reporting cycle. On the legacy
+  `POST /api/v1/sebi/audit/export`, move any integration off
+  `status === "completed"` and off a non-optional `compliance_score`, and
+  handle `failed` as well as `partial`. On the
+  `POST /api/v1/compliance/reports` facade there is **no status change to react
+  to**: it still reports `completed` for an incomplete pack, so read the
+  document's "Report completeness" section, whose very presence means the pack
+  is incomplete, or the portal's completeness caveat, instead of the job
+  status. Either way, expect a stock deployment's all-types SEBI pack to be
+  incomplete until #3459 settles what the two unserved sections do next.
+- **Boot-requirement change: `AXONFLOW_REQUIRE_USER_TOKEN` is FATAL if set to
+  something unrecognised (#3476).** Accepted values are `true` / `1` / `yes` and
+  `false` / `0` / `no`, case-insensitive, surrounding whitespace ignored. Unset,
+  empty or whitespace-only is fine and means `false`. Anything else refuses to
+  boot rather than guess, because both guesses are invisible afterwards: one
+  silently disables a security control and the other silently denies every
+  token-less caller. **If you templated this variable, check what your template
+  renders when the value is absent** before upgrading, because a rendered
+  literal such as `null`, `none` or an unsubstituted placeholder is a boot
+  failure that a deployment which never set the variable would not have. This
+  check runs only where a database is wired.
+- **New optional knob: `AXONFLOW_REQUIRE_USER_TOKEN_TTL_SECONDS` (#3476).**
+  Default 60, clamped to `[5, 600]`. It sets how long a resolved per-org posture
+  is cached, and therefore how long a column flip takes to become live
+  everywhere. Unparseable or non-positive values log a warning and fall back to
+  60 rather than clamping. A lookup-error outcome is cached separately for at
+  most 15 seconds regardless of this setting.
+- **Behaviour change with no schema change: `axonflow_segment_resolution_total`
+  gains a `phase` label (#3473).** Any recording rule, dashboard panel or alert
+  selecting the previous unlabelled series will go permanently empty. Aggregate
+  the label away, or select the phase you actually mean:
+  `enforcement` for resolutions that decide a verdict, `session_auth` for the
+  observability-only one at MCP-server session authentication, `preview` for the
+  portal's policy test. `axonflow_segment_policy_fail_closed_total` and its
+  paired "DENYING" log line now count only the `enforcement` phase, so both can
+  read lower than before; the difference is denials that never happened.
+- **Behaviour change with no schema change: `POST /api/v1/mcp/check-input`
+  idempotency keys cached before the upgrade will not replay after it (#3447).**
+  The endpoint component of the store key now carries a hash of the calling
+  principal, so a pre-upgrade entry no longer matches and the request
+  re-executes, which on this route means it is re-evaluated. **Nothing to run**,
+  but an operator query or sweep matching `idempotency_keys.endpoint =
+  'mcp.check-input'` must move to a prefix match.
+- **Nothing is backfilled for `llm_call_audits.org_id` (#3435).** Pre-release
+  rows continue to be pruned on the default retention window wherever their
+  `org_id` is NULL or blank. **Which rows those are depends on the writer**:
+  the Gateway Mode writer omitted the column entirely, so its historical rows
+  are NULL; the OpenAI-compatible writer already bound it, so its historical
+  rows carry either a real organisation or an empty string, and an empty string
+  is a value no org predicate can claim. Rows written after this release are
+  pruned on the per-org override where one exists, which is clamped upward to
+  the regulatory floor and therefore never shortens retention.
+
 ## [9.19.0] - 2026-08-20 (portal truth across audit, approvals and policy surfaces; policy-evaluator consolidation)
 
 > Scope: the portal's read surfaces (audit, approvals, policies) now agree
@@ -1741,7 +4323,7 @@ Closes the fleet broken-access-control epic: in a fleet where every developer's 
 
 ### Fixed
 
-- **Policy override and organization-tier static-policy create no longer 500 for non-UUID organization ids.** *(Community)* AxonFlow organization ids are free-form strings sourced from the signed license, not UUIDs. Four policy tables (`static_policies`, `dynamic_policies`, `policy_overrides`, `policy_evaluations`) carried a legacy `organization_id` column typed `uuid`; binding a non-UUID org id into it failed with `invalid input syntax for type uuid`, which surfaced in 9.3.0 as a hard 500 on the policy action override create path (`POST /api/v1/static-policies/{id}/override`) and on organization-tier static-policy create (`POST /api/v1/static-policies` with `tier: organization`). Migration `core/133` retypes `organization_id` to `text` on all four tables, and `HandleCreateOverride` now scopes the override by the canonical varchar `org_id` plus `tenant_id`, leaving the legacy column NULL. The `valid_override_scope` CHECK constraint, the partial indexes on `organization_id`, and row-level security (which keys on `org_id`) are all type-transparent across the retype. `org_id` is the canonical organization column and RLS key; the legacy `organization_id` remains deprecated and is scheduled for removal.
+- **Policy override and organization-tier static-policy create no longer 500 for non-UUID organization ids.** *(Community)* AxonFlow organization ids are free-form strings sourced from the signed license, not UUIDs. Four policy tables (`static_policies`, `dynamic_policies`, `policy_overrides`, `policy_evaluations`) carried a legacy `organization_id` column typed `uuid`; binding a non-UUID org id into it failed with `invalid input syntax for type uuid`, which surfaced in 9.3.0 as a hard 500 on the policy action override create path (`POST /api/v1/static-policies/{id}/override`) and on organization-tier static-policy create (`POST /api/v1/static-policies` with `tier: organization`). Migration `core/133` retypes `organization_id` to `text` on all four tables, and `HandleCreateOverride` now scopes the override by the canonical varchar `org_id` plus `tenant_id`, leaving the legacy column NULL. The `valid_override_scope` CHECK constraint, the partial indexes on `organization_id`, and row-level security (which keys on `org_id`) are all type-transparent across the retype. `org_id` is the canonical organization column and RLS key; the legacy `organization_id` remains deprecated and is scheduled for removal. (It was removed in 10.0.0 by migration `core/166`.)
 - **Portal audit Log Explorer shows the matched policy on redact and blocked rows.** *(Enterprise)* The customer-portal audit Log Explorer's Policy column and detail panel rendered blank on PII-redact and blocked rows, because the matched policy is nested in `policy_details` (a `policy_names` array plus `policy_matches` on blocks, and `policy_ids` only on PII redacts) and was never lifted for display. The portal now lifts the human policy name across every shape (scalar, `policy_names` string or array, and all `policy_matches[*].policy_name` joined) and falls back to the matched policy ids on redact rows that carry no name, so a genuinely-matched row is never rendered blank.
 
 ### Migration

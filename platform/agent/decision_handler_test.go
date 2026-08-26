@@ -1032,15 +1032,20 @@ func (m redactedFieldsMatcher) Match(v driver.Value) bool {
 	return false
 }
 
-// decideAuditInsertArgs builds the positional WithArgs matcher for the 20-column
+// decideAuditInsertArgs builds the positional WithArgs matcher for the 21-column
 // audit_logs INSERT: every column is AnyArg except policy_decision (canonical,
 // pos 13), policy_details (optional matcher, pos 14), plane (=decision, pos
-// 16) and session_id (pos 20, pinned NULL — #2896: none of these tests stamp a
+// 16) and session_id (pos 20, pinned NULL. #2896: none of these tests stamp a
 // client session id under the trust gate, so it must stay NULL). Callers
 // override individual positions (e.g. tenant_id pos 8) to assert the actual
 // authenticated identity alongside the attempted one.
+//
+// #3424 added response_time_ms at pos 21, left as AnyArg here: these tests
+// drive the handler, whose real elapsed time is not reproducible, and the
+// column's own contract (measured value or NULL, never 0) is pinned by
+// TestNullIfUnmeasuredLatency and by the runtime-e2e suite against live rows.
 func decideAuditInsertArgs(policyDecision string, details driver.Value) []driver.Value {
-	args := make([]driver.Value, 20)
+	args := make([]driver.Value, 21)
 	for i := range args {
 		args[i] = sqlmock.AnyArg()
 	}
@@ -1336,7 +1341,7 @@ func TestWriteDecisionAuditLog_PersistsRedactedFields(t *testing.T) {
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-rf", "org", "tenant", "llm", VerdictAllow,
-		nil, nil, nil, false,
+		nil, nil, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{clientID: "c", redactedFields: []string{"$.customer.ssn"}})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1350,7 +1355,7 @@ func TestWriteDecisionAuditLog_PersistsRedactedFields(t *testing.T) {
 func TestWriteDecisionAuditLog_NilDBIncrementsFailureMetric(t *testing.T) {
 	before := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("nodb"))
 	writeDecisionAuditLog(context.Background(), nil,
-		"dec-x", "o", "t", "llm", VerdictDeny, nil, nil, nil, false,
+		"dec-x", "o", "t", "llm", VerdictDeny, nil, nil, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{})
 	after := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("nodb"))
 	if after <= before {
@@ -1370,7 +1375,7 @@ func TestWriteDecisionAuditLog_InsertFailureIncrementsMetric(t *testing.T) {
 
 	before := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("insert"))
 	writeDecisionAuditLog(context.Background(), mockDB,
-		"dec-x", "o", "t", "llm", VerdictDeny, nil, nil, nil, false,
+		"dec-x", "o", "t", "llm", VerdictDeny, nil, nil, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{clientID: "c"})
 	after := testutil.ToFloat64(decideAuditWriteFailures.WithLabelValues("insert"))
 	if after <= before {

@@ -295,7 +295,7 @@ async def main() -> int:
                     if "403" in err_str or "enterprise" in err_str.lower() or \
                        "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                        "404" in err_str:
-                        print(f"   SKIP: approve_step not available (Evaluation+ feature): {e}")
+                        print(f"   SKIP: approve_step not available (Professional and above): {e}")
                     else:
                         failures.append(f"approve_step failed: {e}")
 
@@ -313,7 +313,7 @@ async def main() -> int:
                     if "403" in err_str or "enterprise" in err_str.lower() or \
                        "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                        "404" in err_str:
-                        print(f"   SKIP: get_pending_approvals not available (Evaluation+ feature): {e}")
+                        print(f"   SKIP: get_pending_approvals not available (Professional and above): {e}")
                     else:
                         failures.append(f"get_pending_approvals after approve failed: {e}")
 
@@ -377,7 +377,7 @@ async def main() -> int:
                     if "403" in err_str or "enterprise" in err_str.lower() or \
                        "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                        "404" in err_str:
-                        print(f"   SKIP: reject_step not available (Evaluation+ feature): {e}")
+                        print(f"   SKIP: reject_step not available (Professional and above): {e}")
                     else:
                         failures.append(f"reject_step failed: {e}")
 
@@ -417,7 +417,7 @@ async def main() -> int:
                 if "403" in err_str or "enterprise" in err_str.lower() or \
                    "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                    "404" in err_str:
-                    print(f"   SKIP: get_pending_approvals not available (Evaluation+ feature): {e}")
+                    print(f"   SKIP: get_pending_approvals not available (Professional and above): {e}")
                 else:
                     failures.append(f"get_pending_approvals failed: {e}")
             print()
@@ -457,7 +457,7 @@ async def main() -> int:
                 if "403" in err_str or "enterprise" in err_str.lower() or \
                    "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                    "404" in err_str or "license" in err_str.lower():
-                    print(f"   SKIP: get_pending_plan_approvals not available (Evaluation+ feature): {e}")
+                    print(f"   SKIP: get_pending_plan_approvals not available (Professional and above): {e}")
                 else:
                     failures.append(f"get_pending_plan_approvals failed: {e}")
             print()

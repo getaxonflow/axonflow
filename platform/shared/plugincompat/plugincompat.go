@@ -84,6 +84,18 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - claude-desktop 0.3.1 -> 0.3.2 (claude-desktop-plugin#26, published
+//     2026-07-11, corrected here on the v10.0.0 train). This is a CATCH-UP, not
+//     a bump riding a new plugin release: 0.3.2 went live during the 9.10.0
+//     development window (published 2026-07-11; v9.10.0 tagged 2026-07-17) and
+//     this map was never moved with it, so /health recommended a version older
+//     than the one on the registry for five platform releases
+//     (9.14.x through 9.19.0). Nothing validates a recommended value against
+//     the registry, and the test below pins the same literal, so two files
+//     agreed at a stale number and neither could see it. When a plugin
+//     publishes, move this map in the same round; when a train opens, re-derive
+//     every value from `gh release list` per plugin repo rather than trusting
+//     either copy.
 //   - openclaw 2.8.5 -> 2.8.6 (openclaw-plugin#170/#171/#172, riding the
 //     v9.19.0 train): every surface that renders a remote-influenced endpoint
 //     or identity string on a terminal sanitises it, so a hostile registrar
@@ -106,7 +118,7 @@ var recommendedVersion = map[string]string{
 	"claude-code":    "1.11.0",
 	"cursor":         "1.7.0",
 	"codex":          "1.7.0",
-	"claude-desktop": "0.3.1",
+	"claude-desktop": "0.3.2",
 }
 
 // MinVersions returns the floor map.

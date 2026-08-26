@@ -411,6 +411,17 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	clientID := h.getClientID(r)
 
+	// #3281 (ADR-060 #2989 P3b): read X-User-Email directly rather than via
+	// getUserID, whose fallback chain can return a non-email X-User-ID -
+	// resolveUserSegments must never resolve from an unverified/
+	// non-email identifier (see StepGateRequest.Email's doc). This header is
+	// trust-gated the same way applyAuthoritativePrincipal's X-User-Email
+	// read is on the /api/v1/process plane (run.go): requireProxyAuth above
+	// has already confirmed this request carries a valid HMAC proxy token
+	// from the agent's governed forward, so the header cannot be a direct
+	// caller's self-asserted value.
+	req.Email = r.Header.Get("X-User-Email")
+
 	response, err := h.service.StepGate(r.Context(), workflowID, stepID, &req, tenantID, orgID, userID, clientID)
 	if err != nil {
 		// Issue #1673 Phase 2: 409 IDEMPOTENCY_KEY_MISMATCH
@@ -1110,10 +1121,14 @@ func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Reques
 	}
 
 	// #2896 WS1c: resuming a checkpoint re-evaluates its step and applies any
-	// ADR-044 override keyed on the checkpoint's stored actor identity — a
-	// deny→allow flip. Only agent-routed requests (trust-gated identity +
-	// HMAC proxy token) may drive it; a direct caller is rejected before any
-	// re-evaluation. Mirrors the StepGate guard.
+	// ADR-044 override, a deny-to-allow flip. #3281 REKEYED that override on
+	// the LIVE resumer's trust-gated X-User-Email (wcp_policy_adapter.go's
+	// overrideEmail, falling back to the step's UserID only when no email is
+	// present), NOT on the checkpoint's stored actor identity: the flip must
+	// be authorised by whoever is performing the resume, or user A's override
+	// would authorise user B's resume. Only agent-routed requests
+	// (trust-gated identity + HMAC proxy token) may drive it; a direct caller
+	// is rejected before any re-evaluation. Mirrors the StepGate guard.
 	if !h.requireProxyAuth(w, r) {
 		return
 	}
@@ -1132,7 +1147,15 @@ func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Reques
 	tenantID := scope.TenantID
 	orgID := scope.OrgID
 
-	resp, err := h.service.ResumeFromLastCheckpoint(r.Context(), workflowID, tenantID, orgID)
+	// #3281: a resume re-enters the SAME Service.StepGate evaluation the gate
+	// route runs (retry_policy=reevaluate, so the cache is deliberately
+	// bypassed). Read the trust-gated X-User-Email off THIS request exactly as
+	// the StepGate handler does -- this route is behind the identical
+	// requireProxyAuth gate above and receives the header through the same
+	// /api/v1/workflows proxy prefix, so the value cannot be a direct caller's
+	// self-asserted one. Without it the fresh verdict is computed with no
+	// verified identity and every segment-scoped policy stops applying.
+	resp, err := h.service.ResumeFromLastCheckpoint(r.Context(), workflowID, tenantID, orgID, r.Header.Get("X-User-Email"))
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
@@ -1159,9 +1182,11 @@ func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// #2896 WS1c: resuming a specific checkpoint re-evaluates its step and
-	// applies any ADR-044 override keyed on the checkpoint's stored actor
-	// identity — a deny→allow flip. Require the Agent gateway's proxy token
-	// (mirrors StepGate / ResumeFromLastCheckpoint).
+	// applies any ADR-044 override, a deny-to-allow flip. Since #3281 that
+	// override is keyed on the LIVE resumer's trust-gated X-User-Email, not
+	// on the checkpoint's stored actor identity (see ResumeFromLastCheckpoint
+	// above for why). Require the Agent gateway's proxy token (mirrors
+	// StepGate / ResumeFromLastCheckpoint).
 	if !h.requireProxyAuth(w, r) {
 		return
 	}
@@ -1192,7 +1217,10 @@ func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
 	tenantID := scope.TenantID
 	orgID := scope.OrgID
 
-	resp, err := h.service.ResumeFromCheckpoint(r.Context(), workflowID, checkpointID, tenantID, orgID)
+	// #3281: same as ResumeFromLastCheckpoint above -- the trust-gated
+	// X-User-Email carried by THIS resume request, threaded into the fresh
+	// step-gate re-evaluation so segment-scoped policies keep applying.
+	resp, err := h.service.ResumeFromCheckpoint(r.Context(), workflowID, checkpointID, tenantID, orgID, r.Header.Get("X-User-Email"))
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())

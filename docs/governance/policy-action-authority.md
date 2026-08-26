@@ -12,7 +12,18 @@ For the four **detection categories** (`pii-*`, `security-sqli`, `sensitive-data
 
 A `pii-*` policy row seeded with `action='block'` therefore does **not** deny on the decide, gateway, MCP, or OpenAI-compat planes unless the posture lever itself resolves to `block`. This is the designed authority order (ADR-036 governance profiles; the engine applies the lever at `EvalOptions.ActionOverrides`), not a fail-open: the lever exists so an operator can move the whole deployment between log/warn/redact/block postures without editing policy rows.
 
-Compliance categories (`compliance-*`, `fincrime`) and `admin-access` have **no lever entry**: their row action is honored directly wherever those categories are evaluated.
+Compliance categories (`compliance-*`, `fincrime`) and `admin-access` have **no lever entry**, so no posture lever displaces them. That is narrower than "their `action` column is enforced", and the difference matters.
+
+`platform/shared/policy/loader.go` carries **two disjoint column sets**, and which one a surface reads determines which value it is talking about:
+
+| Path | Columns read | Reads `action`? | Feeds |
+|------|--------------|-----------------|-------|
+| `PolicyLoader` (runtime evaluation: `initQueries`, `loadFromDatabase`, `LoadSystemPolicies`, `GetPolicyByID`) | `phase`, `action_request`, `action_response` | **No** | the shared engine on the decide, gateway and MCP planes |
+| `ScanEffectivePolicyRows` / `effectivePolicyColumns` (the `GetEffective` admin/API path) | `sp.action` | **Yes**, and never the phase columns | `StaticPolicyRepository.GetEffective`, the proxy plane's Phase-2 tier engine, and `/api/v1/static-policies/effective` (so the portal's Policies page) |
+
+So on every shared-engine plane the base `action` column is read by nothing: `GetActionForPhase` resolves the phase column, or falls back to a category+severity derivation when it is NULL, and on the lever-free categories that PHASE-resolved action stands. The base `action` column is read only by the proxy plane's Phase-2 tier engine -- the same plane the matrix below records as the exception. Migration `core/124` exists because a row's base action and its phase action had drifted apart, which is exactly what two disjoint read paths over one table produce.
+
+This also means "stored action" is ambiguous unless the column is named. `PolicyMatch.StoredAction`, the audit displacement advisory and the `axonflow_agent_policy_stored_action_displaced_total{stored=...}` label all mean the **phase** column. A surface showing `static_policies.action` is showing a different value and must say so.
 
 ## What you see when the lever weakens a stored action
 

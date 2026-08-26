@@ -58,9 +58,9 @@ type PolicyConflictRef struct {
 
 // DetectConflicts finds conflicts between active policies for a tenant.
 // If policyID is non-empty, only conflicts involving that policy are returned.
-func (s *PolicyConflictService) DetectConflicts(ctx context.Context, tenantID string, policyID string) (*PolicyConflictResponse, error) {
+func (s *PolicyConflictService) DetectConflicts(ctx context.Context, tenantID, orgID string, policyID string) (*PolicyConflictResponse, error) {
 	enabled := true
-	resp, err := s.policyService.ListPolicies(ctx, tenantID, ListPoliciesParams{
+	resp, err := s.policyService.ListPolicies(ctx, tenantID, orgID, ListPoliciesParams{
 		Enabled:  &enabled,
 		PageSize: 1000,
 		Page:     1,

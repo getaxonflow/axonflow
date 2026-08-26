@@ -68,7 +68,9 @@ var (
 )
 
 // MCPPolicyEngine is an interface for policy engines that can be used with MCPDynamicPolicyHandler.
-// Both DynamicPolicyEngine and DatabaseDynamicPolicyEngine implement this interface.
+// DatabaseDynamicPolicyEngine implements this interface; it is the single
+// engine that exists in production (#3319 deleted the retired in-memory
+// DynamicPolicyEngine this interface used to abstract over as well).
 //
 // It declares the TENANT-SCOPED list deliberately, and NOT the raw
 // ListActivePolicies() this handler used to call (#3061 R3).
@@ -76,16 +78,14 @@ var (
 // Two reasons, both load-bearing:
 //
 //   - CORRECTNESS (TENANT scoping only — see the SEGMENT caveat below). "Does
-//     this policy apply to this tenant?" is a shape-aware question and each
-//     engine answers it differently: the database engine treats tenant_id
-//     'global' and 'default' (the NULL sentinel assigned in refreshPolicies)
-//     as apply-to-all, the in-memory engine treats an empty TenantID as
-//     apply-to-all and knows no sentinels. #3059 made each engine route BOTH
-//     enforcement and disclosure through its own single choke point
-//     (dbCachedPolicyAppliesToTenant / memPolicyAppliesToTenant) precisely so
-//     the two can never diverge. The predicate this handler used to carry
-//     locally — `p.TenantID != "" && p.TenantID != req.TenantID` — was the
-//     exact INVERSE of the database engine's on every stored shape: it skipped
+//     this policy apply to this tenant?" is a shape-aware question: the
+//     database engine treats tenant_id 'global' and 'default' (the NULL
+//     sentinel assigned in refreshPolicies) as apply-to-all. #3059 made the
+//     engine route BOTH enforcement and disclosure through its own single
+//     choke point (dbCachedPolicyAppliesToTenant) precisely so the two can
+//     never diverge. The predicate this handler used to carry locally —
+//     `p.TenantID != "" && p.TenantID != req.TenantID` — was the exact
+//     INVERSE of the database engine's on every stored shape: it skipped
 //     'global' and 'default' (which must apply to everyone) and admitted the
 //     empty string (which applies to nobody, and which migration core/155
 //     now forbids outright). A deployment-wide content baseline stored as
@@ -100,28 +100,47 @@ var (
 //     reached from POST /api/v1/mcp/evaluate-policies, so it was exactly that
 //     caller.
 //
-//   - SEGMENT CAVEAT (ADR-060 #2989 P3b, H1 loud-docs, #3239 round 2): the
-//     "blocked on the LLM/MAP/WCP planes" claim above is about TENANT
-//     scoping ONLY and does NOT generalize to SEGMENT scoping. This handler
-//     passes nil segmentIDs (see the interface method doc below), so a
-//     segment-scoped policy is INVISIBLE and UNENFORCED here even though the
-//     same policy IS enforced on /api/v1/process and MAP. Segment
-//     enforcement today covers /process + MAP only — not MCP, not WCP. See
-//     ADR-060's enforcement-surface coverage matrix. Tracked: epic #3279
-//     (verified machine/agent principal — MCP's caller here is typically a
-//     service account, so enforcing segments requires resolving ITS
-//     principal, not threading a human email that doesn't exist on this
-//     plane) and #3280 (MCP segment enforcement, depends on #3279).
+//   - SEGMENT SCOPING (ADR-060 #2989 P3b, H1 loud-docs, #3239 round 2,
+//     #3447): segment scoping is a SEPARATE axis from the tenant scoping
+//     above and does not follow from it. As of #3447 this handler DOES apply
+//     it: MCPPolicyEvaluationRequest carries SegmentIDs — the set the AGENT
+//     already resolved fail-closed for the human actor on the MCP planes —
+//     and getPoliciesForMCP threads it into ListActivePoliciesForTenant, so
+//     a segment-scoped dynamic policy is now visible and enforced here for a
+//     caller who is a member, exactly as it already was on /api/v1/process
+//     and MAP. An ABSENT/empty set means org-only: segment-scoped rows are
+//     skipped, matching the static plane's rule (shared/policy EvalOptions
+//     .Segments).
+//
+//     The orchestrator deliberately does NOT resolve segments itself. The
+//     agent and the orchestrator hold SEPARATE segment caches with separate
+//     TTL clocks (segmentCache, one per process,
+//     identity_attribute_resolver.go), so a second, independent resolution
+//     could see a different set on the SAME request — the agent's static
+//     pass enforcing a segment-scoped policy while this dynamic pass does
+//     not. Relaying the agent's one resolution makes that split verdict
+//     impossible by construction.
+//
+//     STILL OPEN: the MACHINE-ACTOR half, #3280. A caller with no human
+//     principal (a service account driving MCP directly) relays no set and
+//     is therefore evaluated org-only here; closing that needs a verified
+//     machine principal (epic #3279) to resolve against, which does not
+//     exist on this plane yet. WCP's dynamic plane is likewise still open.
+//     See ADR-060's enforcement-surface coverage matrix.
 type MCPPolicyEngine interface {
-	// segmentIDs (ADR-060 #2989 P3b) — see DynamicPolicyEngine's
-	// ListActivePoliciesForTenant doc. getPoliciesForMCP passes nil: the MCP
-	// evaluate-policies contract (MCPPolicyEvaluationRequest) carries a
-	// verified org/tenant (tenantscope.Bind) but no verified per-user email,
-	// so there is nothing to resolve real segments from here yet. This is
-	// NOT a stopgap awaiting a small follow-up — it is the H1/#3280 gap
-	// (see the interface doc above): a segment-scoped policy is silently
-	// absent from every list/evaluate response this handler returns.
-	ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
+	// segmentIDs (ADR-060 #2989 P3b) — see
+	// DatabaseDynamicPolicyEngine.ListActivePoliciesForTenant's doc
+	// (db_dynamic_policies.go). getPoliciesForMCP passes
+	// MCPPolicyEvaluationRequest.SegmentIDs, the agent-resolved,
+	// already-fail-closed governance-segment set for this request (#3447).
+	// nil/empty means org-only — segment-scoped rows are skipped — and
+	// never "resolution failed": a caller whose resolution failed is denied
+	// in the agent before this request is ever built.
+	//
+	// Decision 5 (#3490): the first argument is the caller's licence ORG,
+	// not its tenant. See the implementation's doc for why the method name
+	// was left alone.
+	ListActivePoliciesForTenant(orgID string, segmentIDs []string) []DynamicPolicy
 }
 
 // MCPDynamicPolicyHandler handles dynamic policy evaluation requests from MCP Agent.
@@ -173,11 +192,26 @@ func (h *MCPDynamicPolicyHandler) RegisterRoutes(r *mux.Router) {
 // boundary rather than a tenancy one — but the sentence above was previously
 // written without the qualifier, which is precisely the trap that invites a
 // future reader to assume the field is safe on both planes.
+// SegmentIDs (#3447) is subject to the SAME plane caveat as OrganizationID
+// above and is documented here so a future reader cannot miss it: on the
+// internal-service plane it passes through VERBATIM and UNVALIDATED. It is
+// the segment set the calling AGENT resolved fail-closed for a verified human
+// actor (agent/human_actor_segment_gate.go, agent/mcp_identity.go) and relays
+// across the HMAC-authenticated internal hop (requireInternalProxyAuth,
+// #3068); nothing in this handler authenticates it, and nothing added below
+// may treat it as authenticated. That is an operator-trust boundary, not a
+// tenancy one — identical in kind to the trust this handler already places in
+// the body's TenantID on that plane. It is used ONLY to NARROW the policy set
+// (a segment-scoped row applies iff its segment is in this set), so a forged
+// value on that plane could suppress a segment-scoped policy but can never
+// widen one onto a caller — the same restriction-only property EvalOptions
+// .Segments has on the static plane.
 type MCPPolicyEvaluationRequest struct {
 	TenantID       string                 `json:"tenant_id"`
 	OrganizationID string                 `json:"organization_id,omitempty"`
 	UserID         string                 `json:"user_id"`
 	UserRole       string                 `json:"user_role,omitempty"`
+	SegmentIDs     []string               `json:"segment_ids,omitempty"`
 	ConnectorName  string                 `json:"connector_name"`
 	Operation      string                 `json:"operation"`
 	Statement      string                 `json:"statement"`
@@ -370,6 +404,33 @@ func (h *MCPDynamicPolicyHandler) resolveEvaluationScope(r *http.Request, req *M
 		if bodyTenant == "" {
 			return http.StatusBadRequest, "tenant_id is required"
 		}
+		// Decision 5 (#3490): this plane's policy set is now selected by
+		// organization_id, and on the header-less plane the body is the only
+		// place it can come from - the agent's own hop
+		// (shared/policy/dynamic_evaluator.go) sends no tenancy headers at
+		// all, only the internal-service token.
+		//
+		// A caller that sends tenant_id but no organization_id is speaking
+		// the pre-Decision-5 contract: a version-skewed agent. Evaluating it
+		// org-only would silently drop every tenant-authored dynamic policy
+		// with a 200 and policies_evaluated counting only the global
+		// baseline - the #3048/#3049 shape, quiet under-enforcement that
+		// looks exactly like "this tenant has no policies".
+		//
+		// So it is refused, and refused with 403 specifically: the agent's
+		// EvaluateWithGracefulDegradation absorbs a transient failure but
+		// deliberately REFUSES to absorb a 401/403 (errOrchestratorAuthRejected,
+		// #3068), so the governed tool call fails CLOSED and the operator
+		// gets a loud, permanent signal. A 400 would be absorbed and would
+		// become allow-all. Version skew is permanent and deterministic,
+		// which is the same property #3068 used to justify that rule.
+		if strings.TrimSpace(req.OrganizationID) == "" {
+			log.Printf("[MCPDynamicPolicy] REFUSED: header-less request carries tenant_id but no organization_id - " +
+				"the caller predates the org-keyed policy-selection contract (#3490). Roll the agent and the " +
+				"orchestrator to the same version; evaluating without an org would silently drop every " +
+				"tenant-authored dynamic policy.")
+			return http.StatusForbidden, "Forbidden: organization_id is required for policy evaluation"
+		}
 		req.TenantID = bodyTenant
 		return 0, ""
 	}
@@ -390,12 +451,13 @@ func (h *MCPDynamicPolicyHandler) resolveEvaluationScope(r *http.Request, req *M
 	}
 
 	req.TenantID = scope.TenantID
-	// OrganizationID is unused by this handler today, but it is part of the
-	// same client-supplied tenancy surface. Stamping it from the authenticated
-	// scope means a future consumer of the field cannot inherit a forged org
-	// simply by being added below this line. Overwrite rather than compare: an
-	// `a != "" && b != "" && a != b` guard here would be the fail-open idiom
-	// TestNoFailOpenOrgCompare exists to reject.
+	// OrganizationID is what getPoliciesForMCP scopes the policy set by since
+	// Decision 5 (#3490) - the "future consumer of the field" the note this
+	// replaces anticipated. Stamping it from the authenticated scope is what
+	// makes that consumer safe: a forged body org cannot survive this line.
+	// Overwrite rather than compare: an `a != "" && b != "" && a != b` guard
+	// here would be the fail-open idiom TestNoFailOpenOrgCompare exists to
+	// reject.
 	req.OrganizationID = scope.OrgID
 	return 0, ""
 }
@@ -413,9 +475,27 @@ func (h *MCPDynamicPolicyHandler) getPoliciesForMCP(req MCPPolicyEvaluationReque
 	// would be enforced for this tenant on the LLM/MAP/WCP planes. The local
 	// `p.TenantID != "" && p.TenantID != req.TenantID` predicate this replaces
 	// was the inverse of the database engine's on all three stored shapes.
-	policies := h.policyEngine.ListActivePoliciesForTenant(req.TenantID, nil)
+	// Segment scoping (#3447): relay the agent-resolved set. The engine's
+	// segment predicate is restriction-only — a segment-scoped row applies
+	// iff its segment id is in this set, and an absent/empty set means
+	// org-only, exactly matching the static plane's rule. The agent already
+	// resolved this fail-closed and denied the request if resolution failed,
+	// so an empty set here is always "member of no segments", never
+	// "could not tell". See MCPPolicyEvaluationRequest.SegmentIDs for the
+	// (unauthenticated, restriction-only) trust properties on the
+	// internal-service plane.
+	// Decision 5 (#3490): scoped by req.OrganizationID, which
+	// resolveEvaluationScope overwrites from the authenticated gateway scope
+	// on the stamped plane - the field's own comment already anticipated
+	// this ("a future consumer of the field cannot inherit a forged org
+	// simply by being added below this line"). On the header-less
+	// internal-service plane it is body-supplied, exactly as req.TenantID
+	// was before this change and at exactly the same trust level: that plane
+	// is behind requireInternalProxyAuth, an operator credential, and was
+	// never a tenancy boundary.
+	policies := h.policyEngine.ListActivePoliciesForTenant(req.OrganizationID, req.SegmentIDs)
 
-	// Filter by type. Tenant scoping already happened above.
+	// Filter by type. Org scoping already happened above.
 	var filtered []DynamicPolicy
 	for _, p := range policies {
 		// Only include enabled policies. Both engines' scoped list already
@@ -558,6 +638,12 @@ func mcpFieldValue(field string, req MCPPolicyEvaluationRequest) (value any, ok 
 				}
 			}
 		}
+		// No "risk_score" case here, deliberately: the MCP plane has no
+		// computed risk score (RiskCalculator, db_dynamic_policies.go, is
+		// HTTP-plane-only by design). A policy authored with a risk_score
+		// condition against this plane falls through to ok=false below,
+		// which records sharedpolicy.ReasonFieldUnresolved and evaluates to
+		// false — observable and fail-safe, not a silent always-match.
 		return nil, false
 	}
 }
@@ -882,15 +968,10 @@ func (h *MCPDynamicPolicyHandler) writeError(w http.ResponseWriter, status int, 
 	})
 }
 
-// Global MCP dynamic policy handler
-var globalMCPDynamicPolicyHandler *MCPDynamicPolicyHandler
-
-// InitMCPDynamicPolicyHandler initializes the global handler.
-func InitMCPDynamicPolicyHandler(engine *DynamicPolicyEngine) {
-	globalMCPDynamicPolicyHandler = NewMCPDynamicPolicyHandler(engine)
-}
-
-// GetMCPDynamicPolicyHandler returns the global handler.
-func GetMCPDynamicPolicyHandler() *MCPDynamicPolicyHandler {
-	return globalMCPDynamicPolicyHandler
-}
+// #3319: the global-handler trio that used to live here —
+// InitMCPDynamicPolicyHandler(*DynamicPolicyEngine), GetMCPDynamicPolicyHandler,
+// and the globalMCPDynamicPolicyHandler package var — was deleted. It had
+// zero production callers (grep confirmed the only caller of
+// InitMCPDynamicPolicyHandler was its own test); the live wiring is
+// NewMCPDynamicPolicyHandler above, interface-typed (MCPPolicyEngine) and
+// called directly from run.go's route registration.

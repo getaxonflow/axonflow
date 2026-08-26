@@ -72,7 +72,60 @@ const (
 
 	// AdminAuthorityAsserted is the sole recognized HeaderAdminAuthority value.
 	AdminAuthorityAsserted = "true"
+
+	// HeaderTenancyScope carries a TENANCY-WIDTH assertion by an internal
+	// service: "the caller I am forwarding for is bound to the ORG, and the
+	// X-Tenant-ID on this request is a display default rather than an
+	// authorization narrowing".
+	//
+	// WHY THIS IS A THIRD HEADER AND NOT A REUSE OF THE OTHER TWO (#3367)
+	//
+	// HeaderReadScope answers "how wide may this caller see ACROSS USERS
+	// within one tenant" and HeaderAdminAuthority answers "is this caller an
+	// administrator". Neither answers "which TENANCY KEY is this caller
+	// actually bound to", and the two existing headers are deliberately kept
+	// apart precisely because one header cannot carry two independent answers
+	// (#3060, #3241 round 2). Folding tenancy width into either of them would
+	// repeat that conflation a third time: the portal stamps HeaderReadScope
+	// for every audit:read holder, so reusing it would silently widen the
+	// tenancy key for the seeded viewer role as a side effect of a read-scope
+	// grant.
+	//
+	// The distinction is real on this platform because execution_history and
+	// its siblings stamp tenant_id from the EXECUTING CALLER'S CREDENTIAL
+	// (the Basic-auth username; migration 049 dropped the organizations FK
+	// exactly so an SDK client id could live there, and migration 092 records
+	// tenant_id as a deprecated alias of client_id). A customer-portal session
+	// has no credential identity at all: its tenancy authority is the org, and
+	// portal_default_tenant_id (migration 065/104) hands it an ARBITRARY tenant
+	// of that org - the canonical one if present, else the oldest - purely as a
+	// display default. Comparing that value against a credential-shaped column
+	// is not a narrowing, it is a category error, and it renders a confident
+	// zero over data the session is fully authorized to see.
+	//
+	// Trust: honored ONLY over a valid X-Axonflow-Proxy-Auth token, exactly
+	// like the two headers above, and listed in NeverClientAssertableHeaders
+	// so the agent strips it from inbound client traffic at both sites.
+	//
+	// Fail-closed: absence means "narrow by the tenant header as before", so
+	// every existing caller (the agent gateway, every SDK client, axonctl)
+	// keeps its current per-credential narrowing untouched.
+	HeaderTenancyScope = "X-Axonflow-Tenancy-Scope"
+
+	// TenancyScopeOrg is the sole recognized HeaderTenancyScope value.
+	TenancyScopeOrg = "org"
 )
+
+// TenancyScopeIsOrg reports whether a HeaderTenancyScope value asserts
+// org-wide tenancy binding.
+//
+// Trimmed and case-insensitive for the same reason AdminAuthorityFromHeader is:
+// a proxy that normalizes header casing must not silently drop the assertion.
+// Anything other than "org" is ignored, so an absent header can never become an
+// assertion.
+func TenancyScopeIsOrg(v string) bool {
+	return strings.EqualFold(strings.TrimSpace(v), TenancyScopeOrg)
+}
 
 // NeverClientAssertableHeaders is the closed set of trusted-plane headers a
 // CLIENT may never assert, in any spelling, on any route.
@@ -95,6 +148,7 @@ var NeverClientAssertableHeaders = []string{
 	HeaderUserRole,
 	HeaderReadScope,
 	HeaderAdminAuthority,
+	HeaderTenancyScope,
 }
 
 // AdminAuthorityFromHeader reports whether a HeaderAdminAuthority value asserts

@@ -287,6 +287,17 @@ type StepGateRequest struct {
 	// GateOverride bypasses the policy evaluator and forces a specific decision.
 	// Used by MAP confirm/step modes to enforce require_approval regardless of policies.
 	GateOverride *GateDecision `json:"-"`
+	// Email is the trust-gated caller identity (X-User-Email) used ONLY to
+	// resolve ADR-060 (#2989 P3b) governance segments for policy enforcement
+	// (#3281). Never client-suppliable - json:"-" keeps it off the wire the
+	// same way GateOverride is kept off it - and set by the HTTP handler from
+	// the SAME trust-gated header applyAuthoritativePrincipal reads on the
+	// /api/v1/process plane (orchestrator run.go), never reused from
+	// getUserID (which may hold a non-email X-User-ID and is attribution
+	// only, not verified identity). Empty is the safe "no verified identity"
+	// input to resolveUserSegments - proceeds org-only, non-segment-
+	// scoped policies still enforce - never a bypass.
+	Email string `json:"-"`
 	// IncludePriorOutput is set by the handler from the ?include_prior_output
 	// query param (Issue #1673 Phase 1). When true, RetryContext.PriorOutput
 	// is populated if a prior /complete landed. Opt-in because prior output
@@ -369,12 +380,23 @@ type RetryContext struct {
 
 // StepGateResponse is the response for a step gate check
 type StepGateResponse struct {
-	Decision          GateDecision  `json:"decision"`
-	StepID            string        `json:"step_id"`
-	DecisionID        string        `json:"decision_id,omitempty"`
-	PolicyIDs         []string      `json:"policy_ids,omitempty"`
-	Reason            string        `json:"reason,omitempty"`
-	ApprovalID        string        `json:"approval_id,omitempty"` // HITL queue entry UUID when Decision is require_approval
+	Decision   GateDecision `json:"decision"`
+	StepID     string       `json:"step_id"`
+	DecisionID string       `json:"decision_id,omitempty"`
+	PolicyIDs  []string     `json:"policy_ids,omitempty"`
+	Reason     string       `json:"reason,omitempty"`
+	ApprovalID string       `json:"approval_id,omitempty"` // HITL queue entry UUID when Decision is require_approval
+	// ApprovalEnqueue reports what the HITL enqueue did for this gate:
+	// "created" (a new review entry exists), "reused" (a re-gate resolved to
+	// the entry an earlier call created), "cap_reached" (the tenant's
+	// MaxPendingApprovals limit refused it), "tier_disabled" (the licence
+	// tier does not enable HITL approvals) or "error".
+	//
+	// A require_approval decision ALWAYS holds the step. This field is how a
+	// client tells "held, and there is something to approve" from "held, and
+	// there is nothing to approve" - which before #3408's sibling fix were
+	// the same response.
+	ApprovalEnqueue   string        `json:"approval_enqueue,omitempty"`
 	ApprovalURL       string        `json:"approval_url,omitempty"`
 	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
 	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched and contributed to decision (Issue #1021)

@@ -278,13 +278,13 @@ var ValidActionTypes = append([]string(nil), sharedpolicy.ValidActionTypes...)
 // PolicyServicer defines the interface for policy service operations
 // This interface enables dependency injection and testability
 type PolicyServicer interface {
-	CreatePolicy(ctx context.Context, tenantID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error)
-	GetPolicy(ctx context.Context, tenantID, policyID string) (*PolicyResource, error)
-	ListPolicies(ctx context.Context, tenantID string, params ListPoliciesParams) (*PoliciesListResponse, error)
-	UpdatePolicy(ctx context.Context, tenantID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error)
-	DeletePolicy(ctx context.Context, tenantID, policyID string, deletedBy string) error
-	TestPolicy(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error)
+	CreatePolicy(ctx context.Context, tenantID, orgID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error)
+	GetPolicy(ctx context.Context, tenantID, orgID, policyID string) (*PolicyResource, error)
+	ListPolicies(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) (*PoliciesListResponse, error)
+	UpdatePolicy(ctx context.Context, tenantID, orgID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error)
+	DeletePolicy(ctx context.Context, tenantID, orgID, policyID string, deletedBy string) error
+	TestPolicy(ctx context.Context, tenantID, orgID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error)
 	GetPolicyVersions(ctx context.Context, tenantID, policyID string) (*PolicyVersionResponse, error)
-	ExportPolicies(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error)
-	ImportPolicies(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error)
+	ExportPolicies(ctx context.Context, tenantID, orgID string) (*ExportPoliciesResponse, error)
+	ImportPolicies(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error)
 }

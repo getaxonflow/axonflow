@@ -71,7 +71,7 @@ const (
 
 // setup3060Fixture stands up the real-PG fixture.
 //
-// approletest.Setup applies core migrations 001..111. audit_logs picks up four
+// approletest.Setup applies every core migration. audit_logs picks up four
 // more columns after that range which the read handlers project, so they are
 // applied here by name rather than by number — each is an additive
 // ALTER TABLE ... ADD COLUMN IF NOT EXISTS with no ordering dependency on the

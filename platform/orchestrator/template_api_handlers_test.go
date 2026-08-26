@@ -27,7 +27,7 @@ import (
 type mockTemplateService struct {
 	getTemplateFunc   func(ctx context.Context, templateID string) (*PolicyTemplate, error)
 	listTemplatesFunc func(ctx context.Context, params ListTemplatesParams) (*TemplatesListResponse, error)
-	applyTemplateFunc func(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error)
+	applyTemplateFunc func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error)
 	getCategoriesFunc func(ctx context.Context) ([]string, error)
 	getUsageStatsFunc func(ctx context.Context, tenantID string) ([]TemplateUsageStatsResponse, error)
 }
@@ -46,9 +46,9 @@ func (m *mockTemplateService) ListTemplates(ctx context.Context, params ListTemp
 	return nil, nil
 }
 
-func (m *mockTemplateService) ApplyTemplate(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+func (m *mockTemplateService) ApplyTemplate(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
 	if m.applyTemplateFunc != nil {
-		return m.applyTemplateFunc(ctx, tenantID, templateID, req, userID)
+		return m.applyTemplateFunc(ctx, tenantID, orgID, templateID, req, userID)
 	}
 	return nil, nil
 }
@@ -311,7 +311,7 @@ func TestTemplateAPIHandler_HandleGetTemplate_Error(t *testing.T) {
 
 func TestTemplateAPIHandler_HandleApplyTemplate(t *testing.T) {
 	mock := &mockTemplateService{
-		applyTemplateFunc: func(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
 			return &ApplyTemplateResponse{
 				Success: true,
 				UsageID: "usage-123",
@@ -324,6 +324,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate(t *testing.T) {
 	body := `{"variables": {"threshold": 100}, "policy_name": "My Policy", "enabled": true}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user-1")
 	w := httptest.NewRecorder()
 
@@ -385,12 +386,112 @@ func TestTemplateAPIHandler_HandleApplyTemplate_NoTenantID(t *testing.T) {
 	}
 }
 
+// Decision 5 (#3490): applying a template creates a policy, and
+// PolicyRepository.Create refuses a blank organisation because org_id is what
+// selects the policy. This route is Create's SECOND caller and used to pass no
+// organisation at all, so before this it returned 500 on every call, echoing
+// the internal error into the body.
+//
+// The three assertions are separate on purpose. Status alone would pass on the
+// pre-fix 500 if the constant were ever mistyped; the code pins WHICH refusal
+// this is; and the mock's untouched flag pins that the refusal happens BEFORE
+// the service is reached, which is the part that makes it a refusal rather
+// than a failure downstream.
+func TestTemplateAPIHandler_HandleApplyTemplate_NoOrgID(t *testing.T) {
+	reached := false
+	mock := &mockTemplateService{
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+			reached = true
+			return &ApplyTemplateResponse{}, nil
+		},
+	}
+	handler := NewTemplateAPIHandler(mock)
+
+	body := `{"variables": {}, "policy_name": "Test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-123")
+	// No X-Org-ID.
+	w := httptest.NewRecorder()
+
+	handler.HandleApplyTemplate(w, req, "template-123")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected %d, got %d (body %s)", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+	var apiErr PolicyAPIError
+	if err := json.Unmarshal(w.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("refusal body is not a PolicyAPIError: %v (body %s)", err, w.Body.String())
+	}
+	if apiErr.Error.Code != "ORG_REQUIRED" {
+		t.Errorf("expected code ORG_REQUIRED, got %q", apiErr.Error.Code)
+	}
+	if reached {
+		t.Error("the service was reached: the org refusal must happen before the template is applied")
+	}
+}
+
+// A whitespace-only header is the same as an absent one. Without TrimSpace in
+// getOrgID this reaches the repository, which would stamp the policy with a
+// value no caller authenticates as - created, listed, and enforcing on nobody.
+func TestTemplateAPIHandler_HandleApplyTemplate_BlankOrgID(t *testing.T) {
+	reached := false
+	mock := &mockTemplateService{
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+			reached = true
+			return &ApplyTemplateResponse{}, nil
+		},
+	}
+	handler := NewTemplateAPIHandler(mock)
+
+	body := `{"variables": {}, "policy_name": "Test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "   ")
+	w := httptest.NewRecorder()
+
+	handler.HandleApplyTemplate(w, req, "template-123")
+
+	if w.Code != http.StatusUnauthorized || reached {
+		t.Errorf("a whitespace-only X-Org-ID was accepted: status %d, service reached %v", w.Code, reached)
+	}
+}
+
+// The org the caller presents is the org the policy is authored for - it must
+// reach the service verbatim rather than being derived from the tenant, which
+// is the substitution Decision 5 removes.
+func TestTemplateAPIHandler_HandleApplyTemplate_OrgIsThreadedNotDerived(t *testing.T) {
+	var gotTenant, gotOrg string
+	mock := &mockTemplateService{
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+			gotTenant, gotOrg = tenantID, orgID
+			return &ApplyTemplateResponse{}, nil
+		},
+	}
+	handler := NewTemplateAPIHandler(mock)
+
+	body := `{"variables": {}, "policy_name": "Test"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "acme-org")
+	w := httptest.NewRecorder()
+
+	handler.HandleApplyTemplate(w, req, "template-123")
+
+	if gotOrg != "acme-org" {
+		t.Errorf("org did not reach the service verbatim: got %q, want %q", gotOrg, "acme-org")
+	}
+	if gotOrg == gotTenant {
+		t.Errorf("org was derived from the tenant (%q): the two must be independent here", gotTenant)
+	}
+}
+
 func TestTemplateAPIHandler_HandleApplyTemplate_InvalidJSON(t *testing.T) {
 	mock := &mockTemplateService{}
 	handler := NewTemplateAPIHandler(mock)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader("invalid"))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.HandleApplyTemplate(w, req, "template-123")
@@ -402,7 +503,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate_InvalidJSON(t *testing.T) {
 
 func TestTemplateAPIHandler_HandleApplyTemplate_ValidationError(t *testing.T) {
 	mock := &mockTemplateService{
-		applyTemplateFunc: func(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
 			return nil, &TemplateValidationError{
 				Errors: []TemplateFieldError{
 					{Field: "policy_name", Message: "Policy name is required"},
@@ -415,6 +516,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate_ValidationError(t *testing.T) {
 	body := `{"variables": {}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.HandleApplyTemplate(w, req, "template-123")
@@ -426,7 +528,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate_ValidationError(t *testing.T) {
 
 func TestTemplateAPIHandler_HandleApplyTemplate_NotFound(t *testing.T) {
 	mock := &mockTemplateService{
-		applyTemplateFunc: func(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
 			return nil, errors.New("template not found")
 		},
 	}
@@ -435,6 +537,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate_NotFound(t *testing.T) {
 	body := `{"variables": {}, "policy_name": "Test"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.HandleApplyTemplate(w, req, "template-123")
@@ -446,7 +549,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate_NotFound(t *testing.T) {
 
 func TestTemplateAPIHandler_HandleApplyTemplate_Error(t *testing.T) {
 	mock := &mockTemplateService{
-		applyTemplateFunc: func(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
+		applyTemplateFunc: func(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error) {
 			return nil, errors.New("some other error")
 		},
 	}
@@ -455,6 +558,7 @@ func TestTemplateAPIHandler_HandleApplyTemplate_Error(t *testing.T) {
 	body := `{"variables": {}, "policy_name": "Test"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/templates/template-123/apply", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.HandleApplyTemplate(w, req, "template-123")
@@ -540,6 +644,7 @@ func TestTemplateAPIHandler_HandleGetUsageStats(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/templates/stats", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.HandleGetUsageStats(w, req)
@@ -601,6 +706,7 @@ func TestTemplateAPIHandler_HandleGetUsageStats_Error(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/templates/stats", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.HandleGetUsageStats(w, req)

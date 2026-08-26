@@ -357,7 +357,7 @@ func TestPolicyService_CreatePolicy_RejectSystemTier(t *testing.T) {
 		Enabled:  true,
 	}
 
-	_, err = service.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+	_, err = service.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error for system tier creation")
 	}
@@ -404,7 +404,7 @@ func TestPolicyService_CreatePolicy_OrganizationTierRequiresEvaluationOrHigher(t
 		Enabled:  true,
 	}
 
-	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error for organization tier in Community mode")
 	}
@@ -466,7 +466,7 @@ func TestPolicyService_CreatePolicy_CommunityRejectsRetryAwareStepFields(t *test
 				Enabled:  true,
 			}
 
-			_, err = svc.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+			_, err = svc.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 			if err == nil {
 				t.Fatalf("field %s: expected error on Community tier", field)
 			}
@@ -512,7 +512,7 @@ func TestPolicyService_CreatePolicy_CommunityAcceptsNonRetryAwareFields(t *testi
 		Enabled:  true,
 	}
 
-	_, err = svc.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+	_, err = svc.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	// Allow either success or a non-tier error (e.g. repo mock mismatch) — the
 	// key assertion is that it's NOT a FEATURE_REQUIRES_EVALUATION_LICENSE
 	// rejection, i.e. the retry-aware check did not false-positive.
@@ -552,7 +552,7 @@ func TestPolicyService_CreatePolicy_EvaluationTierOrgPolicyLimit(t *testing.T) {
 		Enabled:  true,
 	}
 
-	_, err = evalService.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+	_, err = evalService.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error when org policy limit reached for Evaluation tier")
 	}
@@ -585,7 +585,12 @@ func TestPolicyService_CreatePolicy_EvaluationTierTenantPolicyLimit(t *testing.T
 	// #3039: CountByTenant now runs org-scoped (BEGIN + set_config + COUNT +
 	// COMMIT) so RLS admits the tenant's rows under app_role.
 	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+	// Decision 5 (#3490) R3 round 2: the GUC is the ORG, not the tenant.
+	// CreatePolicy writes org_id from the authenticated organisation and sets
+	// app.current_org_id from the same value; a count taken under the tenant
+	// would read through RLS as a different org and undercount the limit it is
+	// enforcing. This expectation is the pin: it fails if the two diverge again.
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("org-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(license.EvaluationLimits.TenantPolicies))
@@ -606,7 +611,7 @@ func TestPolicyService_CreatePolicy_EvaluationTierTenantPolicyLimit(t *testing.T
 		Enabled:  true,
 	}
 
-	_, err = evalService.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+	_, err = evalService.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error when policy limit reached for Evaluation tier")
 	}
@@ -638,7 +643,12 @@ func TestPolicyService_CreatePolicy_TenantTierPolicyLimit(t *testing.T) {
 	// Mock count returning at limit. #3039: CountByTenant now runs
 	// org-scoped (BEGIN + set_config + COUNT + COMMIT).
 	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+	// Decision 5 (#3490) R3 round 2: the GUC is the ORG, not the tenant.
+	// CreatePolicy writes org_id from the authenticated organisation and sets
+	// app.current_org_id from the same value; a count taken under the tenant
+	// would read through RLS as a different org and undercount the limit it is
+	// enforcing. This expectation is the pin: it fails if the two diverge again.
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("org-1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT COUNT").
 		WithArgs("tenant-1").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(license.CommunityLimits.TenantPolicies))
@@ -659,7 +669,7 @@ func TestPolicyService_CreatePolicy_TenantTierPolicyLimit(t *testing.T) {
 		Enabled:  true,
 	}
 
-	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", req, "user-1")
+	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error when policy limit reached")
 	}
@@ -695,7 +705,7 @@ func TestPolicyRepository_CountByTenant(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
 	mock.ExpectCommit()
 
-	count, err := repo.CountByTenant(context.Background(), "tenant-1")
+	count, err := repo.CountByTenant(context.Background(), "tenant-1", "tenant-1")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -729,7 +739,7 @@ func TestPolicyService_UpdatePolicy_CommunityRejectsRetryAwareStepFields(t *test
 		},
 	}
 
-	_, err = svc.UpdatePolicy(context.Background(), "tenant-1", "existing-policy", req, "user-1")
+	_, err = svc.UpdatePolicy(context.Background(), "tenant-1", "tenant-1", "existing-policy", req, "user-1")
 	if err == nil {
 		t.Fatal("expected retry-aware update to be rejected on Community tier")
 	}
@@ -778,7 +788,7 @@ func TestPolicyService_ImportPolicies_CommunityRejectsRetryAwareStepFields(t *te
 		OverwriteMode: "skip",
 	}
 
-	_, err = svc.ImportPolicies(context.Background(), "tenant-1", req, "user-1")
+	_, err = svc.ImportPolicies(context.Background(), "tenant-1", "tenant-1", req, "user-1")
 	if err == nil {
 		t.Fatal("expected retry-aware import to be rejected on Community tier")
 	}
@@ -840,7 +850,7 @@ func TestPolicyService_UpdatePolicy_RejectSystemTier(t *testing.T) {
 		Name: &name,
 	}
 
-	_, err = service.UpdatePolicy(context.Background(), "tenant-1", "system-policy-1", req, "user-1")
+	_, err = service.UpdatePolicy(context.Background(), "tenant-1", "tenant-1", "system-policy-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error for system tier update")
 	}
@@ -886,7 +896,7 @@ func TestPolicyService_DeletePolicy_RejectSystemTier(t *testing.T) {
 		))
 	mock.ExpectCommit()
 
-	err = service.DeletePolicy(context.Background(), "tenant-1", "system-policy-1", "user-1")
+	err = service.DeletePolicy(context.Background(), "tenant-1", "tenant-1", "system-policy-1", "user-1")
 	if err == nil {
 		t.Fatal("Expected error for system tier delete")
 	}

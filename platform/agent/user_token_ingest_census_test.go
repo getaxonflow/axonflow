@@ -71,6 +71,15 @@ var xUserTokenMentionOnlyAllowlist = map[string]string{
 	// no-longer-true allowance.
 	"platform/shared/identity/identity_required.go": "#3062/#3077 actionable refusal bodies — names the header as a remedy; no read, no ingest",
 	"platform/agent/identity_trust.go":              "#3077 doc comment on why the MCP refusal offers a token only for enterprise sessions; no read, no ingest",
+	// #3456: the shared human-actor segment gate's header documents, for every
+	// plane that calls it, WHICH envelope carries the per-user token on that
+	// plane — MCP REST and /decide both read it from the JSON BODY, and
+	// neither reads the header. Naming the header is the point of the note:
+	// #2941's promotion trigger is "any single endpoint starts accepting both
+	// spellings", so the reason a new caller must NOT reach for it belongs
+	// next to the contract a new caller reads. Prose only — the census's
+	// read-marker assertion below is what keeps that true.
+	"platform/agent/human_actor_segment_gate.go": "#3456 gate doc — records that this plane's token rides the body envelope, never the header; no read, no ingest",
 }
 
 // userTokenBodyFieldAllowlist is the exact set of production files whose

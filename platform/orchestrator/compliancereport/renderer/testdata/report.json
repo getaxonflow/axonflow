@@ -11,7 +11,7 @@
     "period_end": "2026-06-30T23:59:59Z",
     "generated_at": "2026-07-01T09:30:00Z",
     "report_state": "populated",
-    "retention_note": "OJK / UU PDP: records retained 5 years.",
+    "retention_note": "OJK / UU PDP require these records to be retained 5 years. This line states the REQUIREMENT, not this deployment's configured period.",
     "record_count": 3,
     "sections": [
       {

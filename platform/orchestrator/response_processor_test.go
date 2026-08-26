@@ -1579,3 +1579,31 @@ func TestProcessResponse_AdminWithViewFullPIISeesRawPII(t *testing.T) {
 		t.Error("an admin explicitly granted view_full_pii must still see raw PII")
 	}
 }
+
+// TestContains pins the package-level contains helper (relocated here from
+// dynamic_policy_engine_test.go, #3319 — the retired in-memory
+// DynamicPolicyEngine was deleted, but this helper's real callers are all in
+// this file: deepScanForPII, isAllowed, redactString).
+func TestContains(t *testing.T) {
+	tests := []struct {
+		name     string
+		slice    interface{}
+		item     interface{}
+		expected bool
+	}{
+		{"String slice - contains", []string{"apple", "banana", "cherry"}, "banana", true},
+		{"String slice - not contains", []string{"apple", "banana", "cherry"}, "grape", false},
+		{"Interface slice - contains", []interface{}{"a", "b", "c"}, "b", true},
+		{"Interface slice - not contains", []interface{}{"a", "b", "c"}, "d", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := contains(tt.slice, tt.item)
+			if result != tt.expected {
+				t.Errorf("contains(%v, %v) = %v, expected %v",
+					tt.slice, tt.item, result, tt.expected)
+			}
+		})
+	}
+}

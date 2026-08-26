@@ -256,3 +256,135 @@ in API POST /api/v1/rbi/audit-exports/{export_id}/process added the new required
 # (POST /api/v1/compliance/reports). Scoped to this one operation so any other
 # success-status removal still trips the gate.
 in API GET /api/v1/sebi/audit/export/{export_id} removed the success response with the status `200`
+
+# PR axonflow-enterprise#3429 (#3424) - avg_latency_ms becomes nullable.
+# This is a deliberate, consumer-visible contract change, not a doc
+# correction, and it is recorded here rather than avoided because the
+# alternative is worse: the field was a non-nullable number produced by
+# COALESCE(AVG(...), 0), so "no row in this range carried a measurement"
+# and "the measured average was zero" were the same value on the wire.
+# The portal rendered that as a confident "Avg Latency: 0ms" on a stack
+# that had just enforced real governed traffic. A number that cannot
+# express "unknown" cannot be corrected without becoming nullable.
+# Impact is bounded and checked: the ONLY consumer of POST
+# /api/v1/audit/report in this org is the Enterprise customer portal
+# (ee/platform/customer-portal-ui getAuditReport, proxied via
+# orchestrator_proxy_allowlist.go:90), which ships in lockstep with the
+# orchestrator and is updated in this PR; no SDK, example or plugin
+# reads it. A client that cannot accept null can key on the new
+# latency_sample_count (0 exactly when the average is null) instead of
+# on the value. #3254 is the standing task for auditing SDK models
+# against these specs; the companion /api/v1/audit/summary change is
+# additive (the property was undocumented there) and raises no ERR.
+in API POST /api/v1/audit/report the response property `avg_latency_ms` became nullable for the status `200`
+
+# PR axonflow-enterprise (#3433) - session-summary avg_latency_ms becomes
+# nullable, completing the #3424 family.
+# Same deliberate, consumer-visible contract change as the #3429 entry above,
+# for the same reason: the field was a non-nullable number produced by
+# COALESCE(AVG(...), 0), so "no row in this bucket carried a measurement" and
+# "the measured average was zero" were one value on the wire. Whole planes
+# record no duration by design (HITL approvals, workflow lifecycle rows, the
+# connector-exec MCP closure #3432), so the absent case is the NORMAL one here,
+# not an edge. A number that cannot express "unknown" cannot be corrected
+# without becoming nullable.
+# Omitting the key instead (the route #3424 took for AuditLogEntry.
+# response_time_ms, which raises no ERR because the schema declares no required
+# list) was considered and rejected: #3424 itself drew the line at aggregates
+# versus rows, emitting an explicit null from /audit/summary and /audit/report
+# so a consumer of all three audit surfaces writes ONE optional-float model.
+# This is the third of those three, and #3433 asks for that parity by name.
+# Impact is bounded and checked: nothing in this org reads this endpoint's
+# latency. The portal UI does not call session-summary at all (it appears only
+# in orchestrator_proxy_allowlist.go as a permitted proxy route), no SDK,
+# example or plugin references it, and its only in-repo consumers are
+# runtime-e2e/2759_session_summary and runtime-e2e/2991_audit_read_scope_ux.
+# Of those, only 2759 reads the latency at all, and only 2759 is changed here;
+# 2991 calls the endpoint solely to check read scope and asserts nothing about
+# avg_latency_ms, so it needed no update and correctly does not appear in this
+# PR's diff. (An earlier draft of this entry said "both updated in this PR",
+# which was untrue of 2991. The bound is unchanged - this file is what a future
+# reviewer reads to re-derive a breaking change's blast radius, so the census
+# has to be checkable against the diff rather than merely reassuring.)
+# A client that cannot accept null can key on the new
+# latency_sample_count (0 exactly when the average is null) instead of on the
+# value. #3254 remains the standing SDK-model null-tolerance audit.
+in API GET /api/v1/audit/session-summary the response property `buckets/items/avg_latency_ms` became nullable for the status `200`
+in API GET /api/v1/audit/session-summary the response property `buckets/items/tools/items/avg_latency_ms` became nullable for the status `200`
+
+# PR axonflow-enterprise#3443 (#3435) - SEBI compliance_score becomes nullable.
+# Same class, and the same reasoning, as the #3429 avg_latency_ms entry above:
+# a number that cannot express "unknown" cannot be corrected without becoming
+# nullable. The score is derived from the violations the export actually read,
+# so on an export where a section could not be produced - or was produced under
+# a tenancy scope that cannot reach its rows - it has no basis, and 100.00 was
+# an affirmative regulatory claim manufactured out of a read that did not
+# happen. Measured on a live stack: the production-default portal shape
+# reported "# Status,completed" and "# Compliance score,100.00" over a
+# policy-violations section marked enabled_empty, on a database holding a real
+# high-severity blocked prompt injection.
+# Impact is bounded and checked. The ONLY consumer of POST
+# /api/v1/sebi/audit/export in this org is the Enterprise customer portal
+# (ee/platform/customer-portal-ui startSEBIAuditExport, proxied via
+# orchestrator_proxy_allowlist.go:132), which ships in lockstep with the
+# orchestrator; its SEBIAuditExportResponse type does not carry `summary` at
+# all, so it never read the field. No SDK, example or plugin reads it, and
+# that was CHECKED rather than assumed. THE COUNT IN THIS ENTRY WAS WRONG AND IS
+# CORRECTED (#3435 R7): `grep -rn compliance_score examples/ sdk/` returns THREE
+# hits, not one, and sdk/ contributes none of them. All three are unrelated to
+# this endpoint, so the conclusion stands, but a waiver that cites a number
+# anyone can falsify in one command discredits itself:
+#   examples/support-demo/backend/main.go:135      the demo's OWN DashboardStats
+#                                                  struct, served by its own backend
+#   examples/support-demo/frontend/src/App.js:757  that same demo's frontend
+#                                                  rendering that same struct
+#   examples/indonesia-compliance/http/ojk-audit-export.sh:120
+#                                                  reads compliance_score from
+#                                                  GET /api/v1/ojk/dashboard, a
+#                                                  different endpoint's field
+# None of the three calls /api/v1/sebi. A client that cannot accept absence can
+# key on `report_state`, which is `partial` or `not_available` exactly when the
+# score is withheld. The companion additions in the same schema (report_state,
+# sections, scope_gap, section_row_total, overlapping_records, scope_key) are
+# additive and raise no ERR.
+#
+# NO ENTRY IS ADDED for the enum corrections in the same PR, and that was
+# verified rather than assumed: oasdiff classifies
+# response-property-enum-value-added as WARN and
+# response-property-enum-value-removed as INFO, the workflow is `fail-on: ERR`,
+# and ProcessIgnoredBackwardCompatibilityErrors only consults this file for
+# ERR-level changes, so a line for either would be dead text.
+#
+# RECORD THE RAW DIFF, NOT THE POST-IGNORE ONE (#3435 R8). An earlier version
+# of this note recorded "6 changes: 0 error, 6 warning, 0 info" as though it
+# were the diff. It was the output WITH THIS FILE APPLIED, so the note read as
+# "there is no error here" while sitting directly above the line that waives
+# one. A waiver that quotes a clean number is arguing against its own
+# existence.
+#
+# The invariant to re-derive, which does not drift as main moves:
+#
+#   oasdiff breaking base revision
+#     -> EXACTLY ONE error, and it is response-property-became-nullable on
+#        summary/compliance_score: the entry at the bottom of this block, and
+#        the only reason this block exists. Everything else is WARN.
+#
+#   oasdiff breaking base revision --err-ignore .github/oasdiff-err-ignore.txt
+#     -> ZERO errors. The workflow is `fail-on: ERR`, so this is the gate.
+#
+# Measured against origin/main while preparing this PR: 15 changes / 1 error /
+# 14 warning raw, and 14 changes / 0 error / 14 warning with the ignore. Treat
+# the counts as a sample and the two statements above as the contract.
+#
+# None of the warnings needs an entry: `status` gaining `partial`;
+# `compliance_status` gaining `UNKNOWN` across its five reference sites;
+# `SEBIComplianceCheck.status` and the OJK readiness check gaining `unknown`;
+# and the removal of `SEBIComplianceCheck.message` and of `org_id` from
+# SEBIRetentionResponse and SEBIExportMetadata, all three of which are
+# properties the server has never emitted, and all of which land as
+# response-optional-property-removed (WARN). Every one of these enums
+# previously listed values the server has never emitted (`pending`,
+# `processing`, `WARNING`) or omitted ones it emits routinely (`partial`,
+# `UNKNOWN`, `unknown`), so a generated strict client could not deserialise the
+# COMMON response on a stock deployment.
+in API POST /api/v1/sebi/audit/export the response property `summary/compliance_score` became nullable for the status `200`
