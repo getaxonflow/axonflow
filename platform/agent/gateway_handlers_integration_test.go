@@ -104,7 +104,13 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 			latency_ms INTEGER NOT NULL DEFAULT 0,
 			estimated_cost_usd DECIMAL(10, 6) DEFAULT 0,
 			metadata JSONB,
-			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			-- org_id mirrors migrations/core/089. This DDL is hand-written
+			-- rather than migrated, so it can silently diverge from the real
+			-- schema; the audit writers are best-effort and swallow an INSERT
+			-- failure, so a missing column here shows up only as the row-absence
+			-- assertion below rather than as an error.
+			org_id VARCHAR(255)
 		)
 	`)
 	if err != nil {
@@ -486,7 +492,13 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 			latency_ms INTEGER NOT NULL DEFAULT 0,
 			estimated_cost_usd DECIMAL(10, 6) DEFAULT 0,
 			metadata JSONB,
-			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			-- org_id mirrors migrations/core/089. This DDL is hand-written
+			-- rather than migrated, so it can silently diverge from the real
+			-- schema; the audit writers are best-effort and swallow an INSERT
+			-- failure, so a missing column here shows up only as the row-absence
+			-- assertion below rather than as an error.
+			org_id VARCHAR(255)
 		)
 	`)
 	if err != nil {
@@ -815,4 +827,3 @@ func TestLLMCostCalculation(t *testing.T) {
 		})
 	}
 }
-

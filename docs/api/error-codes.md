@@ -483,7 +483,7 @@ X-RateLimit-Reset: 1705312200
     "current_count": 20,
     "limit": 20,
     "tier": "community",
-    "upgrade_path": "evaluation"
+    "upgrade_path": "professional"
   }
 }
 ```
@@ -628,32 +628,42 @@ X-RateLimit-Reset: 1705312200
 
 ### Pending Approval Limit Exceeded
 
+**No shipped tier can produce this error.** It is documented because the code
+is still defined and the mechanism is still enforced, not because a caller can
+reach it.
+
+Every tier entitled to create approvals (Professional, Enterprise, Enterprise
+Plus) resolves to an unlimited pending-approval allowance, and every tier that
+declares a finite allowance (Community, Free, Pro, Premium, Evaluation) is
+refused by the licence-tier gate before it can create the first entry. The two
+sets do not overlap, so the boundary is unreachable in any configuration. If a
+future tier is both entitled and finitely capped, this is the error it would
+return.
+
+**What you will get instead:** a tier that is not entitled to create approvals
+is refused at creation, not at a limit. On the workflow plane the step is held
+and the response carries `approval_enqueue: "tier_disabled"` with no
+`approval_id`; on the direct queue API the request is refused with `403`.
+
 ```json
 {
   "error": {
     "code": "PENDING_APPROVAL_LIMIT_EXCEEDED",
-    "message": "Pending approval limit reached (5). Resolve existing approvals or upgrade to Evaluation tier.",
-    "current_count": 5,
-    "limit": 5,
-    "tier": "community",
-    "upgrade_path": "evaluation"
+    "message": "Pending approval limit reached (25). Resolve existing approvals or upgrade to a Professional, Enterprise or Enterprise Plus tier.",
+    "current_count": 25,
+    "limit": 25,
+    "tier": "evaluation",
+    "upgrade_path": "professional"
   }
 }
 ```
 
-**Cause:** You've reached the maximum number of concurrent pending approvals for your tier.
-
-**Tier Limits:**
-| Tier | Max Pending Approvals |
-|------|-----------------------|
-| Community | 5 |
-| Evaluation | 25 |
-| Enterprise | Unlimited |
+**Cause:** the maximum number of concurrent pending approvals for the tier has
+been reached. Unreachable today, for the reason above.
 
 **Solution:**
 - Approve or reject existing pending approvals to free up quota
-- Upgrade to Evaluation tier (free) for 25 concurrent pending approvals
-- Upgrade to Enterprise for unlimited pending approvals
+- Upgrade to Professional or above for unlimited concurrent pending approvals
 
 ---
 

@@ -132,7 +132,7 @@ func (h *PolicyAPIHandler) createPolicy(w http.ResponseWriter, r *http.Request, 
 	}
 
 	userID := h.getUserID(r)
-	policy, err := h.service.CreatePolicy(r.Context(), tenantID, &req, userID)
+	policy, err := h.service.CreatePolicy(r.Context(), tenantID, h.getOrgID(r), &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*ValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -188,7 +188,7 @@ func (h *PolicyAPIHandler) listPolicies(w http.ResponseWriter, r *http.Request, 
 		params.Enabled = &enabled
 	}
 
-	response, err := h.service.ListPolicies(r.Context(), tenantID, params)
+	response, err := h.service.ListPolicies(r.Context(), tenantID, h.getOrgID(r), params)
 	if err != nil {
 		log.Printf("[PolicyAPI] ListPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list policies")
@@ -200,7 +200,7 @@ func (h *PolicyAPIHandler) listPolicies(w http.ResponseWriter, r *http.Request, 
 
 // getPolicy handles GET /api/v1/policies/{id}
 func (h *PolicyAPIHandler) getPolicy(w http.ResponseWriter, r *http.Request, tenantID, policyID string) {
-	policy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	policy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil {
 		log.Printf("[PolicyAPI] GetPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get policy")
@@ -227,7 +227,7 @@ func (h *PolicyAPIHandler) updatePolicy(w http.ResponseWriter, r *http.Request, 
 	}
 
 	userID := h.getUserID(r)
-	policy, err := h.service.UpdatePolicy(r.Context(), tenantID, policyID, &req, userID)
+	policy, err := h.service.UpdatePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*ValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -256,7 +256,7 @@ func (h *PolicyAPIHandler) deletePolicy(w http.ResponseWriter, r *http.Request, 
 	userID := h.getUserID(r)
 
 	// Check if policy exists first
-	policy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	policy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil {
 		log.Printf("[PolicyAPI] DeletePolicy check error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete policy")
@@ -267,7 +267,7 @@ func (h *PolicyAPIHandler) deletePolicy(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if err := h.service.DeletePolicy(r.Context(), tenantID, policyID, userID); err != nil {
+	if err := h.service.DeletePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, userID); err != nil {
 		if tierErr, ok := err.(*TierValidationError); ok {
 			log.Printf("[PolicyAPI] DeletePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
 			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
@@ -297,7 +297,7 @@ func (h *PolicyAPIHandler) testPolicy(w http.ResponseWriter, r *http.Request, te
 		return
 	}
 
-	response, err := h.service.TestPolicy(r.Context(), tenantID, policyID, &req)
+	response, err := h.service.TestPolicy(r.Context(), tenantID, h.getOrgID(r), policyID, &req)
 	if err != nil {
 		if err.Error() == "policy not found" {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Policy not found")
@@ -344,6 +344,20 @@ func (h *PolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Decision 5 (#3490): a bulk import WRITES policies, and org_id is what
+	// selects them. Refused rather than defaulted to the tenant, for the same
+	// reason single-policy creation refuses: a default would stamp every
+	// imported row with the Basic-auth username, and on a deployment whose
+	// licence org differs from that string the import would report success
+	// while enforcing on nobody. This prefix is agent-proxied, so the gateway
+	// Sets X-Org-ID from the validated licence on the real path.
+	orgID := h.getOrgID(r)
+	if orgID == "" {
+		h.writeError(w, http.StatusUnauthorized, "ORG_REQUIRED",
+			"Missing organisation: imported policies are selected by their organisation. Send X-Org-ID.")
+		return
+	}
+
 	// Limit request body size for imports (larger than single policy)
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBodySize)
 
@@ -364,7 +378,7 @@ func (h *PolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Request) 
 	}
 
 	userID := h.getUserID(r)
-	response, err := h.service.ImportPolicies(r.Context(), tenantID, &req, userID)
+	response, err := h.service.ImportPolicies(r.Context(), tenantID, orgID, &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*ValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -396,7 +410,7 @@ func (h *PolicyAPIHandler) handleExport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	response, err := h.service.ExportPolicies(r.Context(), tenantID)
+	response, err := h.service.ExportPolicies(r.Context(), tenantID, h.getOrgID(r))
 	if err != nil {
 		log.Printf("[PolicyAPI] ExportPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to export policies")
@@ -421,6 +435,28 @@ func (h *PolicyAPIHandler) getTenantID(r *http.Request) string {
 		return tenantID
 	}
 	return ""
+}
+
+// getOrgID extracts the ORGANISATION from the gateway-stamped X-Org-ID header.
+//
+// Decision 5 (#3490) R3 BLOCKER: this path had no org at all. Every write here
+// stamped dynamic_policies.org_id from the TENANT (see PolicyRepository.Create),
+// which is the Basic-auth username. Once org_id became the selection key that
+// had two consequences, both bad and both silent:
+//
+//   - in an organisation whose licence org differs from the tenant string - the
+//     multi-tenant case migration 165 step 3 exists for - a policy created
+//     through this API is stamped with an org no caller authenticates as, so it
+//     enforces on NOBODY while still appearing in the CRUD listing;
+//   - the org GUC was set from the same forged value, so the RLS WITH CHECK
+//     passed by construction and a caller could stamp a row with another
+//     organisation's id and have it applied to that organisation.
+//
+// The agent gateway Sets X-Org-ID from the validated licence on every proxied
+// request (platform/agent/proxy.go), and all four policy-CRUD prefixes are
+// proxied, so the header is present on the real path.
+func (h *PolicyAPIHandler) getOrgID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Org-ID"))
 }
 
 // getUserID extracts user ID from request

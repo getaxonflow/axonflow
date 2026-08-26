@@ -510,9 +510,15 @@ func TestCreateHITLApproval_NilApprovalService(t *testing.T) {
 		AppliedPolicies: []string{"test-policy"},
 	}
 
-	id := adapter.createHITLApproval(context.Background(), stepCtx, result)
+	id, outcome, err := adapter.createHITLApproval(context.Background(), stepCtx, result)
 	if id != uuid.Nil {
 		t.Errorf("Expected uuid.Nil when hitlApproval is nil, got %s", id)
+	}
+	// #3408 sibling: "no HITL adapter wired" is NOT an enqueue failure. It
+	// must classify as empty, not as "error" - a deployment that never wired
+	// HITL would otherwise light up the failure counter on every gate.
+	if outcome != "" || err != nil {
+		t.Errorf("Expected no classification and no error with a nil creator, got outcome=%q err=%v", outcome, err)
 	}
 }
 
@@ -540,7 +546,10 @@ func TestCreateHITLApproval_NoPolicies(t *testing.T) {
 		AppliedPolicies: []string{}, // No policies
 	}
 
-	id := adapter.createHITLApproval(context.Background(), stepCtx, result)
+	id, _, err := adapter.createHITLApproval(context.Background(), stepCtx, result)
+	if err != nil {
+		t.Fatalf("createHITLApproval returned error: %v", err)
+	}
 	if id != approvalID {
 		t.Errorf("Expected approvalID=%s, got %s", approvalID, id)
 	}

@@ -354,7 +354,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 			OrgID:    user.OrgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
 			// validated caller org (org_id may differ from tenant_id).
-			OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID),
+			OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID),
 			ConnectorName:   "openai_compat",
 			UserID:          fmt.Sprintf("%d", user.ID),
 			Categories:      openaiCompatPolicyCategories,
@@ -363,8 +363,17 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 			// #3266: the OpenAI-compat plane has no resolved
 			// governance-segment set on hand yet — nil excludes
 			// segment-scoped static_policies rows (fail-closed, leak
-			// closed). Real segment enforcement on this plane is tracked
-			// in #3312 (human-actor enforce-now; machine #3279-gated).
+			// closed). This plane has NO verified human-actor principal to
+			// resolve segments from at all: handleOpenAICompat always calls
+			// ResolveUser with an empty token (this endpoint has no
+			// user_token field — it mirrors OpenAI's wire shape), so an
+			// Enterprise caller's identity is a synthetic
+			// per-Basic-auth-credential one (email = "<basic-auth
+			// username>@axonflow.local"), not a validated end-user — #3312
+			// (the human-actor enforcement slice) has nothing to propagate
+			// on this surface. Real segment enforcement here is #3410
+			// (machine-actor), itself blocked on #3279 (no verified
+			// identity to resolve segment membership from).
 			Segments: nil,
 		})
 		policyResult = convertSharedResultToStatic(requestResult)
@@ -528,6 +537,18 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 	if evaluatedPolicies == nil {
 		evaluatedPolicies = []string{}
 	}
+	// #3424: the trailing nil is the audit input, and it is load-bearing.
+	// recordDecideDecision writes an audit_logs row only when that argument is
+	// non-nil, so this call emits the OTel span and the decision-duration
+	// histogram sample WITHOUT an audit row -- which is what keeps the PROVIDER
+	// round trip (providerLatencyMs, recorded below into llm_call_audits) off a
+	// plane=decision row whose response_time_ms is enforcement duration. The
+	// two quantities differ by orders of magnitude; conflating them is the
+	// mixed-semantics defect sharedaudit.LatencyEnforcementPredicate exists to
+	// keep out of the portal's Avg Latency tile. On this surface only a DENY
+	// carries a decisionAuditInput (see the VerdictDeny call above), so an
+	// allowed request writes no audit_logs row here at all and the provider
+	// round trip stays in llm_call_audits, where it is the only quantity.
 	traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, evaluatedPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
 	w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
@@ -559,6 +580,23 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 // audit queue because the OpenAI-compat endpoint has no gateway_contexts
 // row (context_id has a FK to gateway_contexts — passing a non-NULL
 // context_id that doesn't exist in that table violates the constraint).
+//
+// #3435 R5: this is the THIRD writer of llm_call_audits, not one of the "both
+// writers" an earlier census named (the other two are gateway_handlers.go's
+// storeLLMCallAudit and audit_queue.go's AuditTypeLLMCallAudit). It already
+// stamped org_id, but bound the raw string, so a blank organisation landed as
+// the empty string rather than SQL NULL.
+//
+// That stored "this row has no organisation" two different ways in one column,
+// depending only on which of the three writers produced the row. Readers then
+// have to know all of them: the SEBI export's blank-org arm COALESCEs the
+// column and btrims it before comparing to the empty string, precisely because
+// it cannot assume which convention it will meet, and a reader written the
+// obvious way, against
+// `org_id IS NULL`, silently misses every row this handler wrote. The other
+// two writers already normalise through nullIfBlankOrg, so this one goes
+// through the same helper and the column now has one representation of the
+// absent case.
 func recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, provider, model string, promptTokens, completionTokens, totalTokens int, estimatedCost float64, latencyMs int64, verdict, blockingPolicy string) {
 	if authDB == nil {
 		return
@@ -582,7 +620,7 @@ func recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, provider, mo
 		) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, decisionID, clientID, provider, model,
 		promptTokens, completionTokens, totalTokens,
-		latencyMs, estimatedCost, metadataJSON, orgID)
+		latencyMs, estimatedCost, metadataJSON, nullIfBlankOrg(orgID))
 
 	if err != nil {
 		log.Printf("⚠️ [OpenAI-Compat] Audit recording failed (non-fatal): %v", err)

@@ -110,11 +110,11 @@ const (
 //   - ClientID: Client application identifier
 //   - Details: Additional context (policy name, query, etc.)
 type AuditEntry struct {
-	Type      string                 `json:"type"`
-	Timestamp time.Time              `json:"timestamp"`
-	Severity  string                 `json:"severity"`
-	UserID    string                 `json:"user_id"`
-	ClientID  string                 `json:"client_id"`
+	Type      string    `json:"type"`
+	Timestamp time.Time `json:"timestamp"`
+	Severity  string    `json:"severity"`
+	UserID    string    `json:"user_id"`
+	ClientID  string    `json:"client_id"`
 	// OrgID is the tenant scope key (v9 Phase 8 #2384 PR-C1). Required by
 	// the RLS-aware audit_queue persistence path for policy_metrics,
 	// policy_violations, agent_audit_logs and similar tables — see
@@ -130,25 +130,25 @@ type AuditEntry struct {
 
 // Audit entry types
 const (
-	AuditTypeViolation       = "violation"
-	AuditTypeMetric          = "metric"
-	AuditTypeAudit           = "audit"
-	AuditTypeGatewayContext  = "gateway_context"
-	AuditTypeLLMCallAudit    = "llm_call_audit"
-	AuditTypeMCPQueryAudit   = "mcp_query_audit"
+	AuditTypeViolation      = "violation"
+	AuditTypeMetric         = "metric"
+	AuditTypeAudit          = "audit"
+	AuditTypeGatewayContext = "gateway_context"
+	AuditTypeLLMCallAudit   = "llm_call_audit"
+	AuditTypeMCPQueryAudit  = "mcp_query_audit"
 )
 
 // MCPQueryAuditEntry represents an audit entry for MCP connector queries.
 // This captures policy evaluation results at all three phases:
 // REQUEST (pre-execution), RESPONSE (post-execution), and EXFILTRATION checks.
 type MCPQueryAuditEntry struct {
-	AuditID       string   `json:"audit_id"`
-	TenantID      string   `json:"tenant_id"`
-	OrgID         string   `json:"org_id"`
-	ClientID      string   `json:"client_id"`
-	UserID        string   `json:"user_id,omitempty"`
-	ConnectorName string   `json:"connector_name"`
-	Operation     string   `json:"operation"` // query, execute, list_resources, etc.
+	AuditID        string `json:"audit_id"`
+	TenantID       string `json:"tenant_id"`
+	OrgID          string `json:"org_id"`
+	ClientID       string `json:"client_id"`
+	UserID         string `json:"user_id,omitempty"`
+	ConnectorName  string `json:"connector_name"`
+	Operation      string `json:"operation"` // query, execute, list_resources, etc.
 	StatementHash  string `json:"statement_hash,omitempty"`
 	ParametersHash string `json:"parameters_hash,omitempty"`
 	ParameterCount int    `json:"parameter_count"`
@@ -167,15 +167,15 @@ type MCPQueryAuditEntry struct {
 	PolicyVersions map[string]int `json:"policy_versions,omitempty"`
 
 	// Request phase (pre-execution policy evaluation)
-	RequestBlocked          bool     `json:"request_blocked"`
-	RequestBlockReason      string   `json:"request_block_reason,omitempty"`
-	RequestPoliciesEvaluated int     `json:"request_policies_evaluated"`
-	RequestMatchedPolicies  []string `json:"request_matched_policies,omitempty"`
+	RequestBlocked           bool     `json:"request_blocked"`
+	RequestBlockReason       string   `json:"request_block_reason,omitempty"`
+	RequestPoliciesEvaluated int      `json:"request_policies_evaluated"`
+	RequestMatchedPolicies   []string `json:"request_matched_policies,omitempty"`
 
 	// Response phase (post-execution policy evaluation)
-	ResponseRedacted       bool     `json:"response_redacted"`
-	ResponseRedactionsCount int     `json:"response_redactions_count"`
-	ResponseRedactedFields []string `json:"response_redacted_fields,omitempty"`
+	ResponseRedacted        bool     `json:"response_redacted"`
+	ResponseRedactionsCount int      `json:"response_redactions_count"`
+	ResponseRedactedFields  []string `json:"response_redacted_fields,omitempty"`
 
 	// Exfiltration detection
 	ExfilRowsReturned int    `json:"exfil_rows_returned,omitempty"`
@@ -619,15 +619,37 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 			entry.Details["expires_at"])
 
 	case AuditTypeLLMCallAudit:
-		// Gateway Mode LLM call audit storage
+		// Gateway Mode LLM call audit storage.
+		//
+		// #3435: org_id is stamped from the authenticated identity. Migration
+		// 089 added the column and 094 backfilled the rows that existed then,
+		// but this writer and gateway_handlers.go's storeLLMCallAudit both kept
+		// omitting it, so every Gateway Mode row written since landed with a
+		// NULL organisation and an org-scoped regulator export could not reach
+		// it. Written as SQL NULL when blank rather than as '': a
+		// blank-but-present tenancy value plants a row no predicate can claim.
+		//
+		// #3435 R5 CORRECTION: llm_call_audits has THREE writers, not the two an
+		// earlier version of this comment implied. The third is
+		// openai_compat_handler.go's recordOpenAICompatAudit, which already
+		// stamped org_id but bound it raw; it now shares nullIfBlankOrg so all
+		// three agree on what an absent organisation looks like on disk.
+		//
+		// No withOrgScope wrap: migration 101 explicitly left llm_call_audits
+		// out of the FORCE ROW LEVEL SECURITY set, so there is no WITH CHECK to
+		// satisfy and adding the column to the INSERT is purely additive.
 		insertQuery := `
 			INSERT INTO llm_call_audits (
 				audit_id, context_id, client_id, provider, model,
 				prompt_tokens, completion_tokens, total_tokens,
-				latency_ms, estimated_cost_usd, metadata
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				latency_ms, estimated_cost_usd, metadata, org_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		`
 		metadataJSON, _ := json.Marshal(entry.Details["metadata"])
+		llmOrgID := entry.OrgID
+		if llmOrgID == "" {
+			llmOrgID, _ = entry.Details["org_id"].(string)
+		}
 		return execWithRetry(aq.db, insertQuery,
 			entry.Details["audit_id"],
 			entry.Details["context_id"],
@@ -639,7 +661,8 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 			entry.Details["total_tokens"],
 			entry.Details["latency_ms"],
 			entry.Details["estimated_cost_usd"],
-			metadataJSON)
+			metadataJSON,
+			nullIfBlankOrg(llmOrgID))
 
 	case AuditTypeMCPQueryAudit:
 		// MCP connector query audit storage.

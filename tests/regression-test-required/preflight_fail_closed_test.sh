@@ -349,6 +349,58 @@ mutate_and_expect_red "unknown-mode-fails-open" \
   '        if [[ "$mode_norm" == "$m" ]]; then ADMIN_AUTH_REQUIRED=0; return 0; fi' \
   '        if [[ "$mode_norm" == *"$m"* ]]; then ADMIN_AUTH_REQUIRED=0; return 0; fi'
 
+# pg_timeout_to_ms + c17_consider decide check 17's verdict, and check 17 is the
+# only FAIL-capable statement this script makes about migration runtime. Every
+# way the arithmetic could quietly stop discriminating is a way an operator is
+# told their upgrade will complete when it will boot-loop instead, so each gets
+# a mutant.
+#
+# A bare number is MILLISECONDS. Reading it as seconds inflates every configured
+# timeout by 1000x and makes the FAIL unreachable.
+mutate_and_expect_red "bare-timeout-read-as-seconds" \
+  '        *)    num="$v";       unit="ms"  ;;' \
+  '        *)    num="$v";       unit="s"   ;;'
+# "500ms" must not be read as a number ending in "s". Moving the ms arm below
+# the s arm loses three orders of magnitude on every SHOW-normalised value.
+mutate_and_expect_red "ms-swallowed-by-the-s-arm" \
+  '        *ms)  num="${v%ms}";  unit="ms"  ;;' \
+  '        *ms)  num="${v%s}";   unit="s"   ;;'
+# A sub-millisecond timeout is the TIGHTEST a deployment can carry. Truncating
+# it to 0 reports it as "no timeout configured", which is this check's one
+# fail-open direction.
+mutate_and_expect_red "sub-millisecond-truncates-to-disabled" \
+  '        us)  printf '"'"'%s'"'"' "$(( (10#$num + 999) / 1000 ))" ;;' \
+  '        us)  printf '"'"'%s'"'"' "$(( 10#$num / 1000 ))" ;;'
+# Zero means DISABLED. Folding it in as a candidate makes it the tightest value
+# on every deployment that has correctly turned the timeout off, so check 17
+# would FAIL all of them.
+mutate_and_expect_red "zero-becomes-the-tightest-timeout" \
+  '    [[ "$ms" == "0" ]] && return 0' \
+  '    [[ "$ms" == "-1" ]] && return 0'
+# An unparseable value must be reported. Dropping the flag silently turns "we
+# could not read one of the places a timeout is set" into "none is set".
+mutate_and_expect_red "unparseable-timeout-not-flagged" \
+  '    C17_SOURCES_UNREADABLE=1  # an unparsed value is not "none configured"' \
+  '    C17_SOURCES_UNREADABLE=0  # an unparsed value is not "none configured"'
+# The parse guard, inverted: a value that parsed FINE then takes the "could not
+# parse" branch, so every real timeout is discarded and the check reports "none
+# configured" on a deployment that has one.
+mutate_and_expect_red "parse-guard-inverted" \
+  '    if ! ms="$(pg_timeout_to_ms "$raw")"; then' \
+  '    if ms="$(pg_timeout_to_ms "$raw")"; then'
+# The label/value split must survive a label containing a space, which
+# pg_db_role_setting really produces. Splitting on whitespace instead of the
+# semicolon reintroduces the measured defect.
+mutate_and_expect_red "entry-split-on-whitespace" \
+  '    IFS='"'"';'"'"'' \
+  '    IFS='"'"' '"'"''
+# component_names must leave nothing behind for an unknown component, or its
+# caller silently gets the PREVIOUS component's container names: a confident
+# answer about the wrong container.
+mutate_and_expect_red "unknown-component-keeps-stale-names" \
+  '    COMP_UPPER=""; COMP_DEFAULT_SVC=""; COMP_ECS_NAMES=""' \
+  '    :'
+
 echo
 if [ "${fail}" -ne 0 ]; then
   echo "preflight_fail_closed_test.sh: FAILED"

@@ -505,8 +505,10 @@ func mcpToolRequestApproval(ctx context.Context, _ *sql.DB, session *mcpSession,
 			// error so the LLM caller can explain it to the user. The
 			// SaaS Plugin Pro subscription doesn't unlock this — the
 			// running plugin platform itself is on Community tier and
-			// needs at least an Evaluation license.
-			return nil, fmt.Errorf("HITL approvals are disabled on this AxonFlow deployment (Community tier). The AxonFlow agent needs an Evaluation or higher license to enable the approval queue. See https://getaxonflow.com/plugins/evaluation-license")
+			// needs at least a Professional license (HITL is Enterprise-only
+			// since the 2026-08-26 operator decision; Evaluation was entitled
+			// until then).
+			return nil, fmt.Errorf("HITL approvals are disabled on this AxonFlow deployment. The AxonFlow agent needs a Professional, Enterprise or Enterprise Plus license to enable the approval queue. See https://getaxonflow.com/pricing")
 		case errors.Is(err, hitl.ErrPendingApprovalLimitExceeded):
 			// Per-tenant pending-cap from the license tier limits.
 			// Distinct from the 1/7d SaaS Plugin Free gate: that's a

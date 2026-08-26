@@ -170,10 +170,82 @@ jobs:
       - name: Lint policy-table choke point (epic #3293 / #3296)
         run: bash scripts/lint-policy-table-choke-point.sh
 
+  # =============================================================================
+  # Second org-column guard (#3334)
+  # =============================================================================
+  #
+  # DELIBERATELY A SEPARATE JOB, not another step in golangci-lint above.
+  #
+  # golangci-lint runs on a pull_request only when detect-changes reports
+  # `go-code == 'true'`. This guard watches migrations/**/*.sql, and a PR that
+  # reintroduces the column adds ONE .sql file and touches no Go at all - so as
+  # a step up there it would be SKIPPED on precisely the pull request it exists
+  # to catch, and every board would still be green. A guard that does not run is
+  # a guard in name only.
+  #
+  # It carries no `if:` and no path filter for the same reason: the check is a
+  # sub-second bash+awk scan, so gating it on paths buys nothing and can only
+  # introduce a way for it not to run.
+  #
+  # Coverage: the workflow's pull_request trigger has no path filter, so this
+  # runs on every PR to main/develop, and merge_group re-runs it against the
+  # merged code. The repository ruleset ("Main Branch Protection") enforces
+  # pull_request + merge_queue, so no change reaches main by any other route;
+  # that is why lint.yml's push-event path filter is left alone rather than
+  # widened to migrations/**, which would drag a full four-module golangci run
+  # onto every migration-only push for no added coverage.
+  org-column-guard:
+    name: Lint - no second org column on the policy tables
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Runs first, and is the reason this job is trustworthy. It asserts BOTH
+      # directions over fixtures the script builds itself: that every
+      # reintroduction vector is rejected, and that every legitimate survivor
+      # (customers.organization_id, policy_evaluations.organization_id, a
+      # retype, a DROP, a comment, a *_down.sql) is accepted. Without it a
+      # green tick below is equally consistent with "nothing was reintroduced"
+      # and "the scanner silently matches nothing".
+      - name: Self-test the guard (both directions)
+        run: bash scripts/lint-no-second-org-column.sh --self-test
+
+      - name: Lint no second org column (#3334)
+        run: bash scripts/lint-no-second-org-column.sh
+
+  # #3408 sibling: the HITL approval-queue single-writer invariant.
+  #
+  # Its own job with NO `if:`, deliberately. The obvious place - a step inside
+  # golangci-lint - is gated on `needs.detect-changes.outputs.go-code == 'true'`,
+  # and this guard's scan deliberately covers .sql / .sh / .ts / .py as well as
+  # Go. A PR that adds a direct INSERT in a migration seed carries no Go change
+  # and would have skipped the one job that could catch it.
+  hitl-queue-choke-point:
+    name: Lint - one writer for the HITL approval queue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Runs first, and is the reason a green tick below means anything. It
+      # asserts BOTH directions over fixtures it builds itself, INCLUDING that
+      # the real repository scan actually finds the choke point rather than
+      # matching nothing at all.
+      - name: Self-test the guard (both directions)
+        run: bash scripts/lint-hitl-queue-choke-point.sh --self-test
+
+      - name: Lint one writer for hitl_approval_queue (#3408)
+        run: bash scripts/lint-hitl-queue-choke-point.sh
+
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-latest
-    needs: [detect-changes, golangci-lint]
+    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point]
     if: always()
 
     steps:
@@ -184,13 +256,27 @@ jobs:
           echo "Results:"
           echo "  Detect Changes: ${{ needs.detect-changes.result }}"
           echo "  golangci-lint: ${{ needs.golangci-lint.result }}"
+          echo "  org-column-guard: ${{ needs.org-column-guard.result }}"
+          echo "  hitl-queue-choke-point: ${{ needs.hitl-queue-choke-point.result }}"
 
       - name: Fail if lint failed
         # Accept 'success' or 'skipped' (skipped = no Go code changes)
         # detect-changes is 'skipped' for push/workflow_dispatch events
+        #
+        # org-column-guard and hitl-queue-choke-point are held to 'success'
+        # ONLY - no 'skipped' tolerance.
+        # 'Lint Summary' is the REQUIRED status check (repository ruleset
+        # "Main Branch Protection"); the individual jobs are not. So a job
+        # missing from this condition can be red while the required check is
+        # green and the merge queue merges anyway - the exact failure #3002 was
+        # filed about, and documented at the top of migrations-gate.yml. The
+        # guard carries no `if:`, so anything other than 'success' means it did
+        # not run, which is itself the thing worth failing on.
         if: |
           needs.detect-changes.result == 'failure' ||
-          (needs.golangci-lint.result != 'success' && needs.golangci-lint.result != 'skipped')
+          (needs.golangci-lint.result != 'success' && needs.golangci-lint.result != 'skipped') ||
+          needs.org-column-guard.result != 'success' ||
+          needs.hitl-queue-choke-point.result != 'success'
         run: |
           echo "❌ Linting failed - please fix issues before merging"
           exit 1

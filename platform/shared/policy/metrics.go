@@ -124,7 +124,7 @@ func (m *MetricsCollector) RecordEvaluation(
 			Type:              phase,
 			Timestamp:         time.Now(),
 			TenantID:          opts.TenantID,
-			OrganizationID:    opts.OrganizationID,
+			OrganizationID:    opts.OrgScope,
 			ConnectorName:     opts.ConnectorName,
 			UserID:            opts.UserID,
 			PoliciesEvaluated: len(matches),

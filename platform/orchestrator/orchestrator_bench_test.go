@@ -4,7 +4,6 @@ package orchestrator
 import (
 	"context"
 	"regexp"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -33,11 +32,17 @@ func BenchmarkNewResponseProcessor(b *testing.B) {
 	}
 }
 
-// BenchmarkNewDynamicPolicyEngine benchmarks policy engine creation
-func BenchmarkNewDynamicPolicyEngine(b *testing.B) {
+// BenchmarkNewDatabaseDynamicPolicyEngine benchmarks policy engine creation.
+// #3319: this benchmark used to construct the retired in-memory engine;
+// that engine no longer exists, so this now benchmarks the one surviving
+// engine's constructor instead.
+func BenchmarkNewDatabaseDynamicPolicyEngine(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		e := NewDynamicPolicyEngine()
-		e.Close()
+		e, err := NewDatabaseDynamicPolicyEngine()
+		if err != nil {
+			b.Fatalf("NewDatabaseDynamicPolicyEngine() returned an error: %v", err)
+		}
+		_ = e.Close()
 	}
 }
 
@@ -86,43 +91,12 @@ func BenchmarkMetricsCollector_GetMetrics(b *testing.B) {
 	}
 }
 
-// BenchmarkNewPolicyCache benchmarks policy cache creation
-func BenchmarkNewPolicyCache(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		c := NewPolicyCache(5 * time.Minute)
-		c.Close()
-	}
-}
-
-// BenchmarkPolicyCache_Get benchmarks policy cache retrieval.
-//
-// #3142: these two benchmarks used to store a *DynamicPolicy — a policy
-// DEFINITION — into a cache that only ever holds evaluation VERDICTS, which
-// the old interface{}-typed API accepted silently. The concrete signature
-// rejects it at compile time.
-func BenchmarkPolicyCache_Get(b *testing.B) {
-	cache := NewPolicyCache(5 * time.Minute)
-	defer cache.Close()
-	key := verdictCacheKey{OrgID: "bench-org", TenantID: "bench-tenant", Request: "test-policy"}
-	cache.Set(key, &PolicyEvaluationResult{Allowed: true, AppliedPolicies: []string{"test"}})
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = cache.Get(key)
-	}
-}
-
-// BenchmarkPolicyCache_Set benchmarks policy cache updates
-func BenchmarkPolicyCache_Set(b *testing.B) {
-	cache := NewPolicyCache(5 * time.Minute)
-	defer cache.Close()
-	for i := 0; i < b.N; i++ {
-		cache.Set(verdictCacheKey{
-			OrgID:    "bench-org",
-			TenantID: "bench-tenant",
-			Request:  "policy-" + strconv.Itoa(i%100),
-		}, &PolicyEvaluationResult{Allowed: true})
-	}
-}
+// BenchmarkNewPolicyCache / BenchmarkPolicyCache_Get / BenchmarkPolicyCache_Set
+// were deleted here (#3319): they benchmarked PolicyCache/verdictCacheKey,
+// the retired in-memory DynamicPolicyEngine's per-request verdict cache. The
+// surviving DatabaseDynamicPolicyEngine carries no per-request verdict cache
+// (only its background-refreshed policy SET cache, e.policies) — there is no
+// equivalent to benchmark.
 
 // BenchmarkRegexCompilation benchmarks regex compilation
 func BenchmarkRegexCompilation(b *testing.B) {

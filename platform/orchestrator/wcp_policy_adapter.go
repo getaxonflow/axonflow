@@ -5,12 +5,14 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"time"
 
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
+	logutil "axonflow/platform/shared/logger"
 
 	"github.com/google/uuid"
 )
@@ -72,29 +74,85 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 		if step.ToolContext != nil {
 			toolSig = step.ToolContext.ToolName
 		}
+		// #3281: prefer the trust-gated verified email over step.UserID for the
+		// ADR-044 override lookup's userEmail parameter. UserID is attribution
+		// only and its fallback chain can hold a non-email X-User-ID, so an
+		// override keyed on a real address never matched on this plane unless
+		// the caller's UserID happened to BE that address. step.Email is a
+		// verified address by construction. Falling back to step.UserID when no
+		// email is present preserves the existing ADR-043/044 plugin-flow
+		// behaviour for callers whose UserID already holds one, so this is
+		// strictly a widening and cannot regress an override that matches today.
+		overrideEmail := step.Email
+		if overrideEmail == "" {
+			overrideEmail = step.UserID
+		}
 		_, _ = ApplyOverrideToResult(ctx, usageDB, auditLogger, result,
-			step.TenantID, step.OrgID, step.UserID, toolSig)
+			step.TenantID, step.OrgID, overrideEmail, toolSig)
 	}
 
 	// Convert PolicyEvaluationResult to StepGateEvaluation
 	evaluation := a.convertToStepGateEvaluation(result, durationMs)
 
-	// Issue #1082: If require_approval, create HITL approval request
+	// Issue #1082: If require_approval, create HITL approval request.
+	//
+	// #3408 sibling: the enqueue result is now RECORDED, not just logged. It
+	// used to be that a failed enqueue produced the identical response to a
+	// successful one minus the approval_id, so "held with a reviewer surface"
+	// and "held with nothing to approve" were indistinguishable to the client,
+	// to the audit row and to every dashboard. The step is still HELD in both
+	// cases - admitting it because the review queue is full would turn a
+	// capacity limit into a governance bypass - but which one happened is now
+	// on the wire (StepGateResponse.approval_enqueue), on the audit row
+	// (policy_details.approval_enqueue) and on
+	// axonflow_hitl_enqueue_total{plane,outcome}.
 	if evaluation.Decision == workflow_control.GateDecisionRequireApproval && a.hitlApproval != nil {
-		approvalID := a.createHITLApproval(ctx, step, result)
-		if approvalID != uuid.Nil {
+		approvalID, outcome, err := a.createHITLApproval(ctx, step, result)
+		evaluation.ApprovalEnqueue = outcome
+		if err != nil {
+			var reason string
+			evaluation.ApprovalEnqueue, reason = classifyEnqueueFailure(err)
+			// APPENDED, not assigned. Overwriting Reason discarded the
+			// POLICY's own reason - the record of why the step was gated at
+			// all - from both the wire and the audit row, on exactly the
+			// requests an operator most needs to reconstruct. The two facts
+			// are independent and both belong.
+			//
+			// The empty guard is not dead code by accident: on THIS branch
+			// convertToStepGateEvaluation has always set Reason to "Step
+			// requires human approval", so the else arm is unreachable today.
+			// It is kept because the invariant it protects ("never produce a
+			// leading separator") should not depend on a value set 300 lines
+			// away, and asserted by
+			// TestEnqueueRefusalKeepsThePolicyReason.
+			if evaluation.Reason != "" {
+				evaluation.Reason = evaluation.Reason + "; " + reason
+			} else {
+				evaluation.Reason = reason
+			}
+			log.Printf("[WCP] HITL enqueue %s for step %s (workflow %s): %v",
+				evaluation.ApprovalEnqueue, logutil.Sanitize(step.StepName),
+				logutil.Sanitize(step.WorkflowID), err)
+		} else if approvalID != uuid.Nil {
 			evaluation.ApprovalID = approvalID.String()
-			log.Printf("[WCP] HITL approval created for step %s: %s", step.StepName, approvalID)
+			log.Printf("[WCP] HITL approval %s for step %s: %s",
+				evaluation.ApprovalEnqueue, logutil.Sanitize(step.StepName), approvalID)
 		}
 	}
 
 	return evaluation
 }
 
-// createHITLApproval creates an HITL approval request for require_approval actions (Issue #1082)
-func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflow_control.StepGateContext, result *PolicyEvaluationResult) uuid.UUID {
+// createHITLApproval creates an HITL approval request for require_approval
+// actions (Issue #1082).
+//
+// Returns the approval id, the enqueue classification, and the error. It used
+// to return only the id and to log the error internally, which is what made a
+// cap refusal or a licence refusal invisible to every caller (#3408 sibling).
+// The error is now the caller's to classify and disclose.
+func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflow_control.StepGateContext, result *PolicyEvaluationResult) (uuid.UUID, string, error) {
 	if a.hitlApproval == nil {
-		return uuid.Nil
+		return uuid.Nil, "", nil
 	}
 
 	// Determine the triggering policy for the HITL queue entry.
@@ -137,28 +195,41 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 
 	resp, err := a.hitlApproval.CreateApproval(ctx, req)
 	if err != nil {
-		log.Printf("[WCP] Failed to create HITL approval: %v", err)
-		return uuid.Nil
+		return uuid.Nil, "", err
+	}
+	if resp == nil {
+		// A nil response with a nil error is a broken HITLApprovalCreator.
+		// Report it as an enqueue error rather than returning uuid.Nil with
+		// no classification, which is the shape this change exists to remove.
+		return uuid.Nil, "", fmt.Errorf("HITL approval creator returned no response and no error")
 	}
 
-	return resp.ApprovalID
+	return resp.ApprovalID, resp.Enqueue, nil
 }
 
 // convertToOrchestratorRequest converts WCP step context to orchestrator request format.
 //
-// SEGMENT CAVEAT (ADR-060 #2989 P3b, H2 loud-docs, #3239 round 2): the
-// UserContext built below carries TenantID only — no OrgID, no Email. A
-// step-gate's EvaluateDynamicPolicies call therefore ALWAYS resolves segments
-// as "no verified per-user identity" (the M1 org-only early-return,
-// segment_policy_gate.go), so a segment-scoped dynamic policy is silently
-// UNENFORCED on every WCP workflow step-gate, even though the same policy IS
-// enforced on /api/v1/process and MAP. This is not a bug in
-// resolveSegmentsForPolicy — it is a genuine gap in what identity a workflow
-// step carries at all: StepGateContext has no per-user email field to put
-// here. See ADR-060's enforcement-surface coverage matrix. Tracked: epic
-// #3279 (verified machine/agent principal — a workflow step's "caller" is
-// not a human either, so closing this needs the same principal-resolution
-// work as MCP) and #3281 (WCP segment enforcement, depends on #3279).
+// SEGMENT ENFORCEMENT (ADR-060 #2989 P3b, #3281): the UserContext built below
+// carries TenantID, OrgID, AND Email - step.Email is the trust-gated
+// X-User-Email the WCP handler read off the HTTP request (see
+// StepGateRequest.Email's doc), threaded through StepGateContext.Email. A
+// step-gate's EvaluateDynamicPolicies call therefore resolves the caller's
+// governance-segment set the SAME way /api/v1/process and MAP do
+// (resolveUserSegments, segment_policy_gate.go), and a segment-scoped
+// dynamic policy is enforced identically on a WCP workflow step-gate. This
+// holds on EVERY route that reaches Service.StepGate: the gate handler and
+// both checkpoint-resume routes read the same trust-gated header (#3281), and
+// the two GateOverride callers (MAP confirm/step, run.go's plan resume) never
+// reach policy evaluation at all. Where no verified identity is available
+// (an identity-absent caller), this degrades to the SAME org-only path
+// /api/v1/process takes with no identity: non-segment-
+// scoped policies still enforce, segment-scoped ones do not apply, and
+// resolveUserSegments's ok=true / nil-set contract means this is never
+// treated as a resolution FAILURE. A genuine resolver error is handled
+// inside EvaluateDynamicPolicies itself (db_dynamic_policies.go), which
+// returns EvaluationError=true / Allowed=false - surfaced as a fail-closed
+// GateDecisionBlock by convertToStepGateEvaluation below, never a
+// no-match-allow. See ADR-060's enforcement-surface coverage matrix.
 func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.StepGateContext) OrchestratorRequest {
 	// Build context map with step information for policy matching
 	contextData := make(map[string]interface{})
@@ -225,6 +296,14 @@ func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.S
 		RequestType: "workflow_step_gate",
 		User: UserContext{
 			TenantID: step.TenantID,
+			// #3281 (ADR-060 #2989 P3b): OrgID and Email are required for
+			// resolveUserSegments to resolve a verified per-user
+			// identity - previously only Client.OrgID below was populated,
+			// leaving User.OrgID zero and forcing every step-gate onto the
+			// org-only / no-identity path regardless of the caller's actual
+			// segment memberships.
+			OrgID: step.OrgID,
+			Email: step.Email,
 		},
 		Client: ClientContext{
 			ID:       step.ClientID,
@@ -285,6 +364,53 @@ func (a *WCPPolicyAdapter) convertToStepGateEvaluation(result *PolicyEvaluationR
 		PolicyIDs:         result.AppliedPolicies,
 		PoliciesEvaluated: []workflow_control.PolicyMatch{},
 		PoliciesMatched:   []workflow_control.PolicyMatch{},
+	}
+
+	// #3281 (ADR-060 #2989 P3b): a genuine segment-resolution FAILURE inside
+	// EvaluateDynamicPolicies is signaled via EvaluationError=true (S1,
+	// #3239 round 2), always paired with Allowed=false - see
+	// PolicyEvaluationResult.EvaluationError's doc (run.go). Without this
+	// branch the generic "!result.Allowed" handling below still produces
+	// GateDecisionBlock (safe - fail-closed is preserved either way, since
+	// AppliedPolicies is empty and RequiredActions never contains
+	// "require_approval"/"human_review" on this path), but the Reason/
+	// PolicyIDs would read as an indistinguishable, unnamed "Step blocked by
+	// policy" instead of naming the availability failure - the same
+	// disclosure convention run.go's proxy handler and policy_api_service.go
+	// use for this exact condition (triggeredPolicies :=
+	// []string{"segment_resolution_failed"}). Named explicitly here so the
+	// audit row, the API response, and the runtime-e2e fail-closed assertion
+	// can all key off it instead of string-matching a human-readable reason.
+	//
+	// DELIBERATE DIVERGENCE from #3312: the gateway pre-check also calls
+	// circuitBreakerInstance.RecordPolicyViolation on this deny, feeding the
+	// #1176 auto-trip threshold. This plane cannot: circuitBreakerInstance is
+	// a package-level singleton owned by platform/agent and wired in the AGENT
+	// process. The orchestrator binary neither imports agent/circuitbreaker nor
+	// holds an instance (grep: zero references under platform/orchestrator), so
+	// there is nothing here to record into. Matching #3312 would mean giving
+	// the orchestrator its own circuit-breaker wiring -- a real change with its
+	// own tripping semantics and blast radius, not a parity tidy-up. Left
+	// diverged on purpose; the deny itself is fail-closed either way, and the
+	// named PolicyIDs above keep it attributable.
+	if result.EvaluationError {
+		evaluation.Decision = workflow_control.GateDecisionBlock
+		// Wording aligned with the #3312 gateway pre-check's literal at
+		// gateway_handlers.go:698, which reads "segment resolution
+		// unavailable", then a dash, then "request denied (fail-closed,
+		// ADR-060 #2989)" -- so the two human-readable halves of one
+		// condition do not read as two different conditions. NOT quoted
+		// verbatim here: that literal separates its two clauses with an em
+		// dash and this plane's string below uses a hyphen, so a verbatim
+		// quote would be a misquote AND would put an em dash in this file.
+		// Nothing byte-compares the two strings across planes, and nothing
+		// should: the machine-readable half is what consumers key off.
+		// The machine-readable half is PolicyIDs below, which is what the
+		// audit row and the runtime-e2e assertion key off -- deliberately NOT
+		// this string, which no consumer should be matching on.
+		evaluation.Reason = "segment resolution unavailable - request denied (fail-closed, ADR-060 #2989 P3b)"
+		evaluation.PolicyIDs = []string{"segment_resolution_failed"}
+		return evaluation
 	}
 
 	// If not allowed, determine the appropriate decision

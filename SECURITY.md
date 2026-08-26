@@ -68,7 +68,7 @@ The following are **in scope** for security reports:
 
 - AxonFlow Agent (API gateway component)
 - AxonFlow Orchestrator (routing and policy enforcement)
-- AxonFlow SDKs (Go, Python, TypeScript, Java)
+- AxonFlow SDKs (Go, Python, TypeScript, Java, Rust preview)
 - Customer Portal (backend and frontend)
 - MCP Connectors (PostgreSQL, Redis, Salesforce, Snowflake, Amadeus, etc.)
 - AWS Marketplace CloudFormation templates
@@ -88,11 +88,12 @@ The following are **out of scope**:
 
 ### Overview
 
-AxonFlow implements a **prevention-first security architecture** with sub-10ms inline governance. Unlike passive monitoring tools that detect issues after damage is done, AxonFlow provides active prevention through real-time intervention.
+AxonFlow implements a **prevention-first security architecture**: policy is enforced inline before a model or tool call executes, rather than detected after the fact. Measured governance-path latency on the published benchmark of 2026-05-02 (in-VPC, 5 agent + 10 orchestrator replicas, warm stack, no model call): P95 8.98 ms at 20 RPS and 13.61 ms at 100 RPS, with 100% policy correctness over 12,000 requests. See the Performance section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 For detailed information, see:
-- [Threat Model and Data Flow Analysis](technical-docs/THREAT_MODEL_AND_DATA_FLOW.md)
-- [Security Architecture Overview](technical-docs/ARCHITECTURE.md)
+- [Trust Center](https://docs.getaxonflow.com/docs/trust/overview/) and the [Security Control Matrix](https://docs.getaxonflow.com/docs/trust/security-control-matrix/) (public summary of the threat model, controls and certification status)
+- [Architecture overview](docs/ARCHITECTURE.md) (request path, policy phases, signed decision records, measured performance)
+- The full threat model and data-flow analysis is an internal document (`technical-docs/THREAT_MODEL_AND_DATA_FLOW.md` in the enterprise repository, not published in the community mirror); it is shared with customers through the security review process described below
 
 ### Core Security Principles
 
@@ -118,7 +119,7 @@ AxonFlow includes comprehensive security features by default:
 
 ### 1. Authentication & Authorization
 
-- **License Key Authentication**: HMAC-SHA256 signed keys with expiration
+- **License Key Authentication**: Ed25519-signed keys with expiration (`AXON-{payload}.{signature}`); the earlier HMAC (V2) and V1 formats are rejected
 - **Service Identity System**: Granular permissions for MCP connector access
 - **RBAC/ABAC Enforcement**: Role and attribute-based access control
 - **API Key Rotation**: Automated key rotation with zero downtime
@@ -143,7 +144,7 @@ AxonFlow includes comprehensive security features by default:
 
 - **Immutable Audit Logs**: Append-only logs with cryptographic verification
 - **Compliance Mode**: Synchronous audit logging for regulated industries
-- **Retention Policies**: Configurable log retention (7-365 days)
+- **Retention Policies**: `audit_logs` retention is set by licence tier (Community 3 days, Evaluation 14 days, Enterprise 3650 days, configurable within the tier ceiling); the other audit tables are governed by `audit_retention_config` with a 1825-day fallback
 - **GDPR Compliance**: Data residency, right to deletion, data portability
 
 ### 5. Network Security
@@ -182,7 +183,7 @@ AxonFlow includes comprehensive security features by default:
 
 ### Key Management
 
-- **License Keys**: HMAC-SHA256 with Ed25519 signatures
+- **License Keys**: Ed25519 signatures verified against a public key compiled into the binaries; HMAC-based V2 keys are no longer accepted
 - **Secrets Rotation**: Automated rotation via AWS Secrets Manager
 - **KMS Integration**: AWS KMS for envelope encryption
 - **HSM Support**: CloudHSM for regulated industries (optional)
@@ -195,9 +196,9 @@ AxonFlow includes comprehensive security features by default:
 
 - **GDPR Ready**: Data residency controls, right to deletion, data portability
 - **EU AI Act Ready**: Risk classification, transparency, audit trails
-- **SOC 2 Type II**: In progress (target: Q3 2026)
+- **SOC 2 Type II**: Not certified. Readiness work is in progress; no attestation date is committed
 - **HIPAA**: Architecture supports HIPAA compliance (BAA available)
-- **ISO 27001**: In progress (target: Q4 2026)
+- **ISO 27001**: Not certified. Readiness work is in progress; no attestation date is committed
 
 ### Compliance Features
 
@@ -402,15 +403,15 @@ We would like to thank the following security researchers for responsibly disclo
 
 - [Contributing Guide](./CONTRIBUTING.md) - How to contribute securely
 - [Changelog](./CHANGELOG.md) - Security updates and fixes
-- [AxonFlow Security Architecture](technical-docs/THREAT_MODEL_AND_DATA_FLOW.md)
-- [Deployment Security Guide](technical-docs/DEPLOYMENT_SCRIPTS_REFERENCE.md)
-- [Enterprise Security Configuration](ee/docs/ENTERPRISE_SECURITY.md) - HMAC secrets, self-hosted mode
-- [RLS Architecture](technical-docs/RLS_ARCHITECTURE.md)
-- [Audit Logging Architecture](technical-docs/AUDIT_LOGGING_ARCHITECTURE.md)
-- [Service Identity Architecture](technical-docs/SERVICE_IDENTITY_ARCHITECTURE.md)
+- [Trust Center](https://docs.getaxonflow.com/docs/trust/overview/) - security posture, certification status, review evidence
+- Enterprise security configuration: `ee/docs/ENTERPRISE_SECURITY.md` (enterprise repository only, not in the community mirror) - secrets handling, self-hosted mode
+- [Organizations, Tenants, and Licenses](https://docs.getaxonflow.com/docs/identity/organizations-tenants-licenses/) - the `org_id` isolation model enforced with PostgreSQL Row-Level Security
+- [Audit logging](https://docs.getaxonflow.com/docs/governance/audit-logging/) and [Non-repudiation](https://docs.getaxonflow.com/docs/governance/non-repudiation/) - audit trail, signed and hash-chained decision records
+- [Security best practices](https://docs.getaxonflow.com/docs/security/best-practices/) - service identity and permissions, hardening checklist
+- Internal design records (enterprise repository only, not in the community mirror): `technical-docs/RLS_ARCHITECTURE.md`, `technical-docs/AUDIT_LOGGING_ARCHITECTURE.md`, `technical-docs/SERVICE_IDENTITY_ARCHITECTURE.md`
 
 ---
 
-**Last Updated:** February 2026
+**Last Updated:** 2026-08-24
 
-**Version:** 2.2
+**Version:** 2.3

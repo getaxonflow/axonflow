@@ -35,8 +35,8 @@ import java.util.Map;
  * 2. Check step gates before each step
  * 3. Mark steps as completed
  * 4. Complete the workflow
- * 5. Approve/reject steps (Evaluation+ feature)
- * 6. List pending approvals (Evaluation+ feature)
+ * 5. Approve/reject steps (Professional and above)
+ * 6. List pending approvals (Professional and above)
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
@@ -408,7 +408,7 @@ public class WorkflowControl {
                         || pendingMsg.contains("enterprise")
                         || pendingMsg.contains("not available") || pendingMsg.contains("license")
                         || pendingMsg.contains("not found")) {
-                    System.out.println("   SKIPPED: Pending approvals is an Evaluation+ feature");
+                    System.out.println("   SKIPPED: Pending approvals is a Professional-and-above feature");
                     System.out.println("   (" + pendingMsg + ")");
                 } else {
                     throw pendingEx;
@@ -451,7 +451,7 @@ public class WorkflowControl {
                         || mapMsg.contains("enterprise")
                         || mapMsg.contains("not available") || mapMsg.contains("license")
                         || mapMsg.contains("not found")) {
-                    System.out.println("   SKIPPED: MAP-plane pending approvals is an Evaluation+ feature");
+                    System.out.println("   SKIPPED: MAP-plane pending approvals is a Professional-and-above feature");
                     System.out.println("   (" + mapMsg + ")");
                 } else {
                     throw mapPendingEx;

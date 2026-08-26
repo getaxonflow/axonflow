@@ -296,15 +296,62 @@ All endpoints are accessed via the Agent (port 8080). The Agent proxies requests
 | Proxy | `/api/clients` | GET/POST | Manage clients |
 | Gateway | `/api/policy/pre-check` | POST | Pre-check request |
 | Gateway | `/api/audit/llm-call` | POST | Audit LLM call |
-| Static Policy | `/api/v1/static-policies` | GET/POST | List/create static policies |
-| Static Policy | `/api/v1/static-policies/{id}` | GET/PUT/DELETE | CRUD static policy |
-| Static Policy | `/api/v1/static-policies/test` | POST | Test pattern |
-| Static Policy | `/api/v1/static-policies/effective` | GET | Get effective policies |
+| System Policy | `/api/v1/system-policies` | GET/POST | List/create system policies |
+| System Policy | `/api/v1/system-policies/{id}` | GET/PUT/DELETE/PATCH | CRUD system policy |
+| System Policy | `/api/v1/system-policies/test` | POST | Test pattern |
+| System Policy | `/api/v1/system-policies/effective` | GET | Get effective policies |
+| System Policy | `/api/v1/system-policies/overrides` | GET | List tenant overrides |
+| System Policy | `/api/v1/static-policies*` | (all of the above) | **Deprecated** spelling, still served. See [Deprecated path spellings](#deprecated-path-spellings) |
 | MCP | `/mcp/connectors` | GET | List connectors |
 | MCP | `/mcp/connectors/{name}/health` | GET | Connector health |
 | MCP | `/mcp/resources/query` | POST | Execute query |
 | MCP | `/mcp/tools/execute` | POST | Execute command |
 | MCP | `/mcp/health` | GET | MCP health |
+
+## Deprecated path spellings
+
+Two policy route families were renamed in v10.0.0:
+
+| Current | Deprecated, still served |
+|---------|--------------------------|
+| `/api/v1/system-policies` | `/api/v1/static-policies` |
+| `/api/v1/tenant-policies` | `/api/v1/dynamic-policies` |
+
+Everything else in the product already used this vocabulary: the tier column
+in the database, the portal UI and these docs all say **system** and
+**tenant**. Only the wire paths still said `static` and `dynamic`, and
+"dynamic" reads as "changes by itself", which is not what it means. Those are
+simply the policies a tenant writes.
+
+**The two spellings are the same routes.** One handler per pair, one
+registration site per plane, the same authentication, the same permissions,
+the same request and response bodies, the same status codes. Nothing about a
+request changes except the path you send it to.
+
+Responses served from a deprecated path additionally carry, **on any response
+produced by the endpoint itself** (including an authentication failure):
+
+```
+Deprecation: true
+Link: </api/v1/system-policies>; rel="successor-version"
+```
+
+with the `Link` naming the exact successor of the path that served the
+response, suffix preserved, so a client can follow it mechanically rather than
+having to know the mapping. Both headers are CORS-exposed, so a browser client
+can read them.
+
+Two responses do **not** carry the signal, so do not treat its absence as
+proof a path is current: a `404` for a path or method that matches no route
+under the family, and a refusal produced by a gateway in front of the endpoint
+rather than by the endpoint itself. Sample a successful response, not an error
+one.
+
+**There is deliberately no `Sunset` header, and no removal date is
+published.** A `Sunset` value is a promise that the path stops working on a
+given day; whether these paths are ever removed has not been decided. Treat
+the old spellings as supported, migrate when it is convenient, and watch the
+release notes rather than a header.
 
 ### Agent API - Proxied Routes (via Agent to Orchestrator)
 
@@ -312,11 +359,14 @@ These routes are accessed via Agent but proxied to Orchestrator internally.
 
 | Category | Endpoint | Method | Description |
 |----------|----------|--------|-------------|
-| Dynamic Policy | `/api/v1/dynamic-policies` | GET/POST | List/create dynamic policies |
-| Dynamic Policy | `/api/v1/dynamic-policies/{id}` | GET/PUT/DELETE | CRUD dynamic policy |
-| Dynamic Policy | `/api/v1/dynamic-policies/{id}/test` | POST | Test policy |
-| Dynamic Policy | `/api/v1/dynamic-policies/import` | POST | Bulk import |
-| Dynamic Policy | `/api/v1/dynamic-policies/export` | GET | Bulk export |
+| Tenant Policy | `/api/v1/tenant-policies` | GET/POST | List/create tenant policies |
+| Tenant Policy | `/api/v1/tenant-policies/{id}` | GET/PUT/DELETE | CRUD tenant policy |
+| Tenant Policy | `/api/v1/tenant-policies/{id}/test` | POST | Test policy |
+| Tenant Policy | `/api/v1/tenant-policies/{id}/versions` | GET | Version history |
+| Tenant Policy | `/api/v1/tenant-policies/effective` | GET | Get effective policies |
+| Tenant Policy | `/api/v1/tenant-policies/import` | POST | Bulk import |
+| Tenant Policy | `/api/v1/tenant-policies/export` | GET | Bulk export |
+| Tenant Policy | `/api/v1/dynamic-policies*` | (all of the above) | **Deprecated** spelling, still served. See [Deprecated path spellings](#deprecated-path-spellings) |
 | Connectors | `/api/v1/connectors` | GET | List marketplace connectors |
 | Connectors | `/api/v1/connectors/{id}/install` | POST | Install connector |
 | Connectors | `/api/v1/connectors/{id}/uninstall` | DELETE | Uninstall connector |

@@ -81,6 +81,10 @@ func newSegmentSelectionTestDB(t *testing.T) *testutil.PostgresContainer {
 			enabled_override boolean,
 			override_reason text,
 			expires_at timestamptz,
+			-- #3490: the Mechanism-A read filters revoked_at now, as the
+			-- Mechanism-B matcher always has. A fixture without the column
+			-- would fail the query rather than exercise the filter.
+			revoked_at timestamptz,
 			created_by varchar(255),
 			created_at timestamptz DEFAULT now(),
 			updated_by varchar(255),

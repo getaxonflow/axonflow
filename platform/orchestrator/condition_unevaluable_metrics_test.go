@@ -55,19 +55,11 @@ func unevaluableCount(reason, plane string) float64 {
 // TestTestPolicy_LegacyEmptyArrayExcludedFromPreview.
 // ---------------------------------------------------------------------------
 
-func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_MemoryPlane(t *testing.T) {
-	before := unevaluableCount(sharedpolicy.ReasonEmptyConditions, "memory")
-
-	engine := &DynamicPolicyEngine{}
-	matched := engine.evaluatePolicy(context.Background(), DynamicPolicy{}, OrchestratorRequest{}, &PolicyEvaluationResult{})
-
-	if !matched {
-		t.Fatalf("a zero-condition policy must match (applies to everything), got false")
-	}
-	if after := unevaluableCount(sharedpolicy.ReasonEmptyConditions, "memory"); after != before {
-		t.Fatalf("a legitimate zero-condition match must not record empty_conditions: before=%v after=%v", before, after)
-	}
-}
+// TestConditionUnevaluableMetrics_EmptyConditions_MemoryPlane was deleted
+// here (#3319): it exercised the retired in-memory DynamicPolicyEngine's
+// evaluatePolicy, which no longer exists — there is one engine now, and its
+// zero-condition guard is covered below by
+// TestConditionUnevaluableMetrics_EmptyConditions_DatabasePlane.
 
 func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_DatabasePlane(t *testing.T) {
 	before := unevaluableCount(sharedpolicy.ReasonEmptyConditions, "database")
@@ -89,6 +81,7 @@ func TestConditionUnevaluableMetrics_EmptyConditionsVacuouslyMatch_DatabasePlane
 		"name": "no_conditions_policy",
 		"_metadata": map[string]interface{}{
 			"tenant_id": "global",
+			"org_id":    "global",
 		},
 		// No "conditions" key at all -> the parsed []map[string]interface{}
 		// stays zero-length.
@@ -232,62 +225,17 @@ func TestCachedPolicyToDynamicPolicy_MalformedConditions_ExcludedNotEvaluated(t 
 // these three come from inside ConditionEvaluator.Match itself
 // (condition_evaluator.go), so any single wired call site proves the
 // plumbing; the operator semantics themselves are exhaustively covered by
-// platform/shared/policy/condition_evaluator_test.go. Exercised here through
-// the memory plane (DynamicPolicyEngine), the lightest of the four callers
-// to construct directly.
+// platform/shared/policy/condition_evaluator_test.go.
+//
+// #3319: this used to exercise the memory plane (the retired in-memory
+// DynamicPolicyEngine), "the lightest of the four callers to construct
+// directly" — that engine, and the "memory" plane label it was the sole
+// producer of, no longer exist. The plumbing these three reasons prove is
+// still covered database-side by every other test in this file (e.g.
+// TestConditionUnevaluableMetrics_EmptyConditions_DatabasePlane above), and
+// the shared evaluator's own operator semantics remain exhaustively covered
+// by condition_evaluator_test.go regardless of which plane calls it.
 // ---------------------------------------------------------------------------
-
-func TestConditionUnevaluableMetrics_UnknownOperator_MemoryPlane(t *testing.T) {
-	before := unevaluableCount(sharedpolicy.ReasonUnknownOperator, "memory")
-
-	engine := &DynamicPolicyEngine{}
-	policy := DynamicPolicy{
-		Conditions: []PolicyCondition{{Field: "query", Operator: "starts_with", Value: "x"}},
-	}
-	matched := engine.evaluatePolicy(context.Background(), policy, OrchestratorRequest{Query: "xyz"}, &PolicyEvaluationResult{})
-
-	if matched {
-		t.Fatalf("an unknown operator must not match, got true")
-	}
-	if after := unevaluableCount(sharedpolicy.ReasonUnknownOperator, "memory"); after != before+1 {
-		t.Fatalf("axonflow_policy_condition_unevaluable_total{reason=unknown_operator,plane=memory} did not increment: before=%v after=%v", before, after)
-	}
-}
-
-func TestConditionUnevaluableMetrics_NonNumericOperand_MemoryPlane(t *testing.T) {
-	before := unevaluableCount(sharedpolicy.ReasonNonNumericOperand, "memory")
-
-	engine := &DynamicPolicyEngine{}
-	policy := DynamicPolicy{
-		Conditions: []PolicyCondition{{Field: "query", Operator: "greater_than", Value: -1.0}},
-	}
-	matched := engine.evaluatePolicy(context.Background(), policy, OrchestratorRequest{Query: "not-a-number"}, &PolicyEvaluationResult{})
-
-	if matched {
-		t.Fatalf("a non-numeric operand must not match, got true")
-	}
-	if after := unevaluableCount(sharedpolicy.ReasonNonNumericOperand, "memory"); after != before+1 {
-		t.Fatalf("axonflow_policy_condition_unevaluable_total{reason=non_numeric_operand,plane=memory} did not increment: before=%v after=%v", before, after)
-	}
-}
-
-func TestConditionUnevaluableMetrics_NonStringPattern_MemoryPlane(t *testing.T) {
-	before := unevaluableCount(sharedpolicy.ReasonNonStringPattern, "memory")
-
-	engine := &DynamicPolicyEngine{}
-	policy := DynamicPolicy{
-		Conditions: []PolicyCondition{{Field: "query", Operator: "regex", Value: 42}},
-	}
-	matched := engine.evaluatePolicy(context.Background(), policy, OrchestratorRequest{Query: "42"}, &PolicyEvaluationResult{})
-
-	if matched {
-		t.Fatalf("a non-string regex pattern must not match, got true")
-	}
-	if after := unevaluableCount(sharedpolicy.ReasonNonStringPattern, "memory"); after != before+1 {
-		t.Fatalf("axonflow_policy_condition_unevaluable_total{reason=non_string_pattern,plane=memory} did not increment: before=%v after=%v", before, after)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // #3384: the ONE recording site for ReasonEmptyConditions. A stored
 // EXPLICITLY-EMPTY conditions array (`[]`) is update-gap residue — every
@@ -352,13 +300,13 @@ func TestListActivePoliciesForTenant_LegacyEmptyArrayExcluded(t *testing.T) {
 		"policy_id":  "legacy-empty-id",
 		"conditions": json.RawMessage(`[]`),
 		"actions":    json.RawMessage(`[{"type":"block"}]`),
-		"_metadata":  map[string]interface{}{"tenant_id": "tenant-a"},
+		"_metadata":  map[string]interface{}{"tenant_id": "tenant-a", "org_id": "tenant-a"},
 	}
 	engine.policies["seeded-null-id"] = map[string]interface{}{
 		"name":       "seeded-null",
 		"policy_id":  "seeded-null-id",
 		"conditions": json.RawMessage(`null`),
-		"_metadata":  map[string]interface{}{"tenant_id": "tenant-a"},
+		"_metadata":  map[string]interface{}{"tenant_id": "tenant-a", "org_id": "tenant-a"},
 	}
 	engine.lastRefresh = time.Now()
 	engine.mu.Unlock()
@@ -384,7 +332,7 @@ func TestListActivePoliciesForTenant_LegacyEmptyArrayExcluded(t *testing.T) {
 // TestEvaluateDynamicPolicies_LegacyEmptyArrayNotEnforced pins the
 // ENFORCEMENT side of the #3384 exclusion — the /api/request plane. This is
 // the one plane no other test can see: the list/enforce parity gate's
-// enforcement leg probes dbCachedPolicyAppliesToTenant (which runs before
+// enforcement leg probes dbCachedPolicyAppliesToOrg (which runs before
 // the conditions parse), the e2e's check-input leg drives the MCP handler
 // (which reads through the conversion layer), and the conversion unit tests
 // never call EvaluateDynamicPolicies. Without this test, reverting the
@@ -412,7 +360,7 @@ func TestEvaluateDynamicPolicies_LegacyEmptyArrayNotEnforced(t *testing.T) {
 	engine.policies["legacy_empty_block"] = map[string]interface{}{
 		"name":       "legacy_empty_block",
 		"policy_id":  "legacy_empty_block",
-		"_metadata":  map[string]interface{}{"tenant_id": "global"},
+		"_metadata":  map[string]interface{}{"tenant_id": "global", "org_id": "global"},
 		"conditions": json.RawMessage(`[]`),
 		"actions": []interface{}{
 			map[string]interface{}{"type": "block", "config": map[string]interface{}{"reason": "must never fire"}},
@@ -421,7 +369,7 @@ func TestEvaluateDynamicPolicies_LegacyEmptyArrayNotEnforced(t *testing.T) {
 	engine.policies["legacy_empty_preparsed"] = map[string]interface{}{
 		"name":       "legacy_empty_preparsed",
 		"policy_id":  "legacy_empty_preparsed",
-		"_metadata":  map[string]interface{}{"tenant_id": "global"},
+		"_metadata":  map[string]interface{}{"tenant_id": "global", "org_id": "global"},
 		"conditions": []interface{}{},
 		"actions": []interface{}{
 			map[string]interface{}{"type": "block", "config": map[string]interface{}{"reason": "must never fire"}},
@@ -432,7 +380,7 @@ func TestEvaluateDynamicPolicies_LegacyEmptyArrayNotEnforced(t *testing.T) {
 	engine.policies["null_cond_log"] = map[string]interface{}{
 		"name":      "null_cond_log",
 		"policy_id": "null_cond_log",
-		"_metadata": map[string]interface{}{"tenant_id": "global"},
+		"_metadata": map[string]interface{}{"tenant_id": "global", "org_id": "global"},
 		"actions": []interface{}{
 			map[string]interface{}{"type": "log", "config": map[string]interface{}{}},
 		},
@@ -538,7 +486,7 @@ func TestTestPolicy_LegacyEmptyArrayExcluded_LivePath(t *testing.T) {
 	mock.ExpectCommit()
 
 	s := &PolicyService{repo: NewPolicyRepository(db)}
-	resp, err := s.TestPolicy(context.Background(), "tenant-a", "legacy-empty-id", &TestPolicyRequest{Query: "anything"})
+	resp, err := s.TestPolicy(context.Background(), "tenant-a", "tenant-a", "legacy-empty-id", &TestPolicyRequest{Query: "anything"})
 	if err != nil {
 		t.Fatalf("TestPolicy: %v", err)
 	}

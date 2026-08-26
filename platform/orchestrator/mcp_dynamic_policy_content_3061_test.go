@@ -18,7 +18,7 @@ package orchestrator
 //     operator, and the tool writes exactly {field:"query",operator:"regex"} —
 //     a condition that could only ever evaluate FALSE.
 //  3. getPoliciesForMCP carried its OWN tenant predicate, the exact inverse of
-//     the canonical dbCachedPolicyAppliesToTenant (#3059) on every stored
+//     the canonical dbCachedPolicyAppliesToOrg (#3059) on every stored
 //     shape: it skipped 'global' and NULL→"default" (which apply to every
 //     tenant) and admitted '' (which applies to none, and which migration
 //     core/155 forbids). It now calls ListActivePoliciesForTenant so each
@@ -90,6 +90,7 @@ func tenantPolicyAsStored(id, tenantID, pattern string) DynamicPolicy {
 // the request path, so a direct evaluateConditions call would not exercise it.
 func evaluateMCP(t *testing.T, policies []DynamicPolicy, req MCPPolicyEvaluationRequest) MCPPolicyEvaluationResponse {
 	t.Helper()
+	req = defaultOrgFromTenant(req)
 	engine := newTestEngine(policies)
 	defer engine.Close()
 
@@ -356,7 +357,7 @@ func TestMCP3061_DeploymentWidePolicyAppliesOnInMemoryEngine(t *testing.T) {
 
 // dbEngineWithCachedPolicy builds a DatabaseDynamicPolicyEngine whose cache
 // holds one entry in the EXACT shape refreshPolicies writes for a stored row —
-// including the _metadata block dbCachedPolicyAppliesToTenant reads. No
+// including the _metadata block dbCachedPolicyAppliesToOrg reads. No
 // database is involved: the tenant decision is made entirely from the cached
 // shape, which is the thing under test.
 //
@@ -383,6 +384,7 @@ func dbEngineWithCachedPolicy(policyID, tenantIDStr, pattern string) *DatabaseDy
 					"id":        policyID,
 					"name":      "deployment-wide baseline",
 					"tenant_id": tenantIDStr,
+					"org_id":    tenantIDStr,
 					"priority":  100,
 				},
 			},
@@ -392,6 +394,7 @@ func dbEngineWithCachedPolicy(policyID, tenantIDStr, pattern string) *DatabaseDy
 
 func evaluateMCPWithEngine(t *testing.T, engine MCPPolicyEngine, req MCPPolicyEvaluationRequest) MCPPolicyEvaluationResponse {
 	t.Helper()
+	req = defaultOrgFromTenant(req)
 	router := mux.NewRouter()
 	NewMCPDynamicPolicyHandler(engine).RegisterRoutes(router)
 
@@ -414,7 +417,7 @@ func evaluateMCPWithEngine(t *testing.T, engine MCPPolicyEngine, req MCPPolicyEv
 	return resp
 }
 
-// #3061 R3 BLOCKER 2 — the MCP plane must agree with dbCachedPolicyAppliesToTenant
+// #3061 R3 BLOCKER 2 - the MCP plane must agree with dbCachedPolicyAppliesToOrg
 // on every stored shape, because that is the function deciding ENFORCEMENT on
 // the LLM/MAP/WCP planes for the very same row.
 //
@@ -445,7 +448,7 @@ func TestMCP3061_DatabaseEngineSentinelTenantsGovernTheMCPPlane(t *testing.T) {
 		{
 			name: "global baseline governs an unrelated tenant", storedTenant: "global",
 			callerTenant: "tenant-1", wantBlock: true,
-			why: "'global' is the shared-baseline sentinel; dbCachedPolicyAppliesToTenant returns true for every tenant",
+			why: "'global' is the shared-baseline sentinel; dbCachedPolicyAppliesToOrg returns true for every tenant",
 		},
 		{
 			name: "NULL tenant_id (loaded as \"default\") governs an unrelated tenant", storedTenant: "default",
@@ -475,11 +478,11 @@ func TestMCP3061_DatabaseEngineSentinelTenantsGovernTheMCPPlane(t *testing.T) {
 
 			// Pin the MCP plane against the canonical predicate on the SAME raw
 			// cache entry, so this test cannot drift from #3059's choke point:
-			// if dbCachedPolicyAppliesToTenant ever changes, the expectation
+			// if dbCachedPolicyAppliesToOrg ever changes, the expectation
 			// table must change with it or this fails.
 			raw := engine.policies["p-sentinel"].(map[string]interface{})
-			if canonical := dbCachedPolicyAppliesToTenant(raw, tc.callerTenant, nil, "p-sentinel"); canonical != tc.wantBlock {
-				t.Fatalf("expectation drift: dbCachedPolicyAppliesToTenant = %v but this case wants block = %v (%s)",
+			if canonical := dbCachedPolicyAppliesToOrg(raw, tc.callerTenant, nil, "p-sentinel"); canonical != tc.wantBlock {
+				t.Fatalf("expectation drift: dbCachedPolicyAppliesToOrg = %v but this case wants block = %v (%s)",
 					canonical, tc.wantBlock, tc.why)
 			}
 
@@ -689,4 +692,22 @@ func TestMCP3061_RegexSemanticsMatchOrchestratorEngine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// defaultOrgFromTenant fills MCPPolicyEvaluationRequest.OrganizationID from
+// TenantID when a fixture left it unset.
+//
+// Decision 5 (#3490) made organization_id load-bearing on this route: the
+// handler selects the policy set by it, and refuses a header-less request
+// that carries a tenant but no org (a version-skewed agent). These fixtures
+// were written before the field existed and use the org == tenant identity
+// every single-tenant deployment has, so filling it here keeps each test
+// asserting what it was written to assert instead of all of them asserting
+// the new refusal. Tests that need the two to DIVERGE, or that exercise the
+// refusal itself, set OrganizationID explicitly and are untouched by this.
+func defaultOrgFromTenant(req MCPPolicyEvaluationRequest) MCPPolicyEvaluationRequest {
+	if req.OrganizationID == "" {
+		req.OrganizationID = req.TenantID
+	}
+	return req
 }

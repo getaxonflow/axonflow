@@ -51,6 +51,36 @@ func IsEvaluationOrHigher(t Tier) bool {
 	return t == TierEvaluation || IsPaidTier(t)
 }
 
+// IsHITLApprovalEntitled reports whether a tier entitles the deployment to the
+// Human-in-the-Loop approval queue.
+//
+// OPERATOR DECISION, 2026-08-26: HITL is Enterprise-only. The entitled set is
+// Professional, Enterprise and Enterprise Plus - the tiers GetTierLimits maps
+// onto EnterpriseLimits. Evaluation WAS entitled and is not any more;
+// Community, Free, Pro and Premium never were.
+//
+// IT READS THE TIER MATRIX RATHER THAN RESTATING THE SET, and that is the
+// point. #3416's whole class of defect is "a tier value exists but the code
+// that loads it does something else" - a declared limit and an enforcing
+// predicate that drift apart. Deriving the gate FROM TierLimits.HITLApprovalEnabled
+// means the declaration and the enforcement are the same fact, so changing the
+// entitled set is one edit to the tables and cannot leave a gate behind.
+//
+// DELIBERATELY NOT NAMED IsEnterpriseTier: that name is taken by a different
+// predicate in this package whose set is NARROWER (Enterprise and Enterprise
+// Plus only - it excludes Professional, which is #3416 item 3). Reusing it
+// would have silently denied Professional licensees a feature they are
+// entitled to.
+//
+// DELIBERATELY NOT IsEvaluationOrHigher EITHER: that predicate has ten other
+// non-HITL callers - cost-estimation limits, org-tier policy quotas, upgrade
+// URLs, the tier-warning banner - which all still legitimately mean
+// "evaluation or higher". Repurposing a shared predicate is how this class of
+// bug spreads.
+func IsHITLApprovalEntitled(t Tier) bool {
+	return GetTierLimits(t).HITLApprovalEnabled
+}
+
 // tierRank returns the numeric rank of a tier for comparison. Returns -1
 // for any unknown tier so rank-based comparisons fail closed (GAP-3).
 // Pre-fix the default returned 0 (== Community), silently treating unknown
@@ -204,7 +234,7 @@ var (
 		MaxVersionsPerPlan:     25,
 		MaxSSEConnections:      25,
 		MaxCostEstimatesPerDay: 100,
-		MaxPendingApprovals:    100,
+		MaxPendingApprovals:    25,
 		MediaGovernanceEnabled: true,
 		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
 		// V1 Plugin Pro fields: -1 = n/a (Evaluation is self-hosted, not SaaS Plugin)
@@ -214,7 +244,18 @@ var (
 		DecisionListWindowHours: 336,
 		DecisionListMaxPage:     100,
 		// Evaluation features enabled with limits
-		HITLApprovalEnabled:      true,
+		// HITL IS ENTERPRISE-ONLY (operator decision, 2026-08-26). Evaluation
+		// was entitled until then; it is not now. The entitled set is
+		// Professional | Enterprise | Enterprise Plus, i.e. the tiers
+		// GetTierLimits maps onto EnterpriseLimits.
+		HITLApprovalEnabled: false,
+		// INERT while HITLApprovalEnabled is false - the gate refuses before
+		// any cap is read. Kept FINITE rather than set to 0 for two reasons:
+		// 0 means "unlimited" to queue.Enqueuer (`maxPending > 0`), so zeroing
+		// it would point the fail-safe direction the wrong way if the gate
+		// ever regressed; and aligning it with the enterprise copy retires a
+		// live divergence (this copy said 100, both enterprise copies said 25
+		// - #3416 item 2) rather than leaving two dead numbers disagreeing.
 		HITLExpiryHours:          24,
 		PolicySimulationEnabled:  true,
 		MaxSimulationsPerDay:     300,

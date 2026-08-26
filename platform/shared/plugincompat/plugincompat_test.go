@@ -15,7 +15,7 @@ func TestPinnedToReleaseTrain(t *testing.T) {
 	}
 	wantRecommended := map[string]string{
 		"openclaw": "2.8.6", "claude-code": "1.11.0", "cursor": "1.7.0",
-		"codex": "1.7.0", "claude-desktop": "0.3.1",
+		"codex": "1.7.0", "claude-desktop": "0.3.2",
 	}
 	for id, want := range wantMin {
 		if got := MinVersions()[id]; got != want {

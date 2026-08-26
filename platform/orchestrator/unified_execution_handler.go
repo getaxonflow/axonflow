@@ -19,7 +19,9 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/shared/execution"
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 )
 
 // UnifiedExecutionHandler handles HTTP requests for unified execution status tracking.
@@ -63,34 +65,120 @@ func (h *UnifiedExecutionHandler) SetLicenseChecker(lc LicenseChecker) {
 	}
 }
 
+// callerHasOrgTenancyScope reports whether this request carries a trusted
+// org-wide TENANCY assertion (#3367).
+//
+// True only when BOTH hold:
+//
+//  1. the request bears a valid X-Axonflow-Proxy-Auth internal-service token
+//     (the #2896 trusted channel, held only by the agent gateway and the
+//     customer portal), and
+//  2. it carries X-Axonflow-Tenancy-Scope: org.
+//
+// The agent strips the header from every inbound client request (it is in
+// sharedidentity.NeverClientAssertableHeaders), so a governed caller cannot
+// launder it through the gateway; a request that reaches the orchestrator
+// directly cannot mint one either, because the token is HMAC-signed.
+//
+// Deliberately NOT granted in Community mode. Community has no customer
+// portal to assert this, and community callers already read their own
+// executions through the tenant header exactly as before; a blanket community
+// grant would widen a plane for a reason that does not apply to it.
+func callerHasOrgTenancyScope(r *http.Request) bool {
+	if !sharedidentity.TenancyScopeIsOrg(r.Header.Get(sharedidentity.HeaderTenancyScope)) {
+		return false
+	}
+	if proxyTokenValidator == nil {
+		return false
+	}
+	tok := r.Header.Get("X-Axonflow-Proxy-Auth")
+	if tok == "" {
+		return false
+	}
+	valid, _, _ := proxyTokenValidator.ValidateToken(tok)
+	return valid
+}
+
 // checkTenantOwnership validates that the execution belongs to the requesting
-// tenant AND org. Returns true if the request is allowed, false if denied.
+// caller for a READ. See checkTenantOwnershipStrict for the write form.
+func (h *UnifiedExecutionHandler) checkTenantOwnership(w http.ResponseWriter, r *http.Request, exec *execution.ExecutionStatus) bool {
+	return h.authorizeExecution(w, r, exec, callerHasOrgTenancyScope(r))
+}
+
+// checkTenantOwnershipStrict is the WRITE form: it never accepts the org-wide
+// tenancy assertion, so a mutating route keeps the exact pre-#3367 compare.
+//
+// #3367 R3 round 1: the org-only relaxation is a READ decision. Letting it
+// reach CancelExecution would silently mean "any org-bound session may abort an
+// execution started by any credential in the org", which is a separate
+// authorization question nobody has reviewed. It is not reachable today (the
+// cancel route is absent from the portal proxy allowlist, so the catch-all
+// refuses it with 403 ROUTE_NOT_PROXIED, and enforceDomainReadAuthority
+// additionally demands admin authority) - which is exactly why it must be
+// closed here rather than left to be discovered by whoever adds the route.
+// It would also only half-work: CancelExecution forwards the caller's
+// X-Tenant-ID into AbortWorkflow, which runs its own tenancy check against a
+// value an org-bound session does not hold.
+func (h *UnifiedExecutionHandler) checkTenantOwnershipStrict(w http.ResponseWriter, r *http.Request, exec *execution.ExecutionStatus) bool {
+	return h.authorizeExecution(w, r, exec, false)
+}
+
+// authorizeExecution validates that the execution belongs to the requesting
+// caller. Returns true if the request is allowed, false if denied.
 //
 // Multi-tenant isolation: returns 404 on mismatch (not 403) to avoid leaking
-// execution existence across tenants. Requires both X-Tenant-ID and X-Org-ID
-// headers to be present on the request when the execution has non-empty
-// tenant_id/org_id — permissive fallback is removed because it was a
-// cross-tenant data leak vector (executions without tenant_id were accessible
-// to any caller).
-func (h *UnifiedExecutionHandler) checkTenantOwnership(w http.ResponseWriter, r *http.Request, exec *execution.ExecutionStatus) bool {
+// execution existence across tenants. Requires X-Org-ID, plus X-Tenant-ID
+// unless the caller carries a trusted org-wide tenancy assertion -- the
+// permissive fallback is removed because it was a cross-tenant data leak
+// vector (executions without tenant_id were accessible to any caller).
+//
+// #3367: a caller whose authority IS the org (the customer portal session
+// plane) is authorized on org_id alone. The row's tenant_id is the executing
+// credential's id, which a portal session never holds, so comparing it there
+// 404'd every execution the session was entitled to open from its own list.
+//
+// The org compare runs through tenantscope rather than a raw `!=`, so this
+// half of the fix and the repository half agree on what a usable org key is:
+// blank, whitespace-only and the migration core/156 unowned sentinel all fail
+// closed, on BOTH the caller's side and the row's. A raw compare would have
+// let a deployment whose ORG_ID is the sentinel open every unowned row here
+// while the list refused them.
+//
+// Note the status split, which is deliberate and asymmetric. A caller that
+// presented NO tenancy key at all gets 401 (an authentication problem it can
+// see and fix). Everything after that -- an unusable caller key, an unusable
+// row key, a mismatch -- is 404, including the tenantscope.ErrNoCallerScope
+// the package documents as a 401: past the presence check, distinguishing
+// "your org is the unowned sentinel" from "that execution is not yours" would
+// be an existence oracle across the tenancy boundary this function guards.
+//
+// R3 round 2: only the PRESENCE decision looks at a trimmed value; the
+// comparisons use the raw one. The writer (repository Create) stamps
+// tenant_id/org_id raw, so a reader that silently trimmed before comparing
+// would be a second call site normalizing one value differently. The org
+// dimension is safe either way because AuthorizeOrgOnly trims BOTH sides
+// symmetrically.
+func (h *UnifiedExecutionHandler) authorizeExecution(w http.ResponseWriter, r *http.Request, exec *execution.ExecutionStatus, orgScoped bool) bool {
 	tenantID := r.Header.Get("X-Tenant-ID")
 	orgID := r.Header.Get("X-Org-ID")
 
 	// Require authenticated identity on every request. The agent's auth
 	// middleware sets these headers from the validated client license; if
 	// they're missing here, the request bypassed auth and should be denied.
-	if tenantID == "" || orgID == "" {
+	// An org-scoped caller still MUST present an org: that predicate is the
+	// entire tenancy boundary once the tenant compare is dropped.
+	if strings.TrimSpace(orgID) == "" || (strings.TrimSpace(tenantID) == "" && !orgScoped) {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
 		return false
 	}
 
-	// Enforce strict match. Executions that lack a tenant_id or org_id are
-	// treated as not-owned-by-anyone and returned as 404.
-	if exec.TenantID == "" || exec.OrgID == "" {
+	// Executions that lack a usable org_id (or, for a credential-scoped
+	// caller, a tenant_id) are treated as not-owned-by-anyone.
+	if tenantscope.NewOrgOnly(orgID).AuthorizeOrgOnly(exec.OrgID) != nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
 		return false
 	}
-	if exec.TenantID != tenantID || exec.OrgID != orgID {
+	if !orgScoped && (exec.TenantID == "" || exec.TenantID != tenantID) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
 		return false
 	}
@@ -148,9 +236,66 @@ func (h *UnifiedExecutionHandler) ListExecutions(w http.ResponseWriter, r *http.
 		req.Status = &s
 	}
 
-	// Get tenant context from headers
+	// Get tenant context from headers.
 	req.TenantID = r.Header.Get("X-Tenant-ID")
 	req.OrgID = r.Header.Get("X-Org-ID")
+
+	// #3367: drop the credential narrowing for a caller bound to the ORG.
+	//
+	// execution_history.tenant_id holds the EXECUTING CALLER'S CREDENTIAL id
+	// (the Basic-auth username the agent derives the scope from), while a
+	// portal session's X-Tenant-ID is portal_default_tenant_id's arbitrary
+	// display default for the org. ANDing the two matched zero rows on any
+	// deployment whose app credentials are not named after the org, so the
+	// dashboard "Workflows Run" tile and the whole Executions page rendered a
+	// confident 0 over an org with live workflows.
+	//
+	// The org predicate is the entire tenancy boundary here, and OrgWide is
+	// what makes it mandatory: the repository validates the org key and
+	// refuses the read without a usable one.
+	//
+	// This is the same resolution #3377 reached on the sibling approvals
+	// queue: the org scope was the security win and the tenant narrowing was
+	// the defect, because it HID an org's own rows one scope level down.
+	//
+	// Narrow, on purpose: the branch requires a trusted org-tenancy assertion
+	// AND a bound org, so agent-proxied SDK callers keep reading exactly their
+	// own credential's executions. Widening THAT path is a separate decision
+	// about who may see a sibling credential's step names, models and costs,
+	// and is not smuggled in here.
+	//
+	// OrgWide is set rather than the tenant merely cleared, because "org set,
+	// tenant empty" is a shape any caller can produce by OMITTING a header,
+	// and the repository must not serve a BYPASSRLS read off a shape (R3
+	// round 1). A caller with no tenant header and no assertion keeps the old
+	// behaviour exactly: an RLS-scoped org-only read.
+	//
+	// The org is tested TRIMMED (R3 round 2): the repository judges the key
+	// with tenantscope, which trims, so gating on a raw `!= ""` here would let
+	// a whitespace-only X-Org-ID set OrgWide and then be refused downstream as
+	// a 500, where the by-id path answers the same input with a 401.
+	if strings.TrimSpace(req.OrgID) != "" && callerHasOrgTenancyScope(r) {
+		req.TenantID = ""
+		req.OrgWide = true
+	}
+
+	// R3 MAJOR-1: a request carrying NEITHER key is a caller bug or a
+	// degenerate session, never a deliberate cross-tenant listing. It used to
+	// fall through to an unscoped `WHERE 1=1` read of every org's executions.
+	// Refuse with the same status authorizeExecution gives the same input, so
+	// the two halves of this handler answer a missing identity identically.
+	if strings.TrimSpace(req.TenantID) == "" && strings.TrimSpace(req.OrgID) == "" {
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Tenant or org identity required")
+		return
+	}
+
+	// R3 MINOR-3: normalize the org key ONCE, here, so the guard above and the
+	// repository predicate judge the same string. The repository refuses an
+	// unnormalized key (deliberately: the writer stamps raw, and two call sites
+	// normalizing one value differently WILL diverge), which previously made a
+	// padded X-Org-ID a 500 on this path while the by-id path answered 200.
+	req.OrgID = strings.TrimSpace(req.OrgID)
+	req.TenantID = strings.TrimSpace(req.TenantID)
 
 	// Use the base tracker for listing
 	tracker := execution.NewBaseExecutionTracker(h.repo)
@@ -189,6 +334,20 @@ func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executio
 			cost := exec.TotalCost()
 			if cost > 0 {
 				exec.ActualCostUSD = &cost
+			}
+		}
+		// #3442: a WCP row's cached step snapshot is written at /gate time
+		// (approval_status=pending); reconcile it against the live
+		// workflow_steps before returning. This used to happen only in
+		// GetWorkflowStatus, i.e. only for a caller who passed the WORKFLOW
+		// id - never for the portal Executions page, which passes the
+		// EXECUTION id and is answered right here. Now that a WCP execution
+		// row IS addressed by its workflow id, every caller lands on this
+		// strategy, so the merge has to live here or it would have been
+		// retired by the convergence.
+		if exec.ExecutionType == execution.ExecutionTypeWCP && h.wcpTracker != nil {
+			if workflowID, _ := exec.Metadata["workflow_id"].(string); workflowID != "" {
+				h.wcpTracker.ReconcileStepApprovals(ctx, workflowID, exec)
 			}
 		}
 		return exec, nil
@@ -305,8 +464,9 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Verify tenant ownership
-	if !h.checkTenantOwnership(w, r, exec) {
+	// Verify tenant ownership. STRICT: cancel is a write, so it keeps the
+	// pre-#3367 credential compare (see checkTenantOwnershipStrict).
+	if !h.checkTenantOwnershipStrict(w, r, exec) {
 		return
 	}
 

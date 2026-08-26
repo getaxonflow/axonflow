@@ -1348,7 +1348,7 @@ func TestFetchApprovedData(t *testing.T) {
 			mcpRegistry = nil
 			defer func() { mcpRegistry = oldRegistry }()
 
-			result, err := fetchApprovedData(ctx, tt.dataSources, tt.query, user, client)
+			result, err := fetchApprovedData(ctx, tt.dataSources, tt.query, user, client, time.Now())
 
 			// Should not error even with nil registry
 			if err != nil {
@@ -1531,10 +1531,13 @@ func TestStoreLLMCallAudit(t *testing.T) {
 			int64(1500),
 			sqlmock.AnyArg(), // estimated_cost_usd
 			sqlmock.AnyArg(), // metadata
+			// #3435: org_id is now stamped, so an org-scoped regulator export
+			// can reach the row. It was omitted entirely before.
+			"org-1",
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err = storeLLMCallAudit(db, "audit-123", req, 0.009)
+	err = storeLLMCallAudit(db, "audit-123", req, 0.009, "org-1")
 	if err != nil {
 		t.Errorf("storeLLMCallAudit() error = %v", err)
 	}
@@ -1566,7 +1569,7 @@ func TestStoreLLMCallAudit_WithError(t *testing.T) {
 	mock.ExpectExec("INSERT INTO llm_call_audits").
 		WillReturnError(fmt.Errorf("database error"))
 
-	err = storeLLMCallAudit(db, "audit-456", req, 0.003)
+	err = storeLLMCallAudit(db, "audit-456", req, 0.003, "org-1")
 	if err == nil {
 		t.Error("Expected error, got nil")
 	}
@@ -1673,7 +1676,7 @@ func TestQueueLLMCallAudit_WithAuditQueue(t *testing.T) {
 	}
 
 	// Queue the audit
-	err = queueLLMCallAudit("audit-queue-test", req, 0.009)
+	err = queueLLMCallAudit("audit-queue-test", req, 0.009, "org-1")
 	if err != nil {
 		t.Errorf("queueLLMCallAudit() error = %v", err)
 	}
@@ -1770,7 +1773,7 @@ func TestQueueLLMCallAudit_FallbackToDirectDB(t *testing.T) {
 	}
 
 	// Should fallback to direct DB write
-	err = queueLLMCallAudit("audit-fallback-test", req, 0.003)
+	err = queueLLMCallAudit("audit-fallback-test", req, 0.003, "org-1")
 	if err != nil {
 		t.Errorf("queueLLMCallAudit() error = %v (expected fallback to direct DB)", err)
 	}
@@ -1833,7 +1836,7 @@ func TestQueueLLMCallAudit_NoStorageAvailable(t *testing.T) {
 	}
 
 	// Should not error even with no storage available
-	err := queueLLMCallAudit("audit-no-storage", req, 0.003)
+	err := queueLLMCallAudit("audit-no-storage", req, 0.003, "org-1")
 	if err != nil {
 		t.Errorf("queueLLMCallAudit() should not error with no storage, got: %v", err)
 	}
@@ -1900,7 +1903,7 @@ func TestFetchApprovedData_NilRegistry(t *testing.T) {
 		ID: "test-client",
 	}
 
-	result, err := fetchApprovedData(ctx, []string{"test-source"}, "test query", user, client)
+	result, err := fetchApprovedData(ctx, []string{"test-source"}, "test query", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error with nil registry, got: %v", err)
 	}
@@ -1920,7 +1923,7 @@ func TestFetchApprovedData_EmptyDataSources(t *testing.T) {
 		ID: "test-client",
 	}
 
-	result, err := fetchApprovedData(ctx, []string{}, "test query", user, client)
+	result, err := fetchApprovedData(ctx, []string{}, "test query", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error with empty sources, got: %v", err)
 	}
@@ -1946,7 +1949,7 @@ func TestFetchApprovedData_NoPermission(t *testing.T) {
 	}
 
 	// Should not fetch because user lacks permission
-	result, err := fetchApprovedData(ctx, []string{"test-source"}, "test query", user, client)
+	result, err := fetchApprovedData(ctx, []string{"test-source"}, "test query", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
@@ -2172,10 +2175,11 @@ func TestStoreLLMCallAudit_Success(t *testing.T) {
 			int64(1500),
 			sqlmock.AnyArg(), // estimated cost
 			sqlmock.AnyArg(), // metadata JSON
+			"org-1",          // #3435: org_id, stamped from the authenticated identity
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005)
+	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005, "org-1")
 	if err != nil {
 		t.Errorf("storeLLMCallAudit failed: %v", err)
 	}
@@ -2209,7 +2213,7 @@ func TestStoreLLMCallAudit_DBError(t *testing.T) {
 	mock.ExpectExec("INSERT INTO llm_call_audits").
 		WillReturnError(fmt.Errorf("database error"))
 
-	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005)
+	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005, "org-1")
 	if err == nil {
 		t.Error("Expected error when DB insert fails")
 	}
@@ -2446,7 +2450,7 @@ func TestFetchApprovedData_WithMockConnector(t *testing.T) {
 	}
 	client := &Client{ID: "test-client"}
 
-	result, err := fetchApprovedData(ctx, []string{"test-postgres"}, "SELECT * FROM users", user, client)
+	result, err := fetchApprovedData(ctx, []string{"test-postgres"}, "SELECT * FROM users", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
@@ -2501,7 +2505,7 @@ func TestFetchApprovedData_ConnectorQueryError(t *testing.T) {
 	}
 	client := &Client{ID: "test-client"}
 
-	result, err := fetchApprovedData(ctx, []string{"failing-connector"}, "SELECT * FROM users", user, client)
+	result, err := fetchApprovedData(ctx, []string{"failing-connector"}, "SELECT * FROM users", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error even when query fails (should continue), got: %v", err)
 	}
@@ -2529,7 +2533,7 @@ func TestFetchApprovedData_ConnectorNotFound(t *testing.T) {
 	}
 	client := &Client{ID: "test-client"}
 
-	result, err := fetchApprovedData(ctx, []string{"nonexistent-connector"}, "SELECT * FROM users", user, client)
+	result, err := fetchApprovedData(ctx, []string{"nonexistent-connector"}, "SELECT * FROM users", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error when connector not found, got: %v", err)
 	}
@@ -2573,7 +2577,7 @@ func TestFetchApprovedData_MultipleConnectors(t *testing.T) {
 	}
 	client := &Client{ID: "test-client"}
 
-	result, err := fetchApprovedData(ctx, []string{"pg1", "pg2"}, "SELECT 1", user, client)
+	result, err := fetchApprovedData(ctx, []string{"pg1", "pg2"}, "SELECT 1", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
@@ -2621,7 +2625,7 @@ func TestFetchApprovedData_MCPQueryPermission(t *testing.T) {
 	}
 	client := &Client{ID: "test-client"}
 
-	result, err := fetchApprovedData(ctx, []string{"test-db"}, "SELECT 42 as value", user, client)
+	result, err := fetchApprovedData(ctx, []string{"test-db"}, "SELECT 42 as value", user, client, time.Now())
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}

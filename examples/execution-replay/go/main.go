@@ -73,7 +73,12 @@ func main() {
 			fmt.Printf("     - %s: %s (%d/%d steps, status=%s)\n",
 				exec.RequestID, exec.WorkflowName, exec.CompletedSteps, exec.TotalSteps, exec.Status)
 			assert(exec.RequestID != "", "Execution has valid request_id")
-			assert(strings.HasPrefix(exec.RequestID, "req_") || strings.HasPrefix(exec.RequestID, "exec_") || strings.HasPrefix(exec.RequestID, "wf_") || strings.HasPrefix(exec.RequestID, "plan_"),
+			// `wfe_` is the in-process declarative workflow engine, whose runs
+			// are what the replay recorder writes. It carried `wf_` until
+			// #3442 split it off the control-plane workflow prefix; both are
+			// accepted here so this example passes against a stack holding
+			// rows from either side of that change.
+			assert(strings.HasPrefix(exec.RequestID, "req_") || strings.HasPrefix(exec.RequestID, "exec_") || strings.HasPrefix(exec.RequestID, "wfe_") || strings.HasPrefix(exec.RequestID, "wf_") || strings.HasPrefix(exec.RequestID, "plan_"),
 				"Execution ID has valid prefix")
 		}
 	} else {

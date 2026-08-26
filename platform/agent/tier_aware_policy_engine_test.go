@@ -86,7 +86,7 @@ func effectiveCols() []string {
 	return []string{
 		"id", "policy_id", "name", "category", "pattern", "severity",
 		"description", "action", "tier", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id", "segment_id",
+		"tenant_id", "org_id", "segment_id",
 		"tags", "metadata", "version",
 		"created_at", "updated_at", "created_by", "updated_by",
 	}
@@ -114,9 +114,13 @@ func emptyOverrideRows() *sqlmock.Rows {
 // resolver's segment IDs reach the SQL query: a caller that resolved
 // segments but discarded them before calling GetEffective (e.g. passed nil)
 // would still get the canned rows back under the old unconstrained
-// mock.ExpectQuery, silently passing. The tenantID/orgID positional args
-// ($1/$2) are left as sqlmock.AnyArg() — they are constant across a given
-// test's setup and not what this helper exists to pin.
+// mock.ExpectQuery, silently passing.
+//
+// Decision 5 (#3490): pass A now binds TWO args, not three - the caller
+// tenant stopped being one of them, and $1 is the same scopeOrg the
+// set_config above binds. That is asserted rather than left AnyArg: the
+// whole change is that ONE key drives both the RLS GUC and the predicate, so
+// an edit that let them diverge must fail here.
 func expectEffectiveTwoPass(mock sqlmock.Sqlmock, scopeOrg string, tenantRows, overrideRows, globalRows *sqlmock.Rows, expectedSegments []string) {
 	segArg := expectedSegments
 	if segArg == nil {
@@ -127,7 +131,7 @@ func expectEffectiveTwoPass(mock sqlmock.Sqlmock, scopeOrg string, tenantRows, o
 		WithArgs(scopeOrg).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT.*FROM static_policies sp`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), pq.Array(segArg)).
+		WithArgs(scopeOrg, pq.Array(segArg)).
 		WillReturnRows(tenantRows)
 	mock.ExpectQuery(`SELECT po\.id, po\.policy_id`).WillReturnRows(overrideRows)
 	mock.ExpectCommit()
@@ -156,14 +160,14 @@ func TestTierAwarePolicyEngine_GetEffectivePolicies(t *testing.T) {
 	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-2", "pii_ssn", "PII SSN Detection", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
 		"Detects SSN patterns", "redact", "tenant", 50, true,
-		nil, tenantID, "", nil,
+		tenantID, "", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "user", "user",
 	)
 	globalRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-1", "sys_sqli_union", "SQL Injection UNION", "security-sqli", `union\s+select`, "critical",
 		"Blocks UNION-based SQL injection", "block", "system", 100, true,
-		nil, "global", "", nil,
+		"global", "global", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "system", "system",
 	)
@@ -214,14 +218,14 @@ func TestTierAwarePolicyEngine_EvaluatePolicy(t *testing.T) {
 	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-2", "pii_ssn", "PII SSN Detection", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
 		"Detects SSN patterns", "redact", "tenant", 50, true,
-		nil, tenantID, "", nil,
+		tenantID, "", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "user", "user",
 	)
 	globalRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-1", "sys_sqli_union", "SQL Injection UNION", "security-sqli", `(?i)union\s+select`, "critical",
 		"Blocks UNION-based SQL injection", "block", "system", 100, true,
-		nil, "global", "", nil,
+		"global", "global", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "system", "system",
 	)
@@ -298,14 +302,14 @@ func TestTierAwarePolicyEngine_EvaluateAllPolicies(t *testing.T) {
 	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-2", "pii_phone", "Phone Number Detection", "pii-us", `\d{3}-\d{4}`, "medium",
 		"Detects phone numbers", "warn", "tenant", 50, true,
-		nil, tenantID, "", nil,
+		tenantID, "", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "user", "user",
 	)
 	globalRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-1", "pii_ssn", "PII SSN Detection", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
 		"Detects SSN patterns", "block", "system", 100, true,
-		nil, "global", "", nil,
+		"global", "global", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "system", "system",
 	)
@@ -353,7 +357,7 @@ func TestTierAwarePolicyEngine_InvalidateCache(t *testing.T) {
 	globalRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-1", "test_policy", "Test Policy", "security-sqli", `test`, "medium",
 		"Test", "block", "system", 100, true,
-		nil, "global", "", nil,
+		"global", "global", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "system", "system",
 	)
@@ -532,7 +536,7 @@ func TestTierAwarePolicyEngine_EvaluatePolicy_RequireApproval(t *testing.T) {
 	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-hitl", "hitl_credit_scoring", "Credit Scoring HITL", "sensitive-data", `(?i)credit\s*scor`, "critical",
 		"Requires human approval for credit scoring decisions", "require_approval", "tenant", 100, true,
-		nil, tenantID, "", nil,
+		tenantID, "", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "admin", "admin",
 	)
@@ -607,14 +611,14 @@ func TestTierAwarePolicyEngine_GetEffectivePoliciesByCategory(t *testing.T) {
 	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-2", "pii_policy", "PII SSN", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
 		"Detects SSN", "redact", "tenant", 50, true,
-		nil, tenantID, "", nil,
+		tenantID, "", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "user", "user",
 	)
 	globalRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-1", "sqli_policy", "SQL Injection", "security-sqli", `union\s+select`, "critical",
 		"Blocks UNION-based SQL injection", "block", "system", 100, true,
-		nil, "global", "", nil,
+		"global", "global", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "system", "system",
 	)
@@ -661,14 +665,14 @@ func TestTierAwarePolicyEngine_GetEffectivePoliciesByTier(t *testing.T) {
 	tenantRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-2", "tenant_policy", "Tenant Policy", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
 		"Tenant-level policy", "redact", "tenant", 50, true,
-		nil, tenantID, "", nil,
+		tenantID, "", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "user", "user",
 	)
 	globalRows := sqlmock.NewRows(effectiveCols()).AddRow(
 		"uuid-1", "system_policy", "System Policy", "security-sqli", `union\s+select`, "critical",
 		"System-level policy", "block", "system", 100, true,
-		nil, "global", "", nil,
+		"global", "global", nil,
 		"[]", "{}", 1,
 		testTime, testTime, "system", "system",
 	)

@@ -71,8 +71,8 @@ func installMCPDetection(t *testing.T, enabled, wantEngine bool) {
 // RedactionEvaluated must be true even on a clean response with nothing to mask.
 func TestEvaluateOutputPolicies_RedactionEvaluated_TrueWhenScanned(t *testing.T) {
 	installMCPDetection(t, true /* enabled */, true /* engine */)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
-		nil, "nothing sensitive here", nil, 0, false, true /* isGateway */)
+	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
+		nil, "nothing sensitive here", nil, 0, false, true /* isGateway */, nil)
 	if !out.RedactionEvaluated {
 		t.Error("detection on + live engine → RedactionEvaluated must be true, even on a clean response")
 	}
@@ -85,8 +85,8 @@ func TestEvaluateOutputPolicies_RedactionEvaluated_TrueWhenScanned(t *testing.T)
 // be false — a strict PEP then fails closed.
 func TestEvaluateOutputPolicies_RedactionEvaluated_FalseWhenDetectionOff(t *testing.T) {
 	installMCPDetection(t, false /* disabled */, false)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
-		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */)
+	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
+		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */, nil)
 	if out.RedactionEvaluated {
 		t.Error("detection disabled → RedactionEvaluated must be false so a PEP fails closed")
 	}
@@ -97,8 +97,8 @@ func TestEvaluateOutputPolicies_RedactionEvaluated_FalseWhenDetectionOff(t *test
 // "evaluated" would be a fail-open. Must be false — faithful to the input plane.
 func TestEvaluateOutputPolicies_RedactionEvaluated_FalseWhenEngineNil(t *testing.T) {
 	installMCPDetection(t, true /* enabled */, false /* nil engine */)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
-		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */)
+	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
+		nil, "contact bob@example.com", nil, 0, false, true /* isGateway */, nil)
 	if out.RedactionEvaluated {
 		t.Error("detection on but engine nil → generic PII not scanned → RedactionEvaluated must be false (no fail-open)")
 	}

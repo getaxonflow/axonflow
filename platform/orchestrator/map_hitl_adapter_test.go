@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/agent/license"
 )
 
 // mockPolicyEngineForHITL implements the dynamicPolicyEngine interface for CheckPolicy tests.
@@ -79,12 +81,21 @@ func TestMapStepRejectHandler_CommunityNoLicense(t *testing.T) {
 // availability check, which returns 503 because hitlEnabled is false in
 // these tests — that's fine; what we're pinning here is that the tier gate
 // no longer 403s on Evaluation callers.
+//
+// R3 round 2: the mock now carries the TIER, not just hitlEnabled. It used to
+// set `hitlEnabled: true` alone and leave `tier` at its zero value, so the
+// fixture asserted "a checker that says HITL is on" rather than "an Evaluation
+// licence" - the exact conflation this release separates. Since the
+// 2026-08-26 decision Evaluation is NOT entitled to create approvals while it
+// IS entitled to resolve them, so a fixture that cannot tell the two apart
+// cannot pin either. With the tier set, this test now fails if the resolve
+// gate is ever collapsed back onto the creation entitlement.
 func TestMapStepApproveHandler_CommunityWithEvalLicenseBypassesTierCheck(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 
 	origTier := tierChecker
 	origEnabled := hitlEnabled
-	tierChecker = &mockLicenseCheckerForSim{hitlEnabled: true}
+	tierChecker = &mockLicenseCheckerForSim{tier: license.TierEvaluation, hitlEnabled: false}
 	hitlEnabled = false // ensure we stop at the HITL-enabled check, not the tier check
 	defer func() {
 		tierChecker = origTier

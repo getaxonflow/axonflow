@@ -257,7 +257,7 @@ func TestWriteDecisionAuditLog_StampsNamesAndVersions(t *testing.T) {
 			AddRow("sys_pii_indonesia_ktp", 2))
 
 	var detailsJSON []byte
-	args := make([]driver.Value, 20)
+	args := make([]driver.Value, 21) // 21st = response_time_ms (#3424)
 	for i := range args {
 		args[i] = sqlmock.AnyArg()
 	}
@@ -270,7 +270,7 @@ func TestWriteDecisionAuditLog_StampsNamesAndVersions(t *testing.T) {
 		"dec-e2e-3365", "org-1", "tenant-1", "llm", "blocked",
 		[]string{"sys_pii_indonesia_ktp", "rbi_kill_switch"},
 		[]string{"blocked by policy"},
-		nil, false,
+		nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{policyNames: map[string]string{
 			"sys_pii_indonesia_ktp": "Indonesian KTP Detection",
 		}})
@@ -310,7 +310,7 @@ func TestWriteDecisionAuditLog_AllowVerdictSkipsVersionLookup(t *testing.T) {
 
 	writeDecisionAuditLog(context.Background(), db,
 		"dec-allow-3365", "org-1", "tenant-1", "llm", "allow",
-		[]string{"sys_pii_indonesia_ktp"}, nil, nil, false,
+		[]string{"sys_pii_indonesia_ktp"}, nil, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{policyNames: map[string]string{"sys_pii_indonesia_ktp": "Indonesian KTP Detection"}})
 
 	if err := mock.ExpectationsWereMet(); err != nil {

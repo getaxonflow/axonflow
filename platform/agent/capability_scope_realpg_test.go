@@ -130,7 +130,7 @@ func TestCapabilityScope_RealPG(t *testing.T) {
 	evalWith := func(connectorType, text string) sharedpolicy.RequestResult {
 		t.Helper()
 		mcpCfg := ResolveMCPDetectionConfig(ctx, "")
-		out := evaluateInputPolicies(ctx, tenant, "", "captest-user", "", connectorType, connectorType, "execute", text, nil, mcpCfg, true)
+		out := evaluateInputPolicies(ctx, tenant, "", "captest-user", "", connectorType, connectorType, "execute", text, nil, mcpCfg, true, nil)
 		if out.EvalUnavailable || out.DynamicBlocked {
 			t.Fatalf("unexpected dynamic-policy outcome for %q: %+v", connectorType, out)
 		}
@@ -250,7 +250,7 @@ func TestCapabilityScope_RealPG(t *testing.T) {
 		mcpCfg := ResolveMCPDetectionConfig(ctx, "")
 		out := evaluateInputPolicies(ctx, tenant, "", "captest-user", "",
 			"jira_get_issue" /* connectorName: registry-colliding */, "", /* toolIdentity: managed plane */
-			"query", `SELECT id FROM users; DROP TABLE users; --`, nil, mcpCfg, true)
+			"query", `SELECT id FROM users; DROP TABLE users; --`, nil, mcpCfg, true, nil)
 		if out.StaticResult == nil || !out.StaticResult.Blocked {
 			t.Error("managed-connector plane must keep FULL evaluation regardless of a registry-colliding connector NAME")
 		}

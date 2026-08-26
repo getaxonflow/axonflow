@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // errExecMustNotRun is wired into the mock connector for the execute block test:
@@ -144,7 +145,7 @@ func TestFetchApprovedData_ReadOnlyPosture_BlocksWrite(t *testing.T) {
 
 	user := &User{ID: 1, Email: "u@e.com", Role: "service", TenantID: "default", OrgID: "org-1", Permissions: []string{"*"}}
 	client := &Client{ID: "client-1", TenantID: "default", OrgID: "org-1"}
-	res, err := fetchApprovedData(context.Background(), []string{"test-db"}, "DELETE FROM t WHERE 1=1", user, client)
+	res, err := fetchApprovedData(context.Background(), []string{"test-db"}, "DELETE FROM t WHERE 1=1", user, client, time.Now())
 	if err == nil {
 		t.Fatalf("expected error (read-only posture block), got nil with res=%v", res)
 	}
@@ -166,7 +167,7 @@ func TestFetchApprovedData_ReadOnlyPosture_AllowsRead(t *testing.T) {
 
 	user := &User{ID: 1, Email: "u@e.com", Role: "service", TenantID: "default", OrgID: "org-1", Permissions: []string{"*"}}
 	client := &Client{ID: "client-1", TenantID: "default", OrgID: "org-1"}
-	res, err := fetchApprovedData(context.Background(), []string{"test-db"}, "SELECT id FROM t", user, client)
+	res, err := fetchApprovedData(context.Background(), []string{"test-db"}, "SELECT id FROM t", user, client, time.Now())
 	if err != nil {
 		t.Fatalf("expected SELECT pre-check fetch to succeed under read-only, got %v", err)
 	}

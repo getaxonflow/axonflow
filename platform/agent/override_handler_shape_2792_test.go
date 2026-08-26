@@ -52,8 +52,19 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 	ctx := context.WithValue(context.Background(), ContextKeyOrgID, org)
 	const tenant = "acme-eval-org"
 
-	// Post-133 schema: organization_id is TEXT on both policy tables; policy_id is
-	// UUID (mig 030). clients is consulted by isEnterpriseLicense (Enterprise gates
+	// Post-166 schema: the legacy organization_id column is GONE from both
+	// policy tables (#3334), and valid_override_scope went with it - Postgres
+	// drops a CHECK when a column it references is dropped, and the property
+	// it guaranteed ("every override carries an organisation") is now
+	// migration core/165's NOT NULL on org_id, unconditionally. policy_id is
+	// UUID (mig 030).
+	//
+	// THIS DDL IS HAND-BUILT AND THEREFORE CANNOT PROVE ANYTHING ABOUT THE
+	// MIGRATIONS. It is kept because the behaviour under test is repository
+	// SQL against a real Postgres, not schema evolution - but no assertion
+	// here may claim a migration ran, because the only thing such an
+	// assertion would check is this literal. The migration's own effect is
+	// proven in migrations/core/166 and by the runtime-e2e suite. clients is consulted by isEnterpriseLicense (Enterprise gates
 	// override create). Only the columns the repositories read/write are declared.
 	pc.RunMigration(t, `
 		CREATE TABLE clients (
@@ -73,7 +84,6 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 			tier       varchar(50),
 			priority   int,
 			enabled    boolean,
-			organization_id text,
 			tenant_id  varchar(255),
 			org_id     varchar(255),
 			segment_id varchar(255),
@@ -90,19 +100,21 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 			policy_id  uuid NOT NULL,            -- matches prod mig 030 (UUID NOT NULL)
 			policy_type varchar(50),
-			organization_id text,
 			tenant_id  varchar(100),
 			org_id     varchar(255) NOT NULL,
 			action_override varchar(50),
 			enabled_override boolean,
 			override_reason text,
 			expires_at timestamptz,
+			-- #3490: the Mechanism-A override read filters revoked_at now, as
+			-- the Mechanism-B matcher always has.
+			revoked_at timestamptz,
 			created_by varchar(255),
 			created_at timestamptz DEFAULT now(),
 			updated_by varchar(255),
 			updated_at timestamptz DEFAULT now(),
 			CONSTRAINT valid_override_scope CHECK (
-				(organization_id IS NOT NULL AND tenant_id IS NULL) OR (tenant_id IS NOT NULL)
+				tenant_id IS NULL OR tenant_id <> ''
 			)
 		);
 	`)
@@ -127,13 +139,18 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 	staticRepo := NewStaticPolicyRepository(db)
 
 	// ---- Drive the REAL create path in the FIXED handler's shape ----
-	// organization_id NULL, org_id + tenant_id set (both to the non-UUID org),
-	// policy_id = the static policy's UUID (as the portal sends it).
+	// org_id + tenant_id set (both to the non-UUID org), policy_id = the
+	// static policy's UUID (as the portal sends it).
+	//
+	// #3334: the OrganizationID field this literal used to set to nil is gone
+	// with the column (migration core/166). The property this test exists for
+	// is UNCHANGED and is now structural rather than conventional: a non-UUID
+	// org must not break the override create path, and there is no longer a
+	// uuid-typed column for it to break against.
 	tenantVal := tenant
 	warn := ActionWarn
 	override := &PolicyOverride{
 		PolicyID:       staticUUID,
-		OrganizationID: nil, // #2792: legacy uuid column left NULL
 		TenantID:       &tenantVal,
 		OrgID:          org, // canonical varchar org (RLS key)
 		ActionOverride: &warn,
@@ -159,21 +176,32 @@ func TestOverrideHandlerShape_NonUUIDOrg_RealPostgres(t *testing.T) {
 	assert.True(t, ktp.HasOverride, "GetEffective must resolve the override the handler wrote")
 	assert.Equal(t, "warn", ktp.EffectiveAction(), "effective action must be warn (block overridden)")
 
-	// (b) fetchable, and organization_id is STILL NULL (the whole point of #2792).
+	// (b) fetchable, carrying the non-UUID org in the column that is meant to
+	// hold it.
+	//
+	// #3334 changed what this leg can assert, and made it stronger. #2792's
+	// original claim was "organization_id is STILL NULL" - the fix of the day
+	// was to stop binding a non-UUID org into a uuid-typed column. Migration
+	// core/166 removes that column, so the failure mode it guarded against is
+	// now unrepresentable rather than merely avoided, and there is nothing left
+	// to assert NULL about. What replaces it is the positive claim: the
+	// non-UUID org round-trips through org_id, the column that has been VARCHAR
+	// since core/110 and that now carries the organisation for every row.
 	got, err := repo.GetOverrideForPolicy(ctx, staticUUID, &tenantVal, &orgPtr)
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Nil(t, got.OrganizationID, "the fix must leave organization_id NULL, not bind the string org")
+	assert.Equal(t, org, got.OrgID, "the non-UUID org must round-trip through org_id")
 	require.NotNil(t, got.TenantID)
 	assert.Equal(t, tenant, *got.TenantID)
 	require.NotNil(t, got.ActionOverride)
 	assert.Equal(t, ActionWarn, *got.ActionOverride)
 
-	// Belt-and-braces: the raw column is genuinely NULL in Postgres.
-	var orgColNull bool
-	require.NoError(t, db.QueryRow(
-		`SELECT organization_id IS NULL FROM policy_overrides WHERE id = $1`, got.ID).Scan(&orgColNull))
-	assert.True(t, orgColNull, "policy_overrides.organization_id must be SQL NULL")
+	// A "the column is gone" assertion was considered here and DELETED. This
+	// test builds its own DDL a few lines up, so such an assertion would read
+	// back the literal above and pass no matter what migration core/166 does -
+	// a check that cannot fail. The migration's effect is asserted where the
+	// migration actually runs: its own self-test block, and the runtime-e2e
+	// suite against a real migrated database.
 
 	// (c) deletable.
 	require.NoError(t, repo.Delete(ctx, got.ID, "portal-admin"))

@@ -316,7 +316,7 @@ func TestAuditSummary_NonAdmin_ScopedToOwnRows(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
 		mock.ExpectQuery("policy_details->>'policy_name'.+trigger_count").
 			WithArgs("tenant-x", sqlmock.AnyArg(), sqlmock.AnyArg(), "dev@acme.com", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+			WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 
 		body := `{"start_time":"2026-01-01T00:00:00Z","end_time":"2026-02-01T00:00:00Z"}`
 		req := httptest.NewRequest("POST", "/api/v1/audit/summary", strings.NewReader(body))

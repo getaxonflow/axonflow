@@ -41,8 +41,8 @@ func TestEvaluateOutputPolicies_IndonesiaWarnNoMask(t *testing.T) {
 	for _, action := range []DetectionAction{DetectionActionWarn, DetectionActionLog} {
 		t.Run(string(action), func(t *testing.T) {
 			withMCPPIIAction(t, action)
-			out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
-				nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+			out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
+				nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
 			if out.StaticResult != nil && out.StaticResult.Blocked {
 				t.Errorf("%s must not block", action)
 			}
@@ -59,8 +59,8 @@ func TestEvaluateOutputPolicies_IndonesiaWarnNoMask(t *testing.T) {
 // Under PII_ACTION=redact the Indonesia response step masks the NIK.
 func TestEvaluateOutputPolicies_IndonesiaRedactMasks(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionRedact)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
-		nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
+		nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
 	if out.RedactedMessage == "" {
 		t.Fatal("redact must mask the NIK on the response")
 	}
@@ -75,8 +75,8 @@ func TestEvaluateOutputPolicies_IndonesiaRedactMasks(t *testing.T) {
 // Under PII_ACTION=block a critical NIK is blocked (not masked) on the response.
 func TestEvaluateOutputPolicies_IndonesiaBlock(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionBlock)
-	out := evaluateOutputPolicies(context.Background(), "t1", "u1", "gw.test", "gw.test",
-		nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
+		nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
 	if out.StaticResult == nil || !out.StaticResult.Blocked {
 		t.Fatal("block mode must block a critical NIK on the response")
 	}
@@ -237,8 +237,8 @@ func TestEvaluateOutputPolicies_IndonesiaNIKUnaffectedByCapabilityScope(t *testi
 
 	t.Run("redact still masks NIK", func(t *testing.T) {
 		install(t, DetectionActionRedact)
-		out := evaluateOutputPolicies(context.Background(), "t1", "u1", jiraTool, jiraTool,
-			nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+		out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", jiraTool, jiraTool,
+			nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
 		if out.RedactedMessage == "" {
 			t.Fatal("NIK via a text-document tool must still redact")
 		}
@@ -249,8 +249,8 @@ func TestEvaluateOutputPolicies_IndonesiaNIKUnaffectedByCapabilityScope(t *testi
 
 	t.Run("block still blocks NIK", func(t *testing.T) {
 		install(t, DetectionActionBlock)
-		out := evaluateOutputPolicies(context.Background(), "t1", "u1", jiraTool, jiraTool,
-			nil, validNIKResponse, nil, 0, false, true /* isGateway */)
+		out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", jiraTool, jiraTool,
+			nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
 		if out.StaticResult == nil || !out.StaticResult.Blocked {
 			t.Fatal("block posture must block a critical NIK even via a text-document tool")
 		}

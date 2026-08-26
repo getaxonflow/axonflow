@@ -282,7 +282,6 @@ func DynamicPoliciesSchema() string {
 			org_id VARCHAR(255),
 			-- legacy org column: TEXT (not UUID) to match prod after migration 133
 			-- (org ids are free-form license strings, not UUIDs). org_id is canonical.
-			organization_id TEXT,
 			segment_id VARCHAR(255),
 			priority INTEGER DEFAULT 100,
 			enabled BOOLEAN DEFAULT true,
@@ -428,7 +427,6 @@ func StaticPoliciesSchema() string {
 			enabled BOOLEAN DEFAULT true,
 			-- legacy org column: TEXT (not UUID) to match prod after migration 133
 			-- (org ids are free-form license strings, not UUIDs). org_id is canonical.
-			organization_id TEXT,
 			tenant_id VARCHAR(255),
 			org_id VARCHAR(255),
 			tags JSONB DEFAULT '[]',

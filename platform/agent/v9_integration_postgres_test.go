@@ -4,6 +4,7 @@
 package agent
 
 import (
+	sharedaudit "axonflow/platform/shared/audit"
 	"context"
 	"database/sql"
 	"fmt"
@@ -72,7 +73,8 @@ func TestV9_AuditLogs_OrgIDPersistedAgainstRealPostgres(t *testing.T) {
 		"mcp_check_policy", "SELECT 1 -- v9", "h-v9",
 		"deny", "low",
 		[]RicherPolicyMatch{{PolicyName: "v9-p", PolicyID: "v9-pid", Version: 1}},
-		"corr-v9-input")
+		"corr-v9-input",
+		sharedaudit.LatencyUnmeasured)
 
 	// Path 2: writeOverrideUsedEvent
 	writeOverrideUsedEvent(context.Background(), db,

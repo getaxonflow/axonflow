@@ -192,8 +192,15 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 			Actions: []PolicyAction{
 				{
 					Type: "modify_risk",
+					// "add", additive -- matches this engine's actual
+					// modify_risk contract (db_dynamic_policies.go), the
+					// same key/semantics migration 031 seeds on the real
+					// sys_dyn_llm_cost system policy. This used to say
+					// "modifier": 1.5 (the retired in-memory engine's
+					// multiplicative convention, which this engine's switch
+					// never read), making the action a silent no-op.
 					Config: map[string]interface{}{
-						"modifier": 1.5,
+						"add": 0.2,
 					},
 				},
 				{
@@ -272,8 +279,11 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 				},
 				{
 					Type: "modify_risk",
+					// "add", additive -- see pol_expensive_query_limit's
+					// comment above for why (this engine's real contract,
+					// not the retired engine's multiplicative "modifier").
 					Config: map[string]interface{}{
-						"modifier": 1.3,
+						"add": 0.3,
 					},
 				},
 			},

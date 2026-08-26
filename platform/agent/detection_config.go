@@ -153,7 +153,31 @@ func DetectionConfigFromEnv() DetectionConfig {
 	} else {
 		base = ApplyEnforce(base, enforce)
 	}
+	warnIfHighRiskActionNotEnforced(enforce)
 	return DetectionConfigFromEnvWithBase(base)
+}
+
+// warnIfHighRiskActionNotEnforced makes an enforcement gap visible to
+// operators rather than leaving it silent. HighRiskAction is populated from
+// HIGH_RISK_ACTION (below), forced to "block" by ApplyEnforce when
+// AXONFLOW_ENFORCE's category list includes "high_risk" (enforce.go), and
+// given a per-profile default (profile.go) — but it is NOT a field on
+// ModeDetectionConfig, so it is dropped the moment BuildActionOverrides
+// (below) derives the static-category override map, and consumed by
+// nothing else. An operator who sets either lever reasonably believes it
+// does something; today it is a no-op beyond a log line. Warn on the two
+// signals that indicate deliberate operator intent — an explicit
+// HIGH_RISK_ACTION, or an explicit AXONFLOW_ENFORCE=...,high_risk,... —
+// rather than on every profile default, which would fire on every process
+// start regardless of whether the operator ever touched this lever.
+func warnIfHighRiskActionNotEnforced(enforce EnforceResult) {
+	explicitEnv := os.Getenv(EnvHighRiskAction) != ""
+	enforceIncludesHighRisk := !enforce.Unset() && enforce.Categories != nil && enforce.Categories[EnforceHighRisk]
+	if explicitEnv || enforceIncludesHighRisk {
+		log.Printf("[Detection] WARNING: HighRiskAction is configured (%s set=%v, AXONFLOW_ENFORCE includes high_risk=%v) but is NOT currently enforced anywhere in this process — "+
+			"HighRiskAction has no ModeDetectionConfig field and is dropped at derivation; the dynamic-risk policy that actually governs risk_score (sys_dyn_high_risk_block, orchestrator-side) reads its action from the database, not from this env var. This configuration is currently a no-op.",
+			EnvHighRiskAction, explicitEnv, enforceIncludesHighRisk)
+	}
 }
 
 // DetectionConfigFromEnvWithBase parses explicit category env vars on top of
@@ -518,10 +542,19 @@ func (c *ModeDetectionConfig) BuildActionOverrides() map[sharedpolicy.PolicyCate
 
 	// NOTE — intentionally NOT mapped here:
 	//   * HighRiskAction has no static text-engine category: "high risk" is a
-	//     risk-SCORE concept (risk_score > 0.8), enforced by the dynamic-risk
-	//     policy (sys_dyn_high_risk_block) in the orchestrator + the
-	//     AXONFLOW_ENFORCE opt-in (enforce.go), not by a static_policies
-	//     category. Adding it to this static-category override map is a no-op.
+	//     risk-SCORE concept (risk_score > 0.8), not a static_policies
+	//     category, so adding it to this static-category override map would
+	//     be a no-op regardless. It is NOT, however, enforced anywhere else
+	//     either — despite being populated from HIGH_RISK_ACTION, forced to
+	//     "block" by the AXONFLOW_ENFORCE high_risk opt-in (enforce.go), and
+	//     given per-profile defaults (profile.go), HighRiskAction is not a
+	//     field on ModeDetectionConfig, so it is dropped at derivation and
+	//     consumed by nothing but a log line — see
+	//     warnIfHighRiskActionNotEnforced above, which makes that gap visible
+	//     to operators who set either lever. The orchestrator's
+	//     sys_dyn_high_risk_block dynamic policy (currently "warn", migration
+	//     036) governs risk_score independently, reading its action from the
+	//     database, not from this env var or AXONFLOW_ENFORCE.
 	//   * DangerousQueryAction ("dangerous_queries") is a legacy string category
 	//     (no constant) carried only by tenant-tier starter policies, which the
 	//     gateway/decision Categories filters do not evaluate. Whether wiring it

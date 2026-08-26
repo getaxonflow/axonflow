@@ -87,10 +87,27 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *PolicyResource) e
 		tier = TierTenant
 	}
 
-	// Handle organization_id - convert empty string to nil for UUID column
-	var orgID interface{}
-	if policy.OrganizationID != "" {
-		orgID = policy.OrganizationID
+	// Decision 5 (#3490) R3 BLOCKER: org_id is written from the AUTHENTICATED
+	// organisation, not from the tenant. It used to be bound to $9 alongside
+	// tenant_id and client_id - all three the Basic-auth username - and once
+	// org_id became the selection key that made every policy created here
+	// either unenforceable (stamped with an organisation nobody authenticates
+	// as, in any deployment whose licence org differs from the tenant string)
+	// or, on a forged username, injectable into somebody else's organisation.
+	// The GUC below is set from the same value, so the two cannot disagree.
+	//
+	// Refused rather than defaulted when absent. A silent fallback to the
+	// tenant is precisely the behaviour being removed, and it fails in the
+	// quietest possible way: a 201, a row in the CRUD listing, and no
+	// enforcement anywhere.
+	//
+	// #3334 removes the legacy organization_id column (migration core/166)
+	// and with it the empty-string-to-nil dance this INSERT used to do for a
+	// column typed uuid until core/133. The refusal above is what makes that
+	// removal safe: there is no longer a second organisation column to
+	// disagree with, and the one that remains can never be blank.
+	if strings.TrimSpace(policy.OrganizationID) == "" {
+		return fmt.Errorf("Create: policy.OrganizationID must be non-empty (it is the org_id that selects this policy; #3490)")
 	}
 
 	// v9 compat (Epic #2230 Phase 2/4): client_id mirrors tenant_id ($9)
@@ -100,23 +117,23 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *PolicyResource) e
 	// v9 Phase 8 PR-C2 (#2384): dynamic_policies is mig 018 ENABLE RLS with
 	// policy `org_id = get_current_org_id()`. The legacy INSERT omitted the
 	// `org_id` column (only set tenant_id + organization_id UUID), which left
-	// org_id NULL on inserted rows — under axonflow_app_role the WITH CHECK
+	// org_id NULL on inserted rows - under axonflow_app_role the WITH CHECK
 	// rejected the INSERT outright. Fix: add org_id col, populate with
 	// policy.TenantID (== orgID at this writer post-Phase-6 collapse), wrap
 	// in WithOrgScope so the GUC + INSERT col match.
 	query := `
 		INSERT INTO dynamic_policies (
 			policy_id, name, description, policy_type, category, tier,
-			conditions, actions, tenant_id, client_id, organization_id, org_id,
+			conditions, actions, tenant_id, client_id, org_id,
 			priority, enabled, version, created_by, updated_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $9, $11, $12, $13, $14, $15, $16, $17)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`
 
-	if err := agent.WithOrgScope(ctx, r.db, policy.TenantID, func(tx *sql.Tx) error {
+	if err := agent.WithOrgScope(ctx, r.db, policy.OrganizationID, func(tx *sql.Tx) error {
 		_, execErr := tx.ExecContext(ctx, query,
 			policy.ID, policy.Name, policy.Description, string(policy.Type), policy.Category, string(tier),
-			conditionsJSON, actionsJSON, policy.TenantID, orgID,
+			conditionsJSON, actionsJSON, policy.TenantID, policy.OrganizationID,
 			policy.Priority, policy.Enabled, policy.Version, policy.CreatedBy, policy.UpdatedBy,
 			policy.CreatedAt, policy.UpdatedAt,
 		)
@@ -136,11 +153,36 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *PolicyResource) e
 }
 
 // GetByID retrieves a policy by its ID
-func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID string) (*PolicyResource, error) {
+// crudScope picks the value bound to app.current_org_id for this repository's
+// CRUD statements.
+//
+// Decision 5 (#3490) R3: Create and ImportBulk now write org_id from the
+// AUTHENTICATED organisation and set the GUC from the same value, while every
+// reader and the Update/Delete writers still set it from the TENANT. Under
+// axonflow_app_role that is a real divergence and not a cosmetic one: mig 018's
+// USING clause is `org_id = get_current_org_id()`, so a policy created with
+// org_id = "acme" is invisible to a connection whose GUC says "team-a" - the
+// create returns 201, the read-back 404s, Update reports zero rows affected and
+// Delete silently removes nothing. That is the #3039 failure shape, arriving
+// again by a different route, and the SaaS stacks are app-role provisioned.
+//
+// The org is used when the caller has one and the tenant otherwise. The tenant
+// fallback is not a second selection key: the WHERE clauses in this file remain
+// tenant-scoped exactly as before, so this changes only which rows RLS unlocks,
+// never which rows are asked for. Where no org is available the behaviour is
+// byte-for-byte what it was.
+func crudScope(tenantID, orgID string) string {
+	if s := strings.TrimSpace(orgID); s != "" {
+		return s
+	}
+	return tenantID
+}
+
+func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, orgID, policyID string) (*PolicyResource, error) {
 	query := `
 		SELECT policy_id, name, description, policy_type,
 		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
-		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       conditions, actions, tenant_id, COALESCE(org_id, ''),
 		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
@@ -150,7 +192,7 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 
 	policy := &PolicyResource{}
 	var conditionsJSON, actionsJSON []byte
-	var policyType, category, tier, orgID string
+	var policyType, category, tier, rowOrgID string
 
 	// dynamic_policies is RLS-enabled (mig 018, org_id = get_current_org_id()).
 	// The writers in this repository already wrap in WithOrgScope; the readers
@@ -164,15 +206,15 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 			return tx.QueryRowContext(ctx, query, policyID, tenantID).Scan(
 				&policy.ID, &policy.Name, &policy.Description, &policyType,
 				&category, &tier,
-				&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+				&conditionsJSON, &actionsJSON, &policy.TenantID, &rowOrgID,
 				&policy.Priority, &policy.Enabled, &policy.Version,
 				&policy.CreatedBy, &policy.UpdatedBy,
 				&policy.CreatedAt, &policy.UpdatedAt,
 			)
 		})
 	}
-	err := scopedGet(tenantID)
-	if err == sql.ErrNoRows && tenantID != GlobalTenantSentinel {
+	err := scopedGet(crudScope(tenantID, orgID))
+	if err == sql.ErrNoRows && crudScope(tenantID, orgID) != GlobalTenantSentinel {
 		err = scopedGet(GlobalTenantSentinel)
 	}
 
@@ -186,7 +228,7 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 	policy.Type = string(policyType)
 	policy.Category = category
 	policy.Tier = PolicyTier(tier)
-	policy.OrganizationID = orgID
+	policy.OrganizationID = rowOrgID
 
 	if err := json.Unmarshal(conditionsJSON, &policy.Conditions); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal conditions: %w", err)
@@ -200,7 +242,7 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 }
 
 // List retrieves policies with filtering and pagination
-func (r *PolicyRepository) List(ctx context.Context, tenantID string, params ListPoliciesParams) ([]PolicyResource, int, error) {
+func (r *PolicyRepository) List(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) ([]PolicyResource, int, error) {
 	// Build dynamic query
 	// Include both tenant-specific and system/global policies. The tenancy
 	// predicate is a $1 placeholder filled PER SCOPE below (tenant pass reads
@@ -285,7 +327,7 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 	query := fmt.Sprintf(`
 		SELECT policy_id, name, description, policy_type,
 		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
-		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       conditions, actions, tenant_id, COALESCE(org_id, ''),
 		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
@@ -345,11 +387,11 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 		return out, nil
 	}
 
-	policies, err := scopedList(tenantID)
+	policies, err := scopedList(crudScope(tenantID, orgID))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list policies: %w", err)
 	}
-	if tenantID != GlobalTenantSentinel {
+	if crudScope(tenantID, orgID) != GlobalTenantSentinel {
 		globalPolicies, gErr := scopedList(GlobalTenantSentinel)
 		if gErr != nil {
 			return nil, 0, fmt.Errorf("failed to list global policies: %w", gErr)
@@ -407,9 +449,9 @@ func policyResourceSortEqual(a, b PolicyResource, sortBy string) bool {
 }
 
 // Update modifies an existing policy
-func (r *PolicyRepository) Update(ctx context.Context, tenantID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error) {
+func (r *PolicyRepository) Update(ctx context.Context, tenantID, orgID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error) {
 	// Get current policy for version history
-	current, err := r.GetByID(ctx, tenantID, policyID)
+	current, err := r.GetByID(ctx, tenantID, orgID, policyID)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +545,7 @@ func (r *PolicyRepository) Update(ctx context.Context, tenantID, policyID string
 	// USING `org_id = get_current_org_id()`) and the policy_versions INSERT
 	// downstream see the same app.current_org_id GUC under app_role.
 	var rowsAffected int64
-	if wrapErr := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+	if wrapErr := agent.WithOrgScope(ctx, r.db, crudScope(tenantID, orgID), func(tx *sql.Tx) error {
 		result, execErr := tx.ExecContext(ctx, query, args...)
 		if execErr != nil {
 			return fmt.Errorf("failed to update policy: %w", execErr)
@@ -568,7 +610,7 @@ func (r *PolicyRepository) Update(ctx context.Context, tenantID, policyID string
 	// wraps that bracket Update+GetByID together). PR-C2 keeps this read
 	// post-commit to match the v8 contract; PR-D's audit walker will not
 	// flag this site as a write.
-	updated, _ := r.GetByID(ctx, tenantID, policyID)
+	updated, _ := r.GetByID(ctx, tenantID, orgID, policyID)
 	return updated, nil
 }
 
@@ -580,9 +622,9 @@ func (r *PolicyRepository) Update(ctx context.Context, tenantID, policyID string
 // without the GUC (zero rows affected, no error). The wrap also ensures
 // FK CASCADE from dynamic_policies → policy_versions sees the parent's RLS
 // context.
-func (r *PolicyRepository) Delete(ctx context.Context, tenantID, policyID string, deletedBy string) error {
+func (r *PolicyRepository) Delete(ctx context.Context, tenantID, orgID, policyID string, deletedBy string) error {
 	// Get current policy for version history
-	current, err := r.GetByID(ctx, tenantID, policyID)
+	current, err := r.GetByID(ctx, tenantID, orgID, policyID)
 	if err != nil {
 		return err
 	}
@@ -590,7 +632,7 @@ func (r *PolicyRepository) Delete(ctx context.Context, tenantID, policyID string
 		return nil
 	}
 
-	return agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+	return agent.WithOrgScope(ctx, r.db, crudScope(tenantID, orgID), func(tx *sql.Tx) error {
 		// Create delete version entry inside the wrap tx (was: best-effort outside-tx
 		// call that swallowed errors). Under app_role this MUST succeed before the
 		// DELETE because once dynamic_policies row is gone the policy_versions FK
@@ -679,10 +721,10 @@ func (r *PolicyRepository) GetVersions(ctx context.Context, tenantID, policyID s
 // Pages through List in max-page-size chunks: the old single call passed
 // PageSize 1000, which List's clamp silently reset to 20 — exports were
 // truncated to 20 policies (#3039 R3 finding).
-func (r *PolicyRepository) ExportAll(ctx context.Context, tenantID string) ([]PolicyResource, error) {
+func (r *PolicyRepository) ExportAll(ctx context.Context, tenantID, orgID string) ([]PolicyResource, error) {
 	var all []PolicyResource
 	for page := 1; ; page++ {
-		policies, total, err := r.List(ctx, tenantID, ListPoliciesParams{Page: page, PageSize: 100})
+		policies, total, err := r.List(ctx, tenantID, orgID, ListPoliciesParams{Page: page, PageSize: 100})
 		if err != nil {
 			return nil, err
 		}
@@ -697,15 +739,31 @@ func (r *PolicyRepository) ExportAll(ctx context.Context, tenantID string) ([]Po
 //
 // v9 Phase 8 PR-C2 (#2384): wraps the import tx with WithOrgScope so every
 // child INSERT into dynamic_policies + policy_versions sees the
-// app.current_org_id GUC set before WITH CHECK fires. All imported policies
-// share a single tenant scope (the caller's tenantID).
-func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, policies []CreatePolicyRequest, mode string, importedBy string) (*ImportPoliciesResponse, error) {
+// app.current_org_id GUC set before WITH CHECK fires.
+//
+// Decision 5 (#3490): that GUC, and the org_id every child INSERT writes, come
+// from the AUTHENTICATED organisation rather than from the tenant. This is the
+// second write path into dynamic_policies and it had exactly the defect Create
+// was fixed for: org_id was bound to the same $7 as tenant_id and client_id -
+// the Basic-auth username - so in any deployment whose licence org differs
+// from that string, every bulk-imported policy was stamped with an
+// organisation nobody authenticates as. It enforced on NOBODY while returning
+// 200 and appearing in the CRUD listing, and on a forged username it was
+// injectable into another organisation. Both routes that reach here
+// (/api/v1/policies/import and /api/v1/dynamic-policies/import) are proxied by
+// the agent, which Sets X-Org-ID from the validated licence, so the org is
+// present on the real path and is refused rather than defaulted when it is not.
+func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID, orgID string, policies []CreatePolicyRequest, mode string, importedBy string) (*ImportPoliciesResponse, error) {
 	response := &ImportPoliciesResponse{}
 
-	wrapErr := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+	if strings.TrimSpace(orgID) == "" {
+		return nil, fmt.Errorf("ImportBulk: orgID must be non-empty (it is the org_id that selects every imported policy; #3490)")
+	}
+
+	wrapErr := agent.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
 		for _, req := range policies {
 			// Check if policy already exists by name
-			existing, checkErr := r.findByNameTx(ctx, tx, tenantID, req.Name)
+			existing, checkErr := r.findByNameTx(ctx, tx, tenantID, orgID, req.Name)
 			if checkErr != nil {
 				response.Errors = append(response.Errors, fmt.Sprintf("Error checking policy %s: %v", req.Name, checkErr))
 				continue
@@ -721,7 +779,7 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, poli
 					continue
 				case "overwrite":
 					// Update existing within transaction
-					updateErr := r.updatePolicyTx(ctx, tx, tenantID, existing.ID, &req, importedBy)
+					updateErr := r.updatePolicyTx(ctx, tx, tenantID, orgID, existing.ID, &req, importedBy)
 					if updateErr != nil {
 						response.Errors = append(response.Errors, fmt.Sprintf("Error updating policy %s: %v", req.Name, updateErr))
 					} else {
@@ -732,7 +790,7 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, poli
 			}
 
 			// Create new policy within transaction
-			createErr := r.createPolicyTx(ctx, tx, tenantID, &req, importedBy)
+			createErr := r.createPolicyTx(ctx, tx, tenantID, orgID, &req, importedBy)
 			if createErr != nil {
 				response.Errors = append(response.Errors, fmt.Sprintf("Error creating policy %s: %v", req.Name, createErr))
 			} else {
@@ -756,9 +814,13 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, poli
 // v9 Phase 8 PR-C2 (#2384): caller (ImportBulk) wraps with WithOrgScope so the
 // app.current_org_id GUC is already set; the INSERT must now populate the
 // org_id column to satisfy the mig 018 ENABLE RLS WITH CHECK
-// (`org_id = get_current_org_id()`). client_id + org_id both mirror tenant_id
-// ($7) at this writer per the historical schema collapse.
-func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, req *CreatePolicyRequest, createdBy string) error {
+// (`org_id = get_current_org_id()`).
+//
+// Decision 5 (#3490): org_id is now its OWN parameter ($8), taken from the
+// authenticated organisation. client_id still mirrors tenant_id ($7) per the
+// historical schema collapse; org_id no longer does, because it is what
+// selects the policy while tenant_id is a value the caller types.
+func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenantID, orgID string, req *CreatePolicyRequest, createdBy string) error {
 	conditionsJSON, err := json.Marshal(req.Conditions)
 	if err != nil {
 		return fmt.Errorf("failed to marshal conditions: %w", err)
@@ -777,12 +839,12 @@ func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenan
 			policy_id, name, description, policy_type, conditions, actions,
 			tenant_id, client_id, org_id, priority, enabled, version, created_by, updated_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`
 
 	_, err = tx.ExecContext(ctx, query,
 		policyID, req.Name, req.Description, req.Type,
-		conditionsJSON, actionsJSON, tenantID, req.Priority,
+		conditionsJSON, actionsJSON, tenantID, orgID, req.Priority,
 		req.Enabled, 1, createdBy, createdBy, now, now,
 	)
 
@@ -796,26 +858,33 @@ func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenan
 	// the caller can't recover from anyway. The snapshot mirrors what was
 	// INSERTed above (CreatePolicyRequest fields plus the row's identity).
 	snapshot := &PolicyResource{
-		ID:          policyID,
-		Name:        req.Name,
-		Description: req.Description,
-		Type:        req.Type,
-		Conditions:  req.Conditions,
-		Actions:     req.Actions,
-		Priority:    req.Priority,
-		Enabled:     req.Enabled,
-		Version:     1,
-		TenantID:    tenantID,
-		CreatedBy:   createdBy,
-		UpdatedBy:   createdBy,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             policyID,
+		Name:           req.Name,
+		Description:    req.Description,
+		Type:           req.Type,
+		Conditions:     req.Conditions,
+		Actions:        req.Actions,
+		Priority:       req.Priority,
+		Enabled:        req.Enabled,
+		Version:        1,
+		TenantID:       tenantID,
+		OrganizationID: orgID,
+		CreatedBy:      createdBy,
+		UpdatedBy:      createdBy,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	return r.createVersionEntryTx(ctx, tx, snapshot, createdBy, "create", "Policy created via import")
 }
 
 // updatePolicyTx updates a policy within a transaction
-func (r *PolicyRepository) updatePolicyTx(ctx context.Context, tx *sql.Tx, tenantID, policyID string, req *CreatePolicyRequest, updatedBy string) error {
+// Decision 5 (#3490): the WHERE narrows on org_id as well as tenant_id. On an
+// owner-pool deployment (AXONFLOW_DB_USE_APP_ROLE defaults false) RLS is
+// bypassed, so this clause is the whole boundary, and an overwrite-mode import
+// whose caller presented another organisation's tenant string could otherwise
+// rewrite that organisation's policy. Narrowing only: a row belonging to the
+// caller's own org and tenant matches exactly as before.
+func (r *PolicyRepository) updatePolicyTx(ctx context.Context, tx *sql.Tx, tenantID, orgID, policyID string, req *CreatePolicyRequest, updatedBy string) error {
 	conditionsJSON, err := json.Marshal(req.Conditions)
 	if err != nil {
 		return fmt.Errorf("failed to marshal conditions: %w", err)
@@ -830,39 +899,44 @@ func (r *PolicyRepository) updatePolicyTx(ctx context.Context, tx *sql.Tx, tenan
 		UPDATE dynamic_policies
 		SET name = $1, description = $2, policy_type = $3, conditions = $4, actions = $5,
 		    priority = $6, enabled = $7, version = version + 1, updated_by = $8, updated_at = $9
-		WHERE policy_id = $10 AND tenant_id = $11
+		WHERE policy_id = $10 AND tenant_id = $11 AND org_id = $12
 	`
 
 	_, err = tx.ExecContext(ctx, query,
 		req.Name, req.Description, req.Type, conditionsJSON, actionsJSON,
-		req.Priority, req.Enabled, updatedBy, time.Now(), policyID, tenantID,
+		req.Priority, req.Enabled, updatedBy, time.Now(), policyID, tenantID, orgID,
 	)
 
 	return err
 }
 
-// findByNameTx finds a policy by name within a transaction
-func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantID, name string) (*PolicyResource, error) {
+// findByNameTx finds a policy by name within a transaction.
+//
+// Decision 5 (#3490): scoped by org_id as well as tenant_id, for the same
+// reason as updatePolicyTx - this lookup's answer decides whether an
+// overwrite-mode import UPDATEs an existing row or INSERTs a new one, so on an
+// owner-pool deployment it must not be able to find another organisation's.
+func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantID, orgID, name string) (*PolicyResource, error) {
 	query := `
 		SELECT policy_id, name, description, policy_type,
 		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
-		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       conditions, actions, tenant_id, COALESCE(org_id, ''),
 		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
 		FROM dynamic_policies
-		WHERE name = $1 AND tenant_id = $2
+		WHERE name = $1 AND tenant_id = $2 AND org_id = $3
 		LIMIT 1
 	`
 
 	policy := &PolicyResource{}
 	var conditionsJSON, actionsJSON []byte
-	var policyType, category, tier, orgID string
+	var policyType, category, tier, rowOrgID string
 
-	err := tx.QueryRowContext(ctx, query, name, tenantID).Scan(
+	err := tx.QueryRowContext(ctx, query, name, tenantID, orgID).Scan(
 		&policy.ID, &policy.Name, &policy.Description, &policyType,
 		&category, &tier,
-		&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+		&conditionsJSON, &actionsJSON, &policy.TenantID, &rowOrgID,
 		&policy.Priority, &policy.Enabled, &policy.Version,
 		&policy.CreatedBy, &policy.UpdatedBy,
 		&policy.CreatedAt, &policy.UpdatedAt,
@@ -878,7 +952,7 @@ func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantI
 	policy.Type = policyType
 	policy.Category = category
 	policy.Tier = PolicyTier(tier)
-	policy.OrganizationID = orgID
+	policy.OrganizationID = rowOrgID
 	_ = json.Unmarshal(conditionsJSON, &policy.Conditions)
 	_ = json.Unmarshal(actionsJSON, &policy.Actions)
 
@@ -934,7 +1008,7 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 	query := `
 		SELECT policy_id, name, description, policy_type,
 		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
-		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       conditions, actions, tenant_id, COALESCE(org_id, ''),
 		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
@@ -979,12 +1053,12 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 // CountByTenant counts active tenant-created policies for limit enforcement.
 // System-tier policies (seeded by migrations) are excluded — they should not
 // consume the tenant's policy quota.
-func (r *PolicyRepository) CountByTenant(ctx context.Context, tenantID string) (int, error) {
+func (r *PolicyRepository) CountByTenant(ctx context.Context, tenantID, orgID string) (int, error) {
 	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND deleted_at IS NULL AND tier != 'system'`
 	var count int
 	// Org-scoped read: under axonflow_app_role the bare COUNT read 0 through
 	// RLS, so tier-limit enforcement undercounted (#3039).
-	if err := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+	if err := agent.WithOrgScope(ctx, r.db, crudScope(tenantID, orgID), func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, query, tenantID).Scan(&count)
 	}); err != nil {
 		return 0, fmt.Errorf("failed to count policies: %w", err)

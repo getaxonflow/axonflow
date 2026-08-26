@@ -216,8 +216,7 @@ type CompiledPolicy struct {
 	Priority    int // Higher = evaluated first
 
 	// Multi-tenancy
-	TenantID       string
-	OrganizationID *string
+	TenantID string
 
 	// SegmentID is the governance-segment (org-unit/group) this policy is
 	// scoped to (ADR-060, #2989/#3266), or "" when the policy is NOT
@@ -331,6 +330,62 @@ func AllTextPIICategories() []PolicyCategory {
 	}
 }
 
+// PostureLeverForCategory names the detection-posture lever that governs a
+// category's runtime action, or "" when no lever governs it.
+//
+// #3441 (M1), building on the #3360 ruling: for the detection categories the
+// shared engine never uses static_policies.action at all. EvalOptions
+// .ActionOverrides replaces it unconditionally (engine.go), and that map is
+// built from the profile / *_ACTION env / per-org detection override chain. A
+// surface that renders the stored action as the operative one is therefore
+// stating something the engine ignores, and this function is how a surface
+// finds out which rows those are.
+//
+// It is the SHARED source for that question, deliberately not a third copy:
+// agent/detection_config.go BuildActionOverrides decides the set at
+// enforcement time, agent/policy_result_convert.go leverNameForCategory names
+// it in the audit advisory, and the customer portal has to name it on the
+// Policies page. Three independent switches over one fact would diverge, and
+// the divergence would be invisible in both directions (a category that gained
+// a lever but not a disclosure reads as authoritative; one that lost a lever
+// reads as ignored). TestPostureLeverMatchesBuildActionOverrides in the agent
+// package - the only package that can see both - pins the two together.
+//
+// Categories with NO lever entry (compliance-*, fincrime, admin-access,
+// data-exfiltration, media-*) return "": no posture lever displaces them.
+//
+// "" is NOT a promise that static_policies.action is what runs. The shared
+// engine's RUNTIME loader (PolicyLoader, loader.go) does not SELECT that
+// column on any of its queries - they read phase, action_request,
+// action_response - so on every shared-engine plane the base action column is
+// read by nothing; GetActionForPhase resolves the phase column, or a
+// category/severity fallback when it is NULL. The base column is read only by
+// the proxy plane's Phase-2 tier engine, through
+// StaticPolicyRepository.GetEffective.
+//
+// Be precise about the FILE rather than the type: loader.go carries two
+// disjoint column sets, and an earlier version of this comment said the file
+// never selects the column, which is false. effectivePolicyColumns (same file,
+// used by ScanEffectivePolicyRows for the GetEffective admin/API path) selects
+// sp.action and none of the phase columns. That disjointness is the mechanism
+// by which the two drift, which is why migration core/124 exists. This function answers exactly one
+// question - does a POSTURE LEVER replace the resolved action - and callers
+// must not widen it into a claim about the action column.
+func PostureLeverForCategory(cat PolicyCategory) string {
+	switch {
+	case IsPIIPolicyCategory(cat):
+		return "PII_ACTION"
+	case cat == CategorySecuritySQLi:
+		return "SQLI_ACTION"
+	case cat == CategorySensitiveData:
+		return "SENSITIVE_DATA_ACTION"
+	case cat == CategorySecurityDangerous:
+		return "DANGEROUS_COMMAND_ACTION"
+	default:
+		return ""
+	}
+}
+
 // isSecurityPolicyCategory returns true if the category is a security category.
 func isSecurityPolicyCategory(cat PolicyCategory) bool {
 	switch cat {
@@ -365,7 +420,7 @@ func AllComplianceCategories() []PolicyCategory {
 }
 
 // OrgScopePtr converts a caller org string into the *string
-// EvalOptions.OrganizationID / loader orgID parameter shape: nil when empty
+// EvalOptions.OrgScope / loader orgID parameter shape: nil when empty
 // (single-tenant/community contexts — the loader falls back to the
 // org_id==tenant_id identity), a pointer otherwise. #3048 R3 HIGH-3: gates
 // MUST pass the validated caller org through this so the loader's tenant
@@ -390,10 +445,29 @@ type EvalOptions struct {
 	// so the downstream INSERT can populate the row's org_id column and
 	// satisfy WITH CHECK. Leave empty in cross-org workers (those must run
 	// on axonflow_platform_admin / BYPASSRLS, not via WithOrgScope).
-	TenantID       string
-	OrgID          string
-	OrganizationID *string
-	UserID         string
+	TenantID string
+	OrgID    string
+	// OrgScope is the organisation the policy LOAD is scoped by: it fills both
+	// the RLS GUC and the loader's `org_id = $1` predicate. It is OrgID in
+	// pointer form, nil when the caller is unbound (see OrgScopePtr).
+	//
+	// It was called OrganizationID until #3334. That name collided with the
+	// legacy `organization_id` COLUMN on the policy tables - a differently
+	// typed, never-populated second org key that migration core/166 drops -
+	// and the collision was not cosmetic: #3334 records that it produced
+	// several wrong conclusions in two separate pieces of work, because a
+	// reader could not tell whether a given OrganizationID meant "the org this
+	// caller is scoped to" or "the value in that column". One of the two is
+	// now gone and the other says what it is.
+	//
+	// It is deliberately NOT collapsed into OrgID. Three call sites set this
+	// without setting OrgID (mcp_handler.go's response-phase and PII-category
+	// paths, cowork_otel_ingest.go), so collapsing them would start populating
+	// OrgID on those paths - which changes what RecordViolation writes to
+	// AuditEntry.OrgID. That may well be a fix; it is not one to smuggle into
+	// a column retirement. Tracked on #3490.
+	OrgScope *string
+	UserID   string
 
 	// Request context
 	ConnectorName string
@@ -437,9 +511,60 @@ type EvalOptions struct {
 	// non-segment-scoped policy, SegmentID == "", to be skipped). Callers
 	// that have not yet resolved a segment set for their plane MUST pass nil
 	// explicitly rather than omit the field silently — see the call sites in
-	// agent/mcp_handler.go, agent/gateway_handlers.go,
-	// agent/openai_compat_handler.go, and orchestrator/response_processor.go
-	// for the documented per-plane deferral.
+	// agent/openai_compat_handler.go and orchestrator/response_processor.go
+	// for the documented per-plane deferral. agent/gateway_handlers.go
+	// resolves and passes a real segment set as of #3312 (ADR-060 Slice 3)
+	// and is no longer a deferral; agent/openai_compat_handler.go remains
+	// one because that plane has no verified human-actor principal to
+	// resolve segments from at all (see its own call-site comment) — its
+	// real fix is #3410.
+	//
+	// agent/mcp_handler.go is NO LONGER a deferral as of #3447.
+	// evaluateInputPolicies / evaluateOutputPolicies receive a real,
+	// fail-closed-resolved set — request phase and response phase — from
+	// BOTH of their caller families:
+	//
+	//   - the MCP-server JSON-RPC plane's check_policy/check_output tools
+	//     (mcp_server_handler.go), via resolveMCPServerSegmentsForPolicy
+	//     (agent/mcp_identity.go) since #3430; and
+	//   - the four legacy MCP REST handlers in mcp_handler.go itself —
+	//     mcpQueryHandler, mcpExecuteHandler, mcpCheckInputHandler,
+	//     mcpCheckOutputHandler — via resolveHumanActorSegmentsForPolicy
+	//     (agent/human_actor_segment_gate.go) since #3447. Those four
+	//     authenticate the end user with ResolveUser's per-user JWT
+	//     (validateUserToken), and #3447 keys resolution on that VALIDATED
+	//     token's email claim; a verified member is now enforced on both
+	//     planes, where before a one-URL edit switched every segment-scoped
+	//     policy off for them.
+	//
+	// agent/decision_handler.go's /decide is NO LONGER a deferral either, as
+	// of #3456: handleDecide resolves the same way the four MCP REST handlers
+	// do — one fail-closed call to resolveHumanActorSegmentsForPolicy
+	// (agent/human_actor_segment_gate.go), keyed on the validated
+	// DecideRequest.user_token's email claim — and passes the result here.
+	// /decide has only this request-phase call site (runDynamicPolicy=false,
+	// no response phase), so that one resolution covers the whole plane.
+	//
+	// On these planes the "nil is fail-closed by construction" reading
+	// above stops being sufficient, and #3430 R3 says why: nil excludes
+	// every segment-scoped row, which is safe for the POLICY but not for
+	// the PLANE if the caller can choose to arrive without an identity. The
+	// two caller families answer that differently, on purpose:
+	//
+	//   - MCP-server JSON-RPC: a caller with no validated per-user token is
+	//     REFUSED before evaluation whenever HasSegmentScopedPolicies
+	//     reports the phase's policy set can depend on membership (#3430).
+	//   - MCP REST and /decide: a caller with no token gets the unchanged
+	//     ADR-060 baseline — org-only, no refusal, no policy census. What
+	//     keeps that from being a selectable opt-out is #3476
+	//     (require_user_token), which lets an org reject a token-less caller
+	//     at AUTHENTICATION. A RESOLVER ERROR for a caller who HAS a
+	//     principal still denies there, with guard id
+	//     segment_resolution_failed, before this field is ever populated.
+	//
+	// Either way, read this field's nil as "resolved to no segments / this
+	// plane does not resolve one", never as "resolution failed" or
+	// "resolution was skipped because identity was weak".
 	Segments []string
 }
 
@@ -847,6 +972,26 @@ type DynamicPolicyRequest struct {
 	OrganizationID string `json:"organization_id,omitempty"`
 	UserID         string `json:"user_id"`
 	UserRole       string `json:"user_role,omitempty"`
+
+	// SegmentIDs is the caller's governance-segment set (ADR-060), already
+	// resolved FAIL-CLOSED by the agent before this request was built
+	// (#3447). It exists so the dynamic plane applies the same segment
+	// scoping the local static pass does: without it a verified segment
+	// member had segment-scoped DYNAMIC policies silently skipped while the
+	// static half enforced them — a split verdict on one request.
+	//
+	// The agent RELAYS the one set it resolved; the orchestrator does NOT
+	// resolve independently. The two processes hold separate segment caches
+	// with separate TTL clocks (segmentCache, default 60s, one per process),
+	// so independent resolution could observe different sets on the SAME
+	// request. Relaying makes that impossible by construction and costs one
+	// resolution per request instead of two.
+	//
+	// nil/empty means "resolved to no segments / this plane does not resolve
+	// one" — org-only — and NEVER "resolution failed": a caller that resolves
+	// fail-closed and gets ok == false must deny before building this
+	// request. Same contract as EvalOptions.Segments above.
+	SegmentIDs []string `json:"segment_ids,omitempty"`
 
 	// MCP request details
 	ConnectorName string                 `json:"connector_name"`

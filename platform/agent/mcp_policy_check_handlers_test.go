@@ -822,7 +822,7 @@ func TestEvaluateInputPolicies_NilEvaluator_NilEngine(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")
@@ -855,7 +855,7 @@ func TestEvaluateInputPolicies_DynamicAllowed(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")
@@ -888,7 +888,7 @@ func TestEvaluateInputPolicies_DynamicBlocked(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if !out.DynamicBlocked {
 		t.Error("expected DynamicBlocked=true")
@@ -919,7 +919,7 @@ func TestEvaluateInputPolicies_ConnectorNotEnabled(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.DynamicBlocked {
 		t.Error("expected DynamicBlocked=false when connector not enabled")
@@ -942,7 +942,7 @@ func TestEvaluateInputPolicies_WithStaticEngine(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.StaticResult == nil {
 		t.Fatal("expected StaticResult to be non-nil when engine is active")
@@ -967,7 +967,7 @@ func TestEvaluateOutputPolicies_NilEngine_NilChecker(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 1, true, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 1, true, false /* isGateway */, nil)
 
 	if out.SQLiBlocked {
 		t.Error("expected SQLiBlocked=false")
@@ -986,7 +986,7 @@ func TestEvaluateOutputPolicies_MessageOnly(t *testing.T) {
 	defer sharedpolicy.SetGlobalEngine(originalEngine)
 
 	ctx := context.Background()
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", nil, "3 rows affected", nil, 3, false, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", nil, "3 rows affected", nil, 3, false, false /* isGateway */, nil)
 
 	if out.SQLiBlocked {
 		t.Error("expected SQLiBlocked=false")
@@ -1009,7 +1009,7 @@ func TestEvaluateOutputPolicies_ExfiltrationExceeded(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 3, true, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 3, true, false /* isGateway */, nil)
 
 	if out.ExfilResult == nil {
 		t.Fatal("expected ExfilResult to be non-nil")
@@ -1039,7 +1039,7 @@ func TestEvaluateOutputPolicies_ExfiltrationNotChecked(t *testing.T) {
 
 	ctx := context.Background()
 	rows := []map[string]interface{}{{"id": 1}, {"id": 2}, {"id": 3}}
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 3, false, false /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 3, false, false /* isGateway */, nil)
 
 	if out.ExfilResult != nil {
 		t.Error("expected ExfilResult=nil when checkExfiltration=false")
@@ -1069,7 +1069,7 @@ func TestEvaluateOutputPolicies_WithStaticEngine(t *testing.T) {
 	// removed, empty Categories would evaluate ALL policies (the whitelist
 	// "empty == all" footgun) and StaticResult would be non-nil — so this is a
 	// non-vacuous regression lock on the guard, not just a "not blocked" check.
-	out := evaluateOutputPolicies(ctx, "t1", "u1", "postgres", "", rows, "", nil, 1, false, true /* isGateway */)
+	out := evaluateOutputPolicies(ctx, "t1", "", "u1", "postgres", "", rows, "", nil, 1, false, true /* isGateway */, nil)
 
 	if out.StaticResult != nil {
 		t.Errorf("empty-set guard must skip the static pass when no PII policies are enabled; got StaticResult=%+v (the empty-Categories-evaluates-all footgun)", out.StaticResult)
@@ -1228,7 +1228,7 @@ func TestEvaluateInputPolicies_WithParameters(t *testing.T) {
 		"2": "normal-value",
 	}
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT * FROM users WHERE id = $1", params, mcpCfg, true)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT * FROM users WHERE id = $1", params, mcpCfg, true, nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")

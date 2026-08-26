@@ -36,6 +36,7 @@ var tenantDataRoutes = []struct {
 	{"GET", "/api/v1/policies/dynamic"},   // the 25-policy cross-tenant dump on prod
 	{"POST", "/api/v1/policies"},          // unauthenticated cross-tenant policy WRITE
 	{"GET", "/api/v1/dynamic-policies"},   //
+	{"GET", "/api/v1/tenant-policies"},    // #1431 successor of the line above
 	{"GET", "/api/v1/decisions"},          //
 	{"GET", "/api/v1/overrides"},          //
 	{"POST", "/api/v1/overrides"},         //

@@ -86,7 +86,7 @@ func TestReasonsFromPreCheck(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reasonsFromPreCheck(tc.resp, tc.policyResult)
+			got := reasonsFromPreCheck(tc.resp, tc.policyResult, policyStepUpResult{})
 			if len(got) != len(tc.want) {
 				t.Fatalf("reasonsFromPreCheck() len=%d, want len=%d (got=%v want=%v)", len(got), len(tc.want), got, tc.want)
 			}

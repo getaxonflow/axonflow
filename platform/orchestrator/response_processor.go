@@ -320,7 +320,7 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		// #3048 R3 HIGH-3: OrganizationID scopes the loader's tenant pass.
 		TenantID:        user.TenantID,
 		OrgID:           user.OrgID,
-		OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID),
+		OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID),
 		UserID:          fmt.Sprintf("%d", user.ID),
 		Categories:      evalCats,
 		SkipCategories:  gwCfg.SkipCategories,
@@ -893,3 +893,30 @@ func getDefaultValidationRules() []ValidationRule {
 // platform/shared/identity.RoleIsAdministrative, which normalizes through the
 // closed role vocabulary (so an unrecognized string fails closed) and is the
 // single place to edit when the tier changes.
+
+// contains reports whether item is present in slice, which may be a
+// []string or a []interface{} (the two shapes policy condition values and
+// PII allow-lists arrive in). Non-string items in a []interface{} are
+// stringified before comparison.
+//
+// #3319: relocated from dynamic_policy_engine.go, which was deleted along
+// with the retired in-memory DynamicPolicyEngine. This is the only
+// remaining caller (deepScanForPII, isAllowed, redactString above) — grep
+// confirmed no other reference outside this file and its test.
+func contains(slice interface{}, item interface{}) bool {
+	switch s := slice.(type) {
+	case []string:
+		for _, v := range s {
+			if v == fmt.Sprint(item) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, v := range s {
+			if fmt.Sprint(v) == fmt.Sprint(item) {
+				return true
+			}
+		}
+	}
+	return false
+}

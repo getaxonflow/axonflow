@@ -52,19 +52,19 @@ func displacedActionReason(match sharedpolicy.PolicyMatch) string {
 // leverNameForCategory names the env lever that governs a detection category,
 // mirroring BuildActionOverrides' mapping (detection_config.go) so the
 // advisory points the operator at the exact knob.
+//
+// #3441: the mapping itself moved to sharedpolicy.PostureLeverForCategory so
+// the customer portal can answer the same question about a policy row without
+// a third copy of the switch. Only the "" case is local: this function is
+// called from an advisory sentence that needs a noun, and a displacement is
+// unreachable for a category with no lever (the engine only replaces an action
+// for categories present in ActionOverrides), so "detection" here is a
+// grammatical fallback and not a claim about a real lever.
 func leverNameForCategory(cat sharedpolicy.PolicyCategory) string {
-	switch {
-	case sharedpolicy.IsPIIPolicyCategory(cat):
-		return "PII_ACTION"
-	case cat == sharedpolicy.CategorySecuritySQLi:
-		return "SQLI_ACTION"
-	case cat == sharedpolicy.CategorySensitiveData:
-		return "SENSITIVE_DATA_ACTION"
-	case cat == sharedpolicy.CategorySecurityDangerous:
-		return "DANGEROUS_COMMAND_ACTION"
-	default:
-		return "detection"
+	if lever := sharedpolicy.PostureLeverForCategory(cat); lever != "" {
+		return lever
 	}
+	return "detection"
 }
 
 // convertSharedResultToStatic converts a shared policy engine RequestResult
@@ -171,9 +171,16 @@ func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPoli
 
 	// Issue #1081: Check for require_approval action in matched policies
 	// This enables HITL enforcement for EU AI Act Article 14 and other compliance frameworks
+	// #3509: capture WHICH policy held the request at the same time, from the
+	// same match, so the HITL queue entry the three agent planes now raise
+	// names the rule a reviewer has to reason about. Reading it back off
+	// TriggeredPolicies afterwards would name the first match in evaluation
+	// order, which is usually an unrelated advisory PII rule.
 	for _, match := range result.MatchedPolicies {
 		if match.Action == sharedpolicy.ActionRequireApproval {
 			staticResult.RequiresApproval = true
+			staticResult.ApprovalPolicyID = match.PolicyID
+			staticResult.ApprovalPolicyName = match.PolicyName
 			break
 		}
 	}

@@ -72,7 +72,7 @@ func TestValidateServiceLicense_PermissionDenied_WritesCanonicalAudit(t *testing
 
 	w := httptest.NewRecorder()
 	granted, err := validateServiceLicense(context.Background(), w, licenseKey,
-		"postgres", "query", "query", "tenant-test", "org-test", "client-test")
+		"postgres", "query", "query", "tenant-test", "org-test", "client-test", 4 /* #3424: the caller's measured elapsed ms */)
 
 	if err == nil {
 		t.Error("expected permission-denied error")
@@ -122,12 +122,13 @@ func TestValidateServiceLicense_PermissionDenied_AuditIsSecretFree(t *testing.T)
 			nil,                           // correlation_id
 			nil,                           // redacted_fields
 			nil,                           // session_id NULL (#2753)
+			sqlmock.AnyArg(),              // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
 	_, _ = validateServiceLicense(context.Background(), w, licenseKey,
-		"postgres", "query", "query", "tenant-test", "org-test", "client-test")
+		"postgres", "query", "query", "tenant-test", "org-test", "client-test", 4 /* #3424: the caller's measured elapsed ms */)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expected audit row: %v", err)

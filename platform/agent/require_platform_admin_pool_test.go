@@ -385,10 +385,21 @@ func TestPlatformAdminPoolGuardIsWiredAtEveryBootPathSite(t *testing.T) {
 	// negative so re-adding one is a conscious act. Each is reachable while the
 	// orchestrator is booting with an unreachable database, where a fatal turns
 	// a degraded-but-serving governance plane into a crash-loop.
+	// #3319 deleted platform/orchestrator/dynamic_policy_engine.go (the
+	// in-memory fallback engine) and its call sites along with it — it never
+	// carried RequirePlatformAdminPoolOrFatal (that's why it was pinned here
+	// in the negative), so the entry is dropped rather than repointed. The
+	// surviving DatabaseDynamicPolicyEngine boot path guards with the OTHER
+	// flavor, RequirePlatformAdminOrFatal("DatabaseDynamicPolicyEngine")
+	// (platform/orchestrator/run.go, immediately before
+	// NewDatabaseDynamicPolicyEngine()) — same as this file's pre-#3319
+	// RequirePlatformAdminOrFatal("DynamicPolicyEngine") call at the same
+	// site, just renamed. That guard flavor takes no pool argument and was
+	// never part of this census (which only tracks RequirePlatformAdminPoolOrFatal
+	// wiring); #3319 leaves it exactly as covered/uncovered as before.
 	for _, rel := range []string{
 		filepath.Join("platform", "orchestrator", "connector_marketplace_handlers.go"),
 		filepath.Join("platform", "orchestrator", "db_dynamic_policies.go"),
-		filepath.Join("platform", "orchestrator", "dynamic_policy_engine.go"),
 	} {
 		src, readErr := os.ReadFile(filepath.Join(repoRoot, rel))
 		if readErr != nil {
@@ -400,6 +411,26 @@ func TestPlatformAdminPoolGuardIsWiredAtEveryBootPathSite(t *testing.T) {
 				"DATABASE_URL being set, or is a constructor with test callers), so a fatal here converts a "+
 				"database failover into a crash-loop — and zero orchestrator tasks is itself the fail-open "+
 				"shape. If this is intentional, update the rationale at the site and here together.", rel)
+		}
+	}
+
+	// Pin the surviving no-pool guard directly: #3319 deleted the in-memory
+	// DynamicPolicyEngine and renamed this call's caller string along with
+	// it. This flavor (RequirePlatformAdminOrFatal, no pool argument) isn't
+	// part of the want/negative census above, but with the old file gone a
+	// silent drop of this line would previously have gone completely
+	// unpinned by any test in this package — so pin it here rather than
+	// leave it as unasserted as it was before #3319.
+	{
+		rel := filepath.Join("platform", "orchestrator", "run.go")
+		src, readErr := os.ReadFile(filepath.Join(repoRoot, rel))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", rel, readErr)
+		}
+		if !strings.Contains(string(src), `RequirePlatformAdminOrFatal("DatabaseDynamicPolicyEngine")`) {
+			t.Errorf("%s: missing RequirePlatformAdminOrFatal(\"DatabaseDynamicPolicyEngine\") — #3039/#3319 "+
+				"regression. Without it, an unset admin DSN under the app-role posture silently degrades the "+
+				"dynamic-policy gate-cache refresh to a NOBYPASSRLS pool instead of refusing to boot.", rel)
 		}
 	}
 

@@ -12,7 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	sharedidentity "axonflow/platform/shared/identity"
+	logutil "axonflow/platform/shared/logger"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // Fleet-plane per-user identity wiring (epic #2919, issues #2920 + #2924).
@@ -175,11 +180,30 @@ func extractPerUserToken(r *http.Request) string {
 	return ""
 }
 
-// --- #2989 (ADR-060 Phase 2): fleet-plane segment resolution wiring ---
+// --- #2989 (ADR-060) / #3473: fleet-plane segment resolution wiring ---
 //
-// Segments become resolved + OBSERVABLE this phase; they are deliberately
-// NOT consumed for any policy decision (P3) and NOT written to the audit row
-// (P5) here — see resolveUserSegments below.
+// The fleet/MCP-server plane has exactly ONE user->segments lookup
+// (resolveUserSegments, segment_policy_gate.go), fail-closed, called from two
+// places with different jobs:
+//   - authenticateMCPSession (below) calls it once per resolved auth (once
+//     per REQUEST for the stateless/hook-path callers that send no
+//     Mcp-Session-Id — see segmentResolutionPhase's doc,
+//     segment_resolution_metrics.go — not reliably once per session), purely
+//     so the resolution outcome stays OBSERVABLE ("session_auth" phase) -
+//     its return value is discarded, so a resolution error there denies
+//     nothing and downgrades nothing.
+//   - resolveMCPServerSegmentsForPolicy below calls it fresh at every
+//     policy-affecting tools/call (#3430, check_policy/check_output) and
+//     DOES act on the result: a resolver error there denies the call
+//     (fail-closed, ADR-060 §Fail-closed).
+//
+// Before #3473 these were two DIFFERENT functions with opposite error
+// contracts (this file's own former resolveUserSegments swallowed an error
+// into "nil, no decision"; segment_policy_gate.go's resolveSegmentsForPolicy
+// denied on one). They were collapsed because they were never answering a
+// different question - only the caller's use of the answer differed, which
+// is exactly what a `(segmentIDs, ok)` return plus "does this caller check
+// ok" already expresses without a second function.
 
 // fleetSegmentResolver is the process-wide shared IdentityAttributeResolver
 // used to resolve segments for a validated per-user identity, wired once at
@@ -209,49 +233,258 @@ func ResetFleetSegmentResolverForTest() {
 	setFleetSegmentResolver(nil)
 }
 
-// resolveUserSegments resolves the ADR-060 (#2989) governance-segment set
-// for an ALREADY-VALIDATED per-user identity (orgID/email come from a
-// successful Path A or Path B TokenValidator result — see
-// authenticateMCPServerRequest in mcp_server_handler.go) and makes the
-// outcome observable (log + Prometheus: the resolved set, latency, and
-// error-vs-empty).
+// resolveUserSegments itself now lives in segment_policy_gate.go (#3473
+// collapsed it with what used to be this file's own P2-era implementation);
+// see that file's doc for the merged function's contract.
+
+// --- #3430 (ADR-060 P3 fleet-plane promotion): policy-affecting segment
+// resolution for the MCP-server (JSON-RPC) plane's check_policy/check_output
+// tools ---
 //
-// Real-World-Path (#2989 constraint, coordinated with — and not duplicating
-// — #2948): this MUST be called only for a validated identity, never on an
-// absent or rejected token. #2948 owns making an absent/invalid user_token
-// itself reject observably; this function's job starts only after that has
-// already happened successfully. Callers must not invoke this on a
-// ResolveToken error or a "" token.
+// resolveMCPServerSegmentsForPolicy below calls resolveUserSegments fresh at
+// every tools/call, with segmentResolutionPhaseEnforcement, and DOES act on
+// its `ok` return (denies on false) — in contrast to authenticateMCPSession's
+// session-create call (mcp_server_handler.go), which passes
+// segmentResolutionPhaseSessionAuth and discards `ok` entirely. A second
+// resolver call per tools/call, rather than a reuse of the session-create-time
+// outcome, is deliberate: it is what lets the enforcement phase's error
+// contract be independent of whatever happened at session-create (see
+// segment_policy_gate.go's file doc for why these were never two different
+// LOOKUPS, only two different USES of the same one).
+
+// mcpSegmentGateOutcome is what the MCP-server plane's segment gate decided.
+// Three states, not a bool, because the two DENY reasons are operationally
+// different things an operator must be able to tell apart in the audit row:
+// a storage/query failure inside the resolver, versus a caller whose segment
+// membership is not determinable at all.
+type mcpSegmentGateOutcome int
+
+const (
+	// mcpSegmentGateProceed: the returned segment set is authoritative for
+	// this caller (possibly nil/empty, the legitimate "no segments" outcome)
+	// and evaluation may run with it.
+	mcpSegmentGateProceed mcpSegmentGateOutcome = iota
+
+	// mcpSegmentGateDenyResolutionFailed: the caller HAS a per-user principal
+	// to resolve against and the resolution genuinely errored (ADR-060
+	// Fail-closed). Deny before evaluation.
+	mcpSegmentGateDenyResolutionFailed
+
+	// mcpSegmentGateDenyIdentityUnresolved: this session has no per-user
+	// principal whose segment membership could be determined, AND the policy
+	// set for this (tenant, org, phase) contains at least one segment-scoped
+	// row, so the verdict genuinely depends on a set that cannot be
+	// established. Deny before evaluation (#3430 R3 BLOCKER 1).
+	mcpSegmentGateDenyIdentityUnresolved
+)
+
+// Guard ids + operator-facing refusal text for the two deny outcomes. Both
+// ids are resolvable through the builtin guard table in
+// policy_identity_stamp.go, so the audit row and the portal render a name
+// rather than a bare identifier.
+const (
+	mcpSegmentResolutionFailedPolicyID   = "segment_resolution_failed"
+	mcpSegmentIdentityUnresolvedPolicyID = "segment_identity_unresolved"
+)
+
+// mcpSegmentPhaseLabel names which half of a tool call a segment-gate refusal
+// belongs to, so one refusal builder can serve both without either handler
+// re-spelling a literal the other must match.
+type mcpSegmentPhaseLabel int
+
+const (
+	mcpSegmentPhaseRequest mcpSegmentPhaseLabel = iota
+	mcpSegmentPhaseResponse
+)
+
+// mcpSegmentGateRefusal maps a deny outcome to the guard id stamped into the
+// audit row / response and the operator-facing reason text.
 //
-// A resolution ERROR here does NOT reject the request or downgrade the
-// caller's role/identity — Segments are observability-only in this phase
-// (not consumed for policy, per DoD). It returns nil on any unavailability
-// or error, logging + counting the outcome either way, so an operator can
-// see the gap without the fleet plane's availability depending on it.
-func resolveUserSegments(ctx context.Context, orgID, email string) []sharedidentity.Segment {
-	resolver := getFleetSegmentResolver()
-	if resolver == nil {
-		return nil // community build, or resolver construction unavailable
+// The request-phase RESOLUTION-FAILED string is byte-identical to
+// run.go:clientRequestHandler's and gateway_handlers.go's, deliberately: it is
+// the one message an operator sees for this same contract on all three planes,
+// and tooling that keys on it must not have to special-case the plane. It is
+// the ONLY place in this change that keeps an em dash; the repo's
+// no-dash-on-added-lines rule yields to that byte parity here. Do not
+// "normalise" it - see the PR body's dash-gate note.
+//
+// The response-phase string deliberately DIVERGES ("response withheld" rather
+// than "request denied"): check_output governs content already produced, and
+// telling an operator their request was denied when the response was withheld
+// misdescribes what happened. It has no cross-plane twin to match, so it
+// carries a plain hyphen.
+func mcpSegmentGateRefusal(outcome mcpSegmentGateOutcome, phase mcpSegmentPhaseLabel) (policyID, reason string) {
+	switch outcome {
+	case mcpSegmentGateDenyResolutionFailed:
+		if phase == mcpSegmentPhaseResponse {
+			return mcpSegmentResolutionFailedPolicyID, "segment resolution unavailable - response withheld (fail-closed, ADR-060 #2989)"
+		}
+		return mcpSegmentResolutionFailedPolicyID, "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
+	case mcpSegmentGateDenyIdentityUnresolved:
+		if phase == mcpSegmentPhaseResponse {
+			return mcpSegmentIdentityUnresolvedPolicyID, "segment membership indeterminate for a caller with no validated per-user token - response withheld (fail-closed, ADR-060 #3430)"
+		}
+		return mcpSegmentIdentityUnresolvedPolicyID, "segment membership indeterminate for a caller with no validated per-user token - request denied (fail-closed, ADR-060 #3430)"
+	default:
+		// Unreachable: callers only build a refusal for a deny outcome. Never
+		// return an empty policy id, which would write an unattributable
+		// blocked row.
+		return mcpSegmentIdentityUnresolvedPolicyID, "segment gate denied the call (fail-closed, ADR-060 #3430)"
 	}
-	start := time.Now()
-	resolved, err := resolver.Resolve(ctx, orgID, email)
-	latency := time.Since(start)
-	if err != nil {
-		segmentResolutionTotal.WithLabelValues("error").Inc()
-		log.Printf("[Identity] WARNING: #2989 segment resolution failed org=%q latency=%s: %v", orgID, latency, err)
-		return nil
+}
+
+// segmentIdentityUnresolvedTotal counts tool calls DENIED because the caller
+// has no per-user principal whose governance-segment membership could be
+// determined while segment-scoped policies exist for their (tenant, org,
+// phase) - the #3430 R3 BLOCKER 1 refusal. Deliberately distinct from
+// segmentPolicyFailClosedTotal (segment_policy_gate.go), which counts denies
+// caused by the resolver ERRORING for a caller who did have a principal: the
+// two have different operator remedies (provision per-user tokens vs repair
+// the SCIM/identity store), so collapsing them into one series would hide
+// which one is firing.
+var segmentIdentityUnresolvedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "axonflow_agent_mcp_segment_identity_unresolved_total",
+	Help: "ADR-060 (#3430) MCP-server tool calls denied because the caller's governance-segment membership was indeterminate while segment-scoped policies exist.",
+}, []string{"tool"})
+
+// mcpSessionHasPerUserPrincipal reports whether this session carries a
+// per-user principal whose governance-segment membership can meaningfully be
+// resolved.
+//
+// The ONLY trusted signal is session.identityInputs.tokenResolvedIdentity,
+// set exclusively by authenticateMCPSession on a successful Path A (HS256) or
+// Path B (OIDC) per-user-token validation. The trust-gated X-User-Email
+// header is deliberately NOT accepted here even when
+// AXONFLOW_TRUST_IDENTITY_HEADERS is on: that header is caller-supplied, so
+// treating it as a segment-resolution key would let the same human shed their
+// segments by naming a non-member colleague - the reported bypass recreated
+// one level down, through a different header. The header keeps its documented
+// attribution (and ADR-044 override) role untouched; it simply never decides
+// which segment-scoped policies apply.
+//
+// A token-validated identity whose SUBJECT is one of the platform's shared
+// synthetics is also rejected: mint() validates only that the address
+// contains "@" and ResolveToken censuses nothing (see authenticateMCPSession's
+// #3077 R3 comment), so a token minted for e.g. "svc@axonflow.local"
+// validates while naming an identity shared by many callers. Resolving
+// segments for it would return zero memberships and read as "this person is
+// in no segment". IsSharedSyntheticIdentity is the ONE census predicate for
+// this (#2896/#2938) - never a second copy of the list.
+func mcpSessionHasPerUserPrincipal(session *mcpSession) bool {
+	if session == nil || !session.identityInputs.tokenResolvedIdentity {
+		return false
 	}
-	segmentResolutionDurationSeconds.Observe(latency.Seconds())
-	if len(resolved.Segments) == 0 {
-		segmentResolutionTotal.WithLabelValues("empty").Inc()
-		log.Printf("[Identity] #2989 segments resolved org=%q count=0 latency=%s", orgID, latency)
-		return nil
+	if session.orgID == "" || session.userEmail == "" {
+		return false
 	}
-	segmentResolutionTotal.WithLabelValues("resolved").Inc()
-	ids := make([]string, len(resolved.Segments))
-	for i, s := range resolved.Segments {
-		ids[i] = string(s.ID)
+	return !sharedidentity.IsSharedSyntheticIdentity(session.userEmail, isCommunityMode())
+}
+
+// segmentScopedPoliciesInScope reports whether a verdict for this session's
+// (tenant, org, phase) can depend on governance-segment membership at all,
+// i.e. whether the effective policy set holds at least one ENABLED
+// segment-scoped row. ok == false means the policy set could not be read and
+// the answer is unknown.
+//
+// staticEvaluationWillRun mirrors the caller's own detection gate: when the
+// static pass is not going to run for this request (detection disabled for
+// the deployment/org, or no engine wired), no segment-scoped row can fire, so
+// an indeterminate segment set cannot change any verdict and must not deny.
+//
+// Scope, stated so it is not over-read: this censuses the STATIC engine's
+// policy set (static_policies) only. The orchestrator's dynamic-policy plane
+// has its own segment_id column and its own gate (#3052); this plane never
+// hands the dynamic evaluator a segment set, which predates #3430 and is
+// unchanged by it. An org whose ONLY segment-scoped rows are dynamic
+// therefore still answers false here and proceeds - the refusal covers
+// exactly the rows this plane's own evaluation could have applied.
+func segmentScopedPoliciesInScope(ctx context.Context, session *mcpSession, phase sharedpolicy.Phase, staticEvaluationWillRun bool) (present bool, ok bool) {
+	if !staticEvaluationWillRun {
+		return false, true
 	}
-	log.Printf("[Identity] #2989 segments resolved org=%q count=%d segments=%v latency=%s", orgID, len(resolved.Segments), ids, latency)
-	return resolved.Segments
+	engine := sharedpolicy.GetGlobalEngine()
+	if engine == nil {
+		return false, true
+	}
+	// The org scope used here (session.orgID) and the one the subsequent
+	// evaluateInputPolicies / evaluateOutputPolicies scope with
+	// (OrgIDFromContext(ctx)) must keep denoting the same org. Both are
+	// stamped from the same authenticated client identity on every reachable
+	// path today, so they agree; if they ever diverge, this census would
+	// answer "does the verdict depend on segments" for a different org than
+	// the one actually evaluated, which is the one way this gate can be
+	// wrong without any test noticing.
+	return engine.HasSegmentScopedPolicies(ctx, session.tenantID, sharedpolicy.OrgScopePtr(session.orgID), phase)
+}
+
+// resolveMCPServerSegmentsForPolicy resolves the caller's governance-segment
+// set (ADR-060) for POLICY-AFFECTING consumption on the MCP-server JSON-RPC
+// plane (mcpToolCheckPolicy / mcpToolCheckOutput, mcp_server_handler.go).
+//
+// Fail-closed per ADR-060, on BOTH axes:
+//
+//   - The caller HAS a per-user principal and resolution errors: deny
+//     (mcpSegmentGateDenyResolutionFailed). Identical contract to every
+//     other resolveUserSegments enforcement-phase caller
+//     (segment_policy_gate.go); never an org-only fallback.
+//   - The caller has NO per-user principal at all (legacy shared-credential
+//     fleet on the documented Basic-auth norm, a caller that simply omitted
+//     X-User-Token, a deployment with no registered per-user-token validator,
+//     or a token naming a shared synthetic): the segment set is INDETERMINATE.
+//     Round 1 of this PR returned org-only here, which is exactly the reported
+//     bypass - a nil Segments excludes every segment-scoped row
+//     (CompiledPolicy.AppliesToSegments), so the same human dropping one
+//     header turned every segment-scoped policy off for themselves at zero
+//     cost. Indeterminate now DENIES
+//     (mcpSegmentGateDenyIdentityUnresolved) whenever a segment-scoped policy
+//     actually exists for this (tenant, org, phase), and proceeds org-only
+//     when none does.
+//
+// The conditional is what keeps the refusal proportionate: a deployment that
+// has never created a segment-scoped policy - every deployment before ADR-060
+// segment targeting, and every deployment that never adopts it - sees
+// literally no behavior change, while a deployment that HAS adopted segment
+// targeting gets an enforceable boundary instead of an opt-out header. The
+// class this newly denies is stated in the PR body.
+//
+// Deliberately NOT denying when no resolver is wired at all
+// (getFleetSegmentResolver() == nil: a community build, or Enterprise with no
+// identity-attribute resolver constructed): that is the "capability absent"
+// arm of the shared contract (identity.ResolveUserSegments), and both
+// already-merged planes - run.go's clientRequestHandler (#3051) and the
+// gateway pre-check (#3312) - proceed org-only there. Denying here alone
+// would make one plane refuse traffic its two siblings serve for the same
+// deployment. It is also not a caller-reachable state: no request can turn the
+// process-wide resolver off.
+func resolveMCPServerSegmentsForPolicy(ctx context.Context, session *mcpSession, phase sharedpolicy.Phase, staticEvaluationWillRun bool) (segmentIDs []string, outcome mcpSegmentGateOutcome) {
+	if session == nil {
+		// Unreachable from a served request (requireMCPAuth refuses before
+		// dispatch), but a gate must not decide "proceed" on an absent
+		// principal if that ever changes.
+		return nil, mcpSegmentGateDenyIdentityUnresolved
+	}
+	if getFleetSegmentResolver() == nil {
+		return nil, mcpSegmentGateProceed
+	}
+
+	if mcpSessionHasPerUserPrincipal(session) {
+		ids, ok := resolveUserSegmentsForEnforcement(ctx, session.orgID, session.userEmail)
+		if !ok {
+			return nil, mcpSegmentGateDenyResolutionFailed
+		}
+		return ids, mcpSegmentGateProceed
+	}
+
+	present, ok := segmentScopedPoliciesInScope(ctx, session, phase, staticEvaluationWillRun)
+	if !ok {
+		log.Printf("🛡️ [MCP-Server] denying a caller with no per-user principal: the %s-phase policy set for org %s could not be read, so whether the verdict depends on governance segments is unknown (fail-closed, #3430)",
+			string(phase), logutil.Sanitize(session.orgID))
+		return nil, mcpSegmentGateDenyIdentityUnresolved
+	}
+	if present {
+		log.Printf("🛡️ [MCP-Server] denying a caller with no validated per-user token: org %s has %s-phase segment-scoped policies whose applicability cannot be determined for a shared-credential principal (fail-closed, #3430)",
+			logutil.Sanitize(session.orgID), string(phase))
+		return nil, mcpSegmentGateDenyIdentityUnresolved
+	}
+	return nil, mcpSegmentGateProceed
 }

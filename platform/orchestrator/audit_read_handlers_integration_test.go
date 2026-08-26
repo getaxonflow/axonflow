@@ -12,6 +12,7 @@ package orchestrator
 // Skips cleanly when Docker is unavailable (CI unit lane).
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -57,6 +58,17 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 func seedAuditRow(t *testing.T, al *AuditLogger, id, tenant, decision, query, resp string, latency int64, ts time.Time) {
 	t.Helper()
+	seedAuditRowDetails(t, al, id, tenant, decision, query, resp, latency, ts,
+		`{"policy_name":"sys_dangerous","tool_name":"bash","reasons":["x"],"latency_ms":3}`)
+}
+
+// seedAuditRowDetails is seedAuditRow with an explicit policy_details payload,
+// so a test can seed the shapes the OTHER writer planes produce (#3426). The
+// default above is the SINGULAR HITL-style scalar, which is the only shape the
+// pre-#3426 top-policies query could see: a fixture built entirely out of it
+// passes while the defect is live.
+func seedAuditRowDetails(t *testing.T, al *AuditLogger, id, tenant, decision, query, resp string, latency int64, ts time.Time, details string) {
+	t.Helper()
 	_, err := al.db.Exec(`
 		INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_role,
 			client_id, tenant_id, org_id, request_type, query, query_hash, policy_decision,
@@ -65,7 +77,7 @@ func seedAuditRow(t *testing.T, al *AuditLogger, id, tenant, decision, query, re
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 		id, "req-"+id, ts, 1, "dev@acme.com", "agent",
 		tenant, tenant, "org-"+tenant, "tool_call", query, "hash", decision,
-		`{"policy_name":"sys_dangerous","tool_name":"bash","reasons":["x"],"latency_ms":3}`,
+		details,
 		latency, `["$.ssn"]`, resp, "corr-"+id, "dec-"+id, "mcp", "sess-"+id)
 	if err != nil {
 		t.Fatalf("seed %s: %v", id, err)
@@ -90,6 +102,20 @@ func TestAuditReadSurface_RealPostgres(t *testing.T) {
 	seedAuditRow(t, al, "aL", "acme", "override_lifecycle", "override created", "", 0, base.Add(3*time.Minute))
 	// tenant "other": must never surface for acme.
 	seedAuditRow(t, al, "o1", "other", "blocked", "other tenant secret", "", 99, base)
+	// #3426: tenant "fincrime" carries the shapes the decide plane, the
+	// FinCrime seam and the MCP check-input writer produce, alongside ONE
+	// singular-scalar row like the HITL writer's. Its own tenant so the
+	// verdict/latency expectations of the acme sub-tests above stay untouched.
+	// Seeded here and not only in the runtime-e2e because this is where the
+	// report's real SQL meets real JSONB.
+	seedAuditRowDetails(t, al, "f1", "fincrime", "blocked", "wire 48500 to DE", "", 12, base,
+		`{"policy_ids":["fincrime_structuring","fincrime_high_risk_geo"],"policy_names":["Structuring","High-Risk Jurisdiction"]}`)
+	seedAuditRowDetails(t, al, "f2", "fincrime", "blocked", "wire 47900 to DE", "", 13, base.Add(time.Minute),
+		`{"policy_ids":["fincrime_structuring"],"policy_names":["Structuring"]}`)
+	seedAuditRowDetails(t, al, "f3", "fincrime", "redacted", "select * from users", "", 14, base.Add(2*time.Minute),
+		`{"policy_matches":[{"policy_id":"sql-injection-block","policy_version":3}],"policy_names":["SQL Injection Block"]}`)
+	seedAuditRowDetails(t, al, "f4", "fincrime", "needs_approval", "approve wire", "", 15, base.Add(3*time.Minute),
+		`{"workflow_id":"w1","policy_id":"hv-wire-oversight","policy_name":"High-Value Wire Transfer Oversight"}`)
 
 	t.Run("detail returns full redacted record", func(t *testing.T) {
 		e, err := al.GetAuditLogByID("a2", "acme")
@@ -156,7 +182,7 @@ func TestAuditReadSurface_RealPostgres(t *testing.T) {
 	})
 
 	t.Run("report counts reconcile + tenant-scoped + avg latency", func(t *testing.T) {
-		rep, err := al.ReportByAction("acme", "", "", "", base.Add(-time.Hour), base.Add(time.Hour))
+		rep, err := al.ReportByAction(context.Background(), "acme", "", "", "", base.Add(-time.Hour), base.Add(time.Hour))
 		if err != nil {
 			t.Fatalf("report err: %v", err)
 		}
@@ -172,8 +198,20 @@ func TestAuditReadSurface_RealPostgres(t *testing.T) {
 				t.Fatalf("verdict %q missing", v)
 			}
 		}
-		if rep.AvgLatencyMs != 20.0 { // (10+20+30)/3
-			t.Fatalf("avg latency wrong: %v", rep.AvgLatencyMs)
+		// (10+20+30)/3. #3424: the divisor is the number of MEASURED rows, so
+		// this stays 20 -- but it now stays 20 for the right reason. The
+		// override_lifecycle row seeded above carries latency 0 and is excluded
+		// by BOTH the verdict fold and the measured-row filter; before the fix
+		// the divisor was every folded verdict row, which happened to agree here
+		// only because all three verdict rows were measured.
+		if rep.AvgLatencyMs == nil {
+			t.Fatalf("avg latency is null; want 20 over 3 measured rows")
+		}
+		if *rep.AvgLatencyMs != 20.0 {
+			t.Fatalf("avg latency wrong: %v", *rep.AvgLatencyMs)
+		}
+		if rep.LatencySampleCount != 3 {
+			t.Fatalf("latency_sample_count = %d, want 3", rep.LatencySampleCount)
 		}
 		// tenant scoping: 'other' row (latency 99) excluded, else avg != 20
 		if len(rep.TopPolicies) == 0 || rep.TopPolicies[0].PolicyName != "sys_dangerous" {
@@ -181,8 +219,70 @@ func TestAuditReadSurface_RealPostgres(t *testing.T) {
 		}
 	})
 
+	// #3426. The Compliance Report's top_policies must count EVERY writer
+	// plane, not only the singular-scalar HITL exception the pre-fix query
+	// filtered on. Asserted against the real SQL over real JSONB, and against
+	// the pre-fix predicate run side by side so the fixture is provably
+	// discriminating rather than merely green.
+	t.Run("report top_policies counts array-stamped planes and keeps the HITL row", func(t *testing.T) {
+		rep, err := al.ReportByAction(context.Background(), "fincrime", "", "", "", base.Add(-time.Hour), base.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("report err: %v", err)
+		}
+		got := map[string][2]int{}
+		for _, p := range rep.TopPolicies {
+			got[p.PolicyName] = [2]int{p.TriggerCount, p.BlockCount}
+		}
+		want := map[string][2]int{
+			// Two rows carry it; both blocked.
+			"fincrime_structuring": {2, 2},
+			// The SECOND id on row f1: resolving policy_ids[0] alone would
+			// under-report it by the same mechanism as excluding the row.
+			"fincrime_high_risk_geo": {1, 1},
+			// policy_matches, the pre-9.16.1 check-input shape.
+			"sql-injection-block": {1, 0},
+			// The HITL exception, still counted. The fix widens the reader; it
+			// must not swap one exclusion for another.
+			"hv-wire-oversight": {1, 0},
+		}
+		for name, w := range want {
+			g, ok := got[name]
+			if !ok {
+				t.Fatalf("policy %q missing from top_policies: %+v", name, rep.TopPolicies)
+			}
+			if g != w {
+				t.Fatalf("policy %q = (triggers %d, blocks %d), want (%d, %d)", name, g[0], g[1], w[0], w[1])
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("top_policies returned %d policies, want %d: %+v", len(got), len(want), rep.TopPolicies)
+		}
+		// Ordering is by trigger count, so the two-row policy leads.
+		if rep.TopPolicies[0].PolicyName != "fincrime_structuring" {
+			t.Fatalf("top_policies not ordered by trigger_count: %+v", rep.TopPolicies)
+		}
+		// A display name never appears beside the id it was stamped with: one
+		// arm supplies the whole set.
+		if _, leaked := got["Structuring"]; leaked {
+			t.Fatalf("display name counted alongside its id: %+v", rep.TopPolicies)
+		}
+		// THE DISCRIMINATOR. The predicate both surfaces used before #3426,
+		// executed against the same rows: it sees the HITL row and nothing
+		// else. If this ever stops being 1, the fixture has stopped
+		// reproducing the defect and the assertions above prove nothing.
+		var preFix int
+		if err := al.db.QueryRow(`SELECT count(DISTINCT policy_details->>'policy_name')
+			FROM audit_logs WHERE tenant_id = 'fincrime'
+			  AND policy_details IS NOT NULL AND policy_details->>'policy_name' IS NOT NULL`).Scan(&preFix); err != nil {
+			t.Fatalf("pre-fix probe: %v", err)
+		}
+		if preFix != 1 {
+			t.Fatalf("pre-fix predicate saw %d policies, want exactly 1 (the HITL row); the fixture no longer reproduces #3426", preFix)
+		}
+	})
+
 	t.Run("report with user_email + action filter", func(t *testing.T) {
-		rep, err := al.ReportByAction("acme", "", "dev@acme.com", "blocked", base.Add(-time.Hour), base.Add(time.Hour))
+		rep, err := al.ReportByAction(context.Background(), "acme", "", "dev@acme.com", "blocked", base.Add(-time.Hour), base.Add(time.Hour))
 		if err != nil {
 			t.Fatalf("report err: %v", err)
 		}

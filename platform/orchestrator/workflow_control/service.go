@@ -12,8 +12,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
-
 	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/tenantscope"
 )
@@ -40,8 +38,16 @@ type StepGateContext struct {
 	TenantID     string
 	OrgID        string
 	UserID       string
-	ClientID     string
-	ToolContext  *ToolContext
+	// Email is the trust-gated caller identity (X-User-Email), threaded from
+	// StepGateRequest.Email (#3281, ADR-060 #2989 P3b) so the policy adapter
+	// can resolve the caller's governance-segment set the same way
+	// /api/v1/process does. Distinct from UserID, which is attribution only
+	// and may hold a numeric ID or an email depending on caller - segment
+	// resolution must NEVER read UserID. Empty means no verified identity was
+	// presented on this call (org-only enforcement, not a failure).
+	Email       string
+	ClientID    string
+	ToolContext *ToolContext
 
 	// Retry-aware policy fields (Issue #1673 Phase 1).
 	// Populated by the service layer from the existing workflow_steps row
@@ -75,6 +81,17 @@ type StepGateEvaluation struct {
 	PoliciesEvaluated []PolicyMatch
 	PoliciesMatched   []PolicyMatch
 	ApprovalID        string // HITL approval ID when Decision is GateDecisionRequireApproval (Issue #1082)
+	// ApprovalEnqueue classifies what the HITL enqueue did for THIS gate:
+	// "created", "reused", "cap_reached", "tier_disabled" or "error".
+	//
+	// It exists because a require_approval decision with an empty ApprovalID
+	// used to be indistinguishable from one whose queue write failed. The
+	// caller was held either way, and the only record of the difference was a
+	// log line (wcp_policy_adapter.go's `log.Printf` + `return uuid.Nil`) -
+	// the same invisible dead end #3509 documented on the FinCrime seam.
+	// Empty means no enqueue was attempted, which is the ordinary case for an
+	// allow/block decision and for a deployment with no HITL adapter wired.
+	ApprovalEnqueue string
 }
 
 // DefaultPolicyEvaluator is a no-op evaluator that allows all steps
@@ -96,6 +113,30 @@ func (d *DefaultPolicyEvaluator) EvaluateStepGate(ctx context.Context, step *Ste
 // This avoids a circular dependency with the orchestrator package
 type WorkflowAuditLogger interface {
 	LogWorkflowOperation(ctx context.Context, entry *WorkflowAuditEntry)
+}
+
+// HITLMirrorResolver resolves the decide-plane `hitl_approval_queue` row that
+// this plane's require_approval step gate wrote, when the WORKFLOW-plane step
+// reaches a terminal approval state.
+//
+// #3408: the step gate writes that row (it is the EU AI Act Article 14
+// oversight record, and the Evaluation-tier auto-expiry loop drives workflow
+// abortion from it), but nothing ever resolved it. Approving the workflow step
+// left the mirror `pending` - forever, past the re-gate's allow, past the
+// workflow completing - so the portal's Approvals badge counted a decision
+// that had already been made, and the compliance record said a review never
+// concluded.
+//
+// Injected as an interface for the same reason WorkflowExecutionTracker is:
+// the implementation lives in platform/orchestrator and this package must not
+// import it. A nil resolver is the ordinary state for a deployment with no
+// HITL adapter wired, and every call site treats it as a no-op.
+type HITLMirrorResolver interface {
+	// ResolveStepMirror is best-effort by contract: an absent mirror (no
+	// adapter was wired when the gate fired) and an already-terminal mirror
+	// are both normal, and neither may fail the approval the operator just
+	// performed on the workflow plane.
+	ResolveStepMirror(ctx context.Context, orgID, tenantID, workflowID, stepID, status, reviewerID, comment string)
 }
 
 // WorkflowExecutionTracker interface for unified execution tracking
@@ -139,6 +180,10 @@ type WorkflowAuditEntry struct {
 	// step_rejected. Populated from the HTTP caller's X-User-Email / user
 	// context; surfaces in audit_logs.user_email so the portal audit page
 	// shows the reviewer instead of "N/A".
+	//
+	// #3281: step_gate populates UserEmail too. That verdict became
+	// identity-dependent once segment resolution keys on the caller email, so
+	// a row without it cannot say which caller the decision was made for.
 	UserEmail string
 	UserRole  string
 	Metadata  map[string]interface{}
@@ -156,6 +201,7 @@ type Service struct {
 	policyEvaluator  PolicyEvaluator
 	auditLogger      WorkflowAuditLogger
 	executionTracker WorkflowExecutionTracker
+	hitlMirror       HITLMirrorResolver
 	webhookNotifier  WebhookNotifier
 	logger           *log.Logger
 	baseURL          string // Base URL for approval URLs
@@ -200,6 +246,13 @@ func (s *Service) SetAuditLogger(auditLogger WorkflowAuditLogger) {
 // SetExecutionTracker sets the unified execution tracker for the service
 func (s *Service) SetExecutionTracker(tracker WorkflowExecutionTracker) {
 	s.executionTracker = tracker
+}
+
+// SetHITLMirrorResolver wires the decide-plane mirror resolver (#3408).
+// Optional: a deployment with no HITL adapter never wrote a mirror, and a nil
+// resolver simply skips the resolution.
+func (s *Service) SetHITLMirrorResolver(r HITLMirrorResolver) {
+	s.hitlMirror = r
 }
 
 // SetWebhookNotifier sets the webhook notifier for the service
@@ -272,7 +325,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 	}
 
 	workflow := &Workflow{
-		WorkflowID:       fmt.Sprintf("wf_%s", uuid.New().String()[:8]),
+		WorkflowID:       NewWorkflowID(),
 		WorkflowName:     req.WorkflowName,
 		Source:           source,
 		Status:           WorkflowStatusInProgress,
@@ -709,8 +762,14 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		TenantID:     tenantID,
 		OrgID:        orgID,
 		UserID:       userID,
-		ClientID:     clientID,
-		ToolContext:  req.ToolContext,
+		// #3281 (ADR-060 #2989 P3b): the trust-gated caller email, threaded
+		// through from StepGateRequest.Email (the handler populates it from
+		// X-User-Email - see StepGateRequest.Email's doc). This is the ONLY
+		// production construction site for StepGateContext; every other
+		// StepGateContext{...} literal in the package is a test.
+		Email:       req.Email,
+		ClientID:    clientID,
+		ToolContext: req.ToolContext,
 	}
 	// Issue #1673 Phase 1: populate retry-context fields on the gate context
 	// so policy conditions like step.gate_count > 1 work correctly on the
@@ -848,6 +907,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		PolicyIDs:         evaluation.PolicyIDs,
 		Reason:            evaluation.Reason,
 		ApprovalID:        evaluation.ApprovalID,
+		ApprovalEnqueue:   evaluation.ApprovalEnqueue,
 		PoliciesEvaluated: evaluation.PoliciesEvaluated,
 		PoliciesMatched:   evaluation.PoliciesMatched,
 		Cached:            false,
@@ -875,6 +935,31 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		"gate_count":       step.GateCount,
 		"completion_count": step.CompletionCount,
 	}
+	// #3281: the audit row previously recorded only the COUNTS above, so a
+	// named refusal never reached it -- a fail-closed segment-resolution deny
+	// carries PolicyIDs == ["segment_resolution_failed"] and
+	// len(PoliciesMatched) == 0, which landed as "policies_matched": 0 and no
+	// identifier at all. An operator (or an e2e assertion) could then only
+	// string-match the human-readable reason, which is exactly what naming the
+	// refusal was meant to avoid. Record the identifiers themselves, keyed
+	// "policy_ids" to match the canonical decide/gateway audit detail builders
+	// (agent/decision_handler.go buildDecisionAuditDetails). Omitted when
+	// empty so an ordinary uneventful allow does not grow a null column.
+	if len(evaluation.PolicyIDs) > 0 {
+		auditMeta["policy_ids"] = evaluation.PolicyIDs
+	}
+	// #3408 sibling: the enqueue outcome belongs on the audit row for the same
+	// reason policy_ids does. A `require_approval` row with
+	// approval_enqueue="cap_reached" is a governed request that was held with
+	// no reviewer surface; without this key that row is byte-identical to a
+	// healthy hold and the only evidence is a log line on one pod. Key name
+	// matches the `policy_details.approval_enqueue` #3514 stamps for the
+	// policy-authored plane, so one query answers the question across planes.
+	// Omitted when empty (no enqueue was attempted) so an ordinary allow does
+	// not grow a null column.
+	if evaluation.ApprovalEnqueue != "" {
+		auditMeta["approval_enqueue"] = evaluation.ApprovalEnqueue
+	}
 	if req.ToolContext != nil {
 		auditMeta["tool_name"] = req.ToolContext.ToolName
 		auditMeta["tool_type"] = req.ToolContext.ToolType
@@ -892,9 +977,25 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		Decision:     string(evaluation.Decision),
 		Reason:       evaluation.Reason,
 		TenantID:     tenantID,
-		ClientID:     clientID,
-		UserID:       userID,
-		Metadata:     auditMeta,
+		// #3281: OrgID was left unset here (unlike step_approved/
+		// step_rejected below, which already populate it from
+		// workflow.OrgID) - every step_gate audit row's org_id landed NULL,
+		// including the fail-closed segment-resolution-failure deny this
+		// issue adds, making it unfindable by the org-scoped query an
+		// operator/e2e-suite would naturally write. Populated from the SAME
+		// orgID parameter already bound above (#3065) - not re-derived.
+		OrgID:    orgID,
+		ClientID: clientID,
+		UserID:   userID,
+		// #3281: the step_gate verdict is now identity-DEPENDENT (segment
+		// resolution keys on this email), so an audit row that omits it cannot
+		// answer "which caller was this decided for" -- the same question
+		// step_approved/step_rejected already answer by populating UserEmail.
+		// req.Email is the trust-gated X-User-Email the handler read; empty
+		// stays empty (the identity-absent org-only path), never defaulted
+		// from the attribution-only userID.
+		UserEmail: req.Email,
+		Metadata:  auditMeta,
 	})
 
 	// Unified execution tracking
@@ -982,6 +1083,14 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID,
 	s.logger.Printf("[WorkflowControl] Step approved: workflow=%s step=%s by=%s",
 		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(approvedBy))
 
+	// #3408: resolve the decide-plane mirror this step's gate wrote, so the
+	// portal's Approvals badge stops counting a decision that has been made
+	// and the Article 14 record shows the review concluding. Placed
+	// immediately after the workflow_steps write and BEFORE the tracker /
+	// audit / webhook side effects, so the two rows describing one decision
+	// cannot be observed disagreeing for longer than one statement.
+	s.resolveHITLMirror(ctx, workflow, stepID, string(ApprovalStatusApproved), approvedBy, comment)
+
 	// v7.4.1 (Bug 1): re-sync the step to the unified execution tracker so
 	// `/api/v1/unified/executions/{id}` reflects the terminal approval_status
 	// + approved_by instead of the stale "pending" state that was recorded
@@ -1067,6 +1176,12 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID, tenantID, 
 
 	s.logger.Printf("[WorkflowControl] Step rejected: workflow=%s step=%s by=%s",
 		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(rejectedBy))
+
+	// #3408: same resolution on the reject path. A rejected workflow step
+	// whose mirror stayed `pending` was the worse half of the defect - the
+	// queue advertised an outstanding decision for a workflow that had
+	// already been aborted.
+	s.resolveHITLMirror(ctx, workflow, stepID, string(ApprovalStatusRejected), rejectedBy, reason)
 
 	// v7.4.1 (Bug 1): re-sync to unified execution tracker — same rationale as
 	// the approve path. workflow_steps now has approval_status=rejected and
@@ -1516,7 +1631,11 @@ func (s *Service) GetCheckpoints(ctx context.Context, workflowID, tenantID, orgI
 // The step gate is called with retry_policy=reevaluate to get a fresh policy decision,
 // reflecting any policy changes since the checkpoint was created.
 // Available to Evaluation+ tiers.
-func (s *Service) ResumeFromLastCheckpoint(ctx context.Context, workflowID, tenantID, orgID string) (*ResumeFromCheckpointResponse, error) {
+//
+// email is the trust-gated X-User-Email carried by THIS resume request (see
+// resumeFromCheckpointInternal for why it is the live header and not the
+// checkpoint's stored actor).
+func (s *Service) ResumeFromLastCheckpoint(ctx context.Context, workflowID, tenantID, orgID, email string) (*ResumeFromCheckpointResponse, error) {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err
@@ -1533,12 +1652,15 @@ func (s *Service) ResumeFromLastCheckpoint(ctx context.Context, workflowID, tena
 		return nil, fmt.Errorf("no resumable checkpoint found for workflow %s", workflowID)
 	}
 
-	return s.resumeFromCheckpointInternal(ctx, workflow, cp, tenantID, orgID)
+	return s.resumeFromCheckpointInternal(ctx, workflow, cp, tenantID, orgID, email)
 }
 
 // ResumeFromCheckpoint re-evaluates a workflow from a specific checkpoint.
 // Available to Enterprise tier only.
-func (s *Service) ResumeFromCheckpoint(ctx context.Context, workflowID string, checkpointID int64, tenantID, orgID string) (*ResumeFromCheckpointResponse, error) {
+//
+// email is the trust-gated X-User-Email carried by THIS resume request (see
+// resumeFromCheckpointInternal).
+func (s *Service) ResumeFromCheckpoint(ctx context.Context, workflowID string, checkpointID int64, tenantID, orgID, email string) (*ResumeFromCheckpointResponse, error) {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err
@@ -1569,11 +1691,29 @@ func (s *Service) ResumeFromCheckpoint(ctx context.Context, workflowID string, c
 		return nil, fmt.Errorf("checkpoint %d is not resumable (step was blocked)", checkpointID)
 	}
 
-	return s.resumeFromCheckpointInternal(ctx, workflow, cp, tenantID, orgID)
+	return s.resumeFromCheckpointInternal(ctx, workflow, cp, tenantID, orgID, email)
 }
 
 // resumeFromCheckpointInternal handles the shared logic for resuming from any checkpoint.
-func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Workflow, cp *Checkpoint, tenantID, orgID string) (*ResumeFromCheckpointResponse, error) {
+//
+// #3281 (ADR-060 #2989 P3b): a resume re-enters the SAME Service.StepGate
+// evaluation as POST .../steps/{step_id}/gate, with retry_policy=reevaluate --
+// i.e. it deliberately bypasses the decision cache to get a FRESH verdict
+// "reflecting any policy changes since the checkpoint was created". If the
+// caller identity is dropped on the way in, that fresh verdict is computed on
+// the org-only path and every segment-scoped policy silently stops applying,
+// so a step that /gate denies for this very caller is allowed through here.
+// That is the identical bypass shape #3281 closes on the gate route, one route
+// over, and it was measured live before this fix.
+//
+// email is therefore threaded from the LIVE resume request's trust-gated
+// X-User-Email header, exactly as the gate handler reads it. It is deliberately
+// NOT read back from the checkpoint's stored actor (cp.UserID): replaying the
+// ORIGINAL caller's identity would evaluate user B's resume under user A's
+// segment memberships, which is a fresh privilege-escalation surface rather
+// than a fix. Empty stays the safe no-verified-identity input: org-only
+// resolution, non-segment-scoped policies still enforce, never a bypass.
+func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Workflow, cp *Checkpoint, tenantID, orgID, email string) (*ResumeFromCheckpointResponse, error) {
 	// If workflow is in a terminal state that's not aborted, we can't resume
 	if workflow.Status == WorkflowStatusCompleted || workflow.Status == WorkflowStatusFailed {
 		return nil, fmt.Errorf("cannot resume workflow in %s state", workflow.Status)
@@ -1616,6 +1756,9 @@ func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Wo
 		Provider:    cp.Provider,
 		ToolContext: toolContext,
 		RetryPolicy: RetryPolicyReevaluate,
+		// #3281: the resume request's own trust-gated identity, so the fresh
+		// re-evaluation resolves segments the same way the gate route does.
+		Email: email,
 	}, tenantID, cp.OrgID, resumeUserID, resumeClientID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to re-evaluate step gate at checkpoint: %w", err)
@@ -1638,4 +1781,27 @@ func (s *Service) resumeFromCheckpointInternal(ctx context.Context, workflow *Wo
 		ResumeCount:           cp.ResumeCount + 1,
 		Message:               fmt.Sprintf("Workflow resumed from checkpoint at step %s (index %d)", cp.StepID, cp.StepIndex),
 	}, nil
+}
+
+// resolveHITLMirror is the single call site shape for the #3408 mirror
+// resolution, shared by ApproveStep and RejectStep.
+//
+// Best-effort by design and by contract (see HITLMirrorResolver): the
+// workflow-plane approval has ALREADY landed in workflow_steps when this runs,
+// and failing the operator's request afterwards would leave the two rows
+// disagreeing in the OTHER direction while telling the operator their approval
+// did not happen. The resolver logs and counts its own failures - that is the
+// #3509 lesson applied, not an exception to it: the refusal is recorded where
+// an operator can see it, it just does not roll back a decision the operator
+// already made.
+//
+// workflow is the ownership-verified record the caller already fetched, so the
+// org/tenant scope the mirror's RLS wrap needs comes from the workflow row
+// rather than from the caller's headers.
+func (s *Service) resolveHITLMirror(ctx context.Context, workflow *Workflow, stepID, status, reviewerID, comment string) {
+	if s.hitlMirror == nil || workflow == nil {
+		return
+	}
+	s.hitlMirror.ResolveStepMirror(ctx, workflow.OrgID, workflow.TenantID,
+		workflow.WorkflowID, stepID, status, reviewerID, comment)
 }

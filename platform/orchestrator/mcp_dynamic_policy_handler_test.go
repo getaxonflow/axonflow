@@ -14,16 +14,81 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// newTestEngine creates a DynamicPolicyEngine for testing with the given policies.
-// This is a test helper that directly sets the policies slice.
-func newTestEngine(policies []DynamicPolicy) *DynamicPolicyEngine {
-	engine := &DynamicPolicyEngine{
-		policies:       policies,
-		riskCalculator: NewRiskCalculator(),
-		cache:          NewPolicyCache(5 * time.Minute),
-		stopCh:         make(chan struct{}),
+// testMCPPolicyEngine is a minimal MCPPolicyEngine test double: a fixed,
+// directly-set policy slice, filtered by tenant/segment applicability.
+//
+// #3319: replaces the retired in-memory DynamicPolicyEngine this package's
+// MCP handler tests used to construct directly via newTestEngine. That
+// engine no longer exists, but MCPPolicyEngine only ever needed
+// ListActivePoliciesForTenant, so this double reproduces just that method —
+// an empty TenantID/SegmentID applies to everyone, mirroring the retired
+// engine's applicability rule (memPolicyAppliesToTenant), which is what
+// every test using this double already assumes. No test in this package
+// exercises the database engine's 'global'/'default' sentinels through this
+// double.
+type testMCPPolicyEngine struct {
+	policies []DynamicPolicy
+	// orgs maps a policy ID to the org that owns it, for the fixtures where
+	// org and tenant DIVERGE. Decision 5 (#3490) made org the selection key,
+	// and DynamicPolicy has no OrgID field - the real engine reads org_id out
+	// of the raw cache entry's _metadata precisely because the converted
+	// struct cannot carry it, and that reasoning did not stop being true. A
+	// policy absent from this map falls back to its TenantID, the org ==
+	// tenant identity every single-tenant deployment has and every fixture
+	// written before this change assumed.
+	orgs map[string]string
+}
+
+// newTestEngine builds a testMCPPolicyEngine holding exactly the supplied
+// policies, with each policy's org taken to equal its tenant.
+func newTestEngine(policies []DynamicPolicy) *testMCPPolicyEngine {
+	return &testMCPPolicyEngine{policies: policies}
+}
+
+// newTestEngineWithOrgs is newTestEngine for fixtures whose org and tenant
+// differ - the shape a multi-tenant org actually has, and the one that makes
+// a Decision 5 assertion non-vacuous.
+func newTestEngineWithOrgs(policies []DynamicPolicy, orgs map[string]string) *testMCPPolicyEngine {
+	return &testMCPPolicyEngine{policies: policies, orgs: orgs}
+}
+
+// orgOf returns the org that owns p, defaulting to its tenant.
+func (e *testMCPPolicyEngine) orgOf(p DynamicPolicy) string {
+	if org, ok := e.orgs[p.ID]; ok {
+		return org
 	}
-	return engine
+	return p.TenantID
+}
+
+// Close is a no-op, kept so every `defer engine.Close()` call site across
+// this package's MCP handler tests (inherited from when newTestEngine
+// returned a real engine with background goroutines to stop) keeps
+// compiling unchanged.
+func (e *testMCPPolicyEngine) Close() {}
+
+// ListActivePoliciesForTenant implements MCPPolicyEngine.
+//
+// Decision 5 (#3490): the argument is the caller's ORG. DynamicPolicy has no
+// OrgID field - the real engine reads org_id out of the raw cache entry's
+// _metadata precisely because the converted struct cannot carry it - so this
+// double resolves each policy's owner through orgOf (the explicit orgs map,
+// else the org == tenant identity). That keeps the double's answer equal to
+// the real gate's without pretending the wire struct grew a field it did not.
+func (e *testMCPPolicyEngine) ListActivePoliciesForTenant(orgID string, segmentIDs []string) []DynamicPolicy {
+	var active []DynamicPolicy
+	for _, p := range e.policies {
+		if !p.Enabled {
+			continue
+		}
+		if owner := e.orgOf(p); owner != "" && owner != orgID {
+			continue
+		}
+		if p.SegmentID != "" && !segmentSetContains(segmentIDs, p.SegmentID) {
+			continue
+		}
+		active = append(active, p)
+	}
+	return active
 }
 
 func TestNewMCPDynamicPolicyHandler(t *testing.T) {
@@ -150,7 +215,8 @@ func TestMCPDynamicPolicyHandler_MissingConnectorName(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID: "tenant-1",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -179,10 +245,11 @@ func TestMCPDynamicPolicyHandler_NoPolicies(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		Operation:     "query",
-		Statement:     "SELECT * FROM users",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		Operation:      "query",
+		Statement:      "SELECT * FROM users",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -213,8 +280,9 @@ func TestMCPDynamicPolicyHandler_NilEngine(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -252,8 +320,9 @@ func TestMCPDynamicPolicyHandler_RateLimitPolicy(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -295,8 +364,9 @@ func TestMCPDynamicPolicyHandler_BudgetPolicy(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -342,9 +412,10 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Allowed(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserRole:      "admin",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserRole:       "admin",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -386,9 +457,10 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Denied(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserRole:      "viewer",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserRole:       "viewer",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -433,9 +505,10 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_NotIn(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserRole:      "guest",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserRole:       "guest",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -480,9 +553,10 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Equals(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserRole:      "admin",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserRole:       "admin",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -524,9 +598,10 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Wildcard(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserRole:      "any-role",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserRole:       "any-role",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -576,8 +651,9 @@ func TestMCPDynamicPolicyHandler_ConnectorPolicy_Block(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "prod-db",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "prod-db",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -628,8 +704,9 @@ func TestMCPDynamicPolicyHandler_ConnectorPolicy_Allow(t *testing.T) {
 
 	// Request for different connector should be allowed
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "dev-db",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "dev-db",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -679,9 +756,10 @@ func TestMCPDynamicPolicyHandler_MCPPolicy_OperationContains(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		Operation:     "bulk_delete",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		Operation:      "bulk_delete",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -732,9 +810,10 @@ func TestMCPDynamicPolicyHandler_ContainsIsNowCaseInsensitive(t *testing.T) {
 	// #3296 this handler was the sole case-sensitive call site and would
 	// have allowed this request through.
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		Operation:     "bulk_delete",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		Operation:      "bulk_delete",
 	}
 	jsonBody, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
@@ -869,9 +948,10 @@ func TestMCPDynamicPolicyHandler_MCPPolicy_NotEquals(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		Operation:     "execute",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		Operation:      "execute",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -919,8 +999,9 @@ func TestMCPDynamicPolicyHandler_TenantFiltering(t *testing.T) {
 
 	// Request from tenant-2 should not be affected by tenant-1's policy
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-2",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-2",
+		OrganizationID: "tenant-2",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -968,8 +1049,9 @@ func TestMCPDynamicPolicyHandler_GlobalTenantPolicy(t *testing.T) {
 
 	// Any tenant should be affected by global policy
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "any-tenant",
-		ConnectorName: "restricted-db",
+		TenantID:       "any-tenant",
+		OrganizationID: "any-tenant",
+		ConnectorName:  "restricted-db",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1016,8 +1098,9 @@ func TestMCPDynamicPolicyHandler_DisabledPolicy(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1052,8 +1135,9 @@ func TestMCPDynamicPolicyHandler_UnknownPolicyType(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1104,9 +1188,10 @@ func TestMCPDynamicPolicyHandler_TimeAccessPolicy(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		RequestTime:   time.Now(),
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		RequestTime:    time.Now(),
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1176,8 +1261,9 @@ func TestMCPDynamicPolicyHandler_MultiplePolicies_FirstBlock(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1227,8 +1313,9 @@ func TestMCPDynamicPolicyHandler_UnknownConditionField(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1276,8 +1363,9 @@ func TestMCPDynamicPolicyHandler_UnknownOperator(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1325,8 +1413,9 @@ func TestMCPDynamicPolicyHandler_MatchedPoliciesResponse(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1352,26 +1441,13 @@ func TestMCPDynamicPolicyHandler_MatchedPoliciesResponse(t *testing.T) {
 	}
 }
 
-func TestMCPDynamicPolicyHandler_GlobalHandlerFunctions(t *testing.T) {
-	// Reset
-	globalMCPDynamicPolicyHandler = nil
-
-	if GetMCPDynamicPolicyHandler() != nil {
-		t.Error("expected nil before initialization")
-	}
-
-	engine := newTestEngine(nil)
-	defer engine.Close()
-	InitMCPDynamicPolicyHandler(engine)
-
-	handler := GetMCPDynamicPolicyHandler()
-	if handler == nil {
-		t.Fatal("expected non-nil after initialization")
-	}
-
-	// Cleanup
-	globalMCPDynamicPolicyHandler = nil
-}
+// TestMCPDynamicPolicyHandler_GlobalHandlerFunctions was deleted here
+// (#3319): it tested InitMCPDynamicPolicyHandler / GetMCPDynamicPolicyHandler
+// / globalMCPDynamicPolicyHandler, a global-handler wiring apparatus with
+// zero production callers (the live wiring is NewMCPDynamicPolicyHandler,
+// interface-typed, called directly from run.go) — dead code kept alive only
+// by this one test and the deleted InitMCPDynamicPolicyHandler(*DynamicPolicyEngine)
+// constructor. All three were removed together.
 
 func TestMCPDynamicPolicyHandler_ProcessingTime(t *testing.T) {
 	engine := newTestEngine(nil)
@@ -1382,8 +1458,9 @@ func TestMCPDynamicPolicyHandler_ProcessingTime(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1434,8 +1511,9 @@ func TestMCPDynamicPolicyHandler_TenantIDCondition(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "blocked-tenant",
-		ConnectorName: "postgres",
+		TenantID:       "blocked-tenant",
+		OrganizationID: "blocked-tenant",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1478,8 +1556,9 @@ func TestMCPDynamicPolicyHandler_NoActionsPolicy(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1511,8 +1590,9 @@ func BenchmarkMCPDynamicPolicyHandler_NoPolicies(b *testing.B) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1547,8 +1627,9 @@ func BenchmarkMCPDynamicPolicyHandler_WithPolicies(b *testing.B) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -1584,9 +1665,10 @@ func TestEvaluateRateLimit_WithinLimit(t *testing.T) {
 		},
 	}
 	req := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserID:        "user-1",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserID:         "user-1",
 	}
 
 	// First request should be allowed
@@ -1632,8 +1714,8 @@ func TestEvaluateRateLimit_DifferentUsers(t *testing.T) {
 		},
 	}
 
-	req1 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", ConnectorName: "pg", UserID: "user-A"}
-	req2 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", ConnectorName: "pg", UserID: "user-B"}
+	req1 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", OrganizationID: "tenant-1", ConnectorName: "pg", UserID: "user-A"}
+	req2 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", OrganizationID: "tenant-1", ConnectorName: "pg", UserID: "user-B"}
 
 	// User A makes 5 requests
 	for i := 0; i < 5; i++ {
@@ -1669,7 +1751,7 @@ func TestEvaluateRateLimit_DefaultLimits(t *testing.T) {
 		Type:       "rate-limit",
 		Conditions: []PolicyCondition{},
 	}
-	req := MCPPolicyEvaluationRequest{TenantID: "t1", ConnectorName: "pg", UserID: "u1"}
+	req := MCPPolicyEvaluationRequest{TenantID: "t1", OrganizationID: "t1", ConnectorName: "pg", UserID: "u1"}
 
 	// Should be allowed with default limits (no limit configured)
 	_, allowed, _ := handler.evaluateRateLimit(policy, req)
@@ -1696,9 +1778,10 @@ func TestEvaluateBudget_WithinBudget(t *testing.T) {
 		},
 	}
 	req := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserID:        "user-1",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserID:         "user-1",
 	}
 
 	// First request should be allowed
@@ -1745,8 +1828,8 @@ func TestEvaluateBudget_DifferentTenants(t *testing.T) {
 		},
 	}
 
-	reqT1 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", ConnectorName: "pg", UserID: "user-1"}
-	reqT2 := MCPPolicyEvaluationRequest{TenantID: "tenant-2", ConnectorName: "pg", UserID: "user-2"}
+	reqT1 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", OrganizationID: "tenant-1", ConnectorName: "pg", UserID: "user-1"}
+	reqT2 := MCPPolicyEvaluationRequest{TenantID: "tenant-2", OrganizationID: "tenant-2", ConnectorName: "pg", UserID: "user-2"}
 
 	// Tenant 1 uses $0.03
 	_, allowed, _ := handler.evaluateBudget(policy, reqT1)
@@ -1780,7 +1863,7 @@ func TestEvaluateBudget_DefaultBudget(t *testing.T) {
 		Type:       "budget",
 		Conditions: []PolicyCondition{},
 	}
-	req := MCPPolicyEvaluationRequest{TenantID: "t1", ConnectorName: "pg", UserID: "u1"}
+	req := MCPPolicyEvaluationRequest{TenantID: "t1", OrganizationID: "t1", ConnectorName: "pg", UserID: "u1"}
 
 	// Should be allowed with default limits
 	_, allowed, _ := handler.evaluateBudget(policy, req)
@@ -1806,7 +1889,7 @@ func TestEvaluateBudget_SmallBudgetLimit(t *testing.T) {
 			{Field: "cost_per_request", Operator: "equals", Value: float64(1)},
 		},
 	}
-	req := MCPPolicyEvaluationRequest{TenantID: "t1", ConnectorName: "pg", UserID: "u1"}
+	req := MCPPolicyEvaluationRequest{TenantID: "t1", OrganizationID: "t1", ConnectorName: "pg", UserID: "u1"}
 
 	// With $5 budget and $1 per request, 5 requests should be allowed
 	for i := 0; i < 5; i++ {
@@ -1851,9 +1934,10 @@ func TestMCPDynamicPolicyHandler_RateLimitPolicyIntegration(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserID:        "test-user",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserID:         "test-user",
 	}
 
 	// Make 3 requests - all should be allowed
@@ -1915,9 +1999,10 @@ func TestMCPDynamicPolicyHandler_BudgetPolicyIntegration(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		UserID:        "test-user",
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		UserID:         "test-user",
 	}
 
 	// First 2 requests should be allowed
@@ -1982,9 +2067,10 @@ func TestMCPDynamicPolicyHandler_TimeAccess_HourGreaterThan(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		RequestTime:   time.Now(),
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		RequestTime:    time.Now(),
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -2032,9 +2118,10 @@ func TestMCPDynamicPolicyHandler_TimeAccess_HourLessThan(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		RequestTime:   time.Now(),
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		RequestTime:    time.Now(),
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -2079,9 +2166,10 @@ func TestMCPDynamicPolicyHandler_TimeAccess_DayInList(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		RequestTime:   time.Now(),
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		RequestTime:    time.Now(),
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -2130,9 +2218,10 @@ func TestMCPDynamicPolicyHandler_TimeAccess_AllDaysAllowed(t *testing.T) {
 	handler.RegisterRoutes(router)
 
 	body := MCPPolicyEvaluationRequest{
-		TenantID:      "tenant-1",
-		ConnectorName: "postgres",
-		RequestTime:   time.Now(),
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		RequestTime:    time.Now(),
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -2224,5 +2313,65 @@ func TestEvaluateCondition_ParametersMissingKey(t *testing.T) {
 
 	if handler.evaluateCondition(cond, req) {
 		t.Error("expected evaluateCondition to return false when parameter key does not exist")
+	}
+}
+
+// TestMCPDynamicPolicyHandler_HeaderlessWithoutOrgIsRefused pins the Decision 5
+// (#3490) version-skew guard on the header-less internal-service plane.
+//
+// A caller that sends tenant_id but no organization_id predates the org-keyed
+// selection contract. Evaluating it anyway would return 200 with only the
+// global baseline evaluated - every tenant-authored dynamic policy silently
+// dropped, indistinguishable from "this tenant has no policies" (#3048/#3049
+// shape). The refusal is 403 SPECIFICALLY because the agent's
+// EvaluateWithGracefulDegradation absorbs a transient failure but refuses to
+// absorb a 401/403, so the governed tool call fails CLOSED. A 400 would be
+// absorbed into allow-all, which is why the missing-tenant branch's 400 is
+// NOT the right status here.
+func TestMCPDynamicPolicyHandler_HeaderlessWithoutOrgIsRefused(t *testing.T) {
+	engine := newTestEngine([]DynamicPolicy{
+		{ID: "p1", Type: "content", Enabled: true, TenantID: "tenant-1"},
+	})
+	defer engine.Close()
+	router := mux.NewRouter()
+	NewMCPDynamicPolicyHandler(engine).RegisterRoutes(router)
+
+	post := func(body MCPPolicyEvaluationRequest) *httptest.ResponseRecorder {
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// No organization_id: refused.
+	rr := post(MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		Operation:     "query",
+		Statement:     "SELECT 1",
+	})
+	if rr.Code != 403 {
+		t.Fatalf("status = %d, want 403 (a 400 would be absorbed by graceful degradation into allow-all): %s",
+			rr.Code, rr.Body.String())
+	}
+
+	// VACUITY CONTROL: the identical request WITH an organization_id is
+	// served, so the 403 above is about the missing org and not about the
+	// route, the fixture or the engine.
+	rr = post(MCPPolicyEvaluationRequest{
+		TenantID:       "tenant-1",
+		OrganizationID: "tenant-1",
+		ConnectorName:  "postgres",
+		Operation:      "query",
+		Statement:      "SELECT 1",
+	})
+	if rr.Code != 200 {
+		t.Fatalf("vacuity control failed: the same request WITH organization_id must be served, got %d: %s",
+			rr.Code, rr.Body.String())
 	}
 }

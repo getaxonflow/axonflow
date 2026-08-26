@@ -69,13 +69,15 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 		return ErrInvalidOverrideAction
 	}
 
-	// Get tenant ID for license check
+	// Get tenant ID for license check. #3334: an org-scoped row (TenantID
+	// nil) used to fall back to the retired organization_id column; it falls
+	// back to OrgID now, which is the same value that branch was reaching for
+	// and is guaranteed present by migration core/165.
 	tenantID := ""
 	if override.TenantID != nil {
 		tenantID = *override.TenantID
-	} else if override.OrganizationID != nil {
-		// For org-level overrides, we need to get a tenant from the org
-		tenantID = *override.OrganizationID // Use org ID as tenant for license check
+	} else {
+		tenantID = override.OrgID
 	}
 
 	// Check Enterprise license
@@ -126,16 +128,16 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 	query := `
 		INSERT INTO policy_overrides (
 			id, policy_id, policy_type,
-			organization_id, tenant_id, org_id,
+			tenant_id, org_id,
 			action_override, enabled_override,
 			override_reason, expires_at,
 			created_by, created_at, updated_by, updated_at
 		) VALUES (
 			$1, $2, $3,
-			$4, $5, $6,
-			$7, $8,
-			$9, $10,
-			$11, $12, $13, $14
+			$4, $5,
+			$6, $7,
+			$8, $9,
+			$10, $11, $12, $13
 		)
 	`
 
@@ -150,11 +152,11 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 	// without app.current_org_id pinned, the USING predicate masks rows
 	// from other orgs to zero, so an outer-txn overrideExists() call
 	// returns false even when a duplicate exists for the SAME scope tuple
-	// (policy_id + tenant_id|organization_id) — bypassing duplicate
+	// (policy_id + tenant_id|org_id) - bypassing duplicate
 	// detection and persisting two rows. Wrapping both ops in one txn
 	// pins app.current_org_id consistently for both.
 	err = WithOrgScope(ctx, r.db, override.OrgID, func(tx *sql.Tx) error {
-		exists, exErr := overrideExistsTx(ctx, tx, override.PolicyID, override.TenantID, override.OrganizationID)
+		exists, exErr := overrideExistsTx(ctx, tx, override.PolicyID, override.TenantID, &override.OrgID)
 		if exErr != nil {
 			return fmt.Errorf("failed to check existing override: %w", exErr)
 		}
@@ -163,7 +165,7 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 		}
 		if _, exErr = tx.ExecContext(ctx, query,
 			override.ID, override.PolicyID, string(override.PolicyType),
-			override.OrganizationID, override.TenantID, override.OrgID,
+			override.TenantID, override.OrgID,
 			actionStr, override.EnabledOverride,
 			override.OverrideReason, override.ExpiresAt,
 			override.CreatedBy, override.CreatedAt, override.UpdatedBy, override.UpdatedAt,
@@ -232,7 +234,8 @@ func (r *PolicyOverrideRepository) Delete(ctx context.Context, overrideID string
 // mig 110's policy_overrides RLS (post mig 110 the table requires
 // app.current_org_id pinned via SET LOCAL for DELETE USING to surface rows).
 // Callers must pass the auth'd request's OrgID — the `orgID *string` param
-// is the older `organization_id` column scope key (a UUID), kept for
+// is the org scope key (org_id since #3334 retired the legacy, differently
+// typed organization_id column), used for
 // scope-narrowing WHERE clauses, NOT the v9 RLS key.
 func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, rlsOrgID, policyID string, tenantID *string, orgID *string, deletedBy string) error {
 	if rlsOrgID == "" {
@@ -263,7 +266,7 @@ func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, rlsOrgI
 		query += fmt.Sprintf(" AND tenant_id = $%d", argNum)
 		args = append(args, *tenantID)
 	} else if orgID != nil {
-		query += fmt.Sprintf(" AND organization_id = $%d AND tenant_id IS NULL", argNum)
+		query += fmt.Sprintf(" AND org_id = $%d AND tenant_id IS NULL", argNum)
 		args = append(args, *orgID)
 	}
 
@@ -305,7 +308,7 @@ func (r *PolicyOverrideRepository) GetByID(ctx context.Context, id string) (*Pol
 	query := `
 		SELECT
 			id, policy_id, policy_type,
-			organization_id, tenant_id, org_id,
+			tenant_id, org_id,
 			action_override, enabled_override,
 			override_reason, expires_at,
 			created_by, created_at, updated_by, updated_at
@@ -323,7 +326,7 @@ func (r *PolicyOverrideRepository) GetByID(ctx context.Context, id string) (*Pol
 	scan := func(row *sql.Row) error {
 		return row.Scan(
 			&override.ID, &override.PolicyID, &override.PolicyType,
-			&override.OrganizationID, &override.TenantID, &orgIDCol,
+			&override.TenantID, &orgIDCol,
 			&actionOverride, &enabledOverride,
 			&override.OverrideReason, &expiresAt,
 			&createdBy, &override.CreatedAt, &updatedBy, &override.UpdatedAt,
@@ -399,10 +402,16 @@ func (r *PolicyOverrideRepository) GetOverrideForPolicy(
 	tenantID *string,
 	orgID *string,
 ) (*PolicyOverride, error) {
+	// #3334: org_id is SELECTed. It was not, which made this read asymmetric
+	// with Create - Create REFUSES an empty OrgID, but a row fetched back
+	// carried an empty one, so a caller could not round-trip an override
+	// through this repository. That was invisible while the org lived in a
+	// column nothing populated; with org_id the only organisation key, a
+	// fetched override that cannot say which org it belongs to is a gap.
 	query := `
 		SELECT
 			id, policy_id, policy_type,
-			organization_id, tenant_id,
+			tenant_id, org_id,
 			action_override, enabled_override,
 			override_reason, expires_at,
 			created_by, created_at, updated_by, updated_at
@@ -416,7 +425,7 @@ func (r *PolicyOverrideRepository) GetOverrideForPolicy(
 		query += fmt.Sprintf(" AND tenant_id = $%d", argNum)
 		args = append(args, *tenantID)
 	} else if orgID != nil {
-		query += fmt.Sprintf(" AND organization_id = $%d AND tenant_id IS NULL", argNum)
+		query += fmt.Sprintf(" AND org_id = $%d AND tenant_id IS NULL", argNum)
 		args = append(args, *orgID)
 	}
 
@@ -430,7 +439,7 @@ func (r *PolicyOverrideRepository) GetOverrideForPolicy(
 
 	err := r.db.QueryRowContext(ctx, query, args...).Scan(
 		&override.ID, &override.PolicyID, &override.PolicyType,
-		&override.OrganizationID, &override.TenantID,
+		&override.TenantID, &override.OrgID,
 		&actionOverride, &enabledOverride,
 		&override.OverrideReason, &expiresAt,
 		&createdBy, &override.CreatedAt, &updatedBy, &override.UpdatedAt,
@@ -478,12 +487,12 @@ func (r *PolicyOverrideRepository) ListOverridesForTenant(
 		query = `
 			SELECT
 				id, policy_id, policy_type,
-				organization_id, tenant_id,
+				tenant_id,
 				action_override, enabled_override,
 				override_reason, expires_at,
 				created_by, created_at, updated_by, updated_at
 			FROM policy_overrides
-			WHERE (tenant_id = $1 OR (organization_id = $2 AND tenant_id IS NULL))
+			WHERE (tenant_id = $1 OR (org_id = $2 AND tenant_id IS NULL))
 		`
 		args = []interface{}{tenantID, *orgID}
 	} else {
@@ -491,7 +500,7 @@ func (r *PolicyOverrideRepository) ListOverridesForTenant(
 		query = `
 			SELECT
 				id, policy_id, policy_type,
-				organization_id, tenant_id,
+				tenant_id,
 				action_override, enabled_override,
 				override_reason, expires_at,
 				created_by, created_at, updated_by, updated_at
@@ -523,7 +532,7 @@ func (r *PolicyOverrideRepository) ListOverridesForTenant(
 
 		err := rows.Scan(
 			&override.ID, &override.PolicyID, &override.PolicyType,
-			&override.OrganizationID, &override.TenantID,
+			&override.TenantID,
 			&actionOverride, &enabledOverride,
 			&override.OverrideReason, &expiresAt,
 			&createdBy, &override.CreatedAt, &updatedBy, &override.UpdatedAt,
@@ -645,7 +654,7 @@ func buildOverrideExistsQuery(policyID string, tenantID *string, orgID *string) 
 		query += fmt.Sprintf(" AND tenant_id = $%d", argNum)
 		args = append(args, *tenantID)
 	} else if orgID != nil {
-		query += fmt.Sprintf(" AND organization_id = $%d AND tenant_id IS NULL", argNum)
+		query += fmt.Sprintf(" AND org_id = $%d AND tenant_id IS NULL", argNum)
 		args = append(args, *orgID)
 	}
 	return query, args

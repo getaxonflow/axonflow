@@ -94,6 +94,18 @@ func scope3066Policies() []DynamicPolicy {
 	}
 }
 
+// scope3066PolicyOrgs maps each fixture policy to its OWNING ORG. Decision 5
+// (#3490) selects on the org, and this fixture deliberately gives each tenant
+// an org whose id differs from it, so a gate that still read tenant_id would
+// match nothing here - which is what makes every "the caller's own policy
+// fires" control below a real assertion about org keying.
+func scope3066PolicyOrgs() map[string]string {
+	return map[string]string{
+		scope3066VictimPolicyID:   scope3066VictimOrg,
+		scope3066AttackerPolicyID: scope3066AttackerOrg,
+	}
+}
+
 // scope3066Request is the wire body. tenant_id is emitted verbatim — including
 // empty, which must serialize as `""` rather than being dropped, so the
 // omitted-vs-empty distinction the handler draws is actually under test.
@@ -113,7 +125,11 @@ type scope3066Request struct {
 func post3066(t *testing.T, policies []DynamicPolicy, body scope3066Request, headers http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 
-	engine := newTestEngine(policies)
+	// Decision 5 (#3490): this fixture's orgs and tenants DIVERGE by design
+	// (rte3066-org-a owns rte3066-tenant-a), which is exactly the shape that
+	// makes an org-keyed assertion non-vacuous - so the double is told the
+	// mapping rather than being allowed to fall back to org == tenant.
+	engine := newTestEngineWithOrgs(policies, scope3066PolicyOrgs())
 	defer engine.Close()
 
 	router := mux.NewRouter()
@@ -457,11 +473,19 @@ func TestMCP3066_HeaderSpellingIsCanonicalized(t *testing.T) {
 // A blanket 401 on the header-less plane would have hard-BLOCKED every
 // governed MCP tool call, because EvaluateWithGracefulDegradation refuses to
 // absorb a 401/403 (#3068). This test is what stops that being "fixed" in.
+//
+// Decision 5 (#3490) added organization_id to that body - it is what selects
+// the policy set now, and the agent sends it (mcp_handler.go's dynamicReq).
+// The plane is otherwise unchanged: still header-less, still 200, still
+// enforcing the caller's own policy. The companion refusal, for a caller that
+// sends tenant_id WITHOUT an org (a version-skewed agent), is pinned by
+// TestMCPDynamicPolicyHandler_HeaderlessWithoutOrgIsRefused.
 func TestMCP3066_InternalServicePlaneIsUnchanged(t *testing.T) {
 	rr := post3066(t, scope3066Policies(), scope3066Request{
-		TenantID:      scope3066VictimTenant,
-		ConnectorName: "postgres",
-		Statement:     "SELECT * FROM kyc WHERE note='rte3066_victim_marker'",
+		TenantID:       scope3066VictimTenant,
+		OrganizationID: scope3066VictimOrg,
+		ConnectorName:  "postgres",
+		Statement:      "SELECT * FROM kyc WHERE note='rte3066_victim_marker'",
 	}, http.Header{}) // no tenancy headers — the in-process PEP shape
 
 	if rr.Code != http.StatusOK {
@@ -522,7 +546,7 @@ func TestMCP3066_RouteIsCoveredByTheInternalProxyAuthGate(t *testing.T) {
 		}
 	}
 
-	engine := newTestEngine(scope3066Policies())
+	engine := newTestEngineWithOrgs(scope3066Policies(), scope3066PolicyOrgs())
 	defer engine.Close()
 
 	r := mux.NewRouter()

@@ -4,6 +4,7 @@
 package agent
 
 import (
+	sharedaudit "axonflow/platform/shared/audit"
 	"bytes"
 	"context"
 	"database/sql/driver"
@@ -86,6 +87,10 @@ func TestWriteMCPDecisionAudit_RedactedPopulatesRedactedFields(t *testing.T) {
 			"corr-1",                             // correlation_id
 			captureArg{dst: &redactedFieldsJSON}, // redacted_fields JSONB (#2641)
 			nil,                                  // session_id NULL — no X-Session-Id on ctx (#2753)
+			int64(7),                             // response_time_ms: the MEASURED value, not AnyArg -- an
+			// AnyArg here would match a NULL just as happily and could not tell
+			// this writer's pre-#3424 shape (no latency parameter at all) apart
+			// from its current one.
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -99,7 +104,8 @@ func TestWriteMCPDecisionAudit_RedactedPopulatesRedactedFields(t *testing.T) {
 		[]string{"response PII redacted: nik"},
 		[]string{"nik", "npwp"},
 		"corr-1",
-		nil)
+		nil,
+		7) // #3424: a measured MCP redaction row
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("redacted MCP decision row not written as expected: %v", err)
@@ -138,9 +144,10 @@ func TestWriteMCPDecisionAudit_NoRedactionNullColumn(t *testing.T) {
 			sqlmock.AnyArg(), // policy_details
 			"dec-2",
 			PlaneMCP,
-			nil, // correlation_id NULL (none supplied)
-			nil, // redacted_fields NULL — NOT [] or "null" (#2641)
-			nil, // session_id NULL — no X-Session-Id on ctx (#2753)
+			nil,              // correlation_id NULL (none supplied)
+			nil,              // redacted_fields NULL - NOT [] or "null" (#2641)
+			nil,              // session_id NULL - no X-Session-Id on ctx (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -154,7 +161,8 @@ func TestWriteMCPDecisionAudit_NoRedactionNullColumn(t *testing.T) {
 		[]string{"blocked"},
 		nil, // no redaction
 		"",
-		nil)
+		nil,
+		sharedaudit.LatencyUnmeasured)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("blocked MCP decision row not written as expected: %v", err)
@@ -167,7 +175,7 @@ func TestWriteMCPDecisionAudit_NoopGuards(t *testing.T) {
 	// nil db → no panic, no write.
 	writeMCPDecisionAudit(context.Background(), nil,
 		"dec", "req", "t", "o", "c", "e", "0", "r",
-		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "", nil)
+		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "", nil, sharedaudit.LatencyUnmeasured)
 
 	// empty decision_id → no write (would fail the strict mock if it tried).
 	db, mock, err := sqlmock.New()
@@ -177,7 +185,7 @@ func TestWriteMCPDecisionAudit_NoopGuards(t *testing.T) {
 	defer db.Close()
 	writeMCPDecisionAudit(context.Background(), db,
 		"", "req", "t", "o", "c", "e", "0", "r",
-		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "", nil)
+		"rt", "q", "h", mcpVerdictBlocked, nil, nil, nil, "", nil, sharedaudit.LatencyUnmeasured)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("empty decision_id must not write: %v", err)
 	}
@@ -231,9 +239,10 @@ func TestMcpToolCheckPolicy_DynamicBlock_EmitsCanonicalAudit(t *testing.T) {
 			mcpVerdictBlocked, // canonical 'blocked' — NOT legacy 'deny'
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
-			nil, // correlation_id (no traceparent on the MCP-server session)
-			nil, // redacted_fields NULL on a block
-			nil, // session_id NULL — session carries no clientSessionID (#2753)
+			nil,              // correlation_id (no traceparent on the MCP-server session)
+			nil,              // redacted_fields NULL on a block
+			nil,              // session_id NULL - session carries no clientSessionID (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -290,8 +299,9 @@ func TestMcpToolCheckOutput_SQLiBlock_EmitsCanonicalAudit(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
 			nil,
-			nil, // redacted_fields NULL
-			nil, // session_id NULL (#2753)
+			nil,              // redacted_fields NULL
+			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -346,6 +356,7 @@ func TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit(t *testing.T) {
 			nil,
 			captureArg{dst: &redactedFieldsJSON}, // redacted_fields populated
 			nil,                                  // session_id NULL (#2753)
+			sqlmock.AnyArg(),                     // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -436,20 +447,21 @@ func TestAuditMCPServerDeny(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
 			nil, nil, // correlation_id, redacted_fields
-			nil, // session_id NULL (#2753)
+			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	auditMCPServerDeny(context.Background(), &mcpSession{
 		tenantID: "tenant-9", orgID: "org-9", clientID: "client-9",
 		userID: "u9", userRole: "admin", userEmail: "u@e.com",
-	}, "mcp_tools_call", "check_policy", mcpVerdictError, "governance tool error", []string{"tool_error"})
+	}, "mcp_tools_call", "check_policy", mcpVerdictError, "governance tool error", []string{"tool_error"}, 3)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("auditMCPServerDeny did not write the canonical row: %v", err)
 	}
 
 	// nil session → no-op (no panic, no write).
-	auditMCPServerDeny(context.Background(), nil, "mcp_tools_call", "x", mcpVerdictBlocked, "y", nil)
+	auditMCPServerDeny(context.Background(), nil, "mcp_tools_call", "x", mcpVerdictBlocked, "y", nil, sharedaudit.LatencyUnmeasured)
 }
 
 // TestHandleMCPToolsCall_Unauthenticated_EmitsBlockedAudit is the red-on-revert
@@ -479,7 +491,8 @@ func TestHandleMCPToolsCall_Unauthenticated_EmitsBlockedAudit(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
 			nil, nil, // correlation_id, redacted_fields
-			nil, // session_id NULL (#2753)
+			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -528,6 +541,7 @@ func TestMCPCheckInputHandler_UnsupportedContentType_EmitsBlockedAudit(t *testin
 			sqlmock.AnyArg(), // correlation_id (may be NULL)
 			nil,              // redacted_fields NULL
 			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -591,7 +605,8 @@ func TestMCPCheckInputHandler_EvalUnavailable_EmitsErrorAudit(t *testing.T) {
 			PlaneMCP,
 			sqlmock.AnyArg(),
 			nil,
-			nil, // session_id NULL (#2753)
+			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -644,7 +659,8 @@ func TestMCPCheckOutputHandler_Redaction_EmitsRedactedWithFields(t *testing.T) {
 			PlaneMCP,
 			sqlmock.AnyArg(),
 			captureArg{dst: &redactedFieldsJSON},
-			nil, // session_id NULL (#2753)
+			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

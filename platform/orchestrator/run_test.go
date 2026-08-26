@@ -776,10 +776,12 @@ func TestListDynamicPoliciesHandler(t *testing.T) {
 	defer teardownTestComponents()
 
 	req := httptest.NewRequest("GET", "/policies/dynamic", nil)
-	// The handler is tenant-scoped and fails closed: the gateway-stamped
-	// X-Tenant-ID is required (tenant-less requests get a 401, pinned by
-	// TestListDynamicPoliciesHandler_FailClosedWithoutTenant).
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	// The handler is org-scoped and fails closed: the gateway-stamped
+	// X-Org-ID is required (org-less requests get a 401, pinned by
+	// TestListDynamicPoliciesHandler_FailClosedWithoutOrg). Decision 5
+	// (#3490) moved this off X-Tenant-ID, which carries the caller-chosen
+	// Basic-auth username.
+	req.Header.Set("X-Org-ID", "test-org")
 	w := httptest.NewRecorder()
 
 	listDynamicPoliciesHandler(w, req)
@@ -922,7 +924,7 @@ func TestTestPolicyHandlerIgnoresBodyTenant(t *testing.T) {
 // request body.
 //
 // After P3b (ADR-060), EvaluateDynamicPolicies feeds User.OrgID and
-// User.Email straight into resolveSegmentsForPolicy, which resolves against
+// User.Email straight into resolveUserSegments, which resolves against
 // the LIVE SCIM directory of whichever org it is given (both the RLS GUC and
 // the query's WHERE clause are bound from that argument — there is no
 // independent org check downstream). A body-sourced OrgID paired with a
@@ -968,8 +970,17 @@ func TestTestPolicyHandlerIgnoresBodyOrgID(t *testing.T) {
 // setupTestComponents initializes minimal global components for testing
 func setupTestComponents(ctx context.Context) {
 	// Initialize only if nil (avoid re-initialization)
+	//
+	// #3319: NewDatabaseDynamicPolicyEngine — the retired in-memory
+	// DynamicPolicyEngine this test helper used to construct no longer
+	// exists. Like its predecessor, this is always constructible with no
+	// DATABASE_URL set: it serves the built-in default fallback policy set.
 	if dynamicPolicyEngine == nil {
-		dynamicPolicyEngine = NewDynamicPolicyEngine()
+		dbEngine, err := NewDatabaseDynamicPolicyEngine()
+		if err != nil {
+			panic("NewDatabaseDynamicPolicyEngine() returned an error: " + err.Error())
+		}
+		dynamicPolicyEngine = dbEngine
 	}
 
 	// Create a mock router for testing

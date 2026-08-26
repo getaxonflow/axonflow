@@ -51,7 +51,7 @@ func TestPostgresRepository_List_NullSource(t *testing.T) {
 			AddRow("plan_null_src", "map_plan", "MAP Plan", nil, "tenant-1", nil, nil, nil,
 				"running", 1, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now))
 
-	results, total, err := repo.List(ctx, ListExecutionsRequest{Limit: 10})
+	results, total, err := repo.List(ctx, ListExecutionsRequest{OrgID: "org-1", OrgWide: true, Limit: 10})
 	if err != nil {
 		t.Fatalf("List() with a NULL source must not error (regression #2778): %v", err)
 	}

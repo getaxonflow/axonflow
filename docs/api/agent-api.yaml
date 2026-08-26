@@ -97,11 +97,24 @@ tags:
       OpenAI Chat Completions requests, runs AxonFlow policy checks, forwards
       to the upstream provider, records audit, and returns an OpenAI-compatible
       response. Customers change only `baseURL` in their OpenAI SDK setup.
+  - name: System Policies
+    description: |
+      System policy management (ADR-018), served at `/api/v1/system-policies`.
+      Pattern-based enforcement rules for SQL injection detection, PII
+      detection and similar checks, resolved across the system, organization
+      and tenant tiers.
   - name: Static Policies
     description: |
-      Static policy management (ADR-018).
-      Read-only access to system-managed policies for SQL injection detection,
-      PII detection, and other pattern-based enforcement rules.
+      DEPRECATED spelling of System Policies, served at
+      `/api/v1/static-policies`. Every operation is the same handler as its
+      `/api/v1/system-policies` counterpart and returns the same status code
+      and body; responses additionally carry `Deprecation: true` and a
+      `Link: </api/v1/system-policies...>; rel="successor-version"` header
+      naming the replacement.
+
+      These paths remain served. No removal date is published and clients
+      should not infer one - migrate when convenient, and watch the release
+      notes rather than a `Sunset` header, which is deliberately not emitted.
   - name: Audit Verification
     description: |
       Non-repudiation verification of the signed decision chain (#2722).
@@ -404,6 +417,42 @@ paths:
                       - "pii-credit-card"
                     block_reason: "Query contains credit card number"
                     expires_at: "2025-01-15T10:35:00Z"
+                blocked_segment_resolution_failed:
+                  summary: Request blocked fail-closed (governance segments could not be resolved)
+                  description: |
+                    A NEW refusal (#3312, ADR-060 #2989). This plane resolves
+                    the caller's governance-segment memberships to decide which
+                    segment-scoped policies apply. When that resolution
+                    genuinely FAILS (the directory backing it is unavailable)
+                    the pre-check denies fail-closed rather than evaluating as
+                    though the caller had no segments, which would let a
+                    segment-scoped restriction lapse exactly when the directory
+                    is down.
+
+                    This is an HTTP `200` carrying a deny verdict, not an HTTP
+                    error status. Key on `approved: false` together with the
+                    reserved `policies` value `segment_resolution_failed`.
+                    `block_reason` is populated but is deliberately not
+                    reproduced in the example below, and must NOT be keyed on:
+                    it is human-readable text rather than a stable interface,
+                    and the punctuation separating its clauses differs between
+                    the planes that emit this refusal, so a string match
+                    written against another plane's text silently misses this
+                    one.
+
+                    A caller with NO verified identity is a different case and
+                    is not an error: resolution succeeds with an empty set, the
+                    request proceeds org-only, and non-segment-scoped policies
+                    still enforce.
+
+                    Retriable: this signals unavailability, not a durable
+                    denial.
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: false
+                    policies:
+                      - "segment_resolution_failed"
+                    expires_at: "2025-01-15T10:35:00Z"
                 withData:
                   summary: Approved with data
                   value:
@@ -635,18 +684,82 @@ paths:
                 $ref: '#/components/schemas/DecideErrorResponse'
         '401':
           description: |
-            Authentication failed. In non-community mode the
-            `Authorization` header is required and credentials must
-            resolve to a valid client.
+            Authentication failed. THREE distinct causes, and the audit row
+            distinguishes them even though the status code does not.
+
+            1. **Credentials.** In non-community mode the `Authorization`
+               header is required and credentials must resolve to a valid
+               client.
+            2. **`user_token_rejected`** -- a `user_token` WAS supplied in the
+               request body and failed to validate (malformed, expired, wrong
+               algorithm, bad signature, or revoked by `jti`). The attempt is
+               audited as a blocked decision rather than being refused
+               invisibly. Independent of any org posture.
+            3. **`user_token_required`** (#3476) -- NO `user_token` was
+               supplied and the caller's organisation requires one. Off by
+               default: this cause cannot occur unless an operator has set
+               `organizations.require_user_token` for that organisation, or
+               the deployment-wide `AXONFLOW_REQUIRE_USER_TOKEN` default. With
+               the posture off, a token-less enterprise caller is served under
+               a synthetic service identity exactly as before, which is the
+               correct answer for an infrastructure gateway acting as a PEP
+               with no end-user token to forward.
+
+            Causes 2 and 3 are recorded as reserved identifiers in the audit
+            row's policy ids and MUST NOT be collapsed into one: they have
+            opposite operator remedies (repair the caller's token, versus
+            provision one at all). Query them with JSONB containment against
+            `policy_details->'policy_ids'`, never with `LIKE` -- `_` is a
+            single-character wildcard, so a `%user_token_required%` pattern
+            also matches unrelated prose in the same row.
+
+            A per-user token is read from the `user_token` field of the
+            request body on this endpoint. It is not read from the
+            `X-User-Token` header here; that header belongs to a different
+            envelope.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DecideErrorResponse'
         '403':
           description: |
-            Tenant assertion mismatch -- `caller_identity.tenant_id` or
-            `caller_identity.org_id` in the body did not match the
-            authenticated identity (non-community mode only).
+            TWO distinct causes.
+
+            1. **Tenant assertion mismatch** -- `caller_identity.tenant_id` or
+               `caller_identity.org_id` in the body did not match the
+               authenticated identity (non-community mode only).
+            2. **`segment_resolution_failed`** (#3456, ADR-060 #2989) -- a NEW
+               refusal. This endpoint resolves the caller's governance-segment
+               memberships to decide which segment-scoped policies apply. When
+               that resolution genuinely FAILS for a caller who HAS a verified
+               per-user principal (the directory backing it is unavailable),
+               the request is denied fail-closed rather than evaluated as
+               though the caller belonged to no segments, which would let a
+               segment-scoped restriction lapse exactly when the directory is
+               down. A canonical blocked audit row is written carrying the
+               reserved identifier `segment_resolution_failed`.
+
+            Cause 2 is deliberately NOT reported as `503`: a policy-side deny
+            must stay distinguishable from a policy-evaluator outage in both
+            the audit row and the operator dashboard. This endpoint returns
+            `503` separately when its circuit breaker is open (see the `503`
+            response); the segment refusal is deliberately not folded into
+            that channel.
+
+            **Key on the reserved identifier, never on the human-readable
+            message.** That text is not a stable interface, and the
+            punctuation separating its clauses differs between the planes that
+            emit this refusal, so a string match written against another
+            plane's wording silently misses this one.
+
+            A caller with NO verified per-user identity is a different case
+            and is NOT an error: resolution succeeds with an empty set, the
+            request proceeds org-only, and non-segment-scoped policies still
+            enforce. A verified caller who belongs to no segments, and a
+            caller whose token names a shared synthetic identity, resolve the
+            same way. **Enforcement on this endpoint is therefore conditional
+            on the caller presenting a per-user token**; `require_user_token`
+            is what makes presenting one non-optional.
           content:
             application/json:
               schema:
@@ -1123,9 +1236,9 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/MCPPerUserTokenUnauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/MCPSegmentForbidden'
         '404':
           description: Connector not found
           content:
@@ -1189,9 +1302,9 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/MCPPerUserTokenUnauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/MCPSegmentForbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1267,9 +1380,33 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/MCPPerUserTokenUnauthorized'
         '403':
-          description: Input blocked by policy
+          description: |
+            Input blocked by policy.
+
+            **A second, differently-shaped cause since #3447:**
+            `segment_resolution_failed`. This route resolves the caller's
+            governance-segment memberships to decide which segment-scoped
+            policies apply, and when that resolution genuinely FAILS for a
+            caller who HAS a verified per-user principal, the request is
+            denied fail-closed rather than evaluated as though the caller
+            belonged to no segments. That refusal uses this same
+            `MCPCheckInputResponse` shape -- `allowed: false` with a
+            `block_reason` and a `decision_id` -- so a client already handling
+            a policy block needs no new parsing. It additionally writes a
+            canonical blocked audit row carrying the reserved identifier
+            `segment_resolution_failed`, which is where a caller distinguishes
+            it from an ordinary policy block. Key on that identifier, never on
+            the human-readable `block_reason`: that text is not a stable
+            interface, and the punctuation separating its clauses differs
+            between the planes that emit this refusal.
+
+            It is deliberately not reported as the `503` this route also
+            defines: a policy-side deny must stay distinguishable from a
+            policy-evaluator outage. A caller with no verified per-user
+            identity is a different case entirely and is not an error; the
+            request proceeds org-only.
           content:
             application/json:
               schema:
@@ -1406,9 +1543,30 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/MCPPerUserTokenUnauthorized'
         '403':
-          description: Output blocked by policy (exfiltration limit exceeded or SQLi detected)
+          description: |
+            Output blocked by policy (exfiltration limit exceeded or SQLi
+            detected).
+
+            **A second cause since #3447:** `segment_resolution_failed`. This
+            route resolves the caller's governance-segment memberships to
+            decide which segment-scoped response-phase policies apply, and
+            when that resolution genuinely FAILS for a caller who HAS a
+            verified per-user principal, the response is withheld fail-closed
+            rather than evaluated as though the caller belonged to no
+            segments. The refusal uses this same `MCPCheckOutputResponse`
+            shape -- `allowed: false` with a `block_reason` and a
+            `decision_id` -- and writes a canonical blocked audit row carrying
+            the reserved identifier `segment_resolution_failed`, which is
+            where a caller distinguishes it from an ordinary policy block. Key
+            on that identifier, never on the human-readable `block_reason`.
+
+            The response phase has no `503` availability channel at all and
+            deliberately does not grow one here: a resolver-error deny is a
+            policy decision, not an outage. A caller with no verified per-user
+            identity is a different case and is not an error; evaluation
+            proceeds org-only.
           content:
             application/json:
               schema:
@@ -1510,7 +1668,48 @@ paths:
         `check_policy`, `check_output`, `audit_tool_call`, `list_policies`,
         `get_policy_stats`, `explain_decision`, plus Pro-tier tools.
 
-        Authentication: HTTP Basic `org:license-key` on every request.
+        Authentication: HTTP Basic `org:license-key` on every request. An
+        Enterprise deployment MAY additionally send a per-user token in
+        `X-User-Token` (ADR-043/044); it is optional in general, but see the
+        governance-segment note below for the one case where it is required.
+
+        Governance segments (ADR-060, #3430): if the org has at least one
+        ENABLED segment-scoped `static_policies` row, `check_policy` and
+        `check_output` REQUIRE a validated per-user token. A caller without
+        one has no determinable segment membership, so the tool result is a
+        deny carrying `allowed: false` and
+        `blocked_by: "segment_identity_unresolved"` (HTTP 200 with a JSON-RPC
+        result, not an HTTP error - the refusal is a governance verdict).
+        Orgs with no segment-scoped policy are unaffected and Basic alone
+        remains sufficient. A caller WITH a validated token whose segment
+        resolution fails (SCIM/DB outage) is denied the same way with
+        `blocked_by: "segment_resolution_failed"`.
+
+        Two refusals are narrower than an operator usually expects, and both
+        are deliberate:
+
+        - **`X-User-Email` does not substitute for a validated per-user
+          token here, even when `AXONFLOW_TRUST_IDENTITY_HEADERS` is on.**
+          That header is caller-supplied, so accepting it as the key segment
+          membership is resolved from would let the same person shed their
+          segments by naming a non-member colleague, which is the bypass this
+          requirement exists to close, recreated one level down through a
+          different header. The header keeps its attribution and ADR-044
+          override roles unchanged; it simply never decides which
+          segment-scoped policies apply.
+        - **A token naming a shared synthetic identity is refused too.**
+          Token minting validates only that the subject contains `@` and
+          token resolution censuses nothing, so a token issued for a shared
+          service or pseudo identity (the reserved `axonflow.local` and
+          `axonflow.internal` addresses, the MCP client pseudo-identity
+          prefix, and the Community-SaaS evaluator
+          `evaluator@try.getaxonflow.com`; the authoritative census is
+          `IsSharedSyntheticIdentity` in `platform/shared/identity`)
+          validates while naming an identity many callers share.
+          Resolving segments for it would return zero memberships and read as
+          "this person is in no segment", so it is treated as no per-user
+          principal at all.
+
         Tier rate limits (Community SaaS) are reported **inside** the
         JSON-RPC result (`result.content[0].text`), not as an HTTP 429.
 
@@ -2143,8 +2342,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            HITL approvals are disabled for the deployment's license tier
-            (e.g. an Enterprise build running a Community-tier license).
+            HITL approvals are disabled for the deployment's license tier.
+            Entitled tiers are `Professional`, `Enterprise` and
+            `Enterprise Plus`; `Community`, `Free`, `Pro`, `Premium` and
+            `Evaluation` are refused (HITL became Enterprise-only on
+            2026-08-26; Evaluation was entitled until then). The refusal names
+            no tier, because it is raised for five of them.
           content:
             application/json:
               schema:
@@ -2193,6 +2396,29 @@ paths:
           in: query
           schema:
             type: string
+        - name: request_type
+          in: query
+          description: |
+            Narrow the listing to one `request_type`.
+
+            **Default behaviour without it (#3408):** the listing is the
+            ACTIONABLE queue and EXCLUDES `wcp_step_gate` entries. Those
+            mirror a Workflow Control Plane step gate whose approval is
+            resolved on the workflow plane
+            (`POST /api/v1/workflows/{workflow_id}/steps/{step_id}/approve`);
+            approving one here changes a status and releases nothing, so
+            leaving them in rendered one workflow gate as two rows in the
+            portal's merged Approvals queue and double-counted it in the
+            sidebar badge. They are retained as the EU AI Act Article 14
+            oversight record and are returned by asking for them explicitly:
+            `?request_type=wcp_step_gate`.
+
+            `meta.total` follows the same predicate as the returned rows, so
+            a client that renders a badge from it and a page from `data`
+            cannot disagree.
+          schema:
+            type: string
+            example: "wcp_step_gate"
         - name: limit
           in: query
           schema:
@@ -2311,7 +2537,19 @@ paths:
         '404':
           description: Request not found
         '409':
-          description: Conflict — request is not pending (already reviewed or expired)
+          description: |
+            Conflict - the request is not pending (already reviewed or expired).
+
+            Also returned when the entry is a Workflow Control Plane step-gate
+            MIRROR (`request_type: "wcp_step_gate"`). Those are resolved on the
+            workflow plane -
+            `POST /api/v1/workflows/{workflow_id}/steps/{step_id}/approve|reject` -
+            and actioning one here would flip a status and release nothing,
+            leaving the workflow paused. **This arm fires on a row that IS
+            pending**, unlike the state conflict above; the response body names
+            the route that works. Mirrors are excluded from this queue's
+            default listing, so a client reaches this only by acting on an id
+            obtained another way (#3408).
 
   /api/v1/hitl/queue/{id}/reject:
     post:
@@ -2355,7 +2593,19 @@ paths:
         '404':
           description: Request not found
         '409':
-          description: Conflict — request is not pending
+          description: |
+            Conflict - the request is not pending.
+
+            Also returned when the entry is a Workflow Control Plane step-gate
+            MIRROR (`request_type: "wcp_step_gate"`). Those are resolved on the
+            workflow plane -
+            `POST /api/v1/workflows/{workflow_id}/steps/{step_id}/approve|reject` -
+            and actioning one here would flip a status and release nothing,
+            leaving the workflow paused. **This arm fires on a row that IS
+            pending**, unlike the state conflict above; the response body names
+            the route that works. Mirrors are excluded from this queue's
+            default listing, so a client reaches this only by acting on an id
+            obtained another way (#3408).
 
   /api/v1/hitl/queue/{id}/override:
     post:
@@ -2412,7 +2662,19 @@ paths:
         '404':
           description: Request not found
         '409':
-          description: Conflict — another reviewer decided this request first (lost race)
+          description: |
+            Conflict - another reviewer decided this request first (lost race).
+
+            Also returned when the entry is a Workflow Control Plane step-gate
+            MIRROR (`request_type: "wcp_step_gate"`). Those are resolved on the
+            workflow plane -
+            `POST /api/v1/workflows/{workflow_id}/steps/{step_id}/approve|reject` -
+            and actioning one here would flip a status and release nothing,
+            leaving the workflow paused. **This arm fires on a row that IS
+            pending**, unlike the state conflict above; the response body names
+            the route that works. Mirrors are excluded from this queue's
+            default listing, so a client reaches this only by acting on an id
+            obtained another way (#3408).
 
   /api/v1/hitl/queue/{id}/history:
     get:
@@ -3240,6 +3502,7 @@ paths:
 
   /api/v1/static-policies:
     get:
+      deprecated: true
       tags:
         - Static Policies
       summary: List static policies
@@ -3323,6 +3586,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
+      deprecated: true
       tags:
         - Static Policies
       summary: Create static policy
@@ -3390,6 +3654,7 @@ paths:
 
   /api/v1/static-policies/effective:
     get:
+      deprecated: true
       tags:
         - Static Policies
       summary: Get effective policies
@@ -3426,6 +3691,7 @@ paths:
 
   /api/v1/static-policies/test:
     post:
+      deprecated: true
       tags:
         - Static Policies
       summary: Test regex pattern
@@ -3471,6 +3737,7 @@ paths:
 
   /api/v1/static-policies/overrides:
     get:
+      deprecated: true
       tags:
         - Static Policies
       summary: List policy overrides
@@ -3511,11 +3778,14 @@ paths:
   /api/v1/policy-overrides:
     get:
       tags:
-        - Static Policies
+        - System Policies
       summary: List policy overrides (canonical alias)
       description: |
-        Portal-facing alias of `GET /api/v1/static-policies/overrides` —
+        Portal-facing alias of `GET /api/v1/system-policies/overrides`
+        (deprecated spelling: `GET /api/v1/static-policies/overrides`):
         identical handler, parameters, and response.
+
+        This route itself is not deprecated and emits no `Deprecation` header.
       operationId: listPolicyOverrides
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -3538,6 +3808,7 @@ paths:
 
   /api/v1/static-policies/{id}:
     get:
+      deprecated: true
       tags:
         - Static Policies
       summary: Get static policy by ID
@@ -3581,6 +3852,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     put:
+      deprecated: true
       tags:
         - Static Policies
       summary: Update static policy
@@ -3637,6 +3909,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
+      deprecated: true
       tags:
         - Static Policies
       summary: Delete static policy
@@ -3676,6 +3949,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
+      deprecated: true
       tags:
         - Static Policies
       summary: Toggle policy enabled status
@@ -3733,6 +4007,7 @@ paths:
 
   /api/v1/static-policies/{id}/versions:
     get:
+      deprecated: true
       tags:
         - Static Policies
       summary: Get policy version history
@@ -3773,12 +4048,13 @@ paths:
 
   /api/v1/static-policies/{id}/override:
     get:
+      deprecated: true
       tags:
         - Static Policies
       summary: Get active override for a policy
       description: |
         Returns the active override for a single policy (404 when none).
-        `{id}` may be the policy UUID or the human-readable slug — slugs
+        `{id}` may be the policy UUID or the human-readable slug - slugs
         are resolved to the canonical UUID before lookup.
       operationId: getStaticPolicyOverride
       parameters:
@@ -3804,6 +4080,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/JSONError'
     post:
+      deprecated: true
       tags:
         - Static Policies
       summary: Create policy override
@@ -3887,6 +4164,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
+      deprecated: true
       tags:
         - Static Policies
       summary: Delete policy override
@@ -3895,6 +4173,676 @@ paths:
 
         **Enterprise only.**
       operationId: deleteStaticPolicyOverride
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Override deleted successfully
+        '403':
+          description: Enterprise license required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Override not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # =============================================================================
+  # System Policies API: the current spelling of the policy routes this API
+  # serves; the static-policies paths below are the deprecated spelling
+  # =============================================================================
+
+  /api/v1/system-policies:
+    get:
+      tags:
+        - System Policies
+      summary: List static policies
+      description: |
+        Returns static policies with three-tier hierarchy resolution:
+        1. **System policies** - Managed by AxonFlow, immutable base
+        2. **Organization policies** - Enterprise tier, organization-wide (Enterprise only)
+        3. **Tenant policies** - Per-tenant customizations
+
+        **v2.0.0 Categories** (semantic naming):
+        - `security-sqli` - SQL injection detection (was: sql_injection)
+        - `security-admin` - Admin access protection (was: admin_access)
+        - `pii-global` - Global PII patterns (was: pii_detection)
+        - `pii-us` - US-specific PII (SSN, etc.)
+        - `pii-eu` - EU-specific PII (GDPR)
+        - `pii-india` - India-specific PII (Aadhaar, PAN)
+        - `custom` - Tenant-created policies
+
+        Legacy category names are still accepted and automatically mapped.
+
+        Part of ADR-018: Unified Policy Management System.
+      operationId: listSystemPolicies
+      parameters:
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          description: Number of policies per page
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: category
+          in: query
+          description: |
+            Filter by policy category. New categories use semantic naming.
+            Legacy names (sql_injection, pii_detection, etc.) are still accepted.
+          schema:
+            type: string
+            enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, custom, sql_injection, pii_detection, dangerous_queries, admin_access]
+        - name: tier
+          in: query
+          description: Filter by policy tier
+          schema:
+            type: string
+            enum: [system, organization, tenant]
+        - name: severity
+          in: query
+          description: Filter by severity level
+          schema:
+            type: string
+            enum: [critical, high, medium, low]
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of static policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPoliciesListResponse'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - System Policies
+      summary: Create static policy
+      description: |
+        Creates a new static policy for the tenant.
+
+        **Tier restrictions:**
+        - `system` tier: Cannot be created via API (managed by AxonFlow)
+        - `organization` tier: Requires Enterprise license
+        - `tenant` tier: Default, limited to 30 policies in Community mode
+
+        Part of ADR-018: Unified Policy Management System.
+      operationId: createSystemPolicy
+      parameters:
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStaticPolicyRequest'
+            examples:
+              customPII:
+                summary: Create custom PII detection policy
+                value:
+                  name: "Custom Employee ID Detection"
+                  description: "Detects internal employee ID format"
+                  category: "custom"
+                  tier: "tenant"
+                  pattern: "EMP-[0-9]{6}"
+                  action: "warn"
+                  severity: "medium"
+                  enabled: true
+                  tags: ["custom", "pii", "employee"]
+      responses:
+        '201':
+          description: Policy created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '400':
+          description: Invalid request body or missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Operation forbidden (e.g., system tier creation, license required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/system-policies/effective:
+    get:
+      tags:
+        - System Policies
+      summary: Get effective policies
+      description: |
+        Returns all effective policies for a tenant with overrides applied.
+
+        This endpoint resolves the three-tier hierarchy:
+        1. System policies (base)
+        2. Organization overrides (if any)
+        3. Tenant overrides (if any)
+
+        Used by the Customer Portal for the unified policy view.
+      operationId: getEffectiveSystemPolicies
+      parameters:
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Effective policies with overrides applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EffectivePoliciesResponse'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/system-policies/test:
+    post:
+      tags:
+        - System Policies
+      summary: Test regex pattern
+      description: |
+        Tests a regex pattern against input strings without creating a policy.
+
+        Useful for validating patterns before creating policies.
+        Has a 5-second timeout to prevent ReDoS attacks.
+      operationId: testSystemPolicyPattern
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestPatternRequest'
+            examples:
+              singleInput:
+                summary: Test against single input
+                value:
+                  pattern: "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"
+                  input: "My SSN is 123-45-6789"
+              multipleInputs:
+                summary: Test against multiple inputs
+                value:
+                  pattern: "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"
+                  inputs:
+                    - "My SSN is 123-45-6789"
+                    - "No SSN here"
+                    - "Another SSN: 987-65-4321"
+      responses:
+        '200':
+          description: Pattern test results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestPatternResponse'
+        '400':
+          description: Invalid request body or pattern
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/system-policies/overrides:
+    get:
+      tags:
+        - System Policies
+      summary: List policy overrides
+      description: |
+        Lists all policy overrides for a tenant.
+
+        Overrides allow Enterprise customers to modify system policy behavior
+        (action, enabled status) without changing the underlying pattern.
+      operationId: listSystemPolicyOverrides
+      parameters:
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+        - name: include_expired
+          in: query
+          required: false
+          description: Include expired overrides in results
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: List of policy overrides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverridesListResponse'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/system-policies/{id}:
+    get:
+      tags:
+        - System Policies
+      summary: Get static policy by ID
+      description: |
+        Returns a single static policy by its UUID.
+
+        The policy ID is the `id` field from the static_policies table,
+        not the `policy_id` (human-readable identifier like 'sql_injection_union').
+      operationId: getSystemPolicy
+      parameters:
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Static policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - System Policies
+      summary: Update static policy
+      description: |
+        Updates an existing static policy.
+
+        **Restrictions:**
+        - System-tier policies cannot be modified (use overrides instead)
+        - Pattern changes trigger version increment
+      operationId: updateSystemPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStaticPolicyRequest'
+      responses:
+        '200':
+          description: Policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: System policies cannot be modified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - System Policies
+      summary: Delete static policy
+      description: |
+        Soft-deletes a static policy (sets deleted_at timestamp).
+
+        **Restrictions:**
+        - System-tier policies cannot be deleted
+      operationId: deleteSystemPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Policy deleted successfully
+        '403':
+          description: System policies cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags:
+        - System Policies
+      summary: Toggle policy enabled status
+      description: |
+        Toggles the enabled status of a policy.
+
+        **Restrictions:**
+        - System-tier policies cannot be disabled via this endpoint (use overrides)
+      operationId: toggleSystemPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enabled
+              properties:
+                enabled:
+                  type: boolean
+                  description: New enabled status
+      responses:
+        '200':
+          description: Policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '403':
+          description: System policies cannot be disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/system-policies/{id}/versions:
+    get:
+      tags:
+        - System Policies
+      summary: Get policy version history
+      description: |
+        Returns the version history for a policy.
+
+        **Edition limits:**
+        - Community: Last 5 versions
+        - Enterprise: Unlimited history
+      operationId: getSystemPolicyVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersionsResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/system-policies/{id}/override:
+    get:
+      tags:
+        - System Policies
+      summary: Get active override for a policy
+      description: |
+        Returns the active override for a single policy (404 when none).
+        `{id}` may be the policy UUID or the human-readable slug - slugs
+        are resolved to the canonical UUID before lookup.
+      operationId: getSystemPolicyOverride
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The active override
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverride'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No override exists for this policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONError'
+    post:
+      tags:
+        - System Policies
+      summary: Create policy override
+      description: |
+        Creates an override for a system policy.
+
+        **Enterprise only.** Overrides allow modifying policy behavior
+        (action, enabled status) without changing the underlying pattern.
+
+        Overrides can be scoped to organization or tenant level and
+        can have an optional expiration date.
+      operationId: createSystemPolicyOverride
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID to override
+          schema:
+            type: string
+            format: uuid
+        - name: Authorization
+          in: header
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOverrideRequest'
+            examples:
+              disablePolicy:
+                summary: Disable a system policy
+                value:
+                  enabled_override: false
+                  override_reason: "False positive rate too high for this tenant"
+                  expires_at: "2025-06-01T00:00:00Z"
+              changeAction:
+                summary: Change action from block to warn
+                value:
+                  action_override: "warn"
+                  override_reason: "Regulatory requirement to warn instead of block"
+      responses:
+        '201':
+          description: |
+            Override created successfully. Returns `CreateOverrideResponse`
+            with the effective `ttl_seconds` (post server-side clamping)
+            and, when applicable, the `requested_ttl` / `clamped` /
+            `clamped_reason` metadata so callers can surface clamping
+            decisions in their UX. The at-rest `PolicyOverride` entity
+            is returned by `GET /api/v1/policy-overrides` /
+            `GET /api/v1/policy-overrides/{id}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOverrideResponse'
+        '400':
+          description: Invalid request body or missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Enterprise license required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - System Policies
+      summary: Delete policy override
+      description: |
+        Deletes an override, restoring the original policy behavior.
+
+        **Enterprise only.**
+      operationId: deleteSystemPolicyOverride
       parameters:
         - name: id
           in: path
@@ -4108,6 +5056,56 @@ components:
         # Without clientSecret (community mode)
         curl -H "Authorization: Basic $(echo -n 'my-org:' | base64)" ...
         ```
+
+        ## Per-user identity behind a shared credential
+
+        This credential authenticates an ORGANIZATION or client, not a person.
+        Behind one such credential can sit many human principals, each
+        optionally forwarding a **per-user token** that proves who they are.
+        Where that token is read depends on the envelope: the `user_token`
+        field of the request body on `POST /api/v1/decide` and the four MCP
+        REST routes, and the `X-User-Token` header on the MCP-server JSON-RPC
+        plane. The two spellings are deliberately not interchangeable.
+
+        **A presented per-user token that fails to validate is a refused
+        access attempt, not a legacy caller** (`401`, audited
+        `user_token_rejected`). It is never downgraded to a shared service
+        identity, so revocation, expiry, algorithm pinning and signature
+        checks take effect on every plane that reads one.
+
+        **Whether presenting a token is REQUIRED is a per-organization
+        posture, `require_user_token`, and it is off by default (#3476).**
+        With it off, an enterprise caller that presents no token at all is
+        served under a synthetic org-scoped service identity
+        (`<client-id>@axonflow.local`, role `service`), which is the correct
+        answer for an infrastructure gateway acting as a Policy Enforcement
+        Point with no end-user token to forward. With it on, that caller is
+        refused at AUTHENTICATION, before any policy is evaluated (`401`,
+        audited `user_token_required`).
+
+        The posture exists because segment-scoped governance policy
+        (ADR-060) is only meaningful if a caller cannot CHOOSE to arrive
+        without an identity: with the posture off a segment-scoped policy
+        still enforces against everyone who presents a token, but a member
+        can decline to present one and be evaluated org-only. Two levers set
+        it, and an explicit per-organization row wins over the
+        deployment-wide default in EITHER direction:
+
+        - `organizations.require_user_token`, per organization, default
+          `false`.
+        - `AXONFLOW_REQUIRE_USER_TOKEN`, deployment-wide, default `false`.
+
+        A posture change takes up to one cache window to become live
+        (`AXONFLOW_REQUIRE_USER_TOKEN_TTL_SECONDS`, default 60 seconds,
+        clamped to `[5, 600]`). A posture that cannot be READ resolves to
+        REQUIRED rather than not-required, so a database outage cannot
+        quietly switch the control off; a genuinely absent organization row
+        is not a read failure and falls through to the deployment default.
+
+        `POST /v1/chat/completions` is outside this guarantee: it mirrors
+        OpenAI's wire shape and carries no per-user token field at all, so it
+        keeps the synthetic-identity fallback regardless of the posture.
+        Community and community-SaaS deployments never reach any of the above.
 
     InternalServiceID:
       type: apiKey
@@ -4397,9 +5395,6 @@ components:
           description: Whether this policy has an override (Enterprise only)
         override:
           $ref: '#/components/schemas/PolicyOverride'
-        organization_id:
-          type: string
-          description: Organization ID (for organization-tier policies)
         tenant_id:
           type: string
           description: Tenant ID (for tenant-tier policies)
@@ -4465,9 +5460,6 @@ components:
           type: string
           enum: [static, dynamic]
           description: Type of policy being overridden
-        organization_id:
-          type: string
-          description: Organization ID for org-level overrides
         tenant_id:
           type: string
           description: Tenant ID for tenant-level overrides
@@ -4548,11 +5540,6 @@ components:
           items:
             type: string
           description: Tags for categorization
-        organization_id:
-          type: string
-          description: |
-            Organization id for organization-tier policies (Enterprise).
-            Required when `tier: organization`; ignored otherwise.
 
     UpdateStaticPolicyRequest:
       type: object
@@ -4942,6 +5929,24 @@ components:
         block_reason:
           type: string
           description: Reason for blocking
+        approval_request_id:
+          type: string
+          format: uuid
+          description: |
+            The human-approval queue entry raised for a request this response
+            is holding (#3509). Present only on a `require_approval` hold.
+
+            **An EMPTY value on a held response is meaningful, not merely
+            absent.** It means no reviewable entry exists: the organisation is
+            at its pending-approval limit, its tier has no approval queue, or
+            the write failed. The request is still held either way, but nobody
+            will see it, so a caller must treat that case as a refusal rather
+            than as something a reviewer is about to action.
+
+            It is a SEPARATE field rather than an addition to `block_reason`
+            because `block_reason` carries the literal `require_approval`
+            sentinel that shipped SDKs match to enter their HITL branch, and
+            that string is unchanged.
         policy_info:
           $ref: '#/components/schemas/PolicyEvaluationInfo'
         budget_info:
@@ -5034,7 +6039,41 @@ components:
           type: array
           items:
             type: string
-          description: Policies that were evaluated
+          description: |
+            Policies that were evaluated.
+
+            One reserved value can appear here that is not a policy id:
+            `segment_resolution_failed`, always paired with
+            `approved: false` (#3312). It records a fail-closed deny in which
+            the caller's governance-segment memberships could not be
+            resolved, so the request was refused rather than evaluated as
+            though the caller had no segments.
+
+            **This arrives as an HTTP `200` carrying a deny verdict, not as
+            an HTTP error status.** A client must therefore key on `approved`
+            and on the reserved identifier, never on the human-readable
+            `block_reason`: that text is not a stable interface, and the
+            punctuation separating its clauses differs between the planes
+            that emit this refusal, so a string match written against another
+            plane's wording silently misses this one.
+        approval_request_id:
+          type: string
+          format: uuid
+          description: |
+            The human-approval queue entry raised for a request this response
+            is holding (#3509). Present only on a `require_approval` hold.
+
+            **An EMPTY value on a held response is meaningful, not merely
+            absent.** It means no reviewable entry exists: the organisation is
+            at its pending-approval limit, its tier has no approval queue, or
+            the write failed. The request is still held either way, but nobody
+            will see it, so a caller must treat that case as a refusal rather
+            than as something a reviewer is about to action.
+
+            It is a SEPARATE field rather than an addition to `block_reason`
+            because `block_reason` carries the literal `require_approval`
+            sentinel that shipped SDKs match to enter their HITL branch, and
+            that string is unchanged.
         rate_limit:
           $ref: '#/components/schemas/RateLimitInfo'
         expires_at:
@@ -7271,6 +8310,99 @@ components:
 
     Forbidden:
       description: Access denied by policy or tenant mismatch
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Tenant mismatch"
+
+    MCPPerUserTokenUnauthorized:
+      description: |
+        Missing or invalid authentication on an MCP REST route. FOUR distinct
+        causes; the status code is the same for all four, and the audit row is
+        what distinguishes the last two.
+
+        1. **Credentials.** No usable Basic auth / license credential.
+        2. **A tenant the credential may not act for.**
+        3. **`user_token_rejected`** -- a `user_token` WAS supplied in the
+           request body and failed to validate: malformed, expired, signed
+           with the wrong algorithm, carrying a bad signature, or revoked by
+           `jti`. **This is new behaviour on these four routes.** Previously
+           ANY user-token failure in enterprise mode was answered by
+           synthesizing a service identity and serving the request, so
+           revocation and expiry had no effect here; a presented token that
+           fails to validate is now a refused access attempt, audited and
+           returned as `401`. This is not opt-in and no flag restores the old
+           behaviour.
+        4. **`user_token_required`** (#3476) -- NO `user_token` was supplied
+           and the caller's organisation requires one. **Off by default**;
+           this cause cannot occur unless an operator has set
+           `organizations.require_user_token` for that organisation, or the
+           deployment-wide `AXONFLOW_REQUIRE_USER_TOKEN` default. With the
+           posture off, a token-less enterprise caller is still served under a
+           synthetic service identity, which is the correct answer for an
+           infrastructure gateway that has no end-user token to forward.
+
+        Causes 3 and 4 are recorded as reserved identifiers in the audit row's
+        policy ids and MUST NOT be collapsed: they have opposite operator
+        remedies (repair the caller's token, versus provision one at all).
+        Query them with JSONB containment against
+        `policy_details->'policy_ids'`, never with `LIKE` -- `_` is a
+        single-character wildcard, so a `%user_token_required%` pattern also
+        matches unrelated prose in the same row.
+
+        These routes read the per-user token from the `user_token` field of
+        the request body. They do not read the `X-User-Token` header; that
+        header belongs to the MCP-server JSON-RPC envelope.
+
+        Handler-written 401s use the `{success, error}` envelope; 401s written
+        by the auth middleware use the `{"error": {"code", "message"}}`
+        envelope (JSONError).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Invalid user token: token has expired"
+
+    MCPSegmentForbidden:
+      description: |
+        Access denied. Causes on these routes:
+
+        - **Tenant mismatch**, or a connector this tenant may not access.
+        - **`segment_resolution_failed`** (#3447, ADR-060 #2989) -- a NEW
+          refusal. These routes resolve the caller's governance-segment
+          memberships to decide which segment-scoped policies apply. When that
+          resolution genuinely FAILS for a caller who HAS a verified per-user
+          principal (the directory backing it is unavailable), the request is
+          denied fail-closed rather than evaluated as though the caller
+          belonged to no segments, which would let a segment-scoped
+          restriction lapse exactly when the directory is down. A canonical
+          blocked audit row is written carrying the reserved identifier
+          `segment_resolution_failed`, and the error message is prefixed
+          `Request blocked:`.
+
+        The segment refusal is deliberately NOT reported as `503`: a
+        policy-side deny must stay distinguishable from a policy-evaluator
+        outage in both the audit row and the operator dashboard.
+
+        **Key on the reserved identifier, never on the human-readable
+        message.** That text is not a stable interface, and the punctuation
+        separating its clauses differs between the planes that emit this
+        refusal, so a string match written against another plane's wording
+        silently misses this one.
+
+        A caller with NO verified per-user identity is a different case and is
+        NOT an error: resolution succeeds with an empty set, the request
+        proceeds org-only, and non-segment-scoped policies still enforce. A
+        verified caller who belongs to no segments, and a caller whose token
+        names a shared synthetic identity, resolve the same way. **Enforcement
+        on these routes is therefore conditional on the caller presenting a
+        per-user token**; `require_user_token` is what makes presenting one
+        non-optional.
       content:
         application/json:
           schema:

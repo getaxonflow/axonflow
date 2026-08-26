@@ -24,7 +24,9 @@ import (
 // divergent operator sets and divergent semantics for the operators they
 // shared:
 //
-//  1. platform/orchestrator/dynamic_policy_engine.go:619 DynamicPolicyEngine.evaluateCondition ("1a")
+//  1. platform/orchestrator/dynamic_policy_engine.go:619
+//     DynamicPolicyEngine.evaluateCondition ("1a") — file deleted by #3319;
+//     DynamicPolicyEngine no longer exists, cited here for provenance only
 //  2. platform/orchestrator/db_dynamic_policies.go:1113 DatabaseDynamicPolicyEngine.evaluateCondition ("1b")
 //  3. platform/orchestrator/mcp_dynamic_policy_handler.go:509 MCPDynamicPolicyHandler.evaluateCondition ("1c")
 //  4. platform/orchestrator/policy_api_service.go:609 PolicyService.evaluateCondition ("1d", wrapper)

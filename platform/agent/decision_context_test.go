@@ -363,13 +363,14 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 			"trace-corr-99", // correlation_id (#2598): the shared cross-stage key
 			nil,             // redacted_fields (#2643): unset on input → NULL
 			nil,             // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-1", "org-acme", "tenant-rocket", "llm", "allow",
 		[]string{"p_pii_us"}, []string{"clean"},
-		reqContext, false,
+		reqContext, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{
 			clientID:      "client-x",
 			requestID:     "dec-1",
@@ -389,7 +390,7 @@ func TestWriteDecisionAuditLog_PersistsContextJSONB(t *testing.T) {
 func TestWriteDecisionAuditLog_NilDBIsNoop(t *testing.T) {
 	// Must not panic when usageDB is unset (best-effort audit).
 	writeDecisionAuditLog(context.Background(), nil,
-		"dec-1", "org", "tenant", "llm", "allow", nil, nil, nil, false,
+		"dec-1", "org", "tenant", "llm", "allow", nil, nil, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{})
 }
 
@@ -458,6 +459,7 @@ func TestRecordDecideDecision_WithTracerAndAudit(t *testing.T) {
 			nil,           // correlation_id (#2598): unset on input → NULL
 			nil,           // redacted_fields (#2643): unset on input → NULL
 			nil,           // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -502,12 +504,13 @@ func TestWriteDecisionAuditLog_FallbackPlaceholders(t *testing.T) {
 			nil,              // correlation_id (#2598): unset on input → NULL
 			nil,              // redacted_fields (#2643): unset on input → NULL
 			nil,              // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-fb", "", "", "llm", "allow",
-		nil, nil, nil, false,
+		nil, nil, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{}) // all identity fields empty
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -528,7 +531,7 @@ func TestWriteDecisionAuditLog_InsertErrorIsNonFatal(t *testing.T) {
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-err", "org", "tenant", "llm", "deny",
-		[]string{"p"}, []string{"r"}, map[string]string{"x_ai_agent": "a"}, false,
+		[]string{"p"}, []string{"r"}, map[string]string{"x_ai_agent": "a"}, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{clientID: "c", userEmail: "e@x", userRole: "user", query: "q"})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -582,12 +585,13 @@ func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
 			nil,           // correlation_id (#2598): unset on input → NULL
 			nil,           // redacted_fields (#2643): unset on input → NULL
 			nil,           // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-gw", "org-acme", "tenant-rocket", "tool", "allow",
-		[]string{"p_clean"}, []string{"clean"}, nil, false,
+		[]string{"p_clean"}, []string{"clean"}, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{
 			clientID:  "client-x",
 			requestID: "dec-gw",
@@ -657,12 +661,13 @@ func TestWriteDecisionAuditLog_PersistsPlaneAndObligations(t *testing.T) {
 			nil, // correlation_id (#2598): unset on input → NULL
 			nil, // redacted_fields (#2643): unset on input → NULL
 			nil, // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	writeDecisionAuditLog(context.Background(), mockDB,
 		"dec-ob", "org-acme", "tenant-rocket", "tool", "allow",
-		[]string{"pii-id"}, []string{"redact"}, nil, false,
+		[]string{"pii-id"}, []string{"redact"}, nil, false, 0, // latencyMs (#3424): unmeasured -> response_time_ms NULL
 		decisionAuditInput{
 			clientID:    "client-x",
 			requestID:   "dec-ob",

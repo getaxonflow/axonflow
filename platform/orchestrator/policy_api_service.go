@@ -56,16 +56,55 @@ type PolicyEngineRefresher interface {
 	RefreshPolicies() error
 }
 
+// SegmentLookuper is the narrow interface PolicyService needs from a policy
+// engine: only the ability to look up a cached policy's segment scope, for
+// TestPolicy's segment-awareness (#3296). DatabaseDynamicPolicyEngine
+// implements this.
+//
+// #3319: deliberately narrower than the full policy-engine surface. Before
+// this, PolicyService coupled to the concrete *DynamicPolicyEngine type
+// (the retired in-memory engine) purely to reach this one method — the
+// coupling this narrow interface exists to remove, per #3296's original
+// framing of the segment-lookup path as deliberately narrow.
+//
+// R3 finding 4 (#3319 hostile review): no production call site currently
+// SUPPLIES one. run.go wires the production PolicyService via
+// NewPolicyServiceWithRefresher — the only constructor that does not take a
+// SegmentLookuper — so PolicyService.policyEngine is nil on every live HTTP
+// path, and lookupPolicySegmentID always takes the nil-engine branch
+// (returns found=false). TestPolicy's fail-closed / degrade-observably
+// contract already covers that: a lookup miss is treated as "scope status
+// unknown," never as proof "not segment-scoped," and Explanation says so
+// when no verified identity was even available to check against in the
+// first place (today's universal production case, see TestPolicy's doc).
+// So the segment-scope half of TestPolicy degrades OBSERVABLY today, not
+// silently — but it is not live-wired.
+//
+// This is pre-existing, not a #3319 regression: the retired in-memory
+// engine's PolicyService.policyEngine field (typed *DynamicPolicyEngine
+// instead of this interface) was nil at the identical run.go call site
+// before this branch too — verified via
+// `git show 1f7e192a5:platform/orchestrator/policy_api_service.go` and
+// `git show 1f7e192a5:platform/orchestrator/run.go`, both predating #3319.
+// Wiring an engine into NewPolicyServiceWithRefresher's construction path is
+// a deliberate behavior change belonging to its own issue, not folded into
+// this doc fix — this interface exists so a caller that DOES supply an
+// engine (a future run.go change, or any test) gets real segment-aware
+// TestPolicy results for free.
+type SegmentLookuper interface {
+	LookupSegmentID(policyID string) (segmentID string, found bool)
+}
+
 // PolicyService handles business logic for policy operations
 type PolicyService struct {
 	repo            *PolicyRepository
-	policyEngine    *DynamicPolicyEngine
+	policyEngine    SegmentLookuper
 	policyRefresher PolicyEngineRefresher // Interface for triggering policy refresh
 	licenseChecker  LicenseChecker
 }
 
 // NewPolicyService creates a new policy service with environment-based license checker.
-func NewPolicyService(repo *PolicyRepository, engine *DynamicPolicyEngine) *PolicyService {
+func NewPolicyService(repo *PolicyRepository, engine SegmentLookuper) *PolicyService {
 	return &PolicyService{
 		repo:           repo,
 		policyEngine:   engine,
@@ -85,7 +124,7 @@ func NewPolicyServiceWithRefresher(repo *PolicyRepository, refresher PolicyEngin
 }
 
 // NewPolicyServiceWithLicense creates a policy service with a custom license checker.
-func NewPolicyServiceWithLicense(repo *PolicyRepository, engine *DynamicPolicyEngine, lc LicenseChecker) *PolicyService {
+func NewPolicyServiceWithLicense(repo *PolicyRepository, engine SegmentLookuper, lc LicenseChecker) *PolicyService {
 	return &PolicyService{
 		repo:           repo,
 		policyEngine:   engine,
@@ -106,14 +145,22 @@ func (s *PolicyService) refreshPolicyCache() {
 }
 
 // CreatePolicy validates and creates a new policy
-func (s *PolicyService) CreatePolicy(ctx context.Context, tenantID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error) {
+// CreatePolicy persists a dynamic policy for a tenant, under an ORGANISATION.
+//
+// Decision 5 (#3490) R3 BLOCKER: orgID is a parameter now, and it is not
+// optional. dynamic_policies.org_id used to be written from the tenant, which
+// is the Basic-auth username, and once org_id became the selection key that
+// meant a policy created here could be stamped with an organisation no caller
+// authenticates as - enforcing on nobody while still listing in the UI - or,
+// on a forged username, with somebody else's organisation.
+func (s *PolicyService) CreatePolicy(ctx context.Context, tenantID, orgID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error) {
 	// Validate request
 	if err := s.validateCreateRequest(req); err != nil {
 		return nil, err
 	}
 
 	// Tier validation
-	if err := s.validateTierForCreate(ctx, tenantID, req); err != nil {
+	if err := s.validateTierForCreate(ctx, tenantID, orgID, req); err != nil {
 		return nil, err
 	}
 
@@ -134,9 +181,13 @@ func (s *PolicyService) CreatePolicy(ctx context.Context, tenantID string, req *
 		Priority:    req.Priority,
 		Enabled:     req.Enabled,
 		TenantID:    tenantID,
-		Tags:        req.Tags,
-		CreatedBy:   createdBy,
-		UpdatedBy:   createdBy,
+		// The AUTHENTICATED organisation, never a body field. It is what
+		// PolicyRepository.Create writes to org_id and scopes the transaction
+		// by, so the row is owned by the org that created it.
+		OrganizationID: orgID,
+		Tags:           req.Tags,
+		CreatedBy:      createdBy,
+		UpdatedBy:      createdBy,
 	}
 
 	if err := s.repo.Create(ctx, policy); err != nil {
@@ -151,13 +202,13 @@ func (s *PolicyService) CreatePolicy(ctx context.Context, tenantID string, req *
 }
 
 // GetPolicy retrieves a policy by ID
-func (s *PolicyService) GetPolicy(ctx context.Context, tenantID, policyID string) (*PolicyResource, error) {
-	return s.repo.GetByID(ctx, tenantID, policyID)
+func (s *PolicyService) GetPolicy(ctx context.Context, tenantID, orgID, policyID string) (*PolicyResource, error) {
+	return s.repo.GetByID(ctx, tenantID, orgID, policyID)
 }
 
 // ListPolicies retrieves policies with filtering
-func (s *PolicyService) ListPolicies(ctx context.Context, tenantID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
-	policies, total, err := s.repo.List(ctx, tenantID, params)
+func (s *PolicyService) ListPolicies(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
+	policies, total, err := s.repo.List(ctx, tenantID, orgID, params)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +234,7 @@ func (s *PolicyService) ListPolicies(ctx context.Context, tenantID string, param
 }
 
 // UpdatePolicy validates and updates an existing policy
-func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error) {
+func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, orgID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error) {
 	// Validate request
 	if err := s.validateUpdateRequest(req); err != nil {
 		return nil, err
@@ -203,12 +254,12 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 	}
 
 	// Tier validation: system tier policies cannot be modified (except system media policies)
-	if err := s.validateTierForModify(ctx, tenantID, policyID); err != nil {
+	if err := s.validateTierForModify(ctx, tenantID, orgID, policyID); err != nil {
 		return nil, err
 	}
 
 	// Additional field-level validation for system media policies
-	existing, err := s.repo.GetByID(ctx, tenantID, policyID)
+	existing, err := s.repo.GetByID(ctx, tenantID, orgID, policyID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get policy for validation: %w", err)
 	}
@@ -218,7 +269,7 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 		}
 	}
 
-	policy, err := s.repo.Update(ctx, tenantID, policyID, req, updatedBy)
+	policy, err := s.repo.Update(ctx, tenantID, orgID, policyID, req, updatedBy)
 	if err != nil {
 		return nil, err
 	}
@@ -231,9 +282,9 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 }
 
 // DeletePolicy removes a policy
-func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID string, deletedBy string) error {
+func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, orgID, policyID string, deletedBy string) error {
 	// System policies (including system media policies) cannot be deleted
-	existing, err := s.repo.GetByID(ctx, tenantID, policyID)
+	existing, err := s.repo.GetByID(ctx, tenantID, orgID, policyID)
 	if err != nil {
 		return fmt.Errorf("failed to get policy: %w", err)
 	}
@@ -241,7 +292,7 @@ func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID str
 		return NewTierValidationError("System policies cannot be deleted", ErrCodeSystemTierImmutable)
 	}
 
-	if err := s.repo.Delete(ctx, tenantID, policyID, deletedBy); err != nil {
+	if err := s.repo.Delete(ctx, tenantID, orgID, policyID, deletedBy); err != nil {
 		return err
 	}
 
@@ -276,11 +327,14 @@ func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID str
 //     PolicyRepository.GetByID's SELECT does not fetch
 //     dynamic_policies.segment_id — a structural gap in those types, not
 //     something fixable from inside this method. The best-effort fallback is
-//     s.policyEngine.LookupSegmentID (dynamic_policy_engine.go), which reads
-//     the SAME dynamic_policies table via the in-memory engine's
-//     already-loaded cache. When policyEngine is nil or the cache does not
-//     have this policy, segment-scope status is UNKNOWN — never assumed
-//     absent.
+//     s.policyEngine.LookupSegmentID (SegmentLookuper above, implemented by
+//     DatabaseDynamicPolicyEngine, db_dynamic_policies.go), which WOULD read
+//     the SAME dynamic_policies table via the engine's already-loaded cache
+//     if an engine were supplied. See SegmentLookuper's doc: no production
+//     call site does that today, so s.policyEngine is nil in production and
+//     this fallback always misses there too, alongside the identity gap
+//     above. When policyEngine is nil or the cache does not have this
+//     policy, segment-scope status is UNKNOWN — never assumed absent.
 //
 // # Fail-closed / degrade-observably contract
 //
@@ -290,7 +344,7 @@ func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID str
 //   - Verified identity present, resolution succeeds, policy IS
 //     segment-scoped, caller is NOT a member: Matched forced false
 //     regardless of condition evaluation — mirrors
-//     CompiledPolicy.AppliesToSegments / memPolicyAppliesToTenant's
+//     CompiledPolicy.AppliesToSegments / dbCachedPolicyAppliesToTenant's
 //     restriction-only rule. The Explanation note for this case never spells
 //     out the segment's identifier. It does NOT achieve full non-disclosure,
 //     though: the note's mere presence ("This policy does not apply to the
@@ -342,9 +396,9 @@ func (s *PolicyService) testPolicyVerdictForStoredRow(policy *PolicyResource) *T
 	}
 }
 
-func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
+func (s *PolicyService) TestPolicy(ctx context.Context, tenantID, orgID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
 	// Get the policy
-	policy, err := s.repo.GetByID(ctx, tenantID, policyID)
+	policy, err := s.repo.GetByID(ctx, tenantID, orgID, policyID)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +477,7 @@ func (s *PolicyService) applySegmentScopeToTestVerdict(ctx context.Context, poli
 		return matched, " Segment scoping NOT evaluated: no verified caller identity is available on this path (ADR-060 #2989/#3266) — this result does not reflect any segment restriction the policy may carry."
 	}
 
-	segIDs, segOK := resolveSegmentsForPolicy(ctx, user.OrgID, user.Email)
+	segIDs, segOK := resolveUserSegments(ctx, user.OrgID, user.Email)
 	if !segOK {
 		return false, " Segment resolution failed (fail-closed, ADR-060 #2989/#3266): treated as no match."
 	}
@@ -458,11 +512,17 @@ func (s *PolicyService) applySegmentScopeToTestVerdict(ctx context.Context, poli
 	return matched, ""
 }
 
-// lookupPolicySegmentID returns the SegmentID of a policy from the in-memory
-// DynamicPolicyEngine's cache, and whether it was found there. See
+// lookupPolicySegmentID returns the SegmentID of a policy from the policy
+// engine's cache (SegmentLookuper above), and whether it was found there. See
 // TestPolicy's doc for why this indirection exists: PolicyResource itself
 // carries no SegmentID, and the policy-API repository does not fetch
 // dynamic_policies.segment_id.
+//
+// s.policyEngine is nil on every production call path today (see
+// SegmentLookuper's doc) — the nil guard below makes that a lookup miss,
+// not a panic, and the caller (applySegmentScopeToTestVerdict) already
+// treats a miss as "scope status could not be determined," never as proof
+// of "not segment-scoped."
 func (s *PolicyService) lookupPolicySegmentID(policyID string) (string, bool) {
 	if s.policyEngine == nil {
 		return "", false
@@ -481,8 +541,8 @@ func (s *PolicyService) GetPolicyVersions(ctx context.Context, tenantID, policyI
 }
 
 // ExportPolicies exports all policies for a tenant
-func (s *PolicyService) ExportPolicies(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error) {
-	policies, err := s.repo.ExportAll(ctx, tenantID)
+func (s *PolicyService) ExportPolicies(ctx context.Context, tenantID, orgID string) (*ExportPoliciesResponse, error) {
+	policies, err := s.repo.ExportAll(ctx, tenantID, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +555,7 @@ func (s *PolicyService) ExportPolicies(ctx context.Context, tenantID string) (*E
 }
 
 // ImportPolicies imports multiple policies
-func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
+func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
 	// Validate all policies first
 	for i, p := range req.Policies {
 		if err := s.validateCreateRequest(&p); err != nil {
@@ -554,7 +614,7 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req
 
 		// Tenant tier: check policy limit for non-paid tiers
 		if newTenantCount > 0 && !license.IsPaidTier(licenseTier) {
-			existingTenantCount, err := s.repo.CountByTenant(ctx, tenantID)
+			existingTenantCount, err := s.repo.CountByTenant(ctx, tenantID, orgID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to count policies: %w", err)
 			}
@@ -580,7 +640,7 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req
 		mode = "skip"
 	}
 
-	result, err := s.repo.ImportBulk(ctx, tenantID, req.Policies, mode, importedBy)
+	result, err := s.repo.ImportBulk(ctx, tenantID, orgID, req.Policies, mode, importedBy)
 	if err != nil {
 		return nil, err
 	}
@@ -946,7 +1006,7 @@ func (e *ValidationError) Error() string {
 }
 
 // validateTierForCreate validates tier constraints for policy creation.
-func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID string, req *CreatePolicyRequest) error {
+func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID, orgID string, req *CreatePolicyRequest) error {
 	tier := req.Tier
 	if tier == "" {
 		tier = TierTenant
@@ -997,7 +1057,7 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID stri
 
 	// Tenant tier: check policy limit for non-paid tiers
 	if tier == TierTenant && !license.IsPaidTier(licenseTier) {
-		count, err := s.repo.CountByTenant(ctx, tenantID)
+		count, err := s.repo.CountByTenant(ctx, tenantID, orgID)
 		if err != nil {
 			return fmt.Errorf("failed to count policies: %w", err)
 		}
@@ -1072,8 +1132,8 @@ func isMediaPolicyCategory(category string) bool {
 // validateTierForModify validates that a policy can be modified (updated or deleted).
 // System tier policies are generally immutable, except for system media policies
 // which support tiered modification per issue #1222.
-func (s *PolicyService) validateTierForModify(ctx context.Context, tenantID, policyID string) error {
-	policy, err := s.repo.GetByID(ctx, tenantID, policyID)
+func (s *PolicyService) validateTierForModify(ctx context.Context, tenantID, orgID, policyID string) error {
+	policy, err := s.repo.GetByID(ctx, tenantID, orgID, policyID)
 	if err != nil {
 		return fmt.Errorf("failed to get policy: %w", err)
 	}

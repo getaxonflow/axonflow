@@ -74,10 +74,24 @@ func setupTestDBEnv(t *testing.T) func() {
 // Includes Plugin Batch 1 (ADR-044) columns: id (UUID), risk_level,
 // allow_override. These are populated in-memory by the engine's
 // refreshPolicies SELECT and consumed downstream by override enforcement.
+//
+// #3319: also includes org_id, client_id, version, created_by, updated_by
+// (migrations 010/022/090) — seedSystemMediaPolicies and insertSamplePolicies
+// both INSERT into those columns, and without them the seed silently fails
+// with a "column does not exist" warning on every boot, landing the engine
+// on a genuinely empty (0-row) policies table. Pre-#3319 that was invisible:
+// NewDatabaseDynamicPolicyEngine masked a 0-row-after-seed load by silently
+// swapping in the in-memory built-in defaults, so IsHealthy() reported true
+// regardless. #3319 removed that masking — a successful load is trusted at
+// face value, zero rows included (see refreshPolicies' zero-row handling) —
+// which is what turned this fixture's pre-existing gap into a visible test
+// failure instead of a silently-papered-over one.
 func dbPolicyEngineSchema() string {
 	return `
 		CREATE TABLE IF NOT EXISTS dynamic_policies (
 			id UUID NOT NULL DEFAULT gen_random_uuid(),
+			org_id VARCHAR(255),
+			client_id VARCHAR(100),
 			policy_id VARCHAR(36) PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
 			description TEXT,
@@ -102,6 +116,9 @@ func dbPolicyEngineSchema() string {
 			enabled BOOLEAN DEFAULT true,
 			risk_level VARCHAR(20) DEFAULT 'medium',
 			allow_override BOOLEAN DEFAULT false,
+			version INTEGER DEFAULT 1,
+			created_by VARCHAR(255),
+			updated_by VARCHAR(255),
 			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 		)
@@ -156,10 +173,10 @@ func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
 	// platform-seeded shape: an explicitly-empty "[]" is released-update-gap
 	// residue and is EXCLUDED from both listing and enforcement.
 	_, err = db.Exec(`
-		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, org_id, priority, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyID, testPolicyName, "Test policy for refresh", "test", "null", "[]", "test-tenant", 100, true)
+	`, testPolicyID, testPolicyName, "Test policy for refresh", "test", "null", "[]", "test-tenant", "test-tenant", 100, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
@@ -220,23 +237,33 @@ func TestDatabaseDynamicPolicyEngine_ListActivePoliciesForTenant_RealPostgres(t 
 
 	// A distinctive condition value on tenant B's policy: proprietary regexes
 	// are exactly what the pre-fix endpoint disclosed cross-tenant.
+	// Decision 5 (#3490): org_id is seeded explicitly. It is what the
+	// applicability gate reads now, and migration 165 makes it NOT NULL on
+	// this table, so an INSERT that omitted it would not merely mis-scope -
+	// it would be rejected by the schema this test runs against.
+	//
+	// The NULL-tenant row is stamped 'global': a NULL tenant_id means
+	// "applies to every tenant" (refreshPolicies resolves it to the "default"
+	// sentinel), and 'global' is the org spelling of the same intent. Leaving
+	// it unstamped is no longer representable.
 	seed := []struct {
 		id       string
 		name     string
 		tenant   interface{} // string or nil (SQL NULL → "default" sentinel)
+		org      string
 		condJSON string
 	}{
-		{"3059-a-" + suffix, "tenant A policy", tenantA, `[{"field":"q","operator":"regex","value":"AAA"}]`},
-		{"3059-b-" + suffix, "tenant B policy", tenantB, `[{"field":"q","operator":"regex","value":"VICTIM-PROPRIETARY-[0-9]{9}"}]`},
-		{"3059-g-" + suffix, "global policy", "global", `[{"field":"q","operator":"regex","value":"GGG"}]`},
-		{"3059-n-" + suffix, "null tenant policy", nil, `[{"field":"q","operator":"regex","value":"NNN"}]`},
+		{"3059-a-" + suffix, "tenant A policy", tenantA, tenantA, `[{"field":"q","operator":"regex","value":"AAA"}]`},
+		{"3059-b-" + suffix, "tenant B policy", tenantB, tenantB, `[{"field":"q","operator":"regex","value":"VICTIM-PROPRIETARY-[0-9]{9}"}]`},
+		{"3059-g-" + suffix, "global policy", "global", "global", `[{"field":"q","operator":"regex","value":"GGG"}]`},
+		{"3059-n-" + suffix, "null tenant policy", nil, "global", `[{"field":"q","operator":"regex","value":"NNN"}]`},
 	}
 	for _, s := range seed {
 		_, err = db.Exec(`
-			INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, org_id, priority, enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			ON CONFLICT (policy_id) DO NOTHING
-		`, s.id, s.name, "#3059 scope fixture", "test", s.condJSON, "[]", s.tenant, 100, true)
+		`, s.id, s.name, "#3059 scope fixture", "test", s.condJSON, "[]", s.tenant, s.org, 100, true)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", s.id, err)
 		}
@@ -309,7 +336,7 @@ func TestDatabaseDynamicPolicyEngine_ListActivePoliciesForTenant_RealPostgres(t 
 // TestDBCachedPolicyListEnforceParity_RealPostgres pins the invariant that
 // #3059's first cut asserted but did not hold: for every row shape that can
 // reach the cache, "listed to tenant X" and "enforced for tenant X" must be
-// the SAME decision. Both sides now call dbCachedPolicyAppliesToTenant, so the
+// the SAME decision. Both sides now call dbCachedPolicyAppliesToOrg, so the
 // test is a guard against anyone re-introducing a second, parallel predicate.
 func TestDBCachedPolicyListEnforceParity_RealPostgres(t *testing.T) {
 	cleanup := setupTestDBEnv(t)
@@ -325,21 +352,23 @@ func TestDBCachedPolicyListEnforceParity_RealPostgres(t *testing.T) {
 	caller := "3059-parity-caller-" + suffix
 	other := "3059-parity-other-" + suffix
 
+	// Same org_id seeding rationale as the scope fixture above (core/165).
 	rows := []struct {
 		id     string
 		tenant interface{}
+		org    string
 	}{
-		{"3059-p-own-" + suffix, caller},
-		{"3059-p-other-" + suffix, other},
-		{"3059-p-global-" + suffix, "global"},
-		{"3059-p-null-" + suffix, nil},
+		{"3059-p-own-" + suffix, caller, caller},
+		{"3059-p-other-" + suffix, other, other},
+		{"3059-p-global-" + suffix, "global", "global"},
+		{"3059-p-null-" + suffix, nil, "global"},
 	}
 	for _, rw := range rows {
 		_, err = db.Exec(`
-			INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, org_id, priority, enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			ON CONFLICT (policy_id) DO NOTHING
-		`, rw.id, rw.id, "#3059 parity fixture", "test", "null", "[]", rw.tenant, 100, true)
+		`, rw.id, rw.id, "#3059 parity fixture", "test", "null", "[]", rw.tenant, rw.org, 100, true)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", rw.id, err)
 		}
@@ -375,7 +404,7 @@ func TestDBCachedPolicyListEnforceParity_RealPostgres(t *testing.T) {
 		if !ok {
 			t.Fatalf("cache entry for %s is not a map", rw.id)
 		}
-		enforced := dbCachedPolicyAppliesToTenant(policyMap, caller, nil, rw.id)
+		enforced := dbCachedPolicyAppliesToOrg(policyMap, caller, nil, rw.id)
 		if enforced != listed[rw.id] {
 			t.Errorf("list/enforce DIVERGENCE for %s (tenant=%v): enforced=%v listed=%v",
 				rw.id, rw.tenant, enforced, listed[rw.id])
@@ -409,10 +438,10 @@ func TestDatabaseDynamicPolicyEngine_GetPolicy(t *testing.T) {
 	testPolicyID := "test_get_policy_" + time.Now().Format("20060102150405")
 	testPolicyName := "Test Get Policy"
 	_, err = db.Exec(`
-		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, org_id, priority, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyID, testPolicyName, "Test policy for get", "test", "{}", "{}", "test-tenant", 50, true)
+	`, testPolicyID, testPolicyName, "Test policy for get", "test", "{}", "{}", "test-tenant", "test-tenant", 50, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
@@ -468,11 +497,14 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 	testPolicyID := "test_eval_policy_" + time.Now().Format("20060102150405")
 	testPolicyName := "Test Eval Policy"
 	conditionsJSON := `[{"field":"query","operator":"contains","value":"data"}]`
+	// Decision 5 (#3490): org_id is seeded and is what selects this row.
+	// Migration 165 makes the column NOT NULL, so omitting it would fail the
+	// INSERT outright against the schema this test runs on.
 	_, err = db.Exec(`
-		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, org_id, priority, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyID, testPolicyName, "Test policy for evaluation", "test", conditionsJSON, "{}", "test-tenant", 100, true)
+	`, testPolicyID, testPolicyName, "Test policy for evaluation", "test", conditionsJSON, "{}", "test-tenant", "test-org", 100, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
@@ -492,9 +524,15 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 		Query:     "Show me data",
 		User: UserContext{
 			TenantID: "test-tenant",
+			// Decision 5 (#3490): the org is what the applicability gate
+			// reads. It differs from the tenant here on purpose - a gate
+			// that still keyed on tenant_id would find nothing.
+			OrgID: "test-org",
 		},
 		Client: ClientContext{
-			ID: "test-tenant",
+			ID:       "test-tenant",
+			TenantID: "test-tenant",
+			OrgID:    "test-org",
 		},
 	}
 
@@ -519,6 +557,13 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 	}
 }
 
+// TestDatabaseDynamicPolicyEngine_InvalidDBURL asserts the #3319 contract:
+// a database that cannot be reached is a transient data-availability
+// condition, not a permanent structural failure — construction must
+// SUCCEED and serve the built-in default fallback set rather than erroring
+// out the whole process. Pre-#3319 this test asserted the opposite (err !=
+// nil); that was exactly the defect #3319 retires (see run.go's boot-time
+// branch on this constructor's error).
 func TestDatabaseDynamicPolicyEngine_InvalidDBURL(t *testing.T) {
 	// Save original DATABASE_URL to restore after test (avoid polluting parallel tests)
 	originalDBURL := os.Getenv("DATABASE_URL")
@@ -530,14 +575,23 @@ func TestDatabaseDynamicPolicyEngine_InvalidDBURL(t *testing.T) {
 		}
 	}()
 
-	// Test with invalid database URL - should return error
 	// Use 127.0.0.1 with invalid port to fail fast without DNS lookup
 	_ = os.Setenv("DATABASE_URL", "postgresql://invalid:invalid@127.0.0.1:59999/invalid?connect_timeout=1")
 
-	_, err := NewDatabaseDynamicPolicyEngine()
+	engine, err := NewDatabaseDynamicPolicyEngine()
+	if err != nil {
+		t.Fatalf("expected construction to succeed even with an unreachable database, got error: %v", err)
+	}
+	if engine == nil {
+		t.Fatal("expected a non-nil engine")
+	}
+	defer func() { _ = engine.Close() }()
 
-	if err == nil {
-		t.Error("Expected error when connecting to invalid database")
+	if got := engine.PolicySetSource(); got != policySetSourceDefaults {
+		t.Errorf("expected PolicySetSource() = %q against an unreachable database, got %q", policySetSourceDefaults, got)
+	}
+	if len(engine.ListActivePolicies()) == 0 {
+		t.Error("expected the built-in default fallback policies to be served")
 	}
 }
 

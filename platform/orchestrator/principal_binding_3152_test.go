@@ -200,17 +200,17 @@ func TestProcess3152_ForgedRoleNeverReachesThePolicyFieldResolver(t *testing.T) 
 	//    issue quotes.
 	resolver := &DatabaseDynamicPolicyEngine{}
 	for _, field := range []string{"user.role", "user_role"} {
-		if v := resolver.getFieldValue(field, got); v != "" {
+		if v := resolver.getFieldValue(field, got, nil); v != "" {
 			t.Errorf("getFieldValue(%q) = %v — the forged body role reached the policy field resolver", field, v)
 		}
 	}
-	if v := resolver.getFieldValue("user.email", got); v != "" {
+	if v := resolver.getFieldValue("user.email", got, nil); v != "" {
 		t.Errorf("getFieldValue(user.email) = %v — the forged body email reached the resolver", v)
 	}
-	if v := resolver.getFieldValue("user.id", got); v != 0 {
+	if v := resolver.getFieldValue("user.id", got, nil); v != 0 {
 		t.Errorf("getFieldValue(user.id) = %v — the forged body id reached the resolver", v)
 	}
-	if v := resolver.getFieldValue("user.region", got); v != "" {
+	if v := resolver.getFieldValue("user.region", got, nil); v != "" {
 		t.Errorf("getFieldValue(user.region) = %v — the forged body region reached the resolver", v)
 	}
 
@@ -222,13 +222,13 @@ func TestProcess3152_ForgedRoleNeverReachesThePolicyFieldResolver(t *testing.T) 
 	//    actually governs the request.
 	if !resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "not_equals", "value": "admin",
-	}, got) {
+	}, got, nil) {
 		t.Error("{user.role not_equals \"admin\"} did not match: the body still chose the role, " +
 			"so the shipped role-gated policy shape is still evadable")
 	}
 	if resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "equals", "value": "admin",
-	}, got) {
+	}, got, nil) {
 		t.Error("{user.role equals \"admin\"} matched: the caller successfully asserted the admin role")
 	}
 
@@ -282,12 +282,12 @@ func TestProcess3152_ValidatedRoleHeaderIsHonoured(t *testing.T) {
 	got := engine.captured[0]
 
 	resolver := &DatabaseDynamicPolicyEngine{}
-	if v := resolver.getFieldValue("user.role", got); v != "admin" {
+	if v := resolver.getFieldValue("user.role", got, nil); v != "admin" {
 		t.Errorf("getFieldValue(user.role) = %v, want admin from the validated role header", v)
 	}
 	if resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "not_equals", "value": "admin",
-	}, got) {
+	}, got, nil) {
 		t.Error("{user.role not_equals \"admin\"} matched for a validated admin: " +
 			"the fix has made role-keyed policy unenforceable rather than unforgeable")
 	}
@@ -474,7 +474,7 @@ func TestGetFieldValueUserCasesAreAllBound(t *testing.T) {
 	applyAuthoritativePrincipal(httptest.NewRequest(http.MethodPost, "/", nil), &req.User)
 
 	for field, want := range bound {
-		if got := resolver.getFieldValue(field, req); got != want {
+		if got := resolver.getFieldValue(field, req, nil); got != want {
 			t.Errorf("getFieldValue(%q) = %v, want the bound zero value %v", field, got, want)
 		}
 	}
@@ -482,7 +482,7 @@ func TestGetFieldValueUserCasesAreAllBound(t *testing.T) {
 	// user.tenant_id is deliberately NOT in the bound-to-zero set: it is bound
 	// by the TENANCY half and must survive.
 	req.User.TenantID = pb3152Tenant
-	if got := resolver.getFieldValue("user.tenant_id", req); got != pb3152Tenant {
+	if got := resolver.getFieldValue("user.tenant_id", req, nil); got != pb3152Tenant {
 		t.Errorf("getFieldValue(user.tenant_id) = %v, want the authenticated tenant", got)
 	}
 }

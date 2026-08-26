@@ -277,6 +277,14 @@ type HITLApprovalResponse struct {
 	CreatedAt  time.Time
 	ReviewedAt *time.Time
 	ExpiresAt  time.Time
+	// Enqueue is the classification the shared HITL chokepoint returned for
+	// a CreateApproval call: "created" or "reused" (see
+	// platform/agent/hitl/queue.Outcome). Empty on the read path
+	// (GetApproval) and on implementations that do not enqueue, such as
+	// MAPHITLApprovalAdapter's in-memory tracking. Callers surface it as
+	// StepGateResponse.approval_enqueue so a re-gate is distinguishable from
+	// a first gate without a second query.
+	Enqueue string
 }
 
 // hitlAuditLogger is the audit dependency of the HITL engine: just the canonical
@@ -574,7 +582,7 @@ func (e *HITLWorkflowEngine) AbortExecution(ctx context.Context, exec *HITLWorkf
 // createExecution creates a new workflow execution.
 func (e *HITLWorkflowEngine) createExecution(workflow Workflow, input map[string]interface{}, user UserContext) (*WorkflowExecution, error) {
 	return &WorkflowExecution{
-		ID:           fmt.Sprintf("wf_%d_%s", time.Now().Unix(), generateRandomString(8)),
+		ID:           newEngineExecutionID(),
 		WorkflowName: workflow.Metadata.Name,
 		Status:       "running",
 		Input:        input,
