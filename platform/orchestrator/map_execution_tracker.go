@@ -53,6 +53,15 @@ func (t *MAPExecutionTracker) StartPlanExecution(ctx context.Context, plan *plan
 	}
 
 	req := execution.CreateExecutionRequest{
+		// #3442: external_id carries the SOURCE id, which migration core/042
+		// documents for this plane as the plan_id. ExecutionID is deliberately
+		// left to be minted: unlike a `workflows` row, a `plans` row is a
+		// PROPOSAL - it has a TTL (planning.DefaultPlanTTL), versions
+		// (plan_versions) and a confirm step - so the plan and a run of it are
+		// genuinely two things and keeping two ids for them is honest. They
+		// are already distinguishable on sight: plan_<unix>_<8> for the plan,
+		// plan_<24 hex> for the run.
+		ExternalID:    plan.PlanID,
 		ExecutionType: execution.ExecutionTypeMAP,
 		Name:          plan.Query,
 		Source:        plan.Domain,

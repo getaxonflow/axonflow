@@ -21,6 +21,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/policypath"
 )
 
 // isValidDynamicPolicyCategory returns true if the category is valid for the
@@ -41,25 +43,71 @@ func NewDynamicPolicyAPIHandler(service PolicyServicer) *DynamicPolicyAPIHandler
 	return &DynamicPolicyAPIHandler{service: service}
 }
 
-// RegisterRoutes registers dynamic policy API routes with the provided mux router
-// These routes are for /api/v1/dynamic-policies (ADR-026: Single Entry Point)
+// RegisterRoutes registers the tenant policy API routes under BOTH the legacy
+// /api/v1/dynamic-policies prefix and the #1431 successor
+// /api/v1/tenant-policies (ADR-026: Single Entry Point).
+//
+// EDITION (HARD RULE 11): a rename, not a capability. Both prefixes are
+// registered by this one function at this one call site, so the successor
+// inherits the caller's edition gating exactly; there is no second condition
+// to drift, and the orchestrator's authn (requireInternalProxyAuth) is a
+// wrapper around the whole mux with a path exemption map that names neither
+// prefix, so both are equally authenticated.
+//
+// WHY TWO LITERAL BLOCKS AND NOT A LOOP OVER A PREFIX PAIR. The first draft of
+// this function built each path as policypath.TenantPolicies+suffix. That is
+// drift-proof and it is WRONG here, because the customer-portal's census
+// (TestEveryOrchestratorRouteIsClassifiedForTheProxy, and the gate census in
+// policy_route_gate_coverage_test.go) walks go/ast over THIS package to answer
+// "which orchestrator routes can a portal session reach, and is each one
+// classified?" - and a path that is not a string literal is a path that census
+// cannot see. Both tests fail loudly rather than skipping, which is how the
+// draft was caught. A concatenated constant would have made eight
+// policy-mutating routes invisible to the guard that exists to stop exactly
+// that. So: literals here, and TestTenantPolicyAliasIsCompleteAndSymmetric
+// re-derives both blocks and fails if a route exists on one prefix and not the
+// other.
+//
+// The deprecation stamp is applied ONLY to the legacy block, by wrapping the
+// shared handler value. It is not a router-level middleware because these
+// routes sit on the orchestrator's ROOT router, where a middleware would run
+// on every orchestrator route.
+//
+// The consequence, stated so it is not discovered later: because the stamp is
+// INSIDE the handler, a request refused before the handler runs carries no
+// signal. requireInternalProxyAuth wraps the whole mux (run.go), so an
+// unauthenticated caller gets 403 with no Deprecation header. That is the
+// opposite of the agent, where the stamp is subrouter middleware mounted ahead
+// of apiAuthMiddleware and therefore rides the 401. Neither is wrong - a
+// deprecation notice is not something to hand an unauthenticated caller on
+// this plane - but the two planes differ, and the public docs say to sample a
+// SUCCESSFUL response rather than an error one for exactly this reason.
 func (h *DynamicPolicyAPIHandler) RegisterRoutes(r *mux.Router) {
-	// List and Create
-	r.HandleFunc("/api/v1/dynamic-policies", h.handleDynamicPolicies).Methods("GET", "POST", "OPTIONS")
+	// ---- deprecated: /api/v1/dynamic-policies -----------------------------
+	// Same handler values as the successor block below, wrapped so the
+	// response carries Deprecation + Link. Order matters and is preserved:
+	// the literal suffixes must precede "/{id}" or gorilla/mux matches
+	// "import" as an id.
+	r.HandleFunc("/api/v1/dynamic-policies", policypath.DeprecateLegacyFunc(h.handleDynamicPolicies)).Methods("GET", "POST", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/import", policypath.DeprecateLegacyFunc(h.handleImport)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/export", policypath.DeprecateLegacyFunc(h.handleExport)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/effective", policypath.DeprecateLegacyFunc(h.handleEffective)).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/{id}", policypath.DeprecateLegacyFunc(h.handleDynamicPolicyByID)).Methods("GET", "PUT", "DELETE", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/{id}/test", policypath.DeprecateLegacyFunc(h.handleTest)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/dynamic-policies/{id}/versions", policypath.DeprecateLegacyFunc(h.handleVersions)).Methods("GET", "OPTIONS")
 
-	// Import/Export
-	r.HandleFunc("/api/v1/dynamic-policies/import", h.handleImport).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/export", h.handleExport).Methods("GET", "OPTIONS")
+	// ---- current: /api/v1/tenant-policies (#1431) -------------------------
+	// Line-for-line the block above, same handler values, no stamp.
+	r.HandleFunc("/api/v1/tenant-policies", h.handleDynamicPolicies).Methods("GET", "POST", "OPTIONS")
+	r.HandleFunc("/api/v1/tenant-policies/import", h.handleImport).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/tenant-policies/export", h.handleExport).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/tenant-policies/effective", h.handleEffective).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/tenant-policies/{id}", h.handleDynamicPolicyByID).Methods("GET", "PUT", "DELETE", "OPTIONS")
+	r.HandleFunc("/api/v1/tenant-policies/{id}/test", h.handleTest).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/tenant-policies/{id}/versions", h.handleVersions).Methods("GET", "OPTIONS")
 
-	// Get effective policies
-	r.HandleFunc("/api/v1/dynamic-policies/effective", h.handleEffective).Methods("GET", "OPTIONS")
-
-	// Single policy operations (must come after specific routes)
-	r.HandleFunc("/api/v1/dynamic-policies/{id}", h.handleDynamicPolicyByID).Methods("GET", "PUT", "DELETE", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/{id}/test", h.handleTest).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/dynamic-policies/{id}/versions", h.handleVersions).Methods("GET", "OPTIONS")
-
-	log.Println("[DynamicPolicyAPI] Routes registered for /api/v1/dynamic-policies")
+	log.Printf("[TenantPolicyAPI] Routes registered on %s (deprecated) and %s",
+		policypath.LegacyTenantPolicies, policypath.TenantPolicies)
 }
 
 // handleDynamicPolicies handles GET (list) and POST (create) for /api/v1/dynamic-policies
@@ -132,7 +180,7 @@ func (h *DynamicPolicyAPIHandler) listDynamicPolicies(w http.ResponseWriter, r *
 		params.Enabled = &enabled
 	}
 
-	response, err := h.service.ListPolicies(r.Context(), tenantID, params)
+	response, err := h.service.ListPolicies(r.Context(), tenantID, h.getOrgID(r), params)
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] ListDynamicPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list dynamic policies")
@@ -165,7 +213,7 @@ func (h *DynamicPolicyAPIHandler) createDynamicPolicy(w http.ResponseWriter, r *
 	}
 
 	userID := h.getUserID(r)
-	policy, err := h.service.CreatePolicy(r.Context(), tenantID, &req, userID)
+	policy, err := h.service.CreatePolicy(r.Context(), tenantID, strings.TrimSpace(r.Header.Get("X-Org-ID")), &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*ValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -226,7 +274,7 @@ func (h *DynamicPolicyAPIHandler) handleDynamicPolicyByID(w http.ResponseWriter,
 
 // getDynamicPolicy handles GET /api/v1/dynamic-policies/{id}
 func (h *DynamicPolicyAPIHandler) getDynamicPolicy(w http.ResponseWriter, r *http.Request, tenantID, policyID string) {
-	policy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	policy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] GetDynamicPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get dynamic policy")
@@ -250,7 +298,7 @@ func (h *DynamicPolicyAPIHandler) getDynamicPolicy(w http.ResponseWriter, r *htt
 // updateDynamicPolicy handles PUT /api/v1/dynamic-policies/{id}
 func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *http.Request, tenantID, policyID string) {
 	// First check that the existing policy is a dynamic policy
-	existingPolicy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	existingPolicy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] UpdateDynamicPolicy check error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update dynamic policy")
@@ -281,7 +329,7 @@ func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *
 	}
 
 	userID := h.getUserID(r)
-	policy, err := h.service.UpdatePolicy(r.Context(), tenantID, policyID, &req, userID)
+	policy, err := h.service.UpdatePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*ValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -308,7 +356,7 @@ func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *
 // deleteDynamicPolicy handles DELETE /api/v1/dynamic-policies/{id}
 func (h *DynamicPolicyAPIHandler) deleteDynamicPolicy(w http.ResponseWriter, r *http.Request, tenantID, policyID string) {
 	// First check that the existing policy is a dynamic policy
-	existingPolicy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	existingPolicy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] DeleteDynamicPolicy check error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete dynamic policy")
@@ -324,7 +372,7 @@ func (h *DynamicPolicyAPIHandler) deleteDynamicPolicy(w http.ResponseWriter, r *
 	}
 
 	userID := h.getUserID(r)
-	if err := h.service.DeletePolicy(r.Context(), tenantID, policyID, userID); err != nil {
+	if err := h.service.DeletePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, userID); err != nil {
 		if tierErr, ok := err.(*TierValidationError); ok {
 			log.Printf("[DynamicPolicyAPI] DeleteDynamicPolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
 			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
@@ -360,7 +408,7 @@ func (h *DynamicPolicyAPIHandler) handleTest(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Verify this is a dynamic policy
-	policy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	policy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil || policy == nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Dynamic policy not found")
 		return
@@ -383,7 +431,7 @@ func (h *DynamicPolicyAPIHandler) handleTest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	response, err := h.service.TestPolicy(r.Context(), tenantID, policyID, &req)
+	response, err := h.service.TestPolicy(r.Context(), tenantID, h.getOrgID(r), policyID, &req)
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] TestPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to test dynamic policy")
@@ -415,7 +463,7 @@ func (h *DynamicPolicyAPIHandler) handleVersions(w http.ResponseWriter, r *http.
 	}
 
 	// Verify this is a dynamic policy
-	policy, err := h.service.GetPolicy(r.Context(), tenantID, policyID)
+	policy, err := h.service.GetPolicy(r.Context(), tenantID, h.getOrgID(r), policyID)
 	if err != nil || policy == nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Dynamic policy not found")
 		return
@@ -448,6 +496,20 @@ func (h *DynamicPolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Decision 5 (#3490): a bulk import WRITES policies, and org_id is what
+	// selects them. Refused rather than defaulted to the tenant, for the same
+	// reason single-policy creation refuses: a default would stamp every
+	// imported row with the Basic-auth username, and on a deployment whose
+	// licence org differs from that string the import would report success
+	// while enforcing on nobody. The /api/v1/dynamic-policies prefix is agent-proxied, so the gateway
+	// Sets X-Org-ID from the validated licence on the real path.
+	orgID := h.getOrgID(r)
+	if orgID == "" {
+		h.writeError(w, http.StatusUnauthorized, "ORG_REQUIRED",
+			"Missing organisation: imported policies are selected by their organisation. Send X-Org-ID.")
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBodySize)
 
 	var req ImportPoliciesRequest
@@ -476,7 +538,7 @@ func (h *DynamicPolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Re
 	}
 
 	userID := h.getUserID(r)
-	response, err := h.service.ImportPolicies(r.Context(), tenantID, &req, userID)
+	response, err := h.service.ImportPolicies(r.Context(), tenantID, orgID, &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*ValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -505,7 +567,7 @@ func (h *DynamicPolicyAPIHandler) handleExport(w http.ResponseWriter, r *http.Re
 
 	// Export only dynamic policies - the service will need to filter
 	// For now, we'll get all and filter client-side (or update service to accept category filter)
-	response, err := h.service.ExportPolicies(r.Context(), tenantID)
+	response, err := h.service.ExportPolicies(r.Context(), tenantID, h.getOrgID(r))
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] ExportPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to export dynamic policies")
@@ -550,7 +612,7 @@ func (h *DynamicPolicyAPIHandler) handleEffective(w http.ResponseWriter, r *http
 	enabled := true
 	params.Enabled = &enabled
 
-	response, err := h.service.ListPolicies(r.Context(), tenantID, params)
+	response, err := h.service.ListPolicies(r.Context(), tenantID, h.getOrgID(r), params)
 	if err != nil {
 		log.Printf("[DynamicPolicyAPI] GetEffectivePolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get effective dynamic policies")
@@ -569,6 +631,16 @@ func (h *DynamicPolicyAPIHandler) getTenantID(r *http.Request) string {
 	}
 	// Fallback to X-Org-ID for backward compatibility
 	return r.Header.Get("X-Org-ID")
+}
+
+// getOrgID extracts the organisation from the gateway-Set header.
+//
+// Header only and trimmed, matching PolicyAPIHandler.getOrgID: the agent Sets
+// (not Adds) X-Org-ID from the cryptographically validated licence payload, so
+// a client-supplied value is overwritten before this is read, and there is no
+// context fallback to resolve to "" behind an operator's back.
+func (h *DynamicPolicyAPIHandler) getOrgID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Org-ID"))
 }
 
 func (h *DynamicPolicyAPIHandler) getUserID(r *http.Request) string {

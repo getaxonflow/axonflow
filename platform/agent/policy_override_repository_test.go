@@ -100,13 +100,13 @@ func TestCreateOverride(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						nil, "block", "tenant", 50, true,
-						nil, "tenant-1", nil,
+						"tenant-1", nil,
 						nil, nil, 1,
 						now, now, nil, nil, nil,
 					))
@@ -137,13 +137,13 @@ func TestCreateOverride(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"sys-policy-1", "sys_sqli_1", "System SQLi Policy", "security-sqli", `\bDROP\b`, "critical",
 						nil, "block", "system", 100, true,
-						nil, "global", nil,
+						"global", nil,
 						nil, nil, 1,
 						now, now, nil, nil, nil,
 					))
@@ -187,13 +187,13 @@ func TestCreateOverride(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
 						"description", "action", "tier", "priority", "enabled",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"tags", "metadata", "version",
 						"created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 					}).AddRow(
 						"sys-policy-1", "sys_sqli_1", "System SQLi Policy", "security-sqli", `\bDROP\b`, "critical",
 						nil, "block", "system", 100, true,
-						nil, "global", nil,
+						"global", nil,
 						nil, nil, 1,
 						now, now, nil, nil, nil,
 					))
@@ -264,13 +264,13 @@ func TestDeleteOverride(t *testing.T) {
 					WithArgs("override-1").
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "policy_type",
-						"organization_id", "tenant_id", "org_id",
+						"tenant_id", "org_id",
 						"action_override", "enabled_override",
 						"override_reason", "expires_at",
 						"created_by", "created_at", "updated_by", "updated_at",
 					}).AddRow(
 						"override-1", "policy-1", "static",
-						nil, "tenant-1", "tenant-1",
+						"tenant-1", "tenant-1",
 						"warn", nil,
 						"Testing", nil,
 						"user1", time.Now(), "user1", time.Now(),
@@ -363,13 +363,13 @@ func TestGetOverrideByID(t *testing.T) {
 		WithArgs("override-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "policy_type",
-			"organization_id", "tenant_id", "org_id",
+			"tenant_id", "org_id",
 			"action_override", "enabled_override",
 			"override_reason", "expires_at",
 			"created_by", "created_at", "updated_by", "updated_at",
 		}).AddRow(
 			"override-1", "policy-1", "static",
-			nil, "tenant-1", "tenant-1",
+			"tenant-1", "tenant-1",
 			"warn", true,
 			"Testing phase", expiry,
 			"user1", now, "user2", now,
@@ -409,19 +409,19 @@ func TestListOverridesForTenant(t *testing.T) {
 		WithArgs("tenant-1", "org-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "policy_type",
-			"organization_id", "tenant_id",
+			"tenant_id",
 			"action_override", "enabled_override",
 			"override_reason", "expires_at",
 			"created_by", "created_at", "updated_by", "updated_at",
 		}).AddRow(
 			"override-1", "policy-1", "static",
-			nil, "tenant-1",
+			"tenant-1",
 			"warn", nil,
 			"Tenant level", nil,
 			"user1", now, "user1", now,
 		).AddRow(
 			"override-2", "policy-2", "static",
-			"org-1", nil,
+			nil,
 			"log", nil,
 			"Org level", nil,
 			"user2", now, "user2", now,
@@ -601,8 +601,13 @@ func TestOverrideLevel(t *testing.T) {
 	})
 
 	t.Run("org level", func(t *testing.T) {
+		// #3334: an org-scoped row is one with a NULL tenant. It used to also
+		// require the retired organization_id column to be non-nil, but the
+		// schema's own valid_override_scope CHECK made the two conjuncts
+		// inseparable, and migration core/165 now guarantees OrgID is
+		// populated on every row regardless of scope.
 		override := &PolicyOverride{
-			OrganizationID: &orgID,
+			OrgID: orgID,
 		}
 		assert.False(t, override.IsTenantLevel())
 		assert.True(t, override.IsOrgLevel())
@@ -623,13 +628,13 @@ func TestGetOverrideForPolicy(t *testing.T) {
 	t.Run("returns override when found", func(t *testing.T) {
 		rows := sqlmock.NewRows([]string{
 			"id", "policy_id", "policy_type",
-			"organization_id", "tenant_id",
+			"tenant_id", "org_id",
 			"action_override", "enabled_override",
 			"override_reason", "expires_at",
 			"created_by", "created_at", "updated_by", "updated_at",
 		}).AddRow(
 			"override-1", "policy-1", "static",
-			nil, "tenant-1",
+			"tenant-1", "org-1",
 			"block", true,
 			"Testing", nil,
 			"admin", time.Now(), nil, time.Now(),
@@ -666,13 +671,13 @@ func TestGetOverrideForPolicy(t *testing.T) {
 		orgID := "org-1"
 		rows := sqlmock.NewRows([]string{
 			"id", "policy_id", "policy_type",
-			"organization_id", "tenant_id",
+			"tenant_id", "org_id",
 			"action_override", "enabled_override",
 			"override_reason", "expires_at",
 			"created_by", "created_at", "updated_by", "updated_at",
 		}).AddRow(
 			"override-2", "policy-3", "static",
-			"org-1", nil,
+			nil, "org-1",
 			nil, false,
 			"Disabled for org", nil,
 			"admin", time.Now(), nil, time.Now(),
@@ -686,8 +691,13 @@ func TestGetOverrideForPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
-		if override.OrganizationID == nil || *override.OrganizationID != "org-1" {
-			t.Errorf("expected org_id 'org-1', got %v", override.OrganizationID)
+		// #3334: the row is org-scoped because its tenant is NULL, which is
+		// what the retired organization_id column used to say redundantly.
+		if override.TenantID != nil {
+			t.Errorf("expected an org-scoped row (NULL tenant), got tenant %v", *override.TenantID)
+		}
+		if !override.IsOrgLevel() {
+			t.Error("expected IsOrgLevel() true for a NULL-tenant row")
 		}
 	})
 }

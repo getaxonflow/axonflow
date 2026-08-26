@@ -26,7 +26,7 @@ func expectGlobalRowGetByID(mock sqlmock.Sqlmock, callerOrg, policyID string, en
 	cols := []string{
 		"id", "policy_id", "name", "category", "tier", "pattern",
 		"severity", "description", "action", "priority", "enabled",
-		"organization_id", "tenant_id", "org_id", "tags", "metadata",
+		"tenant_id", "org_id", "tags", "metadata",
 		"version", "created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 	}
 	mock.ExpectBegin()
@@ -38,7 +38,7 @@ func expectGlobalRowGetByID(mock sqlmock.Sqlmock, callerOrg, policyID string, en
 		WillReturnRows(sqlmock.NewRows(cols).AddRow(
 			"uuid-"+policyID, policyID, "DROP TABLE Prevention", "dangerous_queries", "tenant", `drop\s+table`,
 			"critical", "baseline", "block", 100, enabled,
-			nil, "global", "global", "[]", "{}",
+			"global", "global", "[]", "{}",
 			1, time.Now(), time.Now(), "system", "system", nil,
 		))
 	mock.ExpectCommit()
@@ -130,6 +130,15 @@ func TestGlobalBaselineRow_WritesRejected(t *testing.T) {
 // predicate must admit ORGANIZATION-tier parents owned by the caller's org —
 // the earlier predicate (`tier='system' OR tenant_id=$2`) dropped them, so an
 // org admin could not read version history for their own org-tier policies.
+//
+// Decision 5 (#3490) satisfies the same requirement with ONE org leg instead
+// of two: `tier='system' OR org_id=$2`. The org-tier leg it replaces keyed on
+// the LEGACY organization_id column, which no shipped migration ever writes
+// (0 of 101 rows, #3334), so the leg this test was written to pin could only
+// ever have matched a row created through the Go create path. The assertion
+// is now that the caller's ORG admits the parent - the property the test was
+// really after - and it still fails if the non-system leg is dropped
+// entirely.
 func TestGetVersions_OrgTierParentLeg(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
@@ -140,14 +149,16 @@ func TestGetVersions_OrgTierParentLeg(t *testing.T) {
 	mock.ExpectQuery(`SELECT license_tier FROM clients`).
 		WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
-	// The version query MUST carry the org-tier leg and bind the caller org
-	// as $3 — the regexp fails the match if the leg is dropped.
+	// The version query MUST carry the org leg and bind the caller org as
+	// $2 - the regexp fails the match if the leg is dropped, and the WithArgs
+	// list fails if the caller TENANT is bound anywhere (it is no longer an
+	// argument at all).
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT set_config`).
 		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`sp\.tier = 'organization' AND sp\.organization_id::text = \$3`).
-		WithArgs("policy-org-tier", "tenant-1", "org-1", 1000).
+	mock.ExpectQuery(`sp\.tier = 'system' OR sp\.org_id = \$2`).
+		WithArgs("policy-org-tier", "org-1", 1000).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "version", "snapshot", "change_type",
 			"change_summary", "changed_by", "changed_at",

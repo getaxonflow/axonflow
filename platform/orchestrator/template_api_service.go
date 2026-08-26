@@ -65,7 +65,7 @@ func (s *TemplateService) ListTemplates(ctx context.Context, params ListTemplate
 }
 
 // ApplyTemplate creates a new policy from a template with variable substitution
-func (s *TemplateService) ApplyTemplate(ctx context.Context, tenantID, templateID string, req *ApplyTemplateRequest, appliedBy string) (*ApplyTemplateResponse, error) {
+func (s *TemplateService) ApplyTemplate(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, appliedBy string) (*ApplyTemplateResponse, error) {
 	// Get the template
 	template, err := s.templateRepo.GetByID(ctx, templateID)
 	if err != nil {
@@ -117,8 +117,13 @@ func (s *TemplateService) ApplyTemplate(ctx context.Context, tenantID, templateI
 		Priority:    policyReq.Priority,
 		Enabled:     policyReq.Enabled,
 		TenantID:    tenantID,
-		CreatedBy:   appliedBy,
-		UpdatedBy:   appliedBy,
+		// Decision 5 (#3490): the organisation is what selects this policy.
+		// tenant_id above is retained as attribution - it records who applied
+		// the template - and no longer decides who the resulting policy
+		// governs. Create refuses a blank value here.
+		OrganizationID: orgID,
+		CreatedBy:      appliedBy,
+		UpdatedBy:      appliedBy,
 	}
 
 	if err := s.policyRepo.Create(ctx, policy); err != nil {

@@ -4,7 +4,10 @@
 package agent
 
 import (
+	"bytes"
+	"log"
 	"os"
+	"strings"
 	"testing"
 
 	sharedpolicy "axonflow/platform/shared/policy"
@@ -1043,4 +1046,61 @@ func TestDetectionConfigCache_FallbackWhenNotInitialized(t *testing.T) {
 
 	// Clean up
 	ResetDetectionConfigCache()
+}
+
+// TestWarnIfHighRiskActionNotEnforced pins the operator-visibility fix:
+// HighRiskAction is populated from HIGH_RISK_ACTION, forced to "block" by
+// AXONFLOW_ENFORCE's high_risk opt-in, and given per-profile defaults, but
+// is not a field on ModeDetectionConfig — so it is dropped at derivation and
+// enforced nowhere. DetectionConfigFromEnv must warn when either signal
+// indicates the operator actually configured it, and must NOT warn on a
+// plain, untouched default (which would fire on every process start).
+func TestWarnIfHighRiskActionNotEnforced(t *testing.T) {
+	captureLog := func(fn func()) string {
+		old := log.Writer()
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		defer log.SetOutput(old)
+		fn()
+		return buf.String()
+	}
+
+	t.Run("no warning on untouched default", func(t *testing.T) {
+		out := captureLog(func() {
+			_ = DetectionConfigFromEnv()
+		})
+		if strings.Contains(out, "HighRiskAction is configured") {
+			t.Errorf("expected no HighRiskAction warning with no HIGH_RISK_ACTION/AXONFLOW_ENFORCE set, got: %s", out)
+		}
+	})
+
+	t.Run("warns when HIGH_RISK_ACTION is explicitly set", func(t *testing.T) {
+		t.Setenv(EnvHighRiskAction, "block")
+		out := captureLog(func() {
+			_ = DetectionConfigFromEnv()
+		})
+		if !strings.Contains(out, "HighRiskAction is configured") {
+			t.Errorf("expected a HighRiskAction warning with HIGH_RISK_ACTION set, got: %s", out)
+		}
+	})
+
+	t.Run("warns when AXONFLOW_ENFORCE includes high_risk", func(t *testing.T) {
+		t.Setenv(EnvEnforce, "high_risk")
+		out := captureLog(func() {
+			_ = DetectionConfigFromEnv()
+		})
+		if !strings.Contains(out, "HighRiskAction is configured") {
+			t.Errorf("expected a HighRiskAction warning with AXONFLOW_ENFORCE=high_risk, got: %s", out)
+		}
+	})
+
+	t.Run("no warning for an unrelated AXONFLOW_ENFORCE category", func(t *testing.T) {
+		t.Setenv(EnvEnforce, "pii")
+		out := captureLog(func() {
+			_ = DetectionConfigFromEnv()
+		})
+		if strings.Contains(out, "HighRiskAction is configured") {
+			t.Errorf("expected no HighRiskAction warning for AXONFLOW_ENFORCE=pii, got: %s", out)
+		}
+	})
 }

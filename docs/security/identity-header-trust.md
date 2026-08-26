@@ -61,11 +61,22 @@ All four governance planes apply the same rule — `/api/v1/decide`,
 
 | | Gate **on** | Gate **off** (default) |
 |---|---|---|
-| `audit_logs.user_email` | `X-User-Email` (falls back to the plane's validated/fallback identity when absent) | Plane's validated/fallback identity only |
+| `audit_logs.user_email` | The plane's **verified** per-user identity when the request carried one; `X-User-Email` only where none was verified | Plane's validated/fallback identity only |
 | `audit_logs.session_id` | `X-Session-Id` | NULL (header ignored) — session-summary reporting and the Claude Code dashboard's per-session drill-down stop attributing new rows |
 | ADR-044 session-override scope | Per-user, keyed on the same trusted identity | The plane's validated identity; overrides asserted via headers do not apply |
 | Per-user dynamic policies (MCP-server plane: user-scoped rate limits / budgets keyed on `X-User-ID`/`X-User-Email`) | Keyed on the trusted identity (as for pre-9.9.0 trusted fleets) | Keyed on the client-scoped identity |
 | Verdicts / authz / policy selection / tenant + org resolution | **Never influenced by a forged header** | **Never influenced by the headers at all** |
+
+Audit attribution always names the principal the decision was **evaluated
+against**. Where a request carries a verified per-user identity, that identity
+is what enforcement keys on — including segment-scoped policy selection
+(ADR-060) — so it is also what the audit row names; an asserted `X-User-Email`
+that disagrees is recorded as a claim at
+`policy_details->>'attempted_user_email'` rather than as the row's principal.
+`X-User-Email` supplies attribution in the case it was introduced for: a PEP
+fronting many principals behind one shared credential, where no per-user
+identity is verified at all. Fleets that want per-principal attribution should
+supply a per-user token, which is verified and needs no trust declaration.
 
 The fallback identity is plane-specific: `/api/v1/decide`, check-input and
 check-output resolve the user from the authenticated credentials

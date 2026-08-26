@@ -326,6 +326,13 @@ func TestPostgresRepository_List(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
+	// #3367: List refuses a request carrying NO tenancy key at all (that arm
+	// used to run `WHERE 1=1` across every org). These subtests exercise
+	// FILTERS and SCANNING, not tenancy, so they present an org-scoped read -
+	// which also keeps them outside the RLS transaction the tenant-scoped
+	// path takes, so each one stays a plain count+select pair.
+	const listTestOrg = "org-1"
+
 	columns := []string{
 		"id", "execution_type", "name", "source",
 		"tenant_id", "org_id", "user_id", "client_id",
@@ -348,7 +355,7 @@ func TestPostgresRepository_List(t *testing.T) {
 				AddRow("plan_1", "map_plan", "Plan 1", "", "tenant-1", nil, nil, nil, "pending", 0, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now).
 				AddRow("plan_2", "map_plan", "Plan 2", "", "tenant-1", nil, nil, nil, "running", 1, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now))
 
-		results, total, err := repo.List(ctx, ListExecutionsRequest{Limit: 10})
+		results, total, err := repo.List(ctx, ListExecutionsRequest{OrgID: listTestOrg, OrgWide: true, Limit: 10})
 		if err != nil {
 			t.Errorf("List() error = %v", err)
 		}
@@ -364,15 +371,15 @@ func TestPostgresRepository_List(t *testing.T) {
 		mapType := ExecutionTypeMAP
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
-			WithArgs(mapType).
+			WithArgs(mapType, listTestOrg).
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
 		mock.ExpectQuery("SELECT .* FROM execution_history").
-			WithArgs(mapType, 10).
+			WithArgs(mapType, listTestOrg, 10).
 			WillReturnRows(sqlmock.NewRows(columns).
 				AddRow("plan_1", "map_plan", "Plan 1", "", nil, nil, nil, nil, "pending", 0, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now))
 
-		results, _, err := repo.List(ctx, ListExecutionsRequest{ExecutionType: &mapType, Limit: 10})
+		results, _, err := repo.List(ctx, ListExecutionsRequest{ExecutionType: &mapType, OrgID: listTestOrg, OrgWide: true, Limit: 10})
 		if err != nil {
 			t.Errorf("List() error = %v", err)
 		}
@@ -385,15 +392,15 @@ func TestPostgresRepository_List(t *testing.T) {
 		status := StatusPending
 
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
-			WithArgs(status).
+			WithArgs(status, listTestOrg).
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
 		mock.ExpectQuery("SELECT .* FROM execution_history").
-			WithArgs(status, 10).
+			WithArgs(status, listTestOrg, 10).
 			WillReturnRows(sqlmock.NewRows(columns).
 				AddRow("plan_1", "map_plan", "Plan 1", "", nil, nil, nil, nil, "pending", 0, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now))
 
-		results, _, err := repo.List(ctx, ListExecutionsRequest{Status: &status, Limit: 10})
+		results, _, err := repo.List(ctx, ListExecutionsRequest{Status: &status, OrgID: listTestOrg, OrgWide: true, Limit: 10})
 		if err != nil {
 			t.Errorf("List() error = %v", err)
 		}
@@ -435,12 +442,12 @@ func TestPostgresRepository_List(t *testing.T) {
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 
 		mock.ExpectQuery("SELECT .* FROM execution_history").
-			WithArgs(5, 2).
+			WithArgs(listTestOrg, 5, 2).
 			WillReturnRows(sqlmock.NewRows(columns).
 				AddRow("plan_3", "map_plan", "Plan 3", "", nil, nil, nil, nil, "pending", 0, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now).
 				AddRow("plan_4", "map_plan", "Plan 4", "", nil, nil, nil, nil, "pending", 0, 3, now, nil, nil, nil, stepsJSON, nil, metadataJSON, now, now))
 
-		results, total, err := repo.List(ctx, ListExecutionsRequest{Limit: 5, Offset: 2})
+		results, total, err := repo.List(ctx, ListExecutionsRequest{OrgID: listTestOrg, OrgWide: true, Limit: 5, Offset: 2})
 		if err != nil {
 			t.Errorf("List() error = %v", err)
 		}
@@ -456,7 +463,7 @@ func TestPostgresRepository_List(t *testing.T) {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
 			WillReturnError(errors.New("database error"))
 
-		_, _, err := repo.List(ctx, ListExecutionsRequest{})
+		_, _, err := repo.List(ctx, ListExecutionsRequest{OrgID: listTestOrg, OrgWide: true})
 		if err == nil {
 			t.Error("expected error")
 		}
@@ -469,7 +476,7 @@ func TestPostgresRepository_List(t *testing.T) {
 		mock.ExpectQuery("SELECT .* FROM execution_history").
 			WillReturnError(errors.New("database error"))
 
-		_, _, err := repo.List(ctx, ListExecutionsRequest{Limit: 10})
+		_, _, err := repo.List(ctx, ListExecutionsRequest{OrgID: listTestOrg, OrgWide: true, Limit: 10})
 		if err == nil {
 			t.Error("expected error")
 		}
@@ -483,7 +490,7 @@ func TestPostgresRepository_List(t *testing.T) {
 		mock.ExpectQuery("SELECT .* FROM execution_history").
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("invalid"))
 
-		_, _, err := repo.List(ctx, ListExecutionsRequest{Limit: 10})
+		_, _, err := repo.List(ctx, ListExecutionsRequest{OrgID: listTestOrg, OrgWide: true, Limit: 10})
 		if err == nil {
 			t.Error("expected error")
 		}

@@ -234,6 +234,7 @@ func TestMCPCheckOutputHandler_BlockEmitsAuditLogsDecisionRow(t *testing.T) {
 			"0af7651916cd43dd8448eb211c80319c",
 			nil, // redacted_fields (#2643): MCP block has none → NULL
 			nil, // session_id (#2896): no trusted client session id → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -321,6 +322,7 @@ func TestMCPCheckOutputHandler_AllowEmitsAuditLogsDecisionRow(t *testing.T) {
 			nil,              // correlation_id (#2598): no traceparent → NULL → singleton
 			nil,              // redacted_fields (#2643): clean allow → NULL
 			nil,              // session_id (#2896): no trusted client session id → NULL
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

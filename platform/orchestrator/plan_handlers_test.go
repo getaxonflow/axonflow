@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1838,5 +1839,160 @@ func TestWebhookGating_CommunityMode(t *testing.T) {
 					shouldRegister, tt.shouldRegister, tt.deploymentMode)
 			}
 		})
+	}
+}
+
+// --- #3408 / #3517: the plan-resume REJECT path must resolve the mirror ---
+
+// recordingMirrorResolver is a spy on the real workflow_control.HITLMirrorResolver
+// interface - the same interface platform/orchestrator's production resolver
+// implements. It records every resolution the workflow plane asks for, which is
+// what "the mirror was resolved" means at this seam.
+type recordingMirrorResolver struct {
+	mu    sync.Mutex
+	calls []mirrorResolution
+}
+
+type mirrorResolution struct {
+	OrgID      string
+	TenantID   string
+	WorkflowID string
+	StepID     string
+	Status     string
+	ReviewerID string
+	Comment    string
+}
+
+func (r *recordingMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, tenantID, workflowID, stepID, status, reviewerID, comment string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, mirrorResolution{
+		OrgID: orgID, TenantID: tenantID, WorkflowID: workflowID, StepID: stepID,
+		Status: status, ReviewerID: reviewerID, Comment: comment,
+	})
+}
+
+func (r *recordingMirrorResolver) snapshot() []mirrorResolution {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]mirrorResolution, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+// TestResumePlanHandler_RejectResolvesTheMirror pins the R3 round 2 fix at
+// run.go:5613. That arm used to call AbortWorkflow, which aborts the workflow
+// and touches NEITHER workflow_steps.approval_status NOR the decide-plane
+// hitl_approval_queue mirror - so a human rejecting here left the mirror
+// `pending` for ever on an app-role deployment, which is the worse half of
+// #3408: the queue advertising an outstanding decision for a workflow that has
+// already been aborted.
+//
+// WHY THIS TEST EXISTS SEPARATELY FROM TestResumePlanHandler_RejectStep: that
+// test asserts only the response envelope (status/plan_id/workflow_id), and
+// AbortWorkflow produces a byte-identical envelope. Reverting RejectStep to
+// AbortWorkflow leaves it green. This one asserts the two state changes only
+// RejectStep makes, so the revert fails here.
+//
+// Mutation-proved both directions: with run.go:5613 replaced by the old
+// AbortWorkflow call the mutant compiles and this test fails on both
+// assertions; restored, it passes.
+func TestResumePlanHandler_RejectResolvesTheMirror(t *testing.T) {
+	const planID = "plan_reject_resolves_mirror"
+	cleanup := setupResumeTestWCP(t, planID, "confirm")
+	defer cleanup()
+
+	// Wire the spy through the production interface. A nil resolver is the
+	// ordinary state for a deployment with no HITL adapter, and every call site
+	// treats it as a no-op - so without this the resolution would be invisible.
+	spy := &recordingMirrorResolver{}
+	workflowControlService.SetHITLMirrorResolver(spy)
+
+	const workflowID = "wf-" + planID
+	const stepID = "step_0_step1"
+
+	// Anti-vacuity: the step must actually be pending before the reject, or the
+	// assertions below would be measuring a fixture that was never gated.
+	// RejectStep returns "step is not pending approval" in that case and the
+	// handler silently falls back to AbortWorkflow, which is precisely the
+	// behaviour under test - so a bad fixture would make this test pass for the
+	// wrong reason.
+	preStep, err := workflowControlService.GetStep(context.Background(), workflowID, stepID, "tenant_1", "org_1")
+	if err != nil {
+		t.Fatalf("fixture: could not read step %s/%s: %v", workflowID, stepID, err)
+	}
+	if preStep.ApprovalStatus == nil || *preStep.ApprovalStatus != workflow_control.ApprovalStatusPending {
+		t.Fatalf("fixture: step approval_status = %v, want %q before the reject; this test cannot vacuously pass",
+			preStep.ApprovalStatus, workflow_control.ApprovalStatusPending)
+	}
+	if len(spy.snapshot()) != 0 {
+		t.Fatalf("fixture: mirror resolver already had %d call(s) before the reject", len(spy.snapshot()))
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{"approved": false})
+	req := httptest.NewRequest("POST", "/api/v1/plan/"+planID+"/resume", bytes.NewReader(body))
+	req.Header.Set("X-Org-ID", "org_1")
+	req.Header.Set("X-Tenant-ID", "tenant_1")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "rejecting-human")
+	req = mux.SetURLVars(req, map[string]string{"id": planID})
+	installProxyTokenValidator(t, proxyGuardTestSecret)
+	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
+
+	w := httptest.NewRecorder()
+	resumePlanHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// ASSERTION 1 - the WORKFLOW-plane step reached a terminal approval state.
+	// AbortWorkflow leaves this `pending`.
+	postStep, err := workflowControlService.GetStep(context.Background(), workflowID, stepID, "tenant_1", "org_1")
+	if err != nil {
+		t.Fatalf("could not read step %s/%s after the reject: %v", workflowID, stepID, err)
+	}
+	if postStep.ApprovalStatus == nil {
+		t.Fatalf("step approval_status is nil after the reject, want %q - the handler did not call RejectStep",
+			workflow_control.ApprovalStatusRejected)
+	}
+	if *postStep.ApprovalStatus != workflow_control.ApprovalStatusRejected {
+		t.Errorf("step approval_status = %q, want %q - the handler aborted the workflow without rejecting the step (#3408 regression)",
+			*postStep.ApprovalStatus, workflow_control.ApprovalStatusRejected)
+	}
+	if postStep.ApprovedBy != "rejecting-human" {
+		t.Errorf("step approved_by = %q, want %q - the rejector identity was not attributed",
+			postStep.ApprovedBy, "rejecting-human")
+	}
+
+	// ASSERTION 2 - the DECIDE-plane mirror was resolved, with the rejection.
+	// AbortWorkflow makes no such call at all.
+	calls := spy.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("mirror resolver received %d call(s), want exactly 1 - the decide-plane row is still 'pending' (#3408 regression). calls: %+v",
+			len(calls), calls)
+	}
+	got := calls[0]
+	if got.Status != string(workflow_control.ApprovalStatusRejected) {
+		t.Errorf("mirror resolved with status = %q, want %q", got.Status, workflow_control.ApprovalStatusRejected)
+	}
+	if got.WorkflowID != workflowID {
+		t.Errorf("mirror resolved for workflow = %q, want %q", got.WorkflowID, workflowID)
+	}
+	if got.StepID != stepID {
+		t.Errorf("mirror resolved for step = %q, want %q", got.StepID, stepID)
+	}
+	if got.OrgID != "org_1" || got.TenantID != "tenant_1" {
+		t.Errorf("mirror resolved for org/tenant = %q/%q, want %q/%q", got.OrgID, got.TenantID, "org_1", "tenant_1")
+	}
+	// An empty reviewer binds SQL NULL, which mig core/025:77's
+	// CHECK (status NOT IN ('approved','rejected') OR reviewer_id IS NOT NULL)
+	// refuses with a 23514 - leaving the row pending, the exact round 1 defect
+	// on the approve path. Pinned here for the reject path too.
+	if strings.TrimSpace(got.ReviewerID) == "" {
+		t.Error("mirror resolved with an EMPTY reviewer_id - that binds SQL NULL and mig core/025:77's CHECK constraint refuses it, leaving the row pending")
+	}
+	if got.ReviewerID != "rejecting-human" {
+		t.Errorf("mirror resolved with reviewer_id = %q, want %q", got.ReviewerID, "rejecting-human")
 	}
 }

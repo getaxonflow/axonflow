@@ -26,6 +26,7 @@ import (
 
 	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/policypath"
 	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 
@@ -272,13 +273,79 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 		_, _ = w.Write([]byte(`{"error":"Backend service unavailable","service":"` + serviceName + `"}`))
 	}
 
-	// Custom ModifyResponse for logging successful proxied responses
+	// Custom ModifyResponse: log, and strip the backend's CORS headers.
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		log.Printf("[Proxy] %s responded: %d %s (path: %s)", logutil.Sanitize(serviceName), resp.StatusCode, resp.Status, logutil.Sanitize(resp.Request.URL.Path))
+		stripBackendCORSHeaders(resp.Header)
 		return nil
 	}
 
 	return proxy
+}
+
+// backendCORSHeaders are the CORS response headers a proxied backend may set
+// and that the AGENT must be the only one to answer with.
+var backendCORSHeaders = []string{
+	"Access-Control-Allow-Origin",
+	"Access-Control-Allow-Credentials",
+	"Access-Control-Allow-Methods",
+	"Access-Control-Allow-Headers",
+	"Access-Control-Expose-Headers",
+	"Access-Control-Max-Age",
+}
+
+// stripBackendCORSHeaders removes the backend's CORS headers from a proxied
+// response, so the agent's own CORS middleware is the only thing that sets
+// them.
+//
+// THE BUG THIS CLOSES. The orchestrator runs its own CORS middleware, and
+// httputil.ReverseProxy copies upstream response headers on top of whatever
+// the agent already wrote. THREE headers were therefore doubled on every
+// orchestrator-backed family, not one. Measured through this proxy with a
+// backend that sets its own, once with the strip in place and once with it
+// neutralised:
+//
+//	header                            | pre-fix | post-fix
+//	----------------------------------+---------+---------
+//	Access-Control-Allow-Origin       | x2      | x1
+//	Access-Control-Allow-Credentials  | x2      | x1
+//	Access-Control-Expose-Headers     | x2      | x1
+//	Vary                              | x2      | x2      (see below)
+//
+// Two of those independently break a browser. Per the Fetch spec a response
+// carrying more than one Access-Control-Allow-Origin fails the CORS check
+// outright; and the credentials check accepts only the exact byte string
+// "true", which "true, true" is not, so CREDENTIALED cross-origin requests
+// failed even where the ACAO count had been survivable. Cross-origin BROWSER
+// access to every proxied family (policies, audit, plans, budgets,
+// executions, the compliance modules) was broken - silently, because a
+// server-side client never runs a CORS check and neither does curl.
+//
+// Stripping rather than de-duplicating is the right rule: ADR-026 makes the
+// agent the single entry point, so the edge owns the CORS contract. An
+// internal service's opinion about which origins may call it is not the
+// answer the browser should be given. It also means the orchestrator's five
+// hardcoded `Access-Control-Allow-Origin: *` writes
+// (template_api_handlers.go:229, mcp_dynamic_policy_handler.go:914,
+// unified_execution_handler.go:613 and :662, map_hitl_adapter.go:527) no
+// longer reach a browser through this path at all.
+//
+// VARY IS DELIBERATELY NOT IN THE LIST, so a proxied response can still carry
+// `Vary: Origin` twice. That is harmless: per RFC 9110 repeated field lines
+// are equivalent to one comma-joined line, and `Origin, Origin` names the
+// same single field as `Origin`. It is left alone because Vary is NOT a CORS
+// header - a backend may legitimately vary on Accept-Encoding or Accept - and
+// stripping it here would discard those. Removing just the `Origin` token
+// would assume this proxy is always mounted behind the agent's CORS
+// middleware, and de-duplicating properly is impossible from ModifyResponse,
+// which sees only the upstream headers and never the ones the middleware
+// already wrote to the ResponseWriter. So "the edge owns the CORS contract"
+// holds for every header a browser's CORS algorithm reads, and Vary is the
+// stated exception.
+func stripBackendCORSHeaders(h http.Header) {
+	for _, name := range backendCORSHeaders {
+		h.Del(name)
+	}
 }
 
 // ProxyToOrchestrator handles requests that should be proxied to Orchestrator
@@ -659,8 +726,23 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	portalAuth := proxyAuthMiddleware(h.ProxyToPortal)
 
 	// Routes proxied to Orchestrator (port 8081)
-	// Dynamic policies - new consistent path
-	r.PathPrefix("/api/v1/dynamic-policies").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	// Tenant policies. The orchestrator serves both prefixes (#1431); the agent
+	// forwards the path verbatim, so the successor needs its own PathPrefix
+	// here or it 404s at the single entry point while working on 8081 - the
+	// exact asymmetry an alias is supposed to remove. Registered from
+	// the shared constants, so the spelling cannot drift from the orchestrator's
+	// registration.
+	//
+	// Only the TENANT family is proxied: the agent serves the system-policy
+	// family itself (RegisterStaticPolicyHandlers), which is why this is two
+	// explicit lines rather than a loop over policypath.Pairs - the two
+	// families are not symmetric here, and a loop would imply they are.
+	//
+	// The deprecation headers are stamped by the ORCHESTRATOR, on its legacy
+	// routes, and copied back through httputil.ReverseProxy's response header
+	// copy. Stamping them here as well would emit the header twice.
+	r.PathPrefix(policypath.LegacyTenantPolicies).HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix(policypath.TenantPolicies).HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// MCP Process (query processing via orchestrator)
 	r.PathPrefix("/api/v1/process").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
@@ -809,7 +891,8 @@ func IsProxiedPath(path string) bool {
 	// Orchestrator paths
 	if strings.HasPrefix(path, "/api/v1/process") ||
 		strings.HasPrefix(path, "/api/v1/mcp/evaluate-policies") ||
-		strings.HasPrefix(path, "/api/v1/dynamic-policies") ||
+		strings.HasPrefix(path, policypath.LegacyTenantPolicies) ||
+		strings.HasPrefix(path, policypath.TenantPolicies) ||
 		strings.HasPrefix(path, "/api/v1/connectors") ||
 		strings.HasPrefix(path, "/api/v1/cost") ||
 		strings.HasPrefix(path, "/api/v1/budgets") ||

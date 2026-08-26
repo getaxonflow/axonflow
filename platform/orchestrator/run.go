@@ -93,10 +93,11 @@ var (
 		// tenant's policies). Internal consumers only — HTTP handlers MUST
 		// use ListActivePoliciesForTenant.
 		ListActivePolicies() []DynamicPolicy
-		// segmentIDs (ADR-060 #2989 P3b) — see DynamicPolicyEngine's
-		// ListActivePoliciesForTenant doc for the parameter contract; every
-		// call site in this file passes nil today (no verified per-user
-		// identity available at those disclosure endpoints).
+		// segmentIDs (ADR-060 #2989 P3b) — see
+		// DatabaseDynamicPolicyEngine.ListActivePoliciesForTenant's doc
+		// (db_dynamic_policies.go) for the parameter contract; every call
+		// site in this file passes nil today (no verified per-user identity
+		// available at those disclosure endpoints).
 		ListActivePoliciesForTenant(tenantID string, segmentIDs []string) []DynamicPolicy
 		IsHealthy() bool
 	}
@@ -733,8 +734,9 @@ func Run() {
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/reject", mapStepRejectHandler).Methods("POST")
 	// MAP plane-scoped pending approvals listing — the MAP counterpart of the
 	// WCP /api/v1/workflows/approvals/pending endpoint (Issue #1680). Tier
-	// gate is enforced inside the handler (IsHITLApprovalEnabled) to match
-	// approve/reject semantics.
+	// gate is enforced inside the handler (hitlResolveAllowed) to match
+	// approve/reject semantics. It names hitlResolveAllowed and not the
+	// creation entitlement deliberately: all three are RESOLVE paths.
 	r.HandleFunc("/api/v1/plans/approvals/pending", mapPendingApprovalsHandler).Methods("GET", "OPTIONS")
 
 	// Cost Estimation endpoints (v4.3.0)
@@ -767,11 +769,16 @@ func Run() {
 	r.HandleFunc("/api/v1/templates/{id}", templateAPIGetHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/templates/{id}/apply", templateAPIApplyHandler).Methods("POST", "OPTIONS")
 
-	// Dynamic Policy API (ADR-026: Single Entry Point Architecture)
-	// New consistent path: /api/v1/dynamic-policies (matches /api/v1/static-policies pattern)
+	// Tenant Policy API (ADR-026: Single Entry Point Architecture).
+	// Registered under BOTH /api/v1/tenant-policies (#1431, current) and
+	// /api/v1/dynamic-policies (deprecated, still served).
+	//
+	// RegisterRoutes logs both prefixes itself. It used to be followed by a
+	// second log line naming only the deprecated one, which meant an operator
+	// grepping the boot log for the successor found nothing and would conclude
+	// it had not been registered.
 	if dynamicPolicyAPIHandler != nil {
 		dynamicPolicyAPIHandler.RegisterRoutes(r)
-		log.Println("Dynamic Policy API routes registered (/api/v1/dynamic-policies)")
 	}
 
 	// MCP Dynamic Policy Evaluation Endpoint (Issue #968)
@@ -892,9 +899,30 @@ func Run() {
 		if !isCommunityMode() {
 			workflowControlHandler.RegisterEnterpriseRoutes(r)
 			log.Println("WCP Enterprise routes registered (approval/rejection)")
-		} else if tierChecker != nil && tierChecker.IsHITLApprovalEnabled() {
+		} else if hitlResolveAllowed(tierChecker) {
+			// NOT gated on IsHITLApprovalEnabled, and that is the whole point.
+			//
+			// These four routes RESOLVE work; they do not create it. Gating
+			// them on the HITL entitlement made the 2026-08-26 Enterprise-only
+			// decision reach further than the decision: flipping
+			// EvaluationLimits.HITLApprovalEnabled to false would have
+			// 404'd approve, reject and pending-list for an Evaluation
+			// deployment that still HAS pending rows - stranding them
+			// permanently, which is verbatim the phantom-row defect #3408
+			// exists to close, reintroduced through a shared predicate.
+			//
+			// It would also have revoked CHECKPOINT RESUME, which this
+			// function registers and which is not a HITL feature at all
+			// (ADR-042; documented as an Evaluation capability in the
+			// orchestrator spec and the feature matrix). Nothing in the
+			// operator decision touches it.
+			//
+			// The entitlement is enforced where the work is CREATED - the
+			// chokepoint in platform/agent/hitl/queue - so an unentitled tier
+			// gets no NEW approval entries while keeping the ability to drain
+			// and expire the ones it already has.
 			workflowControlHandler.RegisterEvaluationRoutes(r)
-			log.Println("WCP Evaluation routes registered (approval/rejection via eval license)")
+			log.Println("WCP Evaluation routes registered (approve/reject/pending + checkpoint resume)")
 		}
 	}
 
@@ -1246,7 +1274,12 @@ func initializeComponents() {
 	// Checks AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE env vars
 	SetConfigFileLoaderFromEnv() // Logs its own success/failure messages
 
-	// Initialize Dynamic Policy Engine (try database-backed first).
+	// Initialize the Dynamic Policy Engine (#3319: one engine, always
+	// constructed — there is no second, in-memory engine to fall back to
+	// anymore). It starts serving the built-in default fallback policy set
+	// and promotes itself to database-backed on its first successful load,
+	// with no reconstruction needed even if the database is unreachable or
+	// unconfigured at boot; see NewDatabaseDynamicPolicyEngine's doc.
 	//
 	// #3039 boot guard: the engine's gate-cache refresh is a cross-org read
 	// that MUST run on the BYPASSRLS platform-admin pool under app-role —
@@ -1255,21 +1288,24 @@ func initializeComponents() {
 	// Fired here at the production boot path, not in the constructor, so
 	// tests can build the engine under app-role fixtures without an admin
 	// DSN.
-	agent.RequirePlatformAdminOrFatal("DynamicPolicyEngine")
+	agent.RequirePlatformAdminOrFatal("DatabaseDynamicPolicyEngine")
 	dbEngine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
-		log.Printf("Failed to initialize database-backed dynamic policy engine: %v", err)
-		log.Println("Falling back to in-memory dynamic policy engine")
-		dynamicPolicyEngine = NewDynamicPolicyEngine()
-		log.Println("Dynamic Policy Engine initialized (in-memory)")
-	} else {
-		dynamicPolicyEngine = dbEngine
-		log.Println("Dynamic Policy Engine initialized with DATABASE backing ✅")
+		// As of #3319 this constructor always returns a nil error — a
+		// boot-time database blip or an unconfigured database both degrade
+		// to the default fallback policy set, not a construction failure.
+		// The error return is retained for a genuinely fatal
+		// misconfiguration; if one is ever introduced, failing the boot
+		// loudly here is the correct response, not silently degrading to a
+		// second engine that no longer exists.
+		log.Fatalf("Failed to initialize dynamic policy engine: %v", err)
 	}
+	dynamicPolicyEngine = dbEngine
+	log.Println("Dynamic Policy Engine initialized ✅ (source=" + dbEngine.PolicySetSource() + ")")
 
 	// ADR-060 (#2989 P3b): wire the process-wide governance-segment resolver
-	// used by both dynamic-policy engines' enforcement path
-	// (resolveSegmentsForPolicy, segment_policy_gate.go). Deterministic at
+	// used by the dynamic-policy engine's enforcement path
+	// (resolveUserSegments, segment_policy_gate.go). Deterministic at
 	// startup, right alongside the engine itself, mirroring the agent's
 	// registerFleetValidators wiring — never lazy-on-first-request.
 	initSegmentPolicyGate(usageDB)
@@ -1611,14 +1647,11 @@ func initializeComponents() {
 			policyRepo.SetCrossOrgDB(rls3039AdminDB)
 		}
 		// Issue #1082: Pass the policy engine as a PolicyEngineRefresher so the
-		// PolicyService can trigger immediate cache refresh after policy changes.
-		// Both DynamicPolicyEngine and DatabaseDynamicPolicyEngine implement RefreshPolicies().
-		var policyRefresher PolicyEngineRefresher
-		if dbEngine, ok := dynamicPolicyEngine.(*DatabaseDynamicPolicyEngine); ok {
-			policyRefresher = dbEngine
-		} else if memEngine, ok := dynamicPolicyEngine.(*DynamicPolicyEngine); ok {
-			policyRefresher = memEngine
-		}
+		// PolicyService can trigger immediate cache refresh after policy
+		// changes. #3319: dbEngine is the one engine constructed above (no
+		// second, in-memory engine to type-switch against anymore), and
+		// DatabaseDynamicPolicyEngine implements RefreshPolicies() directly.
+		var policyRefresher PolicyEngineRefresher = dbEngine
 		policyService := NewPolicyServiceWithRefresher(policyRepo, policyRefresher)
 		policyAPIHandler = NewPolicyAPIHandler(policyService)
 		log.Println("Policy CRUD API initialized ✅")
@@ -1722,6 +1755,21 @@ func initializeComponents() {
 		if rls3039AdminDB != nil {
 			executionPGRepo.SetCrossOrgDB(rls3039AdminDB)
 		}
+		// #3367 R3 MAJOR-2: tell the repository whether reads run through the
+		// restricted app role. Without the BYPASSRLS pool an org-wide list is
+		// filtered to zero rows by mig 042's tenant-keyed RLS, which would
+		// silently restore the empty "Workflows Run" tile this fix removes; the
+		// repository refuses that combination instead of serving a confident
+		// empty page.
+		//
+		// Corrected: this posture is NOT bootable. RequirePlatformAdminOrFatal
+		// runs above in initializeComponents (the DatabaseDynamicPolicyEngine
+		// guard), and it fatals on exactly app-role-enabled plus an unset
+		// AXONFLOW_DB_PLATFORM_ADMIN_URL, so the process crash-loops before it
+		// can serve this route. The repository-level refusal is therefore
+		// defence in depth against a future relaxation of that guard, not a
+		// shape a running deployment reaches. Keep both.
+		executionPGRepo.SetAppRolePredicate(agent.UseAppRoleEnabled)
 		executionRepo = executionPGRepo
 		mapExecutionTracker = NewMAPExecutionTracker(executionRepo, planService)
 		mapExecutionTracker.MaxConcurrentExecutions = tierChecker.MaxConcurrentExecutions()
@@ -1751,6 +1799,20 @@ func initializeComponents() {
 		// Wire audit logging for WCP (Issue #1019)
 		if auditLogger != nil {
 			workflowControlService.SetAuditLogger(NewWCPAuditAdapter(auditLogger))
+		}
+
+		// #3408: wire the decide-plane mirror resolver so approving or
+		// rejecting a workflow step also resolves the hitl_approval_queue row
+		// that step's gate wrote. Wired UNCONDITIONALLY, not under the same
+		// condition as InitializeWCPHITL above: a deployment that stops being
+		// able to write mirrors (licence downgrade, tier change) still has to
+		// resolve the ones already in its database, and a resolver with
+		// nothing to resolve is a no-op that costs one indexed UPDATE
+		// matching zero rows. Gating it on the writer being wired is how a
+		// phantom row outlives the feature that made it.
+		if usageDB != nil {
+			workflowControlService.SetHITLMirrorResolver(&wcpHITLMirrorResolver{db: usageDB})
+			log.Println("✅ WCP HITL mirror resolver wired (#3408)")
 		}
 
 		// Wire unified execution tracking for WCP (#1075)
@@ -2826,19 +2888,28 @@ func listDynamicPoliciesHandler(w http.ResponseWriter, r *http.Request) {
 	// tenant-scoping below is still the boundary that matters. What this
 	// handler removed was the far worse primitive: one request returning EVERY
 	// tenant's policies. The blast radius is one named tenant per request.
-	tenantID := resolveTenantOrFail(w, r, "policies/dynamic")
-	if tenantID == "" {
-		return // resolveTenantOrFail already wrote a 401
+	// Decision 5 (#3490): the disclosure is scoped by the caller's ORG, so it
+	// resolves X-Org-ID rather than X-Tenant-ID. The paragraph above about
+	// the agent Setting (not Adding) the header from the validated credential
+	// holds for X-Org-ID with MORE force than it did for X-Tenant-ID: the
+	// tenant header carries the Basic-auth username, which the caller
+	// chooses, while the org header carries the licence org, which it cannot.
+	// resolveOrgOrFail writes the 401 itself, exactly as resolveTenantOrFail
+	// did, so an unbound caller still gets a refusal rather than an unscoped
+	// list.
+	orgID := resolveOrgOrFail(w, r, "policies/dynamic")
+	if orgID == "" {
+		return // resolveOrgOrFail already wrote a 401
 	}
 
-	// ADR-060 (#2989 P3b): this handler resolves only tenant scope
-	// (resolveTenantOrFail, X-Tenant-ID) — no verified per-user email is
+	// ADR-060 (#2989 P3b): this handler resolves only org scope
+	// (resolveOrgOrFail, X-Org-ID) - no verified per-user email is
 	// available to resolve real segments from without re-deriving identity
 	// from an unverified header, which the #3099/#3108 fail-open defect
 	// class and this ADR's #3065 rule both forbid. nil conservatively
 	// excludes segment-scoped policies from this list (a strict subset of
 	// pre-P3b disclosure, never an over-disclosure).
-	policies := dynamicPolicyEngine.ListActivePoliciesForTenant(tenantID, nil)
+	policies := dynamicPolicyEngine.ListActivePoliciesForTenant(orgID, nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(policies); err != nil {
@@ -2889,7 +2960,7 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 	// user.OrgID is likewise forced from the gateway-stamped X-Org-ID header,
 	// never the body — it is not part of the "hypothetical actor" the
 	// exemption above grants. After P3b (ADR-060), EvaluateDynamicPolicies
-	// feeds User.OrgID and User.Email straight into resolveSegmentsForPolicy,
+	// feeds User.OrgID and User.Email straight into resolveUserSegments,
 	// which resolves against the LIVE SCIM directory of whichever org it is
 	// given (identityAttributeResolver.Resolve org-scopes both the RLS GUC and
 	// the query's WHERE clause on that exact argument). A body-sourced OrgID
@@ -5533,10 +5604,46 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle rejection: abort workflow + fail plan
+	// Handle rejection: reject the pending step (which aborts the workflow and
+	// resolves the decide-plane mirror), then fail the plan.
 	if !approved {
 		log.Printf("[ResumePlan] Plan %s step rejected, aborting workflow %s", logutil.Sanitize(planID), targetWorkflowID)
-		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
+
+		// #3408: this arm went straight to AbortWorkflow, which touches
+		// neither workflow_steps.approval_status nor the mirror. So a human
+		// rejecting here left the decide-plane row `pending` until a 24h
+		// sweeper - and on a community/app-role deployment expireEvalApprovals
+		// matches nothing, so effectively for ever. That is verbatim the
+		// condition RejectStep's own comment calls the worse half of the
+		// defect: the queue advertising an outstanding decision for a workflow
+		// that has already been aborted.
+		//
+		// RejectStep does everything AbortWorkflow did and the rest of it: it
+		// sets approval_status=rejected, aborts the workflow itself, writes
+		// the step_rejected audit row, and resolves the mirror. AbortWorkflow
+		// remains the fallback for a plan with no pending require_approval
+		// step, which is the only shape this arm used to handle correctly.
+		var rejectStepID string
+		for _, step := range targetSteps {
+			if step.ApprovalStatus != nil && *step.ApprovalStatus == workflow_control.ApprovalStatusPending {
+				rejectStepID = step.StepID
+				break
+			}
+		}
+		rejected := false
+		if rejectStepID != "" {
+			if err := workflowControlService.RejectStep(r.Context(), targetWorkflowID, rejectStepID,
+				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"),
+				resumePlanActorIdentity(r), "Step rejected by user via plan resume"); err != nil {
+				log.Printf("[ResumePlan] RejectStep failed for %s/%s, falling back to AbortWorkflow: %v",
+					targetWorkflowID, rejectStepID, err)
+			} else {
+				rejected = true
+			}
+		}
+		if !rejected {
+			_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
+		}
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
 
 		w.Header().Set("Content-Type", "application/json")
@@ -5562,8 +5669,11 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if pendingStepID != "" {
-		// Approve the pending step in WCP
-		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), "Auto-approved via plan resume"); err != nil {
+		// Approve the pending step in WCP. The actor is resolved by
+		// resumePlanActorIdentity, which mirrors the sibling planes and never
+		// returns empty - see its doc for why an empty value here left the
+		// #3408 mirror pending.
+		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), resumePlanActorIdentity(r), "Approved by user via plan resume"); err != nil {
 			log.Printf("[ResumePlan] Failed to approve step %s: %v", pendingStepID, err)
 			sendErrorResponse(w, "Failed to approve step: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -5924,4 +6034,32 @@ func templateAPIStatsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	templateAPIHandler.HandleGetUsageStats(w, r)
+}
+
+// resumePlanActorIdentity resolves WHO approved or rejected on the plan-resume
+// route.
+//
+// The header set and the precedence deliberately mirror
+// workflow_control.Handler.getUserID and mapHITLActorIdentity, the guarded
+// siblings of this operation, so the same human is stamped with the same
+// identity string whichever plane they act on. This route used to read
+// X-User-ID ONLY, so a caller presenting just X-User-Email - which both
+// siblings honour - was recorded as "system" here and as themselves
+// everywhere else.
+//
+// Falling back to "system" rather than to an empty value is what the four
+// sibling call sites do (workflow_control/handlers.go:785 and :866,
+// map_hitl_adapter.go:259 and :447), and it is load-bearing since #3408:
+// mig core/025:77 requires a non-NULL reviewer_id on a terminal status, so an
+// empty actor fails the decide-plane mirror's resolution and leaves the row
+// pending - the exact defect #3408 closes. queue.ResolveMirror's caller
+// carries the same substitution as a backstop.
+func resumePlanActorIdentity(r *http.Request) string {
+	if userID := strings.TrimSpace(r.Header.Get("X-User-ID")); userID != "" {
+		return userID
+	}
+	if email := strings.TrimSpace(r.Header.Get("X-User-Email")); email != "" {
+		return email
+	}
+	return "system"
 }

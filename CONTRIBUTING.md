@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to AxonFlow! This guide will help you get started with local development and making contributions.
 
-## Sign your commits — Developer Certificate of Origin (DCO) is required
+## Sign your commits - Developer Certificate of Origin (DCO) is required
 
 All contributions to this repository must be **signed off** under the [Developer Certificate of Origin v1.1](https://developercertificate.org/). The DCO is a per-commit affirmation that you wrote the code (or otherwise have the right to submit it) and are licensing it under the same license as the rest of this repository.
 
@@ -34,7 +34,7 @@ A DCO check runs automatically on every PR opened in the `getaxonflow` org. **PR
 
 ## No partner/customer names in community source
 
-Partner-driven features are named for the **capability** (e.g. `Indonesia`, `KTP`, `OJK`), never for the partner. Partner-specific artifacts (policy bundles, eval configs, partner runbooks) live **gated or internal** (`ee/`, `technical-docs/`, `docs/protected/`) — never in community source. A CI denylist (`.github/partner-name-denylist.txt`, enforced by the Partner Name Denylist workflow and as a fail-closed gate in the community sync) blocks any denylisted name from appearing in synced paths (`platform/`, `migrations/`, `config/seed-data/`, `docs/`, `examples/`, `infra/`) or public docs.
+Partner-driven features are named for the **capability** (e.g. `Indonesia`, `KTP`, `OJK`), never for the partner. Partner-specific artifacts (policy bundles, eval configs, partner runbooks) live **gated or internal** (`ee/`, `technical-docs/`, `docs/protected/`) - never in community source. A CI denylist (`.github/partner-name-denylist.txt`, enforced by the Partner Name Denylist workflow and as a fail-closed gate in the community sync) blocks any denylisted name from appearing in synced paths (`platform/`, `migrations/`, `config/seed-data/`, `docs/`, `examples/`, `infra/`) or public docs.
 
 ## Table of Contents
 
@@ -450,7 +450,7 @@ connectors:
 ### Submitting Your Connector
 
 1. **Create your connector** in `platform/connectors/community/your-connector/`
-2. **Write tests** with >65% coverage
+2. **Write tests** that keep the connectors package above its CI coverage gate (76.0%, enforced in `.github/workflows/test.yml`)
 3. **Add documentation** (README.md in your connector folder)
 4. **Open a PR** on the [axonflow](https://github.com/getaxonflow/axonflow) repository
 5. **Wait for review** - a maintainer will review and provide feedback
@@ -460,7 +460,7 @@ connectors:
 ### Connector Contribution Guidelines
 
 - **License:** All contributions must be Apache 2.0 compatible
-- **Testing:** Minimum 76% test coverage required
+- **Testing:** Coverage gates are enforced in CI per package (`.github/workflows/test.yml`): Connectors 76.0%, Orchestrator 76.0%, Agent 76.3%, Shared Policy 80.0%
 - **Documentation:** README with configuration and usage examples
 - **Dependencies:** Minimize external dependencies
 - **Security:** No hardcoded credentials, use configuration
@@ -494,7 +494,7 @@ docker compose up -d   # migrations apply automatically on boot; watch with: doc
 ### Test Coverage Requirements
 
 - All new code should have tests
-- Aim for >76% test coverage
+- Keep each package above its CI coverage gate (`.github/workflows/test.yml`: Orchestrator 76.0%, Agent 76.3%, Connectors 76.0%, Shared Policy 80.0%; SECURITY.md states the 76% floor)
 - Integration tests for critical paths
 
 ## Submitting Changes
@@ -522,8 +522,8 @@ and is enforced in CI by `.github/workflows/regression-test-required.yml`
 
 A PR is treated as a bug fix when either:
 
-- The PR title matches the Conventional Commits "fix" type — `fix:`,
-  `fix(scope):`, `fix!:` (breaking), or `fix(scope)!:` — or
+- The PR title matches the Conventional Commits "fix" type - `fix:`,
+  `fix(scope):`, `fix!:` (breaking), or `fix(scope)!:` - or
 - The PR carries the `bug` label.
 
 **What the gate accepts**
@@ -543,7 +543,7 @@ the gate (`git diff --diff-filter=AM --no-renames`):
 The directory branch is restricted to code extensions: `.go`, `.py`, `.ts`,
 `.tsx`, `.java`, `.sh`, `.rb`, `.rs`, `.kt`. Non-code churn under `tests/`
 (JSON snapshots, YAML fixtures, markdown helpers, CSV goldens, images, etc.)
-does **not** satisfy the gate — the test must exercise the failing layer.
+does **not** satisfy the gate - the test must exercise the failing layer.
 
 The matcher's behaviour is pinned by
 `tests/regression-test-required/path_pattern_test.sh`; run it locally if you
@@ -552,11 +552,11 @@ edit the pattern.
 **Why "added or modified" only:** the previous version of the gate accepted any
 changed test path, so the gate could be satisfied by deleting `foo_test.go`,
 renaming an unrelated test, or touching a comment in a `tests/` fixture. Bug
-fixes need new or updated regression coverage at the failing layer — deletions
+fixes need new or updated regression coverage at the failing layer - deletions
 don't add coverage and pure renames don't change behaviour.
 
 **Why code-extension only under `tests/`:** the directory branch was originally
-permissive — any path under `tests/` counted, including JSON snapshots, YAML
+permissive - any path under `tests/` counted, including JSON snapshots, YAML
 fixtures, and markdown notes. That let a bug-fix PR satisfy the gate without
 adding executable coverage. The matcher now requires a code extension on the
 directory branch, closing the loophole. The naming-convention branches
@@ -599,7 +599,7 @@ If the label is present without that section, the gate **fails**. This mirrors
 the `[skip-runtime-e2e]` / `## Skip-runtime-e2e justification` convention used
 by the Definition-of-Done gate (see "Runtime-E2E-per-user-facing-change" below),
 so there is one shape to learn rather than two. Until #3144 the two only shared
-a heading *name* — the Definition-of-Done gate accepted a heading with nothing
+a heading *name* - the Definition-of-Done gate accepted a heading with nothing
 under it. Both now require content.
 
 Reviewers must confirm the exemption is genuine; an exemption is not a license
@@ -607,12 +607,12 @@ to skip writing a test that *could* exist.
 
 **Why the justification lives in the PR body (#3120):** labels are not part of
 a PR's durable state. On PR #3119 the exempt label was applied at 06:57:06 and
-removed at 06:57:16; the gate ran at 06:57:28, reported "Skip — exempt label
+removed at 06:57:16; the gate ran at 06:57:28, reported "Skip - exempt label
 applied", and went green. The head SHA never changed, so nothing re-evaluated,
 and afterwards the PR showed a green required check with no label, no test, and
 no trace of why. The gate now (a) triggers on `unlabeled` as well as `labeled`
 and (b) reads the PR's **current** title, body and labels from the API at
-evaluation time rather than from the triggering event's payload — so the label
+evaluation time rather than from the triggering event's payload - so the label
 snapshot at trigger time can no longer decide anything. Putting the rationale in
 the body means removing the label cannot silently orphan the justification.
 
@@ -629,7 +629,7 @@ bash tests/regression-test-required/run-all.sh
 ```
 
 The runner fails on a failing test, on an empty suite directory, and on a
-missing one — discovering nothing is never reported as a pass. Its behaviour is
+missing one - discovering nothing is never reported as a pass. Its behaviour is
 pinned by `tests/regression-test-required/regression_suite_runner_test.sh`.
 
 Note the boundary: this executes the shell regression tests in that one
@@ -673,8 +673,8 @@ following counts as a rationale:
 | Nothing at all                          | no        |
 | Only an HTML comment (the template's placeholder) | no |
 | Only a horizontal rule (`---`)          | no        |
-| Nothing, with the next heading following | no — content is not borrowed from the next section |
-| The heading written as a single `#`     | no — `##` or deeper |
+| Nothing, with the next heading following | no - content is not borrowed from the next section |
+| The heading written as a single `#`     | no - `##` or deeper |
 
 Per **CLAUDE.md HARD RULE #9** the escape hatch also requires explicit operator
 approval. Name the approver in the justification; a gate that a blank heading
@@ -682,18 +682,18 @@ could waive could not enforce that requirement at all, which is what #3144 was.
 
 **Why the gate reads the API rather than the event payload (#3144):** the
 previous version took the title and body from
-`github.event.pull_request.title` / `.body` — their values *when the triggering
+`github.event.pull_request.title` / `.body` - their values *when the triggering
 event fired*, not when the run executed. That is the #3120 class, and it was
 mitigated here only incidentally, by `edited` happening to be in the trigger
 list. The gate now reads the PR's current title and body from the REST API at
-evaluation time and **fails the job if that read cannot complete** — a gate
+evaluation time and **fails the job if that read cannot complete** - a gate
 that cannot determine whether it applies must not report success. This mirrors
 the `regression-test-exempt` mechanism above; the two conventions are
 deliberately the same shape.
 
 Both behaviours are pinned by
 `tests/regression-test-required/dod_gate_state_test.sh`, which executes the
-workflow's real steps — including feeding the real
+workflow's real steps - including feeding the real
 `.github/pull_request_template.md` through the real parser in both directions.
 
 ## Code Style

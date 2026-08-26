@@ -35,46 +35,46 @@ type mockDynamicPolicyService struct {
 	deleteFunc   func(ctx context.Context, tenantID, policyID, userID string) error
 	testFunc     func(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error)
 	versionsFunc func(ctx context.Context, tenantID, policyID string) (*PolicyVersionResponse, error)
-	importFunc   func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error)
+	importFunc   func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error)
 	exportFunc   func(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error)
 }
 
-func (m *mockDynamicPolicyService) ListPolicies(ctx context.Context, tenantID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
+func (m *mockDynamicPolicyService) ListPolicies(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
 	if m.listFunc != nil {
 		return m.listFunc(ctx, tenantID, params)
 	}
 	return &PoliciesListResponse{}, nil
 }
 
-func (m *mockDynamicPolicyService) GetPolicy(ctx context.Context, tenantID, policyID string) (*PolicyResource, error) {
+func (m *mockDynamicPolicyService) GetPolicy(ctx context.Context, tenantID, orgID, policyID string) (*PolicyResource, error) {
 	if m.getFunc != nil {
 		return m.getFunc(ctx, tenantID, policyID)
 	}
 	return nil, nil
 }
 
-func (m *mockDynamicPolicyService) CreatePolicy(ctx context.Context, tenantID string, req *CreatePolicyRequest, userID string) (*PolicyResource, error) {
+func (m *mockDynamicPolicyService) CreatePolicy(ctx context.Context, tenantID, orgID string, req *CreatePolicyRequest, userID string) (*PolicyResource, error) {
 	if m.createFunc != nil {
 		return m.createFunc(ctx, tenantID, req, userID)
 	}
 	return nil, nil
 }
 
-func (m *mockDynamicPolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID string, req *UpdatePolicyRequest, userID string) (*PolicyResource, error) {
+func (m *mockDynamicPolicyService) UpdatePolicy(ctx context.Context, tenantID, orgID, policyID string, req *UpdatePolicyRequest, userID string) (*PolicyResource, error) {
 	if m.updateFunc != nil {
 		return m.updateFunc(ctx, tenantID, policyID, req, userID)
 	}
 	return nil, nil
 }
 
-func (m *mockDynamicPolicyService) DeletePolicy(ctx context.Context, tenantID, policyID, userID string) error {
+func (m *mockDynamicPolicyService) DeletePolicy(ctx context.Context, tenantID, orgID, policyID, userID string) error {
 	if m.deleteFunc != nil {
 		return m.deleteFunc(ctx, tenantID, policyID, userID)
 	}
 	return nil
 }
 
-func (m *mockDynamicPolicyService) TestPolicy(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
+func (m *mockDynamicPolicyService) TestPolicy(ctx context.Context, tenantID, orgID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
 	if m.testFunc != nil {
 		return m.testFunc(ctx, tenantID, policyID, req)
 	}
@@ -88,14 +88,14 @@ func (m *mockDynamicPolicyService) GetPolicyVersions(ctx context.Context, tenant
 	return nil, nil
 }
 
-func (m *mockDynamicPolicyService) ImportPolicies(ctx context.Context, tenantID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
+func (m *mockDynamicPolicyService) ImportPolicies(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
 	if m.importFunc != nil {
-		return m.importFunc(ctx, tenantID, req, userID)
+		return m.importFunc(ctx, tenantID, orgID, req, userID)
 	}
 	return nil, nil
 }
 
-func (m *mockDynamicPolicyService) ExportPolicies(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error) {
+func (m *mockDynamicPolicyService) ExportPolicies(ctx context.Context, tenantID, orgID string) (*ExportPoliciesResponse, error) {
 	if m.exportFunc != nil {
 		return m.exportFunc(ctx, tenantID)
 	}
@@ -130,6 +130,7 @@ func TestDynamicPolicyAPI_ListDynamicPolicies(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -186,6 +187,7 @@ func TestDynamicPolicyAPI_CreateDynamicPolicy(t *testing.T) {
 	body := `{"name":"Cost Limit Policy","category":"dynamic-cost","type":"cost","conditions":[],"actions":[],"priority":100,"enabled":true}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -205,6 +207,7 @@ func TestDynamicPolicyAPI_CreateDynamicPolicy_InvalidCategory(t *testing.T) {
 	body := `{"name":"Static Policy","category":"pii","type":"content","conditions":[],"actions":[],"priority":100,"enabled":true}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -224,6 +227,7 @@ func TestDynamicPolicyAPI_CreateDynamicPolicy_MissingCategory(t *testing.T) {
 	body := `{"name":"Policy Without Category","type":"cost","conditions":[],"actions":[],"priority":100,"enabled":true}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -254,6 +258,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -284,6 +289,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_NotDynamic(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -307,6 +313,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_NotFound(t *testing.T) {
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -326,6 +333,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_InvalidID(t *testing.T) {
 	// a legitimate legacy ID (e.g. sensitive_data_control from migration 010).
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/BAD_ID%21", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -366,6 +374,7 @@ func TestDynamicPolicyAPI_UpdateDynamicPolicy(t *testing.T) {
 	body := `{"name":"Updated Name"}`
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -398,6 +407,7 @@ func TestDynamicPolicyAPI_UpdateDynamicPolicy_InvalidCategory(t *testing.T) {
 	body := `{"category":"pii"}`
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -433,6 +443,7 @@ func TestDynamicPolicyAPI_DeleteDynamicPolicy(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -448,7 +459,7 @@ func TestDynamicPolicyAPI_DeleteDynamicPolicy(t *testing.T) {
 
 func TestDynamicPolicyAPI_Import(t *testing.T) {
 	mockService := &mockDynamicPolicyService{
-		importFunc: func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
+		importFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
 			return &ImportPoliciesResponse{
 				Created: len(req.Policies),
 				Skipped: 0,
@@ -464,6 +475,7 @@ func TestDynamicPolicyAPI_Import(t *testing.T) {
 	body := `{"policies":[{"name":"Policy 1","category":"dynamic-risk","type":"risk","conditions":[],"actions":[],"priority":1,"enabled":true}]}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/import", bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -483,6 +495,7 @@ func TestDynamicPolicyAPI_Import_InvalidCategory(t *testing.T) {
 	body := `{"policies":[{"name":"Static Policy","category":"pii","type":"content","conditions":[],"actions":[],"priority":1,"enabled":true}]}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/import", bytes.NewBufferString(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -511,6 +524,7 @@ func TestDynamicPolicyAPI_Export(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -556,6 +570,7 @@ func TestDynamicPolicyAPI_Effective(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/effective", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -617,6 +632,7 @@ func TestDynamicPolicyAPI_TestPolicy(t *testing.T) {
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/"+policyID+"/test", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -640,6 +656,7 @@ func TestDynamicPolicyAPI_TestPolicy_InvalidJSON(t *testing.T) {
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/"+policyID+"/test", bytes.NewReader([]byte("invalid json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -672,6 +689,7 @@ func TestDynamicPolicyAPI_GetVersions(t *testing.T) {
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -698,6 +716,7 @@ func TestDynamicPolicyAPI_Delete_Success(t *testing.T) {
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	w := httptest.NewRecorder()
 
@@ -721,6 +740,7 @@ func TestDynamicPolicyAPI_Update_InvalidJSON(t *testing.T) {
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader([]byte("invalid json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -754,6 +774,7 @@ func TestDynamicPolicyAPI_List_WithFilters(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies?type=cost&category=dynamic-cost", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -770,6 +791,7 @@ func TestDynamicPolicyAPI_Import_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/import", bytes.NewReader([]byte("invalid json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -804,6 +826,7 @@ func TestDynamicPolicyAPI_Create_ValidationError(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -855,6 +878,7 @@ func TestDynamicPolicyAPI_Update_Success(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -879,6 +903,7 @@ func TestDynamicPolicyAPI_List_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -901,6 +926,7 @@ func TestDynamicPolicyAPI_Export_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -930,6 +956,7 @@ func TestDynamicPolicyAPI_Create_TierError(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -966,6 +993,7 @@ func TestDynamicPolicyAPI_Create_Success(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -996,6 +1024,7 @@ func TestDynamicPolicyAPI_Create_InternalError(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1021,6 +1050,7 @@ func TestDynamicPolicyAPI_Get_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1044,6 +1074,7 @@ func TestDynamicPolicyAPI_Effective_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/effective", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1070,6 +1101,7 @@ func TestDynamicPolicyAPI_Delete_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	w := httptest.NewRecorder()
 
@@ -1101,6 +1133,7 @@ func TestDynamicPolicyAPI_Update_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1132,6 +1165,7 @@ func TestDynamicPolicyAPI_TestPolicy_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/"+policyID+"/test", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -1159,6 +1193,7 @@ func TestDynamicPolicyAPI_Versions_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1170,7 +1205,7 @@ func TestDynamicPolicyAPI_Versions_ServiceError(t *testing.T) {
 
 func TestDynamicPolicyAPI_Import_ServiceError(t *testing.T) {
 	mockService := &mockDynamicPolicyService{
-		importFunc: func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
+		importFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
 			return nil, errors.New("database error")
 		},
 	}
@@ -1188,6 +1223,7 @@ func TestDynamicPolicyAPI_Import_ServiceError(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/import", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1217,6 +1253,7 @@ func TestDynamicPolicyAPI_Update_NotFound(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1246,6 +1283,7 @@ func TestDynamicPolicyAPI_Update_NotDynamicPolicy(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1275,6 +1313,7 @@ func TestDynamicPolicyAPI_Update_InvalidCategoryChange(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1307,6 +1346,7 @@ func TestDynamicPolicyAPI_Update_ValidationError(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1339,6 +1379,7 @@ func TestDynamicPolicyAPI_Update_TierError(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1371,6 +1412,7 @@ func TestDynamicPolicyAPI_Update_NilPolicyAfterUpdate(t *testing.T) {
 
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1396,6 +1438,7 @@ func TestDynamicPolicyAPI_Delete_NotFound(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	w := httptest.NewRecorder()
 
@@ -1420,6 +1463,7 @@ func TestDynamicPolicyAPI_Delete_NotDynamicPolicy(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	w := httptest.NewRecorder()
 
@@ -1447,6 +1491,7 @@ func TestDynamicPolicyAPI_Delete_TierError(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user123")
 	w := httptest.NewRecorder()
 
@@ -1474,6 +1519,7 @@ func TestDynamicPolicyAPI_Test_NotFound(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/"+policyID+"/test", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -1501,6 +1547,7 @@ func TestDynamicPolicyAPI_Test_NotDynamicPolicy(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/"+policyID+"/test", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -1525,6 +1572,7 @@ func TestDynamicPolicyAPI_Versions_NotFound(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1548,6 +1596,7 @@ func TestDynamicPolicyAPI_Versions_NotDynamicPolicy(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1576,6 +1625,7 @@ func TestDynamicPolicyAPI_List_Pagination(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies?page=2&page_size=2&enabled=true&category=dynamic-risk", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1594,6 +1644,7 @@ func TestDynamicPolicyAPI_CORS_Preflight(t *testing.T) {
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1613,6 +1664,7 @@ func TestDynamicPolicyAPI_HandlePolicyByID_Options(t *testing.T) {
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1631,6 +1683,7 @@ func TestDynamicPolicyAPI_Import_Options(t *testing.T) {
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/import", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1649,6 +1702,7 @@ func TestDynamicPolicyAPI_Export_Options(t *testing.T) {
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -1667,6 +1721,7 @@ func TestDynamicPolicyAPI_Effective_Options(t *testing.T) {
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/effective", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)

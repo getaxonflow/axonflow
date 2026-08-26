@@ -9,7 +9,7 @@
 // scaffolding is used by integration tests in platform/agent,
 // platform/orchestrator, and ee/platform/customer-portal. Each test exercises
 // its service's boot-time call site against a throwaway postgres:15
-// container with migrations 001..111 applied and axonflow_app_role +
+// container with EVERY core migration applied and axonflow_app_role +
 // axonflow_platform_admin login passwords provisioned (mirrors
 // scripts/operators/provision-app-role.sh).
 //
@@ -19,6 +19,7 @@ package approletest
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -50,12 +51,27 @@ func SkipUnlessEnabled(t *testing.T) {
 	}
 }
 
-// Setup spins up a postgres:15 container, runs migrations 001..111, and
+// Setup spins up a postgres:15 container, runs every core migration, and
 // provisions login passwords on the two RLS roles created by migration 098.
 // Returns DSNs for the master, axonflow_app_role, and axonflow_platform_admin
 // users, plus a cleanup callback. The caller is responsible for calling
 // Cleanup() (typically via t.Cleanup).
 func Setup(t *testing.T, migrationsDir string) *Env {
+	t.Helper()
+	return SetupAtVersion(t, migrationsDir, allCoreMigrations)
+}
+
+// SetupAtVersion is Setup with an explicit upper migration bound, for the rare
+// test whose PREMISE is a historical schema -- one that reproduces a data shape
+// a later migration repairs, and applies that migration itself partway through
+// to observe the repair.
+//
+// Prefer Setup. A bound here freezes the fixture at a schema that stops
+// resembling production the moment the next migration lands, so it must be a
+// deliberate, commented choice tied to a specific migration -- never a
+// hand-maintained "latest" marker, which is what it silently decayed into
+// before #3490.
+func SetupAtVersion(t *testing.T, migrationsDir string, maxVersion int) *Env {
 	t.Helper()
 	masterDSN, cleanup := startPostgresContainer(t)
 	t.Cleanup(cleanup)
@@ -88,11 +104,26 @@ func Setup(t *testing.T, migrationsDir string) *Env {
 		}
 	}
 
-	// Range tracks latest stable core migration. Bumped to 111 with
-	// PR-C3's column rename so callers see the canonical org_id schema
-	// (mig 109 = SECURITY DEFINER helpers, mig 110 = policy_overrides
-	// org_id, mig 111 = custom_roles/role_assignments org_id).
-	runMigrations(t, masterDB, migrationsDir, 1, 111)
+	// Apply EVERY core migration present, with no upper bound.
+	//
+	// This used to be a hand-maintained literal ("range tracks latest stable
+	// core migration", last bumped to 111). The bound's stated purpose was
+	// always "the newest schema", so a literal could only ever be wrong: it
+	// silently decays into "the schema as of whenever someone last edited this
+	// line". It reached 55 migrations of drift, and the drift was not
+	// cosmetic -- it changed a column TYPE. core/133 retypes
+	// organization_id from uuid to text, so a fixture whose org key is an
+	// ordinary string (the shape every caller actually uses) inserted fine on
+	// a real deployment and failed here with
+	//   pq: invalid input syntax for type uuid
+	// against a schema that has not existed since core/133. A test harness
+	// pinned to an obsolete schema does not test the product; worse, it can
+	// fail on changes that are correct, which is how it surfaced (#3490).
+	//
+	// Unbounded is also self-maintaining: a new migration is exercised by
+	// these tests the moment it lands, rather than when someone remembers to
+	// edit this number.
+	runMigrations(t, masterDB, migrationsDir, 1, maxVersion)
 
 	const (
 		appRolePass = "appRoleTestPw_session20"
@@ -173,7 +204,17 @@ func startPostgresContainer(t *testing.T) (string, func()) {
 		t.Fatalf("docker run: %v\n%s", err, string(out))
 	}
 	cleanup := func() {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+		// -v, not just -f. postgres:15 declares /var/lib/postgresql/data as a
+		// VOLUME, so every container started here gets an ANONYMOUS volume, and
+		// `docker rm -f` removes the container while orphaning it. Each one holds
+		// a full initdb plus the whole migration chain, and a single run of the
+		// real-PG lanes starts hundreds of them: measured on a developer daemon
+		// after one full pass of the three arms, 339 dangling volumes holding
+		// 26.59 GB, none of them reachable by name. CI never noticed because its
+		// between-arms reaper runs `docker system prune -af --volumes`, which
+		// sweeps them up wholesale -- so the leak is invisible exactly where it
+		// is compensated and unbounded everywhere else.
+		_ = exec.Command("docker", "rm", "-fv", containerName).Run()
 	}
 	// `docker port` can transiently fail (exit status 1) or return an empty
 	// mapping for a brief window right after `docker run -d`: the container
@@ -230,6 +271,11 @@ func extractHostPort(dsn string) string {
 	portAndPath := strings.SplitN(atHost[1], "/", 2)
 	return portAndPath[0]
 }
+
+// allCoreMigrations is the `hi` bound meaning "every migration in the
+// directory". See the call site in Setup for why an explicit numeric cap is a
+// defect rather than a configuration choice.
+const allCoreMigrations = math.MaxInt32
 
 // runMigrations applies migrations files in [lo, hi] from migrationsDir, in
 // (version, name) composite key order — matches the production runner's

@@ -4,6 +4,7 @@
 package agent
 
 import (
+	sharedaudit "axonflow/platform/shared/audit"
 	"context"
 	"net/http/httptest"
 	"regexp"
@@ -43,7 +44,8 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 			"decision-1",         // decision_id (first-class column; #2592)
 			PlaneMCP,             // plane — MCP check-input surface
 			"corr-trace-input-1", // correlation_id (#2598)
-			nil, // session_id (#2753)
+			nil,                  // session_id (#2753)
+			sqlmock.AnyArg(),     // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -54,7 +56,8 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 		"mcp_check_policy", "SELECT 1", "h",
 		"deny", "low",
 		[]RicherPolicyMatch{{PolicyName: "p", PolicyID: "pid", Version: 1}},
-		"corr-trace-input-1")
+		"corr-trace-input-1",
+		sharedaudit.LatencyUnmeasured)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
@@ -90,7 +93,7 @@ func TestWriteOverrideUsedEvent_OrgIDPersisted(t *testing.T) {
 			"decision-1",       // decision_id (first-class column; #2592)
 			PlaneMCP,           // plane — MCP check-input override surface
 			"corr-trace-ovr-1", // correlation_id (#2598)
-			nil, // session_id (#2753)
+			nil,                // session_id (#2753)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

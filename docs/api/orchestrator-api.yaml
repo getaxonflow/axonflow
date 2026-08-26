@@ -150,7 +150,7 @@ paths:
               example:
                 status: healthy
                 service: axonflow-orchestrator
-                version: "9.8.0"
+                version: "10.0.0"
                 timestamp: "2025-01-15T10:30:00Z"
                 components:
                   policy_engine: true
@@ -2658,15 +2658,95 @@ paths:
                       properties:
                         policy_name:
                           type: string
+                          description: |
+                            The policy identity resolved for this group by the
+                            shared identity chain. IDENTITY-first: it carries a
+                            raw policy IDENTIFIER on every row whose writer
+                            stamped one, and a display NAME only when it did
+                            not. Read `identity_is_name` before rendering;
+                            styling an identifier as though it were a display
+                            name is exactly the defect #3347 fixed.
+                        identity_is_name:
+                          type: boolean
+                          description: |
+                            Whether `policy_name` holds a display NAME (true) or
+                            a raw IDENTIFIER (false).
+
+                            It is a property of the RESOLVED STRING, NOT a claim
+                            about what the writer recorded. Since #3365 a
+                            decide-plane row stamps `policy_names` alongside
+                            `policy_ids`, so such a row records a name AND
+                            reports false here, because the chain resolves the
+                            id arm first. Render a false value with a NEUTRAL
+                            identifier affordance (the portal appends
+                            "(policy id)"); a "name not recorded" affordance
+                            would assert a falsehood about that row.
                         trigger_count:
                           type: integer
                         block_count:
                           type: integer
-                    description: Top 10 policies by trigger count
+                    description: |
+                      Top 10 policies by trigger count. A row is counted once
+                      per DISTINCT policy it recorded, so these counts do not
+                      sum to the number of audit rows and are not a share of
+                      one. Compare the array length against `total_policies`
+                      before presenting it as the complete set.
+                  total_policies:
+                    type: integer
+                    description: |
+                      How many DISTINCT policies fired in the range BEFORE the
+                      10-entry `top_policies` limit truncated it. 0 when nothing
+                      fired. When it exceeds the array length, disclose "top 10
+                      of N" rather than implying the remainder does not exist.
+                  top_policies_unavailable:
+                    type: boolean
+                    description: |
+                      Present and `true` ONLY when the top-policies aggregation
+                      did not complete (it failed, or exceeded its 15s
+                      deadline). OMITTED entirely otherwise, so treat absence as
+                      false.
+
+                      The rest of the summary is still returned, so without this
+                      flag a failed aggregation is INDISTINGUISHABLE from "no
+                      policies fired": `top_policies` empty, `total_policies` 0,
+                      and any truncation disclosure computing "nothing hidden".
+                      Clients MUST NOT render that as a clean zero result. The
+                      portal replaces the tile with an explicit "could not be
+                      computed for this range" notice.
+
+                      The `/api/v1/audit/report` twin of this field does not
+                      exist: on that endpoint a failed aggregation fails the
+                      whole response with a 500 instead of truncating.
                   compliance_score:
                     type: number
                     format: float
                     description: "Compliance score 0-100 (100 = no blocked events)"
+                  avg_latency_ms:
+                    type: number
+                    format: double
+                    nullable: true
+                    description: |
+                      Mean ENFORCEMENT latency in milliseconds over the rows in
+                      the range that carried a measurement, or `null` when none
+                      did (#3424). Same contract as the /api/v1/audit/report
+                      field of this name: `null` is the absence of a
+                      measurement, NOT a measured zero, and clients MUST accept
+                      it (a strict deserializer binding this to a non-optional
+                      float will raise). Values below 1 are legitimate --
+                      response_time_ms is whole milliseconds, so a decision
+                      completing in under one contributes a 0.
+                  latency_sample_count:
+                    type: integer
+                    description: |
+                      How many rows backed avg_latency_ms. 0 exactly when
+                      avg_latency_ms is null, and never greater than
+                      total_requests. Routinely far below it: planes that record
+                      no enforcement duration (HITL approvals, workflow
+                      lifecycle rows, the connector-exec MCP closure) and the
+                      LLM plane's provider round trips are excluded from the
+                      average while still being governed rows. The portal
+                      renders this as the tile's basis so an average over a
+                      small subset cannot read like an average over all of them.
               example:
                 total_events: 1523
                 by_severity:
@@ -2679,12 +2759,17 @@ paths:
                   policy_check: 23
                 top_policies:
                   - policy_name: "demo-block-bulk-email"
+                    identity_is_name: true
                     trigger_count: 15
                     block_count: 15
-                  - policy_name: "pii-detection"
+                  - policy_name: "sys_pii_iban"
+                    identity_is_name: false
                     trigger_count: 8
                     block_count: 3
+                total_policies: 2
                 compliance_score: 98.5
+                avg_latency_ms: 4.2
+                latency_sample_count: 612
         '400':
           description: |
             Invalid request (bad/missing RFC3339 timestamps, end_time not after
@@ -2820,7 +2905,7 @@ paths:
               caller_name: "claude_code"
               input: {}
               output: {}
-              workflow_id: "wf_abc123"
+              workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
               step_id: "step-3"
               user_id: "user@example.com"
               duration_ms: 45
@@ -2937,7 +3022,12 @@ paths:
             Export file (Content-Disposition attachment). CSV columns, in
             order: id, timestamp, user_email, tenant_id, org_id,
             policy_decision, request_type, query, response_sample, provider,
-            model, response_time_ms, correlation_id, session_id.
+            model, response_time_ms, tokens, correlation_id, session_id.
+
+            `response_time_ms` is EMPTY for a row whose writer measured nothing
+            (#3424), never `0`: a spreadsheet skips an empty cell in AVERAGE()
+            and would otherwise let every unmeasured row vote that average
+            towards zero.
           headers:
             X-Axonflow-Read-Scope:
               $ref: '#/components/headers/XAxonflowReadScope'
@@ -3060,10 +3150,17 @@ paths:
                   needs_approval: 3
                   error: 0
                 avg_latency_ms: 245.7
+                latency_sample_count: 1180
                 top_policies:
                   - policy_name: "pii-detection"
+                    identity_is_name: true
                     trigger_count: 88
                     block_count: 35
+                  - policy_name: "sys_pii_iban"
+                    identity_is_name: false
+                    trigger_count: 41
+                    block_count: 12
+                total_policies: 2
         '400':
           description: |
             Invalid body, non-RFC3339 timestamps, end_time not after
@@ -3111,6 +3208,13 @@ paths:
 
         The window start is clamped to the tenant's tier retention floor,
         like `/api/v1/audit/search` and `/api/v1/audit/export`.
+
+        **`avg_latency_ms` is nullable** on the bucket and on every entry of
+        its `tools` array (#3433), paired with a `latency_sample_count`. `null`
+        means no row in that bucket carried a measurement, which is a different
+        fact from a measured zero and used to be coalesced onto it. A strict
+        deserializer binding it to a non-optional float will raise; see the
+        `SessionSummaryBucket` schema.
       operationId: getAuditSessionSummary
       parameters:
         - $ref: '#/components/parameters/TenantIDHeader'
@@ -3801,14 +3905,16 @@ paths:
               redact_pii: false
       responses:
         '200':
-          description: Export started (sync) or queued (async)
+          description: |
+            The export, synchronously. There is no queued state: the body IS
+            the data. `status` is completed, partial or failed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SEBIAuditExportResponse'
               example:
                 export_id: "exp_abc123"
-                status: "processing"
+                status: "completed"
                 framework: "SEBI_DPDP_COMBINED"
                 metadata:
                   export_version: "1.0"
@@ -3902,18 +4008,28 @@ paths:
               example:
                 org_id: 123
                 framework: "SEBI_AI_ML"
-                compliance_status: "COMPLIANT"
+                compliance_status: "UNKNOWN"
                 status:
                   - data_type: "policy_violations"
                     retention_days: 1825
+                    retention_configured: true
                     total_records: 15420
                     oldest_record: "2020-01-15T10:30:00Z"
                     compliance_status: "COMPLIANT"
+                    report_state: "populated"
+                  # The stock-deployment shape: audit_retention_config ships
+                  # empty, so the period in force is the platform default and
+                  # the row reports UNKNOWN rather than asserting a period this
+                  # organisation never configured.
                   - data_type: "llm_calls"
                     retention_days: 1825
+                    retention_configured: false
                     total_records: 250000
                     oldest_record: "2020-06-01T08:00:00Z"
-                    compliance_status: "COMPLIANT"
+                    compliance_status: "UNKNOWN"
+                    report_state: "not_available"
+                    error_kind: "not_configured"
+                    error: "retention configuration was read and is empty: no active audit retention configuration row exists for this organisation and data type: \"llm_calls\". The platform's built-in default of 1825 days is what WOULD be applied, not evidence of what is configured here"
 
   /api/v1/sebi/audit/readiness:
     get:
@@ -5196,13 +5312,112 @@ paths:
                 tenant_id: "tenant-abc"
       responses:
         '200':
-          description: Workflow execution started
+          description: |
+            Workflow execution result. With `AXONFLOW_HITL_ENABLED=true`, a
+            run paused by a `require_approval` policy verdict whose
+            approval request was created successfully ALSO answers `200`:
+            the body then carries `status: "paused"` with `approval_id`,
+            `approval_status`, `paused_at_step` (omitted at the first
+            step, index 0) and `paused_reason` promoted alongside the
+            fields below (the Go type embeds `WorkflowExecution`); only a pause whose approval-request
+            creation failed answers `202`. The returned `id` is where a
+            caller first observes the `wfe_` prefix introduced in #3442, so
+            an integration that matches run ids on `wf_` breaks here rather
+            than on a later GET.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkflowExecution'
+              example:
+                id: "wfe_1787399674_6t245pvn"
+                workflow_name: "data-analysis-workflow"
+                status: "completed"
+                steps:
+                  - name: "fetch_data"
+                    status: "completed"
+                    process_time: "412ms"
+                  - name: "analyze"
+                    status: "completed"
+                    process_time: "1.83s"
+                output:
+                  summary: "Sales rose 12% over the window."
+        '202':
+          description: |
+            Degraded HITL pause (`AXONFLOW_HITL_ENABLED=true` only). A
+            `require_approval` policy verdict paused the run but the HITL
+            approval request could NOT be created. This is the only shape
+            the handler answers with `202`; an ordinary successful pause
+            returns `200` (above). The paused execution is stored for a
+            later resume before this response is written. The body is the
+            paused execution: every `WorkflowExecution` field promoted at
+            the top level, plus the HITL fields below.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    description: Always `paused` on this response.
+                  error:
+                    type: string
+                    description: >-
+                      Names the approval-creation failure
+                      (`Failed to create approval: ...`).
+                  approval_id:
+                    type: string
+                    description: >-
+                      The zero UUID on this arm - the approval request was
+                      never created. On a successful pause (a `200`) it is
+                      the real approval UUID.
+                  approval_status:
+                    type: string
+                    description: >-
+                      Absent on this arm; populated from the approval
+                      service on a successful pause.
+                  paused_at_step:
+                    type: integer
+                    description: >-
+                      Index of the step the run paused at. Omitted when
+                      the pause is at the first step: the field is
+                      omitempty and index 0 is the integer zero value.
+                  paused_reason:
+                    type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            The authenticated tenancy scope is missing or unusable. The
+            handler resolves the gateway-stamped `X-Org-ID` /
+            `X-Tenant-ID` pair before anything else and refuses when
+            either dimension is absent, blank, or the unowned-org
+            sentinel, with a message opening `Unauthorized: an
+            authenticated tenant scope is required` and naming the two
+            headers the AxonFlow Agent gateway stamps. The resolved scope
+            then overwrites the body's `user.tenant_id` / `user.org_id`
+            and becomes the tenancy stamped on every row this call
+            creates. A second stamped-row write guard sits at the row
+            boundary (#3066), but it is defense in depth: the scope
+            resolution above already guarantees both dimensions, so that
+            guard's distinct refusal message is not reachable on this
+            endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            The request body carries a cross-tenant claim: a
+            `user.tenant_id` naming a tenancy other than the
+            authenticated one is refused with `Forbidden: user.tenant_id
+            does not name the authenticated tenancy`. Omitting the body
+            field is not an error; it is overwritten from the
+            authenticated scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -5217,10 +5432,14 @@ paths:
         - name: id
           in: path
           required: true
-          description: Workflow execution ID
+          description: >-
+            In-process declarative workflow-engine execution ID, as returned by
+            POST /api/v1/workflows/execute. Since #3442 these carry the `wfe_`
+            prefix; a governed control-plane `wf_` workflow_id is not resolvable
+            here.
           schema:
             type: string
-          example: "exec_abc123"
+          example: "wfe_1787399674_6t245pvn"
       responses:
         '200':
           description: Workflow execution details
@@ -5330,7 +5549,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreateWorkflowResponse'
               example:
-                workflow_id: "wf_abc123"
+                workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
                 workflow_name: "code-review-pipeline"
                 status: "in_progress"
                 started_at: "2026-01-17T10:00:00Z"
@@ -5396,7 +5615,7 @@ paths:
           description: Workflow ID
           schema:
             type: string
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
       responses:
         '200':
           description: Workflow status
@@ -5432,7 +5651,7 @@ paths:
           description: Workflow ID
           schema:
             type: string
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
         - name: step_id
           in: path
           required: true
@@ -5452,6 +5671,30 @@ paths:
             type: boolean
             default: false
           example: true
+        - name: X-User-Email
+          in: header
+          required: false
+          description: |
+            Caller identity used to resolve the governance-segment
+            memberships that decide which segment-scoped policies apply to
+            this evaluation (#3281). The orchestrator honours it only over
+            the internal-service proxy-auth channel; whether a CLIENT can
+            assert it through the agent depends on the agent's identity
+            trust gate. Gate OFF (`AXONFLOW_TRUST_IDENTITY_HEADERS` unset,
+            or any value other than the whitespace-trimmed exact string `true` - the default):
+            the agent strips a client-supplied value before forwarding, so
+            a client cannot assert it. Gate ON: a client-supplied value is
+            forwarded sanitized - the deployment's trust declaration, not
+            the platform, then carries the precondition that every hop
+            re-stamps identity headers from a source the end user cannot
+            edit. In both postures an `X-User-Token` the agent validates
+            overwrites this header with the token's resolved identity.
+            Omitting it is not an error, but the decision is then computed
+            with no verified identity and degrades to org-only evaluation,
+            in which segment-scoped policies do not apply and only
+            org-wide ones enforce.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -5486,6 +5729,33 @@ paths:
                     step_id: "step-1"
                     reason: "GPT-4 not allowed in production workflows"
                     policy_ids: ["policy_gpt4_block"]
+                blocked_segment_resolution_failed:
+                  summary: Step blocked fail-closed (governance segments could not be resolved)
+                  description: |
+                    A NEW refusal (#3281, ADR-060 #2989). Policy evaluation on this
+                    plane resolves the caller's governance-segment memberships to
+                    decide which segment-scoped policies apply. When that resolution
+                    genuinely FAILS (the directory backing it is unavailable) the
+                    gate denies fail-closed rather than silently evaluating as though
+                    the caller had no segments, which would let a segment-scoped
+                    restriction lapse exactly when the directory is down.
+
+                    Distinguish it from an ordinary policy block by the reserved
+                    `policy_ids` value `segment_resolution_failed` - NOT by the
+                    human-readable `reason`, which is not a stable interface. It is
+                    the same identifier the gateway pre-check plane emits for this
+                    condition (#3312).
+
+                    A caller with NO verified identity is a different case and is not
+                    an error: resolution succeeds with an empty set, the request
+                    proceeds org-only, and non-segment-scoped policies still enforce.
+
+                    Retriable: this signals unavailability, not a durable denial.
+                  value:
+                    decision: "block"
+                    step_id: "step-1"
+                    reason: "segment resolution unavailable - request denied (fail-closed, ADR-060 #2989 P3b)"
+                    policy_ids: ["segment_resolution_failed"]
                 approval_required:
                   summary: Approval required
                   value:
@@ -5515,7 +5785,7 @@ paths:
                   code: "IDEMPOTENCY_KEY_MISMATCH"
                   message: "idempotency_key does not match the key recorded on gate"
                   details:
-                    workflow_id: "wf_41231a72"
+                    workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
                     step_id: "step-1"
                     expected_idempotency_key: "payment:wire:invoice-7721"
                     received_idempotency_key: "payment:wire:invoice-9999"
@@ -5724,15 +5994,52 @@ paths:
     post:
       tags:
         - Workflow Control Plane
-      summary: Resume workflow from last checkpoint (Evaluation+)
+      summary: Resume workflow from last checkpoint (Evaluation and above)
       description: |
         Re-evaluates the step gate at the last resumable checkpoint with
         current policies. The step gate uses retry_policy=reevaluate internally.
+
+        Identity: because this re-enters the SAME policy evaluation as
+        POST .../steps/{step_id}/gate, it honours the caller identity on THIS
+        request (a trust-gated `X-User-Email`, or an `X-User-Token` the agent
+        validates) to resolve governance segments. Send it exactly as you would
+        on /gate. Omitting it is not an error, but the fresh decision is then
+        computed with no verified identity: segment-scoped policies do not
+        apply and only org-wide ones enforce. The identity stored on the
+        checkpoint is deliberately NOT replayed - a resume is evaluated for
+        whoever is resuming, not for whoever created the checkpoint.
+
+        This route can therefore return the `segment_resolution_failed`
+        fail-closed block documented on /gate.
       operationId: resumeFromLastCheckpoint
       parameters:
         - name: workflow_id
           in: path
           required: true
+          schema:
+            type: string
+        - name: X-User-Email
+          in: header
+          required: false
+          description: |
+            Caller identity used to resolve the governance-segment
+            memberships that decide which segment-scoped policies apply to
+            this evaluation (#3281). The orchestrator honours it only over
+            the internal-service proxy-auth channel; whether a CLIENT can
+            assert it through the agent depends on the agent's identity
+            trust gate. Gate OFF (`AXONFLOW_TRUST_IDENTITY_HEADERS` unset,
+            or any value other than the whitespace-trimmed exact string `true` - the default):
+            the agent strips a client-supplied value before forwarding, so
+            a client cannot assert it. Gate ON: a client-supplied value is
+            forwarded sanitized - the deployment's trust declaration, not
+            the platform, then carries the precondition that every hop
+            re-stamps identity headers from a source the end user cannot
+            edit. In both postures an `X-User-Token` the agent validates
+            overwrites this header with the token's resolved identity.
+            Omitting it is not an error, but the decision is then computed
+            with no verified identity and degrades to org-only evaluation,
+            in which segment-scoped policies do not apply and only
+            org-wide ones enforce.
           schema:
             type: string
       responses:
@@ -5755,6 +6062,12 @@ paths:
       description: |
         Re-evaluates the step gate at a specific checkpoint with current policies.
         Enterprise only.
+
+        Identity: same contract as POST .../checkpoints/resume above - the
+        caller identity on THIS request drives segment resolution, the
+        checkpoint's stored identity is never replayed, and the
+        `segment_resolution_failed` fail-closed block documented on /gate can
+        be returned here too.
       operationId: resumeFromCheckpoint
       parameters:
         - name: workflow_id
@@ -5768,6 +6081,30 @@ paths:
           schema:
             type: integer
             format: int64
+        - name: X-User-Email
+          in: header
+          required: false
+          description: |
+            Caller identity used to resolve the governance-segment
+            memberships that decide which segment-scoped policies apply to
+            this evaluation (#3281). The orchestrator honours it only over
+            the internal-service proxy-auth channel; whether a CLIENT can
+            assert it through the agent depends on the agent's identity
+            trust gate. Gate OFF (`AXONFLOW_TRUST_IDENTITY_HEADERS` unset,
+            or any value other than the whitespace-trimmed exact string `true` - the default):
+            the agent strips a client-supplied value before forwarding, so
+            a client cannot assert it. Gate ON: a client-supplied value is
+            forwarded sanitized - the deployment's trust declaration, not
+            the platform, then carries the precondition that every hop
+            re-stamps identity headers from a source the end user cannot
+            edit. In both postures an `X-User-Token` the agent validates
+            overwrites this header with the token's resolved identity.
+            Omitting it is not an error, but the decision is then computed
+            with no verified identity and degrades to org-only evaluation,
+            in which segment-scoped policies do not apply and only
+            org-wide ones enforce.
+          schema:
+            type: string
       responses:
         '200':
           description: Resume result
@@ -5796,7 +6133,7 @@ paths:
           description: Workflow ID
           schema:
             type: string
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
         - name: stepId
           in: path
           required: true
@@ -5831,7 +6168,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApprovalResponse'
               example:
-                workflow_id: "wf_abc123"
+                workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
                 step_id: "step-2"
                 status: "approved"
                 decision: "allow"
@@ -5884,7 +6221,7 @@ paths:
           description: Workflow ID
           schema:
             type: string
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
         - name: stepId
           in: path
           required: true
@@ -5919,7 +6256,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApprovalResponse'
               example:
-                workflow_id: "wf_abc123"
+                workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
                 step_id: "step-2"
                 status: "rejected"
                 decision: "block"
@@ -6015,7 +6352,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApprovalResponse'
               example:
-                workflow_id: "wf_abc123"
+                workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
                 plan_id: "plan-abc123"
                 step_id: "step_0_analyze"
                 status: "approved"
@@ -6113,8 +6450,12 @@ paths:
         `/api/v1/plans/approvals/pending`, which scopes to MAP-backed
         workflows and populates `plan_id` on every entry.
 
-        Available on Evaluation+ licenses. Community without an Evaluation
-        license has no approval queue to list.
+        Reachable on Evaluation and above. Listing is a read over entries that
+        already exist, so it follows the resolve rule rather than the creation
+        entitlement: CREATING an approval entry requires Professional,
+        Enterprise or Enterprise Plus, but a deployment that already holds
+        entries can always list, approve and reject them. Community has no
+        approval queue to list.
       operationId: listPendingApprovals
       parameters:
         - name: limit
@@ -6134,7 +6475,7 @@ paths:
                 $ref: '#/components/schemas/PendingApprovalsResponse'
               example:
                 pending_approvals:
-                  - workflow_id: "wf_abc123"
+                  - workflow_id: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
                     workflow_name: "code-review-pipeline"
                     step_id: "step-2"
                     step_index: 1
@@ -6168,8 +6509,9 @@ paths:
         `plan_id` directly without a second lookup; clients that want a
         plane-neutral view can use `/api/v1/hitl/queue` instead.
 
-        Available on Evaluation+ licenses (same tier gate as the MAP
-        `/steps/{step_id}/approve` and `/steps/{step_id}/reject` endpoints).
+        Reachable on Evaluation and above, the same resolve gate as the MAP
+        `/steps/{step_id}/approve` and `/steps/{step_id}/reject` endpoints.
+        Creating new approval entries requires Professional or above.
       operationId: listPendingPlanApprovals
       parameters:
         - name: plan_id
@@ -6195,7 +6537,7 @@ paths:
                 $ref: '#/components/schemas/PendingApprovalsResponse'
               example:
                 pending_approvals:
-                  - workflow_id: "wf_map_abc"
+                  - workflow_id: "wf_9c7d5e02-1a4b-4c68-b3f7-52e8d09a1b64"
                     workflow_name: "map-confirm-plan-abc123"
                     plan_id: "plan-abc123"
                     step_id: "step_0_analyze"
@@ -6210,7 +6552,7 @@ paths:
         '400':
           description: Tenant ID missing from request
         '403':
-          description: License tier does not permit approval listing (community without Evaluation license)
+          description: License tier does not permit approval listing (Community; Evaluation and above may list, approve and reject)
         '503':
           description: Workflow control plane unavailable
 
@@ -7747,8 +8089,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UnifiedExecutionListResponse'
+        '401':
+          description: |
+            `UNAUTHORIZED`: the request carried neither a tenant nor an org
+            key (#3367). Before v10.0.0 this shape fell through to an
+            unscoped `FROM execution_history WHERE 1=1` read of every
+            organisation's executions and answered `200`. It is now refused
+            with `Tenant or org identity required`, which is the same status
+            the by-id half of this handler already returned for the same
+            input. The handler and the execution repository refuse the shape
+            independently, so a future caller reaching the repository by
+            another route cannot reinstate the unscoped read.
         '500':
-          description: Failed to list executions
+          description: |
+            The listing could not be served. Beyond an ordinary query
+            failure, one arm of this status is a deliberate refusal of the
+            org-wide read (#3367), reachable only on the org-wide branch
+            that the trusted-hop `X-Axonflow-Tenancy-Scope` header selects:
+
+            - **No BYPASSRLS admin pool.** A portal org-wide list on a
+              deployment running `axonflow_app_role` (the default since
+              v9.0.0) with no admin pool installed would be filtered to zero
+              rows by the tenant-keyed RLS predicate on `execution_history`,
+              and a `200` carrying a well-formed empty list is exactly the
+              confident-empty page this refusal exists to remove. **The
+              remedy is to set `AXONFLOW_DB_PLATFORM_ADMIN_URL`.** In
+              practice this arm is defence in depth rather than a shape a
+              running deployment reaches: the orchestrator carries a fatal
+              boot guard on exactly that combination, so a deployment with
+              the app-role posture enabled and this variable unset refuses
+              to boot rather than serving the route at all. The refusal
+              below the guard exists so that relaxing the guard could never
+              silently restore the confident-empty page.
+
+            - **A sentinel org key.** The org-wide branch requires a
+              non-empty stamped `X-Org-ID`, but the handler does not check
+              it against the unowned-org sentinel, so a trusted-hop
+              request stamped with the sentinel value reaches the
+              repository's org-key validation and its refusal surfaces as
+              this 500. A real organisation id never takes this arm.
+
+            The execution repository carries two further org-wide refusals
+            (an org key with leading or trailing whitespace, and an
+            org-wide read that also carries a tenant narrowing), but
+            neither is reachable through this endpoint: the handler trims
+            the org key once and clears the tenant narrowing before
+            selecting the org-wide branch, so a padded `X-Org-ID` is
+            served after trimming, not refused. The EMPTY half of the
+            repository's org-key validation is also prevented by
+            construction, because the org-wide branch requires a non-empty
+            key; the SENTINEL half is not, which is why it appears in the
+            cause list above. The unreachable refusals stay in the
+            repository as defense in depth against a future caller that
+            skips the handler's normalization; today this endpoint's
+            handler is the repository listing's only caller.
 
   /api/v1/unified/executions/{id}:
     get:
@@ -8927,12 +9321,20 @@ components:
           type: string
         role:
           type: string
+        region:
+          type: string
+          description: User's region, read by geo-based routing policies.
         permissions:
           type: array
           items:
             type: string
         tenant_id:
           type: string
+        org_id:
+          type: string
+          description: >-
+            Organisation for multi-tenant isolation, populated from the
+            X-Org-ID header the agent stamps on the trusted hop.
 
     ClientContext:
       type: object
@@ -9351,12 +9753,6 @@ components:
           description: |
             Policy tier. Dynamic policies default to `tenant`;
             organization-tier policies require Enterprise.
-        organization_id:
-          type: string
-          nullable: true
-          description: |
-            Organization id for organization-tier policies. Null for
-            system and tenant tiers.
         priority:
           type: integer
           description: |
@@ -9696,11 +10092,66 @@ components:
         response_time_ms:
           type: integer
           format: int64
+          description: |
+            Measured duration for this row in whole milliseconds. ABSENT when
+            this row's writer measured nothing (#3424).
+
+            Absent is NOT `0`. This field used to be emitted unconditionally, so
+            every row from a writer with no duration to record -- blocked
+            request / response / media, failed request, workflow, plan and
+            tool-call rows, HITL approvals, and the connector-exec MCP closure
+            -- carried a literal `0`, which the portal's Latency column rendered
+            as a confident "0ms". The key is now omitted for those rows rather
+            than set to null: this schema declares no `required` list, so the
+            property was already optional and a conforming client already
+            handles its absence. Nothing about the declared contract changes.
+
+            A `0` that DOES arrive is a real measurement: the column is whole
+            milliseconds, so a decision the platform timed at under 1ms is
+            stored as the 0 its clock produced. The portal renders that as
+            "<1ms" and an absent value as "-".
+
+            The quantity differs by `plane`: enforcement duration on
+            decision/gateway/mcp/openai_compat, a PROVIDER round trip on `llm`,
+            and a client-asserted OTLP duration on cowork/claude_code (#3431).
+            The compliance summary's `avg_latency_ms` averages only the first.
         tokens_used:
           type: integer
+          description: >
+            Provider tokens consumed by this request, OMITTED when the row
+            carries no RECORDED provider usage (#3427).
+
+            The omission says the usage was not recorded; it does NOT assert
+            that no provider was called. Two distinct populations omit it:
+
+            * Rows whose writer never reached a model at all -- a blocked
+              request, a redaction, a gateway pre-check deny, a media deny, a
+              workflow step, a plan or a tool-call row.
+            * Rows written by the LLM RESPONSE-plane block writer, which runs
+              AFTER the forward: the call was made and the answer was withheld,
+              so a real round trip was paid for, but that writer records none
+              of the provider usage it is handed. That is a gap in the writer,
+              tracked separately, not a claim about the request.
+
+            Until #3427 both populations left the read paths as a literal `0`,
+            which the portal's detail panel rendered as "Tokens 0" under a
+            request no model saw. The key is now omitted for those rows rather
+            than set to null: this schema declares no `required` list, so the
+            property was already optional and a conforming client already
+            handles its absence.
+
+            A `0` that DOES arrive is a real report from a provider, not an
+            absence.
         cost:
           type: number
           format: double
+          description: >
+            Estimated provider cost for this request in USD, OMITTED when the
+            row carries no recorded provider usage (#3427). Same rule, same two
+            populations and same rationale as `tokens_used` above; note that
+            `0` is a genuinely
+            representable cost (a locally hosted or free-tier model), which is
+            why absence is expressed by omitting the key rather than by a zero.
         redacted_fields:
           type: array
           items:
@@ -9875,17 +10326,45 @@ components:
       properties:
         id:
           type: string
+          description: >-
+            In-process declarative workflow-engine run identifier. Since
+            #3442 these carry the `wfe_` prefix, not `wf_`: this engine runs
+            a spec handed to it in the request body and appears in
+            `workflows`, `workflow_steps` and `execution_history` nowhere at
+            all, so it is a different thing from a governed control-plane
+            workflow and no longer shares that workflow's prefix. No
+            component derives meaning from a `wfe_` id; the one place in
+            the platform that parses id prefixes is the unified-executions
+            resolver, which dispatches on `wf_`/`wcp_`/`plan_`, and a
+            `wfe_` id deliberately no longer matches any of them. A caller
+            that stored one and matches on the `wf_` prefix stops matching.
+            Ids minted before v10.0.0 keep their old prefix; no row is
+            rewritten.
+          example: "wfe_1787399674_6t245pvn"
         workflow_name:
           type: string
         status:
           type: string
           enum: [pending, running, completed, failed]
-        started_at:
+        input:
+          type: object
+          additionalProperties: true
+        start_time:
           type: string
           format: date-time
-        completed_at:
+          description: >-
+            Earlier revisions of this spec named this field `started_at`; the
+            wire has always been `start_time`. Same for `end_time` below,
+            previously misdocumented as `completed_at`.
+        end_time:
           type: string
           format: date-time
+          description: Omitted while the run is still executing.
+        user_context:
+          $ref: '#/components/schemas/UserContext'
+        error:
+          type: string
+          description: Present only when the run failed.
         steps:
           type: array
           items:
@@ -9895,6 +10374,23 @@ components:
                 type: string
               status:
                 type: string
+                enum: [pending, running, completed, failed, skipped]
+              input:
+                type: object
+                additionalProperties: true
+              output:
+                type: object
+                additionalProperties: true
+              start_time:
+                type: string
+                format: date-time
+              end_time:
+                type: string
+                format: date-time
+                description: Omitted while the step is still executing.
+              error:
+                type: string
+                description: Present only when the step failed.
               process_time:
                 type: string
         output:
@@ -9935,7 +10431,7 @@ components:
         workflow_id:
           type: string
           description: Unique workflow identifier
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
         workflow_name:
           type: string
         status:
@@ -10231,6 +10727,57 @@ components:
           description: IDs of policies that matched
           items:
             type: string
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            Deterministic HITL queue entry UUID (UUID v5 over
+            `(workflow_id, step_id)`), present on a `require_approval`
+            decision whose queue entry exists. Returned by this route since
+            #1082 but never specced; added with `approval_enqueue` below,
+            which is only meaningful alongside it. Empty when no entry was
+            created (see `approval_enqueue`) AND on a cached replay
+            (`cached: true`, the default `retry_policy: "idempotent"` on a
+            step that was already evaluated), which reproduces the stored
+            decision without re-running the enqueue.
+          example: "318a270f-7b42-5c56-a191-8dbd1bf2e1e4"
+        approval_enqueue:
+          type: string
+          enum: [created, reused, cap_reached, tier_disabled, error]
+          description: |
+            What the HITL enqueue did for this gate. Present only on a
+            `require_approval` decision where an enqueue was attempted;
+            omitted otherwise.
+
+            A `require_approval` decision ALWAYS holds the step. This field is
+            how a client distinguishes "held, and there is a review entry to
+            approve" (`created` / `reused`) from "held, and there is nothing
+            to approve" (`cap_reached` / `tier_disabled` / `error`) - before
+            #3408's sibling fix those were the same response.
+
+            - `created` - a new queue entry was written.
+            - `reused` - a re-gate of this step resolved to the entry an
+              earlier call created. The `approval_id` is the same. Reachable
+              only when the gate RE-EVALUATES (`retry_policy: "reevaluate"`,
+              or a gate override); the default `retry_policy: "idempotent"`
+              replays the stored decision and carries `cached: true` with
+              neither this field nor `approval_id`.
+            - `cap_reached` - the tenant is at its licence tier's
+              `MaxPendingApprovals`. No entry was created and none will be
+              until a pending one is resolved. **Not reachable by any shipped
+              tier**: since HITL became Enterprise-only (2026-08-26) every
+              entitled tier resolves `MaxPendingApprovals` to `-1`, and every
+              tier with a finite cap is refused by the tier gate first.
+              Documented because the mechanism is retained.
+            - `tier_disabled` - the deployment's licence tier does not enable
+              HITL approvals. Entitled tiers are `Professional`, `Enterprise`
+              and `Enterprise Plus`; `Community`, `Free`, `Pro`, `Premium` and
+              `Evaluation` are refused. Approve, reject and the pending
+              listings remain reachable on a refused tier so existing entries
+              can still be drained.
+            - `error` - the enqueue failed for another reason; the detail is
+              in `reason`.
+          example: "created"
         approval_url:
           type: string
           description: URL for human approval (Enterprise)
@@ -10449,7 +10996,7 @@ components:
         workflow_id:
           type: string
           description: Underlying WCP workflow identifier
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
         plan_id:
           type: string
           description: |
@@ -10542,7 +11089,7 @@ components:
         workflow_id:
           type: string
           description: WCP workflow identifier.
-          example: "wf_abc123"
+          example: "wf_41231a72-9b0c-4f5e-8a13-6d2e0c7b4f91"
         workflow_name:
           type: string
           description: Human-readable workflow name.
@@ -11026,11 +11573,23 @@ components:
 
     SEBIComplianceStatus:
       type: string
-      description: Compliance status indicator
+      description: |
+        Compliance status indicator.
+
+        `WARNING` was in this enum and is removed (#3435 R7): no code path
+        assigns it. The three values below are the only ones the server writes
+        (sebi_audit_export_service.go GetRetentionStatus). `UNKNOWN` was MISSING
+        and is the common answer, not an edge case: it is returned whenever the
+        retention period or the record counts backing a row could not be
+        measured, and `audit_retention_config` ships EMPTY on a stock
+        migration-applied database, so a stock deployment reports UNKNOWN for
+        every data type. A readiness CHECK speaks a different vocabulary on a
+        different schema: see SEBIComplianceCheck.status, which carries
+        `pass`/`fail`/`warning`/`unknown` and is NOT this enum.
       enum:
         - COMPLIANT
         - NON_COMPLIANT
-        - WARNING
+        - UNKNOWN
 
     SEBIDashboard:
       type: object
@@ -11139,8 +11698,19 @@ components:
           description: Unique export identifier
         status:
           type: string
-          enum: [pending, processing, completed, failed]
-          description: Export status
+          enum: [completed, partial, failed]
+          description: |
+            Export status. SEBI audit export is SYNCHRONOUS - the POST returns
+            the data - so there is no queued state: `pending` and `processing`
+            were in this enum and the server has never been able to emit either
+            (sebi_audit_export_service.go assigns the field unconditionally from
+            sebiExportStatus on every path that returns 200).
+
+            `completed` ONLY when every requested section was served AND every
+            served section's scope could reach the dimensions its writer stamps.
+            `partial` when at least one but not every section is missing or
+            scope-gapped; `failed` when none could be produced. On `partial` and
+            `failed`, `summary.compliance_score` is ABSENT rather than zero.
         exported_at:
           type: string
           format: date-time
@@ -11198,7 +11768,130 @@ components:
         compliance_score:
           type: number
           format: float
-          description: Compliance score for the period
+          nullable: true
+          description: |
+            Compliance score for the period, or ABSENT (the key is omitted)
+            when the export could not support one (#3435).
+
+            It is derived from the violations this export actually read, so it
+            has no basis when a requested section could not be produced, or was
+            produced under a tenancy scope that cannot reach its rows. Reporting
+            100.00 in either case is an affirmative regulatory claim
+            manufactured out of a read that did not happen. Same contract as
+            avg_latency_ms elsewhere in this spec: absence is the absence of a
+            measurement, NOT a measured zero, and a strict deserializer binding
+            this to a non-optional float WILL raise. Check `report_state` first.
+        report_state:
+          type: string
+          enum: [not_available, enabled_empty, populated, partial]
+          description: |
+            The document-level roll-up of the per-section outcomes (#3435).
+
+            `populated` and `enabled_empty` are only reported when EVERY
+            requested section was served AND every served section's scope could
+            reach the dimensions its writer stamps. `partial` means at least one
+            section could not be produced, or was produced under a scope that
+            cannot reach part of its population; `compliance_score` is absent in
+            that case. `not_available` means no requested section could be
+            produced.
+        section_row_total:
+          type: integer
+          description: |
+            The plain sum of the per-section counts. `total_records` is the
+            DISTINCT record count, so
+            total_records + overlapping_records == section_row_total.
+        overlapping_records:
+          type: integer
+          description: |
+            Records that are members of more than one section and are therefore
+            counted ONCE in total_records. A governed LLM call is one audit_logs
+            row carrying both plane='llm' and a decision id, so it belongs to
+            both llm_calls and decision_chain.
+        sections:
+          type: array
+          description: One honest outcome per REQUESTED data type, in request order.
+          items:
+            $ref: '#/components/schemas/SEBISectionStatus'
+
+    SEBISectionStatus:
+      type: object
+      description: |
+        The per-data-type outcome of one export (#3435). A section that could
+        not be produced appears here with its cause rather than being dropped,
+        because an absent section and a section with nothing in it read the same
+        way to a regulator.
+      properties:
+        data_type:
+          type: string
+          description: The requested section.
+        report_state:
+          type: string
+          enum: [not_available, enabled_empty, populated]
+          description: |
+            This section's three-state outcome. `partial` is a document-level
+            state only and never appears here.
+        record_count:
+          type: integer
+          description: |
+            Rows in the section. Always 0 when `error` is set; a reader must
+            consult report_state before believing it.
+        error:
+          type: string
+          description: |
+            The failure this section hit, verbatim. Always pairs with
+            report_state=not_available, and the section is then omitted from
+            records_by_type entirely rather than recorded as a zero.
+        error_kind:
+          type: string
+          enum: [store_absent, query_failed, section_not_implemented]
+          description: |
+            Classifies the failure, because report_state alone cannot.
+            `store_absent` is 42P01 only: an undefined COLUMN (42703) is schema
+            drift and lands in `query_failed`, because telling an operator to
+            apply a migration that is already applied sends them to the wrong
+            place.
+
+            `not_configured` is NOT in this enum, and the difference from
+            SEBIDataTypeRetentionStatus.error_kind is deliberate (#3435 R8).
+            Both fields are filled by one classifier
+            (`classifySectionError`), but they classify DIFFERENT error
+            populations, so listing the classifier's whole range on both
+            schemas documented a value each one cannot carry. Here the input
+            is an export section's failure: `errRetentionNotConfigured` is
+            constructed at exactly one site, inside `getRetentionConfig`, which
+            only the retention endpoint calls, so `not_configured` is
+            unreachable on an export section. The mirror value
+            `section_not_implemented` is unreachable on the retention row for
+            the same reason in the other direction.
+        scope_gap:
+          $ref: '#/components/schemas/SEBIScopeGap'
+
+    SEBIScopeGap:
+      type: object
+      nullable: true
+      description: |
+        Present when the section's read SUCCEEDED but ran under a tenancy scope
+        carrying no identifier for a dimension its writer stamps (#3435).
+
+        It is a third answer, distinct from both "could not be produced" and
+        "honestly empty": the query ran, under a key that cannot reach part or
+        all of the population. A section carrying this forces the document to
+        `partial`, which suppresses `compliance_score` and stops the export
+        reporting status `completed`. Integrators MUST NOT read a `scope_gap`
+        section as a statement that nothing occurred.
+      properties:
+        dimension:
+          type: string
+          enum: [client, org]
+          description: The missing tenancy dimension.
+        column:
+          type: string
+          description: |
+            The identity column whose population is out of reach, so a reader
+            can check the claim against the schema rather than take it.
+        reason:
+          type: string
+          description: The plain-language statement carried into the artifact.
 
     SEBIExportMetadata:
       type: object
@@ -11213,10 +11906,24 @@ components:
         generated_at:
           type: string
           format: date-time
-        org_id:
-          type: integer
+        tenant_id:
+          type: string
+          description: |
+            The scope key the export was produced for. Documented as
+            `org_id: integer` and never emitted under that name or that type
+            (#3435 R8): the struct field is
+            `TenantID string \`json:"tenant_id"\`` (SEBIExportMetadata). Same
+            correction as SEBIRetentionResponse.tenant_id.
         org_name:
           type: string
+        scope_key:
+          type: string
+          description: |
+            Every tenancy identifier the sections were actually matched against,
+            rendered per dimension (#3435). It is in the artifact because each
+            section's empty-state sentence is only true RELATIVE to the
+            identifiers searched, and a reader cannot check that without being
+            told what they were.
         requested_by:
           type: string
           description: User who requested the export
@@ -11224,7 +11931,19 @@ components:
           $ref: '#/components/schemas/SEBIComplianceFramework'
         retention_days:
           type: integer
-          description: Retention period (1825 days = 5 years)
+          description: |
+            The retention period SEBI REQUIRES, in days (1825 = 5 years). Read
+            it with `retention_configured` below. It is assigned at response
+            construction before any query runs and is never overwritten, so it
+            is not a measurement of this deployment (#3435 R8).
+        retention_configured:
+          type: boolean
+          description: |
+            Whether `retention_days` was read from this organisation's
+            configuration. ALWAYS `false` on this object: the export path does
+            not consult `audit_retention_config`. `GET
+            /api/v1/sebi/audit/retention` answers what is configured, per data
+            type, and reports `UNKNOWN` when nothing is.
         checksum:
           type: string
           description: SHA-256 checksum of export data
@@ -11436,8 +12155,16 @@ components:
       type: object
       description: 5-year retention compliance status
       properties:
-        org_id:
-          type: integer
+        tenant_id:
+          type: string
+          description: |
+            The scope key the retention rows were read for. This property was
+            documented as `org_id: integer` and the server has never emitted
+            it (#3435 R8): the struct field is
+            `TenantID string \`json:"tenant_id"\``
+            (sebi_audit_export_types.go SEBIRetentionStatusResponse), so the
+            documented property was absent from every response and the one
+            the server does send was undocumented.
         framework:
           $ref: '#/components/schemas/SEBIComplianceFramework'
         compliance_status:
@@ -11459,7 +12186,19 @@ components:
           $ref: '#/components/schemas/SEBIAuditDataType'
         retention_days:
           type: integer
-          description: Configured retention period
+          description: |
+            The retention period in force. READ IT WITH `retention_configured`:
+            when that is false this is the platform's compiled-in default, which
+            is what WOULD be applied and is not evidence that anything was
+            configured.
+        retention_configured:
+          type: boolean
+          description: |
+            Whether `retention_days` was read from this organisation's
+            audit_retention_config row. False on every stock deployment, where
+            that table ships empty; and structurally always false for
+            `llm_calls` and `pii_redactions`, which audit_retention_defaults
+            does not seed under those keys.
         oldest_record:
           type: string
           format: date-time
@@ -11480,6 +12219,27 @@ components:
         last_cleanup:
           type: string
           format: date-time
+        report_state:
+          type: string
+          enum: [not_available, enabled_empty, populated]
+          description: |
+            Whether the figures on this row were actually READ. `not_available`
+            means the retention configuration, the record counts, or both could
+            not be measured, and the row is then not a compliance assertion.
+        error:
+          type: string
+          description: The verbatim cause when report_state is not_available.
+        error_kind:
+          type: string
+          enum: [store_absent, query_failed, not_configured]
+          description: |
+            Classifies that cause. `not_configured` is the common one: the
+            retention read RAN and found no row.
+
+            `section_not_implemented` is NOT in this enum, though the shared
+            classifier can produce it (#3435 R8). It is constructed at exactly
+            one site, the export dispatcher's default arm, which this endpoint
+            never reaches. See SEBISectionStatus.error_kind for the mirror.
 
     SEBIComplianceReadiness:
       type: object
@@ -11515,13 +12275,26 @@ components:
           description: What the check verifies
         status:
           type: string
-          enum: [pass, fail, warning]
+          enum: [pass, fail, warning, unknown]
+          description: |
+            `unknown` was MISSING from this enum and is emitted on the stock
+            path (#3435 R8), so a generated strict client failed to
+            deserialise GET /api/v1/sebi/audit/readiness on every stock
+            deployment. Two of the five checks assign it
+            (sebi_audit_export_service.go, the Retention Configuration and PII
+            Detection Policies checks) whenever the control could not be
+            INSPECTED, which is not an edge case: `audit_retention_config`
+            ships empty and the `policies` relation the PII check reads exists
+            in no migration. A control this deployment cannot inspect must not
+            be reported as one it has, so `unknown` is distinct from `fail`
+            and fails closed on `ready`.
         details:
           type: string
           description: Additional information
-        message:
-          type: string
-          description: Status message (null if pass)
+        # `message` was documented here and is emitted by nothing (#3435 R8):
+        # SEBIComplianceCheck has four fields (Name, Description, Status,
+        # Details) and no Message. Removed rather than left as a field a
+        # generated client would expose and never populate.
 
     SEBIViolationsSummary:
       type: object
@@ -13139,18 +13912,78 @@ components:
         avg_latency_ms:
           type: number
           format: double
+          nullable: true
+          description: |
+            Mean ENFORCEMENT latency in milliseconds over the rows in the range
+            that carried a measurement, or `null` when none did (#3424).
+
+            `null` is not `0`. Whole planes record no enforcement duration by
+            design (HITL approvals, workflow lifecycle rows, the connector-exec
+            MCP closure), and provider round trips on the LLM plane are a
+            different quantity and are excluded rather than averaged in, so a
+            range whose traffic was entirely one of those has nothing to report.
+            It used to be coalesced to 0, which reads exactly like a measured
+            zero. Clients MUST accept null here; a strict deserializer binding
+            this to a non-optional float will raise. It can also be BELOW 1:
+            response_time_ms is whole milliseconds, so a decision completing in
+            under a millisecond contributes a 0.
+
+            Read latency_sample_count to tell "fast" from "empty".
+        latency_sample_count:
+          type: integer
+          description: |
+            How many rows backed avg_latency_ms. 0 exactly when avg_latency_ms
+            is null. Never greater than `total`: both are narrowed to the same
+            verdict rows.
         top_policies:
           type: array
-          description: Top 10 policies by trigger count
+          description: |
+            Top 10 policies by trigger count. A row is counted once per DISTINCT
+            policy it recorded, so these counts do not sum to `total` and are not
+            a share of it. Compare the array length against `total_policies`
+            before presenting it as the complete set.
+
+            There is no `top_policies_unavailable` flag on this endpoint, unlike
+            the compliance summary: this is the regulator-facing artifact, so a
+            failed or timed-out aggregation fails the WHOLE response with a 500
+            rather than returning a table that quietly omits rows.
           items:
             type: object
             properties:
               policy_name:
                 type: string
+                description: |
+                  The policy identity resolved for this group by the shared
+                  identity chain. IDENTITY-first: it carries a raw policy
+                  IDENTIFIER on every row whose writer stamped one, and a display
+                  NAME only when it did not. Read `identity_is_name` before
+                  rendering; styling an identifier as though it were a display
+                  name is exactly the defect #3347 fixed.
+              identity_is_name:
+                type: boolean
+                description: |
+                  Whether `policy_name` holds a display NAME (true) or a raw
+                  IDENTIFIER (false).
+
+                  It is a property of the RESOLVED STRING, NOT a claim about what
+                  the writer recorded. Since #3365 a decide-plane row stamps
+                  `policy_names` alongside `policy_ids`, so such a row records a
+                  name AND reports false here, because the chain resolves the id
+                  arm first. Render a false value with a NEUTRAL identifier
+                  affordance; a "name not recorded" affordance would assert a
+                  falsehood about that row.
               trigger_count:
                 type: integer
               block_count:
                 type: integer
+        total_policies:
+          type: integer
+          description: |
+            How many DISTINCT policies fired in the range BEFORE the 10-entry
+            `top_policies` limit truncated it. 0 when nothing fired. On this
+            REGULATOR-FACING report an undisclosed truncation is the sharper of
+            the two surfaces' risks: when this exceeds the array length, disclose
+            "top 10 of N" rather than implying the remainder does not exist.
 
     SessionSummaryResponse:
       type: object
@@ -13228,6 +14061,21 @@ components:
               avg_latency_ms:
                 type: number
                 format: double
+                nullable: true
+                description: |
+                  Mean latency in milliseconds over the rows of this
+                  request_type in this bucket that carried a measurement, or
+                  `null` when none did (#3433). Same contract as the
+                  bucket-level `avg_latency_ms` below, applied per
+                  request_type - and `null` is the NORMAL answer for a
+                  request_type whose writers record no duration, which is why
+                  it is per-request_type rather than only on the bucket.
+              latency_sample_count:
+                type: integer
+                description: |
+                  How many rows of this request_type backed avg_latency_ms. 0
+                  exactly when avg_latency_ms is null, and never greater than
+                  `count`.
         tokens_used:
           type: integer
           description: Per-request token sum over governed audit rows (authoritative gateway view)
@@ -13237,6 +14085,35 @@ components:
         avg_latency_ms:
           type: number
           format: double
+          nullable: true
+          description: |
+            Mean latency in milliseconds over the rows in this bucket that
+            carried a measurement, or `null` when none did (#3433, for parity
+            with `/api/v1/audit/summary` and `/api/v1/audit/report`).
+
+            `null` is not `0`. Whole planes record no duration by design (HITL
+            approvals, workflow lifecycle rows, the connector-exec MCP
+            closure), so a bucket whose traffic was entirely one of those has
+            nothing to report. It used to be coalesced to 0, which reads
+            exactly like a measured zero. Clients MUST accept null here; a
+            strict deserializer binding this to a non-optional float will
+            raise. It can also be BELOW 1: response_time_ms is whole
+            milliseconds, so a decision completing in under a millisecond
+            contributes a 0.
+
+            Read latency_sample_count to tell "fast" from "empty".
+
+            WHICH quantity this is differs from the compliance summary's tile.
+            This surface sits beside provider tokens and cost, so it
+            deliberately keeps the LLM plane's provider round trip in the
+            average; the audit page's tile is the ENFORCEMENT number and
+            excludes that plane. Naming the three quantities
+            `response_time_ms` carries is tracked in #3431.
+        latency_sample_count:
+          type: integer
+          description: |
+            How many rows backed avg_latency_ms. 0 exactly when avg_latency_ms
+            is null, and never greater than `total`.
         usage_metrics:
           $ref: '#/components/schemas/SessionSummaryUsageMetrics'
 
@@ -13373,8 +14250,6 @@ components:
         policy_type:
           type: string
         tenant_id:
-          type: string
-        organization_id:
           type: string
         tool_signature:
           type: string
@@ -13943,7 +14818,17 @@ components:
                 type: string
               status:
                 type: string
-                enum: [pass, fail, warning]
+                enum: [pass, fail, warning, unknown]
+                description: |
+                  `unknown` was MISSING and is emitted routinely (#3435 R8),
+                  the same defect corrected on SEBIComplianceCheck.status in
+                  the same PR. `OJKCheckUnknown = "unknown"` (ojk/types.go) is
+                  assigned by every check in ojk/readiness.go that could not
+                  MEASURE the control it names, and four of the five checks
+                  read the database, so an unreachable database puts four of
+                  them here. The exception is the first, Data Retention, which
+                  reads configuration rather than a table and is therefore only
+                  ever `pass` or `fail`.
               details:
                 type: string
         recommendations:

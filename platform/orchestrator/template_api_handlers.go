@@ -13,8 +13,10 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // TemplateAPIHandler handles HTTP requests for template management
@@ -122,6 +124,29 @@ func (h *TemplateAPIHandler) HandleApplyTemplate(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Decision 5 (#3490): applying a template CREATES a policy, and a policy
+	// is selected by org_id. PolicyRepository.Create refuses a blank
+	// organisation for that reason, so this route has to supply one - it is
+	// the second caller of Create and the one that carried no org at all.
+	//
+	// Refused rather than defaulted to the tenant. Stamping this row with the
+	// Basic-auth username is exactly what Decision 5 removes: in any
+	// deployment whose licence org differs from that string the policy would
+	// be created, listed, and enforced on nobody. A 401 naming the header is
+	// the honest answer; a 201 that governs no one is not.
+	//
+	// Unlike the policy-CRUD prefixes, /api/v1/templates is NOT proxied by
+	// the agent (platform/agent/proxy.go registers no route for it), so no
+	// gateway Sets this header here. The route is reached directly on the
+	// orchestrator, which is an operator plane, and the operator supplies the
+	// organisation the policy is being authored for.
+	orgID := h.getOrgID(r)
+	if orgID == "" {
+		h.writeError(w, http.StatusUnauthorized, "ORG_REQUIRED",
+			"Missing organisation: applying a template creates a policy, and a policy is selected by its organisation. Send X-Org-ID.")
+		return
+	}
+
 	var req ApplyTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON body")
@@ -129,7 +154,7 @@ func (h *TemplateAPIHandler) HandleApplyTemplate(w http.ResponseWriter, r *http.
 	}
 
 	userID := h.getUserID(r)
-	response, err := h.service.ApplyTemplate(r.Context(), tenantID, templateID, &req, userID)
+	response, err := h.service.ApplyTemplate(r.Context(), tenantID, orgID, templateID, &req, userID)
 	if err != nil {
 		if validationErr, ok := err.(*TemplateValidationError); ok {
 			h.writeValidationError(w, validationErr.Errors)
@@ -139,7 +164,12 @@ func (h *TemplateAPIHandler) HandleApplyTemplate(w http.ResponseWriter, r *http.
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Template not found")
 			return
 		}
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		// The internal error is logged, not served. It is built by wrapping
+		// repository and database errors, which carry table names, column
+		// names and connection detail; this route answers on the strength of
+		// two identity headers and nothing else.
+		log.Printf("[templates] apply %s failed for tenant=%s org=%s: %v", templateID, tenantID, orgID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to apply template")
 		return
 	}
 
@@ -211,6 +241,18 @@ func (h *TemplateAPIHandler) getTenantID(r *http.Request) string {
 		return tenantID
 	}
 	return ""
+}
+
+// getOrgID extracts the organisation from the request.
+//
+// Header only, and deliberately no context fallback: the two context keys
+// getTenantID falls back to are set by middleware that predates the org, so a
+// fallback here would silently resolve to "" and reintroduce the blank-org
+// write the repository now refuses. Trimmed because the header is
+// operator-typed on this route rather than gateway-Set, and " acme" scopes to
+// nothing.
+func (h *TemplateAPIHandler) getOrgID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Org-ID"))
 }
 
 // getUserID extracts user ID from request

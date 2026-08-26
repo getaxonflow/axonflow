@@ -79,6 +79,7 @@ func expectDecideWriterRow(mock sqlmock.Sqlmock, wantEmail string, wantSessionID
 			sqlmock.AnyArg(), // correlation_id
 			sqlmock.AnyArg(), // redacted_fields
 			wantSessionID,    // session_id — trust-gated (#2896)
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }

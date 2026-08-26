@@ -96,6 +96,61 @@ const (
 // needs to recognize it.
 const DecisionOverrideLifecycle = "override_lifecycle"
 
+// OverrideEventRequestTypes is the audit_logs.request_type vocabulary for
+// override events, on EVERY plane that writes one. It is the discriminator the
+// comment above names: override rows "are identified by their RequestType
+// (IsOverrideEventType), not by policy_decision".
+//
+// That distinction is load-bearing rather than stylistic, because the two
+// writers disagree on policy_decision and agree on request_type:
+//
+//	orchestrator LogOverrideEvent   request_type = the event type
+//	                                policy_decision = override_lifecycle
+//	agent writeOverrideUsedEvent    request_type = "override_used"
+//	(mcp_richer_context.go)         policy_decision = "allowed"
+//
+// So a reader that excludes override events on policy_decision alone catches
+// the orchestrator plane and silently keeps the MCP one - and the MCP one is
+// the override_used row, which stamps the policy the override BYPASSED. On an
+// aggregate that ranks policies by how often they fired, that row promotes the
+// one policy that was NOT enforced.
+//
+// Kept here, not imported from platform/orchestrator, because platform/shared
+// is a leaf package (the orchestrator imports it, not the reverse).
+// TestOverrideEventRequestTypesMatchOrchestrator in the orchestrator package
+// pins these against IsOverrideEventType so the two cannot drift.
+var OverrideEventRequestTypes = []string{
+	"override_created",
+	"override_used",
+	"override_expired",
+	"override_revoked",
+}
+
+// IsOverrideEventRequestType reports whether an audit_logs.request_type value
+// is an override event on any plane. The SQL-side equivalent is
+// OverrideEventExclusionSQL.
+func IsOverrideEventRequestType(requestType string) bool {
+	for _, t := range OverrideEventRequestTypes {
+		if requestType == t {
+			return true
+		}
+	}
+	return false
+}
+
+// OverrideEventExclusionSQL is the predicate fragment excluding override events
+// from an aggregate, to be ANDed onto a caller's WHERE clause. It is safe as a
+// bare literal comparison for the same reason latency.go's is:
+// audit_logs.request_type is VARCHAR(50) NOT NULL (migration core/059), so
+// there is no NULL row for `<> ALL` to swallow.
+func OverrideEventExclusionSQL(column string) string {
+	quoted := make([]string, 0, len(OverrideEventRequestTypes))
+	for _, t := range OverrideEventRequestTypes {
+		quoted = append(quoted, "'"+t+"'")
+	}
+	return column + " <> ALL (ARRAY[" + strings.Join(quoted, ", ") + "])"
+}
+
 // All returns the canonical verdict set, in a stable order suitable for
 // building filter allowlists, API docs, and exhaustiveness tests. It does NOT
 // include DecisionOverrideLifecycle — that is a non-verdict marker, not a

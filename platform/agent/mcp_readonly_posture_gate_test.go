@@ -60,9 +60,10 @@ func TestReadOnlyPosture_WriteBlockedAtGate(t *testing.T) {
 			mcpVerdictBlocked, // canonical 'blocked'
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			PlaneMCP,
-			nil, // correlation_id
-			nil, // redacted_fields NULL on a block
-			nil, // session_id NULL (#2753)
+			nil,              // correlation_id
+			nil,              // redacted_fields NULL on a block
+			nil,              // session_id NULL (#2753)
+			sqlmock.AnyArg(), // response_time_ms (#3424)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

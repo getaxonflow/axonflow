@@ -55,7 +55,7 @@ func TestPolicyService_Integration_CreatePolicy(t *testing.T) {
 		Enabled:  true,
 	}
 
-	policy, err := service.CreatePolicy(ctx, tenantID, req, "test-user")
+	policy, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "test-user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
@@ -95,7 +95,7 @@ func TestPolicyService_Integration_CreatePolicy_ValidationError(t *testing.T) {
 		},
 	}
 
-	_, err := service.CreatePolicy(ctx, "tenant", req, "user")
+	_, err := service.CreatePolicy(ctx, "tenant", "tenant", req, "user")
 	if err == nil {
 		t.Fatal("Expected validation error")
 	}
@@ -135,13 +135,13 @@ func TestPolicyService_Integration_GetPolicy(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
 
 	// Get the policy
-	policy, err := service.GetPolicy(ctx, tenantID, created.ID)
+	policy, err := service.GetPolicy(ctx, tenantID, tenantID, created.ID)
 	if err != nil {
 		t.Fatalf("GetPolicy() error = %v", err)
 	}
@@ -180,7 +180,7 @@ func TestPolicyService_Integration_ListPolicies(t *testing.T) {
 			Priority: i * 10,
 			Enabled:  true,
 		}
-		_, err := service.CreatePolicy(ctx, tenantID, req, "user")
+		_, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 		if err != nil {
 			t.Fatalf("CreatePolicy() error = %v", err)
 		}
@@ -191,7 +191,7 @@ func TestPolicyService_Integration_ListPolicies(t *testing.T) {
 		Page:     1,
 		PageSize: 10,
 	}
-	response, err := service.ListPolicies(ctx, tenantID, params)
+	response, err := service.ListPolicies(ctx, tenantID, tenantID, params)
 	if err != nil {
 		t.Fatalf("ListPolicies() error = %v", err)
 	}
@@ -233,7 +233,7 @@ func TestPolicyService_Integration_UpdatePolicy(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
@@ -246,7 +246,7 @@ func TestPolicyService_Integration_UpdatePolicy(t *testing.T) {
 		Description: &newDesc,
 	}
 
-	updated, err := service.UpdatePolicy(ctx, tenantID, created.ID, updateReq, "updater")
+	updated, err := service.UpdatePolicy(ctx, tenantID, tenantID, created.ID, updateReq, "updater")
 	if err != nil {
 		t.Fatalf("UpdatePolicy() error = %v", err)
 	}
@@ -285,7 +285,7 @@ func TestPolicyService_Integration_UpdatePolicy_ValidationError(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
@@ -296,7 +296,7 @@ func TestPolicyService_Integration_UpdatePolicy_ValidationError(t *testing.T) {
 		Name: &shortName,
 	}
 
-	_, err = service.UpdatePolicy(ctx, tenantID, created.ID, updateReq, "user")
+	_, err = service.UpdatePolicy(ctx, tenantID, tenantID, created.ID, updateReq, "user")
 	if err == nil {
 		t.Fatal("Expected validation error")
 	}
@@ -333,19 +333,19 @@ func TestPolicyService_Integration_DeletePolicy(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
 
 	// Delete
-	err = service.DeletePolicy(ctx, tenantID, created.ID, "deleter")
+	err = service.DeletePolicy(ctx, tenantID, tenantID, created.ID, "deleter")
 	if err != nil {
 		t.Fatalf("DeletePolicy() error = %v", err)
 	}
 
 	// Verify deleted
-	policy, err := service.GetPolicy(ctx, tenantID, created.ID)
+	policy, err := service.GetPolicy(ctx, tenantID, tenantID, created.ID)
 	if err != nil {
 		t.Fatalf("GetPolicy() error = %v", err)
 	}
@@ -380,7 +380,7 @@ func TestPolicyService_Integration_TestPolicy(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
@@ -391,7 +391,7 @@ func TestPolicyService_Integration_TestPolicy(t *testing.T) {
 		RequestType: "query",
 	}
 
-	result, err := service.TestPolicy(ctx, tenantID, created.ID, testReq)
+	result, err := service.TestPolicy(ctx, tenantID, tenantID, created.ID, testReq)
 	if err != nil {
 		t.Fatalf("TestPolicy() error = %v", err)
 	}
@@ -412,7 +412,7 @@ func TestPolicyService_Integration_TestPolicy(t *testing.T) {
 		RequestType: "query",
 	}
 
-	result2, err := service.TestPolicy(ctx, tenantID, created.ID, testReq2)
+	result2, err := service.TestPolicy(ctx, tenantID, tenantID, created.ID, testReq2)
 	if err != nil {
 		t.Fatalf("TestPolicy() error = %v", err)
 	}
@@ -438,7 +438,7 @@ func TestPolicyService_Integration_TestPolicy_NotFound(t *testing.T) {
 		Query: "test",
 	}
 
-	_, err := service.TestPolicy(ctx, "tenant", "non-existent-id", testReq)
+	_, err := service.TestPolicy(ctx, "tenant", "tenant", "non-existent-id", testReq)
 	if err == nil {
 		t.Fatal("Expected error for non-existent policy")
 	}
@@ -470,14 +470,14 @@ func TestPolicyService_Integration_GetPolicyVersions(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
 
 	// Update it
 	newName := "Updated for versions"
-	_, err = service.UpdatePolicy(ctx, tenantID, created.ID, &UpdatePolicyRequest{Name: &newName}, "user")
+	_, err = service.UpdatePolicy(ctx, tenantID, tenantID, created.ID, &UpdatePolicyRequest{Name: &newName}, "user")
 	if err != nil {
 		t.Fatalf("UpdatePolicy() error = %v", err)
 	}
@@ -522,14 +522,14 @@ func TestPolicyService_Integration_ExportPolicies(t *testing.T) {
 			Priority: i * 10,
 			Enabled:  true,
 		}
-		_, err := service.CreatePolicy(ctx, tenantID, req, "user")
+		_, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 		if err != nil {
 			t.Fatalf("CreatePolicy() error = %v", err)
 		}
 	}
 
 	// Export
-	response, err := service.ExportPolicies(ctx, tenantID)
+	response, err := service.ExportPolicies(ctx, tenantID, tenantID)
 	if err != nil {
 		t.Fatalf("ExportPolicies() error = %v", err)
 	}
@@ -589,7 +589,7 @@ func TestPolicyService_Integration_ImportPolicies(t *testing.T) {
 		OverwriteMode: "skip",
 	}
 
-	result, err := service.ImportPolicies(ctx, tenantID, importReq, "importer")
+	result, err := service.ImportPolicies(ctx, tenantID, tenantID, importReq, "importer")
 	if err != nil {
 		t.Fatalf("ImportPolicies() error = %v", err)
 	}
@@ -624,7 +624,7 @@ func TestPolicyService_Integration_ImportPolicies_ValidationError(t *testing.T) 
 		},
 	}
 
-	_, err := service.ImportPolicies(ctx, "tenant", importReq, "user")
+	_, err := service.ImportPolicies(ctx, "tenant", "tenant", importReq, "user")
 	if err == nil {
 		t.Fatal("Expected validation error")
 	}
@@ -656,7 +656,7 @@ func TestPolicyService_Integration_TestPolicy_UserConditions(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
@@ -667,7 +667,7 @@ func TestPolicyService_Integration_TestPolicy_UserConditions(t *testing.T) {
 		User:  map[string]interface{}{"role": "admin"},
 	}
 
-	result, err := service.TestPolicy(ctx, tenantID, created.ID, testReq)
+	result, err := service.TestPolicy(ctx, tenantID, tenantID, created.ID, testReq)
 	if err != nil {
 		t.Fatalf("TestPolicy() error = %v", err)
 	}
@@ -682,7 +682,7 @@ func TestPolicyService_Integration_TestPolicy_UserConditions(t *testing.T) {
 		User:  map[string]interface{}{"role": "user"},
 	}
 
-	result2, err := service.TestPolicy(ctx, tenantID, created.ID, testReq2)
+	result2, err := service.TestPolicy(ctx, tenantID, tenantID, created.ID, testReq2)
 	if err != nil {
 		t.Fatalf("TestPolicy() error = %v", err)
 	}
@@ -718,7 +718,7 @@ func TestPolicyService_Integration_TestPolicy_ContextConditions(t *testing.T) {
 		Enabled:  true,
 	}
 
-	created, err := service.CreatePolicy(ctx, tenantID, req, "user")
+	created, err := service.CreatePolicy(ctx, tenantID, tenantID, req, "user")
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
 	}
@@ -729,7 +729,7 @@ func TestPolicyService_Integration_TestPolicy_ContextConditions(t *testing.T) {
 		Context: map[string]interface{}{"env": "production"},
 	}
 
-	result, err := service.TestPolicy(ctx, tenantID, created.ID, testReq)
+	result, err := service.TestPolicy(ctx, tenantID, tenantID, created.ID, testReq)
 	if err != nil {
 		t.Fatalf("TestPolicy() error = %v", err)
 	}
@@ -744,7 +744,7 @@ func TestPolicyService_Integration_TestPolicy_ContextConditions(t *testing.T) {
 		Context: map[string]interface{}{"env": "staging"},
 	}
 
-	result2, err := service.TestPolicy(ctx, tenantID, created.ID, testReq2)
+	result2, err := service.TestPolicy(ctx, tenantID, tenantID, created.ID, testReq2)
 	if err != nil {
 		t.Fatalf("TestPolicy() error = %v", err)
 	}

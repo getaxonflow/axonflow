@@ -157,8 +157,18 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     response_sample TEXT,
     compliance_flags JSONB,
     security_metrics JSONB,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- #3424: the surface discriminator (migration core/119 adds it on a real
+    -- deployment; this fallback DDL has to declare it too). The portal's Avg
+    -- Latency tile only averages rows that NAME their plane -- an unstamped,
+    -- measured row is a pre-119 provider round trip and is a different
+    -- quantity -- so seeded rows must stamp one or they go quiet in the tile.
+    plane VARCHAR(32)
 );
+
+-- Belt and braces for the normal path, where the table already exists from the
+-- agent's migrations and the CREATE above is a no-op.
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS plane VARCHAR(32);
 
 -- Insert sample audit logs for dashboard visualization
 -- Mix of allowed, blocked, and various policy triggers
@@ -243,6 +253,21 @@ INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_rol
  'Customer PAN is ABCDE1234F for tax records', 'hash_015', 'flagged',
  '{"policy_violated": "pii_pan_detection", "pii_type": "pan", "action": "redact", "severity": "medium"}',
  'openai', 'gpt-4', 51, 130, 0.003900, '["pan_number"]', '{"rbi_compliance": true}', NOW() - INTERVAL '6 hours');
+
+
+-- #3424: stamp the surface each seeded row represents. These rows carry a
+-- response_time_ms, and the portal's Avg Latency tile averages only rows whose
+-- plane column names an ENFORCEMENT surface: an unstamped measured row can only
+-- be a pre-migration-119 provider round trip, which is a different quantity
+-- (see sharedaudit.LatencyEnforcementPredicate). Without this the whole demo
+-- dataset drops out of the tile and it reads N/A on the demo path.
+--
+-- Rows carrying a provider ARE the provider round trip and are stamped 'llm',
+-- which the tile correctly excludes; the block/flag rows are decisions.
+UPDATE audit_logs
+   SET plane = CASE WHEN provider IS NOT NULL THEN 'llm' ELSE 'decision' END
+ WHERE id LIKE 'audit\_0%' ESCAPE '\'
+   AND plane IS NULL;
 
 -- ============================================================================
 -- SUMMARY

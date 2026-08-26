@@ -95,9 +95,12 @@ func TestOrchestratorMainPoolConnectsAsAppRole_RealPostgres(t *testing.T) {
 }
 
 // TestOrchestratorRunGoCallsOpenAppRoleConnection is the source-level
-// regression guard for the orchestrator's usageDB site + the 4 auxiliary
-// pools that the §3 audit folded into the same fix (audit_logger,
-// db_dynamic_policies main+metrics, dynamic_policy_engine fallback).
+// regression guard for the orchestrator's usageDB site + the auxiliary pools
+// that the §3 audit folded into the same fix (audit_logger, db_dynamic_policies
+// main+metrics). #3319: the dynamic_policy_engine.go case was removed here —
+// that file (the retired in-memory DynamicPolicyEngine's fallback dial) no
+// longer exists; there is one engine now, and its dial is covered by the
+// db_dynamic_policies.go case below.
 //
 // Mutation-test: reverting any of the audited call sites to raw sql.Open
 // fails this test with an actionable file:line message.
@@ -121,15 +124,15 @@ func TestOrchestratorRunGoCallsOpenAppRoleConnection(t *testing.T) {
 			mustNot:  `db, err := sql.Open("postgres", databaseURL)`,
 		},
 		{
+			// #3319: the dial moved into connectDB (called both from the
+			// constructor and, lazily, from refreshPolicies when e.db is
+			// still nil), so the DSN and retry count are now the engine's
+			// own dbURL field and a maxRetries parameter instead of a bare
+			// local `dbURL`/literal `3` — still routed through
+			// agent.OpenAppRoleConnection, never a raw sql.Open.
 			name:     "db_dynamic_policies.go",
 			path:     "db_dynamic_policies.go",
-			mustHave: `agent.OpenAppRoleConnection(bootCtx, dbURL, 3)`,
-			mustNot:  `db, err := sql.Open("postgres", dbURL)`,
-		},
-		{
-			name:     "dynamic_policy_engine.go",
-			path:     "dynamic_policy_engine.go",
-			mustHave: `db, err := agent.OpenAppRoleConnection(bootCtx, dbURL, 3)`,
+			mustHave: `agent.OpenAppRoleConnection(bootCtx, e.dbURL, maxRetries)`,
 			mustNot:  `db, err := sql.Open("postgres", dbURL)`,
 		},
 		{
@@ -200,8 +203,10 @@ func TestConnectorRegistryEnvNameDriftGuard(t *testing.T) {
 }
 
 // TestBootLogCanonicalShape pins the boot-log shape across all 9 pool sites
-// that emit a `connected as current_user=` line. The Session 20 follow-up
-// normalized 3 divergent shapes into one canonical:
+// that emit a `connected as current_user=` line (#3319: was 10 sites before
+// dynamic_policy_engine.go — the retired in-memory DynamicPolicyEngine's
+// fallback dial — was deleted along with that engine). The Session 20
+// follow-up normalized 3 divergent shapes into one canonical:
 //
 //	connected as current_user=<role> (UseAppRoleEnabled=<bool>, <ENV_NAME>=<bool>)
 //
@@ -239,7 +244,6 @@ func TestBootLogCanonicalShape(t *testing.T) {
 		"run.go",
 		"audit_logger.go",
 		"db_dynamic_policies.go",
-		"dynamic_policy_engine.go",
 		"../connectors/registry/postgres_storage.go",
 		"../../ee/platform/customer-portal/main.go",
 	}
@@ -293,9 +297,13 @@ func TestBootLogCanonicalShape(t *testing.T) {
 	// boot-log line entirely (rather than mangling its shape), the per-file
 	// subtest passes (zero emitters in that file) but the global count
 	// drops below 9 and this assertion catches it.
-	// 10th emitter: the dynamic-policy engine's BYPASSRLS gate-cache refresh
-	// pool (#3039).
-	const wantEmitters = 10
+	//
+	// #3319: was 10 (dynamic_policy_engine.go's fallback-engine dial
+	// contributed a 10th emitter); that file and the engine it dialed for
+	// no longer exist, so db_dynamic_policies.go's 3 emitters (main pool,
+	// metrics pool, and the BYPASSRLS gate-cache refresh pool, #3039) are
+	// now the only dynamic-policy-engine sites.
+	const wantEmitters = 9
 	if totalEmitters != wantEmitters {
 		t.Errorf("found %d boot-log emitters across %d files; want %d — a site was added or removed without updating this audit",
 			totalEmitters, len(files), wantEmitters)

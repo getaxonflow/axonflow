@@ -330,31 +330,18 @@ func TestInvalidateCachedDeniedDecisions_NoopWithoutPolicy(t *testing.T) {
 	}
 }
 
-// TestNullableUUID_ValidUUID covers the UUID-parse happy path.
-func TestNullableUUID_ValidUUID(t *testing.T) {
-	got := nullableUUID("550e8400-e29b-41d4-a716-446655440000")
-	if !got.Valid {
-		t.Error("expected Valid=true for well-formed UUID")
-	}
-	if got.String != "550e8400-e29b-41d4-a716-446655440000" {
-		t.Errorf("String: got %q, want well-formed UUID", got.String)
-	}
-}
-
-// TestNullableUUID_Empty returns an invalid NullString (= NULL in DB).
-func TestNullableUUID_Empty(t *testing.T) {
-	got := nullableUUID("")
-	if got.Valid {
-		t.Error("expected Valid=false for empty input")
-	}
-}
-
-// TestNullableUUID_NonUUID exercises the community-mode slug path
-// ("local-dev-org" fails uuid.Parse → NULL insert). Without this helper the
-// driver would reject the insert with "invalid input syntax for type uuid".
-func TestNullableUUID_NonUUID(t *testing.T) {
-	got := nullableUUID("local-dev-org")
-	if got.Valid {
-		t.Error("expected Valid=false for non-UUID slug (must insert NULL, not error)")
-	}
-}
+// The three TestNullableUUID_* cases were deleted here by #3334, with the
+// helper they covered.
+//
+// nullableUUID existed for ONE caller: the policy_overrides INSERT, whose
+// organization_id column was typed uuid until migration core/133 retyped it to
+// text. It coerced a non-UUID org id ("local-dev-org") to NULL so the driver
+// would not reject the insert. Migration core/166 drops that column and the
+// INSERT writes org_id, VARCHAR since core/110, which needs no coercion.
+//
+// The behaviour those tests protected - a community-mode org id must not 500
+// the override create path - is now a property of the SCHEMA rather than of a
+// function, and is covered end-to-end by the override create/read legs of
+// runtime-e2e/3062_override_identity_gate against a real Postgres. Keeping
+// unit tests for a deleted helper was not an option; keeping the helper for
+// the sake of its tests would have been worse.

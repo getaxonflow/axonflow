@@ -41,6 +41,14 @@ func resolveCORSOptions() cors.Options {
 	return policy.Apply(cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"*"},
+		// #1431. AllowedHeaders governs REQUEST headers; it does nothing for
+		// response headers, and neither Deprecation nor Link is on the CORS
+		// safelist. Without this a browser client gets null from
+		// response.headers.get("Deprecation") - so the deprecation signal on
+		// the legacy policy paths, and the Link naming the successor that the
+		// public docs tell clients to follow, would be invisible to the
+		// largest class of caller there is.
+		ExposedHeaders: []string{"Deprecation", "Link"},
 	})
 }
 

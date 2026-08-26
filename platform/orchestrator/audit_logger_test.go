@@ -26,6 +26,21 @@ import (
 	"github.com/lib/pq"
 )
 
+// ptrInt64 lifts a measured millisecond duration onto AuditEntry.ResponseTime,
+// which is a *int64 so that "this writer measured nothing" is representable
+// (#3424). Test-only sugar.
+func ptrInt64(v int64) *int64 { return &v }
+
+// ptrTokens / ptrCost do the same for AuditEntry.TokensUsed and .Cost, which
+// are pointers so that "this writer recorded no provider usage" is
+// representable (#3427 M19). That is weaker than "never called a provider":
+// LogBlockedResponse runs after the forward and records none of the usage it
+// is handed. Test-only sugar. A test that means "no usage recorded" leaves the
+// field nil rather than passing these a 0 - the whole point of the pointer is
+// that those are different facts.
+func ptrTokens(v int) *int       { return &v }
+func ptrCost(v float64) *float64 { return &v }
+
 // TestGenerateAuditID verifies audit ID generation
 func TestGenerateAuditID(t *testing.T) {
 	// Generate multiple IDs
@@ -445,9 +460,9 @@ func TestBatchWriter_Write(t *testing.T) {
 					PolicyDetails:   map[string]interface{}{"risk_score": 0.1},
 					Provider:        "openai",
 					Model:           "gpt-4",
-					ResponseTime:    150,
-					TokensUsed:      100,
-					Cost:            0.005,
+					ResponseTime:    ptrInt64(150), // #3424: measured provider round trip
+					TokensUsed:      ptrTokens(100),
+					Cost:            ptrCost(0.005),
 					RedactedFields:  []string{},
 					ErrorMessage:    "",
 					ResponseSample:  "The weather is sunny",
@@ -499,9 +514,9 @@ func TestBatchWriter_Write(t *testing.T) {
 					PolicyDetails:   map[string]interface{}{"risk_score": 0.3},
 					Provider:        "anthropic",
 					Model:           "claude-sonnet-4",
-					ResponseTime:    200,
-					TokensUsed:      150,
-					Cost:            0.008,
+					ResponseTime:    ptrInt64(200), // #3424: measured provider round trip
+					TokensUsed:      ptrTokens(150),
+					Cost:            ptrCost(0.008),
 					RedactedFields:  []string{"email"},
 					ErrorMessage:    "",
 					ResponseSample:  "Profile updated",
@@ -524,9 +539,9 @@ func TestBatchWriter_Write(t *testing.T) {
 					PolicyDetails:   map[string]interface{}{"risk_score": 0.6},
 					Provider:        "openai",
 					Model:           "gpt-4",
-					ResponseTime:    180,
-					TokensUsed:      120,
-					Cost:            0.006,
+					ResponseTime:    ptrInt64(180), // #3424: measured provider round trip
+					TokensUsed:      ptrTokens(120),
+					Cost:            ptrCost(0.006),
 					RedactedFields:  []string{"account_number"},
 					ErrorMessage:    "",
 					ResponseSample:  "Balance: [REDACTED]",

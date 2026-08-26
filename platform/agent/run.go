@@ -557,18 +557,29 @@ type MediaContentRequest struct {
 }
 
 type ClientResponse struct {
-	Success       bool                   `json:"success"`
-	Data          interface{}            `json:"data,omitempty"`
-	Result        string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
-	PlanID        string                 `json:"plan_id,omitempty"`  // For multi-agent planning
-	Steps         []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
-	Metadata      map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
-	Error         string                 `json:"error,omitempty"`
-	Blocked       bool                   `json:"blocked"`
-	BlockReason   string                 `json:"block_reason,omitempty"`
-	PolicyInfo    *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
-	BudgetInfo    *BudgetInfo            `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
-	MediaAnalysis interface{}            `json:"media_analysis,omitempty"` // Media governance analysis results
+	Success     bool                   `json:"success"`
+	Data        interface{}            `json:"data,omitempty"`
+	Result      string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
+	PlanID      string                 `json:"plan_id,omitempty"`  // For multi-agent planning
+	Steps       []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
+	Metadata    map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
+	Error       string                 `json:"error,omitempty"`
+	Blocked     bool                   `json:"blocked"`
+	BlockReason string                 `json:"block_reason,omitempty"`
+	// ApprovalRequestID is the hitl_approval_queue entry raised for a request
+	// this response is holding for human review (#3509). Present only on a
+	// require_approval hold, and only when the entry was actually created: an
+	// empty value on a held response means no reviewer will see the request
+	// (pending cap reached, tier without the queue, or a failed write), and a
+	// caller must treat it as a refusal rather than as something pending.
+	//
+	// It is a SEPARATE field rather than an addition to block_reason precisely
+	// because every shipped SDK matches the "require_approval" sentinel
+	// literally to enter its HITL branch.
+	ApprovalRequestID string                `json:"approval_request_id,omitempty"`
+	PolicyInfo        *PolicyEvaluationInfo `json:"policy_info,omitempty"`
+	BudgetInfo        *BudgetInfo           `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
+	MediaAnalysis     interface{}           `json:"media_analysis,omitempty"` // Media governance analysis results
 }
 
 type PolicyEvaluationInfo struct {
@@ -850,6 +861,15 @@ func Run() {
 	// package-level generator is written once, before any request goroutine
 	// exists, so there is no concurrent read/write on it.
 	InitProxyTokenGenerator()
+
+	// #3509: validate AXONFLOW_HITL_GRANT_TTL_SECONDS before anything can serve
+	// a request. Deliberately here and not inside the HITL wiring block further
+	// down: that block sits behind the DB-connected branch, so an operator who
+	// set the value and then hit a database problem would boot with the flag
+	// unvalidated. This value decides how long an approved human-oversight
+	// decision stays spendable, and guessing at it either way is invisible
+	// afterwards.
+	hitlGrantTTLOrFatal()
 
 	initServerImmediately(port)
 
@@ -1196,6 +1216,14 @@ func Run() {
 		// SQLi / dangerous-* posture on top of the deployment-global env config.
 		// No-op in no-DB mode (cache stays nil → global config used everywhere).
 		InitDetectionOverrides(authDB)
+
+		// Per-org require_user_token posture (#3476, ADR-060 follow-up). Wires
+		// the short-TTL cache to authDB so /decide, the MCP-server plane, and
+		// the four MCP REST routes can resolve whether a token-less enterprise
+		// caller must be rejected rather than given a synthetic service
+		// identity. No-op in no-DB mode (resolution then falls back to the
+		// AXONFLOW_REQUIRE_USER_TOKEN env default, unchanged today's behaviour).
+		InitRequireUserToken(authDB)
 
 		// Activate integration-specific policies before policy engine init
 		// so the shared engine sees enabled rows on first load.
@@ -2173,15 +2201,16 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Phase 2 block, so the shared engine had no segment context and would
 	// both ACT ON and REPORT segment-scoped static_policies rows for callers
 	// outside the segment (#3266).
-	segmentIDs, segOK := resolveSegmentsForPolicy(r.Context(), user.OrgID, user.Email)
+	segmentIDs, segOK := resolveUserSegmentsForEnforcement(r.Context(), user.OrgID, user.Email)
 
 	// #3293 locked invariant: a segment-resolution FAILURE is handled at the
 	// resolution SITE and must NEVER be propagated downstream as a nil/empty
-	// segment set — unlike resolveUserSegments (mcp_identity.go, P2,
-	// observability-only), a genuine resolution ERROR here must DENY the
-	// request, never silently fall back to org-only (ADR-060 §Fail-closed,
-	// locked). Deny and return HERE, before Phase 1 ever runs, so the shared
-	// engine is never called with a nil Segments set that actually means
+	// segment set — unlike the observability-only session-create resolution
+	// (mcp_server_handler.go's authenticateMCPSession), a genuine resolution
+	// ERROR here must DENY the request, never silently fall back to org-only
+	// (ADR-060 §Fail-closed, locked). Deny and return HERE, before Phase 1
+	// ever runs, so the shared engine is never called with a nil Segments set
+	// that actually means
 	// "failed to load" — below this point (Phase 1 and Phase 2 alike),
 	// nil/empty Segments means only "resolved to none / no identity"
 	// (community mode, no SCIM configured, or zero real memberships), never
@@ -2259,7 +2288,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
 			TenantID:        user.TenantID,
 			OrgID:           user.OrgID,
-			OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID), // #3048 R3 HIGH-3 (N2)
+			OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID), // #3048 R3 HIGH-3 (N2)
 			ConnectorName:   "proxy",
 			UserID:          fmt.Sprintf("%d", user.ID),
 			Categories:      proxyPolicyCategories,
@@ -2290,7 +2319,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// (above, #3266) — a resolution FAILURE (segOK=false) already denied
 		// and returned before Phase 1 ran, so by construction this point is
 		// only reached with a successfully-resolved (possibly nil/empty) set.
-		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, segmentIDs, req.Query)
+		//
+		// Decision 5 (#3490): the org argument was a literal `nil` here, which
+		// GetEffective turned into `orgIDStr = ""` and bound to the org leg of
+		// its pass-A predicate - so an org-tier policy could never match on
+		// this plane, and on an org whose org_id differs from its tenant id
+		// the RLS scope fell back to the tenant and matched nothing at all.
+		// user.OrgID is the licence-derived org the request already
+		// authenticated as (Phase 1 above passes exactly the same value).
+		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), segmentIDs, req.Query)
 		if err != nil {
 			log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
 		} else if tierResult.Matched && tierResult.Action == "block" {
@@ -2318,6 +2355,16 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
 			if tierResult.Action == "require_approval" {
 				policyResult.RequiresApproval = true
+				// #3509: attribute the hold so the queue entry raised below
+				// names the rule that caused it. Fill-if-empty, never
+				// overwrite: a Phase 1 static/system policy that already
+				// resolved to require_approval held this request FIRST, and
+				// the entry must name the rule a reviewer will look up, not
+				// whichever engine happened to run last.
+				if policyResult.ApprovalPolicyID == "" {
+					policyResult.ApprovalPolicyID = tierResult.PolicyID
+					policyResult.ApprovalPolicyName = tierResult.PolicyName
+				}
 				log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
 			}
 		}
@@ -2382,15 +2429,72 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// HITL is an ENTERPRISE-ONLY feature. It is ONLY triggered by policy evaluation
 	// returning require_approval action. We do NOT trust client-provided context metadata.
 	requiresHITL := policyResult.RequiresApproval && !isCommunityMode()
+	// #3509 defect 2: spend an outstanding single-use approval before the hold
+	// is applied. Placed here rather than inside the branch below so an
+	// admitted request rejoins the ordinary allow path in one piece - budget
+	// check, rate limiting, connector execution and the allow audit row all
+	// run exactly as they would for a request no policy ever held.
+	if requiresHITL {
+		// The FULL principal, not just the user: see the decide plane's note.
+		if grantID, admitted := consumeApprovalGrant(r.Context(), hitlPlaneAgentRequest, hitl.GrantSubject{
+			OrgID:    client.OrgID,
+			TenantID: client.TenantID,
+			ClientID: client.ClientID,
+			UserID:   fmt.Sprintf("%d", user.ID),
+		}, approvalPolicyKey(policyResult.ApprovalPolicyID), req.Query); admitted {
+			requiresHITL = false
+			// Recorded on the audit identity so that if a LATER, unrelated
+			// control refuses this request anyway - the budget check below is
+			// the realistic one - the deny row shows a human approval was
+			// spent on a request that never ran. The grant is single use and
+			// is gone either way; an operator seeing consumed_at set on the
+			// queue row deserves to find the reason on this plane too.
+			proxyAudit.approvalGrantID = grantID
+			log.Printf("✅ [Proxy Mode] HITL hold lifted by approved request %s (single use, now spent)", logutil.Sanitize(grantID))
+		}
+	}
 	if requiresHITL {
 		log.Printf("⏸️ [Proxy Mode] HITL required - blocking request for human approval")
+
+		// #3509: raise the reviewable queue entry. Before this, a
+		// require_approval policy on this plane returned 403 with an audit row
+		// and NOTHING for a reviewer to act on - the caller was refused and,
+		// unlike a block, had no override flow and no reviewer surface either.
+		hitlEnqueue := enqueuePolicyStepUp(r.Context(), policyStepUpInput{
+			Plane:      hitlPlaneAgentRequest,
+			OrgID:      client.OrgID,
+			TenantID:   client.TenantID,
+			ClientID:   client.ClientID,
+			UserID:     fmt.Sprintf("%d", user.ID),
+			UserEmail:  user.Email,
+			PolicyID:   policyResult.ApprovalPolicyID,
+			PolicyName: policyResult.ApprovalPolicyName,
+			Reason:     "human approval required by policy",
+			Severity:   policyResult.Severity,
+			DecisionID: proxyDecisionID,
+			Stage:      DecisionStageLLM,
+			Query:      req.Query,
+		})
+		proxyAudit.approvalEnqueue = hitlEnqueue.Outcome
+		proxyAudit.approvalRequestID = hitlEnqueue.RequestID
 
 		// Canonical audit row for the HITL gate decision (#2684): needs_approval.
 		// VerdictNeedsApproval == the canonical audit value "needs_approval", and
 		// plane=agent stores it verbatim, so it lands canonical without a remap.
+		//
+		// #3509: the reason now records whether a reviewable entry was actually
+		// raised. A hold whose entry was refused (pending cap, tier, write
+		// failure) is the SAME invisible dead end this change removes, and this
+		// row is the only durable place it is recorded.
+		hitlReasons := []string{"human approval required by policy"}
+		if hitlEnqueue.RequestID != "" {
+			hitlReasons = append(hitlReasons, policyStepUpReason(hitlEnqueue.RequestID))
+		} else if hitlEnqueue.Detail != "" {
+			hitlReasons = append(hitlReasons, hitlEnqueue.Detail)
+		}
 		auditProxyDeny(VerdictNeedsApproval,
 			append(policyResult.TriggeredPolicies, "hitl_compliance"),
-			[]string{"human approval required by policy"})
+			hitlReasons)
 
 		// Track HITL blocked request metrics
 		if agentMetrics != nil {
@@ -2407,9 +2511,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 		hitlMatched := append(policyResult.TriggeredPolicies, "hitl_compliance")
 		response := ClientResponse{
-			Success:     false,
-			Blocked:     true,
-			BlockReason: "require_approval",
+			Success: false,
+			Blocked: true,
+			// Pinned literal: every shipped SDK matches this string to enter
+			// its HITL branch. #3509's queue-entry id rides ApprovalRequestID.
+			BlockReason:       "require_approval",
+			ApprovalRequestID: hitlEnqueue.RequestID,
 			PolicyInfo: &PolicyEvaluationInfo{
 				MatchedPolicies:   hitlMatched,
 				PoliciesEvaluated: hitlMatched,
@@ -3237,8 +3344,8 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 	// Phase-1 segment-awareness both live HERE now, not split across #3239 —
 	// #3239 predates EvalOptions.Segments and can only do the Phase-2 half.
 	// #3239 will be slimmed to drop its now-redundant copy of this
-	// convergence and drops the failClosed param resolveSegmentsForPolicy
-	// takes here; that signature change is expected to land as a follow-up
+	// convergence and drops the failClosed param resolveUserSegments used to
+	// take here; that signature change is expected to land as a follow-up
 	// rebase, not a conflict in this file's logic.
 	//
 	// Signal B — segments_resolved (#3239 M4, ported here as part of the same
@@ -3252,7 +3359,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 	// tell "allowed because no segment restricted this" apart from "allowed
 	// and a segment was genuinely considered" — it never itself changes the
 	// verdict.
-	segmentIDs, segOK := resolveSegmentsForPolicy(r.Context(), testUser.OrgID, testReq.UserEmail)
+	segmentIDs, segOK := resolveUserSegmentsForPreview(r.Context(), testUser.OrgID, testReq.UserEmail)
 	segmentsResolved := false
 
 	var result *StaticPolicyResult
@@ -3282,7 +3389,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 			requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
 				TenantID:        testUser.TenantID,
 				OrgID:           testUser.OrgID,
-				OrganizationID:  sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
+				OrgScope:        sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
 				ConnectorName:   "proxy",
 				UserID:          fmt.Sprintf("%d", testUser.ID),
 				Categories:      proxyPolicyCategories,
@@ -3303,7 +3410,10 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		// Phase 2: Tier-aware policies (if not blocked and engine available)
 		if !result.Blocked && tierAwarePolicyEngine != nil {
 			ctx := r.Context()
-			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, nil, segmentIDs, testReq.Query)
+			// Decision 5 (#3490): same org argument the live plane passes (see
+			// clientRequestHandler's Phase 2). A policy TEST that evaluated a
+			// different policy set from the live path would be worse than no test.
+			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, sharedpolicy.OrgScopePtr(testUser.OrgID), segmentIDs, testReq.Query)
 			if err != nil {
 				log.Printf("⚠️ Tier-aware policy test error: %v", err)
 			} else if tierResult.Matched && tierResult.Action == "block" {

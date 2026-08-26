@@ -2,4 +2,4 @@ module github.com/getaxonflow/axonflow/examples/cost-controls/go
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v9 v9.0.0
+require github.com/getaxonflow/axonflow-sdk-go/v9 v9.1.1

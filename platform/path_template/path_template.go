@@ -101,6 +101,19 @@ var Templates = []string{
 	"/api/v1/static-policies/{id}",
 	"/api/v1/static-policies/{id}/override",
 	"/api/v1/static-policies/{id}/versions",
+	// #1431 successors of the seven entries above. Both spellings are
+	// registered on the agent and both must normalize, or the analytics
+	// endpoint column would carry raw paths for every caller that migrated -
+	// the two names would then look like two different endpoints in every
+	// rollup, and the rename would read as a traffic cliff plus a new
+	// unrecognised path.
+	"/api/v1/system-policies",
+	"/api/v1/system-policies/effective",
+	"/api/v1/system-policies/overrides",
+	"/api/v1/system-policies/test",
+	"/api/v1/system-policies/{id}",
+	"/api/v1/system-policies/{id}/override",
+	"/api/v1/system-policies/{id}/versions",
 	"/health",
 	"/mcp/connectors",
 	"/mcp/connectors/{name}/health",

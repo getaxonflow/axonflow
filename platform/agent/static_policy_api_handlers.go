@@ -15,18 +15,25 @@
 // Static policies are pattern-based enforcement rules (PII detection, SQL injection blocking)
 // that are stored in the static_policies table and evaluated by the Agent.
 //
-// API Endpoints:
-//   - GET    /api/v1/static-policies           - List policies with filtering
-//   - POST   /api/v1/static-policies           - Create a new policy
-//   - GET    /api/v1/static-policies/{id}      - Get policy by ID
-//   - PUT    /api/v1/static-policies/{id}      - Update policy
-//   - DELETE /api/v1/static-policies/{id}      - Soft delete policy
-//   - PATCH  /api/v1/static-policies/{id}      - Toggle enabled status
-//   - GET    /api/v1/static-policies/effective - Get effective policies with overrides
-//   - POST   /api/v1/static-policies/test      - Test a pattern against input
-//   - GET    /api/v1/static-policies/{id}/versions - Get version history
-//   - POST   /api/v1/static-policies/{id}/override - Create override (Enterprise)
-//   - DELETE /api/v1/static-policies/{id}/override - Delete override (Enterprise)
+// API Endpoints, served under BOTH /api/v1/system-policies (#1431, current)
+// and /api/v1/static-policies (deprecated, still served):
+//
+//   - GET    {prefix}                - List policies with filtering
+//   - POST   {prefix}                - Create a new policy
+//   - GET    {prefix}/{id}           - Get policy by ID
+//   - PUT    {prefix}/{id}           - Update policy
+//   - DELETE {prefix}/{id}           - Soft delete policy
+//   - PATCH  {prefix}/{id}           - Toggle enabled status
+//   - GET    {prefix}/effective      - Get effective policies with overrides
+//   - POST   {prefix}/test           - Test a pattern against input
+//   - GET    {prefix}/overrides      - List tenant-wide overrides
+//   - GET    {prefix}/{id}/versions  - Get version history
+//   - GET    {prefix}/{id}/override  - Read override (Enterprise)
+//   - POST   {prefix}/{id}/override  - Create override (Enterprise)
+//   - DELETE {prefix}/{id}/override  - Delete override (Enterprise)
+//
+// The two prefixes are the SAME routes against the SAME handler values; see
+// systemPolicyRoutes and package axonflow/platform/shared/policypath.
 package agent
 
 import (
@@ -40,6 +47,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/policypath"
 )
 
 // Note: StaticPolicy, CreateStaticPolicyRequest, UpdateStaticPolicyRequest, and related types
@@ -62,7 +71,61 @@ func NewStaticPolicyAPIHandler(db *sql.DB) *StaticPolicyAPIHandler {
 	}
 }
 
-// RegisterStaticPolicyHandlers registers the static policy API routes.
+// systemPolicyRoute is one (suffix, methods, handler) triple in the system
+// policy API. The table exists so that the legacy /api/v1/static-policies
+// prefix and its #1431 successor /api/v1/system-policies are registered from
+// ONE list against ONE handler value.
+//
+// Writing the two prefixes out as two blocks of HandleFunc lines would be a
+// fork wearing an alias's clothes: the next person to add a route would add it
+// to whichever block they were looking at, and the alias would quietly serve a
+// subset. Here, adding a row adds it to both, and there is no arrangement of
+// this code in which the two prefixes carry different routes.
+type systemPolicyRoute struct {
+	suffix  string
+	methods []string
+	handler http.HandlerFunc
+}
+
+// systemPolicyRoutes returns the route table. Order matters and is preserved:
+// gorilla/mux matches in registration order, so the literal-suffix routes
+// ("/effective", "/test", "/overrides") MUST precede "/{id}" or "effective"
+// is swallowed as an id.
+func systemPolicyRoutes(h *StaticPolicyAPIHandler) []systemPolicyRoute {
+	return []systemPolicyRoute{
+		// List and effective endpoints (must come before {id} routes)
+		{"", []string{"GET"}, h.HandleListStaticPolicies},
+		{"", []string{"POST"}, h.HandleCreateStaticPolicy},
+		{"/effective", []string{"GET"}, h.HandleGetEffectivePolicies},
+		{"/test", []string{"POST"}, h.HandleTestPattern},
+		{"/overrides", []string{"GET"}, h.HandleListOverrides},
+
+		// Single policy operations (must come after literal path routes)
+		{"/{id}", []string{"GET"}, h.HandleGetStaticPolicy},
+		{"/{id}", []string{"PUT"}, h.HandleUpdateStaticPolicy},
+		{"/{id}", []string{"DELETE"}, h.HandleDeleteStaticPolicy},
+		{"/{id}", []string{"PATCH"}, h.HandleTogglePolicy},
+
+		// Version history
+		{"/{id}/versions", []string{"GET"}, h.HandleGetVersionHistory},
+
+		// Override endpoints (Enterprise only)
+		{"/{id}/override", []string{"GET"}, h.HandleGetOverrideByPolicy},
+		{"/{id}/override", []string{"POST"}, h.HandleCreateOverride},
+		{"/{id}/override", []string{"DELETE"}, h.HandleDeleteOverride},
+	}
+}
+
+// RegisterStaticPolicyHandlers registers the system policy API routes under
+// both the legacy /api/v1/static-policies prefix and the #1431 successor
+// /api/v1/system-policies.
+//
+// EDITION (HARD RULE 11): this is a rename, not a capability. Both prefixes
+// are registered by this one function, from one table, at one call site
+// (run.go), so whatever edition gating reaches the legacy prefix reaches the
+// successor by construction. There is no second condition to keep in sync -
+// including the per-route Enterprise gating on the /override endpoints, which
+// lives inside the handlers and is therefore shared by both prefixes.
 func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	if db == nil {
 		log.Println("⚠️ Database not available - Static Policy API disabled")
@@ -70,35 +133,42 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	}
 
 	handler := NewStaticPolicyAPIHandler(db)
+	routes := systemPolicyRoutes(handler)
 
-	// All static policy routes are protected by apiAuthMiddleware.
+	// All system policy routes are protected by apiAuthMiddleware.
 	// Tenant identity is derived from OAuth2 client credentials (Basic auth),
 	// not from X-Tenant-ID header. Handlers read tenant via TenantIDFromContext().
-	sub := router.PathPrefix("/api/v1/static-policies").Subrouter()
-	sub.Use(apiAuthMiddleware)
+	//
+	// The legacy prefix additionally carries the deprecation stamp, mounted
+	// BEFORE apiAuthMiddleware so the signal rides an unauthenticated 401 as
+	// well as a 200: "this path is deprecated" is a property of the path, not
+	// of the caller's credentials, and a client discovering the API with a bad
+	// token should still learn it.
+	//
+	// The limit of that, stated because the sentence above overclaims if left
+	// alone: gorilla/mux runs subrouter middleware only on a MATCHED route. A
+	// request under this prefix that matches no route, or matches a path on a
+	// method it is not registered for, gets a 404 with NO deprecation header.
+	// Measured, not assumed - DELETE /api/v1/static-policies and
+	// GET /api/v1/static-policies/abc/nope both answer 404 bare, while
+	// GET /api/v1/static-policies answers 401 WITH the header. Signalling on a
+	// 404 would mean asserting a path exists in order to deprecate it, so this
+	// is left as it is rather than worked around.
+	legacy := router.PathPrefix(policypath.LegacySystemPolicies).Subrouter()
+	legacy.Use(policypath.DeprecateLegacy)
+	legacy.Use(apiAuthMiddleware)
 
-	// List and effective endpoints (must come before {id} routes)
-	sub.HandleFunc("", handler.HandleListStaticPolicies).Methods("GET")
-	sub.HandleFunc("", handler.HandleCreateStaticPolicy).Methods("POST")
-	sub.HandleFunc("/effective", handler.HandleGetEffectivePolicies).Methods("GET")
-	sub.HandleFunc("/test", handler.HandleTestPattern).Methods("POST")
-	sub.HandleFunc("/overrides", handler.HandleListOverrides).Methods("GET")
+	successor := router.PathPrefix(policypath.SystemPolicies).Subrouter()
+	successor.Use(apiAuthMiddleware)
 
-	// Single policy operations (must come after literal path routes)
-	sub.HandleFunc("/{id}", handler.HandleGetStaticPolicy).Methods("GET")
-	sub.HandleFunc("/{id}", handler.HandleUpdateStaticPolicy).Methods("PUT")
-	sub.HandleFunc("/{id}", handler.HandleDeleteStaticPolicy).Methods("DELETE")
-	sub.HandleFunc("/{id}", handler.HandleTogglePolicy).Methods("PATCH")
+	for _, sub := range []*mux.Router{legacy, successor} {
+		for _, rt := range routes {
+			sub.HandleFunc(rt.suffix, rt.handler).Methods(rt.methods...)
+		}
+	}
 
-	// Version history
-	sub.HandleFunc("/{id}/versions", handler.HandleGetVersionHistory).Methods("GET")
-
-	// Override endpoints (Enterprise only)
-	sub.HandleFunc("/{id}/override", handler.HandleGetOverrideByPolicy).Methods("GET")
-	sub.HandleFunc("/{id}/override", handler.HandleCreateOverride).Methods("POST")
-	sub.HandleFunc("/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
-
-	log.Println("✅ Static Policy API routes registered (13 endpoints, auth-protected)")
+	log.Printf("✅ System Policy API routes registered (%d endpoints x 2 prefixes, auth-protected): %s (deprecated) and %s",
+		len(routes), policypath.LegacySystemPolicies, policypath.SystemPolicies)
 
 	// Canonical policy-overrides alias — customer-portal (and any external
 	// client looking for a tenant-wide override list) expects this path.
@@ -249,15 +319,13 @@ func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter,
 		OrgID:       orgID,
 	}
 
-	// Set organization ID for org-tier policies
-	// Prefer request body organization_id over header
-	effectiveOrgID := req.OrganizationID
-	if effectiveOrgID == "" {
-		effectiveOrgID = orgID // Fall back to X-Organization-ID header
-	}
-	if tier == TierOrganization && effectiveOrgID != "" {
-		policy.OrganizationID = &effectiveOrgID
-	}
+	// #3334: the "prefer request body organization_id over header" block that
+	// used to live here is gone with the column it wrote. It let a request
+	// BODY name the organisation a policy belongs to, falling back to the
+	// authenticated header only when the body said nothing - which is the
+	// wrong precedence for a tenancy key regardless of the column being
+	// retired. policy.OrgID above is the AUTHENTICATED caller's org and is
+	// the only organisation this policy can be created under, for every tier.
 
 	// Create policy using repository
 	if err := h.policyRepo.Create(ctx, policy, userID); err != nil {

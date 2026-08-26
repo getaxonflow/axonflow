@@ -10,13 +10,18 @@ package orchestrator
 // conditions (regex patterns) and actions — to ANY authenticated tenant
 // (confirmed live: a brand-new tenant with zero policies of its own received
 // 33 policies across 11 tenant_ids). The handler now resolves the caller
-// tenant from the gateway-stamped X-Tenant-ID (fail closed, 401) and returns
-// only ListActivePoliciesForTenant.
+// scope (fail closed, 401) and returns only ListActivePoliciesForTenant.
+//
+// Decision 5 (#3490) changed that scope from the gateway-stamped X-Tenant-ID
+// to the gateway-stamped X-Org-ID, because X-Tenant-ID carries the
+// Basic-auth USERNAME and the caller picks it. The disclosure assertions
+// below are unchanged in kind; what changed is that the seeded rows now carry
+// an org_id and the caller is identified by one.
 //
 // Style follows platform/agent/static_policy_tenant_isolation_test.go: seed
-// two tenants plus the shared sentinels, drive the handler as tenant A, and
+// two orgs plus the shared sentinels, drive the handler as org A, and
 // assert on the OWNING tenant_id of every returned row — never just counts —
-// with an explicit vacuity control proving tenant B's policy is in the cache.
+// with an explicit vacuity control proving org B's policy is in the cache.
 
 import (
 	"encoding/json"
@@ -39,11 +44,19 @@ const (
 )
 
 // mkScopeTestPolicy builds a cache entry the way refreshPolicies stores rows
-// (policy_id-keyed map, tenant carried in _metadata). withMetadata=false
+// (policy_id-keyed map, tenancy carried in _metadata). withMetadata=false
 // produces the no-_metadata shape, which every real writer (refreshPolicies,
 // loadDefaultPolicies) avoids — it now exercises the fail-closed defect
-// guard in dbCachedPolicyAppliesToTenant, not a legitimate "applies to
+// guard in dbCachedPolicyAppliesToOrg, not a legitimate "applies to
 // everyone" shape.
+//
+// Decision 5 (#3490): the `tenant` argument fills BOTH keys. Every real row
+// in the shipped schema carries both columns, and giving the fixture one
+// argument keeps the seed honest about the pre-Decision-5 single-tenant
+// collapse. The tests that need them to DIVERGE - which is the whole point
+// of the change - build their metadata explicitly instead (see
+// TestListDynamicPoliciesHandler_TenantHeaderIsNotConsulted and the org_id
+// cases in TestDBCachedPolicyAppliesToOrg_ShapeSemantics).
 func mkScopeTestPolicy(id, name, tenant, conditionRegex string, withMetadata bool) map[string]interface{} {
 	p := map[string]interface{}{
 		"name":       name,
@@ -57,6 +70,7 @@ func mkScopeTestPolicy(id, name, tenant, conditionRegex string, withMetadata boo
 		p["_metadata"] = map[string]interface{}{
 			"priority":  10,
 			"tenant_id": tenant,
+			"org_id":    tenant,
 		}
 	}
 	return p
@@ -114,7 +128,7 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil)
-	req.Header.Set("X-Tenant-ID", "tenant-a") // gateway-stamped, from the validated credential
+	req.Header.Set("X-Org-ID", "tenant-a") // gateway-stamped, from the signed licence payload
 	w := httptest.NewRecorder()
 
 	listDynamicPoliciesHandler(w, req)
@@ -161,7 +175,7 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 	}
 
 	// The no-_metadata row is not a legitimate shape any real writer
-	// produces; dbCachedPolicyAppliesToTenant now treats it as a defect and
+	// produces; dbCachedPolicyAppliesToOrg now treats it as a defect and
 	// excludes it (fail-closed), so it must never reach the response either.
 	if seenIDs["pol-no-metadata"] {
 		t.Error("response contains the no-_metadata policy, which the fail-closed defect guard must exclude from both enforcement and listing")
@@ -190,11 +204,11 @@ func TestListDynamicPoliciesHandler_TenantScoped(t *testing.T) {
 	}
 }
 
-// TestDBCachedPolicyAppliesToTenant_ShapeSemantics pins the two cache shapes
+// TestDBCachedPolicyAppliesToOrg_ShapeSemantics pins the two cache shapes
 // that DynamicPolicy.TenantID cannot distinguish. Collapsing them is what made
 // the first cut of this fix list a policy to tenants the evaluator never
 // enforces it for.
-func TestDBCachedPolicyAppliesToTenant_ShapeSemantics(t *testing.T) {
+func TestDBCachedPolicyAppliesToOrg_ShapeSemantics(t *testing.T) {
 	cases := []struct {
 		name          string
 		policyMap     map[string]interface{}
@@ -223,72 +237,28 @@ func TestDBCachedPolicyAppliesToTenant_ShapeSemantics(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := dbCachedPolicyAppliesToTenant(tc.policyMap, tc.caller, nil, tc.name); got != tc.wantApplies {
-				t.Fatalf("dbCachedPolicyAppliesToTenant = %v, want %v (%s)", got, tc.wantApplies, tc.wantRationale)
+			if got := dbCachedPolicyAppliesToOrg(tc.policyMap, tc.caller, nil, tc.name); got != tc.wantApplies {
+				t.Fatalf("dbCachedPolicyAppliesToOrg = %v, want %v (%s)", got, tc.wantApplies, tc.wantRationale)
 			}
 		})
 	}
 }
 
-// TestMemPolicyAppliesToTenant_MirrorsEnforcement pins the fallback engine's
-// predicate, which is deliberately NARROWER than the database engine's: it has
-// no "global"/"default" sentinels, because getApplicablePolicies does not
-// honour them either. Listing them here would be disclosure without
-// enforcement.
-func TestMemPolicyAppliesToTenant_MirrorsEnforcement(t *testing.T) {
-	cases := []struct {
-		policyTenant string
-		caller       string
-		want         bool
-	}{
-		{"", "tenant-a", true},          // community-global
-		{"tenant-a", "tenant-a", true},  // own
-		{"tenant-b", "tenant-a", false}, // other tenant
-		{"global", "tenant-a", false},   // NOT a sentinel on this engine
-		{"default", "tenant-a", false},  // NOT a sentinel on this engine
-	}
-	for _, tc := range cases {
-		if got := memPolicyAppliesToTenant(tc.policyTenant, tc.caller, "", nil); got != tc.want {
-			t.Errorf("memPolicyAppliesToTenant(%q, %q) = %v, want %v", tc.policyTenant, tc.caller, got, tc.want)
-		}
-	}
+// TestMemPolicyAppliesToTenant_MirrorsEnforcement and
+// TestDynamicPolicyEngine_ListActivePoliciesForTenant (#3319: pinned the
+// retired in-memory DynamicPolicyEngine's list/enforce parity, and its
+// tenant-rule asymmetry with the database engine — no "global"/"default"
+// sentinels) were deleted here: that engine no longer exists, there is now
+// exactly one engine and one tenant rule, and the asymmetry these tests
+// existed to pin is gone with it. dbCachedPolicyAppliesToOrg's own
+// sentinel semantics remain covered by TestDBCachedPolicyAppliesToOrg_ShapeSemantics
+// above and TestListDynamicPoliciesHandler_TenantScoped below.
 
-	// Parity with enforcement, driven through the real engine: whatever
-	// getApplicablePolicies would evaluate is exactly what the scoped list
-	// returns.
-	engine := newTestEngine([]DynamicPolicy{
-		{ID: "own", TenantID: "tenant-a", Enabled: true},
-		{ID: "other", TenantID: "tenant-b", Enabled: true},
-		{ID: "empty", TenantID: "", Enabled: true},
-		{ID: "global", TenantID: "global", Enabled: true},
-	})
-	defer engine.Close()
-
-	enforced := map[string]bool{}
-	for _, p := range engine.getApplicablePolicies(OrchestratorRequest{
-		User: UserContext{TenantID: "tenant-a"},
-	}, nil) {
-		enforced[p.ID] = true
-	}
-	listed := map[string]bool{}
-	for _, p := range engine.ListActivePoliciesForTenant("tenant-a", nil) {
-		listed[p.ID] = true
-	}
-	for _, id := range []string{"own", "other", "empty", "global"} {
-		if enforced[id] != listed[id] {
-			t.Errorf("list/enforce divergence for %q: enforced=%v listed=%v", id, enforced[id], listed[id])
-		}
-	}
-	if len(enforced) == 0 {
-		t.Fatal("vacuity control failed: enforcement returned nothing, so parity above is meaningless")
-	}
-}
-
-// TestListDynamicPoliciesHandler_FailClosedWithoutTenant pins the fail-closed
-// contract: when no tenant can be resolved (no gateway-stamped X-Tenant-ID
-// header, no context value), the handler returns 401 and NO policy data — it
-// must never fall back to the unscoped deployment-wide list.
-func TestListDynamicPoliciesHandler_FailClosedWithoutTenant(t *testing.T) {
+// TestListDynamicPoliciesHandler_FailClosedWithoutOrg pins the fail-closed
+// contract: when no org can be resolved (no gateway-stamped X-Org-ID
+// header), the handler returns 401 and NO policy data - it must never fall
+// back to the unscoped deployment-wide list.
+func TestListDynamicPoliciesHandler_FailClosedWithoutOrg(t *testing.T) {
 	prev := dynamicPolicyEngine
 	defer func() { dynamicPolicyEngine = prev }()
 	engine := newScopeTestDBEngine()
@@ -300,7 +270,7 @@ func TestListDynamicPoliciesHandler_FailClosedWithoutTenant(t *testing.T) {
 		t.Fatal("vacuity control failed: engine cache is empty")
 	}
 
-	req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil) // no X-Tenant-ID
+	req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil) // no X-Org-ID
 	w := httptest.NewRecorder()
 
 	listDynamicPoliciesHandler(w, req)
@@ -312,52 +282,6 @@ func TestListDynamicPoliciesHandler_FailClosedWithoutTenant(t *testing.T) {
 	for _, leak := range []string{"pol-tenant-a", scopeTestTenantBPolicyID, "pol-global", scopeTestTenantBRegex, "conditions"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("401 response leaked policy data (%q): %s", leak, body)
-		}
-	}
-}
-
-// TestDynamicPolicyEngine_ListActivePoliciesForTenant covers the fallback
-// (non-database) engine's scoped list: the caller's own policies and the
-// ""-tenant (community-global) ones are in; another tenant's and disabled
-// policies are out.
-//
-// "global"/"default" are deliberately OUT on this engine: getApplicablePolicies
-// does not treat them as sentinels, so listing them would be disclosure
-// without matching enforcement. That asymmetry with the database engine is
-// intentional and is pinned by TestMemPolicyAppliesToTenant_MirrorsEnforcement.
-func TestDynamicPolicyEngine_ListActivePoliciesForTenant(t *testing.T) {
-	engine := newTestEngine([]DynamicPolicy{
-		{ID: "a1", Name: "own", TenantID: "tenant-a", Enabled: true},
-		{ID: "b1", Name: "other", TenantID: "tenant-b", Enabled: true},
-		{ID: "g1", Name: "global", TenantID: "global", Enabled: true},
-		{ID: "d1", Name: "default", TenantID: "default", Enabled: true},
-		{ID: "e1", Name: "empty", TenantID: "", Enabled: true},
-		{ID: "a2", Name: "own-disabled", TenantID: "tenant-a", Enabled: false},
-	})
-	defer engine.Close()
-
-	// Vacuity control: the unscoped list DOES carry tenant-b's policy.
-	rawHasTenantB := false
-	for _, p := range engine.ListActivePolicies() {
-		if p.TenantID == "tenant-b" {
-			rawHasTenantB = true
-		}
-	}
-	if !rawHasTenantB {
-		t.Fatal("vacuity control failed: tenant-b policy not in the unscoped list")
-	}
-
-	got := engine.ListActivePoliciesForTenant("tenant-a", nil)
-	wantIDs := map[string]bool{"a1": true, "e1": true}
-	if len(got) != len(wantIDs) {
-		t.Fatalf("scoped list has %d policies, want %d: %+v", len(got), len(wantIDs), got)
-	}
-	for _, p := range got {
-		if !wantIDs[p.ID] {
-			t.Errorf("scoped list leaked unexpected policy id=%s tenant_id=%q", p.ID, p.TenantID)
-		}
-		if p.TenantID == "tenant-b" {
-			t.Errorf("scoped list leaked tenant-b policy id=%s", p.ID)
 		}
 	}
 }
@@ -390,6 +314,7 @@ func TestSimulatePolicies_TotalPoliciesScopedToTenant(t *testing.T) {
 	body := []byte(`{"query":"hello","request_type":"chat"}`)
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", strings.NewReader(string(body)))
 	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("X-Org-ID", "tenant-a")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -405,5 +330,143 @@ func TestSimulatePolicies_TotalPoliciesScopedToTenant(t *testing.T) {
 	// deployment), so this fails against the unscoped count.
 	if resp.TotalPolicies != 3 {
 		t.Errorf("total_policies = %d, want 3 (tenant-a's 2 + global; the deployment-wide cache holds 6)", resp.TotalPolicies)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Decision 5 (#3490) regression pins. Each of these FAILS against the
+// pre-Decision-5 code, which is what makes them regression tests rather than
+// restatements.
+// ---------------------------------------------------------------------------
+
+// mkScopeTestPolicyDivergent builds a cache entry whose tenant_id and org_id
+// DIFFER - the shape a multi-tenant org actually produces, and the shape the
+// single-argument mkScopeTestPolicy above cannot express.
+func mkScopeTestPolicyDivergent(id, name, tenant, org, conditionRegex string) map[string]interface{} {
+	p := mkScopeTestPolicy(id, name, tenant, conditionRegex, true)
+	p["_metadata"].(map[string]interface{})["org_id"] = org
+	return p
+}
+
+// TestListDynamicPoliciesHandler_TenantHeaderIsNotConsulted is the disclosure
+// half of the forgery closure. Pre-Decision-5 a caller chose its policy set by
+// choosing its Basic-auth username, which the agent forwards verbatim as
+// X-Tenant-ID; measured on a live stack, three usernames on ONE licence
+// selected three different dynamic policy sets and a username no policy named
+// was governed by none of them.
+//
+// Here the caller sends an X-Tenant-ID naming a DIFFERENT tenant than the one
+// its own policy is stamped with, plus its real X-Org-ID. It must receive its
+// ORG's set regardless - the tenant header must not move a single row either
+// way. Against the old handler the same request returned the OTHER tenant's
+// policy and not its own, so this test fails there in both directions.
+func TestListDynamicPoliciesHandler_TenantHeaderIsNotConsulted(t *testing.T) {
+	prev := dynamicPolicyEngine
+	defer func() { dynamicPolicyEngine = prev }()
+
+	engine := &DatabaseDynamicPolicyEngine{
+		policies: map[string]interface{}{
+			// Both rows belong to org-a; they differ only in the tenant that
+			// authored them. Post-Decision-5 both govern every caller in org-a.
+			"pol-alpha": mkScopeTestPolicyDivergent("pol-alpha", "alpha-authored", "alpha", "org-a", "aaa"),
+			"pol-beta":  mkScopeTestPolicyDivergent("pol-beta", "beta-authored", "beta", "org-a", "bbb"),
+			// A different org's row, to keep the org boundary non-vacuous.
+			"pol-other": mkScopeTestPolicyDivergent("pol-other", "other-org", "gamma", "org-b", "ccc"),
+		},
+	}
+	dynamicPolicyEngine = engine
+
+	for _, tenantHeader := range []string{"alpha", "beta", "a-name-no-policy-targets", ""} {
+		t.Run("X-Tenant-ID="+tenantHeader, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/v1/policies/dynamic", nil)
+			req.Header.Set("X-Org-ID", "org-a")
+			if tenantHeader != "" {
+				req.Header.Set("X-Tenant-ID", tenantHeader)
+			}
+			w := httptest.NewRecorder()
+			listDynamicPoliciesHandler(w, req)
+
+			if w.Code != 200 {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			var got []DynamicPolicy
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			ids := map[string]bool{}
+			for _, p := range got {
+				ids[p.ID] = true
+			}
+			// Both of org-a's rows, whichever tenant authored them.
+			for _, want := range []string{"pol-alpha", "pol-beta"} {
+				if !ids[want] {
+					t.Errorf("X-Tenant-ID=%q changed the result: missing %s (the tenant header must not select)", tenantHeader, want)
+				}
+			}
+			// And nothing from org-b.
+			if ids["pol-other"] {
+				t.Errorf("X-Tenant-ID=%q leaked org-b's policy into org-a's list", tenantHeader)
+			}
+			if len(got) != 2 {
+				t.Errorf("got %d policies, want exactly 2 (org-a's pair): %+v", len(got), got)
+			}
+		})
+	}
+}
+
+// TestDBCachedPolicyAppliesToOrg_Decision5Shapes pins the three shapes the
+// org-keyed gate introduces, each of which the tenant-keyed gate got wrong.
+func TestDBCachedPolicyAppliesToOrg_Decision5Shapes(t *testing.T) {
+	// A row carrying _metadata but NO org_id: a writer that predates or
+	// forgot Decision 5. Admitting it would apply one org's policy to every
+	// org, through a cache deliberately loaded ALL-TENANTS on a BYPASSRLS
+	// pool. Same class, and same answer, as the absent-_metadata guard.
+	//
+	// The metadata map is built imperatively rather than as a literal on
+	// purpose: this fixture's WHOLE value is the ABSENCE of org_id, and the
+	// bulk fixture migration that added org_id alongside tenant_id across
+	// this package's literals silently added one here too, turning the
+	// assertion below into a tautology. It failed, which is how that was
+	// caught -- but a negative fixture that a text transform can quietly
+	// satisfy should not be written as the same shape the transform targets.
+	noOrgMeta := map[string]interface{}{"priority": 1}
+	noOrgMeta["tenant_id"] = "org-a"
+	noOrg := map[string]interface{}{
+		"name":      "legacy-writer",
+		"policy_id": "p",
+		"_metadata": noOrgMeta,
+	}
+	if _, present := noOrgMeta["org_id"]; present {
+		t.Fatal("fixture invariant broken: this entry must NOT carry org_id, or the assertion below cannot fail")
+	}
+	if dbCachedPolicyAppliesToOrg(noOrg, "org-a", nil, "no-org") {
+		t.Error("a cache entry with no org_id must be excluded (fail-closed), not matched on its tenant_id")
+	}
+
+	// An UNBOUND caller against a row whose org_id is likewise empty. This is
+	// the #3065 fail-open idiom - empty matching empty - in the one place a
+	// single match decides enforcement for a whole plane.
+	emptyOrg := mkScopeTestPolicyDivergent("p", "p", "t", "", "x")
+	if dbCachedPolicyAppliesToOrg(emptyOrg, "", nil, "empty-both") {
+		t.Error("an unbound caller must not match a row with an empty org_id (empty-matches-empty is the #3065 fail-open idiom)")
+	}
+
+	// An unbound caller still gets the shared baseline: 'global' and
+	// 'default' are deployment-wide by construction, and excluding them would
+	// leave a caller with no org governed by nothing at all.
+	for _, sentinel := range []string{"global", "default"} {
+		row := mkScopeTestPolicyDivergent("p", "p", "t", sentinel, "x")
+		if !dbCachedPolicyAppliesToOrg(row, "", nil, "unbound-"+sentinel) {
+			t.Errorf("an unbound caller must still be governed by the %q baseline", sentinel)
+		}
+	}
+
+	// The row's TENANT is irrelevant once the org matches - the whole point.
+	divergent := mkScopeTestPolicyDivergent("p", "p", "some-other-tenant", "org-a", "x")
+	if !dbCachedPolicyAppliesToOrg(divergent, "org-a", nil, "divergent") {
+		t.Error("a row authored by a sibling tenant of the caller's org must apply; tenant_id no longer selects")
+	}
+	if dbCachedPolicyAppliesToOrg(divergent, "some-other-tenant", nil, "tenant-as-org") {
+		t.Error("passing the row's TENANT id as the caller org must not match: the gate reads org_id only")
 	}
 }

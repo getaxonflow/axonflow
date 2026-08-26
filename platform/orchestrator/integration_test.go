@@ -130,8 +130,11 @@ func TestEndToEndPlanningToExecution(t *testing.T) {
 
 // TestDynamicPolicyEngineIntegration tests dynamic policy engine integration
 func TestDynamicPolicyEngineIntegration(t *testing.T) {
-	dynamicEngine := NewDynamicPolicyEngine()
-	defer dynamicEngine.Close()
+	dynamicEngine, err := NewDatabaseDynamicPolicyEngine()
+	if err != nil {
+		t.Fatalf("NewDatabaseDynamicPolicyEngine() returned an error: %v", err)
+	}
+	defer func() { _ = dynamicEngine.Close() }()
 
 	tests := []struct {
 		name  string

@@ -323,7 +323,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: ApproveStep not available (Evaluation+ feature): %v\n", err)
+			fmt.Printf("   SKIP: ApproveStep not available (Professional and above): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: ApproveStep returned unexpected error: %v\n", err)
 			failCount++
@@ -390,7 +390,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: RejectStep not available (Evaluation+ feature): %v\n", err)
+			fmt.Printf("   SKIP: RejectStep not available (Professional and above): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: RejectStep returned unexpected error: %v\n", err)
 			failCount++
@@ -415,7 +415,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: GetPendingApprovals not available (Evaluation+ feature): %v\n", err)
+			fmt.Printf("   SKIP: GetPendingApprovals not available (Professional and above): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: GetPendingApprovals returned unexpected error: %v\n", err)
 			failCount++
@@ -436,7 +436,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: GetPendingApprovals with options not available (Evaluation+ feature): %v\n", err)
+			fmt.Printf("   SKIP: GetPendingApprovals with options not available (Professional and above): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: GetPendingApprovals with options returned unexpected error: %v\n", err)
 			failCount++
@@ -463,7 +463,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") || strings.Contains(errStr, "license") {
-			fmt.Printf("   SKIP: GetPendingPlanApprovals not available (Evaluation+ feature): %v\n", err)
+			fmt.Printf("   SKIP: GetPendingPlanApprovals not available (Professional and above): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: GetPendingPlanApprovals returned unexpected error: %v\n", err)
 			failCount++

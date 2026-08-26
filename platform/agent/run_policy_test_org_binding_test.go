@@ -55,7 +55,6 @@ func (f *orgCapturingSegmentResolver) Resolve(_ context.Context, orgID, _ string
 func (f *orgCapturingSegmentResolver) ResolveRole(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
-func (f *orgCapturingSegmentResolver) InvalidateUserSegments(_, _ string) {}
 
 func (f *orgCapturingSegmentResolver) capturedOrgs() []string {
 	f.mu.Lock()

@@ -116,9 +116,16 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 		if !isEnterprise {
 			return ErrOrgTierRequiresEnterprise
 		}
-		// Organization tier requires organization_id
-		if policy.OrganizationID == nil || *policy.OrganizationID == "" {
-			return fmt.Errorf("organization_id is required for organization tier policies")
+		// #3334: this used to require the LEGACY organization_id, which was
+		// the only writer that column ever had. The check is kept, aimed at
+		// org_id - the key that now decides both isolation and selection, and
+		// the one a NULL/empty value makes an unselectable row of. The
+		// unconditional OrgID guard below covers every tier; this arm keeps
+		// the org-tier-specific error message, because an org-tier policy
+		// created without an organisation is a different operator mistake
+		// from a tenant-tier one.
+		if policy.OrgID == "" {
+			return fmt.Errorf("org_id is required for organization tier policies")
 		}
 	}
 
@@ -129,7 +136,13 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 			return fmt.Errorf("failed to check license: %w", err)
 		}
 		if !isEnterprise {
-			count, err := r.countTenantPolicies(ctx, policy.TenantID)
+			// #3490: the count is scoped to the organisation this policy is
+			// about to be written into, not to a context value that may be
+			// absent. policy.OrgID is validated non-empty unconditionally
+			// before the INSERT below; passing it here moves the same
+			// requirement ahead of the quota check, which is the first thing
+			// that actually needs an organisation to be meaningful.
+			count, err := r.countTenantPolicies(ctx, policy.OrgID, policy.TenantID)
 			if err != nil {
 				return fmt.Errorf("failed to count tenant policies: %w", err)
 			}
@@ -198,17 +211,17 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 		INSERT INTO static_policies (
 			id, policy_id, name, category, pattern, severity,
 			description, action, tier, priority, enabled,
-			organization_id, tenant_id, client_id, org_id,
+			tenant_id, client_id, org_id,
 			tags, metadata, version,
 			phase, action_request, action_response,
 			created_at, updated_at, created_by, updated_by
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
-			$12, $13, $13, $14,
-			$15::jsonb, $16::jsonb, $17,
-			$18, $19, $20,
-			$21, $22, $23, $24
+			$12, $12, $13,
+			$14::jsonb, $15::jsonb, $16,
+			$17, $18, $19,
+			$20, $21, $22, $23
 		)
 	`
 
@@ -228,7 +241,7 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 		_, exErr := tx.ExecContext(ctx, query,
 			policy.ID, policy.PolicyID, policy.Name, policy.Category, policy.Pattern, policy.Severity,
 			policy.Description, policy.Action, string(policy.Tier), policy.Priority, policy.Enabled,
-			policy.OrganizationID, policy.TenantID, policy.OrgID,
+			policy.TenantID, policy.OrgID,
 			tagsJSON, metadataJSON, policy.Version,
 			phase, actionRequest, toNullString(actionResponse),
 			policy.CreatedAt, policy.UpdatedAt, policy.CreatedBy, policy.UpdatedBy,
@@ -397,7 +410,7 @@ func (r *StaticPolicyRepository) Update(ctx context.Context, policyID string, up
 		WHERE id = $%d AND deleted_at IS NULL
 		RETURNING id, policy_id, name, category, pattern, severity,
 			description, action, tier, priority, enabled,
-			organization_id, tenant_id, org_id,
+			tenant_id, org_id,
 			version, created_at, updated_at, created_by, updated_by
 	`, strings.Join(updates, ", "), argNum)
 	args = append(args, policy.ID) // Use the actual UUID from fetched policy, not the string param
@@ -418,7 +431,7 @@ func (r *StaticPolicyRepository) Update(ctx context.Context, policyID string, up
 			&updatedPolicy.ID, &updatedPolicy.PolicyID, &updatedPolicy.Name, &updatedPolicy.Category,
 			&updatedPolicy.Pattern, &updatedPolicy.Severity, &description, &updatedPolicy.Action,
 			&updatedPolicy.Tier, &updatedPolicy.Priority, &updatedPolicy.Enabled,
-			&updatedPolicy.OrganizationID, &updatedPolicy.TenantID, &orgIDOut,
+			&updatedPolicy.TenantID, &orgIDOut,
 			&updatedPolicy.Version, &updatedPolicy.CreatedAt, &updatedPolicy.UpdatedAt,
 			&updatedPolicy.CreatedBy, &updatedPolicy.UpdatedBy,
 		)
@@ -508,7 +521,7 @@ func (r *StaticPolicyRepository) GetByID(ctx context.Context, id string) (*Stati
 		SELECT
 			id, policy_id, name, category, pattern, severity,
 			description, action, tier, priority, enabled,
-			organization_id, tenant_id, org_id,
+			tenant_id, org_id,
 			tags, metadata, version,
 			created_at, updated_at, created_by, updated_by, deleted_at
 		FROM static_policies
@@ -526,7 +539,7 @@ func (r *StaticPolicyRepository) GetByID(ctx context.Context, id string) (*Stati
 			&policy.ID, &policy.PolicyID, &policy.Name, &policy.Category,
 			&policy.Pattern, &policy.Severity, &description, &policy.Action,
 			&policy.Tier, &policy.Priority, &policy.Enabled,
-			&policy.OrganizationID, &policy.TenantID, &orgID,
+			&policy.TenantID, &orgID,
 			&tagsJSON, &metadataJSON, &policy.Version,
 			&policy.CreatedAt, &policy.UpdatedAt, &createdBy, &updatedBy, &deletedAt,
 		)
@@ -684,7 +697,7 @@ func (r *StaticPolicyRepository) List(ctx context.Context, tenantID string, para
 			SELECT
 				id, policy_id, name, category, pattern, severity,
 				description, action, tier, priority, enabled,
-				organization_id, tenant_id, org_id,
+				tenant_id, org_id,
 				tags, metadata, version,
 				created_at, updated_at, created_by, updated_by
 			FROM static_policies
@@ -709,7 +722,7 @@ func (r *StaticPolicyRepository) List(ctx context.Context, tenantID string, para
 					&policy.ID, &policy.PolicyID, &policy.Name, &policy.Category,
 					&policy.Pattern, &policy.Severity, &description, &policy.Action,
 					&policy.Tier, &policy.Priority, &policy.Enabled,
-					&policy.OrganizationID, &policy.TenantID, &orgID,
+					&policy.TenantID, &orgID,
 					&tagsJSON, &metadataJSON, &policy.Version,
 					&policy.CreatedAt, &policy.UpdatedAt, &createdBy, &updatedBy,
 				); sErr != nil {
@@ -756,8 +769,15 @@ func (r *StaticPolicyRepository) List(ctx context.Context, tenantID string, para
 		if scopeOrg == "" {
 			scopeOrg = tenantID
 		}
+		// Decision 5 (#3490): org_id, not tenant_id. This listing is what an
+		// admin sees as "my policies", and after Decision 5 the set that
+		// GOVERNS a caller is the org's tenant/org-tier rows - so a listing
+		// still keyed on the caller's username would show a strict subset of
+		// what is actually enforced. The `tier <> 'system'` half is kept so
+		// this pass stays disjoint from the 'global' pass below on an
+		// owner-pool deployment.
 		tenantRows, err := scopedList(scopeOrg,
-			fmt.Sprintf("(tier <> 'system' AND tenant_id = $%d)", argNum), tenantID)
+			fmt.Sprintf("(tier <> 'system' AND org_id = $%d)", argNum), scopeOrg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list policies: %w", err)
 		}
@@ -813,7 +833,7 @@ func scopedListBare(ctx context.Context, db *sql.DB, where []string, args []inte
 		SELECT
 			id, policy_id, name, category, pattern, severity,
 			description, action, tier, priority, enabled,
-			organization_id, tenant_id, org_id,
+			tenant_id, org_id,
 			tags, metadata, version,
 			created_at, updated_at, created_by, updated_by
 		FROM static_policies
@@ -837,7 +857,7 @@ func scopedListBare(ctx context.Context, db *sql.DB, where []string, args []inte
 			&policy.ID, &policy.PolicyID, &policy.Name, &policy.Category,
 			&policy.Pattern, &policy.Severity, &description, &policy.Action,
 			&policy.Tier, &policy.Priority, &policy.Enabled,
-			&policy.OrganizationID, &policy.TenantID, &orgID,
+			&policy.TenantID, &orgID,
 			&tagsJSON, &metadataJSON, &policy.Version,
 			&policy.CreatedAt, &policy.UpdatedAt, &createdBy, &updatedBy,
 		); sErr != nil {
@@ -968,7 +988,7 @@ func staticPolicySortEqual(a, b StaticPolicy, sortBy string) bool {
 //     are ADDITIONALLY required to have their segment_id in segmentIDs.
 //
 // A nil/empty segmentIDs excludes every segment-scoped row (the fail-closed
-// caller contract lives one layer up — see resolveSegmentsForPolicy in
+// caller contract lives one layer up — see resolveUserSegments's call in
 // run.go: a genuine segment-RESOLUTION error must deny the whole request
 // before ever reaching here, never silently call this with an empty set as
 // if the caller had zero segments).
@@ -1004,6 +1024,69 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 	// evaluation paths. This method still owns the policy_overrides read
 	// (a DIFFERENT table) and the override-precedence resolution, now via
 	// policy.EffectiveOverride (#3296 Step C — see applyEffectiveOverride).
+	// Decision 5 (#3490) R3: the `scopeOrg = tenantID` tail below is a path on
+	// which the Basic-auth username can still decide which policies govern a
+	// caller, and it is DELIBERATELY kept. It is reachable only when no
+	// organisation is resolvable at all - neither from the caller's validated
+	// credential (orgIDStr) nor from the request context - which is the pre-v9
+	// single-tenant shape where org_id and tenant_id are the same string by
+	// construction (migrations core/153/154).
+	//
+	// IT IS NOT THE ONLY ONE, and an earlier revision of this comment said it
+	// was. platform/shared/policy/loader.go carries the identical fallback for
+	// the shared engine's content plane, and mcp_richer_context.go and
+	// override_enforcement.go carry it for their own reads. Naming this the
+	// last such path would have told the next reader that deleting it finished
+	// the job. It does not.
+	//
+	// CENSUS, because "nine sites" was quoted for this and is wrong in BOTH
+	// directions. That figure came from `grep 'scopeOrg :='`, which counts a
+	// LOOP VARIABLE and misses every site that does not use that exact
+	// spelling. Derived by reading the call sites, non-test:
+	//
+	//   TEN sites derive a scopeOrg value:
+	//     mcp_richer_context.go:50, :235, :284
+	//     static_policy_repository.go:755, :1043 (here), :1459, :1663
+	//     shared/policy/loader.go:160
+	//     shared/execution/repository.go:433   <- `scopeOrg, scopeTenant :=`,
+	//         a multi-assign the naive grep cannot see
+	//     orchestrator/override_enforcement.go:56  <- assignment onto a
+	//         PARAMETER, on the deny-to-allow flip path; no `:=` at all
+	//
+	//   NOT a site, though the grep counts it:
+	//     orchestrator/overrides_handler.go:253 is `for _, scopeOrg := range`
+	//     -- a loop over two fixed scopes, not a derivation.
+	//
+	//   ELEVEN more compute the same thing under other names:
+	//     callerOrg      decision_chain.go:697, policy_override_repository.go:351,
+	//                    static_policy_repository.go:267, :548,
+	//                    orchestrator/explain_handler.go:110, orchestrator/run.go:3665
+	//     orgIDHeader    static_policy_api_handlers.go:427, :624, :677, :719
+	//     orgScope       orchestrator/db_dynamic_policies.go:1657
+	//     crudScope      orchestrator/policy_api_repository.go:175 (a FUNCTION,
+	//                    invisible to any `name :=` search)
+	//
+	//   Two look like hits and are not: ojk/org_scope.go:19 and
+	//   rbi/org_scope.go:23 are `orgIDHeader` CONSTANTS holding the header
+	//   NAME "X-Org-ID", not an org value.
+	//
+	// The lesson is the method, not the number: an absence-or-count claim over
+	// a variable NAME measures the spelling, not the property.
+	//
+	// Deleting it does not close a forgery, it opens a hole - though not by
+	// the mechanism it is tempting to assume. An empty scopeOrg does not
+	// select zero rows: rls.WithOrgScope refuses an empty org outright
+	// ("orgID must be non-empty"), GetEffective propagates that error, and
+	// run.go logs it and falls through. The caller is then governed by nothing
+	// and allowed past, on the ENFORCEMENT path, which is the one place that
+	// is least acceptable. The fallback is therefore the safer of the two
+	// behaviours available here, and it cannot widen anything: it selects only
+	// rows a single-tenant deployment already stamped with that same string.
+	//
+	// What would actually retire it is making the org non-optional at the
+	// authentication boundary rather than at each of these reads. Tracked as a
+	// checklist row on #3490; not done here because it is a change to what
+	// authentication guarantees, not to what selection keys on.
 	scopeOrg := orgIDStr
 	if scopeOrg == "" {
 		scopeOrg = OrgIDFromContext(ctx)
@@ -1024,13 +1107,28 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 	overridesByPolicy := make(map[string][]staticOverrideRow)
 
 	// Pass A: the caller org's tenant/org-tier policies + live overrides.
+	//
+	// Decision 5 (#3490): one org_id predicate replaces the two-legged
+	// `(tier='organization' AND organization_id::text=$2) OR (tier='tenant'
+	// AND tenant_id=$1)`. Both legs were broken in different ways. The
+	// organization leg keyed on the LEGACY organization_id column, which no
+	// shipped migration ever writes (0 of 101 rows on a fully-migrated seeded
+	// database, #3334) and which run.go's `orgID=nil` call made `= ''`
+	// besides, so org-tier rows were shed on the request plane. The tenant
+	// leg keyed on the Basic-auth username, which is caller-chosen and
+	// validated by nothing. org_id is licence-derived and is the column mig
+	// 018's RLS already isolates on.
+	//
+	// The tier predicate stays as an explicit IN so this pass remains
+	// disjoint from pass B ('global' scope, tier='system') on an owner-pool
+	// deployment where RLS is bypassed and the two org scopes do not
+	// separate the sets by themselves. Without it a system-tier row that
+	// happens to carry the caller's org_id would be counted twice.
 	var tenantPolicies []StaticPolicy
 	err := WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
-		rows, pErr := sharedpolicy.ScanEffectivePolicyRows(ctx, tx, `(
-			(sp.tier = 'organization' AND sp.organization_id::text = $2)
-			OR (sp.tier = 'tenant' AND sp.tenant_id = $1)
-		  )
-		  AND (sp.segment_id IS NULL OR sp.segment_id = ANY($3::text[]))`, tenantID, orgIDStr, pq.Array(segArg))
+		rows, pErr := sharedpolicy.ScanEffectivePolicyRows(ctx, tx, `sp.tier IN ('organization', 'tenant')
+		  AND sp.org_id = $1
+		  AND (sp.segment_id IS NULL OR sp.segment_id = ANY($2::text[]))`, scopeOrg, pq.Array(segArg))
 		if pErr != nil {
 			return pErr
 		}
@@ -1050,18 +1148,55 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 		// not schema-enforced) still prefers the latest row for the
 		// non-precedence metadata fields (enabled/expires_at/reason); see
 		// applyEffectiveOverride.
+		// Decision 5 (#3490): selected by org_id, the same key as the policy
+		// rows above. The old predicate admitted a row either because its
+		// tenant_id equalled the caller's username or because its legacy
+		// organization_id matched - the same two broken legs.
+		//
+		// THE TENANT NARROWING IS DELIBERATE AND IS NOT A RESIDUAL. An earlier
+		// revision of this change read every override row in the org, and R3
+		// caught two things wrong with that:
+		//
+		//   1. It breaks EffectiveOverride's stated caller contract
+		//      (shared/policy/override.go: "rows for OTHER tenants/orgs must
+		//      not be passed in - EffectiveOverride does not re-check identity
+		//      beyond PolicyID").
+		//   2. Because that function resolves tenant-scope ahead of org-scope
+		//      UNCONDITIONALLY, a sibling tenant's block->warn downgrade did
+		//      not merely apply to this caller - it OUTRANKED the caller's own
+		//      org-scoped override. That is a loosening, on an enforcement
+		//      path (tier_aware_policy_engine -> clientRequestHandler Phase 2),
+		//      and it is the one direction this change is meant never to move.
+		//
+		// So the predicate admits the caller's OWN tenant-scoped rows plus the
+		// org's, and nothing else. That keeps a single-tenant org a byte-exact
+		// no-op, keeps the direction of change purely restrictive, and leaves
+		// EffectiveOverride's precedence meaning what it says.
+		//
+		// tenant_id appearing here is NOT the retired selection key. An
+		// override is an EXCEPTION granted to a caller, not a policy targeted
+		// at one, so narrowing it to its grantee is the same reasoning that
+		// leaves the ADR-044 Mechanism-B lookups keyed on created_by. Whether
+		// overrides should become org-only, consistently with policies, is a
+		// product decision and is routed to #3490 rather than taken here.
+		//
+		// revoked_at is filtered for the first time. The Mechanism-B matcher
+		// has always required it (orchestrator/override_enforcement.go); this
+		// read did not, so a REVOKED override went on being applied - and the
+		// upgrade guide tells operators that revoking is the safe way to
+		// dispose of an override they do not want. Remediation that does not
+		// take effect is worse than no remediation.
 		oRows, oErr := tx.QueryContext(ctx, `
 			SELECT po.id, po.policy_id::text, po.action_override, po.enabled_override,
 			       po.expires_at, po.override_reason, po.tenant_id
 			FROM policy_overrides po
 			WHERE po.policy_type = 'static'
 			  AND (po.expires_at IS NULL OR po.expires_at > NOW())
-			  AND (
-				(po.tenant_id = $1)
-				OR (po.organization_id IS NOT NULL AND po.organization_id::text = $2 AND po.tenant_id IS NULL)
-			  )
+			  AND po.revoked_at IS NULL
+			  AND po.org_id = $1
+			  AND (po.tenant_id IS NULL OR po.tenant_id = $2)
 			ORDER BY po.created_at ASC
-		`, tenantID, orgIDStr)
+		`, scopeOrg, tenantID)
 		if oErr != nil {
 			return oErr
 		}
@@ -1073,10 +1208,15 @@ func (r *StaticPolicyRepository) GetEffective(ctx context.Context, tenantID stri
 			if sErr := oRows.Scan(&o.id, &policyUUID, &o.action, &o.enabled, &o.expiresAt, &o.reason, &rowTenantID); sErr != nil {
 				continue
 			}
-			// The WHERE clause above admits exactly two disjoint shapes: a
-			// tenant_id match (tenant scope) or an organization_id match with
-			// tenant_id IS NULL (org scope) — so tenant_id validity alone
-			// determines which branch produced this row.
+			// Scope is a property of the ROW, not of how it was selected.
+			// A Mechanism-A override is written either at tenant scope
+			// (tenant_id set) or at org scope (tenant_id NULL) -
+			// PolicyOverrideRepository.Create is the only writer and it
+			// writes exactly one of the two. Decision 5 (#3490) changed the
+			// selection predicate from that same tenant_id to org_id, so this
+			// read no longer INFERS the scope from which WHERE branch matched;
+			// it reads the column that records it. Same two values, one fewer
+			// assumption.
 			o.scope = sharedpolicy.OverrideScopeOrg
 			if rowTenantID.Valid && rowTenantID.String != "" {
 				o.scope = sharedpolicy.OverrideScopeTenant
@@ -1158,7 +1298,6 @@ func effectiveRowToStaticPolicy(row sharedpolicy.EffectivePolicyRow) StaticPolic
 	policy.Tier = PolicyTier(row.Tier)
 	policy.Priority = row.Priority
 	policy.Enabled = row.Enabled
-	policy.OrganizationID = row.OrganizationID
 	policy.TenantID = row.TenantID
 	if row.OrgID.Valid {
 		policy.OrgID = row.OrgID.String
@@ -1324,10 +1463,16 @@ func (r *StaticPolicyRepository) GetVersions(ctx context.Context, policyID strin
 	// pool bypasses RLS (owner/master): without it any tenant could read any
 	// policy's full version snapshots by ID (#3048 — mirrors the orchestrator
 	// GetVersions fix in #3040). System-tier parents are the shared baseline
-	// every tenant may see; tenant-tier parents must belong to the caller's
-	// tenant; organization-tier parents to the caller's org (R3 MEDIUM-5 —
-	// mirrors GetEffective's pass-A predicate). Under app-role RLS the same
-	// predicate evaluates against the transaction's org GUC.
+	// every tenant may see; every other parent must belong to the caller's
+	// ORG. Under app-role RLS the same predicate evaluates against the
+	// transaction's org GUC.
+	//
+	// Decision 5 (#3490): the two non-system legs (`sp.tenant_id = $2` and
+	// `sp.tier='organization' AND sp.organization_id::text = $3`) collapse to
+	// one `sp.org_id = $2`, mirroring GetEffective's pass-A predicate. The
+	// caller org - not the caller-chosen username - is what bounds this read;
+	// an unbound caller (empty org) now matches no non-system parent at all,
+	// where before it matched every row whose tenant_id was likewise empty.
 	query := `
 		SELECT v.id, v.policy_id, v.version, v.snapshot, v.change_type, v.change_summary, v.changed_by, v.changed_at
 		FROM static_policy_versions v
@@ -1337,12 +1482,11 @@ func (r *StaticPolicyRepository) GetVersions(ctx context.Context, policyID strin
 			WHERE sp.id::text = v.policy_id::text
 			  AND (
 				sp.tier = 'system'
-				OR sp.tenant_id = $2
-				OR (sp.tier = 'organization' AND sp.organization_id::text = $3)
+				OR sp.org_id = $2
 			  )
 		  )
 		ORDER BY v.version DESC
-		LIMIT $4
+		LIMIT $3
 	`
 
 	// static_policy_versions is RLS-enabled keyed on app.current_org_id (mig
@@ -1351,12 +1495,19 @@ func (r *StaticPolicyRepository) GetVersions(ctx context.Context, policyID strin
 	// first, falling back to the 'global' scope for system-policy version
 	// rows (#3048). Empty caller org keeps the legacy bare read
 	// (single-tenant/community owner-pool contexts).
-	callerOrgArg := OrgIDFromContext(ctx)
-	scanVersions := func(q func(query string, args ...interface{}) (*sql.Rows, error)) ([]StaticPolicyVersion, error) {
-		rows, qErr := q(query, policyID, tenantID, callerOrgArg, limit)
-		if qErr != nil {
-			return nil, fmt.Errorf("failed to get versions: %w", qErr)
-		}
+	//
+	// Decision 5 (#3490): scopeOrg fills BOTH the RLS GUC and the query's $2
+	// org predicate. Before this change the GUC used scopeOrg (caller org,
+	// falling back to the tenant) while the predicate used a separately
+	// computed callerOrgArg (caller org, NO fallback), so on a deployment
+	// where the org came only from the tenant identity the two disagreed and
+	// the org leg of the predicate was dead. One value, one meaning.
+	scopeOrg := OrgIDFromContext(ctx)
+	if scopeOrg == "" {
+		scopeOrg = tenantID
+	}
+
+	scanVersionRows := func(rows *sql.Rows) ([]StaticPolicyVersion, error) {
 		defer rows.Close()
 
 		out := make([]StaticPolicyVersion, 0)
@@ -1386,33 +1537,44 @@ func (r *StaticPolicyRepository) GetVersions(ctx context.Context, policyID strin
 		return out, nil
 	}
 
-	scopedVersions := func(scopeOrg string) ([]StaticPolicyVersion, error) {
+	// The 'global' fallback pass re-runs the SAME query with $2 rebound to
+	// the sentinel, so the system-tier parents it is there to recover are
+	// matched by the org leg too rather than only by `sp.tier = 'system'`.
+	scopedVersions := func(passOrg string) ([]StaticPolicyVersion, error) {
 		var out []StaticPolicyVersion
-		err := WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
+		err := WithOrgScope(ctx, r.db, passOrg, func(tx *sql.Tx) error {
+			rows, qErr := tx.QueryContext(ctx, query, policyID, passOrg, limit)
+			if qErr != nil {
+				return fmt.Errorf("failed to get versions: %w", qErr)
+			}
 			var sErr error
-			out, sErr = scanVersions(func(q string, args ...interface{}) (*sql.Rows, error) {
-				return tx.QueryContext(ctx, q, args...)
-			})
+			out, sErr = scanVersionRows(rows)
 			return sErr
 		})
 		return out, err
 	}
 
-	scopeOrg := OrgIDFromContext(ctx)
+	// Fully unbound caller (no org, no tenant): the only leg that can match
+	// is `sp.tier = 'system'`, the shared baseline every caller may read, and
+	// system-tier rows live in the 'global' scope (org_id='global', mig 153).
+	// So that case reads the 'global' scope directly rather than issuing a
+	// BARE query.
+	//
+	// The bare branch this replaces predates Decision 5 and was invisible to
+	// the RLS read-path audit (rls_read_audit_test.go) only because it went
+	// through a closure the AST walk could not follow; inlining it here made
+	// the audit flag it, correctly. It is removed rather than allowlisted:
+	// under axonflow_app_role a bare read of static_policy_versions matches
+	// ZERO rows and returns no error (#3039/#3048), so the branch could not
+	// serve the unbound caller it existed for on any app-role deployment
+	// anyway. Reading the 'global' scope serves that caller on BOTH postures.
 	if scopeOrg == "" {
-		scopeOrg = tenantID
+		scopeOrg = GlobalOrgSentinel
 	}
 
-	var versions []StaticPolicyVersion
-	if scopeOrg == "" {
-		versions, err = scanVersions(func(q string, args ...interface{}) (*sql.Rows, error) {
-			return r.db.QueryContext(ctx, q, args...)
-		})
-	} else {
-		versions, err = scopedVersions(scopeOrg)
-		if err == nil && len(versions) == 0 && scopeOrg != GlobalOrgSentinel {
-			versions, err = scopedVersions(GlobalOrgSentinel)
-		}
+	versions, err := scopedVersions(scopeOrg)
+	if err == nil && len(versions) == 0 && scopeOrg != GlobalOrgSentinel {
+		versions, err = scopedVersions(GlobalOrgSentinel)
 	}
 	if err != nil {
 		return nil, err
@@ -1533,24 +1695,57 @@ func (r *StaticPolicyRepository) recordVersion(ctx context.Context, policy *Stat
 	return nil
 }
 
-// countTenantPolicies counts the number of tenant-tier policies for a tenant.
-func (r *StaticPolicyRepository) countTenantPolicies(ctx context.Context, tenantID string) (int, error) {
+// countTenantPolicies counts the tenant-tier policies a tenant already has,
+// for the Community per-tenant limit Create enforces.
+//
+// orgID is the ORGANISATION the count is scoped to and is REQUIRED. It is
+// passed explicitly rather than read from the context because the caller
+// (Create) is about to write a row with exactly this org_id, and the number
+// that decides whether that write is allowed must be counted in the same
+// organisation the row lands in.
+//
+// # Why the org is a parameter and not a fallback (#3490, Decision 5)
+//
+// This used to scope the GUC to OrgIDFromContext(ctx) and, when that was
+// empty, fall back to `scopeOrg = tenantID` -- treating the Basic-auth
+// USERNAME as an organisation. That is the precise conflation Decision 5
+// exists to remove: tenant_id is a caller-chosen string, org_id comes from
+// the licence. The fallback also failed in the least useful direction. Under
+// axonflow_app_role, mig 018's RLS USING clause filters on
+// app.current_org_id; with the GUC set to a tenant name that is not an org,
+// the USING clause matches NOTHING, COUNT(*) returns 0, and a limit whose
+// entire job is to say "no" silently answers "you have zero policies, go
+// ahead" -- a fail-OPEN on a quota, reached exactly when the org could not be
+// determined. Refusing is the only safe answer: an unknown organisation means
+// an uncountable quota, not an empty one.
+//
+// # Why the predicate names org_id explicitly
+//
+// The WHERE clause carries org_id in addition to tenant_id rather than
+// leaning on the RLS scope to supply it. AXONFLOW_DB_USE_APP_ROLE defaults to
+// false, and on an owner-pool deployment RLS is BYPASSED entirely -- the
+// WHERE clause is then the whole boundary. Delegating the org half to the
+// scope would make this count cross-org on exactly the deployments that have
+// no RLS to fall back on, which is the same reasoning the org-keyed selection
+// predicates in this change are explicit for. With the column named here the
+// two agree by construction instead of by deployment mode.
+func (r *StaticPolicyRepository) countTenantPolicies(ctx context.Context, orgID, tenantID string) (int, error) {
+	if orgID == "" {
+		return 0, fmt.Errorf("countTenantPolicies: orgID must be non-empty (the tenant-policy limit cannot be counted in an unknown organisation)")
+	}
+
 	query := `
 		SELECT COUNT(*)
 		FROM static_policies
-		WHERE tenant_id = $1 AND tier = 'tenant' AND deleted_at IS NULL
+		WHERE tenant_id = $1 AND org_id = $2 AND tier = 'tenant' AND deleted_at IS NULL
 	`
 
 	// Org-scoped (#3048): under axonflow_app_role the bare COUNT read 0
 	// through mig 018's RLS, so the Community tenant-policy limit never
 	// engaged. Same scope key Create uses for the row's org_id.
-	scopeOrg := OrgIDFromContext(ctx)
-	if scopeOrg == "" {
-		scopeOrg = tenantID
-	}
 	var count int
-	err := WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, query, tenantID).Scan(&count)
+	err := WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, tenantID, orgID).Scan(&count)
 	})
 	if err != nil {
 		return 0, err

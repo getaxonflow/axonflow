@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -47,16 +48,25 @@ func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
 		WillReturnRows(actionRows)
 
 	// Mock latency query (v7.4.1+: powers the Avg Latency card)
-	latencyRows := sqlmock.NewRows([]string{"avg"}).AddRow(150.5)
-	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+	latencyRows := sqlmock.NewRows([]string{"avg", "samples"}).AddRow(150.5, 12)
+	mock.ExpectQuery("SELECT AVG\\(response_time_ms\\), COUNT").
 		WithArgs("travel-us", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(latencyRows)
 
-	// Mock policy query
-	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}).
-		AddRow("demo-block-bulk-email", 8, 8).
-		AddRow("pii-detection", 5, 2)
-	mock.ExpectQuery("SELECT").
+	// Mock policy query. The matcher is the LATERAL expansion, not a bare
+	// "SELECT" (#3426): a matcher that loose accepted the defective query that
+	// grouped on the singular policy_details->>'policy_name', AND it accepted
+	// the shared-chain query, so it could not tell them apart. Worse, this
+	// handler treats a failed policy query as non-fatal, so a mismatch here
+	// produced an empty tile and a green test.
+	policyRows := sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}).
+		// The real server shape (#3426): identity-first policy_name, the
+		// identity_is_name flag saying whether that string is a stamped NAME or a
+		// raw id, and the pre-LIMIT distinct total. A mock that omits either
+		// certifies a renderer reading fields the server never sent.
+		AddRow("demo-block-bulk-email", true, 8, 8, 2).
+		AddRow("pii-detection", false, 5, 2, 2)
+	mock.ExpectQuery("CROSS JOIN LATERAL unnest").
 		WithArgs("travel-us", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(policyRows)
 
@@ -119,8 +129,14 @@ func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
 	if summary.BlockRatePercent != 10.0 {
 		t.Errorf("expected block_rate_percent=10.0, got %f", summary.BlockRatePercent)
 	}
-	if summary.AvgLatencyMs != 150.5 {
-		t.Errorf("expected avg_latency_ms=150.5, got %f", summary.AvgLatencyMs)
+	if summary.AvgLatencyMs == nil {
+		t.Fatalf("expected avg_latency_ms=150.5, got null (12 samples were reported)")
+	}
+	if *summary.AvgLatencyMs != 150.5 {
+		t.Errorf("expected avg_latency_ms=150.5, got %f", *summary.AvgLatencyMs)
+	}
+	if summary.LatencySampleCount != 12 {
+		t.Errorf("expected latency_sample_count=12, got %d", summary.LatencySampleCount)
 	}
 }
 
@@ -147,13 +163,13 @@ func TestAuditSummaryHandler_HandleSummary_CountsDenyAsBlocked(t *testing.T) {
 		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(actionRows)
 
-	latencyRows := sqlmock.NewRows([]string{"avg"}).AddRow(0.0)
-	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+	latencyRows := sqlmock.NewRows([]string{"avg", "samples"}).AddRow(nil, 0)
+	mock.ExpectQuery("SELECT AVG\\(response_time_ms\\), COUNT").
 		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(latencyRows)
 
-	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}).
-		AddRow("SSN Detection", 1, 1)
+	policyRows := sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}).
+		AddRow("SSN Detection", true, 1, 1, 1)
 	mock.ExpectQuery("SELECT").
 		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(policyRows)
@@ -380,7 +396,7 @@ func TestAuditSummaryHandler_HandleSummary_ZeroBlockedEvents(t *testing.T) {
 	mock.ExpectQuery("SELECT request_type").
 		WillReturnRows(actionRows)
 
-	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"})
+	policyRows := sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"})
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(policyRows)
 
@@ -417,7 +433,7 @@ func TestAuditSummaryHandler_HandleSummary_AllBlocked(t *testing.T) {
 	mock.ExpectQuery("SELECT request_type").
 		WillReturnRows(actionRows)
 
-	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"})
+	policyRows := sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"})
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(policyRows)
 
@@ -451,10 +467,19 @@ func TestNewAuditSummaryHandler(t *testing.T) {
 }
 
 // TestAuditSummaryHandler_CardAggregates_EmptyTenant exercises the
-// zero-traffic case: total_requests should be 0, block_rate should NOT
-// explode into NaN, and avg_latency should be 0 — the bug we shipped in
-// v7.4.0 was the *opposite* (dashboard card showed zeros even when there
-// WAS data). This test pins the no-data path so we don't regress either way.
+// zero-traffic case: total_requests should be 0 and block_rate should NOT
+// explode into NaN. The bug we shipped in v7.4.0 was the *opposite*
+// (dashboard card showed zeros even when there WAS data). This test pins the
+// no-data path so we don't regress either way.
+//
+// #3424 INVERTED THE LATENCY ASSERTION HERE. This test used to require
+// avg_latency_ms == 0 on a tenant with no measured rows, which is precisely
+// the behaviour that put a confident "Avg Latency: 0ms" on the portal for
+// stacks serving real governed traffic: it made a count-like zero the
+// contract for a measurement that did not exist. The count aggregates above
+// genuinely are 0 when there is no traffic; an average over no samples is not
+// 0, it is unknown, and the contract is now null + a sample count of 0. A
+// test asserting the old value would keep re-certifying the defect.
 func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -466,12 +491,12 @@ func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
 	mock.ExpectQuery("SELECT request_type, policy_decision, COUNT").
 		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}))
-	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+	mock.ExpectQuery("SELECT AVG\\(response_time_ms\\), COUNT").
 		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
+		WillReturnRows(sqlmock.NewRows([]string{"avg", "samples"}).AddRow(nil, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
@@ -484,8 +509,12 @@ func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
+	// Snapshot the wire bytes BEFORE decoding: the decoder drains rr.Body, so
+	// reading it afterwards yields "" and any assertion on it is vacuous.
+	wire := rr.Body.String()
+
 	var summary ComplianceSummary
-	if err := json.NewDecoder(rr.Body).Decode(&summary); err != nil {
+	if err := json.NewDecoder(strings.NewReader(wire)).Decode(&summary); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
@@ -495,8 +524,18 @@ func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
 	if summary.BlockRatePercent != 0.0 {
 		t.Errorf("block_rate_percent = %f, want 0 (no NaN on empty set)", summary.BlockRatePercent)
 	}
-	if summary.AvgLatencyMs != 0.0 {
-		t.Errorf("avg_latency_ms = %f, want 0", summary.AvgLatencyMs)
+	if summary.AvgLatencyMs != nil {
+		t.Errorf("avg_latency_ms = %f, want null (no measured samples must not render as a measured zero)", *summary.AvgLatencyMs)
+	}
+	if summary.LatencySampleCount != 0 {
+		t.Errorf("latency_sample_count = %d, want 0", summary.LatencySampleCount)
+	}
+	// The serialized form is what the portal actually reads, so pin it: the key
+	// must be present and null, not absent (an absent key and a null both read
+	// as undefined/null in the client, but a `omitempty` slip would silently
+	// change the wire contract for other consumers).
+	if !strings.Contains(wire, `"avg_latency_ms":null`) {
+		t.Errorf("wire form should carry avg_latency_ms:null, got %s", wire)
 	}
 	if summary.ComplianceScore != 100.0 {
 		t.Errorf("compliance_score = %f, want 100 (no events = fully compliant)", summary.ComplianceScore)
@@ -526,12 +565,12 @@ func TestAuditSummaryHandler_CardAggregates_NeedsApprovalAndErrorBucketed(t *tes
 			AddRow("llm_call", "allowed", 369).
 			AddRow("workflow_step_gate", "pending_approval", 12).
 			AddRow("llm_call", "error", 4))
-	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+	mock.ExpectQuery("SELECT AVG\\(response_time_ms\\), COUNT").
 		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
+		WillReturnRows(sqlmock.NewRows([]string{"avg", "samples"}).AddRow(nil, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
@@ -585,12 +624,12 @@ func TestAuditSummaryHandler_CardAggregates_AllBlocked(t *testing.T) {
 		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}).
 			AddRow("workflow_step_gate", "blocked", 7))
-	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+	mock.ExpectQuery("SELECT AVG\\(response_time_ms\\), COUNT").
 		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
+		WillReturnRows(sqlmock.NewRows([]string{"avg", "samples"}).AddRow(nil, 0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
@@ -609,5 +648,69 @@ func TestAuditSummaryHandler_CardAggregates_AllBlocked(t *testing.T) {
 	}
 	if summary.ComplianceScore != 0.0 {
 		t.Errorf("compliance_score = %f, want 0 (everything blocked)", summary.ComplianceScore)
+	}
+}
+
+// The portal's Compliance Summary renders one tile per verdict bucket and
+// tells the reader that the buckets sum to Total. That claim is only as strong
+// as the weakest end of it, and the portal end is the weak one: its jest suite
+// asserts the sum over a HAND-WRITTEN fixture, so a sixth bucket added here
+// would ship with the tiles silently no longer closing and that suite still
+// green. A fixture cannot notice a field it was never told about.
+//
+// This is the binding the portal cannot do for itself, in the package that
+// owns the struct: the set of verdict buckets is pinned by name, so ADDING one
+// (or renaming one) is a build-level conversation rather than a display defect
+// discovered in production.
+func TestComplianceSummaryVerdictBucketsAreThePortalTileSet(t *testing.T) {
+	// Exactly the buckets TotalRequests is documented to be the sum of, and
+	// exactly the tiles ee/platform/customer-portal-ui/app/audit/page.tsx
+	// renders beside it.
+	want := map[string]bool{
+		"allowed_requests":        true,
+		"blocked_requests":        true,
+		"modified_requests":       true,
+		"needs_approval_requests": true,
+		"error_requests":          true,
+	}
+
+	// A verdict bucket is an int field whose json tag ends in "_requests" and
+	// which is not the total itself. Derived from the struct rather than from a
+	// literal list, so a NEW bucket is caught by construction.
+	got := map[string]bool{}
+	rt := reflect.TypeOf(ComplianceSummary{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "total_requests" || !strings.HasSuffix(tag, "_requests") {
+			continue
+		}
+		if f.Type.Kind() != reflect.Int {
+			continue
+		}
+		got[tag] = true
+	}
+
+	// Anti-vacuity: if the discovery rule stops matching anything, the
+	// comparison below would pass against an empty set on both sides.
+	if len(got) == 0 {
+		t.Fatal("discovered no verdict buckets; the field-matching rule no longer matches the struct, " +
+			"so this test would pass vacuously")
+	}
+
+	for tag := range got {
+		if !want[tag] {
+			t.Errorf("ComplianceSummary gained verdict bucket %q, which the portal's Compliance Summary "+
+				"does not render. total_requests is documented as the sum of the verdict buckets, so the "+
+				"portal tiles no longer close against Total. Add the tile in "+
+				"ee/platform/customer-portal-ui/app/audit/page.tsx (and its assertion in "+
+				"__tests__/app/audit/verdict-tiles.test.tsx), then add %q here.", tag, tag)
+		}
+	}
+	for tag := range want {
+		if !got[tag] {
+			t.Errorf("verdict bucket %q is gone from ComplianceSummary but the portal still renders a tile "+
+				"for it; remove the tile before removing the field", tag)
+		}
 	}
 }

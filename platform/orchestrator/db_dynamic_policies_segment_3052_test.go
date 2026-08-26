@@ -5,7 +5,8 @@ package orchestrator
 
 // #3052 (ADR-060 #2989 P3b) — segment-awareness for the DB-backed
 // DatabaseDynamicPolicyEngine. Mirrors dynamic_policy_engine_segment_3052_test.go
-// for this engine's own choke point (dbCachedPolicyAppliesToTenant) and its
+// for this engine's own choke point (dbCachedPolicyAppliesToOrg, named
+// dbCachedPolicyAppliesToTenant until Decision 5 / #3490 re-keyed it) and its
 // deliberately different sentinel/shape handling (see that function's doc).
 
 import (
@@ -15,15 +16,21 @@ import (
 	"testing"
 )
 
-// TestDbCachedPolicyAppliesToTenant_SegmentMatrix is the choke-point
+// TestDbCachedPolicyAppliesToOrg_SegmentMatrix is the choke-point
 // applies/doesn't-apply matrix (DoD item) for the DB-backed engine,
 // including the shapes unique to it: metadata absent, and the
-// "global"/"default" tenant sentinels.
-func TestDbCachedPolicyAppliesToTenant_SegmentMatrix(t *testing.T) {
-	mk := func(metadataPresent bool, tenant, segment string) map[string]interface{} {
+// "global"/"default" sentinels.
+//
+// Decision 5 (#3490): the tenancy axis is org_id. The matrix rows are
+// otherwise unchanged - what "matches" means moved from a caller-chosen
+// username to a licence-derived org, but the applies/excluded answers for
+// each shape are the same, which is the point: re-keying must not quietly
+// change the sentinel or segment semantics.
+func TestDbCachedPolicyAppliesToOrg_SegmentMatrix(t *testing.T) {
+	mk := func(metadataPresent bool, org, segment string) map[string]interface{} {
 		m := map[string]interface{}{"name": "p"}
 		if metadataPresent {
-			m["_metadata"] = map[string]interface{}{"tenant_id": tenant, "segment_id": segment}
+			m["_metadata"] = map[string]interface{}{"tenant_id": "authoring-tenant", "org_id": org, "segment_id": segment}
 		}
 		return m
 	}
@@ -31,32 +38,39 @@ func TestDbCachedPolicyAppliesToTenant_SegmentMatrix(t *testing.T) {
 	cases := []struct {
 		name           string
 		policyMap      map[string]interface{}
-		callerTenant   string
+		callerOrg      string
 		callerSegments []string
 		want           bool
 	}{
-		{"no metadata: fail-closed defect guard excludes", mk(false, "", ""), "tenant-a", nil, false},
-		{"empty tenant in metadata: applies to nobody", mk(true, "", ""), "tenant-a", nil, false},
-		{"global sentinel, no segment: applies", mk(true, "global", ""), "tenant-a", nil, true},
-		{"default sentinel, no segment: applies", mk(true, "default", ""), "tenant-a", nil, true},
-		{"exact tenant match, no segment: applies", mk(true, "tenant-a", ""), "tenant-a", nil, true},
-		{"other tenant, no segment: excluded", mk(true, "tenant-b", ""), "tenant-a", nil, false},
+		{"no metadata: fail-closed defect guard excludes", mk(false, "", ""), "org-a", nil, false},
+		{"empty org in metadata: applies to nobody", mk(true, "", ""), "org-a", nil, false},
+		{"global sentinel, no segment: applies", mk(true, "global", ""), "org-a", nil, true},
+		{"default sentinel, no segment: applies", mk(true, "default", ""), "org-a", nil, true},
+		{"exact org match, no segment: applies", mk(true, "org-a", ""), "org-a", nil, true},
+		{"other org, no segment: excluded", mk(true, "org-b", ""), "org-a", nil, false},
 
-		{"global sentinel + matching segment: applies", mk(true, "global", "seg-finance"), "tenant-a", []string{"seg-finance"}, true},
-		{"global sentinel + segment set but caller has none: excluded", mk(true, "global", "seg-finance"), "tenant-a", nil, false},
-		{"global sentinel + wrong segment: excluded", mk(true, "global", "seg-finance"), "tenant-a", []string{"seg-engineering"}, false},
-		{"exact tenant + matching segment: applies", mk(true, "tenant-a", "seg-finance"), "tenant-a", []string{"seg-finance"}, true},
-		{"exact tenant + caller lacks segment: excluded", mk(true, "tenant-a", "seg-finance"), "tenant-a", nil, false},
+		{"global sentinel + matching segment: applies", mk(true, "global", "seg-finance"), "org-a", []string{"seg-finance"}, true},
+		{"global sentinel + segment set but caller has none: excluded", mk(true, "global", "seg-finance"), "org-a", nil, false},
+		{"global sentinel + wrong segment: excluded", mk(true, "global", "seg-finance"), "org-a", []string{"seg-engineering"}, false},
+		{"exact org + matching segment: applies", mk(true, "org-a", "seg-finance"), "org-a", []string{"seg-finance"}, true},
+		{"exact org + caller lacks segment: excluded", mk(true, "org-a", "seg-finance"), "org-a", nil, false},
 
-		// Tenant gate short-circuits regardless of segment membership.
-		{"other tenant + matching segment: still excluded", mk(true, "tenant-b", "seg-finance"), "tenant-a", []string{"seg-finance"}, false},
+		// Org gate short-circuits regardless of segment membership.
+		{"other org + matching segment: still excluded", mk(true, "org-b", "seg-finance"), "org-a", []string{"seg-finance"}, false},
+
+		// Decision 5 (#3490): the AUTHORING TENANT baked into every mk()
+		// entry above is never the caller's org, so a gate that still read
+		// tenant_id would fail the three "applies" rows outright. This row
+		// makes that explicit rather than incidental: naming the authoring
+		// tenant as the caller org must NOT match.
+		{"authoring tenant passed as caller org: excluded", mk(true, "org-a", ""), "authoring-tenant", nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := dbCachedPolicyAppliesToTenant(tc.policyMap, tc.callerTenant, tc.callerSegments, tc.name)
+			got := dbCachedPolicyAppliesToOrg(tc.policyMap, tc.callerOrg, tc.callerSegments, tc.name)
 			if got != tc.want {
-				t.Errorf("dbCachedPolicyAppliesToTenant(%+v, %q, %v) = %v, want %v",
-					tc.policyMap, tc.callerTenant, tc.callerSegments, got, tc.want)
+				t.Errorf("dbCachedPolicyAppliesToOrg(%+v, %q, %v) = %v, want %v",
+					tc.policyMap, tc.callerOrg, tc.callerSegments, got, tc.want)
 			}
 		})
 	}
@@ -88,6 +102,7 @@ func dbCachedSegmentPolicyWithRisk(policyID, segmentID string, allowOverride boo
 			"id":             policyID,
 			"name":           "segment KYC block",
 			"tenant_id":      "global",
+			"org_id":         "global",
 			"segment_id":     segmentID,
 			"priority":       100,
 			"risk_level":     riskLevel,

@@ -49,7 +49,7 @@ func seedGlobalEngineWithMarkerPolicy(t *testing.T, actionRequest, pattern strin
 			sqlmock.NewRows(cols).AddRow(
 				"p1", "test_marker_policy", "Test Marker", "compliance-rbi", "system",
 				pattern, "critical", "test marker", "request", actionRequest, nil,
-				true, 100, "global", nil, nil, []byte("{}"), time.Now().UTC(),
+				true, 100, "global", nil, []byte("{}"), time.Now().UTC(),
 			))
 	}
 	policytest.ScopedTxPlumbing(mockSQL, 8)

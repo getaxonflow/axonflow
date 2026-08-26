@@ -83,6 +83,22 @@ func (t *WCPExecutionTracker) StartWorkflowExecution(ctx context.Context, workfl
 	}
 
 	req := execution.CreateExecutionRequest{
+		// #3442: ONE identifier for one run. This record is a projection of
+		// the `workflows` row - created synchronously from it in
+		// OnWorkflowCreated, exactly one per workflow, and resolved by
+		// metadata->>'workflow_id' on every read below - so it carries the
+		// workflow's identity instead of minting a second `wf_`-prefixed
+		// string. Before this, the Approvals queue showed the operator
+		// wf_<8 hex> and the Executions page showed wf_<24 hex> for the same
+		// run, with nothing on either screen saying they were different kinds
+		// of thing.
+		//
+		// Rows written before this change keep their minted ids and stay
+		// addressable: resolveExecution's direct-id lookup still finds them,
+		// and findExecutionByWorkflowID reads the metadata key, which is
+		// unchanged and is what every WCP path has always used.
+		ExecutionID:   workflow.WorkflowID,
+		ExternalID:    workflow.WorkflowID,
 		ExecutionType: execution.ExecutionTypeWCP,
 		Name:          workflow.WorkflowName,
 		Source:        string(workflow.Source),
@@ -130,16 +146,7 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 		// approved/rejected before the fix deployed would forever show
 		// "Approval: pending" on the portal timeline. Best-effort — a WCP
 		// fetch failure falls back to the cached snapshot.
-		if t.wcpService != nil && len(status.Steps) > 0 {
-			// #3065: named unscoped read — this reconciliation holds no
-			// request scope, and the result is authorized by the HTTP layer
-			// (UnifiedExecutionHandler.checkTenantOwnership) before it reaches
-			// a client. The old GetWorkflow(ctx, id, "", "") relied on an
-			// empty-string bypass that is now a denial.
-			if wf, werr := t.wcpService.GetWorkflowUnscoped(ctx, workflowID); werr == nil && wf != nil {
-				reconcileStepApprovals(status.Steps, wf.Steps)
-			}
-		}
+		t.ReconcileStepApprovals(ctx, workflowID, status)
 		return status, nil
 	}
 	if !errors.Is(err, execution.ErrExecutionNotFound) {
@@ -501,6 +508,32 @@ func mapWCPGateDecision(d workflow_control.GateDecision) execution.GateDecision 
 // without this, cached pending snapshots never update. Matches on step_id;
 // steps present in the cache but absent from the fresh rows are left
 // untouched (protects against partial WCP state).
+// ReconcileStepApprovals merges the live workflow_steps approval state over an
+// execution's cached step snapshot, in place. Best-effort: a WCP fetch failure
+// leaves the cached snapshot exactly as it was.
+//
+// It is a method, and exported, because of #3442. It used to be inline in
+// GetWorkflowStatus, which resolveExecution reached only for a caller who
+// passed the WORKFLOW id - and the portal Executions page passes the EXECUTION
+// id, which resolveExecution answers from its direct-lookup strategy and
+// returns immediately. So the page that renders the step timeline was already
+// the one path that never reconciled. Converging the two identifiers would
+// have made that the only path, silently retiring the merge; hoisting it here
+// and calling it from the direct-lookup strategy instead closes the gap for
+// both id shapes.
+//
+// #3065: the underlying read is a named UNSCOPED one. This reconciliation
+// holds no request scope, and its result is authorized by the HTTP layer
+// (UnifiedExecutionHandler.checkTenantOwnership) before it reaches a client.
+func (t *WCPExecutionTracker) ReconcileStepApprovals(ctx context.Context, workflowID string, status *execution.ExecutionStatus) {
+	if t == nil || t.wcpService == nil || status == nil || workflowID == "" || len(status.Steps) == 0 {
+		return
+	}
+	if wf, err := t.wcpService.GetWorkflowUnscoped(ctx, workflowID); err == nil && wf != nil {
+		reconcileStepApprovals(status.Steps, wf.Steps)
+	}
+}
+
 func reconcileStepApprovals(cached []execution.StepStatus, fresh []workflow_control.WorkflowStep) {
 	if len(cached) == 0 || len(fresh) == 0 {
 		return

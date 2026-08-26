@@ -33,45 +33,45 @@ type mockPolicyService struct {
 	testPolicyFunc        func(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error)
 	getPolicyVersionsFunc func(ctx context.Context, tenantID, policyID string) (*PolicyVersionResponse, error)
 	exportPoliciesFunc    func(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error)
-	importPoliciesFunc    func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error)
+	importPoliciesFunc    func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error)
 }
 
-func (m *mockPolicyService) CreatePolicy(ctx context.Context, tenantID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error) {
+func (m *mockPolicyService) CreatePolicy(ctx context.Context, tenantID, orgID string, req *CreatePolicyRequest, createdBy string) (*PolicyResource, error) {
 	if m.createPolicyFunc != nil {
 		return m.createPolicyFunc(ctx, tenantID, req, createdBy)
 	}
 	return nil, nil
 }
 
-func (m *mockPolicyService) GetPolicy(ctx context.Context, tenantID, policyID string) (*PolicyResource, error) {
+func (m *mockPolicyService) GetPolicy(ctx context.Context, tenantID, orgID, policyID string) (*PolicyResource, error) {
 	if m.getPolicyFunc != nil {
 		return m.getPolicyFunc(ctx, tenantID, policyID)
 	}
 	return nil, nil
 }
 
-func (m *mockPolicyService) ListPolicies(ctx context.Context, tenantID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
+func (m *mockPolicyService) ListPolicies(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
 	if m.listPoliciesFunc != nil {
 		return m.listPoliciesFunc(ctx, tenantID, params)
 	}
 	return nil, nil
 }
 
-func (m *mockPolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error) {
+func (m *mockPolicyService) UpdatePolicy(ctx context.Context, tenantID, orgID, policyID string, req *UpdatePolicyRequest, updatedBy string) (*PolicyResource, error) {
 	if m.updatePolicyFunc != nil {
 		return m.updatePolicyFunc(ctx, tenantID, policyID, req, updatedBy)
 	}
 	return nil, nil
 }
 
-func (m *mockPolicyService) DeletePolicy(ctx context.Context, tenantID, policyID string, deletedBy string) error {
+func (m *mockPolicyService) DeletePolicy(ctx context.Context, tenantID, orgID, policyID string, deletedBy string) error {
 	if m.deletePolicyFunc != nil {
 		return m.deletePolicyFunc(ctx, tenantID, policyID, deletedBy)
 	}
 	return nil
 }
 
-func (m *mockPolicyService) TestPolicy(ctx context.Context, tenantID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
+func (m *mockPolicyService) TestPolicy(ctx context.Context, tenantID, orgID, policyID string, req *TestPolicyRequest) (*TestPolicyResponse, error) {
 	if m.testPolicyFunc != nil {
 		return m.testPolicyFunc(ctx, tenantID, policyID, req)
 	}
@@ -85,16 +85,16 @@ func (m *mockPolicyService) GetPolicyVersions(ctx context.Context, tenantID, pol
 	return nil, nil
 }
 
-func (m *mockPolicyService) ExportPolicies(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error) {
+func (m *mockPolicyService) ExportPolicies(ctx context.Context, tenantID, orgID string) (*ExportPoliciesResponse, error) {
 	if m.exportPoliciesFunc != nil {
 		return m.exportPoliciesFunc(ctx, tenantID)
 	}
 	return nil, nil
 }
 
-func (m *mockPolicyService) ImportPolicies(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
+func (m *mockPolicyService) ImportPolicies(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
 	if m.importPoliciesFunc != nil {
-		return m.importPoliciesFunc(ctx, tenantID, req, importedBy)
+		return m.importPoliciesFunc(ctx, tenantID, orgID, req, importedBy)
 	}
 	return nil, nil
 }
@@ -187,6 +187,7 @@ func TestPolicyAPIHandler_HandlePolicies_List(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies?page=1&page_size=20&type=content&enabled=true", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicies(w, req)
@@ -214,6 +215,7 @@ func TestPolicyAPIHandler_HandlePolicies_ListError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicies(w, req)
@@ -244,6 +246,7 @@ func TestPolicyAPIHandler_HandlePolicies_Create(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user-1")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -269,6 +272,7 @@ func TestPolicyAPIHandler_HandlePolicies_CreateInvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies", strings.NewReader("invalid json"))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicies(w, req)
@@ -301,6 +305,7 @@ func TestPolicyAPIHandler_HandlePolicies_CreateValidationError(t *testing.T) {
 	body := `{"name": "", "type": "content", "conditions": [], "actions": []}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicies(w, req)
@@ -329,6 +334,7 @@ func TestPolicyAPIHandler_HandlePolicies_CreateServiceError(t *testing.T) {
 	body := `{"name": "Test", "type": "content", "conditions": [{"field": "query", "operator": "contains", "value": "x"}], "actions": [{"type": "block"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicies(w, req)
@@ -344,6 +350,7 @@ func TestPolicyAPIHandler_HandlePolicies_Options(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/policies", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Origin", "http://localhost:3000")
 	w := httptest.NewRecorder()
 
@@ -360,6 +367,7 @@ func TestPolicyAPIHandler_HandlePolicies_MethodNotAllowed(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/policies", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicies(w, req)
@@ -389,6 +397,7 @@ func TestPolicyAPIHandler_HandlePolicyByID_NoPolicyID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -407,6 +416,7 @@ func TestPolicyAPIHandler_HandlePolicyByID_InvalidUUID(t *testing.T) {
 	// legacy ID (e.g. sensitive_data_control from migration 010).
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/Bad%20ID%21", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -435,6 +445,7 @@ func TestPolicyAPIHandler_GetPolicy(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -462,6 +473,7 @@ func TestPolicyAPIHandler_GetPolicy_NotFound(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -481,6 +493,7 @@ func TestPolicyAPIHandler_GetPolicy_Error(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -502,6 +515,7 @@ func TestPolicyAPIHandler_UpdatePolicy(t *testing.T) {
 	body := `{"name": "Updated Policy"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user-1")
 	w := httptest.NewRecorder()
 
@@ -518,6 +532,7 @@ func TestPolicyAPIHandler_UpdatePolicy_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", strings.NewReader("invalid"))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -542,6 +557,7 @@ func TestPolicyAPIHandler_UpdatePolicy_ValidationError(t *testing.T) {
 	body := `{"name": "X"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -562,6 +578,7 @@ func TestPolicyAPIHandler_UpdatePolicy_NotFound(t *testing.T) {
 	body := `{"name": "Updated Policy"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -585,6 +602,7 @@ func TestPolicyAPIHandler_DeletePolicy(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user-1")
 	w := httptest.NewRecorder()
 
@@ -605,6 +623,7 @@ func TestPolicyAPIHandler_DeletePolicy_NotFound(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -624,6 +643,7 @@ func TestPolicyAPIHandler_DeletePolicy_GetError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -647,6 +667,7 @@ func TestPolicyAPIHandler_DeletePolicy_DeleteError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -672,6 +693,7 @@ func TestPolicyAPIHandler_TestPolicy(t *testing.T) {
 	body := `{"query": "show me passwords"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/test", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -695,6 +717,7 @@ func TestPolicyAPIHandler_TestPolicy_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/test", strings.NewReader("invalid"))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -711,6 +734,7 @@ func TestPolicyAPIHandler_TestPolicy_MissingQuery(t *testing.T) {
 	body := `{}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/test", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -731,6 +755,7 @@ func TestPolicyAPIHandler_TestPolicy_NotFound(t *testing.T) {
 	body := `{"query": "test"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/test", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -751,6 +776,7 @@ func TestPolicyAPIHandler_TestPolicy_Error(t *testing.T) {
 	body := `{"query": "test"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/test", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -779,6 +805,7 @@ func TestPolicyAPIHandler_GetPolicyVersions(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/versions", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -806,6 +833,7 @@ func TestPolicyAPIHandler_GetPolicyVersions_Error(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000/versions", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -821,6 +849,7 @@ func TestPolicyAPIHandler_HandlePolicyByID_Options(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("Origin", "https://app.getaxonflow.com")
 	w := httptest.NewRecorder()
 
@@ -837,6 +866,7 @@ func TestPolicyAPIHandler_HandlePolicyByID_MethodNotAllowed(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
@@ -848,7 +878,7 @@ func TestPolicyAPIHandler_HandlePolicyByID_MethodNotAllowed(t *testing.T) {
 
 func TestPolicyAPIHandler_HandleImport(t *testing.T) {
 	mock := &mockPolicyService{
-		importPoliciesFunc: func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
+		importPoliciesFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
 			return &ImportPoliciesResponse{
 				Created: 2,
 				Updated: 0,
@@ -867,6 +897,7 @@ func TestPolicyAPIHandler_HandleImport(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	req.Header.Set("X-User-ID", "user-1")
 	w := httptest.NewRecorder()
 
@@ -934,6 +965,7 @@ func TestPolicyAPIHandler_HandleImport_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader("invalid"))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleImport(w, req)
@@ -950,6 +982,7 @@ func TestPolicyAPIHandler_HandleImport_EmptyPolicies(t *testing.T) {
 	body := `{"policies": []}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleImport(w, req)
@@ -985,6 +1018,7 @@ func TestPolicyAPIHandler_HandleImport_TooManyPolicies(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", bytes.NewReader(bodyBytes))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleImport(w, req)
@@ -1004,7 +1038,7 @@ func TestPolicyAPIHandler_HandleImport_TooManyPolicies(t *testing.T) {
 
 func TestPolicyAPIHandler_HandleImport_ValidationError(t *testing.T) {
 	mock := &mockPolicyService{
-		importPoliciesFunc: func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
+		importPoliciesFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
 			return nil, &ValidationError{
 				Errors: []PolicyFieldError{
 					{Field: "policies[0].name", Message: "Invalid"},
@@ -1017,6 +1051,7 @@ func TestPolicyAPIHandler_HandleImport_ValidationError(t *testing.T) {
 	body := `{"policies": [{"name": "Test", "type": "content", "conditions": [{"field": "query", "operator": "contains", "value": "x"}], "actions": [{"type": "block"}]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleImport(w, req)
@@ -1028,7 +1063,7 @@ func TestPolicyAPIHandler_HandleImport_ValidationError(t *testing.T) {
 
 func TestPolicyAPIHandler_HandleImport_Error(t *testing.T) {
 	mock := &mockPolicyService{
-		importPoliciesFunc: func(ctx context.Context, tenantID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
+		importPoliciesFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error) {
 			return nil, errors.New("database error")
 		},
 	}
@@ -1037,6 +1072,7 @@ func TestPolicyAPIHandler_HandleImport_Error(t *testing.T) {
 	body := `{"policies": [{"name": "Test", "type": "content", "conditions": [{"field": "query", "operator": "contains", "value": "x"}], "actions": [{"type": "block"}]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleImport(w, req)
@@ -1060,6 +1096,7 @@ func TestPolicyAPIHandler_HandleExport(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleExport(w, req)
@@ -1135,6 +1172,7 @@ func TestPolicyAPIHandler_HandleExport_Error(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handleExport(w, req)
@@ -1156,6 +1194,7 @@ func TestPolicyAPIHandler_GetTenantID(t *testing.T) {
 			name: "from header",
 			setupReq: func(r *http.Request) {
 				r.Header.Set("X-Tenant-ID", "tenant-from-header")
+				r.Header.Set("X-Org-ID", "org-123")
 			},
 			expected: "tenant-from-header",
 		},
@@ -1176,6 +1215,7 @@ func TestPolicyAPIHandler_GetTenantID(t *testing.T) {
 			name: "header takes precedence",
 			setupReq: func(r *http.Request) {
 				r.Header.Set("X-Tenant-ID", "header-tenant")
+				r.Header.Set("X-Org-ID", "org-123")
 				ctx := context.WithValue(r.Context(), "tenant_id", "context-tenant")
 				*r = *r.WithContext(ctx)
 			},
@@ -1662,6 +1702,7 @@ func TestPolicyAPIHandler_ListPolicies_QueryParams(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodGet, url, nil)
 			req.Header.Set("X-Tenant-ID", "tenant-123")
+			req.Header.Set("X-Org-ID", "org-123")
 			w := httptest.NewRecorder()
 
 			handler.handlePolicies(w, req)
@@ -2000,11 +2041,99 @@ func TestPolicyAPIHandler_UpdatePolicy_ServiceError(t *testing.T) {
 	body := `{"name": "Updated Policy"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies/550e8400-e29b-41d4-a716-446655440000", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "org-123")
 	w := httptest.NewRecorder()
 
 	handler.handlePolicyByID(w, req)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("Expected status %d, got %d", http.StatusInternalServerError, w.Code)
+	}
+}
+
+// Decision 5 (#3490): a bulk import writes policies and org_id is what selects
+// them. ImportBulk binds org_id from the authenticated organisation and
+// refuses a blank one; this pins that the route refuses FIRST, before the body
+// is even parsed, so an import can never reach the repository without an org.
+//
+// The service-not-reached assertion is the load-bearing half. A status-only
+// check would pass on any 401 the handler already had, including the tenant
+// one, and would not notice the refusal moving below the parse.
+func TestPolicyAPIHandler_HandleImport_NoOrgID(t *testing.T) {
+	reached := false
+	mock := &mockPolicyService{
+		importPoliciesFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
+			reached = true
+			return &ImportPoliciesResponse{}, nil
+		},
+	}
+	handler := NewPolicyAPIHandler(mock)
+
+	body := `{"policies": [{"name": "p", "type": "content", "category": "dynamic-risk", "conditions": [], "actions": []}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-123")
+	// No X-Org-ID.
+	w := httptest.NewRecorder()
+
+	handler.handleImport(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected %d, got %d (body %s)", http.StatusUnauthorized, w.Code, w.Body.String())
+	}
+	if reached {
+		t.Error("the import service was reached without an organisation: every imported row would be stamped from the tenant")
+	}
+}
+
+// A whitespace-only header must be treated as absent. Without TrimSpace the
+// import proceeds and stamps org_id with a value nothing authenticates as.
+func TestPolicyAPIHandler_HandleImport_BlankOrgID(t *testing.T) {
+	reached := false
+	mock := &mockPolicyService{
+		importPoliciesFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
+			reached = true
+			return &ImportPoliciesResponse{}, nil
+		},
+	}
+	handler := NewPolicyAPIHandler(mock)
+
+	body := `{"policies": [{"name": "p", "type": "content", "category": "dynamic-risk", "conditions": [], "actions": []}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "  ")
+	w := httptest.NewRecorder()
+
+	handler.handleImport(w, req)
+
+	if w.Code != http.StatusUnauthorized || reached {
+		t.Errorf("a whitespace-only X-Org-ID was accepted: status %d, service reached %v", w.Code, reached)
+	}
+}
+
+// The org must reach the service verbatim rather than being derived from the
+// tenant, which is the substitution Decision 5 removes.
+func TestPolicyAPIHandler_HandleImport_OrgIsThreadedNotDerived(t *testing.T) {
+	var gotTenant, gotOrg string
+	mock := &mockPolicyService{
+		importPoliciesFunc: func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error) {
+			gotTenant, gotOrg = tenantID, orgID
+			return &ImportPoliciesResponse{}, nil
+		},
+	}
+	handler := NewPolicyAPIHandler(mock)
+
+	body := `{"policies": [{"name": "p", "type": "content", "category": "dynamic-risk", "conditions": [], "actions": []}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/import", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-123")
+	req.Header.Set("X-Org-ID", "acme-org")
+	w := httptest.NewRecorder()
+
+	handler.handleImport(w, req)
+
+	if gotOrg != "acme-org" {
+		t.Errorf("org did not reach the service verbatim: got %q (status %d, body %s)", gotOrg, w.Code, w.Body.String())
+	}
+	if gotOrg == gotTenant {
+		t.Errorf("org was derived from the tenant (%q)", gotTenant)
 	}
 }

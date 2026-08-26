@@ -27,6 +27,24 @@ type policyIdentityVector struct {
 	details      string
 	wantIdentity string
 	wantVersion  string
+	// wantIdentities is the FULL set PolicyIdentitySetSQLExpr /
+	// ExtractPolicyIdentities must resolve (#3426). Leave it nil for a vector
+	// whose set is just its scalar identity: wantSet() then derives
+	// [wantIdentity], or the empty set when no identity resolves. Spelling it
+	// out is therefore only required where the widened reader sees MORE than
+	// the scalar one, which is exactly the property #3426 turns on.
+	wantIdentities []string
+}
+
+// wantSet is the expected full identity set for a vector.
+func (v policyIdentityVector) wantSet() []string {
+	if v.wantIdentities != nil {
+		return v.wantIdentities
+	}
+	if v.wantIdentity == "" {
+		return nil
+	}
+	return []string{v.wantIdentity}
 }
 
 var policyIdentityParityVectors = []policyIdentityVector{
@@ -34,6 +52,10 @@ var policyIdentityParityVectors = []policyIdentityVector{
 		name:         "policy_ids array wins",
 		details:      `{"policy_ids":["indonesia_pii_protection","other"],"policy_id":"loser","policy_names":["Loser Name"]}`,
 		wantIdentity: "indonesia_pii_protection",
+		// The whole ids array, and NOT the names beside it: one arm supplies
+		// the whole set, so a row cannot be counted once per id AND once per
+		// name.
+		wantIdentities: []string{"indonesia_pii_protection", "other"},
 	},
 	{
 		name:         "EMPTY policy_ids array falls through to policy_id",
@@ -63,11 +85,15 @@ var policyIdentityParityVectors = []policyIdentityVector{
 		details:      `{"decision_id":"d1","reason":"blocked","policy_names":["SQL Injection Block"],"policy_matches":[{"policy_id":"sql-injection-block","policy_name":"SQL Injection Block","policy_version":3,"allow_override":false}],"policy_versions":{"sql-injection-block":3}}`,
 		wantIdentity: "sql-injection-block",
 		wantVersion:  "3",
+		// policy_matches wins over the policy_names beside it, so the set is
+		// the match ids, not the display names.
+		wantIdentities: []string{"sql-injection-block"},
 	},
 	{
-		name:         "policy_names as JSON array",
-		details:      `{"policy_names":["PII Basic","Second"]}`,
-		wantIdentity: "PII Basic",
+		name:           "policy_names as JSON array",
+		details:        `{"policy_names":["PII Basic","Second"]}`,
+		wantIdentity:   "PII Basic",
+		wantIdentities: []string{"PII Basic", "Second"},
 	},
 	{
 		// The legacy CSV-string shape the portal reader at
@@ -77,6 +103,9 @@ var policyIdentityParityVectors = []policyIdentityVector{
 		name:         "policy_names as legacy CSV STRING takes the first element",
 		details:      `{"policy_names":"PII Basic, Prompt Injection"}`,
 		wantIdentity: "PII Basic",
+		// The CSV arm expands to EVERY element, space-trimmed the way btrim
+		// trims, not just the split_part(...,1) the scalar chain takes.
+		wantIdentities: []string{"PII Basic", "Prompt Injection"},
 	},
 	{
 		name:         "cowork 9.16.1 capture shape resolves id and ruleset version",
@@ -164,6 +193,8 @@ var policyIdentityParityVectors = []policyIdentityVector{
 		details:      `{"policy_ids":["p2"],"policy_matches":[{"policy_name":"Dyn","policy_version":3},{"policy_id":"p2","policy_version":7}],"policy_versions":{"p2":7}}`,
 		wantIdentity: "p2",
 		wantVersion:  "7",
+		// policy_ids is the winning arm; the match ids are NOT appended.
+		wantIdentities: []string{"p2"},
 	},
 	{
 		name:         "a match version of 0 is the writer's omitempty zero, not a version",
@@ -197,6 +228,98 @@ var policyIdentityParityVectors = []policyIdentityVector{
 		wantIdentity: "real",
 		wantVersion:  "",
 	},
+
+	// ---------------------------------------------------------------------
+	// #3426 set-resolution vectors. The scalar chain answers "which policy do
+	// I print in this cell"; the set answers "which policies fired", which is
+	// what the top-policies aggregation groups on. Every vector below pins
+	// BOTH, so the set can never select a different ARM than the scalar and
+	// can never disagree with it on the first element.
+	// ---------------------------------------------------------------------
+	{
+		// THE DEFECT SHAPE. A decide-plane row through the FinCrime seam:
+		// several controls fire, their ids are appended to policy_ids and
+		// their display names to policy_names. The pre-#3426 aggregation read
+		// the SINGULAR policy_name, which is absent here, so the whole row was
+		// excluded before grouping. Resolving only policy_ids[0] would count
+		// one of the three and under-report the other two by the same
+		// mechanism, so the set is all three.
+		name:           "fincrime seam row: every appended control id is in the set",
+		details:        `{"policy_ids":["fincrime_structuring","fincrime_high_risk_geo","fincrime_ml_risk_score"],"policy_names":["Structuring / Smurfing","High-Risk Jurisdiction","FinCrime ML Fraud Score"],"policy_versions":{"fincrime_structuring":1},"risk_score":0.91}`,
+		wantIdentity:   "fincrime_structuring",
+		wantVersion:    "1",
+		wantIdentities: []string{"fincrime_structuring", "fincrime_high_risk_geo", "fincrime_ml_risk_score"},
+	},
+	{
+		// The HITL exception the aggregation used to mistake for the universal
+		// convention. It must keep resolving: the fix widens the reader, it
+		// does not swap one exclusion for another.
+		name:           "HITL singular-scalar row stays counted",
+		details:        `{"workflow_id":"wf-1","step_id":"s2","action":"approved","policy_id":"hv-wire-oversight","policy_name":"High-Value Wire Transfer Oversight"}`,
+		wantIdentity:   "hv-wire-oversight",
+		wantIdentities: []string{"hv-wire-oversight"},
+	},
+	{
+		// A row listing the same policy twice triggered it once. Without the
+		// first-occurrence collapse a LATERAL unnest would multiply the row
+		// into the aggregate.
+		name:           "repeats within an arm collapse on first occurrence",
+		details:        `{"policy_ids":["dup","other","dup"]}`,
+		wantIdentity:   "dup",
+		wantIdentities: []string{"dup", "other"},
+	},
+	{
+		name:           "legacy CSV names collapse repeats too",
+		details:        `{"policy_names":"A, B, A"}`,
+		wantIdentity:   "A",
+		wantIdentities: []string{"A", "B"},
+	},
+	{
+		// The arm ACTIVATES (element 0 is a string) and then filters the
+		// non-string elements out, exactly like the scalar chain's element
+		// guard would if it looked past index 0.
+		name:           "non-string elements after a valid first are dropped, not resolved",
+		details:        `{"policy_ids":["ok",42,{"a":1},"two"]}`,
+		wantIdentity:   "ok",
+		wantIdentities: []string{"ok", "two"},
+	},
+	{
+		// ARM SELECTION PARITY. Element 0 is not a string, so the scalar chain
+		// skips the policy_ids arm entirely and resolves the singular scalar.
+		// The set must skip the SAME arm: expanding policy_ids here would
+		// resolve "later", a policy the printed cell beside it never names.
+		name:           "an unresolvable first element skips the WHOLE arm on both surfaces",
+		details:        `{"policy_ids":[42,"later"],"policy_id":"real"}`,
+		wantIdentity:   "real",
+		wantIdentities: []string{"real"},
+	},
+	{
+		name:           "an EMPTY first element skips the whole arm on both surfaces",
+		details:        `{"policy_ids":["","b"],"policy_id":"real"}`,
+		wantIdentity:   "real",
+		wantIdentities: []string{"real"},
+	},
+	{
+		// The CSV twin of the above: split_part(...,1) is empty, so the scalar
+		// chain falls through and the set must fall through with it.
+		name:           "a leading empty CSV element skips the names arm on both surfaces",
+		details:        `{"policy_names":", B","policy_id":"real"}`,
+		wantIdentity:   "real",
+		wantIdentities: []string{"real"},
+	},
+	{
+		name:           "every policy_matches entry that carries an id is in the set",
+		details:        `{"policy_matches":[{"policy_id":"a","policy_version":2},{"policy_id":"b"},{"policy_name":"id-less"},{"policy_id":""}]}`,
+		wantIdentity:   "a",
+		wantVersion:    "2",
+		wantIdentities: []string{"a", "b"},
+	},
+	{
+		name:           "a bare scalar policy_ids resolves NO set (array-guarded, matching the scalar chain)",
+		details:        `{"policy_ids":"abc"}`,
+		wantIdentity:   "",
+		wantIdentities: nil,
+	},
 }
 
 func TestExtractPolicyIdentity_FallbackChain(t *testing.T) {
@@ -210,6 +333,121 @@ func TestExtractPolicyIdentity_FallbackChain(t *testing.T) {
 				t.Errorf("version = %q, want %q", ver, tc.wantVersion)
 			}
 		})
+	}
+}
+
+// TestExtractPolicyIdentities_SetResolution runs every parity vector through
+// the widened Go mirror (#3426) and additionally pins the two invariants that
+// let the scalar and the set chains coexist without drifting:
+//
+//	SAME ARM        the set never contains a value the scalar chain could not
+//	                have selected, because both pick the same arm;
+//	SAME FIRST      set[0] IS the scalar identity whenever the set is non-empty.
+//
+// The second invariant is asserted, never assumed: it is what makes the
+// aggregation's chips reconcile with the Policy column rendered beside them.
+func TestExtractPolicyIdentities_SetResolution(t *testing.T) {
+	for _, tc := range policyIdentityParityVectors {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractPolicyIdentities([]byte(tc.details))
+			want := tc.wantSet()
+			if len(got) != len(want) {
+				t.Fatalf("identities = %q, want %q", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("identities = %q, want %q", got, want)
+				}
+			}
+			scalar, _ := ExtractPolicyIdentity([]byte(tc.details))
+			if len(got) == 0 {
+				if scalar != "" {
+					t.Errorf("empty identity set but scalar chain resolved %q", scalar)
+				}
+				return
+			}
+			if got[0] != scalar {
+				t.Errorf("set[0] = %q but the scalar chain resolves %q; the aggregation would name a policy the Policy column never shows", got[0], scalar)
+			}
+			// No duplicates: a policy listed twice on one row triggered once.
+			seen := map[string]bool{}
+			for _, s := range got {
+				if seen[s] {
+					t.Errorf("duplicate %q in identity set %q", s, got)
+				}
+				seen[s] = true
+			}
+		})
+	}
+}
+
+// TestPolicyIdentitySetSQLExpr_MirrorsTheScalarArms pins the structural
+// properties that the real-Postgres parity test then confirms behaviourally.
+func TestPolicyIdentitySetSQLExpr_MirrorsTheScalarArms(t *testing.T) {
+	expr := PolicyIdentitySetSQLExpr("policy_details")
+	for _, key := range []string{
+		policyDetailKeyIDs, policyDetailKeyMatches, policyDetailKeyNames,
+		policyDetailKeyID, policyDetailKeyName,
+	} {
+		if !strings.Contains(expr, "'"+key+"'") {
+			t.Errorf("PolicyIdentitySetSQLExpr does not read %q:\n%s", key, expr)
+		}
+	}
+	// EVERY arm of the scalar chain must appear verbatim as the set's
+	// activation guard. This is the anti-drift mechanism: a new arm, or an
+	// edited guard, cannot land on one surface only.
+	for i, arm := range policyIdentityArmsSQL("policy_details") {
+		if !strings.Contains(expr, arm) {
+			t.Errorf("set arm %d is not gated on the scalar chain's arm; the two can select different keys:\n%s", i, arm)
+		}
+	}
+	// Empty array, never NULL: unnest(NULL) yields no rows either, but a NULL
+	// would silently swallow a COALESCE bug instead of failing loudly.
+	if !strings.Contains(expr, "ARRAY[]::text[]") {
+		t.Errorf("PolicyIdentitySetSQLExpr must fall back to an empty text[]:\n%s", expr)
+	}
+	// jsonb_array_elements RAISES on a non-array; every call must be container
+	// guarded or one malformed historical row fails the whole aggregation.
+	for _, chunk := range strings.Split(expr, "jsonb_array_elements(")[1:] {
+		if !strings.HasPrefix(chunk, "CASE WHEN jsonb_typeof(") {
+			t.Errorf("unguarded jsonb_array_elements call would RAISE on a non-array row:\n%.120s", chunk)
+		}
+	}
+}
+
+// TestTopPoliciesQuery_UsesTheSharedChain pins the aggregation both the portal
+// tile and the Compliance Report export render (#3426).
+func TestTopPoliciesQuery_UsesTheSharedChain(t *testing.T) {
+	q := TopPoliciesQuery("tenant_id = $1", "$2")
+
+	// THE REGRESSION. Grouping or filtering on the singular scalar is what
+	// excluded every array-stamping plane; the singular key may only be
+	// reachable THROUGH the shared chain's last arm.
+	if strings.Contains(q, "GROUP BY policy_details") || strings.Contains(q, "policy_details->>'policy_name' IS NOT NULL") {
+		t.Errorf("top-policies query reads the singular policy_name directly again (#3426):\n%s", q)
+	}
+	if !strings.Contains(q, PolicyIdentitySetSQLExpr("policy_details")) {
+		t.Errorf("top-policies query does not resolve identity through the shared chain:\n%s", q)
+	}
+	if !strings.Contains(q, "CROSS JOIN LATERAL unnest(") {
+		t.Errorf("top-policies query must expand EVERY identity on the row, not just the first:\n%s", q)
+	}
+	// The caller's predicate and its blocked-spellings placeholder must both
+	// land, and the predicate must be PARENTHESISED: appending " AND ..." to a
+	// bare predicate binds tighter than a top-level OR in it, which would widen
+	// the aggregation past the rows the caller scoped it to.
+	if !strings.Contains(q, "WHERE (tenant_id = $1") || !strings.Contains(q, "ANY($2)") {
+		t.Errorf("top-policies query lost or failed to parenthesise the caller's predicate:\n%s", q)
+	}
+	if or := TopPoliciesQuery("a = 1 OR b = 2", "$2"); !strings.Contains(or, "WHERE (a = 1 OR b = 2)") {
+		t.Errorf("a predicate with a top-level OR is not parenthesised:\n%s", or)
+	}
+	// Ties must not depend on the plan.
+	if !strings.Contains(q, "ORDER BY trigger_count DESC, "+topPoliciesAlias+".policy ASC") {
+		t.Errorf("top-policies query has no deterministic tiebreak:\n%s", q)
+	}
+	if !strings.Contains(q, "LIMIT 10") {
+		t.Errorf("top-policies query limit drifted from TopPoliciesLimit:\n%s", q)
 	}
 }
 
@@ -300,5 +538,68 @@ func TestFormatPolicyWithVersion(t *testing.T) {
 	}
 	if got := FormatPolicyWithVersion(PolicyLabelUnnamedGate, "3"); got != PolicyLabelUnnamedGate {
 		t.Errorf("a no-policy label must never carry a version, got %q", got)
+	}
+}
+
+// TestExtractPolicyIdentityIsName_ArmClassification pins the Go mirror of
+// PolicyIdentityIsNameSQLExpr WITHOUT a database (#3426 R3 round 2).
+//
+// The SQL/Go parity gate for this flag lives in the real-Postgres file and is
+// skipped unless TEST_PG_INTEGRATION=1, so on a plain `go test ./...` the
+// mirror had no coverage at all. It decides whether the portal renders
+// POLICY_NAME_NOT_RECORDED_MARKER beside a top-policies entry, so an arm
+// classified wrong here shows a raw id dressed as a stamped display name on a
+// regulator-facing report.
+func TestExtractPolicyIdentityIsName_ArmClassification(t *testing.T) {
+	cases := []struct {
+		name         string
+		details      string
+		wantRecorded bool
+		wantResolved bool
+	}{
+		// The id-yielding arms. policy_ids is the decide plane and the
+		// FinCrime seam; policy_matches[*].policy_id is MCP check-input.
+		{"policy_ids wins even when names are stamped beside it",
+			`{"policy_ids":["sys_pii_iban"],"policy_names":["PII: IBAN"]}`, false, true},
+		{"policy_matches id wins over the names beside it",
+			`{"policy_matches":[{"policy_id":"sql-injection-block"}],"policy_names":["SQL Injection Block"]}`, false, true},
+		{"singular policy_id beats the policy_name on the same HITL row",
+			`{"policy_id":"hv-wire","policy_name":"High-Value Wire"}`, false, true},
+		// The name-yielding arms.
+		{"policy_names array with no id anywhere is a stamped NAME",
+			`{"policy_names":["Structuring"]}`, true, true},
+		{"legacy CSV policy_names is a stamped NAME",
+			`{"policy_names":"Structuring, Geo Block"}`, true, true},
+		{"singular policy_name alone is a stamped NAME",
+			`{"policy_name":"High-Value Wire"}`, true, true},
+		// Nothing resolves: the flag must report NOT RESOLVED rather than a
+		// default false, which the SQL expresses as NULL. A false-when-absent
+		// mirror would claim "this is an id" about a policy that is not there.
+		{"no identity at all", `{"decision_id":"d9"}`, false, false},
+		{"empty first element gates the whole arm off (see PolicyIdentitySetSQLExpr)",
+			`{"policy_ids":["","b"]}`, false, false},
+		{"non-string element gates the arm off", `{"policy_ids":[7,"b"]}`, false, false},
+		{"malformed json never panics", `{not json`, false, false},
+		// The gate falls THROUGH to a later arm rather than resolving nothing,
+		// and the later arm's classification is what must be reported.
+		{"blank policy_ids falls through to the singular name",
+			`{"policy_ids":["","b"],"policy_name":"N"}`, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotRecorded, gotResolved := ExtractPolicyIdentityIsName([]byte(tc.details))
+			if gotResolved != tc.wantResolved || gotRecorded != tc.wantRecorded {
+				t.Errorf("ExtractPolicyIdentityIsName(%s) = (recorded %v, resolved %v), want (%v, %v)",
+					tc.details, gotRecorded, gotResolved, tc.wantRecorded, tc.wantResolved)
+			}
+			// The flag and the identity are one event: a resolved flag with no
+			// identity (or the reverse) would put a marker decision on a policy
+			// that does not exist, or leave one unlabelled.
+			identity, _ := ExtractPolicyIdentity([]byte(tc.details))
+			if (identity != "") != gotResolved {
+				t.Errorf("identity=%q but resolved=%v on %s; the flag and the identity took different arms",
+					identity, gotResolved, tc.details)
+			}
+		})
 	}
 }

@@ -12,9 +12,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"axonflow/platform/agent/license"
 )
 
 func TestInitializeWCPHITL_Community(t *testing.T) {
@@ -42,255 +43,19 @@ func TestInitializeWCPHITL_NilAdapter(t *testing.T) {
 	}
 }
 
-func TestEvalWCPHITLAdapter_Fields(t *testing.T) {
-	adapter := &evalWCPHITLAdapter{
-		db:                  nil,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	if adapter.expiryDuration != 24*time.Hour {
-		t.Errorf("Expected 24h expiry, got %v", adapter.expiryDuration)
-	}
-	if adapter.maxPendingPerTenant != 100 {
-		t.Errorf("Expected 100 max pending, got %d", adapter.maxPendingPerTenant)
-	}
-}
-
-func TestEvalWCPHITLAdapter_CreateApproval_NilDB(t *testing.T) {
-	adapter := &evalWCPHITLAdapter{
-		db:                  nil,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	req := &HITLApprovalRequest{
-		TenantID:      "test-tenant",
-		OrgID:         "test-org",
-		ClientID:      "test-client",
-		UserID:        "test-user",
-		StepName:      "review-step",
-		PolicyID:      "pol-1",
-		PolicyName:    "test-policy",
-		TriggerReason: "manual review required",
-		Severity:      "high",
-	}
-
-	resp, err := adapter.CreateApproval(context.Background(), req)
-	if err == nil {
-		t.Fatal("Expected error for nil db, got nil")
-	}
-	if resp != nil {
-		t.Error("Expected nil response for nil db")
-	}
-	if err.Error() != "database connection not available" {
-		t.Errorf("Expected 'database connection not available', got %q", err.Error())
-	}
-}
-
-func TestEvalWCPHITLAdapter_CreateApproval_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("Failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	adapter := &evalWCPHITLAdapter{
-		db:                  db,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	// Expect count query returning 5 (under limit)
-	// #3048: the pending COUNT runs org-scoped.
-	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(
-		sqlmock.NewRows([]string{"count"}).AddRow(5),
-	)
-	mock.ExpectCommit()
-	// v9 Phase 8 PR-C2 (#2384): INSERT now wrapped in rls.WithOrgScope using
-	// req.OrgID. BEGIN + set_config + INSERT + COMMIT.
-	mock.ExpectBegin()
-	mock.ExpectExec("set_config").WithArgs("test-org").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("INSERT INTO hitl_approval_queue").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectCommit()
-
-	req := &HITLApprovalRequest{
-		TenantID:       "test-tenant",
-		OrgID:          "test-org",
-		ClientID:       "test-client",
-		UserID:         "test-user",
-		StepName:       "review-step",
-		PolicyID:       "pol-1",
-		PolicyName:     "test-policy",
-		TriggerReason:  "high risk detected",
-		Severity:       "high",
-		RequestContext: map[string]interface{}{"source": "test"},
-	}
-
-	resp, err := adapter.CreateApproval(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("Expected non-nil response")
-	}
-	if resp.Status != "pending" {
-		t.Errorf("Expected status 'pending', got %q", resp.Status)
-	}
-	if resp.ExpiresAt.Before(time.Now()) {
-		t.Error("Expected expires_at to be in the future")
-	}
-	if resp.ExpiresAt.After(time.Now().Add(25 * time.Hour)) {
-		t.Error("Expected expires_at within ~24h")
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("Unmet sqlmock expectations: %v", err)
-	}
-}
-
-func TestEvalWCPHITLAdapter_CreateApproval_PendingLimitExceeded(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("Failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	adapter := &evalWCPHITLAdapter{
-		db:                  db,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	// Return count at limit
-	// #3048: the pending COUNT runs org-scoped.
-	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(
-		sqlmock.NewRows([]string{"count"}).AddRow(100),
-	)
-	mock.ExpectCommit()
-
-	req := &HITLApprovalRequest{
-		OrgID:    "test-tenant", // #3048: OrgID required before the scoped COUNT
-		TenantID: "test-tenant",
-		StepName: "step-1",
-		PolicyID: "pol-1",
-		Severity: "medium",
-	}
-
-	resp, err := adapter.CreateApproval(context.Background(), req)
-	if err == nil {
-		t.Fatal("Expected error for pending limit exceeded")
-	}
-	if resp != nil {
-		t.Error("Expected nil response when limit exceeded")
-	}
-	if !hitlContains(err.Error(), "pending approval limit exceeded") {
-		t.Errorf("Expected 'pending approval limit exceeded' error, got %q", err.Error())
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("Unmet sqlmock expectations: %v", err)
-	}
-}
-
-func TestEvalWCPHITLAdapter_CreateApproval_CountQueryError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("Failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	adapter := &evalWCPHITLAdapter{
-		db:                  db,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	// #3048: the pending COUNT runs org-scoped.
-	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT COUNT").WillReturnError(err)
-	mock.ExpectRollback()
-
-	req := &HITLApprovalRequest{
-		TenantID: "test-tenant",
-		StepName: "step-1",
-		PolicyID: "pol-1",
-		Severity: "medium",
-	}
-
-	resp, createErr := adapter.CreateApproval(context.Background(), req)
-	if createErr == nil {
-		t.Fatal("Expected error for count query failure")
-	}
-	if resp != nil {
-		t.Error("Expected nil response on count query failure")
-	}
-}
-
-func TestEvalWCPHITLAdapter_CreateApproval_InsertError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("Failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	adapter := &evalWCPHITLAdapter{
-		db:                  db,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	// Count OK
-	// #3048: the pending COUNT runs org-scoped.
-	mock.ExpectBegin()
-	mock.ExpectExec("SELECT set_config").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(
-		sqlmock.NewRows([]string{"count"}).AddRow(0),
-	)
-	mock.ExpectCommit()
-	// Insert fails
-	mock.ExpectExec("INSERT INTO hitl_approval_queue").WillReturnError(err)
-
-	req := &HITLApprovalRequest{
-		TenantID: "test-tenant",
-		StepName: "step-1",
-		PolicyID: "pol-1",
-		Severity: "low",
-	}
-
-	resp, createErr := adapter.CreateApproval(context.Background(), req)
-	if createErr == nil {
-		t.Fatal("Expected error for INSERT failure")
-	}
-	if resp != nil {
-		t.Error("Expected nil response on INSERT failure")
-	}
-}
-
-func TestEvalWCPHITLAdapter_CreateApproval_NilContext(t *testing.T) {
-	adapter := &evalWCPHITLAdapter{
-		db:                  nil,
-		expiryDuration:      24 * time.Hour,
-		maxPendingPerTenant: 100,
-	}
-
-	req := &HITLApprovalRequest{
-		TenantID: "test-tenant",
-		StepName: "step-1",
-	}
-
-	_, err := adapter.CreateApproval(context.Background(), req)
-	if err == nil {
-		t.Fatal("Expected error")
-	}
-}
-
-// Valid eval license key for testing (test-org, expires 2026-05-30).
+// Valid-format eval license key used by the InitializeWCPHITL tests below.
+//
+// NOTE (#3408 sibling): this key EXPIRED on 2026-05-30, so
+// license.IsEvaluationOrHigher is false for it today and the two tests below
+// exercise the community (disabled) branch, not the eval branch their names
+// claim. They still assert the only thing they ever asserted - that
+// InitializeWCPHITL returns nil - so they are not wrong, they are weaker than
+// they read. Left as-is rather than silently re-minted: replacing a fixture
+// key changes which branch a pre-existing test covers, which is a decision for
+// whoever owns the tier-fixture story (#3416), not a drive-by in this diff.
+// The write path's own tier coverage does not depend on it - see
+// TestTierGateRefusesBeforeTouchingTheDatabase in hitl_wcp_adapter_test.go,
+// which injects the tier directly.
 const testEvalLicenseKey = "AXON-eyJ0aWVyIjoiRXZhbHVhdGlvbiIsInRlbmFudF9pZCI6InRlc3Qtb3JnIiwic2VydmljZV9uYW1lIjoicGxhdGZvcm0iLCJzZXJ2aWNlX3R5cGUiOiJiYWNrZW5kLXNlcnZpY2UiLCJwZXJtaXNzaW9ucyI6WyJtY3A6KjoqIiwibGxtOio6KiJdLCJpc3N1ZWRfYXQiOiIyMDI2MDMwMSIsImV4cGlyZXNfYXQiOiIyMDI2MDUzMCJ9.x1bQuE-j3MDvuhIsUZ8vEDo8Z3FRhCAH9X9BsqMoRsOWrLAnnbrM7n2CKTcCWwIgXG7W4qwUeUPT-jOF-cgADQ"
 
 func TestInitializeWCPHITL_EvalTierNilDB(t *testing.T) {
@@ -489,4 +254,52 @@ func hitlContains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestUnentitledTierStillWiresTheAdapter is R3 round 2's pin for the blocker
+// the entitlement change created on THIS build.
+//
+// InitializeWCPHITL used to `return nil` before SetHITLApproval when the tier
+// was unentitled, leaving WCPPolicyAdapter.hitlApproval nil. The enqueue block
+// in wcp_policy_adapter.go is guarded `if ... && a.hitlApproval != nil`, so a
+// require_approval gate on an unentitled tier was held with ApprovalEnqueue
+// left "" - and that field is `omitempty`, whose documented meaning is "no
+// enqueue was attempted, the ordinary case for an allow/block decision".
+//
+// The refusal was therefore INDISTINGUISHABLE ON THE WIRE from an ordinary
+// gate, which is the exact ambiguity approval_enqueue exists to remove. It was
+// promised anyway by this file's own boot log, by the approval_enqueue enum in
+// docs/api/orchestrator-api.yaml, and by two docs pages - all of which were
+// describing the ENTERPRISE build, because round 1 made that build wire
+// unconditionally and did not carry the change here. The edition that
+// disagreed with the published contract is the one an unentitled licensee
+// actually runs.
+//
+// No licence key is set, so the resolved tier is Community: unentitled, and
+// the case a Free/Pro/Premium or Evaluation deployment now lands in.
+func TestUnentitledTierStillWiresTheAdapter(t *testing.T) {
+	t.Setenv("AXONFLOW_LICENSE_KEY", "")
+
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	adapter := &WCPPolicyAdapter{}
+	if err := InitializeWCPHITL(db, adapter); err != nil {
+		t.Fatalf("InitializeWCPHITL returned error: %v", err)
+	}
+
+	// Guard the premise. If the tier ever resolves as entitled here the
+	// assertion below still passes but stops testing the unentitled path.
+	if license.IsHITLApprovalEntitled(license.GetCurrentTier(context.Background())) {
+		t.Fatal("resolved tier is entitled; this test no longer covers the unentitled path")
+	}
+
+	if adapter.hitlApproval == nil {
+		t.Error("no HITL adapter was wired on an unentitled tier: the gate will be held " +
+			"with approval_enqueue absent instead of \"tier_disabled\", which is " +
+			"indistinguishable on the wire from an ordinary allow/block decision")
+	}
 }

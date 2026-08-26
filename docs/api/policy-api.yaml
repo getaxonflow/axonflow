@@ -28,16 +28,28 @@ info:
     belonging to the authenticated tenant.
 
     ## Related APIs
-    - The static policy enforcement API (`/api/v1/static-policies*`) is served
-      by the Agent and specified in `agent-api.yaml`.
+    - The static policy enforcement API is served by the Agent and specified
+      in `agent-api.yaml`. Its current path spelling is
+      `/api/v1/system-policies*`; `/api/v1/static-policies*` is the deprecated
+      spelling and is still served.
     - Unified policy read/write (an aggregated static + dynamic view) lives on
       the Enterprise customer portal and is documented internally.
       **Enterprise only**.
 
     ## Terminology note
-    A terminology migration renaming static→system and dynamic→tenant policy
-    endpoints is planned (#1431). No alias routes exist yet; the paths below
-    are current.
+    The terminology migration renaming static to system and dynamic to tenant
+    policy endpoints has shipped. The alias routes exist and are served on
+    both APIs.
+
+    On this API `/api/v1/tenant-policies` is the current spelling and
+    `/api/v1/dynamic-policies` is the deprecated one. The deprecated paths
+    remain served by the same handlers and return the same status codes and
+    bodies; they additionally carry `Deprecation` and `Link` response headers
+    naming the replacement.
+
+    No removal date is published for the deprecated spelling and no `Sunset`
+    header is emitted, so clients should not infer one. Migrate when
+    convenient and watch the release notes.
   version: 2.1.0
   contact:
     name: AxonFlow Support
@@ -55,11 +67,28 @@ servers:
     description: Orchestrator direct (internal only)
 
 tags:
-  - name: Dynamic Policies
+  - name: Tenant Policies
     description: |
-      Dynamic policy CRUD via the ADR-026 `/api/v1/dynamic-policies` surface
+      Tenant policy CRUD via the ADR-026 `/api/v1/tenant-policies` surface
       (Orchestrator, proxied by the Agent). Accepts only policies whose
       category starts with `dynamic-` or `media-`.
+
+      Note the category prefixes keep their original spelling. The
+      terminology migration renamed the PATHS only; the category vocabulary
+      is a separate, stored value on every existing policy row and renaming
+      it would be a data migration, not an alias.
+  - name: Dynamic Policies
+    description: |
+      DEPRECATED spelling of Tenant Policies, served at
+      `/api/v1/dynamic-policies`. Every operation is the same handler as its
+      `/api/v1/tenant-policies` counterpart and returns the same status code
+      and body; responses additionally carry `Deprecation: true` and a
+      `Link: </api/v1/tenant-policies...>; rel="successor-version"` header
+      naming the replacement.
+
+      These paths remain served. No removal date is published and clients
+      should not infer one - migrate when convenient, and watch the release
+      notes rather than a `Sunset` header, which is deliberately not emitted.
   - name: Policies
     description: Dynamic policy CRUD operations (Orchestrator)
   - name: Testing
@@ -83,6 +112,7 @@ paths:
   # =============================================================================
   /api/v1/dynamic-policies:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: List dynamic policies
@@ -139,7 +169,7 @@ paths:
         - name: page_size
           in: query
           deprecated: true
-          description: Items per page (deprecated — use limit instead)
+          description: Items per page (deprecated - use limit instead)
           schema:
             type: integer
             minimum: 1
@@ -173,6 +203,7 @@ paths:
           $ref: '#/components/responses/InternalError'
 
     post:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Create a dynamic policy
@@ -211,6 +242,7 @@ paths:
 
   /api/v1/dynamic-policies/import:
     post:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Import dynamic policies
@@ -244,6 +276,7 @@ paths:
 
   /api/v1/dynamic-policies/export:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Export dynamic policies
@@ -267,6 +300,7 @@ paths:
 
   /api/v1/dynamic-policies/effective:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Get effective dynamic policies
@@ -295,6 +329,7 @@ paths:
       - $ref: '#/components/parameters/TenantID'
 
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Get a dynamic policy
@@ -319,6 +354,7 @@ paths:
           $ref: '#/components/responses/InternalError'
 
     put:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Update a dynamic policy
@@ -358,6 +394,7 @@ paths:
           $ref: '#/components/responses/InternalError'
 
     delete:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Delete a dynamic policy
@@ -389,6 +426,7 @@ paths:
       - $ref: '#/components/parameters/TenantID'
 
     post:
+      deprecated: true
       tags:
         - Testing
       summary: Test a dynamic policy
@@ -424,11 +462,376 @@ paths:
       - $ref: '#/components/parameters/TenantID'
 
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Get dynamic policy version history
       description: Retrieve the complete version history of a dynamic policy for audit purposes
       operationId: getDynamicPolicyVersions
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersionResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies:
+    get:
+      tags:
+        - Tenant Policies
+      summary: List dynamic policies
+      description: |
+        Retrieve a paginated list of dynamic policies. Only policies whose
+        category starts with `dynamic-` or `media-` are returned. When
+        `type=media` is passed without a category, results are filtered to
+        `media-*` categories.
+
+        `limit` is the preferred pagination parameter; `page_size` is
+        deprecated but still accepted.
+      operationId: listTenantPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: type
+          in: query
+          description: Filter by policy type
+          schema:
+            $ref: '#/components/schemas/PolicyType'
+        - name: category
+          in: query
+          description: |
+            Filter by category. Must start with `dynamic-` or `media-`
+            (e.g., dynamic-risk, media-safety); other values are rejected
+            with a validation error.
+          schema:
+            type: string
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          description: Search in policy name and description
+          schema:
+            type: string
+            maxLength: 100
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page (preferred over the deprecated page_size)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: page_size
+          in: query
+          deprecated: true
+          description: Items per page (deprecated - use limit instead)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: sort_by
+          in: query
+          description: Sort field
+          schema:
+            type: string
+            enum: [name, created_at, updated_at, priority]
+            default: created_at
+        - name: sort_dir
+          in: query
+          description: Sort direction
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: List of dynamic policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoliciesListResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Tenant Policies
+      summary: Create a dynamic policy
+      description: |
+        Create a new dynamic policy. `category` is required and must start
+        with `dynamic-` or `media-` (e.g., dynamic-risk, media-safety).
+      operationId: createTenantPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePolicyRequest'
+      responses:
+        '201':
+          description: Dynamic policy created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tier validation failed (e.g., organization-tier policy without Enterprise license)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies/import:
+    post:
+      tags:
+        - Tenant Policies
+      summary: Import dynamic policies
+      description: |
+        Bulk import dynamic policies from JSON. Supports up to 100 policies
+        per request. Every policy must have a category starting with
+        `dynamic-` or `media-`.
+      operationId: importTenantPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportPoliciesRequest'
+      responses:
+        '200':
+          description: Import results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPoliciesResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies/export:
+    get:
+      tags:
+        - Tenant Policies
+      summary: Export dynamic policies
+      description: |
+        Export the tenant's dynamic policies as JSON. Only policies with a
+        `dynamic-*` or `media-*` category are included.
+      operationId: exportTenantPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Exported dynamic policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportPoliciesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies/effective:
+    get:
+      tags:
+        - Tenant Policies
+      summary: Get effective dynamic policies
+      description: |
+        Returns the enabled dynamic policies for the tenant (both `dynamic-*`
+        and `media-*` categories), sorted by priority ascending. Returns up to
+        100 policies.
+      operationId: getEffectiveTenantPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Effective dynamic policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoliciesListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    get:
+      tags:
+        - Tenant Policies
+      summary: Get a dynamic policy
+      description: |
+        Retrieve a single dynamic policy by ID. Returns 404 if the policy
+        exists but is not a dynamic policy (category not `dynamic-*`/`media-*`).
+      operationId: getTenantPolicy
+      responses:
+        '200':
+          description: Dynamic policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags:
+        - Tenant Policies
+      summary: Update a dynamic policy
+      description: |
+        Update an existing dynamic policy. Only provided fields are updated.
+        If `category` is changed, the new value must still start with
+        `dynamic-` or `media-`.
+      operationId: updateTenantPolicy
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePolicyRequest'
+      responses:
+        '200':
+          description: Dynamic policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tier validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags:
+        - Tenant Policies
+      summary: Delete a dynamic policy
+      description: Soft-delete a dynamic policy. The policy is marked as deleted but retained for audit purposes.
+      operationId: deleteTenantPolicy
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204':
+          description: Dynamic policy deleted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tier validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    post:
+      tags:
+        - Testing
+      summary: Test a dynamic policy
+      description: |
+        Evaluate a dynamic policy against sample input without executing
+        actions. `query` is required.
+      operationId: testTenantPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestPolicyRequest'
+      responses:
+        '200':
+          description: Test results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestPolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/tenant-policies/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    get:
+      tags:
+        - Tenant Policies
+      summary: Get dynamic policy version history
+      description: Retrieve the complete version history of a dynamic policy for audit purposes
+      operationId: getTenantPolicyVersions
       responses:
         '200':
           description: Version history
@@ -1489,7 +1892,12 @@ components:
           description: Owning tenant ID
         organization_id:
           type: string
-          description: Organization ID (for organization-tier policies)
+          description: |
+            The organisation that owns this policy. Since #3490 the
+            organisation is what SELECTS a policy row, at every tier -- this
+            is not an organization-tier-only field, and the previous wording
+            described the retired organization_id COLUMN rather than this
+            resource field.
         tags:
           type: array
           items:

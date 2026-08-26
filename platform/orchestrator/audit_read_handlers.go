@@ -33,6 +33,7 @@ package orchestrator
 // (auditToolCallHandler / ToolCallAuditEntry / LogToolCallAudit).
 
 import (
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -117,9 +118,9 @@ func (l *AuditLogger) GetAuditLogByID(id, tenantID string) (*AuditEntry, error) 
 	entry.Model = model.String
 	entry.ErrorMessage = errorMessage.String
 	entry.ResponseSample = responseSample.String
-	entry.ResponseTime = responseTime.Int64
-	entry.TokensUsed = int(tokensUsed.Int64)
-	entry.Cost = cost.Float64
+	entry.ResponseTime = nullLatencyPtr(responseTime)
+	entry.TokensUsed = nullTokensPtr(tokensUsed)
+	entry.Cost = nullCostPtr(cost)
 
 	// policy_details carries the nested detail the #2755 contract asks for:
 	// policy_ids / reasons / latency_ms plus gateway_id and tool_name, exactly
@@ -355,9 +356,9 @@ func (l *AuditLogger) ExportAuditLogs(crit auditSearchCriteria) ([]*AuditEntry, 
 		entry.Model = model.String
 		entry.ErrorMessage = errorMessage.String
 		entry.ResponseSample = responseSample.String
-		entry.ResponseTime = responseTime.Int64
-		entry.TokensUsed = int(tokensUsed.Int64)
-		entry.Cost = cost.Float64
+		entry.ResponseTime = nullLatencyPtr(responseTime)
+		entry.TokensUsed = nullTokensPtr(tokensUsed)
+		entry.Cost = nullCostPtr(cost)
 		_ = json.Unmarshal(policyDetailsJSON, &entry.PolicyDetails)
 		_ = json.Unmarshal(redactedFieldsJSON, &entry.RedactedFields)
 
@@ -503,6 +504,53 @@ var auditExportCSVHeader = []string{
 	"response_time_ms", "tokens", "correlation_id", "session_id",
 }
 
+// csvLatencyCell renders audit_logs.response_time_ms for the CSV export. It
+// draws the same MEASURED-vs-UNMEASURED line as the portal's tile and its
+// Latency column (#3424) -- an unmeasured row has no value, so the cell is
+// EMPTY rather than "0" -- but it renders the measured side differently on
+// purpose, and the difference is the point of the column:
+//
+//   - UNMEASURED -> empty. A "0" here is worse than on screen. The operator
+//     opening this file in a spreadsheet gets a numeric column they will
+//     average, chart or threshold, and every unmeasured row would vote that
+//     average towards zero with nothing to signal it was never a measurement.
+//     An empty cell is skipped by AVERAGE() in Excel and Sheets alike, which is
+//     the same treatment sharedaudit.LatencyMeasuredPredicate gives it.
+//   - MEASURED SUB-MILLISECOND -> "0", not the portal's "<1ms". This column is
+//     numeric: "<1ms" would turn the whole column into text in a spreadsheet
+//     and break the aggregate the empty cell above exists to protect. 0 is the
+//     honest numeric form of the same fact -- the platform timed the decision
+//     and it finished inside the column's 1ms resolution -- and it is what the
+//     server itself averages.
+func csvLatencyCell(ms *int64) string {
+	if ms == nil {
+		return ""
+	}
+	return strconv.FormatInt(*ms, 10)
+}
+
+// csvTokensCell is the token-count twin of csvLatencyCell (#3427 M19), and it
+// exists for the harder half of the same argument: a row that recorded no
+// provider usage has no token count, so its cell is not zero, it is absent.
+// Writing "0" would put every governed BLOCK into an AVERAGE() or a SUM() over
+// the column as a real zero-token call, which is precisely the population an
+// analyst filters the export to look at. Empty is skipped by both
+// spreadsheets. A measured zero, if a provider ever reports one, still renders
+// as "0".
+//
+// "No RECORDED usage" is deliberately weaker than "never reached a model".
+// Most of this population never did -- a blocked request, a redaction, a
+// pre-check deny, a workflow step, a tool call -- but LogBlockedResponse runs
+// AFTER the forward, so its rows ARE a paid-for round trip whose usage that
+// writer does not record (a gap tracked separately). The empty cell is right
+// for both: neither carries a measurement to export.
+func csvTokensCell(tokens *int) string {
+	if tokens == nil {
+		return ""
+	}
+	return strconv.Itoa(*tokens)
+}
+
 func writeAuditExportCSV(w http.ResponseWriter, entries []*AuditEntry, ts string) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"audit-export-%s.csv\"", ts))
@@ -528,8 +576,8 @@ func writeAuditExportCSV(w http.ResponseWriter, entries []*AuditEntry, ts string
 			csvFormulaSafe(e.ResponseSample),
 			csvFormulaSafe(e.Provider),
 			csvFormulaSafe(e.Model),
-			strconv.FormatInt(e.ResponseTime, 10),
-			strconv.Itoa(e.TokensUsed),
+			csvLatencyCell(e.ResponseTime),
+			csvTokensCell(e.TokensUsed),
 			csvFormulaSafe(e.CorrelationID),
 			// session_id is server-generated (uuid/opaque id) but formula-safed
 			// like every other string cell for uniformity.
@@ -582,14 +630,33 @@ func writeAuditExportJSON(w http.ResponseWriter, entries []*AuditEntry, truncate
 // than being absent, so the UI can render a stable set of cards. "modified" in
 // the partner's vocabulary maps to "redacted" (handled in the UI layer / label).
 type ActionReport struct {
-	TenantID     string             `json:"tenant_id"`
-	UserEmail    string             `json:"user_email,omitempty"`
-	StartTime    time.Time          `json:"start_time"`
-	EndTime      time.Time          `json:"end_time"`
-	Total        int                `json:"total"`
-	ByAction     map[string]int     `json:"by_action"`
-	AvgLatencyMs float64            `json:"avg_latency_ms"`
-	TopPolicies  []PolicyHitSummary `json:"top_policies"`
+	TenantID  string         `json:"tenant_id"`
+	UserEmail string         `json:"user_email,omitempty"`
+	StartTime time.Time      `json:"start_time"`
+	EndTime   time.Time      `json:"end_time"`
+	Total     int            `json:"total"`
+	ByAction  map[string]int `json:"by_action"`
+
+	// AvgLatencyMs / LatencySampleCount carry the same contract as the
+	// compliance summary's pair (see ComplianceSummary in
+	// audit_summary_handler.go): NULL when no row in the range carried a
+	// measurement, never a synthesized 0.
+	//
+	// #3424: this surface had a second, worse bug than the summary's. It
+	// divided the latency SUM (which only measured rows contribute to) by
+	// report.Total (EVERY verdict row), so each unmeasured row acted as a
+	// zero-latency sample and dragged the mean down -- one 50ms row among ten
+	// unmeasured ones reported 5ms. That is a plausible-looking wrong number
+	// rather than an obviously empty one, so it is the harder of the two to
+	// notice. Both sides of the ratio are now restricted to measured rows.
+	AvgLatencyMs       *float64           `json:"avg_latency_ms"`
+	LatencySampleCount int                `json:"latency_sample_count"`
+	TopPolicies        []PolicyHitSummary `json:"top_policies"`
+	// TotalPolicies is how many DISTINCT policies fired in range, before
+	// audit.TopPoliciesLimit truncated TopPolicies. See the identical field on
+	// ComplianceSummary: on THIS surface, the regulator-facing Compliance
+	// Report, an undisclosed truncation is the sharper of the two.
+	TotalPolicies int `json:"total_policies"`
 }
 
 // foldDecisionCount folds a raw policy_decision + its row count onto the
@@ -620,7 +687,7 @@ func foldDecisionCount(byAction map[string]int, decision string, cnt int) int {
 // match, AND'ed before the optional userEmail ILIKE filter so the filter can
 // only narrow it). Empty means tenant-wide (the handler resolves the scope and
 // passes "" only for tenant-wide callers).
-func (l *AuditLogger) ReportByAction(tenantID, scopeUserEmail, userEmail, action string, start, end time.Time) (*ActionReport, error) {
+func (l *AuditLogger) ReportByAction(ctx context.Context, tenantID, scopeUserEmail, userEmail, action string, start, end time.Time) (*ActionReport, error) {
 	report := &ActionReport{
 		TenantID:    tenantID,
 		UserEmail:   userEmail,
@@ -637,31 +704,42 @@ func (l *AuditLogger) ReportByAction(tenantID, scopeUserEmail, userEmail, action
 		return report, nil
 	}
 
-	// Shared WHERE builder so the count and top-policy queries filter identically.
-	where := " WHERE tenant_id = $1 AND timestamp >= $2 AND timestamp <= $3"
+	// Shared predicate so the count and top-policy queries filter identically.
+	// Held WITHOUT the "WHERE" keyword: audit.TopPoliciesQuery parenthesises it
+	// before ANDing its own policy_details filter on, which a ready-made WHERE
+	// clause could not be.
+	predicate := "tenant_id = $1 AND timestamp >= $2 AND timestamp <= $3"
 	args := []interface{}{tenantID, start, end}
 	argIndex := 4
 	// #2922 enforced read scope — exact canonical-email predicate, first, so
 	// the optional userEmail ILIKE filter below can only narrow it.
 	if scopeUserEmail != "" {
-		where += fmt.Sprintf(" AND LOWER(user_email) = $%d", argIndex)
+		predicate += fmt.Sprintf(" AND LOWER(user_email) = $%d", argIndex)
 		args = append(args, strings.ToLower(scopeUserEmail))
 		argIndex++
 	}
 	if userEmail != "" {
-		where += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", argIndex)
+		predicate += fmt.Sprintf(" AND user_email ILIKE '%%' || $%d || '%%'", argIndex)
 		args = append(args, userEmail)
 		argIndex++
 	}
 	if action != "" {
-		where += fmt.Sprintf(" AND policy_decision = ANY($%d)", argIndex)
+		predicate += fmt.Sprintf(" AND policy_decision = ANY($%d)", argIndex)
 		args = append(args, pq.Array(sharedaudit.Spellings(sharedaudit.Normalize(action))))
 		argIndex++
 	}
 
 	// Query 1 — per-decision count + latency sum (weighted avg computed in Go).
+	//
+	// #3424: the SUM and the COUNT that divides it must range over the SAME
+	// rows. Both are now FILTERed with the identical predicate the compliance
+	// summary uses -- measured rows, enforcement planes only -- so the report
+	// footer and the tile above it on the same page answer "average enforcement
+	// latency" the same way.
+	measuredFilter := " FILTER (WHERE " + sharedaudit.LatencyEnforcementPredicate + ")"
 	countRows, err := l.db.Query(
-		"SELECT policy_decision, COUNT(*), COALESCE(SUM(response_time_ms), 0) FROM audit_logs"+where+" GROUP BY policy_decision",
+		"SELECT policy_decision, COUNT(*), COALESCE(SUM(response_time_ms)"+measuredFilter+", 0), "+
+			"COUNT(*)"+measuredFilter+" FROM audit_logs WHERE "+predicate+" GROUP BY policy_decision",
 		args...,
 	)
 	if err != nil {
@@ -670,11 +748,13 @@ func (l *AuditLogger) ReportByAction(tenantID, scopeUserEmail, userEmail, action
 	defer func() { _ = countRows.Close() }()
 
 	var latencySum int64
+	var latencySamples int
 	for countRows.Next() {
 		var decision string
 		var cnt int
 		var sumLatency int64
-		if err := countRows.Scan(&decision, &cnt, &sumLatency); err != nil {
+		var measuredCnt int
+		if err := countRows.Scan(&decision, &cnt, &sumLatency, &measuredCnt); err != nil {
 			log.Printf("[audit/report] error scanning count row: %v", err)
 			continue
 		}
@@ -685,23 +765,45 @@ func (l *AuditLogger) ReportByAction(tenantID, scopeUserEmail, userEmail, action
 		report.Total += added
 		if added > 0 {
 			latencySum += sumLatency
+			latencySamples += measuredCnt
 		}
 	}
 	if err := countRows.Err(); err != nil {
 		return nil, err
 	}
-	if report.Total > 0 {
-		report.AvgLatencyMs = float64(latencySum) / float64(report.Total)
+	// #3424: divide by the number of MEASURED rows, not by every verdict row,
+	// and report absence as absence. The mean can legitimately be below 1.0
+	// (or exactly 0) now that a sub-millisecond decision records the 0 its
+	// clock produced instead of a NULL; latencySamples is what tells a reader
+	// that such an average is real rather than empty.
+	if latencySamples > 0 {
+		avg := float64(latencySum) / float64(latencySamples)
+		report.AvgLatencyMs = &avg
+		report.LatencySampleCount = latencySamples
 	}
 
-	// Query 2 — top policies by trigger count (mirrors auditSummary's shape).
-	topRows, err := l.db.Query(
-		"SELECT COALESCE(policy_details->>'policy_name', 'unknown') AS policy_name, "+
-			"COUNT(*) AS trigger_count, "+
-			"COUNT(*) FILTER (WHERE policy_decision = ANY($"+strconv.Itoa(argIndex)+")) AS block_count "+
-			"FROM audit_logs"+where+
-			" AND policy_details IS NOT NULL AND policy_details->>'policy_name' IS NOT NULL"+
-			" GROUP BY policy_details->>'policy_name' ORDER BY trigger_count DESC LIMIT 10",
+	// Query 2 -- top policies by trigger count. THE SAME QUERY TEXT the portal
+	// summary tile uses, not a mirror of it (#3426): both surfaces used to hold
+	// a hand-copied duplicate grouping on the SINGULAR
+	// policy_details->>'policy_name', so every decide-plane / MCP / FinCrime-seam
+	// row (plural policy_names + policy_ids) was excluded before grouping and
+	// this REGULATOR-FACING report under-reported which policies fired. The
+	// shared builder resolves identity through the #3243 chain the OJK, SEBI and
+	// EU AI Act exporters already use. See platform/shared/audit/top_policies.go.
+	// BOUNDED, for the same reason the summary tile is: the aggregation is
+	// linear in in-scope rows (~2.9us each on PG 16.14) against a range the
+	// caller controls, so a single-tenant stack with three million in-scope rows
+	// takes ~8.7s holding a pool connection. See audit.TopPoliciesTimeout.
+	//
+	// Unlike the tile, EVERY failure here is fatal to the whole response. This
+	// is the regulator-facing artifact: a Top Triggered Policies table that
+	// quietly omits rows reads as "these are the policies that fired", so a
+	// partial answer is worse than an explicit 500.
+	topCtx, cancelTop := context.WithTimeout(ctx, sharedaudit.TopPoliciesTimeout)
+	defer cancelTop()
+
+	topRows, err := l.db.QueryContext(topCtx,
+		sharedaudit.TopPoliciesQuery(predicate, "$"+strconv.Itoa(argIndex)),
 		append(args, pq.Array(sharedaudit.Spellings(sharedaudit.DecisionBlocked)))...,
 	)
 	if err != nil {
@@ -711,11 +813,19 @@ func (l *AuditLogger) ReportByAction(tenantID, scopeUserEmail, userEmail, action
 
 	for topRows.Next() {
 		var p PolicyHitSummary
-		if err := topRows.Scan(&p.PolicyName, &p.TriggerCount, &p.BlockCount); err != nil {
+		// Same window-over-groups total the summary reads; identical on every
+		// row, so the last scan wins and the value is the pre-LIMIT count.
+		var totalPolicies int
+		if err := topRows.Scan(&p.PolicyName, &p.IdentityIsName,
+			&p.TriggerCount, &p.BlockCount, &totalPolicies); err != nil {
+			// Was `continue`, which dropped the row from the compliance report
+			// and left total_policies claiming it was there - the report then
+			// disclosed "showing top 9 of 12" while holding 8 rows.
 			log.Printf("[audit/report] error scanning top-policy row: %v", err)
-			continue
+			return nil, fmt.Errorf("scanning top-policy row: %w", err)
 		}
 		report.TopPolicies = append(report.TopPolicies, p)
+		report.TotalPolicies = totalPolicies
 	}
 	if err := topRows.Err(); err != nil {
 		return nil, err
@@ -804,10 +914,20 @@ func auditReportHandler(w http.ResponseWriter, r *http.Request) {
 		scopeUserEmail = scope.UserEmail
 	}
 
-	report, err := auditLogger.ReportByAction(tenantID, scopeUserEmail, req.UserEmail, req.Action, start, end)
+	report, err := auditLogger.ReportByAction(r.Context(), tenantID, scopeUserEmail, req.UserEmail, req.Action, start, end)
 	if err != nil {
 		log.Printf("[audit/report] query failed for tenant=%s: %v", logutil.Sanitize(tenantID), err)
-		sendErrorResponse(w, "audit report failed", http.StatusInternalServerError)
+		// Same standard as the portal's compliance tile: say that the failure
+		// is a failure (not an empty result), name the timeout as a cause, and
+		// give the one action the caller can actually take. The top-policies
+		// aggregation is linear in in-scope rows and bounded by
+		// audit.TopPoliciesTimeout, so a wide range is the likeliest way to
+		// land here, and a bare "audit report failed" leaves the caller with
+		// nothing to try. Deliberately no server internals: this is the
+		// caller-facing body, the cause is in the log line above.
+		sendErrorResponse(w,
+			"audit report failed: the aggregation failed or timed out. No report was produced - this is NOT a report that nothing was found. Narrow the date range and try again.",
+			http.StatusInternalServerError)
 		return
 	}
 

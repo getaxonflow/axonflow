@@ -11,6 +11,7 @@ package agent
 import (
 	"bytes"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -173,7 +174,7 @@ func TestAttributedUserEmail_FailSafeFallbacks(t *testing.T) {
 		t.Setenv(sharedidentity.EnvVar, "false")
 		r := httptest.NewRequest("POST", "/", nil)
 		r.Header.Set(identityHeaderUserEmail, "forged@victim.example")
-		if got := attributedUserEmail(r, validated); got != validated {
+		if got := attributedUserEmail(r, validated, false /* no verified per-user identity */); got != validated {
 			t.Errorf("got %q, want validated fallback %q", got, validated)
 		}
 	})
@@ -182,7 +183,7 @@ func TestAttributedUserEmail_FailSafeFallbacks(t *testing.T) {
 		resetIdentityWarnLatches(t)
 		t.Setenv(sharedidentity.EnvVar, "true")
 		r := httptest.NewRequest("POST", "/", nil)
-		if got := attributedUserEmail(r, validated); got != validated {
+		if got := attributedUserEmail(r, validated, false /* no verified per-user identity */); got != validated {
 			t.Errorf("got %q, want validated fallback %q", got, validated)
 		}
 	})
@@ -192,7 +193,7 @@ func TestAttributedUserEmail_FailSafeFallbacks(t *testing.T) {
 		t.Setenv(sharedidentity.EnvVar, "true")
 		r := httptest.NewRequest("POST", "/", nil)
 		r.Header.Set(identityHeaderUserEmail, "   ")
-		if got := attributedUserEmail(r, validated); got != validated {
+		if got := attributedUserEmail(r, validated, false /* no verified per-user identity */); got != validated {
 			t.Errorf("got %q, want validated fallback %q", got, validated)
 		}
 	})
@@ -202,7 +203,7 @@ func TestAttributedUserEmail_FailSafeFallbacks(t *testing.T) {
 		t.Setenv(sharedidentity.EnvVar, "true")
 		r := httptest.NewRequest("POST", "/", nil)
 		r.Header.Set(identityHeaderUserEmail, "\x01\x02\x03")
-		if got := attributedUserEmail(r, validated); got != validated {
+		if got := attributedUserEmail(r, validated, false /* no verified per-user identity */); got != validated {
 			t.Errorf("got %q, want validated fallback %q", got, validated)
 		}
 	})
@@ -212,7 +213,7 @@ func TestAttributedUserEmail_FailSafeFallbacks(t *testing.T) {
 		t.Setenv(sharedidentity.EnvVar, "true")
 		r := httptest.NewRequest("POST", "/", nil)
 		r.Header.Set(identityHeaderUserEmail, "leader@corp.example")
-		if got := attributedUserEmail(r, validated); got != "leader@corp.example" {
+		if got := attributedUserEmail(r, validated, false /* no verified per-user identity */); got != "leader@corp.example" {
 			t.Errorf("got %q, want header value", got)
 		}
 	})
@@ -308,4 +309,46 @@ func TestIsClientSharedPseudoIdentity_CommunityLocalDevExempt(t *testing.T) {
 	if !isClientSharedPseudoIdentity("local-dev@axonflow.local") {
 		t.Error("enterprise mode: an asserted local-dev is a spoofed community synthetic, must be census-flagged")
 	}
+}
+
+// TestAttributedUserEmail_VerifiedIdentityIsNeverDisplaced: where a per-user
+// identity WAS cryptographically verified, an asserted header must not take
+// the attribution slot.
+//
+// This is the half that makes attribution and enforcement agree: segment-scoped
+// policy (ADR-060) keys enforcement on the verified identity, so a row naming
+// the asserted one would misdescribe which policies applied — not merely
+// mislabel the caller. The pair below is what makes it a real assertion: the
+// SAME request attributes to the header when nothing was verified, and to the
+// verified identity when something was.
+func TestAttributedUserEmail_VerifiedIdentityIsNeverDisplaced(t *testing.T) {
+	const validated = "alice@corp.example"
+	const asserted = "bob@corp.example"
+
+	newReq := func(t *testing.T) *http.Request {
+		t.Helper()
+		resetIdentityWarnLatches(t)
+		t.Setenv(sharedidentity.EnvVar, "true")
+		r := httptest.NewRequest("POST", "/", nil)
+		r.Header.Set(identityHeaderUserEmail, asserted)
+		return r
+	}
+
+	t.Run("verified → validated identity wins", func(t *testing.T) {
+		if got := attributedUserEmail(newReq(t), validated, true); got != validated {
+			t.Errorf("got %q, want the VERIFIED identity %q — an asserted header must never "+
+				"displace it", got, validated)
+		}
+	})
+
+	t.Run("not verified → header still supplies attribution (#2896, unchanged)", func(t *testing.T) {
+		resetIdentityWarnLatches(t)
+		t.Setenv(sharedidentity.EnvVar, "true")
+		r := httptest.NewRequest("POST", "/", nil)
+		r.Header.Set(identityHeaderUserEmail, asserted)
+		if got := attributedUserEmail(r, validated, false); got != asserted {
+			t.Errorf("got %q, want the asserted header %q — with no verified identity the header "+
+				"is the only per-principal signal and cannot misdescribe the decision", got, asserted)
+		}
+	})
 }

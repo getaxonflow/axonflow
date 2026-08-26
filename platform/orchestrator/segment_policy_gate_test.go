@@ -4,13 +4,29 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 
 	sharedidentity "axonflow/platform/shared/identity"
 )
+
+// captureLog redirects the standard logger into a buffer for the duration of
+// the test so log emission can be asserted, mirroring
+// platform/agent/identity_trust_test.go's helper of the same name (same
+// technique, not shared across packages).
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
 
 // fakeOrchestratorSegmentResolver is a call-counting
 // sharedidentity.IdentityAttributeResolver double, mirroring
@@ -37,7 +53,6 @@ func (f *fakeOrchestratorSegmentResolver) Resolve(_ context.Context, _, _ string
 func (f *fakeOrchestratorSegmentResolver) ResolveRole(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
-func (f *fakeOrchestratorSegmentResolver) InvalidateUserSegments(_, _ string) {}
 
 func (f *fakeOrchestratorSegmentResolver) callCount() int {
 	f.mu.Lock()
@@ -53,9 +68,28 @@ func withOrchestratorSegmentResolver(t *testing.T, r sharedidentity.IdentityAttr
 	t.Cleanup(ResetOrchestratorSegmentResolverForTest)
 }
 
-func TestResolveSegmentsForPolicy_NilResolver_OrgOnlyNotFailure(t *testing.T) {
+// resolverReturning builds a fakeOrchestratorSegmentResolver that resolves
+// to exactly the given segment ids.
+//
+// #3319: relocated from verdict_cache_segment_3052_test.go, which was
+// deleted along with the retired in-memory DynamicPolicyEngine's per-request
+// verdict cache (the tests in that file existed solely to pin that cache's
+// segment-collision behavior, which has no equivalent on the surviving
+// DatabaseDynamicPolicyEngine — it carries no per-request verdict cache).
+// This helper itself is not cache-specific — db_dynamic_policies_segment_3052_test.go
+// depends on it too — so it moved here, alongside its sibling segment-resolver
+// test doubles, rather than being deleted with the rest of that file.
+func resolverReturning(ids ...string) *fakeOrchestratorSegmentResolver {
+	segs := make([]sharedidentity.Segment, len(ids))
+	for i, id := range ids {
+		segs[i] = sharedidentity.Segment{ID: sharedidentity.SegmentID(id)}
+	}
+	return &fakeOrchestratorSegmentResolver{resolved: sharedidentity.ResolvedIdentity{Segments: segs}}
+}
+
+func TestResolveUserSegments_NilResolver_OrgOnlyNotFailure(t *testing.T) {
 	ResetOrchestratorSegmentResolverForTest()
-	ids, ok := resolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com")
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com")
 	if !ok {
 		t.Fatal("no resolver wired (community / no SCIM) must NOT be treated as a failure")
 	}
@@ -64,7 +98,7 @@ func TestResolveSegmentsForPolicy_NilResolver_OrgOnlyNotFailure(t *testing.T) {
 	}
 }
 
-func TestResolveSegmentsForPolicy_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T) {
+func TestResolveUserSegments_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T) {
 	fake := &fakeOrchestratorSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
 		Segments: []sharedidentity.Segment{{ID: "grp-finance"}},
 	}}
@@ -75,7 +109,7 @@ func TestResolveSegmentsForPolicy_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T
 		{"org-a", ""},
 		{"", ""},
 	} {
-		ids, ok := resolveSegmentsForPolicy(context.Background(), tc.org, tc.email)
+		ids, ok := resolveUserSegments(context.Background(), tc.org, tc.email)
 		if !ok {
 			t.Fatalf("org=%q email=%q: no verified identity to resolve against must not be a failure", tc.org, tc.email)
 		}
@@ -88,11 +122,11 @@ func TestResolveSegmentsForPolicy_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T
 	}
 }
 
-func TestResolveSegmentsForPolicy_EmptySet_OrgOnly(t *testing.T) {
+func TestResolveUserSegments_EmptySet_OrgOnly(t *testing.T) {
 	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{
 		resolved: sharedidentity.ResolvedIdentity{Segments: []sharedidentity.Segment{}},
 	})
-	ids, ok := resolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com")
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com")
 	if !ok {
 		t.Fatal("zero group memberships is a legitimate success, not a failure")
 	}
@@ -101,13 +135,13 @@ func TestResolveSegmentsForPolicy_EmptySet_OrgOnly(t *testing.T) {
 	}
 }
 
-// TestResolveSegmentsForPolicy_Error_FailsClosed is the ADR-060 §Fail-closed
+// TestResolveUserSegments_Error_FailsClosed is the ADR-060 §Fail-closed
 // contract, unconditional on this plane (the orchestrator's dynamic-policy
 // enforcement path has no read-only-simulator carve-out): a genuine
 // resolver ERROR must deny (ok=false).
-func TestResolveSegmentsForPolicy_Error_FailsClosed(t *testing.T) {
+func TestResolveUserSegments_Error_FailsClosed(t *testing.T) {
 	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{err: errors.New("segment query failed")})
-	ids, ok := resolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com")
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com")
 	if ok {
 		t.Fatal("a genuine segment resolution error must DENY (ok=false), never fall back to org-only")
 	}
@@ -116,15 +150,35 @@ func TestResolveSegmentsForPolicy_Error_FailsClosed(t *testing.T) {
 	}
 }
 
-func TestResolveSegmentsForPolicy_Success_ReturnsIDs(t *testing.T) {
+// TestResolveUserSegments_ErrorLogsDenying is the orchestrator mirror of
+// platform/agent/segment_policy_gate_test.go's
+// TestResolveUserSegments_EnforcementPhase_ErrorLogsDenying: existing tests
+// here exercise LogResolutionError but nothing previously asserted its TEXT.
+// Unlike the agent, the orchestrator has no session-auth phase — every call
+// site is policy-affecting (see this file's and segment_policy_gate.go's
+// doc) — so "DENYING" is unconditionally the correct claim here, with no
+// phase gate to pin.
+func TestResolveUserSegments_ErrorLogsDenying(t *testing.T) {
+	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{err: errors.New("segment query failed")})
+	buf := captureLog(t)
+
+	resolveUserSegments(context.Background(), "org-a", "a@example.com")
+
+	out := buf.String()
+	if !strings.Contains(out, `[Policy] DENYING (fail-closed, ADR-060 #2989): segment resolution failed org="org-a"`) {
+		t.Fatalf("expected the unconditional DENYING line, got: %s", out)
+	}
+}
+
+func TestResolveUserSegments_Success_ReturnsIDs(t *testing.T) {
 	want := []sharedidentity.Segment{{ID: "grp-finance", DisplayName: "finance"}, {ID: "grp-ml", DisplayName: "ml-platform"}}
 	withOrchestratorSegmentResolver(t, &fakeOrchestratorSegmentResolver{resolved: sharedidentity.ResolvedIdentity{Segments: want}})
-	ids, ok := resolveSegmentsForPolicy(context.Background(), "org-a", "a@example.com")
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com")
 	if !ok {
 		t.Fatal("a successful resolution must never fail closed")
 	}
 	if len(ids) != 2 || ids[0] != "grp-finance" || ids[1] != "grp-ml" {
-		t.Fatalf("resolveSegmentsForPolicy ids = %v, want [grp-finance grp-ml]", ids)
+		t.Fatalf("resolveUserSegments ids = %v, want [grp-finance grp-ml]", ids)
 	}
 }
 

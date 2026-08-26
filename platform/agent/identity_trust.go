@@ -116,7 +116,21 @@ func warnUntrustedIdentityHeader(name string) {
 // present (post-sanitize), else the validated identity. Attribution only —
 // callers must not feed the result into any authz/verdict path except the
 // documented ADR-044 override scope, which deliberately shares this identity.
-func attributedUserEmail(r *http.Request, validatedEmail string) string {
+func attributedUserEmail(r *http.Request, validatedEmail string, verified bool) string {
+	// A VERIFIED per-user identity is never displaced by an asserted header:
+	// audit attribution names the principal the decision was evaluated
+	// against, and segment-scoped policy (ADR-060) keys enforcement on that
+	// same identity — so naming a different one would misdescribe what was
+	// governed, not merely mislabel the caller. The header is forgeable by any
+	// governed caller under a deployment-wide trust gate.
+	if verified {
+		return validatedEmail
+	}
+	// No verified per-user identity: the header is the only per-principal
+	// signal there is, and nothing principal-specific was evaluated for this
+	// caller, so it cannot misdescribe the decision. This is the case #2896
+	// introduced it for — a PEP fronting many principals behind one shared
+	// credential.
 	if e := trustedIdentityHeader(r, identityHeaderUserEmail, maxAttributedEmailLen); e != "" {
 		return e
 	}
@@ -298,4 +312,27 @@ func errSharedIdentityRefusal(session *mcpSession, feature string) error {
 		TokenResolvedIdentity:                 session.identityInputs.tokenResolvedIdentity,
 		PerUserTokenResolvable:                session.authKind == AuthKindEnterprise,
 	}))
+}
+
+// callerHasVerifiedUserIdentity reports whether this request carried a
+// per-user identity that was CRYPTOGRAPHICALLY VERIFIED, as opposed to a
+// synthetic or asserted one.
+//
+// It is the single discriminator both audit attribution and segment
+// enforcement turn on, so the two cannot key on different notions of "who this
+// is": attribution names the principal enforcement was evaluated against, and
+// that is only meaningful if one predicate decides what counts as verified.
+//
+// userErr == nil alone is NOT sufficient. ResolveUser returns a synthetic
+// identity with no error for community, community-SaaS and internal-service
+// callers, and validateUserToken SHORT-CIRCUITS in community / community-SaaS
+// deployments — returning "local-dev@axonflow.local" or the evaluator identity
+// with no error even under AuthKindEnterprise. Only the enterprise arm in a
+// non-community deployment validates a JWT for real, and an ABSENT token
+// errors there, so this triple is exactly "a per-user JWT was validated".
+func callerHasVerifiedUserIdentity(authKind AuthKind, userErr *AuthError, presentedToken string) bool {
+	if isCommunityMode() || isCommunitySaasMode() {
+		return false
+	}
+	return userErr == nil && authKind == AuthKindEnterprise && presentedToken != ""
 }

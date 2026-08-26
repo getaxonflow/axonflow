@@ -1,6 +1,6 @@
 # Community Edition: what you get, and what needs a license
 
-**Applies to:** AxonFlow Platform v9.19.0
+**Applies to:** AxonFlow Platform v10.0.0
 
 > **This document is product documentation, not a license term.** It is **not**
 > incorporated into the Business Source License or the Additional Use Grant, it
@@ -46,7 +46,7 @@
 | Versions per plan | 10 | `platform/orchestrator/planning/types.go` (`MaxCommunityVersionsPerPlan`); reported by `CommunityLimits.MaxVersionsPerPlan` |
 | Concurrent SSE connections | 5 | `platform/agent/license/tier.go` (`CommunityLimits.MaxSSEConnections`) |
 | Cost estimates per day | 10 | `platform/agent/license/tier.go` (`CommunityLimits.MaxCostEstimatesPerDay`) |
-| Pending approvals | 5 | `platform/agent/license/tier.go` (`CommunityLimits.MaxPendingApprovals`). Dormant at Community, on both planes. The agent build ships a stub that rejects creation outright (`platform/agent/hitl/hitl_community.go`), and the workflow-control initializer does not install an approval adapter below Evaluation (`platform/orchestrator/hitl_wcp_community.go`, `InitializeWCPHITL`). When Evaluation or higher is active, that adapter enforces the active tier's limit rather than this Community value. Note the Free, Pro and Premium tiers also sit at 5 |
+| Pending approvals | 5 | `platform/agent/license/tier.go` (`CommunityLimits.MaxPendingApprovals`). Dormant at Community, on both planes, and in fact unreachable at every shipped tier. The agent build ships a stub that rejects creation outright (`platform/agent/hitl/hitl_community.go`). The workflow-control initializer installs the approval adapter unconditionally on both build tags (`platform/orchestrator/hitl_wcp_community.go` and `hitl_wcp_enterprise.go`, `InitializeWCPHITL`); the entitlement is applied per call at the chokepoint instead, so an unentitled tier is refused with `approval_enqueue: "tier_disabled"` rather than being silently unwired. Since the 2026-08-26 decision the entitled set is Professional, Enterprise and Enterprise Plus, all of which resolve to `EnterpriseLimits.MaxPendingApprovals: -1` (unlimited), while every tier declaring a finite cap (Community, Free, Pro, Premium at 5, Evaluation at 25) is refused by the tier gate before it can spend one. No configuration reaches this number; `TestNoShippedTierCanReachTheCap` fails if that stops being true |
 | Decision list lookback (hours) | 24 | `platform/agent/license/tier.go` (`CommunityLimits.DecisionListWindowHours`) |
 | Decision list rows per page | 5 | `platform/agent/license/tier.go` (`CommunityLimits.DecisionListMaxPage`) |
 | Media analyzers (when media governance is enabled) | 2 | `platform/orchestrator/media/license_gating.go` (`CommunityAnalyzerValidator.GetMaxAnalyzers`). One Community analyzer type currently exists (local OCR), so this ceiling is not presently reachable |

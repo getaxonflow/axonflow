@@ -93,6 +93,15 @@ type ExecutionStatus struct {
 	ExecutionType ExecutionType `json:"execution_type"`
 	Name          string        `json:"name"`
 
+	// ExternalID is the source system's identifier for this run (#3442). It is
+	// WRITE-SIDE ONLY: Create persists it to execution_history.external_id, and
+	// no SELECT in this package reads the column back, so a value read from the
+	// database always arrives empty. It is therefore not serialized - a field
+	// that is present on a write and absent on the matching read is exactly the
+	// kind of half-truth an API should not publish. A future reader must add
+	// the column to the SELECT lists in repository.go before removing `json:"-"`.
+	ExternalID string `json:"-"`
+
 	// Source (WCP-specific: langchain, crewai, etc.)
 	Source string `json:"source,omitempty"`
 
@@ -314,6 +323,36 @@ type CreateExecutionRequest struct {
 	TotalSteps    int                    `json:"total_steps,omitempty"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
 
+	// ExecutionID lets a caller whose subsystem ALREADY has the run's identity
+	// hand it in rather than have a second one minted here. Empty means "mint
+	// one" (generateExecutionID), which is the MAP path and the default.
+	//
+	// #3442: the WCP path supplies the control-plane workflow_id. A
+	// `workflows` row is itself the run - it carries status,
+	// current_step_index, started_at and completed_at - and its
+	// execution_history row is a 1:1 projection created synchronously from it
+	// (WCPExecutionTracker.OnWorkflowCreated) and resolved by
+	// metadata->>'workflow_id' on every subsequent read. Minting a second
+	// `wf_`-prefixed id for it put two different strings, indistinguishable by
+	// prefix, on two operator screens for one run.
+	//
+	// Deliberately NOT serialized from any wire format: this is an
+	// in-process seam between a subsystem and its projection, not something a
+	// client may choose. Letting a caller name the primary key of
+	// execution_history would let it address, and collide with, another
+	// tenant's row.
+	ExecutionID string `json:"-"`
+
+	// ExternalID is the source system's own identifier for this run: the
+	// workflow_id for WCP, the plan_id for MAP. It lands in
+	// execution_history.external_id, which migration core/042 documents as
+	// exactly that ("Original ID from source system (plan_id or workflow_id)")
+	// and which the writer had been filling with a copy of the execution id
+	// instead - an indexed correlation column that correlated a row only with
+	// itself. Empty falls back to the execution id, preserving the old value
+	// for any caller that does not set it.
+	ExternalID string `json:"-"`
+
 	// Tenancy
 	TenantID string `json:"tenant_id,omitempty"`
 	OrgID    string `json:"org_id,omitempty"`
@@ -327,8 +366,21 @@ type ListExecutionsRequest struct {
 	Status        *ExecutionStatusValue `json:"status,omitempty"`
 	TenantID      string                `json:"tenant_id,omitempty"`
 	OrgID         string                `json:"org_id,omitempty"`
-	Limit         int                   `json:"limit,omitempty"`
-	Offset        int                   `json:"offset,omitempty"`
+	// OrgWide asks for an ORG-SCOPED read: every execution in OrgID, whatever
+	// credential wrote it (#3367). It is an explicit statement of INTENT by a
+	// caller that has established org-wide tenancy authority, and the
+	// repository will not serve that read without it.
+	//
+	// It is a field rather than an inference from "OrgID set, TenantID empty",
+	// because that shape is reachable by simply OMITTING a header, while the
+	// authority behind it is not. Keying the BYPASSRLS read on the shape would
+	// hand it to any caller who left X-Tenant-ID off, which is the
+	// guard-by-shape mistake rather than guard-by-capability. Deliberately not
+	// serialized: no wire format may set it, only server-side code that has
+	// resolved the caller's authority.
+	OrgWide bool `json:"-"`
+	Limit   int  `json:"limit,omitempty"`
+	Offset  int  `json:"offset,omitempty"`
 }
 
 // CancelExecutionRequest is the request to cancel an execution.

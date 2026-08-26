@@ -62,9 +62,11 @@ type mockPolicyEngineForSim struct {
 	evaluateResult *PolicyEvaluationResult
 	activePolicies []DynamicPolicy
 	lastReq        OrchestratorRequest
+	called         bool
 }
 
 func (m *mockPolicyEngineForSim) EvaluateDynamicPolicies(_ context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
+	m.called = true
 	m.lastReq = req
 	if m.evaluateResult != nil {
 		return m.evaluateResult
@@ -82,7 +84,7 @@ func (m *mockPolicyEngineForSim) ListActivePolicies() []DynamicPolicy {
 
 // ListActivePoliciesForTenant is a STAND-IN, not a copy of either engine's
 // scoping rule — the real predicates live in memPolicyAppliesToTenant and
-// dbCachedPolicyAppliesToTenant and are pinned by their own tests
+// dbCachedPolicyAppliesToOrg and are pinned by their own tests
 // (dynamic_policy_list_tenant_scope_test.go and the real-Postgres parity test
 // in db_policy_engine_integration_test.go).
 //
@@ -128,6 +130,7 @@ func TestSimulatePolicies_IgnoresBodyTenant(t *testing.T) {
 	body := []byte(`{"query":"hello","request_type":"chat","user":{"tenant_id":"victim-org"},"client":{"tenant_id":"victim-org"}}`)
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "caller-org")
+	req.Header.Set("X-Org-ID", "caller-org")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -150,7 +153,7 @@ func TestSimulatePolicies_IgnoresBodyTenant(t *testing.T) {
 // halves of that fix must not diverge.
 //
 // After P3b (ADR-060), EvaluateDynamicPolicies feeds User.OrgID and
-// User.Email straight into resolveSegmentsForPolicy, which resolves against
+// User.Email straight into resolveUserSegments, which resolves against
 // the LIVE SCIM directory of whichever org it is given (both the RLS GUC and
 // the query's WHERE clause are bound from that argument). A body-sourced
 // OrgID paired with a body-sourced Email would let a caller probe an
@@ -238,6 +241,7 @@ func TestSimulatePolicies_Success(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -307,6 +311,7 @@ func TestSimulatePolicies_RateLimit(t *testing.T) {
 	body, _ := json.Marshal(SimulatePoliciesRequest{Query: "test"})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -334,6 +339,7 @@ func TestImpactReport_InputLimitExceeded(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.ImpactReport(w, req)
@@ -378,6 +384,7 @@ func TestSimulatePolicies_EmptyQuery(t *testing.T) {
 	body, _ := json.Marshal(SimulatePoliciesRequest{Query: ""})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -404,6 +411,7 @@ func TestSimulatePolicies_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader([]byte("{invalid json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -440,6 +448,7 @@ func TestSimulatePolicies_UnlimitedTier(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -484,15 +493,75 @@ func TestSimulatePolicies_TenantFromContext(t *testing.T) {
 
 	body, _ := json.Marshal(SimulatePoliciesRequest{Query: "test query"})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
-	// No X-Tenant-ID header -- tenant comes from context
+	// No X-Tenant-ID header -- tenant comes from context.
+	//
+	// Decision 5 (#3490): the ORG still has to come from the header.
+	// resolveOrgOrFail deliberately has no context fallback - the two context
+	// keys resolveTenantOrFail accepts are set by middleware that predates the
+	// org, so a fallback would resolve to "" and simulate against the global
+	// baseline alone while looking self-consistent.
 	ctx := context.WithValue(req.Context(), "tenant_id", "ctx-tenant")
 	req = req.WithContext(ctx)
+	req.Header.Set("X-Org-ID", "ctx-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Decision 5 (#3490) R3 round 2: a simulation with no organisation is refused,
+// not answered against the global baseline. The engine-not-reached assertion is
+// what makes this a refusal rather than an empty result.
+func TestSimulatePolicies_NoOrgIDIsRefused(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{policySimEnabled: true, maxSimsPerDay: 300}
+	engine := &mockPolicyEngineForSim{activePolicies: make([]DynamicPolicy, 1)}
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
+	handler.rateLimiter = &simulationRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	body, _ := json.Marshal(SimulatePoliciesRequest{Query: "test query"})
+	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	// No X-Org-ID.
+	w := httptest.NewRecorder()
+
+	handler.SimulatePolicies(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if engine.called {
+		t.Error("the engine was reached without an organisation: the simulation would have run against the global baseline")
+	}
+}
+
+// A whitespace-only org header must be refused too: " acme" scopes the
+// simulation to an organisation that matches nothing while CreatePolicy writes
+// "acme", so the simulation and the live path would disagree silently.
+func TestSimulatePolicies_BlankOrgIDIsRefused(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{policySimEnabled: true, maxSimsPerDay: 300}
+	engine := &mockPolicyEngineForSim{activePolicies: make([]DynamicPolicy, 1)}
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
+	handler.rateLimiter = &simulationRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	body, _ := json.Marshal(SimulatePoliciesRequest{Query: "test query"})
+	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "   ")
+	w := httptest.NewRecorder()
+
+	handler.SimulatePolicies(w, req)
+
+	if w.Code != http.StatusUnauthorized || engine.called {
+		t.Errorf("a whitespace-only X-Org-ID was accepted: status %d, engine reached %v", w.Code, engine.called)
 	}
 }
 
@@ -509,6 +578,7 @@ func TestImpactReport_EmptyPolicyID(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.ImpactReport(w, req)
@@ -539,6 +609,7 @@ func TestImpactReport_NoInputs(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.ImpactReport(w, req)
@@ -565,6 +636,7 @@ func TestImpactReport_InvalidJSON(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader([]byte("not json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.ImpactReport(w, req)
@@ -664,6 +736,7 @@ func TestSimulatePolicies_DefaultRequestType(t *testing.T) {
 	body, _ := json.Marshal(SimulatePoliciesRequest{Query: "test query"})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.SimulatePolicies(w, req)
@@ -740,6 +813,7 @@ func TestImpactReport_NilPolicyService(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.ImpactReport(w, req)
@@ -843,6 +917,7 @@ func TestImpactReport_Success(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	handler.ImpactReport(w, req)

@@ -153,25 +153,78 @@ type AuditLogger struct {
 
 // AuditEntry represents a single audit log entry
 type AuditEntry struct {
-	ID              string                 `json:"id"`
-	RequestID       string                 `json:"request_id"`
-	Timestamp       time.Time              `json:"timestamp"`
-	UserID          int                    `json:"user_id"`
-	UserEmail       string                 `json:"user_email"`
-	UserRole        string                 `json:"user_role"`
-	ClientID        string                 `json:"client_id"`
-	TenantID        string                 `json:"tenant_id"`
-	OrgID           string                 `json:"org_id"`
-	RequestType     string                 `json:"request_type"`
-	Query           string                 `json:"query"`
-	QueryHash       string                 `json:"query_hash"`
-	PolicyDecision  string                 `json:"policy_decision"` // "allowed", "blocked", "redacted"
-	PolicyDetails   map[string]interface{} `json:"policy_details"`
-	Provider        string                 `json:"provider"`
-	Model           string                 `json:"model"`
-	ResponseTime    int64                  `json:"response_time_ms"`
-	TokensUsed      int                    `json:"tokens_used"`
-	Cost            float64                `json:"cost"`
+	ID             string                 `json:"id"`
+	RequestID      string                 `json:"request_id"`
+	Timestamp      time.Time              `json:"timestamp"`
+	UserID         int                    `json:"user_id"`
+	UserEmail      string                 `json:"user_email"`
+	UserRole       string                 `json:"user_role"`
+	ClientID       string                 `json:"client_id"`
+	TenantID       string                 `json:"tenant_id"`
+	OrgID          string                 `json:"org_id"`
+	RequestType    string                 `json:"request_type"`
+	Query          string                 `json:"query"`
+	QueryHash      string                 `json:"query_hash"`
+	PolicyDecision string                 `json:"policy_decision"` // "allowed", "blocked", "redacted"
+	PolicyDetails  map[string]interface{} `json:"policy_details"`
+	Provider       string                 `json:"provider"`
+	Model          string                 `json:"model"`
+	// ResponseTime is the measured duration for this row in whole milliseconds,
+	// or nil when this row's writer measured nothing (#3424).
+	//
+	// It is a POINTER because the absence of a measurement is a fact this struct
+	// has to be able to hold. Only LogSuccessfulRequest populates it; the seven
+	// other AuditEntry producers here -- blocked request / response / media,
+	// failed request, workflow, plan and tool-call rows -- have no duration to
+	// record, and while this was a plain int64 their zero VALUE was
+	// indistinguishable from a measured zero. That was wrong twice over: the
+	// BatchWriter INSERT bound a literal 0 into a column whose reader treats a
+	// value as a sample, and, worse, /api/v1/audit/search serialized
+	// `"response_time_ms": 0` for every one of those rows, which the portal's
+	// Latency column rendered as a confident "0ms" one panel below the Avg
+	// Latency tile this issue exists to stop fabricating.
+	//
+	// omitempty, so an unmeasured row OMITS the key rather than emitting an
+	// explicit null. AuditLogEntry declares no `required` list, so the field
+	// was ALREADY optional in the published contract and every conforming
+	// client must already handle its absence -- which makes this the one shape
+	// that fixes the lie without changing the contract at all. On a POINTER
+	// omitempty drops only nil, so a measured 0 (a decision faster than the
+	// column's 1ms resolution) still serializes as 0; a value-typed omitempty
+	// would have swallowed exactly that sample.
+	//
+	// Bind it with sharedaudit.LatencyValue and render it with the portal's
+	// formatRowLatency; both sides of that pair agree with
+	// sharedaudit.LatencyMeasuredPredicate.
+	ResponseTime *int64 `json:"response_time_ms,omitempty"`
+	// TokensUsed and Cost are the provider round trip's usage for this row, or
+	// nil when the row carries no RECORDED provider usage (#3427 M19).
+	//
+	// NIL MEANS "NOT RECORDED", NOT "NO PROVIDER WAS CALLED", and the
+	// distinction is load-bearing because a published contract states it.
+	// LogSuccessfulRequest is the only writer that RECORDS usage, but it is
+	// not the only writer HANDED a ProviderInfo: LogBlockedResponse takes one
+	// too, and it is a post-forward path (run.go forwards, then the response
+	// plane withholds the answer), so its rows are round trips that were paid
+	// for and discarded. It records none of that usage today - a gap in that
+	// writer, deliberately not closed here because stamping it would move
+	// SUM(tokens_used)/SUM(cost) in the session summary and the OJK LLM-call
+	// section, which is a compliance-figure change and not a table-layout one.
+	//
+	// POINTERS for the same reason ResponseTime is one: while these were plain
+	// value types every producer that records no usage had its zero value
+	// bound into the INSERT as a literal 0 and re-serialized to
+	// /api/v1/audit/search as
+	// `"tokens_used": 0, "cost": 0`, which the portal's detail panel rendered
+	// as "Tokens 0" and "Cost $0.0000" beneath a request that was blocked
+	// before any model saw it.
+	//
+	// omitempty, so an unmeasured row OMITS the key. AuditLogEntry declares no
+	// `required` list, so both properties were already optional in the
+	// published contract. On a pointer omitempty drops only nil, so a genuine
+	// zero-cost round trip (a local or free-tier model) still serializes.
+	TokensUsed      *int                   `json:"tokens_used,omitempty"`
+	Cost            *float64               `json:"cost,omitempty"`
 	RedactedFields  []string               `json:"redacted_fields"`
 	ErrorMessage    string                 `json:"error_message,omitempty"`
 	ResponseSample  string                 `json:"response_sample"`
@@ -255,6 +308,85 @@ func NewAuditLogger(databaseURL string) *AuditLogger {
 	return logger
 }
 
+// nullLatencyPtr converts the scanned audit_logs.response_time_ms into
+// AuditEntry.ResponseTime (#3424): a SQL NULL becomes a nil pointer, which
+// omitempty then drops from the JSON entirely, which the portal renders as
+// "-". Surfacing it as the int64 zero value instead -- which every one of
+// these read paths used to do -- re-manufactured on the WIRE exactly the
+// fabricated "0ms" the write path had just stopped storing.
+func nullLatencyPtr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}
+
+// nullTokensPtr / nullCostPtr are the token and cost twins of nullLatencyPtr
+// (#3427, sub-finding M19). audit_logs.tokens_used and audit_logs.cost are
+// nullable and NULL on every row that recorded no provider usage: a blocked
+// request, a redaction, a pre-check deny, a workflow step, a tool call -- and
+// also a RESPONSE-plane block, which is the one member of that list where a
+// round trip really did happen and LogBlockedResponse simply records none of
+// the usage it is handed (see providerUsagePtrs below). All
+// three read paths scanned them into sql.Null* and then took .Int64 / .Float64
+// WITHOUT checking .Valid, so "this row recorded no usage" left the
+// orchestrator as `"tokens_used": 0, "cost": 0` -- and the portal's expanded
+// detail panel, whose `!= null` guards were written for exactly this case,
+// rendered "Tokens 0" and "Cost $0.0000" under a governed block. That is the
+// same defect class #3424 fixed for latency, on the two columns it did not
+// cover, and it reads as a measurement of a thing that never happened.
+func nullTokensPtr(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
+}
+
+func nullCostPtr(n sql.NullFloat64) *float64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Float64
+	return &v
+}
+
+// providerUsagePtrs lifts a provider round trip's token count and cost onto
+// AuditEntry (#3427 M19).
+//
+// Unlike the latency twin below, a 0 here is KEPT when the round trip really
+// happened: a locally hosted or free-tier model genuinely costs 0.0000, and
+// discarding that would replace a measured zero with "not recorded" - the
+// mirror image of the bug. The absence signal is the CALL to this helper:
+// LogSuccessfulRequest is the only writer that makes it, and every other
+// AuditEntry producer leaves both fields nil. That is not the same as "the
+// only writer with a ProviderInfo" - LogBlockedResponse is handed one too and
+// simply does not record it (see the AuditEntry.TokensUsed doc above).
+func providerUsagePtrs(tokens int, cost float64) (*int, *float64) {
+	t, c := tokens, cost
+	return &t, &c
+}
+
+// providerLatencyPtr lifts a provider round-trip duration onto
+// AuditEntry.ResponseTime (#3424).
+//
+// ProviderInfo.ResponseTimeMs is a plain int64 filled in by the LLM adapters
+// from time.Since(start), so it has no way to say "absent": a provider info
+// assembled on an error path, or by an adapter that never timed the call,
+// carries a 0 that means nothing was measured rather than a call that returned
+// instantly. A network round trip to a third-party API cannot complete in under
+// a millisecond, so treating a non-positive value here as unmeasured cannot
+// discard a real sample -- unlike the enforcement planes, where 0 IS a real
+// sub-millisecond result and is kept.
+func providerLatencyPtr(ms int64) *int64 {
+	if ms <= 0 {
+		return nil
+	}
+	v := ms
+	return &v
+}
+
 // LogSuccessfulRequest writes the canonical audit_logs row for an orchestrator
 // LLM response that was delivered to the caller (verdict "allowed" or
 // "redacted"). It is the authoritative response-plane writer (#2626): the
@@ -277,6 +409,12 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 
 	decisionID := generateDecisionID()
 	correlationID := correlationIDFromContext(ctx, req.RequestID)
+
+	// #3427 M19: this is the ONE writer that RECORDS a token count and a cost.
+	// Every other producer leaves both nil and stores NULL - including
+	// LogBlockedResponse, which is handed a ProviderInfo for a round trip that
+	// really happened and records none of it.
+	tokensPtr, costPtr := providerUsagePtrs(providerInfo.TokensUsed, providerInfo.Cost)
 
 	entry := &AuditEntry{
 		ID:             generateAuditID(),
@@ -303,11 +441,16 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 			"correlation_id": correlationID,
 			"plane":          agent.PlaneLLM,
 		},
-		Provider:        providerInfo.Provider,
-		Model:           providerInfo.Model,
-		ResponseTime:    providerInfo.ResponseTimeMs,
-		TokensUsed:      providerInfo.TokensUsed,
-		Cost:            providerInfo.Cost,
+		Provider: providerInfo.Provider,
+		Model:    providerInfo.Model,
+		// #3424: the ONE AuditEntry producer that has a duration to record. It
+		// is the PROVIDER round trip, not an enforcement duration (see the
+		// KNOWN SEMANTIC table on sharedaudit.MeasuredLatencyMs), which is why
+		// sharedaudit.LatencyEnforcementPredicate excludes plane='llm' from the
+		// portal's Avg Latency tile rather than averaging the two together.
+		ResponseTime:    providerLatencyPtr(providerInfo.ResponseTimeMs),
+		TokensUsed:      tokensPtr,
+		Cost:            costPtr,
 		ResponseSample:  truncateResponse(response),
 		ComplianceFlags: l.detectComplianceFlags(req, response),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
@@ -352,6 +495,19 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 // This is a POST-forward path: the request already reached the LLM (only the
 // response is withheld), so the cross-border transfer completed and is stamped
 // like the success path (#2718). providerInfo carries the resolved destination.
+//
+// KNOWN GAP (#3427 R3): because the forward completed, providerInfo also
+// carries the round trip's Provider, Model, TokensUsed and Cost - usage that
+// was genuinely spent and then discarded - and this writer records NONE of it.
+// The row therefore stores an empty provider and, since #3427, a NULL token
+// count and cost rather than the fabricated 0s it used to store. Not closed
+// here on purpose: stamping it moves SUM(tokens_used)/SUM(cost) in
+// session_summary_handler.go (unfiltered by plane) and the OJK export's
+// LLM-call section, and populates model_id on SEBI / EU AI Act decision
+// chains. That is a change to reported compliance figures and needs its own
+// runtime proof, not a fold into a table-layout fix. What #3427 does fix is
+// the CLAIM: nothing now tells a reader that an omitted token count means no
+// provider was called.
 func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRequest,
 	policyResult *PolicyEvaluationResult, info *RedactionInfo, providerInfo *ProviderInfo) *AuditEntry {
 	if l == nil {
@@ -540,7 +696,7 @@ type WorkflowAuditEntry struct {
 	OrgID        string
 	ClientID     string
 	UserID       string
-	UserEmail    string // v7.4.1+: reviewer email for step_approved/step_rejected
+	UserEmail    string // v7.4.1+: reviewer email for step_approved/step_rejected; #3281: also the trust-gated caller email on step_gate, whose verdict is identity-dependent
 	UserRole     string // v7.4.1+: reviewer role
 	Metadata     map[string]interface{}
 }
@@ -1007,9 +1163,9 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, int,
 		entry.Provider = provider.String
 		entry.Model = model.String
 		entry.ErrorMessage = errorMessage.String
-		entry.ResponseTime = responseTime.Int64
-		entry.TokensUsed = int(tokensUsed.Int64)
-		entry.Cost = cost.Float64
+		entry.ResponseTime = nullLatencyPtr(responseTime)
+		entry.TokensUsed = nullTokensPtr(tokensUsed)
+		entry.Cost = nullCostPtr(cost)
 
 		// All rows carry the same window-function value; capture it once per
 		// iteration so that after the loop totalCount reflects the true number
@@ -1296,7 +1452,21 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			policyDetailsJSON,
 			entry.Provider,
 			entry.Model,
-			entry.ResponseTime,
+			// #3424: NULL when this writer had nothing to measure. Only
+			// LogSuccessfulRequest populates ResponseTime (from the provider
+			// round trip); the seven other AuditEntry producers here -- blocked
+			// request / response / media, failed request, workflow, plan and
+			// tool-call rows -- leave it nil. Before this change the field was a
+			// plain int64 and their zero VALUE was written as a literal 0, which
+			// is a claim of a measured zero-millisecond operation and only stayed
+			// out of the portal's average by the grace of the reader's `> 0`
+			// filter -- a filter #3424 then had to relax so sub-millisecond
+			// enforcement decisions stop vanishing. Migration core/161 clears the
+			// zeros those writers already stored.
+			sharedaudit.LatencyValue(entry.ResponseTime),
+			// #3427 M19: nil -> NULL. Bound as pointers so a writer with no
+			// provider round trip stores "not applicable" rather than a
+			// literal 0 that every reader below is then obliged to believe.
 			entry.TokensUsed,
 			entry.Cost,
 			redactedFieldsJSON,

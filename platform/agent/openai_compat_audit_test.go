@@ -60,6 +60,7 @@ func expectOpenAICompatAuditRow(mock sqlmock.Sqlmock, clientID, tenantID, orgID 
 			sqlmock.AnyArg(),    // correlation_id
 			nil,                 // redacted_fields (none)
 			nil,                 // session_id (#2896): context unstamped (untrusted) → NULL
+			sqlmock.AnyArg(),    // response_time_ms (#3424): handler elapsed time
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }

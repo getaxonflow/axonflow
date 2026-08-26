@@ -306,7 +306,11 @@ func TestGetPoliciesForMCP_IncludesAnomalyAndTimeAccess(t *testing.T) {
 	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
-	got, err := handler.getPoliciesForMCP(MCPPolicyEvaluationRequest{TenantID: "acme-ops", ConnectorName: "acme-crm"})
+	// Decision 5 (#3490): getPoliciesForMCP scopes by OrganizationID. These
+	// fixtures use the org == tenant identity (see defaultOrgFromTenant), so
+	// the "different-tenant" row below is still the cross-scope control it
+	// was written to be.
+	got, err := handler.getPoliciesForMCP(MCPPolicyEvaluationRequest{TenantID: "acme-ops", OrganizationID: "acme-ops", ConnectorName: "acme-crm"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -38,11 +38,12 @@ type ResolvedIdentity struct {
 
 // IdentityAttributeResolver mirrors the enterprise interface (embeds
 // RoleResolver) so a resolver value can be used directly wherever a
-// RoleResolver is expected.
+// RoleResolver is expected. #3473: InvalidateUserSegments is deliberately
+// NOT part of this interface — see the enterprise file's doc for why
+// (kept only on the enterprise concrete type, for its own unit test).
 type IdentityAttributeResolver interface {
 	RoleResolver
 	Resolve(ctx context.Context, orgID, email string) (ResolvedIdentity, error)
-	InvalidateUserSegments(orgID, email string)
 }
 
 // NewIdentityAttributeResolver is Enterprise-only in community builds — SCIM,

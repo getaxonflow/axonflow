@@ -362,7 +362,7 @@ async function main() {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("403") || msg.includes("404") || msg.includes("enterprise") || msg.includes("not available") || msg.includes("license")) {
-        console.log("   SKIPPED: Pending approvals is an Evaluation+ feature");
+        console.log("   SKIPPED: Pending approvals is a Professional-and-above feature");
         console.log(`   (${msg})`);
       } else {
         throw error;
@@ -407,7 +407,7 @@ async function main() {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("403") || msg.includes("404") || msg.includes("enterprise") || msg.includes("not available") || msg.includes("license")) {
-        console.log("   SKIPPED: MAP-plane pending approvals is an Evaluation+ feature");
+        console.log("   SKIPPED: MAP-plane pending approvals is a Professional-and-above feature");
         console.log(`   (${msg})`);
       } else {
         throw error;

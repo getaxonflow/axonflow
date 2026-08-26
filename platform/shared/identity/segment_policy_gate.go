@@ -5,7 +5,6 @@ package identity
 
 import (
 	"context"
-	"log"
 	"sort"
 	"time"
 )
@@ -29,10 +28,19 @@ import (
 // (platform/agent/segment_policy_gate.go, platform/orchestrator/
 // segment_policy_gate.go) that call the exported functions below.
 
-// SegmentPolicyMetrics is the per-service Prometheus sink
-// ResolveSegmentsForPolicy reports into. It carries the OUTCOME only; each
+// SegmentPolicyMetrics is the per-service Prometheus + logging sink
+// ResolveUserSegments reports into. It carries the OUTCOME only; each
 // service wires its own counter/histogram (with its own name/help text) via
 // a small adapter, so this extraction changes no exported metric name.
+//
+// Logging is part of this sink, not a bare log.Printf inside
+// ResolveUserSegments, for the same reason IncFailClosed is: this function
+// serves callers with different jobs (an enforcement-phase caller that
+// denies on ok==false, an observability-only caller that never does — see
+// this function's own doc), and what a resolution outcome MEANS in a log —
+// whether "DENYING" is even true — depends on which one is calling, not on
+// the lookup itself. A caller decides its own log text (or logs nothing)
+// exactly the way it already decides whether ok==false denies anything.
 type SegmentPolicyMetrics interface {
 	// ObserveResolutionResult increments a per-result-label resolution
 	// counter. result is one of "resolved", "empty", "error".
@@ -44,13 +52,39 @@ type SegmentPolicyMetrics interface {
 	// IncFailClosed increments the counter tracking requests DENIED because
 	// segment resolution failed on the policy-affecting path.
 	IncFailClosed()
+	// LogResolutionError reports a resolution FAILURE (orgID, latency, the
+	// underlying error) so the caller can log it in whatever terms are true
+	// for its own call population — an enforcement-phase caller's failure
+	// really does deny the request; an observability-only caller's does not,
+	// and must not be logged as if it did (a caller may also choose to log
+	// nothing at all).
+	LogResolutionError(orgID string, latency time.Duration, err error)
+	// LogResolutionSuccess reports a SUCCESSFUL resolution outcome (orgID,
+	// latency, the resolved segment ids — nil/empty means zero group
+	// memberships, the legitimate "resolved to none" case) so the caller can
+	// log the specific entity/cardinality resolved, if its call population
+	// warrants it (a caller may choose to log nothing, e.g. a call site
+	// invoked on every single policy-affecting request, where a log line per
+	// call would flood the log for no operational benefit).
+	LogResolutionSuccess(orgID string, latency time.Duration, segmentIDs []string)
 }
 
-// ResolveSegmentsForPolicy resolves the caller's governance-segment set
-// (ADR-060, #2989) for POLICY-AFFECTING consumption. resolver is the
-// caller's already-looked-up process-wide resolver (nil = capability
-// unavailable — community build, or Enterprise without SCIM/segment
-// resolution configured); metrics is the caller's per-service sink.
+// ResolveUserSegments resolves the caller's governance-segment set (ADR-060,
+// #2989) for (orgID, email). resolver is the caller's already-looked-up
+// process-wide resolver (nil = capability unavailable — community build, or
+// Enterprise without SCIM/segment resolution configured); metrics is the
+// caller's per-service sink.
+//
+// This is the ONE user->segments lookup (#3473): every plane that needs a
+// caller's segment set — observability-only or policy-affecting alike —
+// reaches it through this function (or a thin per-service adapter over it,
+// e.g. platform/agent/segment_policy_gate.go's resolveUserSegments). The
+// error contract below is unconditional; a caller that wants an
+// observability-only, never-deny use of this (e.g. the agent fleet plane's
+// session-auth resolution, which feeds no decision — see
+// platform/agent/segment_resolution_metrics.go's segmentResolutionPhase doc)
+// gets that by simply not acting on ok==false, not by this function
+// offering a second, fail-open contract.
 //
 // Contract (fail-closed UNCONDITIONALLY — both the agent static plane and
 // the orchestrator dynamic-policy plane converged on this after #3239 round
@@ -74,7 +108,7 @@ type SegmentPolicyMetrics interface {
 //     §Fail-closed is explicit that a segment resolution failure must never
 //     be papered over as "proceed org-only", because that IS the exact
 //     fail-open bypass ADR-060 exists to close.
-func ResolveSegmentsForPolicy(ctx context.Context, orgID, email string, resolver IdentityAttributeResolver, metrics SegmentPolicyMetrics) (segmentIDs []string, ok bool) {
+func ResolveUserSegments(ctx context.Context, orgID, email string, resolver IdentityAttributeResolver, metrics SegmentPolicyMetrics) (segmentIDs []string, ok bool) {
 	if resolver == nil {
 		return nil, true // capability unavailable — not a failure, proceed org-only
 	}
@@ -88,14 +122,14 @@ func ResolveSegmentsForPolicy(ctx context.Context, orgID, email string, resolver
 	if err != nil {
 		metrics.ObserveResolutionResult("error")
 		metrics.IncFailClosed()
-		log.Printf("[Policy] DENYING (fail-closed, ADR-060 #2989): segment resolution failed org=%q latency=%s: %v",
-			orgID, latency, err)
+		metrics.LogResolutionError(orgID, latency, err)
 		return nil, false
 	}
 	metrics.ObserveResolutionDuration(latency.Seconds())
 
 	if len(resolved.Segments) == 0 {
 		metrics.ObserveResolutionResult("empty")
+		metrics.LogResolutionSuccess(orgID, latency, nil)
 		return nil, true
 	}
 
@@ -104,6 +138,7 @@ func ResolveSegmentsForPolicy(ctx context.Context, orgID, email string, resolver
 	for i, s := range resolved.Segments {
 		ids[i] = string(s.ID)
 	}
+	metrics.LogResolutionSuccess(orgID, latency, ids)
 	return ids, true
 }
 

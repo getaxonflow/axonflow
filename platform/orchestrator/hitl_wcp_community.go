@@ -5,7 +5,8 @@
 //
 // Community + Evaluation HITL wiring for WCP.
 // Community mode: HITL disabled (no queue).
-// Evaluation mode: HITL enabled with 24h fixed expiry and pending limit.
+// Evaluation mode: HITL enabled with the tier's expiry and pending limit.
+// The write path itself is edition-neutral - see hitl_wcp_adapter.go.
 //
 // Issue #1082: Wire WCP require_approval action to HITL queue
 
@@ -15,129 +16,31 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"time"
 
-	logutil "axonflow/platform/shared/logger"
-
-	"github.com/google/uuid"
-
-	"axonflow/platform/agent"
+	"axonflow/platform/agent/hitl/queue"
 	"axonflow/platform/agent/license"
 )
 
-// evalWCPHITLAdapter is the Evaluation tier HITL adapter for WCP.
-// It creates HITL queue entries with a fixed 24h expiry and enforces pending limits.
-type evalWCPHITLAdapter struct {
-	db                  *sql.DB
-	expiryDuration      time.Duration
-	maxPendingPerTenant int
-}
-
-// CreateApproval creates an HITL queue entry for WCP require_approval actions (Evaluation tier).
-func (a *evalWCPHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprovalRequest) (*HITLApprovalResponse, error) {
-	if a.db == nil {
-		return nil, fmt.Errorf("database connection not available")
-	}
-
-	// Enforce pending approval limit.
-	//
-	// #3048: hitl_approval_queue is RLS-enabled (mig 025) — the bare COUNT
-	// read 0 under axonflow_app_role, so the pending-approval limit never
-	// engaged. Same req.OrgID scope key the INSERT below uses.
-	if req.OrgID == "" {
-		return nil, fmt.Errorf("HITLApprovalRequest.OrgID is required under RLS")
-	}
-	var pendingCount int
-	err := agent.WithOrgScope(ctx, a.db, req.OrgID, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM hitl_approval_queue WHERE tenant_id = $1 AND status = 'pending'`,
-			req.TenantID,
-		).Scan(&pendingCount)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to check pending approvals: %w", err)
-	}
-	if pendingCount >= a.maxPendingPerTenant {
-		return nil, fmt.Errorf("pending approval limit exceeded (%d/%d) - upgrade to Enterprise for unlimited approvals: https://getaxonflow.com/pricing", pendingCount, a.maxPendingPerTenant)
-	}
-
-	requestID := uuid.New()
-	now := time.Now()
-	expiresAt := now.Add(a.expiryDuration)
-
-	contextJSON, err := json.Marshal(req.RequestContext)
-	if err != nil {
-		contextJSON = []byte("{}")
-	}
-
-	query := `
-		INSERT INTO hitl_approval_queue (
-			request_id, org_id, tenant_id, client_id, user_id,
-			original_query, request_type, request_context,
-			triggered_policy_id, triggered_policy_name, trigger_reason,
-			severity, status, created_at, expires_at
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8,
-			$9, $10, $11,
-			$12, 'pending', $13, $14
-		)
-	`
-
-	// v9 Phase 8 PR-C2 (#2384): hitl_approval_queue is mig 025 ENABLE RLS with
-	// policy `org_id = get_current_org_id()`. Wrap so the INSERT WITH CHECK
-	// sees the orgID under axonflow_app_role. req.OrgID is the canonical
-	// post-Phase-6 identifier; the row's org_id column also gets it.
-	if req.OrgID == "" {
-		return nil, fmt.Errorf("HITLApprovalRequest.OrgID is required under RLS")
-	}
-	if wrapErr := agent.WithOrgScope(ctx, a.db, req.OrgID, func(tx *sql.Tx) error {
-		_, execErr := tx.ExecContext(ctx, query,
-			requestID,
-			req.OrgID,
-			req.TenantID,
-			req.ClientID,
-			req.UserID,
-			req.StepName,
-			"wcp_step_gate",
-			contextJSON,
-			req.PolicyID,
-			req.PolicyName,
-			req.TriggerReason,
-			req.Severity,
-			now,
-			expiresAt,
-		)
-		return execErr
-	}); wrapErr != nil {
-		log.Printf("❌ [WCP-HITL-Eval] Failed to create approval: %v", wrapErr)
-		return nil, fmt.Errorf("failed to create HITL approval: %w", wrapErr)
-	}
-
-	log.Printf("✅ [WCP-HITL-Eval] Created approval request: %s for step %s (expires %s)", requestID, logutil.Sanitize(req.StepName), expiresAt.Format(time.RFC3339))
-
-	return &HITLApprovalResponse{
-		ApprovalID: requestID,
-		Status:     "pending",
-		CreatedAt:  now,
-		ExpiresAt:  expiresAt,
-	}, nil
-}
-
 // InitializeWCPHITL initializes the HITL adapter for WCP.
 // In Community mode (no license): HITL is disabled.
-// In Evaluation mode: HITL is enabled with fixed 24h expiry and pending limits.
+// In Evaluation mode: HITL is enabled with the tier's expiry and pending limits.
+//
+// THE WRITE PATH MOVED, THE GATE DID NOT MOVE - IT MULTIPLIED. The
+// IsEvaluationOrHigher check below still short-circuits the wiring so an
+// unlicensed community process never even gets an adapter (and the log line
+// an operator greps for is unchanged). The SAME gate is now also applied
+// per-call inside queue.Enqueuer, which is what makes a licence that expires
+// while the process is running take effect at the next gate instead of at the
+// next restart.
+//
+// The adapter itself is the edition-neutral wcpHITLAdapter - see
+// hitl_wcp_adapter.go for the three defects the eval-specific copy carried
+// (a random request_id that did not match the one the approve/reject response
+// projects, no dedup on re-gate, and no hitl_approval_history row).
 func InitializeWCPHITL(db *sql.DB, wcpAdapter *WCPPolicyAdapter) error {
 	if wcpAdapter == nil {
-		return nil
-	}
-
-	// Check if we have an eval license
-	tier := license.GetCurrentTier(context.Background())
-	if !license.IsEvaluationOrHigher(tier) {
-		log.Println("ℹ️  WCP HITL disabled (Community mode) - require_approval actions will block but not queue")
 		return nil
 	}
 
@@ -146,25 +49,69 @@ func InitializeWCPHITL(db *sql.DB, wcpAdapter *WCPPolicyAdapter) error {
 		return nil
 	}
 
-	limits := license.GetTierLimits(tier)
-	adapter := &evalWCPHITLAdapter{
-		db:                  db,
-		expiryDuration:      time.Duration(limits.HITLExpiryHours) * time.Hour,
-		maxPendingPerTenant: limits.MaxPendingApprovals,
-	}
-	wcpAdapter.SetHITLApproval(adapter)
-
-	// Start auto-expiry goroutine for timed-out eval approvals.
+	// THE EXPIRY SWEEPER STARTS REGARDLESS OF ENTITLEMENT, and it starts
+	// BEFORE the tier check. It is what times out pending rows and aborts
+	// their workflows, so an unentitled deployment that still HOLDS rows -
+	// every Evaluation deployment upgrading across the 2026-08-26
+	// Enterprise-only decision - needs it more than an entitled one, not
+	// less. Starting it only when entitled left those rows pending for ever:
+	// the phantom-row defect #3408 exists to close, reintroduced by the
+	// entitlement change itself.
+	//
 	// The goroutine runs until the context is cancelled (server shutdown).
 	ctx, cancel := context.WithCancel(context.Background())
 	go runEvalApprovalExpiryLoop(ctx, db)
-
-	// Store cancel func so it can be called on shutdown.
-	// In practice the process exits and the goroutine is cleaned up,
-	// but this makes the lifecycle explicit and testable.
 	evalExpiryCancel = cancel
 
-	log.Printf("✅ WCP HITL adapter initialized (Evaluation tier) - 24h expiry, max %d pending", limits.MaxPendingApprovals)
+	tier := license.GetCurrentTier(context.Background())
+	limits := license.GetTierLimits(tier)
+	expiry := time.Duration(limits.HITLExpiryHours) * time.Hour
+	if expiry <= 0 {
+		expiry = 24 * time.Hour
+	}
+
+	// THE ADAPTER IS WIRED UNCONDITIONALLY, AS ON THE ENTERPRISE BUILD.
+	//
+	// R3 round 2: this function used to `return nil` here when the tier was
+	// unentitled, leaving wcpAdapter.hitlApproval nil. wcp_policy_adapter.go
+	// only enters the enqueue block `if ... && a.hitlApproval != nil`, so with
+	// no adapter the gate was held with ApprovalEnqueue left "" - and the
+	// field is `omitempty`, whose documented meaning is "no enqueue was
+	// attempted, the ordinary case for an allow/block decision". The refusal
+	// was therefore INDISTINGUISHABLE ON THE WIRE from an ordinary gate, which
+	// is the exact ambiguity approval_enqueue was added to remove.
+	//
+	// The log line three lines below promised `tier_disabled`, the API spec
+	// declares it in the enum, and two docs pages document it. All four were
+	// describing the ENTERPRISE build: round 1 made that build wire
+	// unconditionally and did not carry the same change here, so the two
+	// editions disagreed about a field in the published contract, and the
+	// edition that disagreed is the one an Evaluation licensee actually runs.
+	//
+	// Wiring unconditionally is also the position round 1 already argued for
+	// on the enterprise twin: the refusal belongs at the per-call gate inside
+	// queue.Enqueuer, where a licence renewed at runtime starts working at the
+	// next gate rather than at the next restart. The cap and expiry read from
+	// an unentitled tier are inert - no call gets past the gate to spend them.
+	wcpAdapter.SetHITLApproval(newWCPHITLAdapter(queue.NewEnqueuer(db, queue.Config{
+		Plane:               wcpHITLRequestType,
+		MaxPendingApprovals: limits.MaxPendingApprovals,
+		DefaultExpiry:       expiry,
+	})))
+
+	if !license.IsHITLApprovalEntitled(tier) {
+		// Names the RESOLVED TIER, not a deployment mode. This line used to
+		// read "(Community mode)", which is a lie to an operator holding a
+		// valid Evaluation licence - and since the entitlement change,
+		// Evaluation is exactly who reaches it.
+		log.Printf("ℹ️  WCP HITL disabled by licence tier %q - require_approval actions will block "+
+			"and report approval_enqueue=tier_disabled, creating no reviewer entry "+
+			"(existing entries still expire and can still be approved or rejected)", string(tier))
+		return nil
+	}
+
+	log.Printf("✅ WCP HITL adapter initialized (tier %s) - %s expiry, max %d pending per tenant (-1 = unlimited)",
+		string(tier), expiry, limits.MaxPendingApprovals)
 	return nil
 }
 
@@ -308,7 +255,7 @@ func expireEvalApprovals(db *sql.DB) {
 
 		// Build abort reason with safe JSON encoding to prevent injection
 		abortReason, _ := json.Marshal(map[string]string{
-			"abort_reason": "Step " + ea.stepName + " auto-expired after 24h (Evaluation tier)",
+			"abort_reason": "Step " + ea.stepName + " auto-expired after its approval window",
 		})
 
 		if ea.workflowID != "" {

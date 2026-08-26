@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"axonflow/platform/agent/hitl"
 	"axonflow/platform/shared/llmdefaults"
 	"context"
 	"crypto/sha256"
@@ -207,6 +208,17 @@ type PreCheckResponse struct {
 	BudgetInfo        *BudgetInfo            `json:"budget_info,omitempty"` // Issue #1082: Budget status
 	ExpiresAt         time.Time              `json:"expires_at"`
 	BlockReason       string                 `json:"block_reason,omitempty"`
+	// ApprovalRequestID is the hitl_approval_queue entry raised for a request
+	// this response is holding for human review (#3509). Present only on a
+	// require_approval hold, and only when the entry was actually created: an
+	// empty value on a held response means no reviewer will see the request
+	// (pending cap reached, tier without the queue, or a failed write), and a
+	// caller must treat it as a refusal rather than as something pending.
+	//
+	// It is a SEPARATE field rather than an addition to block_reason precisely
+	// because every shipped SDK matches the "require_approval" sentinel
+	// literally to enter its HITL branch.
+	ApprovalRequestID string `json:"approval_request_id,omitempty"`
 	// TraceID is the W3C OpenTelemetry trace_id emitted by the decision
 	// tracer (#2426 WS4). Empty when AXONFLOW_OTEL_ENDPOINT is unset
 	// (Community-tier default — OTel is opt-in). Decision-Mode PEPs
@@ -436,6 +448,22 @@ func getGatewayAuditQueue() *AuditQueue {
 	return nil
 }
 
+// preCheckRequiresHITL decides whether this plane holds the caller for a human,
+// and is a pure function so the PRECEDENCE is unit-testable without standing up
+// the handler. See the call site for why a block outranks a hold here (#3509).
+func preCheckRequiresHITL(result *StaticPolicyResult, communityMode bool) bool {
+	if result == nil || communityMode {
+		return false
+	}
+	// Blocked FIRST. Not defence in depth: six downstream readers key off the
+	// single boolean this returns, and getting the order wrong tells the caller
+	// to wait for an approval that cannot release a block.
+	if result.Blocked {
+		return false
+	}
+	return result.RequiresApproval
+}
+
 // handlePolicyPreCheck handles POST /api/policy/pre-check
 // This is the first step in Gateway Mode - SDK calls this before making LLM call
 func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
@@ -506,7 +534,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		// Defense-in-depth: Enabled is hard-set true above today, so this branch is
 		// currently unreachable — but if client provisioning ever gates Enabled, the
 		// refusal must still be auditable. Canonical row first, then deny (#2642).
-		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"client_disabled"}, []string{"Client disabled"}, preCheckAudit)
+		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"client_disabled"}, []string{"Client disabled"}, time.Since(startTime).Milliseconds(), preCheckAudit)
 		sendGatewayError(w, "Client disabled", http.StatusForbidden)
 		return
 	}
@@ -522,7 +550,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		// Audit the refusal (#2642). The user token never resolved, so the row
 		// carries the writer's user placeholders; org/tenant/client identity is the
 		// auth-derived context. Reason is FIXED — no token material on the row.
-		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"user_token_invalid"}, []string{"user token validation failed"}, preCheckAudit)
+		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"user_token_invalid"}, []string{"user token validation failed"}, time.Since(startTime).Milliseconds(), preCheckAudit)
 		sendGatewayError(w, userErr.Message, userErr.HTTPStatus)
 		return
 	}
@@ -538,7 +566,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		log.Printf("❌ [Pre-check] Tenant mismatch: user=%s, client=%s", user.TenantID, client.TenantID)
 		// Security-relevant deny: a token whose tenant doesn't match the client it
 		// was presented with. Auditable against the client's asserted tenant (#2642).
-		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"tenant_mismatch"}, []string{"tenant mismatch"}, preCheckAudit)
+		recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"tenant_mismatch"}, []string{"tenant mismatch"}, time.Since(startTime).Milliseconds(), preCheckAudit)
 		sendGatewayError(w, "Tenant mismatch", http.StatusForbidden)
 		return
 	}
@@ -559,7 +587,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			}
 			// Circuit-breaker is a (transient) deny — the request WAS refused, so it
 			// is auditable as blocked; the reason makes the transient nature clear (#2642).
-			recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"circuit_breaker"}, []string{string(cbResult.Reason)}, preCheckAudit)
+			recordGatewayPreCheckAudit(ctx, uuid.New().String(), client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, []string{"circuit_breaker"}, []string{string(cbResult.Reason)}, time.Since(startTime).Milliseconds(), preCheckAudit)
 			sendGatewayError(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable)
 			return
 		}
@@ -579,7 +607,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:   time.Now(),
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, killSwitchResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
-		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{killSwitchResult.Reason}, preCheckAudit)
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{killSwitchResult.Reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -613,7 +641,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:   time.Now(),
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, indonesiaPIIResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
-		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{indonesiaPIIResult.Reason}, preCheckAudit)
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{indonesiaPIIResult.Reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
 		// #3242: persist the UU PDP / OJK detection events (MASKED values only) so
 		// the OJK pii_redactions export can evidence this refusal. Best-effort;
 		// the block above is already held. No-op in a community build.
@@ -662,7 +690,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:   time.Now(),
 		}
 		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, piiResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
-		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{piiResult.Reason}, preCheckAudit)
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{piiResult.Reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -677,6 +705,55 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("⚠️ [Pre-check] India PII detected (non-critical): %v", piiResult.DetectedTypes)
 		}
+	}
+
+	// #3312 (ADR-060 Slice 3): resolve the caller's governance-segment set
+	// ONCE, up front, before static policies are evaluated below, so
+	// segment-scoped static_policies rows actually enforce for a member on
+	// THIS plane too — closing the bypass where a caller blocked on
+	// /api/request (run.go clientRequestHandler) could re-route the
+	// identical query through the gateway pre-check and have the
+	// segment-scoped policy silently excluded. Mirrors run.go:2176.
+	//
+	// #3293 locked invariant: a resolution FAILURE (segOK == false) is
+	// handled HERE, at the resolution site, and must NEVER be propagated
+	// downstream as a nil/empty segment set. segOK == true with a
+	// nil/empty segmentIDs is the legitimate "no segments" outcome (no
+	// resolver configured / no identity / zero memberships) and proceeds
+	// org-only exactly as before this change; only segOK == false denies.
+	segmentIDs, segOK := resolveUserSegmentsForEnforcement(ctx, user.OrgID, user.Email)
+	if !segOK {
+		reason := "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
+		log.Printf("🛡️ [Pre-check] Request denied: segment resolution failed (fail-closed) for org %s", logutil.Sanitize(user.OrgID))
+		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
+		response := PreCheckResponse{
+			ContextID:   uuid.New().String(),
+			Approved:    false,
+			Policies:    []string{"segment_resolution_failed"},
+			BlockReason: reason,
+			ExpiresAt:   time.Now(),
+		}
+		// Canonical audit row for the fail-closed deny (#2642) — the SAME
+		// writer (recordPreCheckDecision + recordGatewayPreCheckAudit)
+		// every other pre-check terminal verdict/early-return deny in this
+		// handler uses.
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, reason, response.Policies, time.Since(startTime).Milliseconds())
+		recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{reason}, time.Since(startTime).Milliseconds(), preCheckAudit)
+
+		// Record policy violation for auto-trip threshold tracking (#1176),
+		// mirroring run.go's clientRequestHandler segment-resolution-failure
+		// deny (the canonical pattern this block is modeled on).
+		if circuitBreakerInstance != nil {
+			for _, policyID := range response.Policies {
+				if err := circuitBreakerInstance.RecordPolicyViolation(ctx, client.OrgID, client.TenantID, client.ID, policyID); err != nil {
+					log.Printf("⚠️ [Pre-check] Circuit breaker RecordPolicyViolation error: %v", err)
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+		return
 	}
 
 	// IMPORTANT: Gateway Mode Design Decision - Static Policies Only
@@ -713,17 +790,20 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			OrgID:    user.OrgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
 			// validated caller org (org_id may differ from tenant_id).
-			OrganizationID:  sharedpolicy.OrgScopePtr(user.OrgID),
+			OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID),
 			ConnectorName:   "gateway",
 			UserID:          fmt.Sprintf("%d", user.ID),
 			Categories:      gatewayPreCheckPolicyCategories,
 			SkipCategories:  gwDetectionCfg.SkipCategories,
 			ActionOverrides: gwDetectionCfg.BuildActionOverrides(),
-			// #3266: the gateway pre-check has no resolved governance-segment
-			// set on hand yet — nil excludes segment-scoped static_policies
-			// rows (fail-closed, leak closed). Real segment enforcement on
-			// this plane is tracked in #3312 (human-actor enforce-now; machine #3279-gated).
-			Segments: nil,
+			// #3312 (ADR-060 Slice 3): the caller's governance-segment set,
+			// resolved fail-closed above (segOK denied before this point on
+			// a resolver error). segmentIDs is nil/empty for the legitimate
+			// "no segments" case (no resolver / no identity / zero
+			// memberships) and proceeds org-only; non-nil restricts
+			// segment-scoped static_policies rows to actual members,
+			// closing the #3266 leak AND enforcing for members (#3312).
+			Segments: segmentIDs,
 		})
 		// Convert to StaticPolicyResult for backward compatibility
 		policyResult = convertSharedResultToStatic(requestResult)
@@ -779,7 +859,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 					ExpiresAt:   time.Now(),
 				}
 				response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, budgetDecision.Message, response.Policies, time.Since(startTime).Milliseconds())
-				recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{budgetDecision.Message}, preCheckAudit)
+				recordGatewayPreCheckAudit(ctx, response.ContextID, client.OrgID, client.TenantID, precheckStage, gatewayAuditBlocked, response.Policies, []string{budgetDecision.Message}, time.Since(startTime).Milliseconds(), preCheckAudit)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
 				_ = json.NewEncoder(w).Encode(response)
@@ -808,7 +888,78 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// This is an ENTERPRISE-ONLY feature - in Community mode, require_approval policies auto-approve.
 	// Security: We do NOT trust client-provided context (requires_hitl, eu_ai_act_article_14, etc.)
 	// as that would allow any client to bypass policy or trigger DoS.
-	requiresHITL := policyResult.RequiresApproval && !isCommunityMode()
+	// #3509: a BLOCK outranks a hold here, matching the two sibling planes.
+	//
+	// It did not, and the divergence was not survivable once this plane started
+	// raising queue entries. `convertSharedResultToStatic` sets Blocked and
+	// RequiresApproval from INDEPENDENT matches, so a request can be blocked by
+	// one policy (SQLi, say) and held by another. The reporting precedence
+	// below put HITL first, so such a request answered `block_reason:
+	// require_approval` - the exact sentinel every shipped SDK matches to enter
+	// its HITL wait - while `isBlocked` (an OR) kept `approved:false`. The
+	// caller was told to wait for an approval that could never release it,
+	// because the block does not go away when a reviewer approves. Before this
+	// change that was merely a misleading response; with an entry raised on
+	// every retry it also mints an unbounded row per attempt and buries the
+	// reviewer's queue.
+	//
+	// `/decide` has always denied this case (mapPolicyResultToVerdict
+	// short-circuits on Blocked) and `/api/request` returns 403 before its HITL
+	// branch is reached. This plane now agrees with both. Folding it into
+	// requiresHITL rather than guarding each site separately is deliberate:
+	// six downstream readers key off this one boolean (the consume, the
+	// enqueue, response.BlockReason, isBlocked, gatewayPreCheckAuditVerdict and
+	// verdictFromPreCheck), and a per-site guard is how the halves come apart.
+	requiresHITL := preCheckRequiresHITL(policyResult, isCommunityMode())
+
+	// #3509 defect 2: spend an outstanding single-use approval before the hold
+	// is applied, so an admitted request takes the ordinary approved path -
+	// including the #2867 connector prefetch, which is gated on a CLEAN
+	// approval and must not be skipped for a request a human authorised.
+	//
+	// No separate `!policyResult.Blocked` guard here: requiresHITL already
+	// carries it (above), which is what keeps the consume, the enqueue and the
+	// response from being able to disagree about this case.
+	if requiresHITL {
+		// The FULL principal, not just the user: see the decide plane's note.
+		if grantID, admitted := consumeApprovalGrant(ctx, hitlPlaneGatewayPreCheck, hitl.GrantSubject{
+			OrgID:    client.OrgID,
+			TenantID: client.TenantID,
+			ClientID: client.ClientID,
+			UserID:   fmt.Sprintf("%d", user.ID),
+		}, approvalPolicyKey(policyResult.ApprovalPolicyID), req.Query); admitted {
+			requiresHITL = false
+			preCheckAudit.approvalGrantID = grantID
+			log.Printf("✅ [Pre-check] HITL hold lifted by approved request %s (single use, now spent)", logutil.Sanitize(grantID))
+		}
+	}
+
+	// #3509 defect 1: raise the reviewable queue entry. Before this, a
+	// require_approval policy on this plane returned approved:false with the
+	// require_approval sentinel and NOTHING for a reviewer to act on. Placed
+	// before the response is assembled so the created entry's id can ride the
+	// response and the audit row.
+	hitlEnqueue := policyStepUpResult{}
+	if requiresHITL {
+		hitlEnqueue = enqueuePolicyStepUp(ctx, policyStepUpInput{
+			Plane:    hitlPlaneGatewayPreCheck,
+			OrgID:    client.OrgID,
+			TenantID: client.TenantID,
+			// client.ClientID, not client.ID: see the decide plane's note.
+			ClientID:   client.ClientID,
+			UserID:     fmt.Sprintf("%d", user.ID),
+			UserEmail:  user.Email,
+			PolicyID:   policyResult.ApprovalPolicyID,
+			PolicyName: policyResult.ApprovalPolicyName,
+			Reason:     "human approval required by policy",
+			Severity:   policyResult.Severity,
+			DecisionID: contextID,
+			Stage:      precheckStage,
+			Query:      req.Query,
+		})
+		preCheckAudit.approvalEnqueue = hitlEnqueue.Outcome
+		preCheckAudit.approvalRequestID = hitlEnqueue.RequestID
+	}
 
 	// Build response
 	// Issue #891: Combine redaction flags from static policies and RBI PII detection
@@ -849,9 +1000,21 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	if requiresHITL {
 		// HITL takes precedence over block — the request needs human approval,
 		// not an outright deny. SDKs check for the exact "require_approval"
-		// sentinel to trigger the HITL polling flow.
+		// sentinel to trigger the HITL polling flow, so BlockReason is pinned
+		// to that literal and #3509's queue-entry id rides ApprovalRequestID
+		// instead of being appended to it. Changing this string would break
+		// every shipped SDK's HITL branch.
 		response.BlockReason = "require_approval"
-		log.Printf("⏸️ [Pre-check] HITL required (Enterprise) - awaiting human approval (contextID=%s)", contextID)
+		response.ApprovalRequestID = hitlEnqueue.RequestID
+		if hitlEnqueue.RequestID != "" {
+			log.Printf("⏸️ [Pre-check] HITL required (Enterprise) - approval %s pending human review (contextID=%s)", hitlEnqueue.RequestID, contextID)
+		} else {
+			// The hold stands and the caller is refused, but no reviewer will
+			// see the request. That is the invisible dead end #3509 removes,
+			// arriving by a different cause, and it must not be silent.
+			log.Printf("⚠️ [Pre-check] HITL required (Enterprise) but NO reviewable entry was created (%s) - contextID=%s",
+				hitlEnqueue.Outcome, contextID)
+		}
 	} else if policyResult.Blocked {
 		response.BlockReason = policyResult.Reason
 		log.Printf("⛔ [Pre-check] Request blocked: %s", policyResult.Reason)
@@ -880,7 +1043,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// else-branch fetched on every outcome except approved-with-redaction.
 	if shouldPrefetchApprovedData(policyResult.Blocked, requiresHITL, requiresRedaction) {
 		if len(req.DataSources) > 0 && mcpRegistry != nil {
-			approvedData, err := fetchApprovedData(ctx, req.DataSources, req.Query, user, client)
+			approvedData, err := fetchApprovedData(ctx, req.DataSources, req.Query, user, client, startTime)
 			if err != nil {
 				log.Printf("⚠️ [Pre-check] MCP data fetch warning: %v", err)
 			} else {
@@ -906,7 +1069,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// the same contextID as the satellite so the two records join.
 	recordGatewayPreCheckAudit(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
 		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
-		response.Policies, reasonsFromPreCheck(response, policyResult), preCheckAudit)
+		response.Policies, reasonsFromPreCheck(response, policyResult, hitlEnqueue), time.Since(startTime).Milliseconds(), preCheckAudit)
 
 	// #3242: the deferred non-blocking Indonesia PII detection, recorded HERE
 	// because this is where contextID exists — the same key the canonical audit
@@ -948,7 +1111,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			Verdict:    verdictFromPreCheck(response, requiresHITL),
 			PolicyIDs:  response.Policies,
 			LatencyMs:  latencyMs,
-			Reasons:    reasonsFromPreCheck(response, policyResult),
+			Reasons:    reasonsFromPreCheck(response, policyResult, hitlEnqueue),
 		})
 	}
 
@@ -960,7 +1123,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// when no OTel endpoint is configured; best-effort + off the hot path.
 	recordSignedDecision(ctx, contextID, client.OrgID, client.TenantID, precheckStage,
 		gatewayPreCheckAuditVerdict(policyResult.Blocked, requiresHITL, requiresRedaction),
-		response.Policies, reasonsFromPreCheck(response, policyResult), latencyMs)
+		response.Policies, reasonsFromPreCheck(response, policyResult, hitlEnqueue), latencyMs)
 
 	log.Printf("✅ [Pre-check] Completed in %dms - contextID=%s, approved=%v, trace_id=%q",
 		latencyMs, contextID, response.Approved, response.TraceID)
@@ -1051,13 +1214,19 @@ func gatewayPreCheckAuditVerdict(blocked, requiresHITL, requiresRedaction bool) 
 // the gateway_contexts satellite, which writes through the retry + fallback-file
 // AuditQueue (queueGatewayContext). Net: defense in depth — durable satellite +
 // best-effort canonical row — identical to the other planes.
-func recordGatewayPreCheckAudit(ctx context.Context, contextID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, audit decisionAuditInput) {
+// latencyMs (#3424) is the pre-check handler's own elapsed time at the moment
+// the verdict was reached, measured from the single startTime at the top of
+// handlePolicyPreCheck. Every call site is an exit from that one handler, so
+// all of them measure the same span of work -- the same span the Decision API
+// records for /decide -- and the portal's Avg Latency tile can average gateway
+// and decision rows together without mixing two definitions of "latency".
+func recordGatewayPreCheckAudit(ctx context.Context, contextID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, latencyMs int64, audit decisionAuditInput) {
 	audit.plane = PlaneGateway
 	// reqContext/contextTruncated are nil/false: the Gateway pre-check does not
 	// canonicalize req.Context onto the audit row (that SIEM-join enrichment is a
 	// Decision-API feature, #2509). The verdict, policies and reasons are the
 	// audit-completeness payload this session guarantees.
-	writeDecisionAuditLog(ctx, usageDB, contextID, orgID, tenantID, stage, verdict, policyIDs, reasons, nil, false, audit)
+	writeDecisionAuditLog(ctx, usageDB, contextID, orgID, tenantID, stage, verdict, policyIDs, reasons, nil, false, latencyMs, audit)
 }
 
 // recordPreCheckDecision emits the OTel decision span for an
@@ -1118,13 +1287,24 @@ func verdictFromPreCheck(resp PreCheckResponse, requiresHITL bool) string {
 // attribute. Block reason is authoritative for deny/needs_approval;
 // triggered policies double as a reason hint for allowed-with-policy
 // outcomes (e.g. redaction).
-func reasonsFromPreCheck(resp PreCheckResponse, policyResult *StaticPolicyResult) []string {
+func reasonsFromPreCheck(resp PreCheckResponse, policyResult *StaticPolicyResult, hitlEnqueue policyStepUpResult) []string {
 	var reasons []string
 	if resp.BlockReason != "" {
 		reasons = append(reasons, resp.BlockReason)
 	}
 	if policyResult != nil && policyResult.Reason != "" && policyResult.Reason != resp.BlockReason {
 		reasons = append(reasons, policyResult.Reason)
+	}
+	// #3509: on a require_approval hold, record whether a reviewable entry was
+	// actually raised. resp.BlockReason above is the pinned "require_approval"
+	// sentinel and says nothing about it, so without this the audit row for a
+	// hold nobody can review is indistinguishable from one a reviewer is
+	// already looking at.
+	switch {
+	case hitlEnqueue.RequestID != "":
+		reasons = append(reasons, policyStepUpReason(hitlEnqueue.RequestID))
+	case hitlEnqueue.Detail != "":
+		reasons = append(reasons, hitlEnqueue.Detail)
 	}
 	return reasons
 }
@@ -1203,7 +1383,7 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 
 	// Store audit record via AuditQueue for reliable persistence
 	// Uses retry with exponential backoff and fallback file if DB fails
-	if err := queueLLMCallAudit(auditID, req, estimatedCost); err != nil {
+	if err := queueLLMCallAudit(auditID, req, estimatedCost, OrgIDFromContext(r.Context())); err != nil {
 		log.Printf("⚠️ [Audit] Failed to queue audit: %v", err)
 		gatewayAuditQueuedTotal.WithLabelValues("llm_call_audit", "error").Inc()
 		// Don't fail the request - audit is best-effort but queued for retry
@@ -1248,7 +1428,11 @@ func shouldPrefetchApprovedData(blocked, requiresHITL, requiresRedaction bool) b
 
 // fetchApprovedData fetches data from MCP connectors based on policy-approved sources
 // This is optional for pre-check - clients may prefer to fetch data themselves
-func fetchApprovedData(ctx context.Context, dataSources []string, query string, user *User, client *Client) (map[string]interface{}, error) {
+// precheckStart (#3424) is handlePolicyPreCheck's own clock, passed in so the
+// read-only refusal below records the same enforcement span as every other row
+// that handler writes. This function is called before any connector.Query runs,
+// so nothing downstream is inside that span at the point the refusal fires.
+func fetchApprovedData(ctx context.Context, dataSources []string, query string, user *User, client *Client, precheckStart time.Time) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	// If no MCP registry available, return empty result
@@ -1273,7 +1457,8 @@ func fetchApprovedData(ctx context.Context, dataSources []string, query string, 
 			mcpVerdictBlocked,
 			[]string{readOnlyPosturePolicyID},
 			[]string{reason},
-			nil, "", nil)
+			nil, "", nil,
+			time.Since(precheckStart).Milliseconds())
 		return nil, fmt.Errorf("%s", reason)
 	}
 
@@ -1399,21 +1584,40 @@ func validateGatewayContext(db *sql.DB, contextID, clientID string) (bool, error
 	return true, nil
 }
 
-// storeLLMCallAudit stores the LLM call audit record
-func storeLLMCallAudit(db *sql.DB, auditID string, req AuditLLMCallRequest, estimatedCost float64) error {
+// storeLLMCallAudit stores the LLM call audit record.
+//
+// orgID is stamped from the AUTHENTICATED identity (#3435). It closes the write
+// half of migration 089, which added llm_call_audits.org_id "so a later backfill
+// migration can populate it" and left both INSERT sites omitting the column;
+// migration 101 then deferred RLS on this table for exactly that reason ("INSERT
+// in audit_queue.go + gateway_handlers.go omits org_id today"). Until this,
+// every Gateway Mode row landed with a NULL org and could be scoped only by the
+// client credential, so an org-scoped regulator export could not reach its own
+// model-activity rows. Best-effort like the rest of this path: a blank orgID is
+// written as SQL NULL rather than as an empty string, which would plant a row
+// that no predicate can subsequently claim (the core/155+156 class).
+func storeLLMCallAudit(db *sql.DB, auditID string, req AuditLLMCallRequest, estimatedCost float64, orgID string) error {
 	metadataJSON, _ := json.Marshal(req.Metadata)
 
 	_, err := db.Exec(`
 		INSERT INTO llm_call_audits (
 			audit_id, context_id, client_id, provider, model,
 			prompt_tokens, completion_tokens, total_tokens,
-			latency_ms, estimated_cost_usd, metadata
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			latency_ms, estimated_cost_usd, metadata, org_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, auditID, req.ContextID, req.ClientID, req.Provider, req.Model,
 		req.TokenUsage.PromptTokens, req.TokenUsage.CompletionTokens, req.TokenUsage.TotalTokens,
-		req.LatencyMs, estimatedCost, metadataJSON)
+		req.LatencyMs, estimatedCost, metadataJSON, nullIfBlankOrg(orgID))
 
 	return err
+}
+
+// nullIfBlankOrg binds a blank organisation as SQL NULL.
+func nullIfBlankOrg(orgID string) interface{} {
+	if strings.TrimSpace(orgID) == "" {
+		return nil
+	}
+	return orgID
 }
 
 // calculateLLMCost estimates the cost of an LLM call based on provider, model, and tokens
@@ -1512,7 +1716,7 @@ func queueGatewayContext(contextID, clientID string, req PreCheckRequest, policy
 
 // queueLLMCallAudit queues the LLM call audit via AuditQueue
 // Falls back to direct DB write if queue is unavailable
-func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost float64) error {
+func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost float64, orgID string) error {
 	// Get the audit queue
 	auditQueue := getGatewayAuditQueue()
 
@@ -1521,6 +1725,10 @@ func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost fl
 		Type:      AuditTypeLLMCallAudit,
 		Timestamp: time.Now(),
 		ClientID:  req.ClientID,
+		// #3435: the queued path and the direct-write fallback below must stamp
+		// the SAME organisation, or which of the two ran would decide whether
+		// the row is reachable by an org-scoped export.
+		OrgID: orgID,
 		Details: map[string]interface{}{
 			"audit_id":           auditID,
 			"context_id":         req.ContextID,
@@ -1532,6 +1740,7 @@ func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost fl
 			"latency_ms":         req.LatencyMs,
 			"estimated_cost_usd": estimatedCost,
 			"metadata":           req.Metadata,
+			"org_id":             orgID,
 		},
 	}
 
@@ -1548,7 +1757,7 @@ func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost fl
 
 	// Fallback to direct DB write (legacy behavior)
 	if authDB != nil {
-		return storeLLMCallAudit(authDB, auditID, req, estimatedCost)
+		return storeLLMCallAudit(authDB, auditID, req, estimatedCost, orgID)
 	}
 
 	return nil // No storage available, but don't fail the request

@@ -99,19 +99,7 @@ func (b *HITLBridge) CreateApprovalFromPolicy(
 	complianceFramework string, // e.g., "EU AI Act", "SEBI AI/ML", "RBI FREE-AI"
 	complianceArticle string, // e.g., "Article 14", "Section 2.4"
 ) (*HITLApprovalRequest, error) {
-	if b.service == nil {
-		return nil, fmt.Errorf("HITL service not configured")
-	}
-
-	// Use defaults if not specified
-	if complianceFramework == "" {
-		complianceFramework = "EU AI Act"
-	}
-	if complianceArticle == "" {
-		complianceArticle = "Article 14"
-	}
-
-	input := HITLCreateInput{
+	return b.CreateApproval(ctx, HITLCreateInput{
 		OrgID:               orgID,
 		TenantID:            tenantID,
 		ClientID:            clientID,
@@ -124,10 +112,42 @@ func (b *HITLBridge) CreateApprovalFromPolicy(
 		Severity:            severity,
 		EUAIActArticle:      complianceArticle,
 		ComplianceFramework: complianceFramework,
-		RiskClassification:  mapSeverityToRisk(severity),
-		ExpiresIn:           DefaultApprovalExpiration,
-	}
+	})
+}
 
+// CreateApproval creates an HITL approval request from an already-assembled
+// input, filling the defaults every caller shares.
+//
+// It exists because CreateApprovalFromPolicy's positional signature cannot
+// carry a RequestContext, and the policy-authored step-up (#3509,
+// hitl_policy_enqueue.go) must record decision_id, plane and query_hash there
+// so a reviewer can join the entry back to the decision that raised it.
+//
+// CreateApprovalFromPolicy now delegates here, and the delegation is exact
+// rather than approximately equivalent: it previously set RiskClassification
+// to mapSeverityToRisk(severity) and ExpiresIn to DefaultApprovalExpiration
+// unconditionally, and it passes neither field, so both empty-guards below
+// compute the identical value it used to pass. TestCreateApprovalFromPolicy_
+// DelegationIsFieldIdentical pins that rather than leaving it to review.
+func (b *HITLBridge) CreateApproval(ctx context.Context, input HITLCreateInput) (*HITLApprovalRequest, error) {
+	if b.service == nil {
+		return nil, fmt.Errorf("HITL service not configured")
+	}
+	if input.ComplianceFramework == "" {
+		input.ComplianceFramework = "EU AI Act"
+	}
+	if input.EUAIActArticle == "" {
+		// The column is VARCHAR(10); "Article 14" is the EU AI Act
+		// human-oversight article this queue implements, and a longer
+		// free-text value fails the insert.
+		input.EUAIActArticle = "Article 14"
+	}
+	if input.RiskClassification == "" {
+		input.RiskClassification = mapSeverityToRisk(input.Severity)
+	}
+	if input.ExpiresIn == 0 {
+		input.ExpiresIn = DefaultApprovalExpiration
+	}
 	return b.service.CreateApprovalRequest(ctx, input)
 }
 

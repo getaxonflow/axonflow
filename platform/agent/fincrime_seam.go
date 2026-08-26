@@ -12,7 +12,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/google/uuid"
 
@@ -134,8 +133,24 @@ func applyFinCrimeToDecideVerdict(
 // returns "" and is untouched: pre-existing platform semantics for those
 // policies are not this seam's to change.
 //
-// Best-effort: the needs_approval verdict stands regardless; a creation
-// failure is logged (the PEP still holds the request, nothing fails open).
+// The needs_approval verdict stands regardless; a creation failure leaves the
+// PEP holding the request and nothing fails open. Since #3509 the failure is
+// no longer silent: this path is one caller of the shared enqueueApproval
+// chokepoint (hitl_policy_enqueue.go), which classifies and COUNTS a
+// cap-reached, tier-disabled or failed write instead of logging one
+// undifferentiated line. The ROW it writes is unchanged - same request_type,
+// same descriptor (the raw query, see below), same attribution, same severity,
+// same framework - so the outcome an operator or a suite can observe in
+// Postgres is byte-identical to the pre-change path.
+//
+// The raw query in original_query is deliberately LEFT ALONE here. The
+// policy-authored planes store a descriptor instead (hitlQueryDescriptor
+// explains why: original_query egresses to a customer-configured notify_url),
+// and this path arguably should too - but changing it would alter the row this
+// function writes, which is exactly the FinCrime drift #3509's work is
+// required not to introduce. Raised on #3509 as a follow-up rather than made
+// here.
+//
 // Returns the approval request id ("" when none created).
 func createFinCrimeApprovalForDecision(
 	ctx context.Context,
@@ -169,25 +184,45 @@ func createFinCrimeApprovalForDecision(
 		}
 		reason = fmt.Sprintf("fincrime policy %s requires human approval", policyID)
 	}
-	// complianceArticle is empty so the bridge default ("Article 14", the EU
+	// EUAIActArticle is left empty so the bridge default ("Article 14", the EU
 	// AI Act human-oversight article this queue implements) applies; the
 	// column is VARCHAR(10) and a longer free-text value fails the insert.
-	approval, err := fincrimeHITLBridge.CreateApprovalFromPolicy(ctx,
-		orgID, tenantID, clientID, userID,
-		query,
-		"fincrime_review",
-		policyID, policyName,
-		reason,
-		"high",
-		"AML/CFT",
-		"",
-	)
-	if err != nil {
-		log.Printf("[FinCrime] HITL approval entry not created (verdict stands): %v", err)
-		return ""
+	// RiskClassification and ExpiresIn are likewise left empty so the bridge
+	// computes mapSeverityToRisk("high") and DefaultApprovalExpiration - the
+	// identical values the previous CreateApprovalFromPolicy call passed.
+	res := enqueueApproval(ctx, "fincrime", HITLCreateInput{
+		OrgID:               orgID,
+		TenantID:            tenantID,
+		ClientID:            clientID,
+		UserID:              userID,
+		OriginalQuery:       query,
+		RequestType:         "fincrime_review",
+		TriggeredPolicyID:   policyID,
+		TriggeredPolicyName: policyName,
+		TriggerReason:       reason,
+		Severity:            "high",
+		ComplianceFramework: "AML/CFT",
+	})
+	return res.RequestID
+}
+
+// decideApprovalIsPolicyAuthored reports whether a needs_approval on this
+// request is raised by a plain require_approval policy rather than by the
+// FinCrime seam, using exactly the two conditions
+// createFinCrimeApprovalForDecision itself branches on.
+//
+// It exists so the #3509 grant path can be scoped to policy-authored step-ups
+// without duplicating the seam's precedence rules: a false here means the seam
+// will own this decision, and a true means it will return "" and leave it
+// untouched. Keeping the predicate in this file, next to the switch it
+// mirrors, is deliberate - a future change to the seam's arms that forgets
+// this function is a change made one line away from it.
+func decideApprovalIsPolicyAuthored(fc *fincrime.Result, sr *sharedpolicy.RequestResult) bool {
+	if fc != nil && fc.RequiresApproval {
+		return false
 	}
-	log.Printf("[FinCrime] HITL approval %s created for policy %s", approval.RequestID, policyID)
-	return approval.RequestID.String()
+	packID, _ := firstFinCrimePackApprovalMatch(sr)
+	return packID == ""
 }
 
 // firstFinCrimePackApprovalMatch returns the id/name of the first

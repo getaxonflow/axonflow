@@ -196,7 +196,7 @@ func TestAuditSummary_OverrideLifecycleRoutedOut(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-x", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
@@ -251,7 +251,7 @@ func TestAuditSummary_UnknownVerdictFailsSafeToError(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
 	mock.ExpectQuery("SELECT").
 		WithArgs("org-y", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "identity_is_name", "trigger_count", "block_count", "total_policies"}))
 
 	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))

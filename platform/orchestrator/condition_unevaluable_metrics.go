@@ -34,13 +34,15 @@ func (r planeUnevaluableRecorder) RecordUnevaluable(reason string) {
 }
 
 // One recorder per call site named in condition_evaluator.go's convergence
-// record (1a-1e) — the same four package-level ConditionEvaluator values
-// (memoryConditionEvaluator, dbConditionEvaluator, mcpConditionEvaluator,
-// policyTestEvaluator) this file's siblings already declare. Package-level,
-// not per-request, for the same reason those evaluators are: no per-call
-// state, constructed once.
+// record (1a-1e) — the same package-level ConditionEvaluator values
+// (dbConditionEvaluator, mcpConditionEvaluator, policyTestEvaluator) this
+// file's siblings already declare. Package-level, not per-request, for the
+// same reason those evaluators are: no per-call state, constructed once.
+//
+// #3319: memoryUnevaluableRecorder (plane: "memory") was deleted here — its
+// only caller, the retired in-memory DynamicPolicyEngine (dynamic_policy_engine.go),
+// no longer exists. There is one engine now ("database").
 var (
-	memoryUnevaluableRecorder     sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "memory"}
 	dbUnevaluableRecorder         sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "database"}
 	mcpUnevaluableRecorder        sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "mcp"}
 	policyTestUnevaluableRecorder sharedpolicy.UnevaluableRecorder = planeUnevaluableRecorder{plane: "policy_test"}

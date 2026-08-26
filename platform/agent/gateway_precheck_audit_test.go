@@ -124,6 +124,12 @@ func TestRecordGatewayPreCheckAudit_WritesCanonicalRow(t *testing.T) {
 					"0af7651916cd43dd8448eb211c80319c", // correlation_id — threaded traceparent
 					nil,                                // redacted_fields — pre-check emits none → NULL (#2643)
 					nil,                                // session_id — context unstamped (untrusted) → NULL (#2896)
+					// response_time_ms (#3424): the pre-check handler's own
+					// enforcement duration, bound as int64 rather than dropped.
+					// This is the column the portal's Avg Latency tile averages;
+					// the gateway plane wrote nothing into it before, so a
+					// gateway-driven deployment's tile had no samples at all.
+					int64(42),
 				).
 				WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -132,7 +138,7 @@ func TestRecordGatewayPreCheckAudit_WritesCanonicalRow(t *testing.T) {
 				query:         "some query",
 				correlationID: "0af7651916cd43dd8448eb211c80319c",
 			}
-			recordGatewayPreCheckAudit(context.Background(), contextID, "org-x", "tenant-x", "llm", verdict, []string{"p1"}, []string{"reason"}, audit)
+			recordGatewayPreCheckAudit(context.Background(), contextID, "org-x", "tenant-x", "llm", verdict, []string{"p1"}, []string{"reason"}, 42, audit)
 
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("canonical audit_logs row not written as expected for verdict %q: %v", verdict, err)
@@ -220,6 +226,7 @@ func expectGatewayAuditRow(mock sqlmock.Sqlmock, wantDecision string) {
 			sqlmock.AnyArg(), // correlation_id
 			sqlmock.AnyArg(), // redacted_fields (#2643)
 			nil,              // session_id — context unstamped (untrusted) → NULL (#2896)
+			sqlmock.AnyArg(), // response_time_ms (#3424): handler elapsed time, not reproducible here
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }

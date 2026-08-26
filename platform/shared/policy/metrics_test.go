@@ -385,7 +385,7 @@ func TestBuildPolicyInfo_BothResults(t *testing.T) {
 	}
 
 	response := &ResponseResult{
-		Blocked:          false,
+		Blocked:           false,
 		PoliciesEvaluated: 10,
 		Redacted:          true,
 		RedactedFields:    []RedactedField{{Path: "field1"}, {Path: "field2"}},
@@ -451,7 +451,7 @@ func TestEvalOptions_Fields(t *testing.T) {
 	orgID := "org123"
 	opts := EvalOptions{
 		TenantID:       "tenant1",
-		OrganizationID: &orgID,
+		OrgScope:       &orgID,
 		ConnectorName:  "postgres",
 		UserID:         "user1",
 		Categories:     []PolicyCategory{CategorySecuritySQLi, CategoryPIIUS},
@@ -462,8 +462,8 @@ func TestEvalOptions_Fields(t *testing.T) {
 	if opts.TenantID != "tenant1" {
 		t.Error("TenantID mismatch")
 	}
-	if *opts.OrganizationID != "org123" {
-		t.Error("OrganizationID mismatch")
+	if *opts.OrgScope != "org123" {
+		t.Error("OrgScope mismatch")
 	}
 	if len(opts.Categories) != 2 {
 		t.Error("Categories mismatch")

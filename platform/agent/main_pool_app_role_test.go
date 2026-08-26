@@ -20,7 +20,7 @@ import (
 //
 // What the test proves:
 //
-//  1. Setup applies migrations 001..111 (which creates axonflow_app_role
+//  1. Setup applies every core migration (which creates axonflow_app_role
 //     via migration 098) and ALTER ROLE provisions login passwords for both
 //     RLS roles, mirroring scripts/operators/provision-app-role.sh.
 //  2. With AXONFLOW_DB_USE_APP_ROLE=true + AXONFLOW_DB_APP_ROLE_URL pointed
