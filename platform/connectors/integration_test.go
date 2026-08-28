@@ -27,7 +27,7 @@
 //	go test -tags=integration ./connectors/...
 //
 //	# Clean up
-//	docker rm -f mysql-test mongo-test
+//	docker rm -fv mysql-test mongo-test
 package connectors
 
 import (

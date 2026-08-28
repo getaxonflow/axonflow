@@ -230,7 +230,7 @@ services:
 YAML
     : > "${fixrepo}/docker-compose.enterprise.yml"
 
-    docker rm -f "${decoy_other}" "${decoy_prefix}" "${owned_name}" "${owned_label}" >/dev/null 2>&1 || true
+    docker rm -fv "${decoy_other}" "${decoy_prefix}" "${owned_name}" "${owned_label}" >/dev/null 2>&1 || true
     docker create --name "${decoy_other}" --label com.docker.compose.project=someoneelse "${img}" /bin/true >/dev/null
     docker create --name "${decoy_prefix}" "${img}" /bin/true >/dev/null
     docker create --name "${owned_name}" "${img}" /bin/true >/dev/null
@@ -282,7 +282,7 @@ YAML
       fi
     fi
 
-    docker rm -f "${decoy_other}" "${decoy_prefix}" "${owned_name}" "${owned_label}" >/dev/null 2>&1 || true
+    docker rm -fv "${decoy_other}" "${decoy_prefix}" "${owned_name}" "${owned_label}" >/dev/null 2>&1 || true
     docker rmi -f "${img}" >/dev/null 2>&1 || true
   fi
 fi

@@ -68,6 +68,31 @@ var runtimeConfigService *config.RuntimeConfigService
 // It validates HMAC-signed tokens from the orchestrator, with backward compatibility for legacy tokens.
 var internalTokenValidator *serviceauth.TokenValidator
 
+// mcpInputPolicyCategories is the STATIC portion of the category whitelist
+// evaluated on the managed MCP planes by evaluateInputPolicies. The PII portion
+// is NOT here: it is policy-derived per request (every enabled PII-category
+// system policy), so a new pii-* category is covered without a hand list to
+// forget, which was the #2965 defect that left pii-indonesia ungoverned
+// elsewhere. These non-PII categories also keep the slice non-empty, so the
+// empty-Categories-means-evaluate-everything footgun cannot apply here.
+//
+// #3529: hoisted from an inline literal to a package var so the sibling planes'
+// guard test can see it. The three other planes were already package vars and
+// this one was invisible to any test. Its compliance portion is sourced from
+// sharedpolicy.AllComplianceCategories() rather than hand-listed.
+//
+// CategoryFinCrime is listed EXPLICITLY and must stay that way. It is
+// deliberately outside the compliance vocabulary (ADR-061 / #3329: the pack is
+// governed by neither the PII/SQLi posture levers nor capability scoping), so
+// AllComplianceCategories does not return it and must not start to. Rows exist
+// only where the enterprise pack was seeded, so it is a no-op otherwise.
+var mcpInputPolicyCategories = append([]sharedpolicy.PolicyCategory{
+	sharedpolicy.CategorySecuritySQLi,
+	sharedpolicy.CategorySecurityDangerous,
+	sharedpolicy.CategorySensitiveData,
+	sharedpolicy.CategoryFinCrime,
+}, sharedpolicy.AllComplianceCategories()...)
+
 func init() {
 	// secretenv.Get trims AWS-SM-quirky trailing whitespace; an HMAC seed
 	// with a stray newline produces a different digest from the orchestrator
@@ -851,26 +876,16 @@ func evaluateInputPolicies(
 	// Request-phase static policy evaluation (SQLi, PII, sensitive-data, compliance)
 	policyEngine := sharedpolicy.GetGlobalEngine()
 	if policyEngine != nil && detectionCfg.Enabled && detectionCfg.IsConnectorEnabled(connectorName) {
-		// Security + sensitive-data + compliance categories stay explicit; the
-		// PII categories are policy-derived (every enabled PII-category system
-		// policy) so a new pii-* category (e.g. pii-indonesia) is auto-covered —
-		// no hardcoded PII list to forget. The non-PII categories keep the slice
-		// non-empty, so the empty-Categories-means-all whitelist footgun can't
-		// apply here.
-		inputCats := []sharedpolicy.PolicyCategory{
-			sharedpolicy.CategorySecuritySQLi,
-			sharedpolicy.CategorySecurityDangerous,
-			sharedpolicy.CategorySensitiveData,
-			sharedpolicy.CategoryComplianceRBI,
-			sharedpolicy.CategoryComplianceSEBI,
-			sharedpolicy.CategoryComplianceEUAIAct,
-			sharedpolicy.CategoryComplianceMASFEAT,
-			// ADR-061 / #3329: the FinCrime Policy Pack rows. Dedicated
-			// category so the pack is governed by neither the PII/SQLi
-			// posture levers nor capability scoping; rows exist only where
-			// the enterprise pack was seeded, so this is a no-op otherwise.
-			sharedpolicy.CategoryFinCrime,
-		}
+		// The static portion is the package-level mcpInputPolicyCategories; the
+		// PII portion stays policy-derived per request. Copied into a fresh
+		// slice rather than appended onto the package var directly: appending
+		// to a shared slice that has spare capacity writes into its backing
+		// array, which would let one request mutate the whitelist every other
+		// request reads.
+		inputCats := make([]sharedpolicy.PolicyCategory, 0, len(mcpInputPolicyCategories)+len(sharedpolicy.AllTextPIICategories()))
+		// Capacity is a hint only: the PII portion below is the ENABLED subset,
+		// which is at most the canonical list sized above.
+		inputCats = append(inputCats, mcpInputPolicyCategories...)
 		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
 			TenantID: tenantID,

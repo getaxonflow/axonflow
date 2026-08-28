@@ -42,7 +42,7 @@ AxonFlow is not a workflow engine, observability dashboard, or prompt gateway. Y
 **Policy Enforcement**: 80 built-in system policies (70 pattern-based, evaluated on the Agent; 10 condition-based, evaluated on the Orchestrator), seeded by `migrations/core` and pinned by `platform/agent/system_policy_count_realpg_test.go`, plus editable tenant-tier starter policies. Categories:
 - **Security**: SQL injection detection (38 patterns), unsafe admin access, schema exposure
 - **Sensitive Data**: PII detection (SSN, credit cards, PAN, Aadhaar, email, phone), salary, medical records
-- **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, DORA frameworks with retention and exports (Enterprise)
+- **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, OJK/BI/UU PDP, NAIC/NYDFS/Colorado for US insurance, US banking supervision (federal and Farm Credit), SEC/FINRA examination packages for US securities, DORA frameworks with retention and exports (Enterprise)
 - **Runtime Controls**: Tenant isolation, environment restrictions, approval gates
 - **Cost & Abuse**: Per-user/team limits, anomalous usage detection, token budgets
 

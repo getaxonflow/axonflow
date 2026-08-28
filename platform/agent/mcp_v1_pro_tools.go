@@ -6,8 +6,8 @@
 // per the locked freemium model:
 //
 //   axonflow_get_tenant_id       — Free + Pro, no gate; returns tenant identity + tier + upgrade prompt
-//   axonflow_request_approval    — Free=1/7d rolling, Pro=unlimited; wraps HITL queue create
-//   axonflow_create_tenant_policy — Free=2 active max, Pro=unlimited; wraps dynamic-policies create
+//   axonflow_request_approval    - Free=2 per rolling 7d, Pro=20; wraps HITL queue create
+//   axonflow_create_tenant_policy - Free=4 active max, Pro=50; wraps dynamic-policies create
 //   axonflow_get_cost_estimate   — Pro only; wraps cost_estimation_handler
 //   axonflow_list_pro_features   — Free + Pro, pure data tool; surfaces locked Pro feature list
 //
@@ -113,7 +113,7 @@ func v1ProMCPTools() []mcpTool {
 		},
 		{
 			Name:        mcpToolNameRequestApproval,
-			Description: "Request human-in-the-loop approval before executing a risky operation (e.g. shell command, file write, git push). On Free tier, 1 approval request allowed per rolling 7-day window. On Pro, unlimited.",
+			Description: "Request human-in-the-loop approval before executing a risky operation (e.g. shell command, file write, git push). On Free tier, 2 approval requests allowed per rolling 7-day window. On Pro, 20.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -451,7 +451,7 @@ func mcpToolGetTenantID(session *mcpSession) (interface{}, error) {
 //   - Input validation + severity normalisation + expiry clamp.
 //   - History row written automatically alongside the approval row.
 //
-// The SaaS Plugin per-tenant 1-per-7d gate (Free) / unlimited (Pro)
+// The SaaS Plugin per-tenant rolling-7d gate: 2 (Free) / 20 (Pro)
 // already fired in `enforceMCPToolGate` before this body runs — that's
 // the SaaS subscription differentiator and stays at the dispatch layer.
 //

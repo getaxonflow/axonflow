@@ -47,7 +47,20 @@ else
     echo -e "${YELLOW}⚠️  PostgreSQL not accessible, attempting to start Docker container...${NC}"
 
     # Try to start a PostgreSQL container
+    # tmpfs: the anonymous volume postgres would otherwise create is never
+    # made, so nothing leaks however this container dies. Safe here because
+    # steps 2 and 4 below re-apply migrations and re-seed on every run, so
+    # the data is reconstructed rather than relied upon - PROVIDED YOU COME
+    # BACK THROUGH THIS SCRIPT. This is a fixed-name, long-lived developer
+    # container, and a tmpfs does not survive a Docker restart: after one, a
+    # bare `docker start axonflow-test-db` yields a freshly-initdb'd EMPTY
+    # database, and `go test` run without re-running this script fails on
+    # missing relations. That is by design - re-run ./setup_test_env.sh and
+    # the schema and seed are rebuilt - but if you hit "relation does not
+    # exist" after a reboot, this comment is the explanation.
     docker run -d --name axonflow-test-db \
+        --label axonflow.test.ephemeral=1 \
+        --tmpfs /var/lib/postgresql/data:rw,size=1g \
         -e POSTGRES_USER="$TEST_DB_USER" \
         -e POSTGRES_PASSWORD="$TEST_DB_PASSWORD" \
         -e POSTGRES_DB="$TEST_DB_NAME" \

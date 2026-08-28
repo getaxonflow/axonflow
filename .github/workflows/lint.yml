@@ -8,21 +8,8 @@ on:
     branches:
       - main
       - develop
-  # Push to main/develop: Run lint with path filters
-  push:
-    branches:
-      - main
-      - develop
-    # There is no root Go module in this repo — the modules are platform/,
-    # ee/ and scripts/key-rotation/. The bare 'go.mod'/'go.sum' patterns
-    # matched nothing, so a dependency bump in platform/go.mod skipped lint on
-    # main entirely (#3089).
-    paths:
-      - '**.go'
-      - '**/go.mod'
-      - '**/go.sum'
-      - '.golangci.yml'
-      - '.github/workflows/lint.yml'
+  # (Push to main no longer re-runs lint - the merge queue verified the
+  # identical tree; 2026-08-27 CI-cost change.)
   # Merge queue: re-run lint against the merged code with path filtering
   merge_group:
     branches:
@@ -51,6 +38,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     permissions:
       contents: read
@@ -242,10 +232,42 @@ jobs:
       - name: Lint one writer for hitl_approval_queue (#3408)
         run: bash scripts/lint-hitl-queue-choke-point.sh
 
+  # Anonymous-volume leak ratchet.
+  #
+  # Same job shape and same reasoning as the guard above: no `if:`, because the
+  # offending line is as likely to be in a `.sh` runtime-e2e suite or a
+  # workflow file as in Go, and a Go-gated job would skip the PR class it
+  # exists to catch.
+  #
+  # The bug it ratchets: `postgres` and friends declare a VOLUME, so
+  # `docker rm -f` orphans an anonymous volume that nothing ever collects. It
+  # was fixed once, at ONE call site, and 39 siblings kept leaking - which is
+  # why this is a guard and not just a patch.
+  docker-rm-volumes:
+    name: Lint - docker rm must remove anonymous volumes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Both directions, over fixtures it builds itself, plus an anti-vacuity
+      # assertion that the walk actually sees the tree rather than passing
+      # because it found no files.
+      - name: Self-test the guard (both directions)
+        run: bash scripts/lint-docker-rm-removes-volumes.sh --self-test
+
+      - name: Lint docker rm removes anonymous volumes
+        run: bash scripts/lint-docker-rm-removes-volumes.sh
+
   lint-summary:
     name: Lint Summary
     runs-on: ubuntu-latest
-    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point]
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
+    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point, docker-rm-volumes]
     if: always()
 
     steps:
@@ -258,12 +280,14 @@ jobs:
           echo "  golangci-lint: ${{ needs.golangci-lint.result }}"
           echo "  org-column-guard: ${{ needs.org-column-guard.result }}"
           echo "  hitl-queue-choke-point: ${{ needs.hitl-queue-choke-point.result }}"
+          echo "  docker-rm-volumes: ${{ needs.docker-rm-volumes.result }}"
 
       - name: Fail if lint failed
         # Accept 'success' or 'skipped' (skipped = no Go code changes)
         # detect-changes is 'skipped' for push/workflow_dispatch events
         #
-        # org-column-guard and hitl-queue-choke-point are held to 'success'
+        # org-column-guard, hitl-queue-choke-point and docker-rm-volumes are
+        # held to 'success'
         # ONLY - no 'skipped' tolerance.
         # 'Lint Summary' is the REQUIRED status check (repository ruleset
         # "Main Branch Protection"); the individual jobs are not. So a job
@@ -276,7 +300,8 @@ jobs:
           needs.detect-changes.result == 'failure' ||
           (needs.golangci-lint.result != 'success' && needs.golangci-lint.result != 'skipped') ||
           needs.org-column-guard.result != 'success' ||
-          needs.hitl-queue-choke-point.result != 'success'
+          needs.hitl-queue-choke-point.result != 'success' ||
+          needs.docker-rm-volumes.result != 'success'
         run: |
           echo "❌ Linting failed - please fix issues before merging"
           exit 1

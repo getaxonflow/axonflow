@@ -55,7 +55,7 @@ echo -e "${BLUE}[3/3] Checking for test database container...${NC}"
 if docker ps -a | grep -q "axonflow-test-db"; then
     echo -e "${BLUE}Stopping and removing test database container...${NC}"
     docker stop axonflow-test-db > /dev/null 2>&1
-    docker rm axonflow-test-db > /dev/null 2>&1
+    docker rm -v axonflow-test-db > /dev/null 2>&1
     echo -e "${GREEN}✅ Test database container removed${NC}"
 else
     echo -e "${BLUE}ℹ️  No test database container found (using existing PostgreSQL)${NC}"

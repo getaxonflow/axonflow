@@ -14,16 +14,6 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
-    # 'go.mod'/'go.sum' matched nothing — there is no root Go module (#3089).
-    paths:
-      - 'platform/**/*.go'
-      - 'platform/go.mod'
-      - 'platform/go.sum'
-      - 'migrations/**'
-      - '.github/workflows/test-community.yml'
   merge_group:
     branches:
       - main
@@ -44,6 +34,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     if: |
       github.repository == 'getaxonflow/axonflow' &&
       (github.event_name == 'pull_request' || github.event_name == 'merge_group')
@@ -354,6 +347,9 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     needs: [detect-changes, unit-tests, race-detector, integration-tests]
     if: always()
 

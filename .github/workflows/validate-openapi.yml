@@ -1,12 +1,6 @@
 name: Validate OpenAPI
 
 on:
-  push:
-    paths:
-      - 'docs/api/**/*.yaml'
-      - 'docs/api/**/*.yml'
-      - '.github/workflows/validate-openapi.yml'
-      - '.spectral.yaml'
   pull_request:
     paths:
       - 'docs/api/**/*.yaml'
@@ -14,10 +8,26 @@ on:
       - '.github/workflows/validate-openapi.yml'
       - '.spectral.yaml'
 
+# Cancel superseded runs. Sessions on this repo push in rapid bursts, and a
+# run for a push that is no longer the tip proves nothing while billing the
+# same minutes as a real one. Two halves make non-PR runs safe, and BOTH are
+# needed: cancel-in-progress only covers the RUNNING run, while GitHub's
+# documented default also cancels a PENDING run in the same group the moment
+# a third arrives - so with a shared per-branch group, three rapid pushes
+# meant the middle push was never scanned at all. R3 found real windows: on
+# 2026-08-25 three pushes landed inside one 42-second gitleaks run, and that
+# scanner is delta-only, so the dropped run's commit range would have been
+# scanned by NOTHING. Non-PR events therefore get a PER-COMMIT group (no
+# sharing, nothing to displace), and only pull_request events cancel.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   validate:
     name: Validate OpenAPI Spec
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -185,6 +195,7 @@ jobs:
   bundle:
     name: Bundle OpenAPI Spec
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: validate
     if: github.ref == 'refs/heads/main'
 

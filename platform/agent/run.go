@@ -422,16 +422,19 @@ var (
 // single canonical pii-* list) rather than hand-listed here — the old hand list
 // omitted pii-indonesia, so the KTP/NIK policy was filtered out BEFORE evaluation
 // on this plane and a matching query was silently ungoverned under every posture.
-var proxyPolicyCategories = append([]sharedpolicy.PolicyCategory{
+//
+// #3529: the COMPLIANCE portion is now sourced from
+// sharedpolicy.AllComplianceCategories() for the same reason the PII portion
+// was. The hand list carried four of the six categories that function
+// returned, so compliance-gdpr and compliance-hipaa were filtered out before
+// evaluation on this plane, and any new compliance family (the four US ones
+// added by #3529) would have been too.
+var proxyPolicyCategories = append(append([]sharedpolicy.PolicyCategory{
 	sharedpolicy.CategorySecuritySQLi,
 	sharedpolicy.CategorySecurityDangerous,
 	sharedpolicy.CategoryAdminAccess,
 	sharedpolicy.CategorySensitiveData,
-	sharedpolicy.CategoryComplianceRBI,
-	sharedpolicy.CategoryComplianceSEBI,
-	sharedpolicy.CategoryComplianceEUAIAct,
-	sharedpolicy.CategoryComplianceMASFEAT,
-}, sharedpolicy.AllTextPIICategories()...)
+}, sharedpolicy.AllComplianceCategories()...), sharedpolicy.AllTextPIICategories()...)
 
 // Prometheus metrics
 var (

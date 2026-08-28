@@ -112,11 +112,25 @@ func (s *TemplateService) ApplyTemplate(ctx context.Context, tenantID, orgID, te
 		Name:        policyReq.Name,
 		Description: policyReq.Description,
 		Type:        policyReq.Type,
-		Conditions:  policyReq.Conditions,
-		Actions:     policyReq.Actions,
-		Priority:    policyReq.Priority,
-		Enabled:     policyReq.Enabled,
-		TenantID:    tenantID,
+		// The template CATALOG vocabulary (general, security, hipaa,
+		// compliance-glba, ...) and the dynamic-policy vocabulary
+		// (dynamic-*/media-*, enforced by isValidDynamicPolicyCategory on the
+		// direct-create path) are distinct. Before this line the field was
+		// simply never set, so every applied template produced a policy with
+		// an EMPTY category: unfilterable on the Policies page, and a row the
+		// direct-create API would have refused with a 400. The mapping is
+		// deliberately the one-line prefix rule rather than a lookup table:
+		// a table drifts the moment a template family is added, while
+		// "dynamic-" + the catalog category is deterministic, self-describing,
+		// always passes the direct-create validation, and preserves per-family
+		// filtering (dynamic-compliance-glba, not a collapsed
+		// dynamic-compliance). Routed from epic #3528 (found during #3529).
+		Category:   dynamicCategoryForTemplate(template.Category),
+		Conditions: policyReq.Conditions,
+		Actions:    policyReq.Actions,
+		Priority:   policyReq.Priority,
+		Enabled:    policyReq.Enabled,
+		TenantID:   tenantID,
 		// Decision 5 (#3490): the organisation is what selects this policy.
 		// tenant_id above is retained as attribution - it records who applied
 		// the template - and no longer decides who the resulting policy
@@ -383,4 +397,16 @@ func (e *TemplateValidationError) Error() string {
 		msgs = append(msgs, fmt.Sprintf("%s: %s", err.Field, err.Message))
 	}
 	return strings.Join(msgs, "; ")
+}
+
+// dynamicCategoryForTemplate maps a template catalog category onto the
+// dynamic-policy category vocabulary. One rule, no lookup table: prefix with
+// "dynamic-". A catalog value that is empty maps to "dynamic-general" so the
+// result always passes isValidDynamicPolicyCategory and is never the empty
+// string this function exists to eliminate.
+func dynamicCategoryForTemplate(catalogCategory string) string {
+	if catalogCategory == "" {
+		return "dynamic-general"
+	}
+	return "dynamic-" + catalogCategory
 }

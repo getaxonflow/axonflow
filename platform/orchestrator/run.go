@@ -45,14 +45,17 @@ import (
 	"axonflow/platform/orchestrator/cost"             // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact"          // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
-	"axonflow/platform/orchestrator/masfeat"  // MAS FEAT module - Community stub or EE impl
-	"axonflow/platform/orchestrator/media"    // Media governance analysis pipeline
-	"axonflow/platform/orchestrator/ojk"      // OJK module - Community stub or EE impl
-	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
-	"axonflow/platform/orchestrator/rbi"      // RBI FREE-AI module - Community stub or EE impl
-	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
-	"axonflow/platform/orchestrator/sebi"     // SEBI AI/ML module - Community stub or EE impl
-	"axonflow/platform/orchestrator/ui"       // Embedded execution viewer UI
+	"axonflow/platform/orchestrator/masfeat"   // MAS FEAT module - Community stub or EE impl
+	"axonflow/platform/orchestrator/media"     // Media governance analysis pipeline
+	"axonflow/platform/orchestrator/ojk"       // OJK module - Community stub or EE impl
+	"axonflow/platform/orchestrator/planning"  // MAP two-step execution (#927)
+	"axonflow/platform/orchestrator/rbi"       // RBI FREE-AI module - Community stub or EE impl
+	"axonflow/platform/orchestrator/replay"    // Execution replay/debug mode (#763)
+	"axonflow/platform/orchestrator/sebi"      // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/ui"        // Embedded execution viewer UI
+	"axonflow/platform/orchestrator/usbanking" // US banking module (ADR-063) - Community stub or EE impl
+	"axonflow/platform/orchestrator/usinsurance"
+	"axonflow/platform/orchestrator/ussecurities" // US securities module (ADR-064) - Community stub or EE impl
 	"axonflow/platform/orchestrator/webhooks"
 	"axonflow/platform/orchestrator/workflow_control"  // Workflow Control Plane V1 (#834)
 	"axonflow/platform/shared/execution"               // Unified execution tracking (#1075)
@@ -129,9 +132,21 @@ var (
 	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
 	masfeatModule *masfeat.Module  // MAS FEAT compliance (Singapore)
 	ojkModule     *ojk.OJKModule   // OJK AI Governance compliance (Indonesia)
+	// usInsuranceModule backs the NAIC Supplement exhibit set (#3531).
+	usInsuranceModule *usinsurance.Module
+	// US federal banking + Farm Credit examination evidence (ADR-063, #3530).
+	// Unlike its siblings this module owns NO tables: it reads audit_logs, the
+	// HITL queue and the provider configuration read-only.
+	usbankingModule *usbanking.Module
+
+	// ussecuritiesModule is the US securities (SEC/FINRA) compliance module
+	// (ADR-064, #3532). Declared untagged like every sibling: run.go compiles in
+	// both editions and the community build resolves this to the package's no-op
+	// stub.
+	ussecuritiesModule *ussecurities.Module
 
 	// Unified compliance report facade (#3241, epic #2892). Sits IN FRONT of
-	// the five modules above as a read-only consumer: it constructs after them
+	// the seven modules above as a read-only consumer: it constructs after them
 	// so it can be handed the live modules, and a module that failed to
 	// initialize arrives as nil, which the facade reports as report_state
 	// "not_available" rather than as an error.
@@ -844,6 +859,51 @@ func Run() {
 			log.Println("OJK Compliance API routes registered (/api/v1/ojk/...)")
 		} else {
 			log.Println("OJK Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
+	}
+
+	// US Insurance Module (Enterprise - NAIC Supplement, NYDFS CL7, CO 10-1-1)
+	if usInsuranceModule != nil {
+		usInsuranceModule.RegisterRoutesWithMux(r)
+		if usInsuranceModule.IsHealthy() {
+			log.Println("US Insurance API routes registered (/api/v1/usinsurance/...)")
+		} else {
+			// NOT "routes inactive": on an enterprise build the routes ARE
+			// registered and answer 503 with a cause, which is deliberate (see
+			// usinsurance/wire.go). The unhealthy case here is almost always a
+			// missing database, not a community build, and the community build
+			// never reaches this line at all because its stub registers
+			// nothing.
+			log.Println("US Insurance Module loaded but not healthy - routes answer 503 with a cause (a database connection is required)")
+		}
+	}
+
+	// US Banking Compliance Module (Enterprise - Federal banking + Farm Credit)
+	if usbankingModule != nil {
+		usbankingModule.RegisterRoutesWithMux(r)
+		if usbankingModule.IsHealthy() {
+			log.Println("US Banking Compliance API routes registered (/api/v1/usbanking/...)")
+		} else {
+			// Same wording as the US Insurance block above, and for the same
+			// reason: on an enterprise build the routes ARE registered and
+			// answer 503 with a cause. "Routes inactive" would be wrong here,
+			// and the community build never reaches this line at all because
+			// its stub registers nothing.
+			log.Println("US Banking Compliance Module loaded but not healthy - routes answer 503 with a cause (a database connection is required)")
+		}
+	}
+
+	// US Securities Compliance Module (Enterprise - SEC advisers + FINRA broker-dealers)
+	if ussecuritiesModule != nil {
+		ussecuritiesModule.RegisterRoutesWithMux(r)
+		if ussecuritiesModule.IsHealthy() {
+			log.Println("US Securities Compliance API routes registered (/api/v1/ussecurities/...)")
+		} else {
+			// Same wording as the two US blocks above, and for the same reason:
+			// on an enterprise build the routes ARE registered and answer 503
+			// with a cause, and the community build never reaches this line
+			// because its stub registers nothing.
+			log.Println("US Securities Compliance Module loaded but not healthy - routes answer 503 with a cause (a database connection is required)")
 		}
 	}
 
@@ -1952,8 +2012,65 @@ func initializeComponents() {
 			log.Println("⚠️  OJK Module initialized but not healthy - database may be required")
 		}
 
+		// Initialize the US Insurance Module (Enterprise, #3531).
+		//
+		// It owns no tables: it READS audit_logs and hitl_approval_queue, so
+		// it needs only the database handle. Constructed before the facade
+		// below, which takes it as a read-only data provider.
+		log.Println("Initializing US Insurance Module...")
+		var usInsuranceErr error
+		usInsuranceModule, usInsuranceErr = usinsurance.NewModule(usageDB)
+		if usInsuranceErr != nil {
+			log.Printf("⚠️  US Insurance Module initialization error: %v", usInsuranceErr)
+		} else if usInsuranceModule.IsHealthy() {
+			log.Println("US Insurance Module initialized ✅")
+		} else {
+			log.Println("⚠️  US Insurance Module initialized but not healthy - database may be required")
+		}
+
+		// Initialize US Banking Compliance Module (Enterprise - Federal + Farm Credit)
+		//
+		// Like the US Insurance module above it owns no tables: it READS
+		// audit_logs, hitl_approval_queue and llm_provider_configs, so it needs
+		// only the database handle. Constructed before the facade below, which
+		// takes it as a read-only data provider.
+		log.Println("Initializing US Banking Compliance Module...")
+		usbankingConfig := usbanking.ModuleConfig{
+			DB: usageDB,
+		}
+		var usbankingErr error
+		usbankingModule, usbankingErr = usbanking.NewModule(usbankingConfig)
+		if usbankingErr != nil {
+			log.Printf("⚠️  US Banking Module initialization error: %v", usbankingErr)
+		} else if usbankingModule.IsHealthy() {
+			log.Println("US Banking Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  US Banking Module initialized but not healthy - database may be required")
+		}
+
+		// Initialize US Securities Compliance Module (Enterprise - SEC + FINRA)
+		//
+		// Like the two US modules above it owns no tables: it READS audit_logs,
+		// decision_chain, hitl_approval_queue, static_policies and
+		// llm_provider_configs, so it needs only the database handle.
+		// Constructed before the facade below, which takes it as a read-only
+		// data provider.
+		log.Println("Initializing US Securities Compliance Module...")
+		ussecuritiesConfig := ussecurities.ModuleConfig{
+			DB: usageDB,
+		}
+		var ussecuritiesErr error
+		ussecuritiesModule, ussecuritiesErr = ussecurities.NewModule(ussecuritiesConfig)
+		if ussecuritiesErr != nil {
+			log.Printf("⚠️  US Securities Module initialization error: %v", ussecuritiesErr)
+		} else if ussecuritiesModule.IsHealthy() {
+			log.Println("US Securities Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  US Securities Module initialized but not healthy - database may be required")
+		}
+
 		// Initialize the unified compliance report facade (Enterprise, #3241).
-		// LAST in this block, deliberately: it takes the five modules above as
+		// LAST in this block, deliberately: it takes the eight modules above as
 		// read-only data providers, so it must see their final values.
 		log.Println("Initializing Compliance Report facade...")
 		complianceReportConfig := compliancereport.ModuleConfig{
@@ -1965,6 +2082,9 @@ func initializeComponents() {
 			RBI:            rbiModule,
 			MASFEAT:        masfeatModule,
 			OJK:            ojkModule,
+			USInsurance:    usInsuranceModule,
+			USBanking:      usbankingModule,
+			USSecurities:   ussecuritiesModule,
 		}
 		var complianceReportErr error
 		complianceReportModule, complianceReportErr = compliancereport.NewModule(complianceReportConfig)
@@ -1983,6 +2103,7 @@ func initializeComponents() {
 		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
 		log.Println("⚠️  MAS FEAT Compliance Module not initialized - database connection required")
 		log.Println("⚠️  OJK Compliance Module not initialized - database connection required")
+		log.Println("⚠️  US Banking Compliance Module not initialized - database connection required")
 		log.Println("⚠️  Compliance Report facade not initialized - database connection required")
 	}
 
@@ -2025,6 +2146,12 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if euaiactModule != nil {
 		components["euaiact_compliance"] = euaiactModule.IsHealthy()
 	}
+	if usbankingModule != nil {
+		components["usbanking_compliance"] = usbankingModule.IsHealthy()
+	}
+	if ussecuritiesModule != nil {
+		components["ussecurities_compliance"] = ussecuritiesModule.IsHealthy()
+	}
 	if masfeatModule != nil {
 		components["masfeat_compliance"] = masfeatModule.IsHealthy()
 	}
@@ -2040,6 +2167,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	// live probe would change the semantics of all five compliance entries at
 	// once and belongs with the module-health work, not here; adding OJK to the
 	// map with the same semantics as its siblings is what this closes.
+	if usInsuranceModule != nil {
+		components["usinsurance_compliance"] = usInsuranceModule.IsHealthy()
+	}
 	if ojkModule != nil {
 		components["ojk_compliance"] = ojkModule.IsHealthy()
 	}

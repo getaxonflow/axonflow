@@ -246,6 +246,14 @@ func startMig124Postgres(t *testing.T) (string, func()) {
 	containerName := fmt.Sprintf("axonflow-test-mig124-pg-%d", time.Now().UnixNano())
 	out, err := exec.Command("docker", "run", "-d",
 		"--name", containerName,
+		// tmpfs at the declared VOLUME path: postgres creates an ANONYMOUS
+		// volume there otherwise, and `docker rm -fv` only reclaims it if the
+		// cleanup actually runs - which it does not on a -timeout kill, a
+		// Ctrl-C or a panic. With the mount there is nothing to leak at all.
+		// Label so an orphaned container is reapable by exact match rather
+		// than by a name glob, which collides on a shared daemon.
+		"--label", "axonflow.test.ephemeral=1",
+		"--tmpfs", "/var/lib/postgresql/data:rw,size=1g",
 		"-e", "POSTGRES_PASSWORD=testpass",
 		"-e", "POSTGRES_DB=axonflow_test",
 		"-p", "0:5432",
@@ -255,7 +263,7 @@ func startMig124Postgres(t *testing.T) (string, func()) {
 		t.Fatalf("docker run: %v\n%s", err, string(out))
 	}
 	cleanup := func() {
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+		_ = exec.Command("docker", "rm", "-fv", containerName).Run()
 	}
 
 	var hostPort string

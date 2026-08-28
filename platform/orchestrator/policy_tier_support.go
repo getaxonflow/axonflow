@@ -452,6 +452,33 @@ const (
 // still claimed "both planes accept Evaluation+". One predicate, one place to
 // change, and a test that asserts the planes agree.
 //
+// WHAT THIS DELIBERATELY DOES NOT COVER, measured rather than assumed.
+//
+// The drain set is Evaluation and above, so Community, Free, Pro and Premium
+// are still refused here. That matters for one narrow deployment class: the
+// PRE-FIX enterprise binary consulted no licence at all (see
+// hitl_wcp_enterprise.go's doc comment), so a Community/Free/Pro/Premium-tier
+// deployment running the enterprise image genuinely accumulated wcp_step_gate
+// rows on main. Such a deployment running with DEPLOYMENT_MODE=community
+// cannot manually approve them, because this predicate refuses it.
+//
+// Those rows are NOT permanently stranded, which is the part worth having
+// checked rather than assumed: the agent's cross-tenant expire ticker
+// (platform/agent/run.go, ExpireStaleAcrossTenants -> ExpireStaleReturning)
+// predicates on `status = 'pending' AND expires_at < CURRENT_TIMESTAMP` with
+// NO request_type filter, so it expires these rows like any other. The
+// deployment loses the ability to APPROVE before expiry, not the ability to
+// clear the queue. In DEPLOYMENT_MODE=enterprise the routes are registered
+// unconditionally and even that does not apply.
+//
+// Widening this predicate to those four tiers would hand Community an approval
+// API it has never had. That is a tier-entitlement decision of exactly the
+// kind the 2026-08-26 operator decision settled for Evaluation, and it is not
+// a worker's call to make unilaterally - so it is escalated on #3517 rather
+// than taken here. Note also that RegisterEvaluationRoutes bundles CHECKPOINT
+// RESUME with the three approval routes, so widening this without splitting
+// that bundle would grant a second, unrelated capability by accident.
+//
 // A nil checker is refused: no tier resolved is not a licence to act.
 //
 // The parameter is the NARROWEST interface this predicate reads, not

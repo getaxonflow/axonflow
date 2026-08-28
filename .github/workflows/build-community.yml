@@ -55,6 +55,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     if: |
       github.repository == 'getaxonflow/axonflow' &&
       (github.event_name == 'merge_group' || github.event_name == 'pull_request')
@@ -106,6 +109,7 @@ jobs:
       needs.detect-changes.result != 'failure' &&
       (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.agent == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -144,6 +148,7 @@ jobs:
       needs.detect-changes.result != 'failure' &&
       (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.orchestrator == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -176,6 +181,7 @@ jobs:
   docker-compose-test:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: [build-agent, build-orchestrator]
     # Skip on PRs - only run on push/merge_group when builds succeed
     if: |
@@ -249,6 +255,9 @@ jobs:
   build-summary:
     name: Build Summary
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     needs: [detect-changes, build-agent, build-orchestrator, docker-compose-test]
     if: always()
 

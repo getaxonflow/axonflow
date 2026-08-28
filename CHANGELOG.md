@@ -11,124 +11,354 @@ community mirror, **Enterprise** changes are EE-only.
 ---
 
 <!--
-  Version decision (Step 0): v9.15.0, MINOR. The train adds new backward-compatible
-  capabilities - SSO role auto-provisioning (#3291) and the telemetry digest's
-  per-platform-version breakdown (#3277) - so by the 2026-07-30 semver policy it is
-  a MINOR, not a patch. It also RELAXES a refusal (the /api/request empty-email
-  fail-close now proceeds org-only, #3278), which is not a breaking change. No
-  removed capability, no new required credential, no new refusal.
+  Version decision (Step 0): v10.1.0, MINOR, operator-approved 2026-08-28. The
+  train is the US compliance framework family (epic #3528): three new
+  compliance-report regulators (usinsurance, usbanking, ussecurities), nine US
+  policy templates plus retention presets, and the jsonl artifact format - all
+  additive. The one item measured against the 2026-07-30 semver policy's "new
+  refusal = MAJOR" clause is #2914/#3532: the three audit-chain verification
+  routes now require compliance read authority (admin/owner/policy_admin or an
+  asserted internal-service identity) where before ANY authenticated org member
+  could call them. That is a least-privilege fix to an unintended exposure, not
+  a removed documented capability; the operator approved MINOR with that item
+  named. Five migrations (core/168; enterprise/139, 142, 144, 145), all
+  additive; no removed capability, no new required credential, no fatal config
+  value.
 -->
 
-<!--
-  Version decision (Step 0): the next train is a MAJOR, pending operator
-  sign-off. #2330's headline is additive (portal password recovery by email,
-  off by default), which alone would be a MINOR - but by the 2026-07-30
-  operator semver policy ("removed fallback / new required credential / new
-  refusal / fatal config value = MAJOR") it carries three qualifying changes:
+## [10.1.0] - 2026-08-28 (the US compliance framework family: banking, insurance and securities examination packages; US policy templates; audit verification becomes least-privilege)
 
-    1. A REMOVED FALLBACK + NEW REFUSAL: forgot-password no longer returns a
-       reset token in the body on ENVIRONMENT=staging (or unset), it returns
-       501. Any operator scripting against staging token-in-body must move to
-       ENVIRONMENT=development or the admin reset endpoint.
-    2. A NEW REFUSAL AT BOOT: a portal with RESEND_API_KEY but no
-       from-address or no SSO_BASE_URL logs a misconfiguration and keeps
-       forgot-password on 501.
-    3. Reset links issued before the upgrade stop working (tokens are now
-       hashed at rest); they live at most 1 hour.
+> Scope: operators upgrading from 10.0.0. Everything is additive - five
+> migrations (`core/168`; `enterprise/139`, `142`, `144`, `145`), no removed
+> capability, no new required configuration. One authorization change to note
+> before upgrading: the three audit-chain verification routes now answer 403
+> for authenticated members whose role is not `admin`, `owner` or
+> `policy_admin` (details under Community > Fixed).
 
-  Both 1 and 2 are security fixes to unintended behavior, so an argument for
-  MINOR exists - flagged here for the release owner to decide rather than
-  assumed.
--->
+### Community
 
-<!--
-  Version decision (Step 0): the policy-evaluation consolidation (epic #3293
-  Slice 2, #3296) is MINOR in its own right. It does introduce two new
-  refusals, which the 2026-07-30 policy would ordinarily read as MAJOR, so
-  the reasoning is recorded rather than left implicit. This does NOT override
-  the pending-MAJOR decision above: that is driven by #2330 independently,
-  and a train's version is the maximum of its contents.
+#### Fixed
 
-  The two new refusals, and why each is judged niche:
+- **The audit-chain verification endpoints were readable by every authenticated
+  organization member** *(Community)* - `GET /api/v1/audit/chains/{id}/verify`,
+  `/records/{id}/verify` and `/signing-key` (#2722) were registered behind
+  authentication and nothing else, so any member of an organization could verify,
+  and thereby enumerate, its audit records by id. At the severity #2914 itself
+  gives it: least-privilege and metadata disclosure, not a secret leak - the
+  public key is public by definition, the per-record signature is meant to be
+  shareable, no private key material is exposed and the reads were already
+  org-scoped. What was reachable is each record's `decision_type`, `risk_level`
+  and chain linkage through the digest pre-image, by roles that hold no
+  tenant-wide audit read. All three now require **compliance read authority**: a
+  validated per-user token whose role is `admin`, `owner` or `policy_admin`, or
+  an internal service asserting `X-Axonflow-Admin-Authority`. Holding the
+  internal-service secret is the trusted CHANNEL and not the authority itself, so
+  a service must assert it. Community mode is exempt, having no authentication to
+  hold a role; the hosted **Community SaaS** stack is NOT, because it runs with
+  authentication enabled and its evaluator accounts hold no entitled role, so
+  these three routes answer `403` there deliberately rather than widening the
+  exposure this change closes on a public shared deployment. The token is additionally bound to the credential's own
+  organization and tenancy, which nothing previously checked: a privileged token
+  from one organization presented with another's credential would otherwise have
+  authorized a read scoped to the second. Enforced as one middleware, so a fourth
+  verification route added later is gated by default. (#3532)
 
-    1. A `regex` condition whose `value` is not a string is now rejected
-       (400) instead of being stored and silently never matching. Nothing
-       AxonFlow ships is affected - no seeded policy in policy_defaults.go
-       or any seed migration uses a non-string regex value - and the portal
-       cannot produce one, since its condition-value input is a text field.
-       The exposed population is callers who wrote such a value directly
-       against the API, where it was always meaningless: a numeric "pattern"
-       only ever matched by an accident of stringification.
+- **Existing community deployments kept the inert Content Safety Filter; `core/168` repairs it** *(Community)* - #3529's substitution fix corrected `core/024` at source, which reaches only FRESH deployments (the seed is `ON CONFLICT DO NOTHING`), and its forward-fix ran in `enterprise/139`, which community modes never apply. `migrations/core/168` is the community-set repair: one guarded `jsonb_set` on `tpl_general_content_filter`, idempotent, verified in place, with a real-Postgres proof that applies the core chain only (the community posture) and re-injects the defective shape to prove the repair path. Its verification is deliberately scoped to the one row it owns - ownership scoping as defence in depth (the runner sorts all selected categories into one (version, name) order, so enterprise/139 in fact applies before core/168 in a mixed batch), so it can never abort an upgrade on rows that are another migration's job. The same migration backfills the category on policies applied from templates BEFORE the fix below, via the recorded policy_template_usage join; empty-category rows from the bulk-import path have no usage record, are deliberately out of its scope, and are routed on #3528. (#3528)
+- **Policies created from templates now carry a category** *(Community)* - `ApplyTemplate` never set `Category`, so every applied template produced a policy with an empty category: unfilterable on the Policies page, and a row the direct-create API would have refused with 400. The mapping is the one-line prefix rule, `dynamic-` plus the template's catalog category (`compliance-glba` becomes `dynamic-compliance-glba`), so it is deterministic, passes the direct-create validation, preserves per-family filtering, and cannot drift the way a lookup table would. Pinned by a unit guard and asserted live on the 3529 runtime-e2e suite. (#3528)
 
-       The sharp edge, recorded so it is not rediscovered: validateUpdateRequest
-       re-validates conditions whenever an update supplies them, so a client
-       that round-trips a whole policy object can hit this on a pre-existing
-       row while editing an unrelated field. Operators wanting to check their
-       own corpus before upgrading:
+- **Every builtin policy template with a list-valued variable produced a policy that could not fire** *(Community)* - a template writing `"value": ["{{authorized_roles}}"]` does not substitute to a list. `deepSubstitute` walks into the array and calls `substituteString` on the single element, which returns the variable's value with its type preserved, so the result is an array nested inside an array; the evaluator then stringifies the inner array with `%v` and compares the field against `"[query mutation admin]"`, which can never be equal. An `in` condition written this way **never fires** and a `not_in` condition **always fires**, so a policy meant to catch unauthorized roles instead matched every role including the authorized ones. Four shipped templates carried it: HIPAA PHI Access Control and GDPR PII Access Control (both `not_in`, both over-matching), DORA Critical Operations Monitoring and the community Content Safety Filter (both `in`, both inert). All are corrected at source, so every fresh deployment is right, and migration `enterprise/139` forward-fixes rows already seeded on deployments that ran the earlier migrations - by `jsonb_set` on an exact path rather than delete-and-reseed, because `policy_template_usage` cascades on delete and would take the record of who applied what with it. **One gap is disclosed rather than closed**: a community deployment never runs enterprise migrations, so an existing community deployment keeps the drifted `core/024` row until a core migration repairs it; allocating a core slot was out of this change's scope and it is recorded on epic #3528. Guarded from both directions now - a text pin on the shape and a behavioural test that runs the real substitution with each template's own defaults, evaluates the result with the real shared evaluator, and fails any condition that cannot tell a listed value from an unlisted one. (#3529)
 
-         SELECT policy_id, tenant_id FROM dynamic_policies
-         WHERE conditions @> '[{"operator":"regex"}]'
-           AND jsonb_typeof(conditions->0->'value') <> 'string';
+- **Compliance policy categories were declared but never evaluated on any request plane** - `AllComplianceCategories()` returned six categories and had no caller outside tests, while the four agent plane whitelists (proxy, gateway pre-check, openai-compat, and the MCP input path) each hand-listed four of those six. Because a plane whitelist filters the loaded policy set BEFORE evaluation, every `compliance-gdpr` and `compliance-hipaa` policy was dropped before it was ever evaluated - no error, no log, request allowed - while the portal advertised both as authorable categories. All four whitelists now source their compliance portion from `AllComplianceCategories()`, which is the same fix #2965 applied to the PII portion after a hand list dropped `pii-indonesia` and left Indonesian PII ungoverned. **On a stock deployment the runtime delta is nil**: no seed in the repository has ever written a `compliance-gdpr` or `compliance-hipaa` row into `static_policies`, and every API write path rejects compliance categories, so the change becomes live only for rows seeded by SQL or a policy pack - where it removes a silent exclusion. The MCP path keeps `fincrime` listed explicitly and a guard test pins that it stays out of the compliance vocabulary, since the pack depends on being governed by neither the posture levers nor capability scoping. (#3529)
 
-    2. An explicitly-empty `conditions` array on update is now rejected;
-       omitting the field still means "leave unchanged". This closes the one
-       path by which a caller could clear a policy's conditions, and is
-       load-bearing for the restored "no conditions means applies to
-       everything" semantics - it is what keeps that construct platform-only.
-       No customer-authored zero-condition rows exist, so nothing pre-existing
-       breaks.
+### Enterprise
 
-  ImportPolicies' all-or-nothing behavior (validation runs over the whole
-  batch and returns on the first failure) is PRE-EXISTING and unchanged here.
-  What changes is how often it can trigger: an export-import round-trip of a
-  corpus containing one non-string regex value now fails the batch where it
-  previously succeeded. Left as-is by decision.
--->
+> The US compliance framework family (epic #3528) lands in four phases, all
+> below: the Phase 1 template packs, the insurance module (#3531), the banking
+> module (#3530) and the securities module (#3532).
 
-<!--
-  Version decision (Step 0): v9.19.0, MINOR. The train's headline is the
-  portal-truth wave (#3347 via #3359, #3363 via #3366, #3361/#3364 via #3382,
-  #3346 via #3377, #3365 via #3375, #3360 via #3376) and the policy-evaluation
-  consolidation (epic #3293 Slice 2, #3296 via #3320) with its
-  legacy-conditions follow-up (#3384 via #3387). It removes no operator-facing
-  capability, adds no required credential and adds no boot-time refusal.
+#### Added
 
-  The two new API refusals it carries (a non-string `regex` condition value,
-  and an explicitly-empty `conditions` array on update) are #3296's, already
-  judged niche in the Step-0 comment recorded above; that reasoning stands
-  unchanged and is what keeps this MINOR rather than MAJOR under the
-  2026-07-30 operator semver policy.
+- **Four US compliance policy template families, and the regulator-keyed retention preset vocabulary** - a US institution's compliance team now finds US-native templates in the portal catalog the way Indian and Indonesian teams already do. Migration `enterprise/139` seeds nine templates across `compliance-glba` (NPI access logging and user-activity monitoring under 16 CFR 314.4(c)(8); service-provider call gating under 16 CFR 314.4(f)), `compliance-fairlending` (adverse-action decision logging and prohibited-basis prompt flags in Regulation B vocabulary, 12 CFR 1002.9 and 1002.2(z)), `compliance-bsa-aml` (a SAR-confidentiality guard under 31 CFR 1020.320(e) and SAR-support retention logging under 1020.320(d)), and `compliance-nydfs` (NPI-in-prompt monitoring aligned to the NYDFS October 2024 AI industry letter, plus an AI-tool usage audit trail under 23 NYCRR 500.06(a)(2)). Every rule cites the public provision it is modelled on, each citation read against a primary source. **These are templates, not enforcing policies**: a row is inert until an operator applies it, which is the `enterprise/109` contract and the right one for a migration that runs on every enterprise deployment - the FinCrime pack seeds enforcing rows, but from an opt-in `seed.sh` an operator runs deliberately. The BSA/AML family extends that pack rather than duplicating it: the pack's ten controls all govern transactions, and neither SAR control is among them. Retention presets are seeded into `audit_retention_defaults` - the existing layer that answers "what applies when nothing is configured" - as five regulator-keyed record classes: Reg B consumer-credit records at 25 months (12 CFR 1002.12(b)), SAR supporting documentation at 5 years (31 CFR 1020.320(d)), the two 23 NYCRR 500.06 classes at 5 and 3 years, and SEC broker-dealer records at 6 years (17 CFR 240.17a-4(a)). There is **no GLBA retention row**: the Safeguards Rule requires the log and sets no period, and inventing one would be a fabricated regulatory number. **The presets are a requirement vocabulary, not a pruning schedule** - the retention executor iterates its own fixed table map, not the rows of this table, so a preset naming a record class AxonFlow does not store can never cause a delete; a guard test fails if a future change makes one governed, so that decision has to be taken deliberately. No new table, no new column, no new route. (#3529)
 
-  The one further item that argues for more than MINOR, recorded here rather
-  than left implicit: #3387 CHANGES ENFORCEMENT for stored rows whose
-  `conditions` column holds an explicitly-empty array. Those rows stop being
-  evaluated on the database-backed evaluation surfaces (the in-memory
-  fallback engine, in play only while the database is unreachable, still
-  loads them as stored). It is a narrowing of a state no
-  released create API could produce (only the pre-9.19 update API could), it
-  removes nothing an operator deliberately configured, and it is what stops
-  #3296's restored vacuous-match semantics from turning that residue into a
-  tenant-wide deny at upgrade. Treated as a defect fix, not a breaking
-  change; the operator audit query is in the Migration section below.
+- **`usinsurance`: a sixth compliance-report regulator rendering the NAIC AI
+  Systems Evaluation Tool's exhibit structure (#3531).** Formally
+  "Artificial Intelligence Systems Evaluation: Optional Supplemental Exhibits
+  for State Regulators", version **4.0 (DRAFT)**, from the NAIC Big Data and
+  Artificial Intelligence (H) Working Group: Exhibit A (Quantify Regulated
+  Entity's Use of AI Systems), Exhibit B (AI Systems Governance Risk Assessment
+  Framework), Exhibit C (High Risk AI Systems Details), Exhibit D (AI Systems
+  Model Data Details), plus annexes for **NYDFS Insurance Circular Letter
+  No. 7** and **Colorado Regulation 10-1-1**. The tool is an EXAMINATION
+  information request supplementing market conduct, financial analysis and
+  financial examination procedures; it is not an annual-statement filing. Frameworks: `NAIC_AIS`, `NYDFS_CL7`,
+  `CO_REG_10_1_1`. Formats: `pdf`, `csv`, `xlsx`, `json`. As with `ojk`, the
+  `framework` field is **required**: with three instruments, choosing one for
+  the caller would file the artifact under a law they did not select.
+- **Three live read routes for the portal's US insurance sections (#3531):**
+  `GET /api/v1/usinsurance/inventory`, `GET /api/v1/usinsurance/oversight` and
+  `GET /api/v1/usinsurance/data-sources`. All three are GET-only, org-scoped,
+  and carry an explicit completeness signal so an unreadable surface is never
+  presented as an empty result.
+- **A seventh compliance-report regulator: `usbanking`, the US federal banking and
+  Farm Credit examination package (#3530, epic #3528; see ADR-063).**
+  `POST /api/v1/compliance/reports` with `regulator=usbanking` produces ten
+  sections: scope and completeness, AI and agent inventory, per-decision
+  reconstruction, human oversight register, kill-switch and containment
+  attestation, data-boundary report, third-party AI annex, monitoring summary,
+  board pack, and a NIST AI RMF cross-index. Formats are `pdf`, `csv` and
+  `json`. Five frameworks: `US_MRM`, `US_TPRM`, `GLBA_SAFEGUARDS`, `BSA_AML`
+  and `FCA_EM31`. There is NO default framework, exactly as for `ojk`: with
+  five instruments in scope, silently choosing one would file the package under
+  an instrument the caller did not pick, so a request omitting `framework` is
+  refused with `UNKNOWN_FRAMEWORK` enumerating all five.
+  **The report PROFILE is derived from the framework, never requested.**
+  `FCA_EM31` renders the Farm Credit profile (FCA Exam Manual EM-31.1's
+  when/what/who/approver change-log form for the oversight register, a
+  quarterly board pack, and the 12 CFR Part 609 36-hour clock); the other four
+  render the federal profile (SR 26-2 / OCC 2026-13 cited as current with
+  SR 11-7 named as predecessor, and an annual cadence). A separate `profile`
+  field would have made `{"framework":"FCA_EM31","profile":"federal"}`
+  expressible, so the contradiction is made unrepresentable instead of
+  validated.
+  **What it deliberately does not claim.** Every artifact carries five
+  disclosures, and they are not boilerplate: AxonFlow reports what routes
+  through its governed paths and performs no discovery of AI elsewhere in the
+  institution; kill-switch thresholds are NOT automatically evaluated, so any
+  configured kill switch is manually triggered and no automatic containment is
+  claimed (#3344 is open); no statistical fairness, bias or disparate-impact
+  testing is performed; nothing classifies a system's risk tier or analyses any
+  law's applicability; and the package is not a model validation or an
+  effective-challenge record. The NIST cross-index ships NIST functions only:
+  the Treasury/CRI FS AI RMF control-objective identifiers are not reproduced,
+  because the terms governing their reproduction in a commercial artifact were
+  not verified.
+  **Scope is the requesting TENANCY, not the organization.** Its sources are
+  platform tables rather than a module's own: `audit_logs.org_id` is nullable,
+  so an organization-wide predicate silently omits records from a regulatory
+  artifact, and `llm_provider_configs` carries no organization column at all.
+  The completeness section reports how many records in the period carry no
+  organization attribution, which is exactly the population an
+  organization-wide report would have dropped without saying so. On a
+  single-tenancy organization the two are the same set of records.
+- **`GET /api/v1/usbanking/exam-readiness` (#3530).** Answers what a package
+  generated now would contain, without creating a report job and without
+  spending one of an Evaluation tier's three daily reports. It returns counts,
+  presence and disclosures and never evidence rows, so it is not a second
+  export path; rows come from the facade alone. Gated on the same tenant-wide
+  read authority as the evidence and compliance exports. The compliance page
+  gains a US tab rendering it.
 
-  No migrations: `git diff v9.18.0..origin/main -- migrations/` is empty.
--->
+- **`ussecurities`: an eighth compliance-report regulator, the SEC/FINRA
+  examination package (#3532).** One regulator for SEC-registered investment
+  advisers AND FINRA member broker-dealers, because the evidence set is
+  identical and only the instrument each clause is cited against differs.
+  Frameworks: `SEC_EXAM`, `FINRA_SUPERVISION`, `REG_SP`, and the supervised
+  POPULATION is **derived** from the framework rather than requested, so a
+  request whose two halves contradict each other cannot be expressed. Formats:
+  `pdf`, `csv`, `json` and the new `jsonl`. As with `ojk`, `usinsurance` and
+  `usbanking`, the `framework` field is **required**: with three instruments,
+  choosing one for the caller would file the artifact under a rule they did not
+  select.
 
-<!--
-  TAG-TIME ACTION (Step 0): the date on the heading below, 2026-08-22, is
-  STALE and is deliberately left that way until the tag is cut. It is not an
-  oversight and it should not be "fixed" in a review pass.
+  Eight sections, in the order the published AI sweep letters ask for them: the
+  AI-use inventory with the reviewers AxonFlow actually observed resolving
+  approval holds; the interaction archive; the consequential-output log; FINRA
+  3110 / Notice 24-09 supervision evidence; the amended Regulation S-P annex; the
+  disclosure-vs-reality reconciliation; financial-crime evidence; and the scope,
+  completeness and dated-instrument block.
 
-  WHY IT IS LEFT ALONE: the version string is atomic across nine sites in this
-  file plus the heading, and moving the date alone would split that set and
-  make the next reader trust a half-updated block. The whole set moves in one
-  commit, at tag time, and not before.
+- **The interaction archive carries the Ed25519 attribution chain IN BAND
+  (#3532, #2722).** In the `json` and `jsonl` renderings each archived
+  interaction carries its per-record signature, chain linkage and signing key id,
+  so the export is independently verifiable record by record. The `pdf` and `csv`
+  renderings carry the chain-head summary instead - six proof columns per
+  interaction is not a readable paginated document - and **say so**, naming the
+  renderings that carry the full proof, so a reader of the shorter one is never
+  left thinking there is none. Three states are kept apart, because collapsing
+  any two of them is the defect the section exists to prevent: an interaction
+  with **no** attribution record, one that is **hash-chained but unsigned**, and
+  one that is **signed**.
 
-  WHAT TO DO WHEN CUTTING THE TAG: set this date to the ACTUAL release date in
-  the same commit that settles the version string everywhere else, then delete
-  this comment. If you are reading this in a released tag, the date is wrong
-  and this step was missed.
--->
+- **`jsonl`, a fifth artifact format, offered to `ussecurities` alone (#3532).**
+  Line-delimited JSON: one self-describing record per line, no enclosing array. A
+  broker-dealer preserves records under Exchange Act rule 17a-4 on write-once
+  read-many media **or under the audit-trail alternative the 2022 amendments to
+  that rule added**, and the systems that ingest into either are line-oriented -
+  they take a stream of records and commit each one, where a single JSON document
+  has to be parsed whole first. Every line carries its schema, record type and
+  job id, and every ROW record additionally carries the section key and the
+  column headers its values are positional against, because line-oriented
+  ingestion routinely splits a stream across batches. It is offered nowhere else,
+  on the format matrix's own rule: a format is offered where the regulator's own
+  practice wants it.
+
+- **One live read route for the portal's US securities section (#3532):**
+  `GET /api/v1/ussecurities/exam-readiness`. GET-only, scoped from the
+  auth-stamped headers, gated on tenant-wide read authority like the exports, and
+  it publishes counts, presence and disclosures only - never evidence rows, which
+  come from the report facade and only from there.
+
+#### Fixed
+
+- **The hosted plugin's `axonflow_request_approval` tool description matched no shipped gate** *(Enterprise, Community-SaaS)* - the prose told agents "On Free tier, 1 approval request ... On Pro, unlimited" while the gate 190 lines below enforces `MaxHITLApprovalsPerWeek` of 2 and 20 on a rolling 7-day window. An agent reading the description rationed against the wrong budget on Free and treated Pro as boundless. The description now states 2 and 20, and a guard derives the expected numbers from the shipped limits so a future tier change turns it red until the prose moves. Found by WS-LAND-F2, routed via epic #3528. (#3528)
+
+- **The banking demo claimed compliance with three statutes** - `ee/platform/clients/banking-demo` asserted "ECOA, FCRA, TILA compliance built-in", "ECOA/FCRA/TILA compliance enforced" and, in the loan-application API response, that an application was "processed in compliance with" ECOA. AxonFlow produces evidence; it does not perform fair-lending testing, does not generate adverse-action or TILA disclosures, and makes no determination that a statute applies. Twelve rewrites across five files - README 4, the home page 3, the fraud-detection and loan-application pages 2 each, and the loan-application API response 1 - restate every one as capability mapping with the obligation each record supports named explicitly. The brief listed three of them; fixing only those would have left the same claim class live on the same pages, in one case three lines from a corrected string. (#3529)
+
+- **The compliance console read the report facade's error code from the wrong
+  field, so every code the facade emits was dropped (#3530).** The facade
+  serialises its code as `error_code`; the portal's error parser looked only at
+  `code`. `UNKNOWN_REGULATOR`, `REGULATOR_NOT_AVAILABLE`,
+  `COMPLIANCE_REPORT_REQUIRES_EVALUATION_LICENSE`,
+  `COMPLIANCE_REPORT_LIMIT_EXCEEDED` and the rest all arrived classified by
+  HTTP status alone. It went unnoticed because the licence refusal is rescued
+  by a message-pattern fallback that matches the upsell prose; nothing rescued
+  the others. All seven regulators were affected.
+- **A regulator whose module is not enabled no longer renders as a retryable
+  failure (#3530).** `POST /api/v1/compliance/reports` answers
+  `409 REGULATOR_NOT_AVAILABLE` for a known regulator whose module is not wired
+  in this deployment, which is reachable on any deployment that has the facade
+  but not that module. The console had no branch for it, so it fell through to
+  the catch-all and displayed "this is a temporary failure, not a licence or
+  permission problem" with a Retry button, for a condition retrying can never
+  clear. It now reads as "not available on this deployment".
+
+  Two corrections to how this was first described. The branch keys on the CODE
+  rather than the status, so the facade's other two 409s
+  (`REPORT_NOT_COMPLETED`, `REPORT_ARTIFACT_UNAVAILABLE`) keep their retry. And
+  it is NOT the response an un-upgraded deployment gives for a regulator it has
+  never heard of: that is a `400 UNKNOWN_REGULATOR` from the facade, or a 404
+  from an orchestrator with no such route, both of which already classified
+  correctly. The 409 is specifically "known regulator, module absent".
+- **Two more facade error codes are now classified from the code rather than by
+  status (#3530).** `COMPLIANCE_REPORT_REQUIRES_EVALUATION_LICENSE` (403) and
+  `COMPLIANCE_REPORT_LIMIT_EXCEEDED` (429) are both PLAN answers carrying an
+  upgrade path. The second had been rendering a Retry button directly above the
+  server's own "Upgrade to Enterprise for unlimited reports" sentence.
+
+#### Notes for operators reading the US securities package
+
+- **It adds NO tables and NO write path.** Every figure is read from surfaces the
+  platform already maintains: `audit_logs` for interactions and inventory, the
+  signed `decision_chain` for attribution, `hitl_approval_queue` for human
+  dispositions, `static_policies` for the configured controls, and
+  `llm_provider_configs` for the Regulation S-P service-provider annex. Its only
+  migration, `enterprise/145`, widens three shared CHECK constraints and creates
+  nothing.
+- **AxonFlow provides NO archival storage.** Rule 17a-4 is satisfied by WORM
+  media or by the 2022 amendments' audit-trail alternative, and AxonFlow provides
+  neither. The package is an EXPORT for whichever the firm operates; producing it
+  preserves nothing. The artifact says so on its face, and every mention of WORM
+  anywhere in it names the alternative beside it - telling a firm it must hold
+  WORM media is a false statement about a live obligation, and one that costs
+  money to act on.
+- **No output is classified as a recommendation.** Whether an AI output triggers
+  Regulation Best Interest or an adviser's fiduciary obligation is a legal
+  judgment. No text classifier ships; the consequential-output log renders the
+  interactions a policy THE FIRM CONFIGURED as consequential stopped or held, and
+  no section carries a recommendation or suitability column.
+- **The disclosure-vs-reality reconciliation adjudicates nothing, and its
+  DECLARED column is empty by construction.** AxonFlow holds no register of a
+  firm's public AI claims, so the two populations are separated structurally: the
+  OBSERVED column is filled from measured evidence with each cell naming the
+  section it is drawn from, and the DECLARED column is filled from a single
+  constant, which is what makes it impossible for an observed value to reach it.
+  A firm completes the left column from its own Form ADV, brochure and marketing
+  materials. The table makes no finding that any claim is accurate, inaccurate or
+  misleading.
+- **The financial-crime section is DISCLOSED ABSENT, never empty, where the Fraud
+  and Risk Add-on is not installed.** An empty section would read as "this firm's
+  AI produced no financial-crime signals", which is a statement about the firm;
+  "the add-on is not active here" is a statement about the deployment. Where the
+  configured control set could not be READ, the section says the add-on's state
+  is unknown rather than absent. The risk score itself is never printed, and no
+  suspicious activity report is implied or produced.
+- **Scope: the requesting TENANCY, with two exceptions stated on the artifact.**
+  The approval queue and the decision chain are additionally bounded by
+  organization, because both enforce that boundary in the database. The
+  configured supervisory controls are scoped by ORGANIZATION outright, because
+  that is the scope the engine that enforces them reads them under - a
+  tenancy-scoped inventory would publish a set of controls that is not the set
+  being applied.
+- **Containment is manual.** #3344 is open: kill-switch thresholds are persisted
+  and reported but nothing evaluates them, so no automatic shutdown is claimed
+  anywhere in the package.
+
+#### Notes for operators reading the US insurance exhibits
+
+- **The exhibit set adds NO tables and NO write path.** Every figure is read
+  from surfaces the platform already maintains: `audit_logs` for observed model
+  activity and policy enforcement, `hitl_approval_queue` for the human
+  oversight register and the exception and override trail. Nothing a carrier
+  types into AxonFlow is rendered back as though AxonFlow had observed it.
+- **The fairness section is a POINTER and contains no results.** AxonFlow does
+  not perform statistical fairness or bias testing; the CL7 three-step
+  quantitative analysis remains the insurer's own work. The section renders no
+  table at all, deliberately: an empty fairness table reads either as "testing
+  was performed and found nothing" or as "the carrier has no testing", and
+  neither is a claim AxonFlow may make on a carrier's behalf.
+- **AxonFlow does not designate any system as high risk.** Exhibit C answers a
+  form asking for per-high-risk-system detail; the designation is a legal
+  determination the carrier makes, so the exhibit reports every observed system
+  and names whose call that is.
+- **The exhibits cover only traffic that routed through AxonFlow.** There is no
+  shadow-AI discovery, no line-of-business breakdown (AxonFlow does not hold
+  that mapping) and no adverse-decision share (AxonFlow does not determine
+  whether a consumer decision was adverse). Each of those is stated on the
+  artifact as a named gap directed at the carrier rather than left blank, since
+  a blank reads as "none".
+- **The NAIC form revision is named on every artifact.** The Supplement was in
+  pilot when this release was built and the adopted form may differ; confirm
+  the exhibit structure against the form your domiciliary regulator has adopted
+  before filing.
+
+### Migration
+
+> ⚠️ **HAS MIGRATIONS.** Five new migrations, all additive: `core/168` and
+> `enterprise/139`, `142`, `144`, `145`. None creates a table, none rewrites
+> operator data destructively, none takes a long lock; a community deployment
+> applies only `core/168`. The migration runner sorts every selected category
+> into ONE `(version, name)` order, so the enterprise widenings apply in
+> numeric sequence.
+
+- **`core/168`** repairs the inert community Content Safety Filter row in
+  place (one guarded `jsonb_set` on `tpl_general_content_filter`) and
+  backfills the category on policies applied from templates before this
+  release, via the recorded `policy_template_usage` join. Idempotent;
+  verification is scoped to the rows it owns. Details under Community > Fixed.
+- **`enterprise/139`** seeds the nine US policy templates and five retention
+  presets, and forward-fixes the four already-seeded templates broken by the
+  list-variable substitution defect (`jsonb_set` on the exact path, never
+  delete-and-reseed - `policy_template_usage` cascades on delete). Details
+  under Enterprise > Added and Community > Fixed.
+- **`enterprise/142`** widens the `compliance_report_jobs` regulator and
+  framework CHECK constraints to admit `usinsurance` and its three frameworks.
+  Additive only; no existing value is removed. Its down-migration REFUSES to
+  run while any US insurance report row still exists rather than deleting
+  compliance evidence on the operator's behalf, and names the row count and the
+  decision required.
+- **`enterprise/144` (#3530).** Additive. It creates no table and rewrites no
+  row: it widens the regulator and framework `CHECK` constraints on
+  `compliance_report_jobs` to admit `usbanking` and its five frameworks.
+
+  It sits ABOVE the usinsurance widening deliberately. These constraints are
+  SHARED and are converged by DROP and ADD, so a widening BELOW another one is
+  silently undone by it - and a by-definition verification block only probes for
+  the values its own author was thinking about, so it prints "verified" either
+  way. 144 therefore enumerates the UNION of every regulator and framework
+  defined at that point, and verifies a value from EVERY preceding widening.
+  **Whoever widens these two constraints next must do the same.**
+
+  The `usbanking` module itself adds NO schema at all: it reads `audit_logs`,
+  `hitl_approval_queue` and `llm_provider_configs` read-only, and needs no index
+  because `core/141`'s `idx_audit_logs_tenant_ts_session` already serves its hot
+  predicate.
+- **`enterprise/145` (#3532).** Additive, and the current tail of the shared
+  CHECK-widening chain: it admits `ussecurities`, its three frameworks and the
+  `jsonl` format, enumerating the full union at this release - eight
+  regulators, nineteen frameworks, five formats - and verifying a value from
+  every preceding widening, per 144's rule above. Its down-migration refuses to
+  run while any US securities report row exists, for 142's reason.
+
 ## [10.0.0] - 2026-08-26 (segment enforcement reaches five more planes; identity suppression closed at authentication; one dynamic-policy engine; audit and compliance surfaces stop fabricating values)
 
 > Scope: every operator upgrading from 9.19.0. This release removes two boot

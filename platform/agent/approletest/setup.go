@@ -51,6 +51,15 @@ func SkipUnlessEnabled(t *testing.T) {
 	}
 }
 
+// TestContainerLabel marks every container this package starts.
+//
+// It exists so orphans can be reaped by EXACT LABEL MATCH. The obvious
+// alternative - a name glob like `--filter name=axonflow-test-` - is unsafe on
+// a shared daemon, where a substring can collide with a peer's stack; that has
+// already happened once in this repo (`wshitl` vs `wshitlchoke`). A label the
+// reaper sets itself cannot collide with anything it did not create.
+const TestContainerLabel = "axonflow.test.ephemeral=1"
+
 // Setup spins up a postgres:15 container, runs every core migration, and
 // provisions login passwords on the two RLS roles created by migration 098.
 // Returns DSNs for the master, axonflow_app_role, and axonflow_platform_admin
@@ -193,8 +202,36 @@ func pingAs(dsn, want string) error {
 func startPostgresContainer(t *testing.T) (string, func()) {
 	t.Helper()
 	containerName := fmt.Sprintf("axonflow-test-approle-pg-%d", time.Now().UnixNano())
+	// THE DATA DIRECTORY IS A tmpfs, WHICH IS WHAT MAKES THE LEAK IMPOSSIBLE
+	// RATHER THAN MERELY TIDIED UP.
+	//
+	// postgres:15 declares /var/lib/postgresql/data as a VOLUME, so absent any
+	// mount at that path Docker creates an ANONYMOUS volume per container.
+	// `docker rm -fv` in the cleanup below removes it - but ONLY if the
+	// cleanup runs. It does not run on `go test -timeout` kill, on Ctrl-C, or
+	// on a panic that takes the process down, and measured on a real daemon
+	// that is not a rare path: 680 orphaned volumes holding 52.84 GB
+	// accumulated in two days.
+	//
+	// Supplying ANY mount at the declared path stops the anonymous volume
+	// being created at all, so there is nothing to leak however the process
+	// dies. Measured: with the tmpfs, killing the container and never removing
+	// it leaves the volume count unchanged.
+	//
+	// tmpfs specifically, not a bind or a named volume: the data is worthless
+	// the moment the test ends, RAM makes the migration chain materially
+	// faster, and it cannot outlive the container even in principle. 1g against
+	// a measured 69 MB for a fresh initdb plus this repo's whole core
+	// migration chain - roughly 15x headroom, and the container fails loudly on ENOSPC
+	// rather than corrupting silently.
+	//
+	// The label is the second half: a container CAN still be orphaned by a
+	// killed process, and a label makes those reapable by exact match instead
+	// of by a name glob that would catch a peer's stack on a shared daemon.
 	out, err := exec.Command("docker", "run", "-d",
 		"--name", containerName,
+		"--label", TestContainerLabel,
+		"--tmpfs", "/var/lib/postgresql/data:rw,size=1g",
 		"-e", "POSTGRES_PASSWORD=testpass",
 		"-e", "POSTGRES_DB=axonflow_test",
 		"-p", "0:5432",
