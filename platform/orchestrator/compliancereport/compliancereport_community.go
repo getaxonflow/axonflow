@@ -30,23 +30,29 @@ import (
 	"axonflow/platform/orchestrator/ojk"
 	"axonflow/platform/orchestrator/rbi"
 	"axonflow/platform/orchestrator/sebi"
+	"axonflow/platform/orchestrator/usbanking"
+	"axonflow/platform/orchestrator/usinsurance"
+	"axonflow/platform/orchestrator/ussecurities"
 )
 
 // ModuleConfig is accepted but ignored in community mode.
 //
 // The field set mirrors the enterprise ModuleConfig exactly so run.go's single
-// (untagged) construction site compiles in both editions. The five module
+// (untagged) construction site compiles in both editions. The eight module
 // pointers reference the sibling packages' own community stub types.
 type ModuleConfig struct {
 	DB             *sql.DB
 	StorageBackend cloudstorage.StorageBackend
 	Licenses       interface{}
 
-	EUAIAct *euaiact.Module
-	SEBI    *sebi.SEBIModule
-	RBI     *rbi.RBIModule
-	MASFEAT *masfeat.Module
-	OJK     *ojk.OJKModule
+	EUAIAct      *euaiact.Module
+	SEBI         *sebi.SEBIModule
+	RBI          *rbi.RBIModule
+	MASFEAT      *masfeat.Module
+	OJK          *ojk.OJKModule
+	USInsurance  *usinsurance.Module
+	USBanking    *usbanking.Module
+	USSecurities *ussecurities.Module
 }
 
 // Module is the community stub for the compliance report facade.

@@ -161,15 +161,14 @@ var providerEndpoints = map[string]string{
 // canonical sharedpolicy.AllTextPIICategories() so pii-indonesia (KTP/NIK) is
 // evaluated on this plane — the previous hand-listed set omitted it, filtering
 // the KTP policy out before evaluation and leaving Indonesian PII ungoverned.
-var openaiCompatPolicyCategories = append([]sharedpolicy.PolicyCategory{
+// #3529: the compliance portion is sourced from
+// sharedpolicy.AllComplianceCategories() rather than hand-listed, closing the
+// same gap on this plane. Covered by TestPlaneWhitelistsCoverAllCompliance.
+var openaiCompatPolicyCategories = append(append([]sharedpolicy.PolicyCategory{
 	sharedpolicy.CategorySecuritySQLi,
 	sharedpolicy.CategorySecurityDangerous,
 	sharedpolicy.CategorySensitiveData,
-	sharedpolicy.CategoryComplianceRBI,
-	sharedpolicy.CategoryComplianceSEBI,
-	sharedpolicy.CategoryComplianceEUAIAct,
-	sharedpolicy.CategoryComplianceMASFEAT,
-}, sharedpolicy.AllTextPIICategories()...)
+}, sharedpolicy.AllComplianceCategories()...), sharedpolicy.AllTextPIICategories()...)
 
 // resolveProviderBaseURL determines the upstream provider from the model name.
 func resolveProviderBaseURL(model string) (baseURL string, provider string, ok bool) {

@@ -20,6 +20,33 @@ func TestIsComplianceCategory(t *testing.T) {
 		{"MAS FEAT compliance", CategoryComplianceMASFEAT, true},
 		{"GDPR compliance", CategoryComplianceGDPR, true},
 		{"HIPAA compliance", CategoryComplianceHIPAA, true},
+		// US families (#3529). Each literal is spelled out as well as
+		// referenced through its constant, so a typo'd constant VALUE is caught
+		// here and not merely a renamed identifier: the core/127 defect was a
+		// wrong string, which a constant-to-constant comparison cannot see.
+		{"GLBA compliance", CategoryComplianceGLBA, true},
+		{"GLBA canonical spelling", PolicyCategory("compliance-glba"), true},
+		{"Fair lending compliance", CategoryComplianceFairLending, true},
+		{"Fair lending canonical spelling", PolicyCategory("compliance-fairlending"), true},
+		{"BSA/AML compliance", CategoryComplianceBSAAML, true},
+		{"BSA/AML canonical spelling", PolicyCategory("compliance-bsa-aml"), true},
+		{"NYDFS compliance", CategoryComplianceNYDFS, true},
+		{"NYDFS canonical spelling", PolicyCategory("compliance-nydfs"), true},
+
+		// Plausible drifted spellings of the US families. Each is the shape
+		// core/127 had to repair for the four earlier families, and each must
+		// be REJECTED so a seed that used one cannot pass unnoticed.
+		{"drifted glba_compliance", PolicyCategory("glba_compliance"), false},
+		{"drifted compliance-fair-lending", PolicyCategory("compliance-fair-lending"), false},
+		{"drifted compliance-bsaaml", PolicyCategory("compliance-bsaaml"), false},
+		{"drifted compliance-bsa_aml", PolicyCategory("compliance-bsa_aml"), false},
+		{"drifted nydfs_compliance", PolicyCategory("nydfs_compliance"), false},
+
+		// FinCrime is NOT a compliance category and must not become one: it is
+		// deliberately outside the compliance vocabulary so the pack escapes
+		// the posture levers, and the mcp_handler whitelist lists it
+		// separately for exactly that reason.
+		{"FinCrime is not a compliance category", CategoryFinCrime, false},
 
 		// Non-compliance categories - should return false
 		{"PII Global", CategoryPIIGlobal, false},
@@ -47,20 +74,32 @@ func TestIsComplianceCategory(t *testing.T) {
 func TestAllComplianceCategories(t *testing.T) {
 	categories := AllComplianceCategories()
 
-	// Should return exactly 6 compliance categories
-	expectedCount := 6
+	// Should return exactly 10 compliance categories: the original six plus
+	// the four US families added by #3529.
+	//
+	// This count is load-bearing beyond bookkeeping. Since #3529 all four agent
+	// plane whitelists spread this function, so a category added here starts
+	// being evaluated on the proxy, gateway pre-check, openai-compat and MCP
+	// planes. A silent addition is a silent change to what four planes govern.
+	expectedCount := 10
 	if len(categories) != expectedCount {
 		t.Errorf("AllComplianceCategories() returned %d categories, want %d", len(categories), expectedCount)
 	}
 
-	// Verify expected categories are present
+	// Verify expected categories are present. Keyed by the literal STRING each
+	// constant must hold, not by the constant, so that renaming a constant
+	// while changing its value cannot satisfy this map.
 	expected := map[PolicyCategory]bool{
-		CategoryComplianceGDPR:    true,
-		CategoryComplianceHIPAA:   true,
-		CategoryComplianceRBI:     true,
-		CategoryComplianceSEBI:    true,
-		CategoryComplianceEUAIAct: true,
-		CategoryComplianceMASFEAT: true,
+		"compliance-gdpr":        true,
+		"compliance-hipaa":       true,
+		"compliance-rbi":         true,
+		"compliance-sebi":        true,
+		"compliance-euaiact":     true,
+		"compliance-masfeat":     true,
+		"compliance-glba":        true,
+		"compliance-fairlending": true,
+		"compliance-bsa-aml":     true,
+		"compliance-nydfs":       true,
 	}
 
 	for _, cat := range categories {

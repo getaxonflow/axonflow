@@ -4902,6 +4902,22 @@ paths:
         record signed and all signatures + linkage verify). `valid` only means
         no integrity violation was detected and can be `true` for a chain with
         zero signed records, so do not gate non-repudiation on `valid` alone.
+
+        **Authority (#2914).** Authentication alone is not enough: this route
+        requires COMPLIANCE READ AUTHORITY over the organization. Present a
+        validated per-user token (`X-User-Token`, or `Authorization: Bearer`)
+        whose role is `admin`, `owner` or `policy_admin`, or call from an
+        internal service asserting `X-Axonflow-Admin-Authority: true`. A
+        Community-mode deployment is exempt: it has no authentication and
+        resolves every caller to one local operator. Anything else is `403`.
+
+        **Community SaaS (`try.getaxonflow.com`) refuses these routes, by
+        design.** The hosted evaluation stack runs with authentication enabled,
+        so the Community-mode exemption above does not apply to it, and its
+        evaluator accounts hold no entitled role. Verification there is a `403`.
+        Granting evaluators access would widen, on a public shared stack, the
+        exact exposure this change closes. Verify audit records on a deployment
+        you operate.
       operationId: verifyAuditChain
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -4927,6 +4943,14 @@ paths:
                 $ref: '#/components/schemas/AuditVerifyError'
         '401':
           description: Missing authenticated org context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '403':
+          description: |
+            Authenticated, but without compliance read authority over this
+            organization (#2914). See the authority note in the description.
           content:
             application/json:
               schema:
@@ -4964,6 +4988,22 @@ paths:
         The record is resolved by id only within the authenticated caller's
         organization (RLS-scoped). `recordID` is the per-record UUID assigned at
         signing time (distinct from the chain id).
+
+        **Authority (#2914).** Authentication alone is not enough: this route
+        requires COMPLIANCE READ AUTHORITY over the organization. Present a
+        validated per-user token (`X-User-Token`, or `Authorization: Bearer`)
+        whose role is `admin`, `owner` or `policy_admin`, or call from an
+        internal service asserting `X-Axonflow-Admin-Authority: true`. A
+        Community-mode deployment is exempt: it has no authentication and
+        resolves every caller to one local operator. Anything else is `403`.
+
+        **Community SaaS (`try.getaxonflow.com`) refuses these routes, by
+        design.** The hosted evaluation stack runs with authentication enabled,
+        so the Community-mode exemption above does not apply to it, and its
+        evaluator accounts hold no entitled role. Verification there is a `403`.
+        Granting evaluators access would widen, on a public shared stack, the
+        exact exposure this change closes. Verify audit records on a deployment
+        you operate.
       operationId: verifyAuditRecord
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -4993,6 +5033,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditVerifyError'
+        '403':
+          description: |
+            Authenticated, but without compliance read authority over this
+            organization (#2914). See the authority note in the description.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
         '404':
           description: No decision record found for this id in your organization
           content:
@@ -5018,6 +5066,22 @@ paths:
         When no signing key is configured, `configured` is `false` and
         `public_key` is empty: records are hash-chained but unsigned, and the
         verify endpoints report that honestly.
+
+        **Authority (#2914).** Authentication alone is not enough: this route
+        requires COMPLIANCE READ AUTHORITY over the organization. Present a
+        validated per-user token (`X-User-Token`, or `Authorization: Bearer`)
+        whose role is `admin`, `owner` or `policy_admin`, or call from an
+        internal service asserting `X-Axonflow-Admin-Authority: true`. A
+        Community-mode deployment is exempt: it has no authentication and
+        resolves every caller to one local operator. Anything else is `403`.
+
+        **Community SaaS (`try.getaxonflow.com`) refuses these routes, by
+        design.** The hosted evaluation stack runs with authentication enabled,
+        so the Community-mode exemption above does not apply to it, and its
+        evaluator accounts hold no entitled role. Verification there is a `403`.
+        Granting evaluators access would widen, on a public shared stack, the
+        exact exposure this change closes. Verify audit records on a deployment
+        you operate.
       operationId: getAuditSigningKey
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -5030,6 +5094,14 @@ paths:
                 $ref: '#/components/schemas/AuditSigningKeyResponse'
         '401':
           description: Missing authenticated org context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyError'
+        '403':
+          description: |
+            Authenticated, but without compliance read authority over this
+            organization (#2914). See the authority note in the description.
           content:
             application/json:
               schema:

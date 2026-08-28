@@ -71,6 +71,24 @@ var xUserTokenMentionOnlyAllowlist = map[string]string{
 	// no-longer-true allowance.
 	"platform/shared/identity/identity_required.go": "#3062/#3077 actionable refusal bodies — names the header as a remedy; no read, no ingest",
 	"platform/agent/identity_trust.go":              "#3077 doc comment on why the MCP refusal offers a token only for enterprise sessions; no read, no ingest",
+	// #2914/#3532: the authority gate on the audit-chain verification routes.
+	//
+	// It names the header in a doc comment and in the 403 refusal STRING - a
+	// caller told only "you lack authority" cannot act on it, and naming the
+	// credential to present is the entire point of the message.
+	//
+	// It does NOT read the header. The read goes through extractPerUserToken,
+	// the allowlisted MCP-plane seam, which is what keeps the downstream
+	// posture single-sourced: the same Bearer fallback, the same
+	// validateUserToken validation, the same fail-closed default. Reusing that
+	// seam rather than adding a third read site is why this is a mention and
+	// not a new ingest point.
+	//
+	// Credential class: the #2924 per-user token, unchanged. It is CONSUMED for
+	// an authorization decision here, never minted, never forwarded, and never
+	// combined with a second envelope - so the #2941 collision rule has nothing
+	// to bite on: this route family accepts exactly one envelope.
+	"platform/agent/audit_verification_authority.go": "#2914 authority gate - names the header in a doc comment and in the 403 remedy; the read goes through extractPerUserToken, no second ingest",
 	// #3456: the shared human-actor segment gate's header documents, for every
 	// plane that calls it, WHICH envelope carries the per-user token on that
 	// plane — MCP REST and /decide both read it from the JSON BODY, and

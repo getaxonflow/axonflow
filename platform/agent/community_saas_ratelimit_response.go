@@ -73,8 +73,8 @@ const (
 //   - limit_type: one of LimitType* constants
 //   - tier: caller's effective tier ("Free" expected; carried so future
 //     metrics / analytics can join on tier without a separate lookup)
-//   - limit: the cap value (200 for daily_quota Free, 2 for active_policies,
-//     1 for hitl_approvals_window)
+//   - limit: the cap value (200 for daily_quota Free, 4 for active_policies,
+//     2 for hitl_approvals_window on Free / 20 on Pro, rolling 7 days)
 //   - remaining: typically 0 at the wall; surfaced so plugins can render
 //     "X of Y used" indicators continuously, not just on the wall
 //   - window: "daily_utc" for daily_quota, "rolling_7d" for hitl_approvals_window,
@@ -164,8 +164,8 @@ func writeRateLimitError(w http.ResponseWriter, tenantID, tier string, limit int
 //
 // tier — caller's effective tier label.
 //
-// limit — the cap value the caller tripped (e.g. 2 for active_policies,
-// 1 for hitl_approvals_window). 0 for feature_pro_only since there is
+// limit - the cap value the caller tripped (e.g. 4 for active_policies,
+// 2 for hitl_approvals_window on Free, 20 on Pro). 0 for feature_pro_only since there is
 // no quantitative cap, just a binary gate.
 //
 // remaining — typically 0 at the wall.

@@ -26,6 +26,14 @@ package agent
 // authenticated request context, never from a path/query parameter, and the
 // underlying reads run under RLS so a caller can only verify chains/records
 // belonging to its own org.
+//
+// All three additionally require COMPLIANCE READ AUTHORITY over that org
+// (#2914). Authentication alone used to be enough, which made the proof surface
+// - and with it each record's decision_type, risk_level and chain linkage -
+// readable by every member of the organization rather than by the roles that
+// already hold tenant-wide audit read. See auditVerificationAuthorized in
+// audit_verification_authority.go for the predicate, the three postures it
+// admits, and why this is a least-privilege fix and not a secret leak.
 
 import (
 	"encoding/json"
@@ -36,19 +44,48 @@ import (
 )
 
 // RegisterAuditVerificationHandlers mounts the verification endpoints behind
-// apiAuthMiddleware (so org/tenant are derived from auth credentials). tracker
-// must be non-nil; when it carries no signing key, signature fields verify as
-// unsigned and the signing-key endpoint reports that none is configured.
+// apiAuthMiddleware (so org/tenant are derived from auth credentials) and then
+// behind auditVerificationAuthorityMiddleware (#2914). tracker must be non-nil;
+// when it carries no signing key, signature fields verify as unsigned and the
+// signing-key endpoint reports that none is configured.
+//
+// The authority check is a SUBROUTER MIDDLEWARE rather than three calls at the
+// top of three handlers, so a fourth verification route added to this subrouter
+// later is gated by default instead of by remembering. Ordering is load-bearing:
+// apiAuthMiddleware runs first, because the authority predicate reads the auth
+// kind and the org it stamps into the request context.
+//
+// TestEveryRegisteredAuditVerificationRouteRefusesWithoutAuthority enumerates
+// the routes this function actually registers - by walking the router, not from
+// a hand-written list - and drives each one unauthorized.
 func RegisterAuditVerificationHandlers(router *mux.Router, tracker *DecisionChainTracker) {
 	if router == nil || tracker == nil {
 		return
 	}
 	sub := router.NewRoute().Subrouter()
 	sub.Use(apiAuthMiddleware)
+	sub.Use(auditVerificationAuthorityMiddleware)
 	h := &auditVerificationHandler{tracker: tracker}
 	sub.HandleFunc("/api/v1/audit/chains/{chainID}/verify", h.verifyChain).Methods("GET")
 	sub.HandleFunc("/api/v1/audit/records/{recordID}/verify", h.verifyRecord).Methods("GET")
 	sub.HandleFunc("/api/v1/audit/signing-key", h.signingKey).Methods("GET")
+}
+
+// auditVerificationAuthorityMiddleware refuses a caller that authenticated but
+// holds no compliance read authority over the organization (#2914).
+//
+// 403, not 404: the caller IS authenticated and the route DOES exist, and
+// answering 404 to hide that would leave an operator debugging a URL they typed
+// correctly. There is nothing to hide here - the routes are published in
+// docs/api/agent-api.yaml and in the architecture guide.
+func auditVerificationAuthorityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !auditVerificationAuthorized(r) {
+			writeAuditVerifyError(w, http.StatusForbidden, auditVerifyDenyMessage)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type auditVerificationHandler struct {

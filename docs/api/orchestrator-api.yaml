@@ -92,6 +92,29 @@ tags:
       OJK AI Governance + UU PDP compliance for Indonesian financial services.
       Audit export, retention/readiness checks, UU PDP Art. 46 breach-notification
       lifecycle, and a compliance dashboard. **Enterprise** feature.
+  - name: US Insurance Compliance
+    description: |
+      NAIC AI Systems Evaluation Tool exhibit evidence for US insurers, with
+      the NYDFS Circular Letter No. 7 and Colorado Regulation 10-1-1 annexes.
+      Read-only: these routes report AI system surfaces, human oversight and
+      consumer data classes observed in governed traffic. AxonFlow performs no
+      statistical fairness testing and designates no system as high risk.
+  - name: US Banking Compliance
+    description: |
+      US federal banking and Farm Credit examination evidence (ADR-063). One
+      read: the examination-readiness summary. The evidence itself is produced
+      by the compliance report facade with `regulator=usbanking`; this module
+      owns no tables and adds no second path to the underlying rows.
+      **Enterprise** feature.
+  - name: US Securities Compliance
+    description: |
+      SEC adviser and FINRA broker-dealer examination evidence (ADR-064). One
+      read: the examination-readiness summary. The evidence itself is produced
+      by the compliance report facade with `regulator=ussecurities`; this module
+      owns no tables and adds no second path to the underlying rows. The
+      supervised population is DERIVED from the framework a report requests, so
+      the same evidence is cited against the adviser's instruments, the
+      broker-dealer's, or both under Regulation S-P. **Enterprise** feature.
   - name: Decisions & Overrides
     description: |
       Decision explainability (ADR-043) and session-scoped policy overrides
@@ -4644,6 +4667,130 @@ paths:
               schema:
                 $ref: '#/components/schemas/OJKAPIError'
 
+  /api/v1/usbanking/exam-readiness:
+    get:
+      tags:
+        - US Banking Compliance
+      summary: US banking examination readiness
+      description: |
+        Answers "if I generate the US banking examination package now, what
+        will be in it and what will it have to disclose?" WITHOUT creating a
+        report job.
+
+        It returns COUNTS, PRESENCE and DISCLOSURES, never evidence rows. The
+        rows come from the compliance report facade
+        (`POST /api/v1/compliance/reports` with `regulator=usbanking`) and only
+        from there, so this is not a second export path.
+
+        It exists because the facade cannot answer this question: asking it
+        means creating a job, spending one of an Evaluation tier's three daily
+        reports, and waiting on an async render, purely to learn whether the
+        package is worth generating.
+
+        SCOPE: the summary covers the requesting TENANCY. Every source it reads
+        is tenancy-keyed, and `audit_logs.org_id` is nullable, so an
+        organization-wide count would silently omit records (ADR-063 section 4).
+        The `unattributed_records` source reports exactly the population an
+        organization-wide report would have dropped.
+
+        AUTHORITY: gated on tenant-wide read authority, the same gate as the
+        evidence and compliance exports. It returns aggregates rather than
+        rows, but an aggregate over `audit_logs` still describes whole-tenant
+        activity.
+
+        **Enterprise Feature**. Community builds register no route (404).
+      operationId: getUSBankingExamReadiness
+      responses:
+        '200':
+          description: Examination readiness summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USBankingExamReadiness'
+        '401':
+          description: |
+            No organization or tenant scope on the request (`SCOPE_REQUIRED`):
+            it did not traverse an authenticating hop.
+        '403':
+          description: |
+            The caller does not hold tenant-wide read authority.
+        '405':
+          description: Method not allowed; this route is GET-only.
+        '500':
+          description: |
+            The readiness summary could not be produced (`INTERNAL_ERROR`). The
+            body carries a fixed sentence; the cause is in the orchestrator log
+            keyed by the request.
+        '503':
+          description: |
+            The module is not initialized (the orchestrator has no database
+            connection).
+
+  /api/v1/ussecurities/exam-readiness:
+    get:
+      tags:
+        - US Securities Compliance
+      summary: US securities examination readiness
+      description: |
+        Answers "if I generate the SEC/FINRA examination package now, what will
+        be in it and what will it have to disclose?" WITHOUT creating a report
+        job.
+
+        It returns COUNTS, PRESENCE and DISCLOSURES, never evidence rows. The
+        rows come from the compliance report facade
+        (`POST /api/v1/compliance/reports` with `regulator=ussecurities`) and
+        only from there, so this is not a second export path.
+
+        It exists because the facade cannot answer this question: asking it
+        means creating a job, spending one of an Evaluation tier's three daily
+        reports, and waiting on an async render, purely to learn whether the
+        package is worth generating.
+
+        SCOPE: the summary covers the requesting TENANCY, with two DISCLOSED
+        exceptions rather than two silent ones (ADR-064 section 4). The
+        RLS-gated sources - the approval queue and the signed decision chain -
+        are additionally bounded by ORGANIZATION, because both enforce that
+        boundary in the database. The configured supervisory controls are
+        scoped by organization outright, because that is the scope the engine
+        that enforces them reads them under; a tenancy-scoped inventory would
+        publish a set of controls that is not the set being applied. The `scope`
+        field states all three in one sentence.
+
+        AUTHORITY: gated on tenant-wide read authority, the same gate as the
+        evidence and compliance exports. It returns aggregates rather than rows,
+        but an aggregate over `audit_logs` still describes whole-tenant
+        activity.
+
+        **Enterprise Feature**. Community builds register no route (404).
+      operationId: getUSSecuritiesExamReadiness
+      responses:
+        '200':
+          description: Examination readiness summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USSecuritiesExamReadiness'
+        '401':
+          description: |
+            No organization or tenant scope on the request (`SCOPE_REQUIRED`):
+            it did not traverse an authenticating hop.
+        '403':
+          description: |
+            The caller does not hold tenant-wide read authority.
+        '405':
+          description: Method not allowed; this route is GET-only.
+        '500':
+          description: |
+            The readiness summary could not be produced (`INTERNAL_ERROR`). The
+            body carries a fixed sentence; the cause is in the orchestrator log
+            keyed by the request.
+        '503':
+          description: |
+            The module is not initialized (`USSECURITIES_NOT_AVAILABLE`: the
+            orchestrator has no database connection). A DEPLOYMENT fact, not a
+            server fault, so it is not behind a Retry button that can never
+            clear.
+
   /api/v1/ojk/dashboard:
     get:
       tags:
@@ -4707,6 +4854,314 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OJKAPIError'
+
+  # ============================================================================
+  # US Insurance Compliance Endpoints (NAIC Supplement, NYDFS CL7, CO 10-1-1)
+  # ============================================================================
+
+  /api/v1/usinsurance/inventory:
+    get:
+      tags:
+        - US Insurance Compliance
+      summary: Observed AI system inventory (Exhibit A)
+      description: |
+        Returns the AI system surfaces OBSERVED in governed traffic during the
+        reporting window, with invocation counts and the governance verdicts
+        recorded against them. This is the spine of NAIC Supplement Exhibit A.
+
+        The response carries a `disclosure` string stating what the list is
+        not: AxonFlow does not discover AI systems outside the gateway, so this
+        is not a network-wide AI census, and it does not designate any system
+        as high risk. `unattributed_invocations` reports governed activity that
+        recorded no provider or model, so the item counts and the decision
+        volumes can be reconciled.
+
+        **Enterprise Feature**.
+      operationId: getUSInsuranceInventory
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: |
+            Organization identifier, the authoritative scope for this route.
+            Set by the AxonFlow agent from the validated client credential on
+            every proxied route, so a caller cannot choose it.
+          schema:
+            type: string
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Fallback used ONLY when `X-Org-ID` is absent, which covers
+            single-identifier deployments where the two values are the same.
+            When both are present the organization wins. A request carrying
+            neither, or a whitespace-only value, is rejected with 400
+            (`SCOPE_REQUIRED`): the org predicate is the tenant boundary on
+            `audit_logs`, which has no row-level security.
+          schema:
+            type: string
+        - name: period_start
+          in: query
+          required: false
+          description: |
+            Start of the reporting window, RFC3339 or `YYYY-MM-DD`. Defaults to
+            90 days before `period_end`.
+          schema:
+            type: string
+        - name: period_end
+          in: query
+          required: false
+          description: End of the reporting window, RFC3339 or `YYYY-MM-DD`. Defaults to now.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Observed AI system inventory (Exhibit A)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceInventoryResponse'
+              example:
+                items:
+                  - system: "anthropic / claude-3-5-sonnet"
+                    provider: "anthropic"
+                    model: "claude-3-5-sonnet"
+                    request_types: ["llm_chat"]
+                    invocations: 120
+                    decision_counts:
+                      allowed: 100
+                      blocked: 12
+                      redacted: 5
+                      needs_approval: 3
+                    first_seen: "2026-06-01T00:00:00Z"
+                    last_seen: "2026-08-26T00:00:00Z"
+                total: 1
+                unattributed_invocations: 9
+                period_start: "2026-06-01T00:00:00Z"
+                period_end: "2026-08-26T00:00:00Z"
+                completeness:
+                  complete: true
+                  truncated: false
+                  unavailable: false
+                disclosure: "This inventory lists the model surfaces observed in traffic that routed through AxonFlow."
+        '400':
+          description: Missing organization scope (`SCOPE_REQUIRED`) or an invalid window (`INVALID_PERIOD`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+        '405':
+          description: The US insurance read routes are GET-only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+        '503':
+          description: The module is not available on this deployment (`USINSURANCE_NOT_AVAILABLE`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+
+  /api/v1/usinsurance/oversight:
+    get:
+      tags:
+        - US Insurance Compliance
+      summary: Human oversight register with exceptions and overrides (Exhibits B and C)
+      description: |
+        Returns the human oversight register for the window: approvals,
+        rejections, expiries and overrides, with the reviewer identity and role
+        the platform recorded. Rows carrying an override trail are the
+        exception history NAIC Supplement Exhibit C and NYDFS CL7 ask for, and
+        are flagged with `is_exception`.
+
+        Unreviewed rows are INCLUDED and counted in `unresolved`: how many
+        holds were never resolved is a market-conduct question, and filtering
+        them out would make every report show perfect resolution.
+
+        **Enterprise Feature**.
+      operationId: getUSInsuranceOversight
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: |
+            Organization identifier, the authoritative scope for this route.
+            Set by the AxonFlow agent from the validated client credential on
+            every proxied route, so a caller cannot choose it.
+          schema:
+            type: string
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Fallback used ONLY when `X-Org-ID` is absent, which covers
+            single-identifier deployments where the two values are the same.
+            When both are present the organization wins. A request carrying
+            neither, or a whitespace-only value, is rejected with 400
+            (`SCOPE_REQUIRED`): the org predicate is the tenant boundary on
+            `audit_logs`, which has no row-level security.
+          schema:
+            type: string
+        - name: period_start
+          in: query
+          required: false
+          description: |
+            Start of the reporting window, RFC3339 or `YYYY-MM-DD`. Defaults to
+            90 days before `period_end`.
+          schema:
+            type: string
+        - name: period_end
+          in: query
+          required: false
+          description: End of the reporting window, RFC3339 or `YYYY-MM-DD`. Defaults to now.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Human oversight register with exceptions and overrides (Exhibits B and C)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceOversightResponse'
+              example:
+                items:
+                  - id: "1"
+                    request_id: "0f4b2c4a-1d1e-4a3b-9a1a-2f3c4d5e6f70"
+                    created_at: "2026-08-20T09:00:00Z"
+                    request_type: "llm_chat"
+                    trigger_reason: "policy hold"
+                    policy_id: "underwriting_guard"
+                    policy_name: "Underwriting guard"
+                    severity: "critical"
+                    status: "overridden"
+                    reviewer_id: "reviewer-1"
+                    reviewer_role: "underwriter"
+                    reviewed_at: "2026-08-20T10:00:00Z"
+                    review_latency_ms: 3600000
+                    is_exception: true
+                    override_authorized_by: "risk-officer"
+                    override_justification: "documented regulatory exception"
+                total: 1
+                exceptions: 1
+                unresolved: 0
+                period_start: "2026-06-01T00:00:00Z"
+                period_end: "2026-08-26T00:00:00Z"
+                completeness:
+                  complete: true
+                  truncated: false
+                  unavailable: false
+        '400':
+          description: Missing organization scope (`SCOPE_REQUIRED`) or an invalid window (`INVALID_PERIOD`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+        '405':
+          description: The US insurance read routes are GET-only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+        '503':
+          description: The module is not available on this deployment (`USINSURANCE_NOT_AVAILABLE`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+
+  /api/v1/usinsurance/data-sources:
+    get:
+      tags:
+        - US Insurance Compliance
+      summary: Consumer data classes observed in governed traffic (Exhibit D)
+      description: |
+        Returns the classes of consumer data detected and acted on in governed
+        traffic during the window. This is the measurable half of NAIC
+        Supplement Exhibit D.
+
+        The response carries a `disclosure` string stating what the list is
+        not: it is not the carrier's data-source inventory and it is not an
+        external consumer data and information source (ECDIS) register. Both
+        remain the carrier's own records.
+
+        **Enterprise Feature**.
+      operationId: getUSInsuranceDataSources
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: false
+          description: |
+            Organization identifier, the authoritative scope for this route.
+            Set by the AxonFlow agent from the validated client credential on
+            every proxied route, so a caller cannot choose it.
+          schema:
+            type: string
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: |
+            Fallback used ONLY when `X-Org-ID` is absent, which covers
+            single-identifier deployments where the two values are the same.
+            When both are present the organization wins. A request carrying
+            neither, or a whitespace-only value, is rejected with 400
+            (`SCOPE_REQUIRED`): the org predicate is the tenant boundary on
+            `audit_logs`, which has no row-level security.
+          schema:
+            type: string
+        - name: period_start
+          in: query
+          required: false
+          description: |
+            Start of the reporting window, RFC3339 or `YYYY-MM-DD`. Defaults to
+            90 days before `period_end`.
+          schema:
+            type: string
+        - name: period_end
+          in: query
+          required: false
+          description: End of the reporting window, RFC3339 or `YYYY-MM-DD`. Defaults to now.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Consumer data classes observed in governed traffic (Exhibit D)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceDataSourcesResponse'
+              example:
+                items:
+                  - category: "ssn"
+                    occurrences: 12
+                    first_seen: "2026-06-01T00:00:00Z"
+                    last_seen: "2026-08-26T00:00:00Z"
+                total: 1
+                period_start: "2026-06-01T00:00:00Z"
+                period_end: "2026-08-26T00:00:00Z"
+                completeness:
+                  complete: true
+                  truncated: false
+                  unavailable: false
+                disclosure: "These are the consumer data classes detected in governed traffic."
+        '400':
+          description: Missing organization scope (`SCOPE_REQUIRED`) or an invalid window (`INVALID_PERIOD`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+        '405':
+          description: The US insurance read routes are GET-only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
+        '503':
+          description: The module is not available on this deployment (`USINSURANCE_NOT_AVAILABLE`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/USInsuranceAPIError'
 
   # ============================================================================
   # EU AI Act Compliance Endpoints
@@ -14423,6 +14878,217 @@ components:
     # OJK Compliance schemas (Enterprise - Indonesia)
     # ==========================================================================
 
+    USInsuranceAPIError:
+      type: object
+      description: US insurance module error envelope
+      properties:
+        error:
+          type: string
+          description: Human-readable message. Never carries the underlying database error.
+        error_code:
+          type: string
+          description: |
+            Stable machine-readable code: SCOPE_REQUIRED, INVALID_PERIOD,
+            USINSURANCE_NOT_AVAILABLE or INTERNAL_ERROR.
+      required:
+        - error
+        - error_code
+
+    USInsuranceCompleteness:
+      type: object
+      description: |
+        The per-response completeness signal. It is ALWAYS present, populated
+        or not, so a client never has to infer the good case from an absent
+        field. `unavailable` means the backing surface is not present on this
+        deployment, which is NOT the same as an empty result.
+      properties:
+        complete:
+          type: boolean
+          description: True when the read succeeded and returned everything it matched.
+        truncated:
+          type: boolean
+          description: True when the row cap was reached, so the items are a subset.
+        unavailable:
+          type: boolean
+          description: True when the backing surface is absent on this deployment.
+        note:
+          type: string
+          description: One sentence explaining a non-complete answer. Omitted when complete.
+      required:
+        - complete
+        - truncated
+        - unavailable
+
+    USInsuranceInventoryItem:
+      type: object
+      description: |
+        One AI system surface observed in governed traffic. The identity is the
+        recorded provider and model pair, which is the only system identity the
+        platform holds; a carrier's own system name is never invented here.
+      properties:
+        system:
+          type: string
+          description: Rendered identity, "provider / model".
+        provider:
+          type: string
+        model:
+          type: string
+        request_types:
+          type: array
+          items:
+            type: string
+        invocations:
+          type: integer
+        decision_counts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Counts keyed by the platform's own policy_decision vocabulary.
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+
+    USInsuranceInventoryResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/USInsuranceInventoryItem'
+        total:
+          type: integer
+        unattributed_invocations:
+          type: integer
+          description: |
+            Governed activity that recorded no provider and no model, so it
+            could not be attributed to a model surface. Reported rather than
+            dropped so the item counts and the decision volumes reconcile.
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        completeness:
+          $ref: '#/components/schemas/USInsuranceCompleteness'
+        disclosure:
+          type: string
+          description: |
+            States what this list is not. AxonFlow does not discover AI systems
+            outside the gateway and does not designate any system as high risk.
+
+    USInsuranceOversightItem:
+      type: object
+      properties:
+        id:
+          type: string
+        request_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        request_type:
+          type: string
+        trigger_reason:
+          type: string
+        policy_id:
+          type: string
+        policy_name:
+          type: string
+        severity:
+          type: string
+        status:
+          type: string
+        reviewer_id:
+          type: string
+        reviewer_role:
+          type: string
+        reviewed_at:
+          type: string
+          format: date-time
+          description: Omitted when the row was never reviewed.
+        review_latency_ms:
+          type: integer
+          format: int64
+          description: Omitted when the row was never reviewed.
+        is_exception:
+          type: boolean
+          description: |
+            True when the platform recorded the overridden status, OR recorded
+            an override trail under another status. Both arms matter: a row
+            carrying evidence must not drop out of the exception exhibit
+            because its status string differs.
+        override_authorized_by:
+          type: string
+          description: Omitted when none was recorded.
+        override_justification:
+          type: string
+          description: Surfaced verbatim. Omitted when none was recorded.
+
+    USInsuranceOversightResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/USInsuranceOversightItem'
+        total:
+          type: integer
+        exceptions:
+          type: integer
+          description: Count of items carrying an override trail.
+        unresolved:
+          type: integer
+          description: Count of items that were never reviewed.
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        completeness:
+          $ref: '#/components/schemas/USInsuranceCompleteness'
+
+    USInsuranceDataCategoryItem:
+      type: object
+      properties:
+        category:
+          type: string
+        occurrences:
+          type: integer
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+
+    USInsuranceDataSourcesResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/USInsuranceDataCategoryItem'
+        total:
+          type: integer
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        completeness:
+          $ref: '#/components/schemas/USInsuranceCompleteness'
+        disclosure:
+          type: string
+          description: |
+            States what this list is not: not the carrier's data-source
+            inventory and not an ECDIS register.
+
     OJKAPIError:
       type: object
       description: OJK module error envelope
@@ -14895,6 +15561,299 @@ components:
         created_at:
           type: string
           format: date-time
+
+    USBankingExamReadiness:
+      type: object
+      description: |
+        The US banking examination-readiness summary. Counts, presence and
+        disclosures only; it carries no evidence rows.
+      properties:
+        tenant_id:
+          type: string
+          description: The tenancy this summary covers.
+        window_days:
+          type: integer
+          description: |
+            The lookback the counts are taken over. One quarter, because that
+            is the shortest cadence any instrument in scope sets (12 CFR Part
+            609 quarterly board reporting), so the window always covers at
+            least one full cycle for the tighter profile.
+          example: 90
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        scope:
+          type: string
+          description: |
+            One sentence stating the report's tenancy boundary. Every count is
+            meaningless without it.
+        profiles:
+          type: array
+          description: |
+            The supervisory profiles and the frameworks that select each. The
+            profile is DERIVED from the framework a report requests and is
+            never a separate request field, so a caller cannot ask for a
+            combination that contradicts itself (ADR-063 section 2). Served so
+            a console learns the mapping from the deployment instead of keeping
+            a copy that drifts.
+          items:
+            $ref: '#/components/schemas/USBankingProfile'
+        sources:
+          type: array
+          description: Per evidence source, whether it holds anything and how much.
+          items:
+            $ref: '#/components/schemas/USBankingSourceReadiness'
+        disclosures:
+          type: array
+          description: |
+            The sentences every generated artifact carries. Returned here so
+            nothing in a package is a surprise at the point it reaches an
+            examiner, and served from the same source the artifact renders
+            from, so the two cannot say different things.
+          items:
+            type: string
+        generated_at:
+          type: string
+          format: date-time
+
+    USBankingProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          enum: [federal, farm-credit]
+        display_name:
+          type: string
+        frameworks:
+          type: array
+          description: The framework tokens that select this profile.
+          items:
+            type: string
+            enum: [US_MRM, US_TPRM, GLBA_SAFEGUARDS, BSA_AML, FCA_EM31]
+        board_pack_cadence:
+          type: string
+          description: |
+            What the profile's supervisor EXPECTS, not a claim that this
+            deployment produces a pack on that schedule.
+          enum: [annual, quarterly]
+        model_risk_citation:
+          type: string
+        incident_clock:
+          type: string
+
+    USBankingSourceReadiness:
+      type: object
+      properties:
+        key:
+          type: string
+        title:
+          type: string
+        present:
+          type: boolean
+          description: |
+            An OBSERVATION, not a health check: false means the source held
+            nothing for this tenancy in this window, which on a quiet
+            deployment is a truthful answer and not a fault. Meaningful ONLY
+            when `readable` is true.
+        count:
+          type: integer
+        readable:
+          type: boolean
+          description: |
+            Whether this deployment could read the source AT ALL.
+
+            UNDOCUMENTED UNTIL #3532, and load-bearing since #3530 shipped: the
+            server has always sent it, the console keys its warning styling on
+            it, and the field is what separates "quiet deployment" from
+            "surface this deployment cannot read". Omitting it from the schema
+            left a generated client with no way to tell them apart except by
+            sniffing the note's prose, which is exactly the shape the note's
+            own description warns against.
+        note:
+          type: string
+          description: |
+            Why the count reads as it does. Load-bearing: a source can read
+            zero because the deployment is quiet OR because this deployment
+            cannot read that source at all, and `readable` is what separates
+            them. A note beginning `NOT REPORTED` means the generated package
+            will carry an INCOMPLETE section.
+
+    USSecuritiesExamReadiness:
+      type: object
+      description: |
+        The US securities examination-readiness summary. Counts, presence and
+        disclosures only; it carries no evidence rows.
+      properties:
+        tenant_id:
+          type: string
+          description: The tenancy this summary covers.
+        window_days:
+          type: integer
+          description: |
+            The lookback the counts are taken over. One quarter, matching the
+            sibling US modules: it is the shortest cycle any instrument in scope
+            works to, and it bounds an unqualified read on a busy audit trail.
+          example: 90
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        scope:
+          type: string
+          description: |
+            One sentence stating the package's tenancy boundary AND its two
+            disclosed exceptions. Every count is meaningless without it.
+        populations:
+          type: array
+          description: |
+            The supervised populations and the frameworks that select each. The
+            population is DERIVED from the framework a report requests and is
+            never a separate request field, so a caller cannot ask for a
+            combination that contradicts itself (ADR-063 section 2). Served so a
+            console learns the mapping from the deployment instead of keeping a
+            copy that drifts.
+          items:
+            $ref: '#/components/schemas/USSecuritiesPopulation'
+        sources:
+          type: array
+          description: Per evidence source, whether it holds anything and how much.
+          items:
+            $ref: '#/components/schemas/USSecuritiesSourceReadiness'
+        instruments:
+          type: array
+          description: |
+            The instruments a generated package is rendered against, each with
+            the version or date it was read at. An instrument named without its
+            revision leaves the reader to guess, and the guess a reader makes is
+            always the current one.
+          items:
+            $ref: '#/components/schemas/USSecuritiesInstrument'
+        disclosures:
+          type: array
+          description: |
+            The sentences every generated artifact carries. Returned here so
+            nothing in a package is a surprise at the point it reaches an
+            examiner, and served from the same source the artifact renders from,
+            so the two cannot say different things.
+          items:
+            type: string
+        complete:
+          type: boolean
+          description: |
+            False when ANY source could not be read. A package generated while
+            this is false carries at least one INCOMPLETE section.
+        fraud_risk_addon_active:
+          type: boolean
+          description: |
+            Whether the Fraud and Risk Add-on's control pack is active on this
+            deployment. MEASURED from the seeded pack rather than from a licence
+            field: the licence feature reader ADR-061 designs does not exist in
+            the tree, and the pack is installed by a deliberate operator action
+            rather than by a migration, so its presence is what decides whether
+            deterministic financial-crime controls run.
+
+            It is published here because the answer changes what the
+            financial-crime section of a generated package SAYS - disclosed
+            absent rather than empty - and an operator deciding whether to
+            generate should see that first.
+        fraud_risk_addon_policy_rows:
+          type: integer
+          description: |
+            The number of enabled financial-crime controls visible to this
+            organization, deployment-wide rows included.
+        generated_at:
+          type: string
+          format: date-time
+
+    USSecuritiesPopulation:
+      type: object
+      properties:
+        id:
+          type: string
+          enum: [adviser, broker-dealer, both]
+        display_name:
+          type: string
+        frameworks:
+          type: array
+          description: The framework tokens that select this population.
+          items:
+            type: string
+            enum: [SEC_EXAM, FINRA_SUPERVISION, REG_SP]
+        recordkeeping_citation:
+          type: string
+          description: |
+            States the REQUIREMENT, never this deployment's posture. Where it
+            names WORM it also names the audit-trail alternative the 2022
+            amendments to Exchange Act rule 17a-4 added: naming only the first
+            tells a firm to buy storage it may not need.
+        supervision_citation:
+          type: string
+        marketing_citation:
+          type: string
+          description: |
+            The instrument under which the firm's own AI claims are examined.
+            This is what makes the disclosure-vs-reality reconciliation a
+            compliance artifact rather than a marketing summary.
+
+    USSecuritiesInstrument:
+      type: object
+      properties:
+        instrument:
+          type: string
+        as_of:
+          type: string
+          description: The version or date this package is rendered against.
+        note:
+          type: string
+          description: What the instrument is cited for.
+        applies_to:
+          type: array
+          description: |
+            The registrations the instrument reaches. A rendered artifact
+            carries only the instruments its own population appears in, because
+            an examiner reads a citation block as the set the document answers.
+          items:
+            type: string
+            enum: [adviser, broker-dealer]
+
+    USSecuritiesSourceReadiness:
+      type: object
+      properties:
+        key:
+          type: string
+        title:
+          type: string
+        present:
+          type: boolean
+          description: |
+            An OBSERVATION, not a health check: false means the source held
+            nothing for this tenancy in this window, which on a quiet deployment
+            is a truthful answer and not a fault. Meaningful ONLY when
+            `readable` is true.
+        count:
+          type: integer
+        readable:
+          type: boolean
+          description: |
+            Whether this deployment could read the source AT ALL. `present:
+            false` has two causes needing opposite reactions - a quiet
+            deployment, and a surface this deployment cannot read - and this is
+            the field that separates them. A console must key on this boolean
+            rather than on the note's prose, or rewording the sentence silently
+            switches the warning off.
+        note:
+          type: string
+          description: |
+            Why the count reads as it does. Load-bearing: a note beginning `NOT
+            REPORTED` means the generated package will carry an INCOMPLETE
+            section, and a note beginning `DISCLOSED ABSENT` means the
+            capability is not installed here and the section will say so rather
+            than reporting a zero.
 
     OJKDashboardResponse:
       type: object

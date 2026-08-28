@@ -61,14 +61,6 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
-  push:
-    branches: [main]
-    paths:
-      - 'examples/**'
-      - '.github/workflows/java-examples-compile.yml'
-      - '.github/scripts/compile-java-examples.sh'
-      - '.github/scripts/pom_introspect.py'
-      - 'tests/regression-test-required/java_examples_compile_gate_test.sh'
   workflow_dispatch:
 
 permissions:
@@ -85,6 +77,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     permissions:
       contents: read
@@ -165,6 +160,9 @@ jobs:
   java-examples-summary:
     name: Java Examples Summary
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     needs: [detect-changes, compile-java-examples]
     if: always()
     steps:

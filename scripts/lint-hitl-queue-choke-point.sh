@@ -12,7 +12,7 @@
 # THE INVARIANT
 #
 #   Exactly ONE non-test file in the tree may contain the literal
-#   `INSERT INTO hitl_approval_queue`, and it is
+#   `INSERT INTO`, `MERGE INTO` or `COPY` against hitl_approval_queue, and it is
 #   platform/agent/hitl/queue/writer.go - the shared writer that
 #   platform/agent/hitl/queue.Enqueuer fronts with the licence-tier gate, the
 #   MaxPendingApprovals cap and the hitl_approval_history trail.
@@ -117,6 +117,15 @@ scan() {
           # of runtime_e2e_suites.tsv, so nothing can live here that is not a
           # declared suite. The suffix rule alone would not cover it - the
           # suites' entry points are named `test.sh`, not `*_test.sh`.
+          #
+          # ...but runtime-e2e/lib IS scanned. The bijection above is between
+          # SUITE directories and TSV rows; `lib/` is neither a suite nor a
+          # TSV row, it is sourced helper code shared by all of them, and it
+          # matched `runtime-e2e/*` purely by glob accident. A writer parked
+          # there would have been invisible to this guard while running inside
+          # every suite that sources it. This arm is empty on purpose: it
+          # matches before the exclusion below and falls through to be scanned.
+          runtime-e2e/lib/*) ;;
           runtime-e2e/*) continue ;;
           # This guard names the statement it looks for.
           scripts/lint-hitl-queue-choke-point.sh) continue ;;
@@ -193,6 +202,13 @@ scan() {
 #      door to traversal loops). No such directory exists in this repo.
 #   3. A writer built by a TEMPLATE or a code generator whose output is not
 #      committed.
+#   4. The COPY verb is matched DIRECTION-BLIND: `COPY hitl_approval_queue TO
+#      STDOUT` is an export - a read - and is flagged anyway. Deliberate:
+#      distinguishing FROM from TO needs statement parsing, the false positive
+#      is LOUD (a reviewer sees exactly what tripped it and allow-lists or
+#      rewrites), and an export of this table in non-test code would deserve a
+#      look regardless. The parenthesised form `COPY (SELECT ...) TO` is not
+#      flagged - the table name there is not adjacent to the verb.
 count_statements() {
   # ORDER MATTERS, and getting it wrong is a documented incident. #3334's
   # guard stripped BLOCK comments in a pass BEFORE line comments, so a `/*`
@@ -229,12 +245,23 @@ count_statements() {
   # Safe to blank: turning a literal backslash-n into a space cannot create a
   # match that was not already there, because the table name still has to be
   # present verbatim.
+  #
+  # THE BLOCK STRIP REFUSES TO OPEN ON A /* TOUCHING A QUOTE ON EITHER SIDE.
+  # The lookbehind (round 2) guards a literal that BEGINS "/*"; R3 round 3
+  # measured that a literal ENDING in /* - a path glob like "migrations/*" -
+  # still opened a strip window that swallowed a real INSERT further down,
+  # which is verbatim the class the round-2 commit claimed closed. Hence the
+  # lookahead too: in `"migrations/*"` the character AFTER /* is a quote, and
+  # no genuine comment opener is immediately followed by one in this tree
+  # (a comment like /*"x"*/ would now go unstripped, which errs LOUD - the
+  # text may then be counted as a writer - rather than silent). Both
+  # directions are pinned as fixtures below.
   LC_ALL=C grep -v -E '^[[:space:]]*(//|#|--)' "$1" 2>/dev/null \
     | tr '\n' ' ' \
-    | perl -0pe 's{/\*.*?\*/}{ }gs' \
+    | perl -0pe 's{(?<!["\x27\x60])/\*(?!["\x27\x60]).*?\*/}{ }gs' \
     | perl -0pe 's{\\[nrt]}{ }gs' \
     | tr -s '[:space:]' ' ' \
-    | LC_ALL=C grep -o -i -E 'insert[[:space:]]+into[[:space:]]*("?[a-z_][a-z0-9_]*"?[[:space:]]*\.[[:space:]]*)?"?hitl_approval_queue"?([^a-z0-9_"]|$)' \
+    | LC_ALL=C grep -o -i -E '(insert[[:space:]]+into|merge[[:space:]]+into|copy)[[:space:]]*("?[a-z_][a-z0-9_]*"?[[:space:]]*\.[[:space:]]*)?"?hitl_approval_queue"?([^a-z0-9_"]|$)' \
     | wc -l \
     | tr -d ' '
   # `|| true` is NOT enough here and its absence is a latent trap: the pipeline
@@ -254,7 +281,7 @@ run_lint() {
   got=$(scan "$root")
 
   if [ "$want" = "$got" ]; then
-    echo "✅ HITL queue choke point intact - the only non-test '${NEEDLE}' is in the shared writer."
+    echo "✅ HITL queue choke point intact - the only non-test write statement (INSERT/MERGE/COPY into hitl_approval_queue) is in the shared writer."
     printf '%s\n' "$got" | sed 's/^/   /'
     return 0
   fi
@@ -427,6 +454,79 @@ $NEEDLE must never appear in this package
   cp -R "$ok" "$esc"
   mk "$esc/platform/orchestrator/sneak.go" "query := \"INSERT\\n  INTO\\n  hitl_approval_queue (a) VALUES (\$1)\""
   check "a statement split by ESCAPED newlines is caught" 1 "$esc"
+
+  # 12d. R3 ROUND 2, SECOND REVIEWER. Three more evasions, all reproduced
+  #      against the finished guard and all now closed.
+  #
+  #      MERGE and COPY are ordinary Postgres write verbs. The header claims
+  #      the invariant is "every WRITE goes through the chokepoint" while the
+  #      needle only ever said INSERT INTO - so a seed, a backfill or a
+  #      migration using either wrote rows and passed. The claim was wider
+  #      than the matcher, which is the same defect shape as an absence claim
+  #      backed by a truncated grep.
+  local merge="$tmp/merge"
+  cp -R "$ok" "$merge"
+  mk "$merge/platform/orchestrator/sneak.go" "q := \`MERGE INTO hitl_approval_queue t USING s ON t.id=s.id WHEN NOT MATCHED THEN INSERT (a) VALUES (1)\`"
+  check "MERGE INTO ... THEN INSERT is caught" 1 "$merge"
+
+  local copyv="$tmp/copyv"
+  cp -R "$ok" "$copyv"
+  mk "$copyv/migrations/core/999_seed.sql" "COPY hitl_approval_queue (org_id, tenant_id) FROM STDIN;"
+  check "COPY ... FROM STDIN is caught" 1 "$copyv"
+
+  #      And the one that is my own fix biting back. The block-comment strip
+  #      was added to stop a Go package doc reading as a writer. It runs over
+  #      the JOINED file, so a `/*` appearing inside a STRING LITERAL - a
+  #      regex, a glob, an eslint pragma - opened a strip window that swallowed
+  #      a real statement further down. A false positive closed, a false
+  #      negative opened: #3334's alternation exactly, in the same guard, one
+  #      round later. The strip now refuses to open on a `/*` preceded by a
+  #      quote character.
+  #
+  #      NOT a full lexer, and deliberately not: blanking string literals
+  #      outright is what #3334 measured and REJECTED, because on that guard
+  #      the DDL lived inside a literal. On this one the statements we hunt
+  #      live inside Go backtick literals, so blanking would delete the
+  #      evidence rather than the noise.
+  local strlit="$tmp/strlit"
+  cp -R "$ok" "$strlit"
+  mk "$strlit/platform/orchestrator/sneak.go" "const open = \"/*\"
+q := \`INSERT INTO hitl_approval_queue (a) VALUES (\$1)\`
+const shut = \"*/\""
+  check "an INSERT between /* and */ STRING LITERALS is caught" 1 "$strlit"
+
+  #      R3 round 3: the round-2 lookbehind only guarded a literal BEGINNING
+  #      "/*". A literal ENDING in /* - a path glob - reopened the window and
+  #      swallowed a real INSERT between the glob and a later package-doc
+  #      trailer. Same class, opposite edge. Pinned in BOTH directions: the
+  #      glob must not hide a writer, and an ordinary trailing package doc
+  #      must still be stripped rather than counted as one.
+  local glob="$tmp/glob"
+  cp -R "$ok" "$glob"
+  mk "$glob/platform/orchestrator/sneak.go" "var scanPaths = []string{\"migrations/*\", \"platform/*\"}
+q := \`INSERT INTO hitl_approval_queue (a) VALUES (\$1)\`
+/*
+Package doc trailer.
+*/"
+  check "a PATH GLOB literal does not hide a writer before a package doc" 1 "$glob"
+
+  local trailer="$tmp/trailer"
+  cp -R "$ok" "$trailer"
+  mk "$trailer/platform/orchestrator/ok2.go" "var x = 1
+/*
+An ordinary trailing package doc that mentions INSERT INTO hitl_approval_queue.
+*/"
+  check "an ordinary package-doc trailer is still stripped, not counted" 0 "$trailer"
+
+  #      The runtime-e2e/lib widening (round 2) shipped UNPINNED: no fixture
+  #      exercised the empty case arm, so reordering the two arms - or
+  #      deleting the lib arm - reverted it with a green board. A behaviour
+  #      change without a fixture is a demonstration, not a pin, in a script
+  #      whose own header says every fixture below is a pin.
+  local libw="$tmp/libw"
+  cp -R "$ok" "$libw"
+  mk "$libw/runtime-e2e/lib/seed_helper.sh" "psql -c \"$NEEDLE (a) VALUES ('x')\""
+  check "a writer in runtime-e2e/lib IS scanned (lib is helper code, not a suite)" 1 "$libw"
 
   # 12c. NEGATIVE FIXTURES for the two evasions that remain open. These assert
   #      rc=0 - the guard does NOT catch them - which looks backwards until you

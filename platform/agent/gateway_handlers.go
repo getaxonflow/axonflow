@@ -56,15 +56,14 @@ var (
 // canonical sharedpolicy.AllTextPIICategories() so no pii-* jurisdiction can be
 // dropped from this plane (the class of bug that left pii-indonesia ungoverned
 // elsewhere). Covered by TestPlaneWhitelistsCoverAllPII.
-var gatewayPreCheckPolicyCategories = append([]sharedpolicy.PolicyCategory{
+// #3529: the compliance portion is sourced from
+// sharedpolicy.AllComplianceCategories() rather than hand-listed, closing the
+// same gap on this plane. Covered by TestPlaneWhitelistsCoverAllCompliance.
+var gatewayPreCheckPolicyCategories = append(append([]sharedpolicy.PolicyCategory{
 	sharedpolicy.CategorySecuritySQLi,
 	sharedpolicy.CategorySecurityDangerous,
 	sharedpolicy.CategorySensitiveData, // For dynamically created HITL policies (#1081)
-	sharedpolicy.CategoryComplianceRBI,
-	sharedpolicy.CategoryComplianceSEBI,
-	sharedpolicy.CategoryComplianceEUAIAct,
-	sharedpolicy.CategoryComplianceMASFEAT,
-}, sharedpolicy.AllTextPIICategories()...)
+}, sharedpolicy.AllComplianceCategories()...), sharedpolicy.AllTextPIICategories()...)
 
 // shouldLogEnforcementOutreach returns true if enough time has passed since last enforcement log
 func shouldLogEnforcementOutreach() bool {

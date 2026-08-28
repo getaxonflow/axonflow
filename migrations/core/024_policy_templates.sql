@@ -98,7 +98,7 @@ VALUES
             {
                 "field": "query",
                 "operator": "contains_any",
-                "value": ["{{prohibited_patterns}}"]
+                "value": "{{prohibited_patterns}}"
             }
         ],
         "actions": [

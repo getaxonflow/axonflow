@@ -160,6 +160,20 @@ const (
 	CategoryComplianceEUAIAct PolicyCategory = "compliance-euaiact" // Issue #1081 - EU AI Act
 	CategoryComplianceMASFEAT PolicyCategory = "compliance-masfeat" // Issue #1081 - MAS FEAT Singapore
 
+	// US compliance categories (#3529, epic #3528 Phase 1). Seeded as policy
+	// templates by migrations/enterprise/139_us_compliance_templates.sql, each
+	// rule citing the public provision it is modelled on.
+	//
+	// The spelling is canonical `compliance-<x>` on purpose and the four
+	// constants below are the ONLY place it is written in Go: migration
+	// core/127 records what happens when a seed invents its own spelling, the
+	// exact-match category filter excluded every drifted row and those
+	// policies silently never fired.
+	CategoryComplianceGLBA        PolicyCategory = "compliance-glba"        // GLBA Safeguards Rule, 16 CFR 314.4
+	CategoryComplianceFairLending PolicyCategory = "compliance-fairlending" // ECOA / Regulation B, 12 CFR 1002
+	CategoryComplianceBSAAML      PolicyCategory = "compliance-bsa-aml"     // Bank Secrecy Act / SAR, 31 CFR 1020.320
+	CategoryComplianceNYDFS       PolicyCategory = "compliance-nydfs"       // NYDFS 23 NYCRR Part 500
+
 	// Financial crime category (ADR-061 / #3329). Carries the FinCrime
 	// Policy Pack rows so they are governed neither by the PII/SQLi posture
 	// levers (BuildActionOverrides) nor by capability scoping, and are
@@ -400,7 +414,9 @@ func isSecurityPolicyCategory(cat PolicyCategory) bool {
 func IsComplianceCategory(cat PolicyCategory) bool {
 	switch cat {
 	case CategoryComplianceGDPR, CategoryComplianceHIPAA, CategoryComplianceRBI,
-		CategoryComplianceSEBI, CategoryComplianceEUAIAct, CategoryComplianceMASFEAT:
+		CategoryComplianceSEBI, CategoryComplianceEUAIAct, CategoryComplianceMASFEAT,
+		CategoryComplianceGLBA, CategoryComplianceFairLending,
+		CategoryComplianceBSAAML, CategoryComplianceNYDFS:
 		return true
 	}
 	return false
@@ -408,6 +424,23 @@ func IsComplianceCategory(cat PolicyCategory) bool {
 
 // AllComplianceCategories returns all compliance-related policy categories.
 // Issue #1081: Added for use in gateway evaluation.
+//
+// #3529: it is now actually USED for that. Until this change the four agent
+// plane whitelists (proxyPolicyCategories, gatewayPreCheckPolicyCategories,
+// openaiCompatPolicyCategories and the inline mcp_handler list) each hand-listed
+// four of the six categories this function returned, and nothing in the
+// non-test tree called this function at all. So it declared a vocabulary that
+// no plane honoured, and compliance-gdpr / compliance-hipaa were filtered out
+// before evaluation on every plane while being advertised as authorable in the
+// portal. All four whitelists now spread this function, which is the same fix
+// #2965 applied to the PII portion with AllTextPIICategories after a hand list
+// dropped pii-indonesia and left Indonesian PII ungoverned.
+//
+// Consequence for anyone adding a category here: it becomes evaluated on all
+// four planes at once. That is the point (a compliance category that no plane
+// evaluates is a silent allow) but it means this list is a runtime surface
+// now, not a piece of documentation. TestPlaneWhitelistsCoverAllCompliance and
+// its independent cross-check pin the relationship in both directions.
 func AllComplianceCategories() []PolicyCategory {
 	return []PolicyCategory{
 		CategoryComplianceGDPR,
@@ -416,6 +449,10 @@ func AllComplianceCategories() []PolicyCategory {
 		CategoryComplianceSEBI,
 		CategoryComplianceEUAIAct,
 		CategoryComplianceMASFEAT,
+		CategoryComplianceGLBA,
+		CategoryComplianceFairLending,
+		CategoryComplianceBSAAML,
+		CategoryComplianceNYDFS,
 	}
 }
 

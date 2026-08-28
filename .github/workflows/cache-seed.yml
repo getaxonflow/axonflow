@@ -1,0 +1,117 @@
+# Seeds the caches every PR restores from, now that verification workflows no
+# longer re-run on push to main.
+#
+# WHY THIS EXISTS - the coupling is invisible until it is cut. GitHub Actions
+# caches are BRANCH-SCOPED: a PR (or merge-queue) run can restore caches
+# written on its own branch or on the default branch, and nothing else. While
+# test.yml, lint.yml and the e2e suites re-ran on every push to main, their
+# setup-go steps kept the main-branch Go module cache warm as a SIDE EFFECT.
+# The 2026-08-27 CI-cost change removed those post-merge re-runs (the merge
+# queue had just verified the identical tree), which also removed the only
+# writers of the main-scoped cache - build.yml, the one builder kept on main,
+# runs setup-go with `cache: false`.
+#
+# THE KEY MUST MATCH THE CONSUMER'S KEY EXACTLY, OR THE SEED IS A NO-OP.
+# R3 proved the first version of this file useless by replicating setup-go's
+# key derivation: the primary key ends in hashFiles(cache-dependency-path) and
+# setup-go restores with NO restore-keys - exact match only. One seed job
+# covering "all the go.sums" therefore wrote a key that none of the sixteen
+# cache-restoring PR jobs ever looks up. Each matrix entry below mirrors ONE
+# real consumer configuration VERBATIM - same go-version spelling, same
+# cache-dependency-path list byte for byte, including test-customer-portal's
+# reference to platform/shared/go.sum, a file that does not exist (hashFiles
+# skips it, so it shapes the key only by its absence; changing the list here
+# would change the key and break the match). If a workflow's setup-go block
+# changes, its matrix entry here must change in the same PR.
+#
+# Consumers per entry (census 2026-08-27):
+#   platform        -> test.yml x6, test-community.yml x3, migrations-gate.yml
+#   platform+ee     -> test.yml unit-tests-enterprise, unit-tests-enterprise-realpg
+#   ee              -> tier-gate-contract.yml x2 (merge queue)
+#   portal          -> test-customer-portal-modes.yml test-backend
+# and the bespoke job -> risk-scorer-tests.yml x2 (go-version-file, not go-version)
+name: Cache Seed
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/go.sum'
+      - 'ee/go.sum'
+      - 'ee/platform/customer-portal/go.sum'
+      - '.github/workflows/cache-seed.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    name: Seed ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: platform
+            dep-path: platform/go.sum
+            modules: platform
+          - name: platform+ee
+            dep-path: |
+              platform/go.sum
+              ee/go.sum
+            modules: platform ee
+          - name: ee
+            dep-path: ee/go.sum
+            modules: ee
+          - name: portal
+            dep-path: |
+              ee/platform/customer-portal/go.sum
+              platform/shared/go.sum
+            modules: ee/platform/customer-portal
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go (key mirrors one consumer exactly)
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: ${{ matrix.dep-path }}
+
+      # setup-go SAVES the module directory at job end; it only has something
+      # to save if the modules were actually downloaded.
+      - name: Download modules
+        run: |
+          set -euo pipefail
+          for d in ${{ matrix.modules }}; do
+            echo "--- go mod download: $d"
+            (cd "$d" && go mod download)
+          done
+
+  # risk-scorer-tests.yml pins Go via go-version-file, not go-version, and the
+  # version spec is part of setup-go's cache key - so its key cannot come from
+  # the matrix above and gets its own verbatim mirror.
+  seed-risk-scorer:
+    name: Seed risk-scorer (go-version-file)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: platform/go.mod
+          cache-dependency-path: ee/go.sum
+
+      - name: Download modules
+        run: |
+          set -euo pipefail
+          (cd ee && go mod download)

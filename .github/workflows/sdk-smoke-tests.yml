@@ -15,38 +15,6 @@ on:
     branches:
       - main
       - develop
-  push:
-    branches:
-      - main
-      - develop
-    # This list gates whether the workflow runs AT ALL on main — including the
-    # mandatory e2e-production-posture job, which has no dorny gate of its own.
-    # The dorny/paths-filter list in detect-changes below is narrower on
-    # purpose: it gates only the SDK smoke-tests job. Keep the two in sync
-    # except where noted.
-    paths:
-      - 'platform/**'
-      - 'ee/platform/agent/**'
-      - 'ee/platform/orchestrator/**'
-      - 'ee/platform/connectors/**'
-      - 'ee/platform/customer-portal/**'
-      - 'examples/demo/**'
-      - 'docker-compose.yml'
-      - 'docker-compose.enterprise.yml'
-      - 'migrations/**'
-      - 'scripts/e2e/**'
-      - 'scripts/setup-e2e-testing.sh'
-      - 'scripts/operators/provision-app-role.sh'
-      # The e2e-production-posture job runs the suites named in
-      # scripts/e2e/production_posture_registry.txt. scripts/e2e/** covered the
-      # registry and the runner but NOT the suite bodies it invokes, so a
-      # direct push to main touching only runtime-e2e/3039_rls_blind_reads/
-      # (or runtime-e2e/lib/) skipped the job that consumes them (#3089).
-      # push-only: the pull_request trigger has no paths filter, so the posture
-      # job already runs on every enterprise PR; adding this to the dorny list
-      # below would only make the unrelated SDK smoke-tests job run too.
-      - 'runtime-e2e/**'
-      - '.github/workflows/sdk-smoke-tests.yml'
   workflow_dispatch:
 
 permissions:
@@ -73,6 +41,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     permissions:
       contents: read
@@ -629,6 +600,9 @@ jobs:
   smoke-test-summary:
     name: Smoke Test Summary
     runs-on: ubuntu-latest
+    # 10, not the class cap: measured max for this job shape is under 20
+    # seconds, so a wedged run should bill minutes, not an hour.
+    timeout-minutes: 10
     needs: [detect-changes, smoke-tests, e2e-production-posture]
     if: always()
 

@@ -40,7 +40,45 @@ var tenantWideAuditExportPaths = []string{
 	// See complianceReportPollShape below - that carve-out is the only reason
 	// this entry is not a plain whole-prefix gate.
 	complianceReportBasePath,
+	// ADR-063 / #3530: the US banking exam-readiness summary. It returns
+	// AGGREGATES over audit_logs (counts, presence, disclosures) and never
+	// rows, so it is arguably the rbi/audit-exports class rather than this
+	// one. It is gated here anyway: "it is only a count" is a claim that ages
+	// badly over audit data, an aggregate that partitions by client id still
+	// describes whole-tenant activity, and the route is admin-facing by
+	// design, so the fail-safe direction costs nothing. Whole-prefix, with no
+	// carve-out: unlike the facade there is no viewer-facing poll under it.
+	usBankingBasePath,
+	// ADR-064 / #3532: the US securities exam-readiness summary, gated on the
+	// same reasoning as its usbanking sibling directly above. It returns
+	// AGGREGATES over audit_logs, decision_chain and the approval queue - counts,
+	// presence and disclosures - and never rows; it is gated here anyway,
+	// because "it is only a count" ages badly over audit data, an aggregate that
+	// partitions by client id still describes whole-tenant activity, and the
+	// route is admin-facing by design. Whole-prefix, with no carve-out: unlike
+	// the facade there is no viewer-facing poll under it.
+	usSecuritiesBasePath,
 }
+
+// usBankingBasePath is the US banking module's route prefix.
+//
+// Declared here rather than imported from the usbanking package because that
+// package is Enterprise-tagged and this file compiles in BOTH editions.
+// TestUSBanking_BasePathMatchesTheExportClassConstant pins this copy against
+// the literal, and (Enterprise-only, where the module source is present)
+// TestUSBanking_BasePathMatchesTheModuleSource asserts it still agrees with the
+// route usbanking/wire.go actually registers.
+const usBankingBasePath = "/api/v1/usbanking"
+
+// usSecuritiesBasePath is the US securities module's route prefix.
+//
+// Declared here rather than imported from the ussecurities package because that
+// package is Enterprise-tagged and this file compiles in BOTH editions.
+// TestUSSecurities_BasePathMatchesTheExportClassConstant pins this copy against
+// the literal, and (Enterprise-only, where the module source is present)
+// TestUSSecurities_BasePathMatchesTheModuleSource asserts it still agrees with
+// the route ussecurities/wire.go actually registers.
+const usSecuritiesBasePath = "/api/v1/ussecurities"
 
 // complianceReportBasePath is the compliance report facade's collection route.
 // Declared here rather than imported from the compliancereport package because
