@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.getaxonflow.com/decision/contract-2026-08-29.schema.json",
+  "title": "AxonFlow decision contract, schema version 2026-08-29",
+  "description": "Versioned JSON Schemas for the ADR-065 normalized authorization request, the four-valued decision, the typed obligation, and the audience-scoped explain trace. The schema version is the value carried in snapshot.schema_version and changes when the SHAPE changes, never when a value changes.",
+  "$defs": {
+    "identifier": {
+      "type": "object",
+      "description": "A canonical identifier. Display names, emails, token claims, connector names and aliases are never identifiers.",
+      "properties": {
+        "kind": {
+          "enum": ["organization", "principal", "group", "resource", "action", "tool", "client", "session"]
+        },
+        "type": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$" },
+        "qualifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+        "local": { "type": "string", "minLength": 1 }
+      },
+      "required": ["kind", "type", "local"],
+      "additionalProperties": false
+    },
+
+    "attribute": {
+      "type": "object",
+      "description": "One tagged policy-visible value. State is mandatory, so a structure that was never populated cannot be mistaken for a resolved attribute.",
+      "properties": {
+        "state": { "enum": ["known", "absent", "unknown"] },
+        "value": true,
+        "source": { "enum": ["authentication", "directory", "resource", "platform", "detector", "caller"] },
+        "source_version": { "type": "integer", "minimum": 0 },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "max_age_seconds": { "type": "integer", "minimum": 0 },
+        "reason": {
+          "enum": [
+            "attribute_not_supplied", "resolution_failed", "stale", "schema_mismatch",
+            "closure_unavailable", "closure_truncated", "malformed_value",
+            "required_attribute_absent"
+          ]
+        }
+      },
+      "required": ["state", "source", "source_version", "observed_at"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "known" } }, "required": ["state"] },
+          "then": { "required": ["value"], "not": { "required": ["reason"] } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "absent" } }, "required": ["state"] },
+          "then": { "not": { "anyOf": [{ "required": ["value"] }, { "required": ["reason"] }] } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "unknown" } }, "required": ["state"] },
+          "then": { "required": ["reason"], "not": { "required": ["value"] } }
+        }
+      ]
+    },
+
+    "attribute_set": {
+      "type": "object",
+      "description": "Flat, namespace-keyed attributes. The key is a dotted path whose first segment is a declared namespace.",
+      "propertyNames": {
+        "pattern": "^(principal|agent|resource|action|env|args|state|signal)\\.[^.]+(\\.[^.]+)*$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/attribute" }
+    },
+
+    "snapshot": {
+      "type": "object",
+      "description": "Every version a decision was computed against. All fields are mandatory, because a decision that cannot name what it was computed against cannot be replayed, and an unreplayable decision cannot be audited.",
+      "properties": {
+        "identity_epoch": { "type": "integer", "minimum": 0 },
+        "resource_epoch": { "type": "integer", "minimum": 0 },
+        "policy_bundle": { "type": "string", "pattern": "^sha256:[0-9a-f]+$" },
+        "registry_version": { "type": "integer", "minimum": 0 },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "policy_epoch": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "identity_epoch", "resource_epoch", "policy_bundle",
+        "registry_version", "schema_version", "policy_epoch"
+      ],
+      "additionalProperties": false
+    },
+
+    "tool_call": {
+      "type": "object",
+      "properties": {
+        "registry_id": { "$ref": "#/$defs/identifier" },
+        "registry_version": { "type": "integer", "minimum": 1 },
+        "arguments_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]+$" }
+      },
+      "required": ["registry_id", "registry_version", "arguments_digest"],
+      "additionalProperties": false
+    },
+
+    "actor": {
+      "type": "object",
+      "description": "One hop of the delegation chain with the identity attributes that resolve for it. Only principal attributes may appear here.",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "attributes": {
+          "type": "object",
+          "propertyNames": { "pattern": "^principal\\.[^.]+(\\.[^.]+)*$" },
+          "additionalProperties": { "$ref": "#/$defs/attribute" }
+        }
+      },
+      "required": ["id", "attributes"],
+      "additionalProperties": false
+    },
+
+    "request": {
+      "type": "object",
+      "description": "The immutable normalized authorization request the PDP evaluates.",
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "organization": { "$ref": "#/$defs/identifier" },
+        "principal": { "$ref": "#/$defs/identifier" },
+        "action": { "$ref": "#/$defs/identifier" },
+        "resource": { "$ref": "#/$defs/identifier" },
+        "context": {
+          "type": "object",
+          "properties": {
+            "actor_chain": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/actor" } },
+            "client": { "$ref": "#/$defs/identifier" },
+            "session": { "$ref": "#/$defs/identifier" },
+            "tool_call": { "$ref": "#/$defs/tool_call" }
+          },
+          "required": ["actor_chain"],
+          "additionalProperties": false
+        },
+        "snapshot": { "$ref": "#/$defs/snapshot" },
+        "attributes": { "$ref": "#/$defs/attribute_set" },
+        "evaluated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "request_id", "organization", "principal", "action",
+        "resource", "context", "snapshot", "attributes", "evaluated_at"
+      ],
+      "additionalProperties": false
+    },
+
+    "obligation": {
+      "type": "object",
+      "description": "One typed instruction owned by a named enforcement component.",
+      "properties": {
+        "type": {
+          "enum": [
+            "approval_challenge", "field_remove", "field_redact", "field_hash",
+            "field_mask", "field_annotate", "field_tokenize", "schema_transform",
+            "response_filter", "route_restriction", "step_up_authentication",
+            "quota_reservation", "immutable_audit", "notification"
+          ]
+        },
+        "target": { "type": "string", "minLength": 1 },
+        "params": { "type": "object", "additionalProperties": { "type": "string" } },
+        "mandatory": { "type": "boolean" },
+        "source_policy": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["type", "mandatory", "source_policy", "schema_version"],
+      "additionalProperties": false
+    },
+
+    "approval_requirement": {
+      "type": "object",
+      "description": "A conjunction of immutable threshold clauses. Clauses are never collapsed by pool intersection or union.",
+      "properties": {
+        "all_of": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "quorum": { "type": "integer", "minimum": 1 },
+              "eligible": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/identifier" } }
+            },
+            "required": ["quorum", "eligible"],
+            "additionalProperties": false
+          }
+        },
+        "separation_of_duties": { "type": "boolean" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["all_of", "separation_of_duties", "expires_at"],
+      "additionalProperties": false
+    },
+
+    "unknown_policy": {
+      "type": "object",
+      "properties": {
+        "policy_id": { "type": "string", "minLength": 1 },
+        "authority": { "enum": ["permission", "constraint", "requirement", "inspection"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "paths": { "type": ["array", "null"], "items": { "type": "string" } }
+      },
+      "required": ["policy_id", "authority", "reason"],
+      "additionalProperties": false
+    },
+
+    "determining": {
+      "type": "object",
+      "properties": {
+        "matched_permissions": { "type": ["array", "null"], "items": { "type": "string" } },
+        "matched_constraints": { "type": ["array", "null"], "items": { "type": "string" } },
+        "matched_requirements": { "type": ["array", "null"], "items": { "type": "string" } },
+        "matched_inspections": { "type": ["array", "null"], "items": { "type": "string" } },
+        "unknown": { "type": ["array", "null"], "items": { "$ref": "#/$defs/unknown_policy" } }
+      },
+      "required": [
+        "matched_permissions", "matched_constraints",
+        "matched_requirements", "matched_inspections"
+      ],
+      "additionalProperties": false
+    },
+
+    "decision": {
+      "type": "object",
+      "description": "The complete result of one evaluation. The four-valued authorization and the operational state are both carried, because collapsing the lattice is an edge concern. A decision carries no trace: an explain payload is built for exactly one declared and independently authorized audience and is transmitted separately.",
+      "properties": {
+        "decision_id": { "type": "string", "minLength": 1 },
+        "request_id": { "type": "string", "minLength": 1 },
+        "authorization": { "enum": ["permit", "deny", "not_applicable", "indeterminate"] },
+        "state": { "enum": ["ALLOW", "DENY", "CHALLENGE", "ERROR"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "obligations": { "type": "array", "items": { "$ref": "#/$defs/obligation" } },
+        "approval": { "$ref": "#/$defs/approval_requirement" },
+        "determining": { "$ref": "#/$defs/determining" },
+        "snapshot": { "$ref": "#/$defs/snapshot" }
+      },
+      "required": [
+        "decision_id", "request_id", "authorization",
+        "state", "reason", "determining", "snapshot"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "Obligations and an outstanding approval are carried only on a permit.",
+          "if": {
+            "properties": { "authorization": { "enum": ["deny", "not_applicable", "indeterminate"] } },
+            "required": ["authorization"]
+          },
+          "then": { "not": { "anyOf": [{ "required": ["obligations"] }, { "required": ["approval"] }] } }
+        },
+        {
+          "description": "An outstanding approval means the operational state is a challenge.",
+          "if": { "required": ["approval"] },
+          "then": { "properties": { "state": { "const": "CHALLENGE" } } }
+        }
+      ]
+    },
+
+    "witness": {
+      "type": "object",
+      "properties": {
+        "subject": { "type": "string", "minLength": 1 },
+        "path": { "type": "array", "items": { "type": "string" } },
+        "source_class": { "enum": ["authentication", "directory", "resource", "platform", "detector", "caller"] }
+      },
+      "required": ["subject", "path", "source_class"],
+      "additionalProperties": false
+    },
+
+    "trace": {
+      "type": "object",
+      "description": "The audience-scoped explain payload. Every field beyond the outcome and its coarse category is present only for an audience entitled to it, and absent rather than empty otherwise.",
+      "properties": {
+        "audience": { "enum": ["pep", "requester", "operator", "auditor"] },
+        "state": { "enum": ["ALLOW", "DENY", "CHALLENGE", "ERROR"] },
+        "category": {
+          "enum": ["allowed", "not_permitted", "approval_required", "temporarily_unavailable", "invalid_request"]
+        },
+        "reason": { "type": "string" },
+        "remediation": { "type": "string" },
+        "obligations": { "type": "array", "items": { "$ref": "#/$defs/obligation" } },
+        "approval_expires_at": { "type": "string", "format": "date-time" },
+        "determining": { "$ref": "#/$defs/determining" },
+        "binding_policy": { "type": "string" },
+        "witnesses": { "type": "array", "items": { "$ref": "#/$defs/witness" } },
+        "next_bound": {
+          "type": "object",
+          "properties": {
+            "policy_id": { "type": "string", "minLength": 1 },
+            "authority": { "enum": ["permission", "constraint", "requirement", "inspection"] },
+            "summary": { "type": "string" }
+          },
+          "required": ["policy_id", "authority", "summary"],
+          "additionalProperties": false
+        },
+        "resolved_ancestors": { "type": "object", "additionalProperties": { "type": "string" } },
+        "snapshot": { "$ref": "#/$defs/snapshot" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["audience", "state", "category"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "The requester and agent audience never receives the next bound, the determining policies, the binding policy or a witness path.",
+          "if": { "properties": { "audience": { "const": "requester" } }, "required": ["audience"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["next_bound"] },
+                { "required": ["determining"] },
+                { "required": ["binding_policy"] },
+                { "required": ["witnesses"] },
+                { "required": ["reason"] },
+                { "required": ["resolved_ancestors"] },
+                { "required": ["warnings"] }
+              ]
+            }
+          }
+        },
+        {
+          "description": "Resolved ancestors are auditor data only.",
+          "if": { "properties": { "audience": { "enum": ["pep", "requester", "operator"] } }, "required": ["audience"] },
+          "then": { "not": { "required": ["resolved_ancestors"] } }
+        }
+      ]
+    }
+  }
+}

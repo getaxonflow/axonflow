@@ -1370,6 +1370,12 @@ func initializeComponents() {
 	// registerFleetValidators wiring — never lazy-on-first-request.
 	initSegmentPolicyGate(usageDB)
 
+	// ADR-065 identity compatibility adapters (#3550). After
+	// initSegmentPolicyGate, because that is what establishes whether a
+	// SCIM-backed directory exists in this process, and DirectorySourceNone is
+	// a positive declaration that one does not.
+	initIdentityCompat()
+
 	// Initialize LLM Router context (ADR-007)
 	ctx := context.Background()
 	tenantID := os.Getenv("ORG_ID") // Use org ID as tenant ID
@@ -2470,8 +2476,14 @@ func logDeploymentOrgDrift(orgID string) {
 // of every runtime-e2e harness and of the customer-portal proxy on routes where a
 // session has no user email. A blanket 401 on "no actor" would take all of them
 // down, the same reasoning that made a blanket refusal wrong on #3066 C3-4.
-// An empty actor is a truthful answer, and it is the fail-closed one: an empty
-// role satisfies no allowlist.
+// An empty actor is a truthful answer. It is NOT unconditionally the
+// fail-closed one, and an earlier version of this paragraph said it was: an
+// empty role satisfies no ALLOWLIST, and it also fails every
+// {user.role equals X} condition, one of which ships as a default in
+// policy_defaults.go and ADDS risk when it matches. So an absent actor is
+// fail-closed for allowlist-shaped conditions and fail-OPEN for the
+// deny-or-escalate-on-role shape. That is exactly why observeCompatPrincipal
+// records and does not clear.
 func applyAuthoritativePrincipal(r *http.Request, u *UserContext) {
 	if u == nil {
 		return
@@ -2481,6 +2493,16 @@ func applyAuthoritativePrincipal(r *http.Request, u *UserContext) {
 	u.ID = 0
 	u.Region = ""
 	u.Permissions = nil
+
+	// ADR-065 identity compatibility adapter (#3550). It runs INSIDE this
+	// function, after the binding it is about, so every plane that binds a
+	// principal through here is covered and none of them has a flag to
+	// consult. Under the default mode (off) it returns before reading a clock.
+	//
+	// It RECORDS and does not act: see observeCompatPrincipal for why clearing
+	// the actor is a widening on this plane rather than the fail-closed answer
+	// it looks like, and where this credential is actually enforced.
+	observeCompatPrincipal(r, u, r.Header.Get("X-Org-ID"))
 }
 
 func processRequestHandler(w http.ResponseWriter, r *http.Request) {

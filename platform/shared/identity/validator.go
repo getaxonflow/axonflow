@@ -61,6 +61,20 @@ type ValidatedIdentity struct {
 	// it distinguishes this from the attribution-only header-derived identity
 	// on the MCP-server plane, which must stay least-privilege.
 	Validated bool
+	// Claims is the token's VERIFIED claim set, carried solely so the
+	// identity-plane compatibility adapter (#3550) can build the credential it
+	// verifies realm policy over. It is populated by both backends.
+	//
+	// IT IS NOT AN AUTHORIZATION INPUT AND IT IS NOT LOGGED. Every field this
+	// plane authorizes on is already resolved above - Email is canonicalized,
+	// Role comes from the SCIM directory on Path B and is normalized to the
+	// closed vocabulary on Path A. A consumer reading a claim out of here to
+	// make a decision would be routing around both of those, which is the
+	// defect #2924 closed. It exists because the compat adapter needs the
+	// issuer, audience, subject and time claims, and re-parsing the token to
+	// recover them would mean a second, independently-drifting parse of a
+	// credential this one already verified.
+	Claims map[string]any
 }
 
 // TokenValidator is the pluggable per-user token validation backend (#2920).
@@ -104,6 +118,29 @@ var (
 	// ErrEnterpriseOnly: per-user token validation is an Enterprise
 	// capability; community builds return this from every constructor.
 	ErrEnterpriseOnly = errors.New("per-user token validation is an Enterprise capability")
+	// ErrJWKSUnavailable: the verifying key material could not be obtained -
+	// the JWKS endpoint is unreachable, its document is unusable, or the
+	// cached key set has aged past the bounded staleness window.
+	//
+	// IT IS NOT ErrTokenInvalid, AND THAT IS THE POINT. Before this sentinel,
+	// every one of those outcomes was wrapped as ErrTokenInvalid and reached
+	// the operator as "per-user token invalid", which is the wording for a
+	// forgery. An IdP outage and a forged token are opposite incidents with
+	// opposite remedies, and they were indistinguishable in the logs.
+	//
+	// The VERDICT is unchanged and is still fail-closed: unavailable key
+	// material rejects the token, exactly as before. Nothing here makes a
+	// staleness case admissible - only nameable.
+	ErrJWKSUnavailable = errors.New("per-user token key material unavailable")
+	// ErrRevocationUnavailable: the revocation deny-list could not be
+	// consulted, so the platform cannot prove the token is still live.
+	//
+	// Same shape and same reason as ErrJWKSUnavailable: the VERDICT is
+	// unchanged and still fail-closed (an unreachable deny-list rejects the
+	// token), but a storage outage and a forged credential are opposite
+	// incidents and were previously indistinguishable, both arriving as
+	// "per-user token invalid".
+	ErrRevocationUnavailable = errors.New("per-user token revocation status unavailable")
 )
 
 // RevocationChecker answers whether a Path A token has been revoked, either

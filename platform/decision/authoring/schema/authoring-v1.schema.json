@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.getaxonflow.com/decision/authoring-v1.schema.json",
+  "title": "AxonFlow typed policy authoring document",
+  "description": "The versioned typed authoring document of ADR-065. It is the source of truth for policy: generated Rego is never the source, and this document is what an authoring API accepts, renders back without loss, compiles into a signed bundle, and diffs. Every enum below is held to the Go declarations by a test, so a value the compiler understands and this schema does not is a build failure rather than a portal that silently refuses a valid policy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "metadata", "policy"],
+  "properties": {
+    "api_version": {
+      "description": "The version of the authoring envelope. Distinct from the decision contract version and from the author's own revision number.",
+      "const": "authoring.axonflow.com/v1"
+    },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "policy": { "$ref": "#/$defs/policy_document" }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["document_id", "title", "author"],
+      "properties": {
+        "document_id": {
+          "description": "Stable identity across versions. A version bump changes policy.version and never this.",
+          "type": "string",
+          "minLength": 1
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "author": {
+          "description": "The principal that saved this version. It is inside the signed source because separation of duties at publication is checked against it.",
+          "allOf": [{ "$ref": "#/$defs/identifier" }],
+          "properties": { "kind": { "const": "principal" } }
+        },
+        "supersedes": {
+          "description": "The artifact digest this version was edited from. A digest rather than a version number, so that two authors who both start from version 4 agree on the number and disagree on the parent.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+
+    "identifier": {
+      "description": "A canonical identifier. Display names, emails, token claims, connector names and aliases are never identifiers.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "type", "local"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/identifier_kind" },
+        "type": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$" },
+        "qualifier": {
+          "description": "The realm or connector identifier. Present for qualified kinds and empty for the rest.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "local": { "type": "string", "minLength": 1 }
+      }
+    },
+    "identifier_kind": {
+      "enum": ["organization", "principal", "group", "resource", "action", "tool", "client", "session"]
+    },
+
+    "policy_document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "version", "attributes", "policies"],
+      "properties": {
+        "root": { "$ref": "#/$defs/root" },
+        "version": {
+          "description": "The author's revision number. Promotion advances it; rollback is the operation that does not.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "attributes": {
+          "description": "Every policy-visible attribute this document may reference. A condition over a path absent from this list is refused at save time.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/attribute_schema" }
+        },
+        "policies": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/policy" }
+        },
+        "interactive_realms": {
+          "description": "Whether a person can be asked a question in each realm, carried so a signed bundle is self contained. It is DERIVED from the registry by the authoring constructor and refused when it disagrees, so it is never a second source of truth.",
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        }
+      }
+    },
+
+    "root": {
+      "description": "The signing authority. System and organization roots are separate signed artifacts verified against different keys, so an organization permission cannot modify a system constraint.",
+      "enum": ["system", "organization"]
+    },
+
+    "attribute_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "type", "optional"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/value_type" },
+        "optional": {
+          "description": "Whether authoritative absence is possible. It permits, but does not by itself decide, a non-match on absence: the policy must also say what absence means.",
+          "type": "boolean"
+        },
+        "max_age_seconds": {
+          "description": "The freshness bound. A value outside it becomes unknown rather than stale-but-usable. Zero means unbounded.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "value_type": { "enum": ["number", "string", "boolean", "array", "any"] },
+
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "authority", "root", "scope", "actions", "where"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "authority": { "$ref": "#/$defs/authority" },
+        "root": { "$ref": "#/$defs/root" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "actions": { "$ref": "#/$defs/action_selector" },
+        "resource_scope": { "$ref": "#/$defs/condition" },
+        "where": { "$ref": "#/$defs/condition" },
+        "unless": {
+          "description": "An exception clause. A satisfied exception collapses the policy to non-applicable, which is the same code path as the policy not existing.",
+          "$ref": "#/$defs/condition"
+        },
+        "obligations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/obligation" }
+        },
+        "mandatory": { "type": "boolean" },
+        "pierceable_by": {
+          "description": "The break-glass roles that may suspend this control. Absent means unbreakable by construction, which is what a regulatory or contractual constraint declares.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "description": { "type": "string" }
+      }
+    },
+
+    "authority": {
+      "description": "What a policy is allowed to do, not where it executes. A permission only widens, a constraint only restricts, a requirement attaches a mandatory obligation, and an inspection policy cannot grant.",
+      "enum": ["permission", "constraint", "requirement", "inspection"]
+    },
+
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["organization"],
+      "properties": {
+        "organization": { "type": "boolean" },
+        "principals": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/identifier" } }
+      }
+    },
+
+    "action_selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "required_tags": {
+          "description": "Conjunctive: the action must carry every tag. A constraint over the pair of irreversible and pii_egress expresses something no combination of single-tag constraints reaches.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "any": {
+          "description": "Selects every registered action. It must be set explicitly, so that an empty selector is a construction defect rather than an accidental match-all.",
+          "type": "boolean"
+        }
+      }
+    },
+
+    "condition": {
+      "description": "One node of the typed condition tree. There is no raw Rego anywhere in this document: the compiler owns condition generation, which is what makes the tri-state guarantees enforceable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/condition_kind" },
+        "path": { "type": "string" },
+        "right_path": { "type": "string" },
+        "op": { "$ref": "#/$defs/compare_op" },
+        "literal": {},
+        "literals": { "type": "array" },
+        "on_absent": { "$ref": "#/$defs/absence_handling" },
+        "operands": { "type": "array", "items": { "$ref": "#/$defs/condition" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "compare" } }, "required": ["kind"] },
+          "then": { "required": ["path", "op"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "attr_compare" } }, "required": ["kind"] },
+          "then": { "required": ["path", "right_path", "op"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "member" } }, "required": ["kind"] },
+          "then": { "required": ["path", "literal"] }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["superset", "intersects"] } }, "required": ["kind"] },
+          "then": { "required": ["path", "literals"] }
+        },
+        {
+          "if": { "properties": { "kind": { "enum": ["and", "or"] } }, "required": ["kind"] },
+          "then": { "properties": { "operands": { "minItems": 2 } }, "required": ["operands"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "not" } }, "required": ["kind"] },
+          "then": { "properties": { "operands": { "minItems": 1, "maxItems": 1 } }, "required": ["operands"] }
+        }
+      ]
+    },
+    "condition_kind": {
+      "enum": ["true", "compare", "member", "superset", "intersects", "attr_compare", "and", "or", "not"]
+    },
+    "compare_op": { "enum": ["eq", "ne", "lt", "le", "gt", "ge"] },
+    "absence_handling": {
+      "description": "What a condition does when the authoritative source established that its attribute has no value. It is required on a condition over an optional attribute and forbidden otherwise, and caller-supplied absence is always unknown.",
+      "enum": ["no_match", "unknown"]
+    },
+
+    "obligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "mandatory", "source_policy", "schema_version"],
+      "properties": {
+        "type": { "$ref": "#/$defs/obligation_type" },
+        "target": {
+          "description": "The canonical field path for a disclosure transform. Empty for every other family.",
+          "type": "string"
+        },
+        "params": { "type": "object", "additionalProperties": { "type": "string" } },
+        "mandatory": {
+          "description": "A mandatory obligation denies when it cannot be discharged. An advisory one is recorded and dropped.",
+          "type": "boolean"
+        },
+        "source_policy": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "obligation_type": {
+      "enum": [
+        "approval_challenge",
+        "field_remove",
+        "field_redact",
+        "field_hash",
+        "field_mask",
+        "field_annotate",
+        "field_tokenize",
+        "schema_transform",
+        "response_filter",
+        "route_restriction",
+        "step_up_authentication",
+        "quota_reservation",
+        "immutable_audit",
+        "notification"
+      ]
+    }
+  }
+}

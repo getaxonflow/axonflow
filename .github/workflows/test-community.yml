@@ -59,6 +59,14 @@ jobs:
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/test-community.yml'
+              # The decision module's gates read files that are not Go, so a
+              # filter watching only *.go would skip the guard whose job is to
+              # check the non-Go file that changed: the disposition ledger, the
+              # platform-owned Rego helpers, and the published JSON Schema the
+              # authoring documents are validated against.
+              - 'platform/decision/**/*.tsv'
+              - 'platform/decision/**/*.rego'
+              - 'platform/decision/**/*.json'
 
   unit-tests:
     name: Unit Tests (All Modules)
@@ -344,13 +352,429 @@ jobs:
           cd platform/orchestrator
           go test -v -run "TestIntegration|TestEndToEnd" -timeout 10m
 
+  # =============================================================================
+  # Decision Contracts (ADR-065)
+  # =============================================================================
+  # WHY THIS EXISTS HERE AS WELL AS IN test.yml (#3574).
+  #
+  # The community sync is EXCLUDE-based, and it excludes
+  # `.github/workflows/test.yml` while excluding nothing under
+  # `platform/decision`. The module therefore mirrors whole and the only
+  # workflow that runs it does not, so on getaxonflow/axonflow the conformance
+  # corpus, the disposition-ledger guard, the tri-state corpus, the mutation
+  # proofs, the round-trip property and the authoring gates all land as files
+  # that never execute. That is the same silent-mirror class as the //go:build
+  # strip: nothing is red, the coverage is simply absent, and it is absent on
+  # the public repository where an outside contributor's pull request is the one
+  # being gated.
+  #
+  # platform/decision is a SEPARATE Go module, so `go test ./...` from platform/
+  # does not descend into it and the community `Unit Tests (All Modules)` job
+  # cannot pick it up by widening a path. It needs its own job, and it runs the
+  # same gates test.yml runs, deliberately: two lanes that test one module
+  # differently would eventually disagree, and the mirror is the lane nobody is
+  # watching.
+  unit-tests-decision:
+    name: "Unit Tests: Decision Contracts (Community)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [detect-changes]
+    if: |
+      github.repository == 'getaxonflow/axonflow' &&
+      always() &&
+      (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.go-code == 'true')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: platform/decision/go.sum
+
+      - name: Install dependencies
+        run: |
+          cd platform/decision
+          go mod download
+
+      - name: Vet
+        run: |
+          cd platform/decision
+          go vet ./...
+
+      # The gates are named individually rather than folded into one `./...`
+      # invocation. A gate that stops existing then shows up as a missing test
+      # name in the log rather than as a slightly shorter run nobody reads.
+      - name: "ADR-065 gate 14: source-case disposition ledger"
+        run: |
+          cd platform/decision
+          go test ./conformance/ -count=1 -timeout 5m -v \
+            -run 'TestDispositionLedgerIsComplete|TestEveryTranscribedCaseHasALedgerRow|TestLedgerGuardSelfTest'
+
+      - name: "ADR-065 gate 4: tri-state corpus"
+        run: |
+          cd platform/decision
+          go test ./conformance/ -count=1 -timeout 10m \
+            -run 'TestTriStateCorpus|TestTriStateCorpusIsComplete|TestTriStateCorpusNeverWidensTheDecision'
+
+      - name: "ADR-065 gates 5 and 6: monotonicity and delegation property tests"
+        run: |
+          cd platform/decision
+          go test ./conformance/ -count=1 -timeout 10m -v \
+            -run 'TestPropertyAddingAConstraintNeverWidens|TestPropertyAddingAnActorNeverWidens|TestPropertyAnOrganizationPermissionCannotEscapeASystemConstraint|TestPropertyReplayIsDeterministic'
+
+      - name: "Conformance corpus and mutation proofs"
+        run: |
+          cd platform/decision
+          go test ./conformance/ -count=1 -timeout 10m \
+            -run 'TestConformanceCorpus|TestMutationProofs|TestCorpusIdentifierRangesDoNotCollide|TestEveryDecisionSatisfiesItsSchema'
+
+      # ADR-065 gate 18 is "shadow migration has no unexplained fail-open
+      # difference for the agreed window". This is that sentence, executable:
+      # the legacy substrate is compiled, both engines are evaluated on every
+      # plane, and every difference is classified. UNEXPLAINED == 0 over a
+      # non-vacuous corpus is the operand, and the gate refuses an empty
+      # corpus, a plane with policy and no cases, and any compiled row the
+      # corpus never reached - because zero unexplained out of zero compared
+      # passes forever and passes hardest when the corpus is broken.
+      #
+      # -v so the per-plane counters and the coverage block land in the log.
+      # The number a reader needs is UNEXPLAINED per plane, and a summary
+      # nobody can see is a summary nobody checks.
+      # ADR-065 gate 18 and the compiler's own invariants.
+      #
+      # `go test -run` with a name that matches NOTHING prints "no tests to
+      # run" and exits 0, so a rename turns a named gate into a green step that
+      # verified nothing. Each name is therefore run individually and its
+      # `--- PASS:` line is required, which is the only way this shape of step
+      # can fail for the right reason.
+      - name: "ADR-065 gate 18: shadow diff, zero unexplained differences"
+        run: |
+          set -euo pipefail
+          cd platform/decision
+          echo "::notice::ADR-065 gate 18 running against head ${{ github.event.pull_request.head.sha || github.sha }}"
+          run_gate() {
+            local pkg="$1" name="$2" out
+            out=$(go test "$pkg" -count=1 -timeout 10m -v -run "^${name}$" 2>&1) || { echo "$out"; exit 1; }
+            echo "$out"
+            if ! grep -q -- "--- PASS: ${name}" <<< "$out"; then
+              echo "::error::${name} did not run. A -run pattern that matches nothing exits 0, so a renamed or"
+              echo "::error::deleted gate would otherwise be a green step that verified nothing."
+              exit 1
+            fi
+          }
+          for t in \
+            TestGatePassesOnAFaithfulCompilation \
+            TestPlantedSemanticChangeIsUnexplainedAndFailsTheGate \
+            TestPlantedObligationChangeIsUnexplained \
+            TestGateRefusesVacuity \
+            TestGateRefusesAReportThatCompiledNothing \
+            TestUnmigratedRowProducesAnUnexplainedFailOpen \
+            TestAnExpectedChangeDoesNotLaunderAResidualDifference \
+            TestAPreservedDefectIsContextAndNeverAnExplanation \
+            TestAPermanentlyAsymmetricRowExplainsNothing \
+            TestLegacyDefectDoesNotAbsorbAnExpectedChange \
+            TestProxyTierOrdersByTierBeforePriority \
+            TestProxyTierReturnsOneResult \
+            TestTheModelReadsContextFallthroughFields \
+            TestCallerSuppliableContextFieldIsDiffed \
+            TestTheCorpusUsesTheCompilationOptions \
+            TestOneOrgsPoliciesDoNotReachAnotherOrg \
+            TestSanitizedIdentifiersDoNotCollide \
+            TestUnmeasurableRowsAreReported \
+            TestTheSummaryStatesItsOwnProvenance \
+            TestDynamicRowsAreAlsoScanDropped \
+            TestCorrespondenceTableCoversEveryActionTheCompilerEmits \
+            TestLegacyModelRefusesARowItHasNoFactsFor \
+            TestEveryExpectedChangeRuleIsFalsifiable \
+            TestExpectedChangeRulesAreReachable \
+            TestObligationTargetsAndMultiplicityAreCompared \
+            TestApprovalClauseCountMustMatch \
+            TestProxyTierIsFirstMatchWins \
+            TestRowIdentityIsTableAndPolicyID \
+            TestACaseThatMissesItsClaimedRowFailsTheGate \
+            TestEmptyAuthorityRootActivates \
+          ; do
+            run_gate ./legacycompile/shadow/ "$t"
+          done
+
+      - name: "ADR-065: legacy compiler, zero silent drops"
+        run: |
+          set -euo pipefail
+          cd platform/decision
+          run_gate() {
+            local name="$1" out
+            out=$(go test ./legacycompile/ -count=1 -timeout 5m -v -run "^${name}$" 2>&1) || { echo "$out"; exit 1; }
+            echo "$out"
+            if ! grep -q -- "--- PASS: ${name}" <<< "$out"; then
+              echo "::error::${name} did not run; see the note in the gate-18 step above."
+              exit 1
+            fi
+          }
+          for t in \
+            TestEveryRowProducesExactlyOneRecord \
+            TestStatusIsDerivedNotAsserted \
+            TestBothReadPathsAreCompiled \
+            TestPostureLeverIsPerPlane \
+            TestEffectiveScanModelsBothTimestamps \
+            TestContextFallthroughFieldsCompileLive \
+            TestContentOperatorsCompileAsDetectors \
+            TestAnInexpressibleRowIsFiledAsAMigrationGap \
+            TestEveryConditionIsExaminedRegardlessOfOrder \
+            TestReadPathDivergenceReportsAnEmptySide \
+            TestPhaseExcludedPlanesCarryAReason \
+            TestUIFieldListMatchesTheConstant \
+            TestPlaneModelCoversEveryStaticEvaluationSurface \
+            TestTablesContainOnlyDeclaredCategories \
+            TestCaptureDocDoesNotRestateTheLimitations \
+            TestPlaneModelMatchesTheCensus \
+            TestUnimplementedPlanesAreRecordedNotModelled \
+            TestResolutionTableIsExhaustiveAndAgrees \
+            TestPostureLeverTableAgrees \
+          ; do
+            run_gate "$t"
+          done
+
+      - name: "Authoring: the round-trip theorem and the document-digest attacks"
+        run: |
+          cd platform/decision
+          go test ./authoring/ -count=1 -timeout 10m -v \
+            -run 'TestPropertyDocumentsRenderBackWithoutLoss|TestTheGeneratorReachesTheWholeVocabulary|TestUnicodeNormalizationCannotCollideTwoDocuments|TestParseKeepsALargeIntegerLiteralExactly|TestParseRefusesAnUnknownField'
+
+      - name: "Authoring: the save-time check set"
+        run: |
+          cd platform/decision
+          go test ./authoring/ -count=1 -timeout 10m \
+            -run 'TestTheBaselineDocumentIsClean|TestSaveTimeChecks|TestEveryDeclaredCheckHasACaseThatFires|TestRelayCoversEveryPDPRule|TestRetiredChecksAreGenuinelyRetired|TestFindingsAreOrderedDeterministically|TestValidateRefusesAnUnusableCatalog'
+
+      # The mutation harness is named on its own because it is the gate that
+      # proves the gate above can fail. It compiles the module once per mutant,
+      # so a run that quietly stopped executing would look like a slightly
+      # shorter job rather than like missing coverage; -v names every mutant.
+      - name: "Authoring: mutation proofs for every save-time check"
+        run: |
+          cd platform/decision
+          go test ./authoring/ -count=1 -timeout 20m -v -run 'TestMutationProofsForEverySaveTimeCheck'
+
+      - name: "Authoring: publication gauntlet, cross-root refusal, activation and rollback"
+        run: |
+          cd platform/decision
+          go test ./authoring/ -count=1 -timeout 10m -v \
+            -run 'TestPublishRunsEveryGateAndSigns|TestPublishIsTheOnlyPathToASignedArtifact|TestGauntlet|TestCrossRootPublicationIsRefused|TestASwappedSourceIsRefused|TestATamperedReportIsRefused|TestUnicodeNormalizationCannotForgeAnArtifact|TestActivationLifecycle|TestADeauthorizedKeyStopsActivation'
+
+      - name: "Authoring: the published JSON Schema against the Go declarations"
+        run: |
+          cd platform/decision
+          go test ./authoring/ -count=1 -timeout 10m \
+            -run 'TestSchemaCompiles|TestEveryEnumMatchesTheGoDeclarations|TestGeneratedDocumentsSatisfyTheSchema|TestTheSchemaRejectsWhatItShould'
+
+      - name: "Registry: posture, governed tags and the capability check"
+        run: |
+          cd platform/decision
+          go test ./registry/ -count=1 -timeout 10m -v \
+            -run 'TestBothPostureAxesAreMandatory|TestPermissivePostureNeedsALiveException|TestCompatibilityPostureIsUnavailableForHighRiskActions|TestPermissiveErrorPostureHasNoExceptionPath|TestUnmatchedPostureCannotForgeAnExplicitConstraint|TestGovernedTagRemovalRaisesAnAlarm|TestGovernedTagAdditionRaisesAnAlarm|TestGovernedTagChangeRequiresApproval|TestAbsentRecordIsDistinguishableFromDeclaredEmpty|TestPublicationRefusesAnUndischargeableObligation'
+
+      - name: "Registry: the catalog projection and the conformance registry"
+        run: |
+          cd platform/decision
+          go test ./registry/ -count=1 -timeout 10m \
+            -run 'TestProjectionRefusesAnInvalidCatalog|TestProjectionCarriesTheDeclaredSchema|TestRegistrationIsCreateOnly|TestTheCatalogHandsOutCopies|TestConformanceCorpusIsWellFormed|TestConformanceCorpusGuardSelfTest|TestEveryConformanceCaseNamesATestThatExists|TestLedgerCoverageCellsAgreeWithTheComputedCorpus|TestLegacyPlaneFixtureAgreesWithTheShadowCensus'
+          go test ./authoring/ -count=1 -timeout 10m \
+            -run 'TestTheAuthoringCatalogIsDerivedFromTheRegistry|TestTheTwoContainmentChecksCannotDisagree|TestTheDerivationRefusesADisagreementAboutRealms|TestTheDerivationInheritsTheRegistrysRefusal'
+
+      # Named on its own for the same reason the authoring one is: it is the
+      # gate that proves the gates above can fail, and it compiles the package
+      # once per mutant, so a run that quietly stopped executing would look
+      # like a slightly shorter job rather than like missing coverage.
+      - name: "Registry: source mutation proofs"
+        run: |
+          cd platform/decision
+          go test ./registry/ -count=1 -timeout 20m -v \
+            -run 'TestSourceMutationsAreKilled|TestTheMutationGateCanReportASurvivor|TestTheAnchorCheckRefusesAnAmbiguousOrAbsentAnchor'
+
+      # -short skips ONLY the two mutation harnesses, which have their own steps
+      # above. Each shells out to the toolchain once per mutant and those
+      # subprocesses are not instrumented, so running them again here would add
+      # minutes of build time while telling the race detector nothing the rest
+      # of the module has not.
+      - name: Full module test with the race detector
+        run: |
+          cd platform/decision
+          go test ./... -count=1 -race -short -timeout 15m
+
+  # =============================================================================
+  # Platform packages the per-service steps do not reach
+  # =============================================================================
+  # WHY THIS EXISTS (#3574). The `platform` module is tested by three
+  # per-service steps that `cd` into orchestrator/, agent/ and connectors/, and
+  # only the connectors step says `./...`. Every other package in the module -
+  # all of platform/shared/*, every orchestrator and agent subpackage - was run
+  # by NO job in the untagged (community) build in either repository: the only
+  # `go test ./...` over the module runs under `-tags enterprise`, in a lane
+  # that does not mirror. platform/shared/identity, the ADR-065 identity
+  # plane, is where that was noticed, but it is the class that is closed here,
+  # not the package: the selection is `go list ./...` minus the packages that
+  # have their own step, so a package added tomorrow is in it by default.
+  #
+  # This job is a byte-exact twin of the same job in test.yml; the parity is
+  # pinned by tests/regression-test-required/community_workflow_twin_parity_test.sh
+  # because the decision job's copy drifted within a day of being made.
+  unit-tests-platform-packages:
+    name: "Unit Tests: Platform Packages (Community)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [detect-changes]
+    if: |
+      github.repository == 'getaxonflow/axonflow' &&
+      always() &&
+      (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.go-code == 'true')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: platform/go.sum
+
+      - name: Install dependencies
+        run: |
+          cd platform
+          go mod download
+          go mod verify
+
+      - name: Vet the untagged build
+        run: |
+          cd platform
+          go vet ./...
+
+      - name: "Test every package the per-service steps do not reach"
+        run: |
+          set -euo pipefail
+          cd platform
+          # The three service roots (orchestrator, agent, connectors) have their
+          # own coverage-gated steps backed by live Postgres, Redis and MySQL, in
+          # this workflow and in its twin. Everything ELSE in the module - every
+          # platform/shared/* package, every orchestrator/* and agent/*
+          # subpackage, common/, path_template - had never been run by any job
+          # in the untagged build: `go test` without `./...` runs one package,
+          # and the only `./...` over this module carried `-tags enterprise`.
+          # platform/shared/identity, the ADR-065 identity plane, is the package
+          # that made the gap visible (#3574).
+          ALL="$(go list ./...)"
+          total="$(printf '%s\n' "$ALL" | wc -l | tr -d ' ')"
+          roots="$(printf '%s\n' "$ALL" | grep -cE '/platform/(orchestrator|agent)$' || true)"
+          connectors="$(printf '%s\n' "$ALL" | grep -cE '/platform/connectors(/|$)' || true)"
+          PKGS="$(printf '%s\n' "$ALL" | grep -vE '/platform/(orchestrator|agent)$' | grep -vE '/platform/connectors(/|$)')"
+          count="$(printf '%s\n' "$PKGS" | wc -l | tr -d ' ')"
+          # The floors, each falsifiable by an input: the two service roots
+          # must still be in the module (a rename would make the exclusion
+          # match nothing and the roots would be tested twice, without their
+          # services), the connectors tree must still be there, the selection
+          # must be non-empty, and it must contain the package this lane was
+          # created for. (`count == total - roots - connectors` is not listed:
+          # it is the same two patterns applied twice and cannot fail.)
+          [ "$roots" -eq 2 ] || { echo "::error::expected exactly 2 service roots in the module, found $roots"; exit 1; }
+          [ "$connectors" -ge 1 ] || { echo "::error::no connectors packages found; the exclusion pattern no longer matches the tree"; exit 1; }
+          [ "$count" -gt 0 ] || { echo "::error::no packages selected"; exit 1; }
+          printf '%s\n' "$PKGS" | grep -qE '/platform/shared/identity$' || { echo "::error::platform/shared/identity is not in the selection"; exit 1; }
+          echo "testing $count of $total packages in the untagged build; $roots service roots and $connectors connector packages have their own steps"
+          # shellcheck disable=SC2086
+          go test -count=1 -timeout 15m -v $PKGS 2>&1 | tee /tmp/platform-packages.log
+          # Every selected package must have produced a verdict line. A package
+          # missing from the output is a package that was not tested, whatever
+          # the exit code says.
+          verdicts="$(grep -cE '^(ok|\?)[[:space:]]' /tmp/platform-packages.log || true)"
+          [ "$verdicts" -eq "$count" ] || { echo "::error::$count packages selected but $verdicts reported a verdict"; exit 1; }
+          grep -qE '^ok[[:space:]]+[^[:space:]]*/platform/shared/identity[[:space:]]' /tmp/platform-packages.log || { echo "::error::platform/shared/identity did not report ok"; exit 1; }
+          echo "tests passed: $(grep -c '^--- PASS: ' /tmp/platform-packages.log || true)   skipped: $(grep -c '^--- SKIP: ' /tmp/platform-packages.log || true)"
+          # Skips are listed by name, so a lane that is green on skips is green
+          # visibly. No DATABASE_URL is set here on purpose: the tests that need
+          # a migrated database run in the Real-PG lane, and un-skipping them
+          # against the raw-psql database the service steps use would fail for
+          # a reason that is not a regression.
+          grep '^--- SKIP: ' /tmp/platform-packages.log || true
+
+  # =============================================================================
+  # Standalone modules
+  # =============================================================================
+  # WHY THIS EXISTS. platform/cmd/axonctl and platform/test/integration are
+  # SEPARATE Go modules, so `go test ./...` from platform/ does not descend into
+  # them, and until this job existed no workflow ran either one. The gap was
+  # found by tests/regression-test-required/mirrored_module_has_a_community_test_job_test.sh
+  # while closing #3574, and it was not theoretical: axonctl's client_test.go had
+  # been failing on main, because the client sent the deprecated X-Tenant-ID
+  # alias where the test asserts the v9 canonical X-Client-ID, and nothing ran it
+  # to say so.
+  #
+  # setup-go runs with cache: false deliberately. Between them these modules
+  # declare seven dependencies; a cache entry would cost a cache-seed matrix
+  # entry mirroring this block byte for byte forever, to save a download shorter
+  # than the restore it replaces.
+  unit-tests-standalone-modules:
+    name: "Unit Tests: Standalone Modules (Community)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [detect-changes]
+    if: |
+      github.repository == 'getaxonflow/axonflow' &&
+      always() &&
+      (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.go-code == 'true')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Test axonctl
+        run: |
+          cd platform/cmd/axonctl
+          go test ./... -count=1 -timeout 5m
+
+      - name: Test the standalone integration module
+        run: |
+          cd platform/test/integration
+          go test ./... -count=1 -timeout 5m
+
   test-summary:
-    name: Test Summary
+    # #3573 - `Test Summary` is a REQUIRED status check in BOTH repositories,
+    # and branch protection matches a required context by NAME. In the
+    # enterprise repo this file and `test.yml` both reported a check run under
+    # that one name on the same head commit, so which conclusion satisfied the
+    # requirement was not something the workflow files decided - and the
+    # cheaper of the two producers is this one, which skips its work on most
+    # changes (measured on #3572's head: 3s, `Unit Tests (All Modules)`
+    # skipping). `test.yml` is the lane that actually runs the unit tests, the
+    # race detector, the integration tests and the audit-coverage gate.
+    #
+    # WHY THIS IS AN EXPRESSION AND NOT A PLAIN RENAME. This file SYNCS to the
+    # community mirror (`sync-community-repo.yml` re-includes it by name) while
+    # `test.yml` does NOT, so in `getaxonflow/axonflow` this job is the ONLY
+    # producer of `Test Summary` - and that repo's ruleset 10855245 requires
+    # exactly that context. An unconditional rename would leave the mirror
+    # requiring a context nothing reports, i.e. every mirror PR pending
+    # forever, at the next sync. Resolving the name from `github.repository`
+    # de-duplicates the enterprise gate with no ruleset edit in either repo and
+    # with no window in which either required context is unproduced.
+    #
+    # Pinned by tests/regression-test-required/required_check_name_uniqueness_test.sh.
+    name: ${{ github.repository == 'getaxonflow/axonflow' && 'Test Summary' || 'Test Summary (Community)' }}
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
-    needs: [detect-changes, unit-tests, race-detector, integration-tests]
+    needs: [detect-changes, unit-tests, unit-tests-platform-packages, unit-tests-decision, unit-tests-standalone-modules, race-detector, integration-tests]
     if: always()
 
     steps:
@@ -361,6 +785,9 @@ jobs:
           echo "Results:"
           echo "  Detect Changes: ${{ needs.detect-changes.result }}"
           echo "  Unit Tests: ${{ needs.unit-tests.result }}"
+          echo "  Unit Platform Packages: ${{ needs.unit-tests-platform-packages.result }}"
+          echo "  Unit Decision: ${{ needs.unit-tests-decision.result }}"
+          echo "  Unit Standalone: ${{ needs.unit-tests-standalone-modules.result }}"
           echo "  Race Detector: ${{ needs.race-detector.result }}"
           echo "  Integration Tests: ${{ needs.integration-tests.result }}"
 
@@ -368,6 +795,9 @@ jobs:
         if: |
           needs.detect-changes.result == 'failure' ||
           (needs.unit-tests.result != 'success' && needs.unit-tests.result != 'skipped') ||
+          (needs.unit-tests-platform-packages.result != 'success' && needs.unit-tests-platform-packages.result != 'skipped') ||
+          (needs.unit-tests-decision.result != 'success' && needs.unit-tests-decision.result != 'skipped') ||
+          (needs.unit-tests-standalone-modules.result != 'success' && needs.unit-tests-standalone-modules.result != 'skipped') ||
           (needs.race-detector.result != 'success' && needs.race-detector.result != 'skipped') ||
           (needs.integration-tests.result != 'success' && needs.integration-tests.result != 'skipped')
         run: |

@@ -253,7 +253,17 @@ jobs:
   # Build Summary
   # =============================================================================
   build-summary:
-    name: Build Summary
+    # #3573, same class as `Test Summary`: this file and `build.yml` both
+    # reported a check run named `Build Summary` on every enterprise pull
+    # request, and `Build Summary` is a required context of ruleset 9199766.
+    # This file syncs to the community mirror and `build.yml` does not, so in
+    # `getaxonflow/axonflow` this job is the only producer of the context its
+    # own ruleset (10855245) requires. See the long note on `test-summary` in
+    # test-community.yml for why the name is resolved from `github.repository`
+    # rather than renamed outright.
+    #
+    # Pinned by tests/regression-test-required/required_check_name_uniqueness_test.sh.
+    name: ${{ github.repository == 'getaxonflow/axonflow' && 'Build Summary' || 'Build Summary (Community)' }}
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.

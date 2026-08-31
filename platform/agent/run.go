@@ -620,6 +620,22 @@ type User struct {
 	Permissions []string `json:"permissions"`
 	TenantID    string   `json:"tenant_id"`
 	OrgID       string   `json:"org_id"`
+
+	// TokenClaims is the VERIFIED claim set of the per-user token this user
+	// was resolved from, carried solely so the ADR-065 identity compatibility
+	// adapter (#3550) can build the credential it verifies realm policy over.
+	// Empty for every path that synthesizes a user without a token.
+	//
+	// `json:"-"` IS LOAD-BEARING. This struct is marshalled into the body of
+	// the agent's governed forward to the orchestrator (forwardToOrchestrator)
+	// and into several handler responses. Serializing the raw claims would put
+	// a token's contents on a wire they have never been on, and would change
+	// the request body byte-for-byte with the adapter switched OFF - which is
+	// exactly the guarantee this change is required to keep.
+	//
+	// It is also not an authorization input anywhere: every field this plane
+	// decides on is already resolved into the exported fields above.
+	TokenClaims map[string]any `json:"-"`
 }
 
 // recordLatency adds a latency measurement to the appropriate buckets
@@ -1297,6 +1313,19 @@ func Run() {
 			"which includes PostgreSQL. See: https://docs.getaxonflow.com/docs/deployment/quickstart")
 	}
 
+	// ADR-065 identity compatibility adapters (#3550). Installed here, AFTER
+	// the database block, because the built-in trust realms are derived from
+	// what that block actually wired (a SCIM directory, a revocation deny-list,
+	// a tenant OIDC provider), and DirectorySourceNone / RevocationSourceNone
+	// are positive declarations that a source does not exist rather than
+	// absences.
+	//
+	// It runs unconditionally, in every deployment mode, so an unrecognized
+	// AXONFLOW_IDENTITY_COMPAT_MODE refuses to boot even on a deployment where
+	// nothing else would consult it. Default (unset) is off, and off touches
+	// nothing on the authentication path.
+	initIdentityCompat()
+
 	// DB-independent initializations (work in both DB and no-DB mode)
 	sharedpolicy.InitGlobalExfiltrationChecker()
 	exfilLimits := sharedpolicy.GetGlobalExfiltrationChecker().GetLimits()
@@ -1511,6 +1540,15 @@ func Run() {
 
 	// Register MCP server protocol endpoint (Claude Code plugin — #1484)
 	RegisterMCPServerHandler(globalRouter)
+
+	// ADR-065 Shared Signals / CAEP push endpoint (#3550, session ADR65-I).
+	// Registered only when this process derived HasCAEP=true at boot, which
+	// is when the collaborators it needs were all wired; fatal if that
+	// derivation and the registration ever disagree, because a realm
+	// declaring a revocation channel that does not exist is the exact failure
+	// BuiltinRealmDeployment exists to prevent. Community builds resolve to a
+	// no-op.
+	RegisterCAEPReceiver(globalRouter, usageDB)
 
 	// Register connector refresh API endpoints (ADR-007)
 	// These endpoints allow manual cache invalidation for connector configurations.
@@ -3061,6 +3099,9 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 		Permissions: getClaimStringArray(claims, "permissions"),
 		TenantID:    tenantID,
 		OrgID:       orgID,
+		// The verified claim set, for the ADR-065 compat adapter only (#3550).
+		// Never serialized (json:"-") and never an authorization input.
+		TokenClaims: map[string]any(claims),
 	}, nil
 }
 

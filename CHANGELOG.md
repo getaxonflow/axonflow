@@ -11,6 +11,716 @@ community mirror, **Enterprise** changes are EE-only.
 ---
 
 <!--
+  Version decision (Step 0): v10.2.0, MINOR, prepared 2026-08-31 for the
+  operator to tag (HARD RULE 10: the operator tags; nothing here cuts,
+  publishes, syncs or deploys). The train is ADR-065 Phases 0-3 shipped DARK:
+  the NINETEEN commits on main since v10.1.0, re-derived from
+  `git log v10.1.0..origin/main` after #3582, #3586, #3588, #3598 and #3596
+  merged (#3545, #3547, #3571, #3572, #3575, #3576, #3570, #3578, #3579,
+  #3567, #3580, #3581, #3577, #3585, #3582, #3586, #3588, #3598, #3596). Two
+  of them give the plane a live call site and both are default-off: #3582, the
+  identity compatibility adapters, and #3596, which makes the same switch
+  settable per organization and adds an opt-in Shared Signals receiver.
+  Measured against the 2026-07-30 semver policy from the diff, not the PR
+  bodies: no removed fallback (git diff v10.1.0..main removes ZERO os.Getenv
+  reads and ZERO AXONFLOW_ variables), no new required credential, and no
+  new refusal on an existing path while the new switch is unset and no
+  organization holds a record. Four items were examined against the "new
+  refusal = MAJOR" clause and ruled MINOR-safe:
+  (1) AXONFLOW_IDENTITY_COMPAT_MODE and AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS
+  are BOOT FATAL on an unrecognized value, which only a deployment that SETS a
+  variable that did not exist before can reach; unset is outcome-identical
+  (status, error, blocked) request for request per the feature's runtime
+  suite, plus one startup log line per process. (2) The licence expiry fix
+  changes a number every validator reports (days_until_expiry) in the widening
+  direction only: no licence becomes expired earlier than before. (3) The
+  per-organization mode (#3596) can raise OR lower the process mode, but only
+  for an organization an operator has written a row for through the new admin
+  API; no row exists after the upgrade, and with no row effectiveMode returns
+  the process flag unchanged. (4) The Shared Signals receiver is a NEW route,
+  so it refuses nothing that previously succeeded; it is registered only in an
+  enterprise build with all three collaborators wired, and it refuses every
+  event for an organization that has not opted in.
+  ONE MIGRATION ships, enterprise/146, additive, Enterprise only: it CREATEs
+  identity_org_settings and ALTERs nothing. An enterprise deployment that has
+  not applied it keeps 10.1.0 behaviour, because the settings read fails, is
+  counted, and falls back to the process mode. Two items the ADR-065 release
+  plan lists for this minor are NOT in it and are stated under the operator
+  notes rather than implied: PDP shadow evaluation on the request planes, and
+  the AuthZEN-native SDK surface. The plan's third item, per-organization
+  enablement, IS here as of #3596 and the operator notes were corrected to say
+  so. Every sentence describing #3582 and #3596 is derived from the merged
+  tree, not from any pre-merge head. The heading date is the prep date
+  and moves to the tag date if the tag slips.
+-->
+
+## [10.2.0] - 2026-08-31 (the ADR-065 policy decision and identity control plane lands dark: decision contracts, deterministic PDP, identity plane, registries, typed authoring, shadow-diff gate; identity compatibility mode, per organization; an opt-in Shared Signals receiver; licence expiry counted in whole UTC days)
+
+> Scope: operators upgrading from 10.1.0. A deployment that sets no new
+> variable, and for which no organization holds an `identity_org_settings`
+> row, sees no change beyond one `[IDENTITY-COMPAT] ... =off` startup log
+> line per process: no removed capability, no new
+> required configuration, no status or verdict change on any existing
+> endpoint, and every request path authenticates and evaluates policy as on
+> 10.1.0 - including the `401` error bodies and their `errors.Is` semantics,
+> which are byte-identical to 10.1.0 with the mode unset, pinned by
+> `compat_flagoff_bytes_test.go` against 10.1.0's transcribed renderings.
+> **One migration ships, and it is Enterprise only**: `enterprise/146` CREATEs
+> the `identity_org_settings` table and ALTERs nothing (see Migration, below).
+> A community deployment applies nothing. An Enterprise deployment that rolls
+> the binaries BEFORE applying it still authenticates and evaluates policy
+> exactly as on 10.1.0, because the settings read fails and falls back to the
+> process mode; the one thing it will see is an `[IDENTITY-COMPAT] ... could
+> not be read` line per organization per memo window until the migration runs,
+> which is a log volume to expect rather than a fault. Four new environment variables exist
+> for an operator who wants to observe
+> the ADR-065 identity plane against live traffic: `AXONFLOW_IDENTITY_COMPAT_MODE`
+> (default off) and `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS` (default empty),
+> both FATAL AT BOOT on an unrecognized value even with the mode unset;
+> `AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY` (a sampling interval, default
+> 100000, never fatal); and `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` (how
+> long a per-organization record is memoized, default 60, clamped to 1-600,
+> never fatal). The mode is now settable PER ORGANIZATION as well as
+> process-wide, through a new Enterprise admin API; an organization with no
+> record runs on the process flag exactly as before. One number an operator
+> already sees changes: a licence's `days_until_expiry` now counts whole days
+> between UTC dates. An EXISTING licence's number moves by at most one day; a
+> licence minted after the upgrade encodes the intended date, so a fresh 30-day
+> licence reports 30 where the old pipeline could report 28 (Community > Fixed).
+
+### Community
+
+#### Added
+
+- **The ADR-065 policy decision plane, as a separate Go module that no shipping
+  binary imports** *(Community)* - `platform/decision` carries the canonical
+  authorization contract (realm-qualified identifiers, tagged tri-state
+  attributes with provenance, a normalized request with per-hop actor identity,
+  the four-valued decision and its operational state, typed obligations with one
+  composition algebra per family, an audience-scoped explain trace, versioned
+  JSON Schemas, and a strict AuthZEN 1.0 adapter that refuses duplicate JSON
+  members and unknown envelope keys); an in-process deterministic policy
+  decision point (a typed authoring document compiled losslessly into Rego v1,
+  platform-owned tri-state helper rules, an OPA runtime with an allow-listed
+  capabilities document and strict compilation, ed25519-signed digest-pinned
+  bundles under separate system and organization authority roots, a bundle lint
+  that refuses a raw attribute dereference, and the ADR-065 combining
+  semantics); the executable conformance corpus (all 47 source cases and the
+  corrective cases, the 47-row source-case disposition ledger with a guard and a
+  self-test, the tri-state corpus over every referenced attribute, mutation
+  proofs per family, and the monotonicity, delegation, authority-root and replay
+  property tests); the typed policy authoring control plane (27 save-time checks
+  each with a compiling mutant, a 400-document round-trip property under which
+  render, parse and recompile are byte-identical, a five-gate publication
+  gauntlet over signed artifacts, promote and rollback with separation of
+  duties, a reflective semantic diff, and a published JSON Schema); the action,
+  tool, resource and enforcement-point registries (both posture axes mandatory
+  with no default, `unmatched=permit` only behind a registered exception with an
+  owner and an expiry and never on a privileged action, `on_error=permit`
+  refused outright, governed tags as a policy channel with alarms in both
+  directions, create-only registration, and the authoring catalog DERIVED from
+  the registry); and the legacy policy compiler with its shadow semantic-diff
+  gate (below). Canonical encoding is deliberately two encoders, because the two
+  jobs need opposite normalization: `CanonicalJSON` normalizes and is for
+  cross-gateway agreement about a request, `ExactJSON` does not and is for
+  signing and pinning an artifact. Every ordered enumeration in the module
+  refuses an undeclared value rather than ranking it at one end of the order.
+  The module is separate so that OPA, which is security critical and heavy,
+  stays out of the dependency graph of every shipping binary during the
+  contracts phase: `platform/go.mod` does not reference it and no file outside
+  `platform/decision` imports it. **Nothing in this module evaluates a
+  request.** (#3572, #3576, #3580, #3578, #3581, #3577)
+
+- **The legacy policy compiler and the shadow semantic-diff gate, which make
+  ADR-065 acceptance gate 18 a number** *(Community)* -
+  `platform/decision/legacycompile` compiles `static_policies` and
+  `dynamic_policies` rows into ADR-065 typed documents, reading BOTH disjoint
+  legacy read paths per plane and producing exactly one record per input row
+  (compiled, preserved defect, or uncompilable, never silently dropped), with
+  the plane model pinned by a census of all 18 distinct legacy evaluation call
+  sites (19 rows, one function serving two planes) so an added call site fails
+  CI on the PR that adds it. `legacycompile/shadow`
+  dual-evaluates every plane, organization scope and phase: a model of the
+  legacy decision procedure on one side, the real PDP with signed bundles on
+  the other, and classifies every difference. A difference is UNEXPLAINED by
+  default; a preserved legacy defect is recorded as context and never as an
+  explanation, because a faithfully preserved defect makes both sides behave
+  identically and so cannot be the cause of a difference. The gate enforces its
+  denominator as well as its numerator: an empty corpus, a plane with compiled
+  policy and no cases, an unreached compiled row, and a report that compiled
+  nothing all fail. It runs in CI over the fixture corpus and, in the real-
+  Postgres lane, over a capture taken from a freshly migrated database: 112
+  rows, 1880 comparisons, `UNEXPLAINED=0`. The summary states its own
+  provenance (generated cases over N captured rows, never replayed traffic) so a
+  green line cannot be read as more than it is. Its `ModelLimitations()` list is
+  the reader's protection against over-trusting it and is pointed at rather than
+  copied. **This is a measurement harness over captured policy rows, run
+  offline and in CI. It is not a shadow evaluation of live requests, and no
+  request plane consults the PDP in this release.** (#3577)
+
+- **The ADR-065 identity plane primitives** *(Community; the directory graph
+  closure and SCIM ingestion are Enterprise, below)* - `platform/shared/identity`
+  gains organization-scoped trust realms with per-realm verification (issuer,
+  audience, authorized party, algorithm, credential type, subject type, clock
+  skew, maximum age, assurance class, revocation), canonical realm-qualified
+  principals (`<SubjectType>::<realm_id>:<subject_id>`; a bare identifier is a
+  hard error and is never completed with a default realm; email, username,
+  display name, SCIM `externalId` and token `sub` are aliases with provenance,
+  never keys), and ordered root-first actor chains with RFC 8693 ingestion,
+  whole-chain verification and attenuation expressed as a meet. An undeclared
+  issuer denies with `UNKNOWN_REALM` before policy loads, and every tri-state
+  on a realm is refused at registration if left at its zero value, so no
+  registered realm can hold a falsy default that reads as permissive. Every
+  tri-state is validated by membership with a default arm, and the one ORDERED
+  enumeration (assurance class) is validated on the credential as well as on
+  the realm, because an out-of-range value compared with `<` satisfies every
+  floor. 63 executable conformance cases, AXC-200 to AXC-299, cite seven rows
+  of the disposition ledger. **No production caller in this package's new
+  files until the compatibility adapters below, and none of the pre-existing
+  authentication paths changed.** (#3570)
+
+- **The obligation registry, family algebras, pre-permit planner and detector
+  assurance classes of the ADR-065 stateful requirements plane** *(Community;
+  the approval, decision-proof and reservation implementations are
+  Enterprise, below)* - `platform/shared/requirements/obligation` declares nine
+  initial obligation types with one composition algebra per family, selected
+  by family alone, and the six pre-permit proofs: a mandatory obligation whose
+  applicability is unknown DENIES (the source specification let it resolve
+  cleanly and drop the redaction it carried), an enforcement point must
+  advertise the exact obligation version it can discharge (no wildcard, no
+  version range), an incompatible same-kind pair denies, a broad redaction and
+  a narrow hash over one payload resolve per leaf, and absent evidence is never
+  read as satisfied. `requirements/assurance` separates a detector's failure
+  behaviour from authorization: an advisory outage and a required-control
+  outage have different outcomes, inspection cannot grant authorization, and
+  caller-supplied detector results are discarded rather than down-weighted.
+  Every delivery guarantee is a declared value and an undeclared one is refused
+  at the boundary. **No caller outside the package.** (#3571, #3580)
+
+- **`AXONFLOW_IDENTITY_COMPAT_MODE`: the ADR-065 identity plane in shadow, on
+  both binaries, default `off`** *(Community; the OIDC realm source and the CAEP
+  intake are Enterprise, below)* - the four legacy credential paths (the API
+  credential including the internal-service hop, the AxonFlow-minted HS256
+  per-user token on both the agent path and the fleet choke point, the
+  tenant's OIDC issuer, and the trust-gated identity header) now build the
+  credential the identity plane verifies realm policy over, without changing
+  what the legacy path decided. `off` (unset, the default) returns before
+  consulting the registry or the recorder and nothing it produces is observed;
+  the verified claim set carried for it on the agent's `User` is `json:"-"`,
+  so no forwarded body changes; and the feature's runtime suite proves the
+  authentication outcome (status, error, blocked) is identical to `off`,
+  request for request, across its 20 assertions - none of which induces an
+  outage, so that claim does not cover the outage legs below. `shadow` runs
+  the identity plane and RECORDS its verdict
+  as a `[IDENTITY-COMPAT]` log line (agreements sampled, every divergence and
+  every indeterminate outcome logged individually, every caller-influenced
+  field sanitized) while legacy authentication continues to decide every
+  request; one caller-visible effect exists in shadow, and it is deliberate:
+  the outage reclassification under Enterprise > Changed rides the same mode
+  read, so in shadow (and enforce) an Enterprise fleet-validator `401` on a
+  revocation or key-material outage carries the outage wording where `off`
+  carries 10.1.0's bytes, with the status and the verdict unchanged.
+  `enforce` additionally refuses a credential the legacy path
+  accepted and the identity plane did not admit, with a `401` on every
+  adapted agent path except the audit-verification read authority, which
+  keeps its existing `403`. **There is no machine-readable refusal code on the
+  wire in this release**: `AuthError.Code` is internal and no renderer emits
+  it. The string `identity_realm_refused` appears in the error MESSAGE on the
+  per-user token path (`Invalid user token: identity_realm_refused: ...`), on
+  the fleet choke point (`invalid user token: identity_realm_refused: ...`)
+  and on the MCP-server initialize error; the API and proxy middleware render
+  `Authentication refused by the identity plane (REASON) ...` with no such
+  token, and a non-initialize MCP call answers the generic `Authentication
+  required`. Emitting the code on the wire is routed on #3566. **The adapter can only
+  ever refuse**: a credential legacy rejected reaches realm verification with
+  `signature_verified=false`, so "the identity plane admitted what legacy
+  rejected" is unreachable and alarms if it fires. **No call site reads the
+  mode**, so a call site cannot forget it, and since #3596 the package reads
+  it in exactly ONE function: `effectiveMode`, which composes the process flag
+  with the organization's record and is the only reader of either input.
+  `Resolve`, which owns admission, and `outageSentinelsActive`, which decides
+  no admission (every branch it selects between rejects, in every mode; it
+  only picks the wording), both read the value that function returns rather
+  than either input. An AST census,
+  `TestCompatModeIsConsultedAtExactlyOneSite`, enumerates every selector on
+  the two fields across every file and fails on any other reader. Two
+  companions:
+  `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS` narrows what `enforce` refuses to
+  an allow-list of reason codes (it can only narrow; an unlisted reason is
+  recorded exactly as in shadow), and stays process-wide even where the mode
+  itself is set per organization; and
+  `AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY` sets the agreement sampling
+  interval (default 100000; unparseable falls back with a warning). **An
+  unrecognized value of the mode or of the reason list is FATAL AT BOOT**,
+  unlike `AXONFLOW_TRUST_IDENTITY_HEADERS`, which downgrades a typo to off: this
+  flag has no safe direction to fall back to, because `off` would leave an
+  operator who typed `enfore` believing they enforce and `enforce` would take
+  authentication down on a typo. The orchestrator's trusted-header plane
+  records and never acts in any mode, because clearing the actor there is a
+  widening (the shipped `{user.role equals "evaluation"} -> modify_risk`
+  default stops applying). The four divergences an operator should expect in
+  shadow are each a real property of the legacy paths, described here by
+  reason code (the per-path detail is in the ADR and the feature's own review,
+  in the enterprise repository): `UNKNOWN_REALM` (the issuer is declared by no
+  realm), `ORG_BINDING_MISMATCH` (the token asserts an organization other than
+  the credential's), `REVOCATION_UNAVAILABLE` (a realm declaring a revocation
+  source cannot check a `jti`-less token) and `SUBJECT_MISSING` (an upstream
+  asserting only `X-User-Email` has asserted an alias). Shadow writes one
+  record per divergence, unsampled, so an organization whose token traffic all
+  diverges on one class writes one line per request until the class is
+  cleared. The three compat variables are carried on BOTH the agent and the
+  orchestrator in `docker-compose.yml`, `docker-compose.enterprise.yml` and
+  `docker-compose.scaled.yml`, because a value on one and not the
+  other is exactly the "consulted in some planes and not others" split the
+  adapter exists to prevent; `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` is
+  carried on both services in `docker-compose.yml` and
+  `docker-compose.enterprise.yml` but NOT in `docker-compose.scaled.yml`, so a
+  scaled deployment gets the 60-second default and cannot tune it from compose.
+  `docker-compose.community-saas.yml` and
+  `docker-compose.test.yml` pass none of them through, and the CloudFormation
+  stacks have a parameter for none of them yet. **Documented in this repository at
+  `docs/security/identity-compat-mode.md`** (what the switch does, what shadow
+  records, what `enforce` refuses, what it will mean at v11); the public
+  docs-site page is authored in a held docs PR and merges at the tag. Runtime
+  suite `runtime-e2e/3550_identity_compat_adapters` (in the enterprise
+  repository; not carried on the community mirror), 20 assertions across the
+  three modes of one deployment. The ADR-060 segment projection from the directory graph
+  (`compat_segment_projection.go`, untagged) ships here too, with no
+  production consumer; its real-SCIM diff evidence is Enterprise, below.
+  (#3582)
+
+- **Per-organization composition of the compatibility mode, as plumbing with
+  no source wired** *(Community; the storage-backed source, the admin API and
+  the migration that make it settable are Enterprise, below)* -
+  `platform/shared/identity/compat_org_mode.go` and
+  `compat_org_settings_contract.go` are untagged and ship on the mirror: they
+  declare the `CompatOrgModeSource` contract and `effectiveMode`, which
+  composes the process flag with an organization's record and is now the
+  single reader of both. A community build wires NO source, so `effectiveMode`
+  returns the process flag on the first branch and performs no lookup at all,
+  pinned by `TestCompatNilOrgModeSourceIsTheProcessMode`. A record that cannot
+  be read, names an undeclared mode, or is absent all resolve to the process
+  flag; only the unreadable case is counted and logged, because an absent
+  record is the ordinary state and not a fault. `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS`
+  bounds how long a record is memoized (default 60 seconds, clamped to
+  1-600, never fatal); it is the ONLY propagation bound, because there is no
+  invalidation channel from the writing process to the reading ones. 19
+  executable conformance cases, AXC-280 to AXC-298, of which five hold in any
+  edition and 14 are Enterprise. (#3596)
+
+- **`sharedpolicy.AllPolicyCategories()`** *(Community)* - enumerates every
+  `PolicyCategory` constant in a stable order, with a source-scanning guard
+  proving it complete, so the two ADR-065 migration pin tables can be held
+  complete against the enum in both directions instead of against a
+  hand-maintained list. Not to be confused with the agent's own
+  `AllPolicyCategories`, which enumerates a different type. (#3577)
+
+- **CI on the community lane: the decision module and the standalone modules
+  now execute there** *(Community)* - `test-community.yml` carries a
+  `Unit Tests: Decision Contracts (Community)` job running a subset of the
+  enterprise lane's named gates (the disposition ledger, the tri-state corpus,
+  the property tests, the corpus and mutation proofs, one collapsed authoring
+  step) plus a full-module `-race -short` run under which the gate-18 and
+  legacy-compiler tests and most registry tests execute without a named step
+  (the registry's two mutation-gate tests skip under `-short` there), and a
+  `Unit Tests: Standalone Modules (Community)` job for `platform/cmd/axonctl`
+  and `platform/test/integration`, which are separate Go modules that
+  `go test ./...` from `platform/` never reached and that no workflow in either
+  repository ran. A regression guard DISCOVERS the modules under `platform/`
+  rather than listing them, and fails closed when its Python dependency is
+  missing rather than skipping. A second guard pins that every required status
+  check has exactly one producing workflow in whichever tree it runs in, after
+  two workflows were found reporting the required `Test Summary` under one
+  name with the cheaper one skipping; the community summary jobs resolve their
+  display name from the repository so the mirror's own ruleset keeps its
+  producers. (#3578, #3577)
+
+#### Fixed
+
+- **A 30-day licence minted west of Greenwich validated as 28 days, and every
+  expiry warning fired up to two days early** *(Community; the Enterprise and
+  marketplace validators carry the same fix, below)* - `days_until_expiry` was
+  computed by subtracting a mid-afternoon `now` from an expiry DATE parsed as
+  midnight UTC and truncating, which loses most of a day, and both licence
+  generators formatted their bare dates in the generator's LOCAL zone, so a
+  licence minted in a western timezone encoded yesterday's date. The two errors
+  compounded to two days. Every validator (`platform/agent/license/license.go`,
+  `platform/agent/license/validation.go`, the Enterprise validator and the AWS
+  Marketplace validator) now anchors on today's midnight UTC and counts whole
+  days between dates, and both generator paths format their date in UTC, so
+  the two sides agree on the zone - including the plugin-claim generators'
+  fallback for a zero `IssuedAt`, which now reads `time.Now().UTC()` in both
+  `platform/agent/license/keygen.go` and its `ee/` counterpart, each pinned by
+  its own `keygen_timezone_default_test.go`, so no generator path formats a
+  local-zone date. Fixing some validators and not others would have made the
+  SAME licence report different numbers in each edition, which is worse than
+  the shared error. `TestLicenseExpiryDays` and `TestValidateLicenseExpiry`
+  were red on a developer machine west of Greenwich and green in CI, which
+  runs in UTC, which is both how it went unnoticed and how it surfaced.
+  **Operator-visible**: for a licence already installed, the days-remaining
+  number every consumer displays and the expiry warnings move by at most one
+  day in the widening direction (the generator's local-zone date is already
+  baked into a licence minted before the upgrade); a licence minted after the
+  upgrade encodes the intended date. No licence becomes expired earlier than
+  it was. (#3582)
+
+- **`axonctl` sent only the deprecated `X-Tenant-ID` alias** *(Community)* - it
+  now sends the v9 canonical `X-Client-ID` alongside it, as every other caller
+  in the platform does. Neither header authenticates (the agent's middleware
+  overwrites all three identity headers from the validated credential); the
+  canonical name matters to the servers and proxies in front of that
+  middleware, which route and log on it. The module's own test had been
+  failing on `main` and nothing ran it (see CI, above). (#3578)
+
+- **The Community SaaS activity-update worker raced its own channel**
+  *(Community)* - `startActivityUpdateWorker`'s doc said "call once" and
+  nothing enforced it; every call replaced the package-level channel while the
+  previous goroutine was still ranging over the old one. A production binary
+  calls it once and never noticed; a test binary calls it per test and
+  `go test -race ./agent/` reports it. `sync.Once` now, with a test pinning
+  channel identity across repeated calls. It survived because no CI job runs
+  the race detector over `platform/agent` (the race job covers
+  `platform/orchestrator` and the decision module); that gap is recorded on
+  the ADR-065 umbrella rather than closed here. (#3585)
+
+- **The PDP returned an error for a nil request instead of a decision, and
+  approval clause reachability was an optional interface** *(Community)* -
+  `Decide(nil)` now produces an indeterminate `ERROR` decision with
+  `INVALID_INPUT` and stable shell identifiers rather than an error a caller
+  could drop; and the resolver an approval plane hands in must answer clause
+  reachability, so a resolver that cannot say whether a quorum is answerable
+  can no longer silently skip the EX-46 check and park a challenge until
+  timeout. (#3580)
+
+### Enterprise
+
+#### Added
+
+- **Directory graph closure and SCIM ingestion for the identity plane** - a
+  normalized directory graph with a bounded breadth-first closure that emits
+  shortest witness paths, names every group on any loop by strongly connected
+  component (a diamond stays quiet), quarantines cross-realm and orphan edges
+  under separate codes (graph poisoning and a stale row need different
+  responses), and fails closed on truncation: a realm with no group graph is
+  authoritatively empty, an unreadable graph is unreachable, and a bounded
+  traversal is truncated, and the three never share a code path. The resolved
+  set is unexported and reachable only through a method that refuses on a
+  non-authoritative, disabled, cross-organization or foreign-realm input. SCIM
+  ingestion sits behind it and refuses to guess nesting support, identifiers
+  or membership disagreement between the two provider views. (#3570)
+
+- **The OIDC realm source, the CAEP intake, and the real-SCIM proof of the
+  segment projection, for the compatibility adapters** - the tenant's
+  configured OIDC issuer is derived into a per-organization `oidc` realm that
+  is withdrawn when the provider is disabled; a Shared Signals / CAEP event
+  intake ships as an in-process typed intake, which #3596 puts an
+  authenticated opt-in HTTP route in front of (below); and the community
+  ADR-060 segment projection from the directory graph is diffed against the
+  legacy resolver on the real SCIM schema (direct membership, zero membership,
+  an unprovisioned identity, cross-organization isolation, a cycle and a
+  diamond) with zero unexplained differences and one explained one pinned
+  rather than asserted away, in an Enterprise-tagged real-Postgres test.
+  Nothing re-points the policy gates at the projection yet. (#3582)
+
+- **The compatibility mode becomes settable per organization, with an admin
+  API and a migration** - `enterprise/146` creates `identity_org_settings`
+  (one row per organization; see Migration, below), read on both the agent and
+  the orchestrator by an Enterprise-tagged memoizing store that serves the
+  last successfully read row through a storage outage rather than reporting an
+  absence, and falls back to the process mode when it has never read one. A
+  record wins over the process flag **in both directions**: an organization
+  can be raised to `shadow` on a deployment that is otherwise `off`, which is
+  what the ADR-065 release plan asked for and the process-wide flag could not
+  deliver, and an organization can be lowered to `off` on a deployment running
+  `enforce`. `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS` stays process-wide and
+  applies whenever the RESOLVED mode is `enforce`. The management surface is
+  three new platform-operator routes on the customer portal, all behind the
+  existing `X-Admin-API-Key` admin middleware and all scoped through
+  `withOrgScope`: **`GET`, `PUT` and `DELETE
+  /api/v1/admin/organizations/{org_id}/identity-settings`**. `GET` answers
+  `404` when no row exists, which is the ordinary state; `DELETE` is
+  idempotent and answers `204` either way; on `PUT`, omitting `caep_enabled`
+  PRESERVES the stored opt-in and its audience, while an absent or null
+  `compat_mode` CLEARS the per-organization mode so the deployment flag
+  decides again. A write is visible to the agent and the orchestrator only
+  after their memo window expires, and the response says so. (#3596)
+
+- **An authenticated, opt-in OpenID Shared Signals (CAEP) push receiver** -
+  **`POST /api/v1/identity/caep/events`** on the agent, registered only in an
+  enterprise build and only when the attribute resolver, the tenant OIDC
+  configuration provider and the org settings store are all wired; the
+  community build registers nothing. The caller authenticates with an ordinary
+  client credential and **the organization is taken from that credential, never
+  from the event body**. Three gates must all agree before an event is
+  considered: the process wired a receiver, the organization's
+  `identity_org_settings` row sets `caep_enabled` with an audience, and the
+  realm therefore declares Shared Signals as its revocation source; the
+  receiver re-reads the row at request time and treats it as authoritative
+  over the realm's memoized declaration. **The issuer is resolved against the
+  realm registry, and the algorithm and key id are checked against the realm,
+  BEFORE any key material is fetched**, so a token from an undeclared issuer
+  or carrying `alg=none` cannot make the process fetch anything. The realm's
+  allow-list for the only realm kind that can carry Shared Signals is `RS256`,
+  and verification is RSA/SHA-256 against the realm's own key set; the JWS
+  `typ` must be `secevent+jwt` and the request `Content-Type`
+  `application/secevent+jwt`. Only an `iss_sub` subject whose issuer equals the
+  realm's canonical issuer becomes a principal; every other RFC 9493 format is
+  refused. Refusals carry the RFC 8935 `{"err","description"}` body, and the
+  status splits the two things a transmitter must do differently: **`400` and
+  `403` mean stop and do not redeliver, `503` means redeliver** (a realm
+  source, settings row, OIDC configuration or key set that could not be read,
+  and a cache invalidation that FAILED, which is deliberately not
+  acknowledged). A redelivered `jti` inside the 30-minute window is
+  acknowledged `202` without being applied twice. **What an applied event
+  does** is drop cached identity state for the named subject: the subject is
+  mapped to the emails the organization's SCIM directory holds for it, under
+  that organization's scope, and each one's cached governance segment set is
+  invalidated, so a revocation at the IdP takes effect without waiting out the
+  segment cache TTL. A subject the directory does not know drops the
+  organization's whole cached segment set instead, so nothing about it stays
+  live. A directory lookup that FAILS is returned as a retryable `503` rather
+  than swallowed, deliberately: falling back to an organization-wide drop
+  would report success for an event the platform could not attribute, and a
+  directory outage would then read as a burst of successful revocations. Two
+  Prometheus counters,
+  `axonflow_identity_caep_push_total{outcome,stage}` and
+  `axonflow_identity_caep_invalidations_total{scope}`, are exported on the
+  agent's `/prometheus` endpoint (not `/metrics`, which is a separate JSON
+  summary). (#3596)
+
+- **Compound approval clauses, signed decision proofs and atomic reservations
+  of the ADR-065 stateful requirements plane** - `requirements/approval` holds
+  a conjunction of immutable threshold clauses that is never flattened (the
+  source specification's pool-intersection meet turns 2-of-{A,B} AND 2-of-{B,C}
+  into the unsatisfiable 2-of-{B}); separation of duties is a real bipartite
+  matching rather than a greedy pass; self-exclusion is unconditional; timeout,
+  cancellation, revocation, a policy-epoch change and any bound-input change
+  all deny, and `on_timeout=permit` has nowhere to live; a clause whose pool
+  resolves only to non-interactive principals denies at decision time (EX-46)
+  rather than parking until timeout. The plane holds no database handle: queue
+  writes go through the #3518 HITL enqueue chokepoint via
+  `platform/agent/hitl/queue/adr065`, proven by an AST walk of the call site
+  and four real-Postgres tests showing the tier gate, pending cap, dedup and
+  history trail all apply, under its own plane label so the enqueue metric can
+  tell the two sources apart. `requirements/proof` signs audience-bound
+  decision proofs whose binding walks the struct by reflection and whose
+  mutation test enumerates it the same way, so a new bound field is bound and
+  mutation-tested automatically; the encoder refuses a field type it cannot
+  render rather than skipping it. `requirements/reservation` is a
+  reserved/committed/released/expired state machine with fencing on every
+  transition, one linearizable critical section covering the check and the
+  charge across every counter, idempotent scoped retries checked inside it
+  (a retry with different demands is refused), and a test in which 64 racers
+  against a capacity of 1 admit exactly one; the key has no arguments-digest
+  field so the user-blind #3483 key is unrepresentable. **The reservation store
+  is an in-memory reference implementation; the durable store is a written
+  recommendation and its migration number is the operator's to allocate.**
+  (#3571, #3580)
+
+- **Documentation in this repository** - ADR-065 (policy decision and identity
+  control plane) and its index entry; the implementation guide
+  `technical-docs/architecture/POLICY_IDENTITY_CONTROL_PLANE.md`, whose
+  section 14 lists the three decisions still awaiting the operator;
+  `technical-docs/DECISION_PROOF_KEY_MANAGEMENT.md` (custody recommendation,
+  rotation, revocation blast radius, six open items);
+  `technical-docs/RESERVATION_STORE_SELECTION.md` (Postgres with RLS, with Redis
+  and DynamoDB considered and rejected); and the CI architecture note's
+  required-status-check section, now read live from the ruleset rather than
+  restated. (`technical-docs/` does not sync to the
+  community mirror; the capture design note `platform/decision/legacycompile/CAPTURE.md`
+  does, and ships with the module.) (#3567, #3579, #3571, #3577)
+
+#### Changed
+
+- **With the identity plane running, the fleet per-user token validators name
+  an outage as an outage** - in `platform/shared/identity/hs256_validator.go`
+  and `oidc_verifier.go` (both `//go:build enterprise`), a revocation check
+  that cannot be consulted, a JWKS that cannot be fetched or is still cooling
+  down, and an unknown key id whose covering refetch itself FAILED now carry
+  `ErrRevocationUnavailable` / `ErrJWKSUnavailable` and say the revocation
+  status or the key material is unavailable, where before all of them read as
+  an invalid token; an unknown key id under refetch cooldown whose refetch
+  succeeded names the age of the key set it was checked against and stays a
+  determinate rejection. **Every changed literal is MODE-GATED, never
+  unconditional**: `outageSentinelsActive()` (the second and last mode read
+  in the package, above) selects the wording, so with
+  `AXONFLOW_IDENTITY_COMPAT_MODE` unset the validators and the JWKS cache
+  emit 10.1.0's exact bytes, including the `errors.Is(ErrTokenInvalid)`
+  semantics an in-process consumer branches on, pinned by
+  `compat_flagoff_bytes_test.go` against 10.1.0's transcribed renderings.
+  They reach the
+  wire through `no registered validator accepted the per-user token: ...` on
+  the four MCP REST routes and the MCP-server session. Status `401` and the
+  verdict are unchanged in every mode. The portal SSO login verifier carries
+  the same classification under the same gate: `IDTokenVerifier.Verify`
+  (enterprise-tagged `idtoken_verifier.go`) reports a failure to OBTAIN key
+  material as `ErrJWKSUnavailable`, so with the plane running an IdP key
+  rotation during login is no longer reported to the user as an invalid
+  id_token; the login still fails either way, and with the plane off the
+  branch is inert and the wrap is 10.1.0's, byte for byte (grafted from the
+  superseded #3583 branch, with attribution in the code). Community binaries
+  do not compile these files and carry no change.
+  (#3582)
+
+#### Fixed
+
+- **The Enterprise licence validator, the Enterprise licence generator and the
+  AWS Marketplace offline validator carry the whole-UTC-day expiry fix** - the
+  same class as Community > Fixed above, applied to every validator and
+  generator path in the tree in one change, because an edition-split fix had
+  the two editions disagreeing about the same licence. (#3582)
+
+### CI / Testing (this repository only)
+
+- The enterprise `test.yml` carries every ADR-065 gate as an individually
+  named step whose named test must print its own `--- PASS:` line, because a
+  `-run` pattern that matches nothing exits 0 and a renamed gate would
+  otherwise become a green step that verified nothing; the real-Postgres lane
+  runs `scripts/legacy-policy-capture.sh` and both capture-backed tests on every
+  PR with the same requirement. The Go module list of the lint job includes
+  the decision module. (#3572, #3577)
+- The portal SSO browser e2e reclaims 23 GB of unused runner toolchains
+  before building, after failing on every branch including unmodified `main`
+  with `no space left on device`; it deliberately does not prune Docker.
+  `df -h` runs either side so a recurrence is read rather than re-derived.
+  (#3575)
+- `test-customer-portal-modes.yml` and the cache seeder pointed at a
+  `platform/shared/go.sum` that has never existed, so a platform dependency
+  bump did not invalidate the portal's module cache. (#3545)
+- Dependabot groups patch and minor updates per ecosystem across all 14
+  ecosystems; majors stay ungrouped and per-dependency on purpose. (#3547)
+- Every module the community mirror carries is now executed by a job that
+  runs in the mirror. A `Unit Tests: Platform Packages` job derives its
+  package set from `go list ./...` minus the packages holding a dedicated
+  step, and ships as a byte-for-byte twin in `test.yml` and
+  `test-community.yml` with a parity guard; the community decision job
+  re-syncs the gate-18 shadow-diff, legacy-compiler and registry gates that
+  had drifted into the enterprise-only lane. `legacy_call_sites.tsv` gains an
+  edition column, so a census test can tell "absent because the build-tag
+  scan stripped it" from "absent because it was deleted". The two operator
+  scripts that stage this tree through the sync workflow's own rsync chain
+  live under `scripts/ci/` and do not sync. (#3586, closing #3574)
+- The v10.2.0 identity work is exercised by a new
+  `identity-per-org-shadow-caep-e2e` workflow and the runtime suite
+  `runtime-e2e/3550_per_org_shadow_caep`; neither is carried on the community
+  mirror. (#3596)
+
+### Notes for operators reading the ADR-065 entries
+
+- **What is dark, and the evidence.** `platform/decision` is a separate module
+  that `platform/go.mod` does not reference and no file outside it imports.
+  The new files in `platform/shared/identity` (realms, principals, chains,
+  graph) and the whole of `platform/shared/requirements` have no caller outside
+  their own packages, except the HITL bridge, which itself has none. The
+  live call sites introduced by this release are two, and both are
+  default-off. The first is the compatibility adapter: its
+  entry call runs on every authenticated request in every mode and returns
+  immediately unless the mode resolved for the request's organization selects
+  `shadow` or `enforce`; the boot wiring builds the realm registry in every
+  mode and refuses to start on an unrecognized value. On an Enterprise build
+  that resolution reads one memoized per-organization row, so an organization
+  with no row is unchanged in outcome, though the read itself does happen. The
+  second is the Shared Signals receiver, which is a new route rather than a
+  change to an existing one, exists only in an enterprise build with its three
+  collaborators wired, and refuses everything for an organization that has not
+  opted in.
+- **What the ADR-065 release plan says v10.2.0 carries and this release does
+  not.** The plan names "PDP shadow mode on ALL planes" and an AuthZEN-native
+  wire surface shipped in all five SDKs together. Neither is here. The shadow
+  DIFF harness is offline and CI-bound over captured policy rows; no request
+  plane dual-evaluates against the PDP. No SDK releases in this train, and the
+  existing check/decide endpoints keep their status, verdict and wire shapes
+  (with the identity plane running, the Enterprise fleet-validator and
+  portal-SSO outage errors are reclassified, under Enterprise > Changed;
+  flag-off is byte-identical). The plan's third item for this minor,
+  per-organization enablement of the identity shadow, IS here as of #3596 on
+  Enterprise builds; the reason allow-list remains process-wide and is a
+  second, independent staged-rollout axis. These are
+  stated so the plan is amended rather than the release misread.
+- **What to do with it.** On an Enterprise deployment, apply `enterprise/146`
+  and prefer the per-organization route: `PUT
+  /api/v1/admin/organizations/{org_id}/identity-settings` with
+  `{"compat_mode":"shadow"}` puts ONE organization in shadow on a deployment
+  that is otherwise off, which bounds the blast radius of a first look and is
+  reversible with a `DELETE`. Expect the change to reach the agent and the
+  orchestrator within `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` (default
+  60), because there is no invalidation channel from the portal to them.
+  Otherwise, or on Community, set `AXONFLOW_IDENTITY_COMPAT_MODE=shadow` on both
+  the agent and the orchestrator, lower
+  `AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY` while reading, and review the
+  `[IDENTITY-COMPAT]` lines. In shadow, legacy authentication still decides
+  every request and no status or verdict changes; the one caller-visible
+  effect is on the outage legs, where an Enterprise `401` for a revocation or
+  key-material outage carries the reclassified wording under
+  Enterprise > Changed instead of 10.1.0's bytes.
+  Enable `enforce` only with the reasons you have driven to zero listed in
+  `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS`; with an empty list, `enforce`
+  also refuses on the two indeterminate codes that can arise on a credential
+  legacy accepted: `REVOCATION_UNAVAILABLE` (a `jti`-less token on the agent's
+  per-user token path, or the adapter's own revocation lookup failing) and
+  `IDENTITY_INTERNAL_ERROR` (an organization's trust realms could not be
+  established, for instance an unreadable SSO configuration row, for a
+  credential whose issuer is not already declared). A JWKS outage is already a
+  legacy rejection, so `enforce` adds nothing there. See
+  `docs/security/identity-compat-mode.md`.
+- **Three decisions are parked and none blocks this minor**: the durable
+  reservation store (including the `FORCE ROW LEVEL SECURITY` and
+  budget-window-rollover rulings), whether the reservation package is
+  Enterprise or Community, and decision-proof key custody (KMS lacks Ed25519,
+  so choosing it changes the algorithm policy). They are tracked on the #3551
+  closeout.
+- **Owed at or after the tag**: the public docs-site page for the
+  compatibility mode; realm-registry persistence and the reservation store,
+  each still needing a master-allocated migration number (`enterprise/146`
+  covers the per-organization settings row and nothing else); an exporter for
+  the shadow-mode diagnostic counters, which is still owed - `OrgModeFailures`,
+  the settings store's read-failure count and the receiver's `Snapshot` have
+  no production reader and no exposition, and the two Prometheus counters
+  #3596 does export cover the Shared Signals receiver alone; a cross-process
+  invalidation channel so an admin write does not wait out the memo window;
+  `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` in
+  `docker-compose.scaled.yml` and CloudFormation parameters for all four
+  variables; the COAZ adapters (the profile names exist, the adapters do
+  not); a cross-plane outcome-equality test, a decision-plane benchmark
+  budget and a threat-model artifact for ADR-065 gates 15, 17 and 19, which
+  are recorded as gaps on #3555 rather than claimed.
+
+### Migration
+
+> **One migration ships: `enterprise/146_identity_org_settings.sql`. It is
+> Enterprise only and a community deployment applies nothing.**
+>
+> It CREATEs one new table, `identity_org_settings`, and **ALTERs no existing
+> table**: there is no backfill, no data mutation, no index build on an
+> existing relation, and no lock taken on anything that was there before. The
+> table is one row per organization holding the organization's compatibility
+> mode (`off` | `shadow` | `enforce`, or NULL for "no per-organization mode,
+> the deployment's `AXONFLOW_IDENTITY_COMPAT_MODE` decides") and its Shared
+> Signals opt-in and required audience. Two CHECK constraints pin the
+> vocabulary to the three modes the reader accepts and make an opted-in row
+> with no audience unwritable. Row Level Security is **ENABLEd and FORCEd**, so
+> the table owner is bound too, with an isolation policy on
+> `app.current_org_id`; that matches `enterprise/135`. Every existence probe in
+> the verification block reads `to_regclass` / `pg_catalog` and never
+> `information_schema`, which is privilege-filtered and would answer "absent"
+> for a table the role merely cannot see (#3463). A down file ships alongside
+> it.
+>
+> **The migration creates no rows, and an organization with no row behaves
+> exactly as it did on 10.1.0**: the settings read reports "not found", and the
+> resolved mode is the process flag. An Enterprise deployment that upgrades the
+> binaries and has NOT yet applied `enterprise/146` also keeps 10.1.0
+> behaviour: the read fails, the failure is counted and logged once per memo
+> window, and the process mode applies.
+>
+> No boot requirement changes for a deployment that sets none of the four new
+> variables; a deployment that sets `AXONFLOW_IDENTITY_COMPAT_MODE`
+> or `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS` to an unrecognized value does
+> not start, by design. `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` is never
+> fatal: an out-of-range or unparseable value falls back to the clamped
+> default.
+
+<!--
   Version decision (Step 0): v10.1.0, MINOR, operator-approved 2026-08-28. The
   train is the US compliance framework family (epic #3528): three new
   compliance-report regulators (usinsurance, usbanking, ussecurities), nine US

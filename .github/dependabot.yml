@@ -1,4 +1,14 @@
 # Dependabot configuration for AxonFlow
+#
+# GROUPING (2026-08-29). With 14 ecosystems and no groups, dependabot opened one
+# PR per dependency per directory; this repo was carrying 10 open bumps and the
+# org 48, 25 of them untouched for over 30 days. Bumps that share a lockfile
+# invalidate each other's mergeability on every merge - measured elsewhere in
+# the org: merging one flipped nine siblings from CLEAN to UNKNOWN in the same
+# minute - so the backlog refills faster than it drains by hand.
+#
+# Patch and minor are grouped per ecosystem; MAJORS stay ungrouped and
+# per-dependency, deliberately, because those are the ones that need reading.
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
@@ -24,6 +34,11 @@ updates:
       include: "scope"
 
   # Go modules - Platform Orchestrator
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "gomod"
     directory: "/platform/orchestrator"
     schedule:
@@ -43,6 +58,11 @@ updates:
       include: "scope"
 
   # Go modules - Customer Portal
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "gomod"
     directory: "/platform/customer-portal"
     schedule:
@@ -62,6 +82,11 @@ updates:
       include: "scope"
 
   # Go modules - Connectors
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "gomod"
     directory: "/platform/connectors"
     schedule:
@@ -81,6 +106,11 @@ updates:
       include: "scope"
 
   # Go modules - Shared Libraries
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "gomod"
     directory: "/platform/shared"
     schedule:
@@ -100,6 +130,11 @@ updates:
       include: "scope"
 
   # Go modules - Golang SDK
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "gomod"
     directory: "/sdk/golang"
     schedule:
@@ -119,6 +154,11 @@ updates:
       include: "scope"
 
   # npm - Customer Portal UI
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "npm"
     directory: "/platform/customer-portal-ui"
     schedule:
@@ -139,6 +179,11 @@ updates:
       include: "scope"
 
   # npm - Healthcare Demo Frontend
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "npm"
     directory: "/platform/clients/healthcare-demo/frontend"
     schedule:
@@ -155,6 +200,11 @@ updates:
       prefix: "chore(demo)"
 
   # npm - Ecommerce Demo Frontend
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "npm"
     directory: "/platform/clients/ecommerce-demo/frontend"
     schedule:
@@ -171,6 +221,11 @@ updates:
       prefix: "chore(demo)"
 
   # npm - Support Demo Frontend
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "npm"
     directory: "/platform/clients/support-demo/frontend"
     schedule:
@@ -187,6 +242,11 @@ updates:
       prefix: "chore(demo)"
 
   # npm - Travel Demo Frontend
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "npm"
     directory: "/platform/clients/travel-demo/frontend"
     schedule:
@@ -203,6 +263,11 @@ updates:
       prefix: "chore(demo)"
 
   # Docker - Agent
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "docker"
     directory: "/platform/agent"
     schedule:
@@ -219,6 +284,11 @@ updates:
       prefix: "chore(docker)"
 
   # Docker - Orchestrator
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "docker"
     directory: "/platform/orchestrator"
     schedule:
@@ -235,6 +305,11 @@ updates:
       prefix: "chore(docker)"
 
   # GitHub Actions
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -252,3 +327,8 @@ updates:
     commit-message:
       prefix: "chore(ci)"
       include: "scope"
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
