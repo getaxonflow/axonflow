@@ -139,6 +139,12 @@ bootstrap
 
 # Go generated files
 platform/*/go.sum
+# platform/decision is a real Go module and its go.sum is a lock file, not a
+# build artefact: without it `go vet ./...` fails on every import and the module
+# cannot be verified or built here. The enterprise repository carries the same
+# negation, but .gitignore is deliberately NOT synced between the two repos, so
+# the negation has to exist independently on both sides.
+!platform/decision/go.sum
 
 # Test results
 *_load_results.json
