@@ -307,6 +307,39 @@ func (p *CompiledPolicy) AppliesToSegments(callerSegments []string) bool {
 	return slices.Contains(callerSegments, p.SegmentID)
 }
 
+// AllPolicyCategories returns every PolicyCategory constant this package
+// declares, in a stable order.
+//
+// It exists because two ADR-065 migration pin tables - the action-resolution
+// table and the detection-posture lever table - have to be complete against
+// this enum in BOTH directions: a category with no row goes unpinned, and a
+// MISSPELLED row pins nothing while inflating the counts a reader trusts.
+// Enumerating from a hand-maintained list in each test is the drift those
+// tables exist to prevent, so the list lives here, beside the constants, with
+// a source-scanning guard in this package's own tests proving it is complete.
+//
+// Not to be confused with platform/agent.AllPolicyCategories, which enumerates
+// the AGENT's own PolicyCategory type over its static/dynamic authoring split.
+// They are different types over overlapping vocabularies and neither is
+// derived from the other; this one is the one the ADR-065 migration tables are
+// pinned against, because it is the type the shared engine evaluates.
+func AllPolicyCategories() []PolicyCategory {
+	return []PolicyCategory{
+		CategorySecuritySQLi, CategorySecurityDangerous, CategoryAdminAccess,
+		CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU,
+		CategoryPIISingapore, CategoryPIIIndonesia,
+		CategoryDataExfiltration, CategorySensitiveData,
+		CategoryDynamicRateLimit, CategoryDynamicBudget,
+		CategoryDynamicTimeAccess, CategoryDynamicRoleAccess,
+		CategoryComplianceGDPR, CategoryComplianceHIPAA, CategoryComplianceRBI,
+		CategoryComplianceSEBI, CategoryComplianceEUAIAct, CategoryComplianceMASFEAT,
+		CategoryComplianceGLBA, CategoryComplianceFairLending,
+		CategoryComplianceBSAAML, CategoryComplianceNYDFS,
+		CategoryFinCrime,
+		CategoryMediaSafety, CategoryMediaBiometric, CategoryMediaDocument, CategoryMediaPII,
+	}
+}
+
 // IsPIIPolicyCategory reports whether a category is a TEXT PII category, by
 // CONVENTION rather than an enumerated list: any "pii-*" category
 // (pii-global/us/india/eu/singapore/indonesia). This is the single source of

@@ -106,6 +106,7 @@ jobs:
             ["orchestrator"]="platform/orchestrator"
             ["connectors"]="platform/connectors"
             ["shared"]="platform/shared"
+            ["decision"]="platform/decision"
           )
 
           # Run all lint jobs in parallel, capturing output

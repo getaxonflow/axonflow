@@ -37,6 +37,16 @@ func (c *Client) do(method, path string) ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("creating request: %w", err)
 	}
 
+	// X-Client-ID is the v9 canonical credential identity and X-Tenant-ID is
+	// the deprecated alias (ADR-052 section 5 / ADR-053 step 2). Both are
+	// emitted during the compatibility window, which is what every other
+	// caller in the platform does; this client sent only the deprecated one.
+	//
+	// Neither header authenticates: the agent's auth middleware Sets all three
+	// identity headers from the validated credential, overwriting whatever the
+	// caller supplied. Sending the canonical name matters for the servers and
+	// proxies in front of that middleware, which route and log on it.
+	req.Header.Set("X-Client-ID", c.clientID)
 	req.Header.Set("X-Tenant-ID", c.clientID)
 	req.Header.Set("X-Client-Secret", c.clientSecret)
 	req.Header.Set("Accept", "application/json")

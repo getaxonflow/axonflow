@@ -282,9 +282,31 @@ type activityUpdate struct {
 	tenantID string
 }
 
+// activityUpdateWorkerOnce makes the worker start exactly once per process,
+// which is what this function's own doc has always said it requires.
+//
+// It did not. RegisterCommunityRegistrationHandler calls it, and every call
+// REPLACED activityUpdateChan while the worker goroutine from the previous
+// call was still ranging over the old one - a write to the package variable
+// racing that goroutine's read of it. `go test -race ./agent/` reports it on
+// origin/main, and it has survived because no CI job runs the race detector
+// over platform/agent: the race-detector job covers platform/orchestrator and
+// the full-module race job covers platform/decision.
+//
+// A production binary calls this once and never noticed. A test binary calls
+// it once per test that wires the router, which is why the detector sees it
+// there first - but the variable is shared process-wide either way, and a
+// second caller appearing in production would inherit a real bug.
+var activityUpdateWorkerOnce sync.Once
+
 // startActivityUpdateWorker starts a single background worker that processes
-// tenant activity updates from the channel. Call once at startup.
+// tenant activity updates from the channel. Safe to call more than once; only
+// the first call starts anything.
 func startActivityUpdateWorker() {
+	activityUpdateWorkerOnce.Do(startActivityUpdateWorkerLocked)
+}
+
+func startActivityUpdateWorkerLocked() {
 	activityUpdateChan = make(chan activityUpdate, activityUpdateBufferSize)
 	go func() {
 		for update := range activityUpdateChan {

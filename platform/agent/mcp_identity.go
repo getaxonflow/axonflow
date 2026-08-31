@@ -101,6 +101,12 @@ func registerFleetValidators() {
 
 	// Path A — AxonFlow-minted HS256 per-user tokens, revocation-checked.
 	if rev, err := sharedidentity.NewDBRevocationStore(db); err == nil {
+		// #3550: record that a deny-list WAS wired, so the built-in minted
+		// realm declares RevocationSourceLocalStore rather than the positive
+		// "this realm has no revocation channel". The fact is taken from the
+		// constructor succeeding, not from configuration, because those two
+		// disagree exactly when the constructor failed.
+		noteIdentityCompatWiring(rev, nil, false)
 		if v, verr := sharedidentity.NewHS256Validator(jwtSecret, rev); verr == nil {
 			if regErr := sharedidentity.RegisterValidator(v); regErr != nil {
 				log.Printf("[MCP-Server] HS256 validator not registered: %v", regErr)
@@ -123,6 +129,11 @@ func registerFleetValidators() {
 	attrs, attrsErr := sharedidentity.NewIdentityAttributeResolver(db)
 	if attrsErr == nil {
 		setFleetSegmentResolver(attrs)
+		// #3550: a SCIM-backed directory IS wired, so the realms that can
+		// carry one declare DirectorySourceSCIM. Declaring None here would
+		// make an empty group closure authoritative (EX-45) for a deployment
+		// that actually has a directory.
+		noteIdentityCompatWiring(nil, nil, true)
 	} else if !errors.Is(attrsErr, sharedidentity.ErrEnterpriseOnly) {
 		log.Printf("[MCP-Server] identity attribute resolver unavailable: %v", attrsErr)
 	}
@@ -135,6 +146,37 @@ func registerFleetValidators() {
 	// unmodified, and the role logic it delegates to is byte-for-byte the same
 	// scimRoleResolver as before this change.
 	cfg, cfgErr := sharedidentity.NewDBOIDCConfigProvider(db)
+	if cfgErr == nil {
+		// #3550: the tenant OIDC realm is derived from this same provider, so
+		// EX-47 is real on that path without a second configuration surface:
+		// an org with no enabled OIDC row declares no OIDC realm, and a
+		// validly signed IdP token from it is UNKNOWN_REALM.
+		noteIdentityCompatWiring(nil, cfg, false)
+	}
+
+	// Session ADR65-I: the per-organization identity settings store. It feeds
+	// the adapter's per-org mode, the OIDC realm's Shared Signals opt-in and
+	// the CAEP receiver's audience. ErrEnterpriseOnly is skipped like every
+	// other Enterprise capability here; any other failure is FATAL, because a
+	// deployment whose table exists and whose store cannot be opened would
+	// silently run every organization in the process mode while its records
+	// say otherwise - the one outcome the record exists to rule out.
+	//
+	// A nil db is "nothing to read", the same posture every constructor
+	// above takes (they log and skip), not a construction failure: run.go
+	// refuses to boot without DATABASE_URL long before this runs, so a nil
+	// db here is a test or a no-DB harness, never a deployment whose table
+	// exists and whose store cannot be opened.
+	if db != nil {
+		if settings, serr := sharedidentity.NewDBOrgIdentitySettingsStore(db); serr == nil {
+			noteIdentityOrgSettingsWired(settings)
+		} else if !errors.Is(serr, sharedidentity.ErrEnterpriseOnly) {
+			log.Fatalf("❌ identity compat: per-organization settings store could not be built: %v", serr)
+		}
+	}
+	// Whether this process can host a Shared Signals receiver, derived from
+	// what was actually wired above. Must run AFTER the three constructors.
+	noteIdentityCAEPReceivable(attrsErr == nil)
 	if cfgErr == nil && attrsErr == nil {
 		if v, verr := sharedidentity.NewOIDCVerifier(cfg, attrs); verr == nil {
 			if regErr := sharedidentity.RegisterValidator(v); regErr != nil {

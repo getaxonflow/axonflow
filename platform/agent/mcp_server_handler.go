@@ -1413,6 +1413,47 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 	if resolvedUserID == "" {
 		resolvedUserID = resolvedEmail
 	}
+
+	// ADR-065 identity compatibility adapter (#3550), on the trusted-header
+	// path. This is the branch where an upstream's assertion actually BECOMES
+	// the session's identity, which is what makes it the credential path's
+	// entry point; the reads a few lines above and gateProxyIdentityHeaders in
+	// proxy.go move header bytes around and resolve no principal.
+	//
+	// The values passed are the ones that SURVIVED the #2896 gate, not the
+	// ones the caller sent. With the gate off both are empty here and the
+	// counterfactual truthfully records that this deployment resolved no
+	// upstream identity at all, which is a different fact from an upstream
+	// that asserted one.
+	//
+	// The email is presented as an alias and can never become the canonical
+	// subject: a deployment whose upstream asserts only an address records
+	// SUBJECT_MISSING, which is the honest statement that it has attribution
+	// and not identity.
+	//
+	// `accepted` is whether the LEGACY path resolved an identity from the
+	// headers at all, which is EITHER header surviving the gate. It is
+	// deliberately not `headerUserID != ""`: the legacy path accepts an
+	// email-only assertion and makes it the session's identity, so reporting
+	// that as a legacy rejection would hide the one divergence this path
+	// exists to surface, by comparing a refusal against a refusal.
+	//
+	// A request that asserted NOTHING is skipped, for the same reason
+	// ResolveToken skips a request that presented no token: there is no
+	// credential decision to compare against, and recording it would inflate
+	// the agreement rate with requests that carried no upstream identity at
+	// all - on the higher-volume path, since under the default posture the
+	// gate strips both headers and every MCP request lands here.
+	if headerUserID != "" || headerEmail != "" {
+		legacyHeader := sharedidentity.TrustedHeaderLegacyAuth(
+			auth.OrgID, headerUserID, headerEmail, true, "", time.Now())
+		if ref := sharedidentity.CompatResolve(r.Context(), legacyHeader).Refusal(); ref != nil {
+			return "", "", "", "", "", "", "", nil, idInputs,
+				fmt.Errorf("%s: upstream-asserted identity refused by the identity plane (%s)",
+					sharedidentity.CompatRefusalCode, ref.Reason)
+		}
+	}
+
 	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "", auth.ClientID, resolvedTier, auth, idInputs, nil
 }
 

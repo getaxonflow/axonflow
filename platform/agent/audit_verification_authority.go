@@ -141,7 +141,11 @@ func auditVerificationAuthorized(r *http.Request) bool {
 	if credentialTenant == "" {
 		credentialTenant = TenantIDFromContext(ctx)
 	}
-	user, err := validateUserToken(token, credentialTenant)
+	// #3550: through adaptedValidateUserToken, not validateUserToken directly.
+	// This gate turns a per-user token into TENANT-WIDE AUDIT READ, so an
+	// identity the organization's trust realms refuse must not buy read scope
+	// here while the same token is refused on every other route.
+	user, err := adaptedValidateUserToken(OrgIDFromContext(ctx), token, credentialTenant)
 	if err != nil || user == nil {
 		return false
 	}

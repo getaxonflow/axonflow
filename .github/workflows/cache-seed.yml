@@ -25,7 +25,9 @@
 # changes, its matrix entry here must change in the same PR.
 #
 # Consumers per entry (census 2026-08-27):
-#   platform        -> test.yml x6, test-community.yml x3, migrations-gate.yml
+#   platform        -> test.yml x7, test-community.yml x4, migrations-gate.yml
+#   decision        -> test.yml unit-tests-decision, test-community.yml unit-tests-decision
+#   platform+decision -> test.yml community-mirror-simulation
 #   platform+ee     -> test.yml unit-tests-enterprise, unit-tests-enterprise-realpg
 #   ee              -> tier-gate-contract.yml x2 (merge queue)
 #   portal          -> test-customer-portal-modes.yml test-backend
@@ -37,6 +39,7 @@ on:
     branches: [main]
     paths:
       - 'platform/go.sum'
+      - 'platform/decision/go.sum'
       - 'ee/go.sum'
       - 'ee/platform/customer-portal/go.sum'
       - '.github/workflows/cache-seed.yml'
@@ -61,6 +64,22 @@ jobs:
           - name: platform
             dep-path: platform/go.sum
             modules: platform
+          # platform/decision is a SEPARATE module and takes the OPA Go SDK,
+          # which the rest of the platform deliberately does not. Without a seed
+          # its consumers download and compile OPA from cold on every pull
+          # request, because a PR restores only caches written on its own branch
+          # or on the default branch and nothing on main writes this one.
+          - name: decision
+            dep-path: platform/decision/go.sum
+            modules: platform/decision
+          # test.yml's community-mirror-simulation job replays the community
+          # lanes over a staged copy spanning the platform module AND the
+          # decision module, so its setup-go key hashes both go.sum files.
+          - name: platform+decision
+            dep-path: |
+              platform/go.sum
+              platform/decision/go.sum
+            modules: platform platform/decision
           - name: platform+ee
             dep-path: |
               platform/go.sum
@@ -72,7 +91,7 @@ jobs:
           - name: portal
             dep-path: |
               ee/platform/customer-portal/go.sum
-              platform/shared/go.sum
+              platform/go.sum
             modules: ee/platform/customer-portal
     steps:
       - name: Checkout code

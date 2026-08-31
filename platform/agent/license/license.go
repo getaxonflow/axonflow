@@ -130,9 +130,16 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 	// a signed payload from granting limits above the tier ceiling.
 	limits := GetTierLimits(tier)
 
-	// Check expiry
+	// Check expiry.
+	//
+	// Same computation as the enterprise validator (validation.go), and it has
+	// to be: `expiry` is a bare date parsed as midnight UTC on both sides, and
+	// subtracting a mid-afternoon `now` then truncating loses most of a day.
+	// Fixing one edition and not the other would make the SAME licence report
+	// a different number of days remaining in each, which is worse than the
+	// shared error they had before.
 	now := time.Now()
-	daysUntilExpiry := int(expiry.Sub(now).Hours() / 24)
+	daysUntilExpiry := int(expiry.Sub(now.UTC().Truncate(24*time.Hour)).Hours() / 24)
 
 	// Set max nodes based on tier
 	maxNodes := 2

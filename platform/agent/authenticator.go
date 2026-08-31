@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	serviceauth "axonflow/platform/shared/serviceauth"
 )
@@ -112,6 +114,36 @@ func (e *AuthError) Error() string { return e.Message }
 //  3. Community-SaaS mode → bcrypt validation, rate limits
 //  4. Enterprise → Ed25519 license key via Basic auth
 func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
+	auth, authErr := authenticateLegacy(r, hints)
+
+	// ADR-065 identity compatibility adapter (#3550). It runs HERE, wrapping
+	// the whole legacy decision, rather than at any of the callers: every
+	// handler, middleware and proxy in this package reaches client-credential
+	// authentication through this function, so wiring it here covers all of
+	// them and one added tomorrow.
+	//
+	// A FAILED authentication is deliberately not adapted. There is no
+	// authenticated organization on that path, and the identity plane is
+	// organization-scoped by construction - a realm lookup with no org is not
+	// a refusal to record, it is a question that cannot be asked. Attributing
+	// the attempt to the deployment's own org would be worse: it would file
+	// another tenant's failed credential under ours.
+	//
+	// Under the default mode (off) Resolve returns before reading a clock or
+	// touching the registry, so this is one nil-pointer comparison.
+	if legacy, adaptable := authResultLegacyAuth(auth, time.Now()); adaptable && authErr == nil {
+		if ref := sharedidentity.CompatResolve(r.Context(), legacy).Refusal(); ref != nil {
+			return nil, compatAuthError(ref)
+		}
+	}
+	return auth, authErr
+}
+
+// authenticateLegacy is the unchanged legacy authentication. Every semantic
+// below is what Authenticate has always done; the split exists so the identity
+// adapter has exactly one place to wrap, and so a future edit to a branch here
+// cannot bypass it.
+func authenticateLegacy(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 	// 1. Internal service detection — checked FIRST in all modes.
 	// The orchestrator calls back to agent MCP handlers with HMAC-signed body
 	// fields. This must be checked before mode-specific auth because the
@@ -318,10 +350,22 @@ func ResolveUser(auth *AuthResult, userToken string) (*User, *AuthError) {
 		}, nil
 
 	case AuthKindEnterprise:
-		user, err := validateUserToken(userToken, auth.TenantID)
+		// The HS256 path's single production entry point, which is where the
+		// ADR-065 compat adapter lives (#3550). It is NOT here, because
+		// validateUserToken has a second production caller
+		// (resolveAuditReadAuthority) and a guard at one of two callers is not
+		// a guard. See adaptedValidateUserToken.
+		user, err := adaptedValidateUserToken(auth.OrgID, userToken, auth.TenantID)
 		if err != nil {
+			// An identity-plane refusal carries its own code so it is
+			// distinguishable from a tampered or expired token, which share
+			// this branch. See CompatRefusalCode.
+			code := "invalid_user_token"
+			if strings.HasPrefix(err.Error(), sharedidentity.CompatRefusalCode+":") {
+				code = sharedidentity.CompatRefusalCode
+			}
 			return nil, &AuthError{
-				Code:       "invalid_user_token",
+				Code:       code,
 				Message:    fmt.Sprintf("Invalid user token: %v", err),
 				HTTPStatus: http.StatusUnauthorized,
 			}

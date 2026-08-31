@@ -90,6 +90,9 @@ func initSegmentPolicyGate(db *sql.DB) {
 	resolver, err := sharedidentity.NewIdentityAttributeResolver(db)
 	if err == nil {
 		setOrchestratorSegmentResolver(resolver)
+		// #3550: a SCIM-backed directory IS wired in this process, so the
+		// built-in realms that can carry one declare DirectorySourceSCIM.
+		noteOrchestratorDirectoryWired()
 		log.Println("[Policy] ADR-060 (#2989 P3b) orchestrator segment resolver wired")
 	} else if !errors.Is(err, sharedidentity.ErrEnterpriseOnly) {
 		log.Printf("[Policy] ADR-060 (#2989 P3b) orchestrator segment resolver unavailable: %v", err)
