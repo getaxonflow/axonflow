@@ -53,6 +53,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The ee/ tree does not exist on the community mirror: sync-community-repo.yml
+  # strips it, so every ee-dependent seed resolved a dep-path that is not there
+  # and failed on push to the mirror's main. The entries that need ee/ live in
+  # seed-enterprise below, which is gated on the repository, exactly as
+  # build-community.yml gates its community-only jobs. This job carries only
+  # paths that exist in BOTH repositories.
   seed:
     name: Seed ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -80,6 +86,39 @@ jobs:
               platform/go.sum
               platform/decision/go.sum
             modules: platform platform/decision
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go (key mirrors one consumer exactly)
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: ${{ matrix.dep-path }}
+
+      # setup-go SAVES the module directory at job end; it only has something
+      # to save if the modules were actually downloaded.
+      - name: Download modules
+        run: |
+          set -euo pipefail
+          for d in ${{ matrix.modules }}; do
+            echo "--- go mod download: $d"
+            (cd "$d" && go mod download)
+          done
+
+  # The ee/ tree is stripped from the community mirror, so these three seeds
+  # exist only where ee/ does. Gated on the repository the same way
+  # build-community.yml gates its community-only jobs.
+  seed-enterprise:
+    name: Seed ${{ matrix.name }}
+    if: github.repository != 'getaxonflow/axonflow'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - name: platform+ee
             dep-path: |
               platform/go.sum
@@ -104,8 +143,6 @@ jobs:
           cache: true
           cache-dependency-path: ${{ matrix.dep-path }}
 
-      # setup-go SAVES the module directory at job end; it only has something
-      # to save if the modules were actually downloaded.
       - name: Download modules
         run: |
           set -euo pipefail
@@ -119,6 +156,8 @@ jobs:
   # the matrix above and gets its own verbatim mirror.
   seed-risk-scorer:
     name: Seed risk-scorer (go-version-file)
+    # Its cache key hashes ee/go.sum, which the community mirror does not carry.
+    if: github.repository != 'getaxonflow/axonflow'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
