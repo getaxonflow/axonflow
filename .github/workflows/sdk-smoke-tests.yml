@@ -52,7 +52,7 @@ jobs:
       sdk-relevant: ${{ steps.filter.outputs.sdk-relevant }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect SDK-relevant changes
         uses: dorny/paths-filter@v4
@@ -92,7 +92,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -304,7 +304,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go (license keygen)
         uses: actions/setup-go@v5

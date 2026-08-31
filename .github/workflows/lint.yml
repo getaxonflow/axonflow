@@ -49,7 +49,7 @@ jobs:
       go-code: ${{ steps.filter.outputs.go-code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect Go code changes
         uses: dorny/paths-filter@v4
@@ -77,7 +77,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -192,7 +192,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Runs first, and is the reason this job is trustworthy. It asserts BOTH
       # directions over fixtures the script builds itself: that every
@@ -221,7 +221,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Runs first, and is the reason a green tick below means anything. It
       # asserts BOTH directions over fixtures it builds itself, INCLUDING that
@@ -251,7 +251,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Both directions, over fixtures it builds itself, plus an anti-vacuity
       # assertion that the walk actually sees the tree rather than passing
