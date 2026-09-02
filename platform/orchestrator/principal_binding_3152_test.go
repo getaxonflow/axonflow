@@ -222,13 +222,13 @@ func TestProcess3152_ForgedRoleNeverReachesThePolicyFieldResolver(t *testing.T) 
 	//    actually governs the request.
 	if !resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "not_equals", "value": "admin",
-	}, got, nil) {
+	}, got, nil, nil) {
 		t.Error("{user.role not_equals \"admin\"} did not match: the body still chose the role, " +
 			"so the shipped role-gated policy shape is still evadable")
 	}
 	if resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "equals", "value": "admin",
-	}, got, nil) {
+	}, got, nil, nil) {
 		t.Error("{user.role equals \"admin\"} matched: the caller successfully asserted the admin role")
 	}
 
@@ -287,7 +287,7 @@ func TestProcess3152_ValidatedRoleHeaderIsHonoured(t *testing.T) {
 	}
 	if resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "not_equals", "value": "admin",
-	}, got, nil) {
+	}, got, nil, nil) {
 		t.Error("{user.role not_equals \"admin\"} matched for a validated admin: " +
 			"the fix has made role-keyed policy unenforceable rather than unforgeable")
 	}

@@ -36,6 +36,7 @@ import (
 
 	sharedpolicy "axonflow/platform/shared/policy"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -349,6 +350,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, queryText, sharedpolicy.EvalOptions{
+			Plane:    legacycompile.PlaneOpenAICompatible,
 			TenantID: user.TenantID,
 			OrgID:    user.OrgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the

@@ -146,6 +146,20 @@ func BootstrapCompat(cfg CompatBootstrapConfig) (*CompatBootstrap, error) {
 	if err != nil {
 		return nil, err
 	}
+	// THE FAN-OUT IS THE WHOLE METRICS WIRING (#3602).
+	//
+	// The log recorder and the Prometheus recorder see the SAME record, in the
+	// same call, so the two tallies cannot disagree about what happened - which
+	// is why the metric is not derived from the log recorder's Snapshot. It is
+	// assembled here rather than at each binary for the reason this file exists
+	// at all: two assemblies drift, and a deployment exporting compat metrics
+	// from the agent and not from the orchestrator would produce a window whose
+	// denominator is a statement about which binary was configured.
+	//
+	// Order matters only for the log: the log recorder is first so a divergence
+	// line is emitted before the counter moves, which is the order an operator
+	// reading a log next to a graph expects.
+	fanout := MultiCounterfactualRecorder{recorder, PrometheusCounterfactualRecorder{}}
 	opts := []CompatAdapterOption{
 		WithCompatComponent(cfg.Component),
 		WithCompatEnforceReasons(reasons),
@@ -156,7 +170,7 @@ func BootstrapCompat(cfg CompatBootstrapConfig) (*CompatBootstrap, error) {
 	if cfg.OrgModes != nil {
 		opts = append(opts, WithCompatOrgModes(cfg.OrgModes))
 	}
-	adapter, err := NewCompatAdapter(mode, registry, source, recorder, opts...)
+	adapter, err := NewCompatAdapter(mode, registry, source, fanout, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +194,12 @@ func (b *CompatBootstrap) InstallProcessCompat(component string) {
 		return
 	}
 	SetProcessCompatAdapter(b.Adapter)
+	// The mode gauge is published HERE, at install, and not on the first
+	// request. A process that never serves an evaluating request is exactly the
+	// state the observation window has to be able to name, so the series that
+	// says "this process is in shadow" must exist before any traffic does. See
+	// compat_metrics.go's compatModeGauge.
+	publishCompatMode(component, b.Mode)
 	// Read off the bootstrap, NOT off the adapter's field: the AST census in
 	// compat_org_mode_test.go permits exactly one reader of that field, and
 	// a startup log line is not a reason to add a second.
@@ -254,8 +274,20 @@ const compatRealmTimeout = 2 * time.Second
 
 // boundedRealmContext derives the context the realm source runs under.
 func boundedRealmContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(nonNilContext(ctx), compatRealmTimeout)
+}
+
+// nonNilContext is context.Background() for a nil context.
+//
+// A named helper because two callers need it and one of them
+// (CompatAdapter.effectiveMode) needs a DIFFERENT derivation on top of it -
+// context.WithoutCancel, because a configuration read must not be poisoned for
+// a whole TTL window by one client disconnect. Inlining the nil check at both
+// would be two copies of the same guard, one of which would eventually be the
+// one that was not updated.
+func nonNilContext(ctx context.Context) context.Context {
 	if ctx == nil {
-		ctx = context.Background()
+		return context.Background()
 	}
-	return context.WithTimeout(ctx, compatRealmTimeout)
+	return ctx
 }

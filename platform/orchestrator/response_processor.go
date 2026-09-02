@@ -24,6 +24,7 @@ import (
 
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/indonesia"
+	"axonflow/platform/decision/legacycompile"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
@@ -316,6 +317,7 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 	}
 
 	result := p.sharedPolicyEngine.EvaluateResponse(ctx, data, sharedpolicy.EvalOptions{
+		Plane: legacycompile.PlaneOrchestratorResponse,
 		// v9 Phase 8 #2384 PR-C1: OrgID propagation for RLS-aware audit writes.
 		// #3048 R3 HIGH-3: OrganizationID scopes the loader's tenant pass.
 		TenantID:        user.TenantID,

@@ -467,6 +467,48 @@ type LegacyAuth struct {
 	// one-direction invariant). A value outside the allow-list, or one paired
 	// with an accepted decision, is an adapter defect and refuses to evaluate.
 	UnverifiableReason AdmissionReason
+
+	// Synthetic marks a request driven by AxonFlow's own observation-window
+	// canary rather than by a tenant (#3602).
+	//
+	// # WHY THE OBSERVATION GATE NEEDS IT
+	//
+	// A canary exists to give the shadow window a denominator, so its
+	// comparisons MUST count towards coverage - a path only the canary
+	// exercises is still an exercised path. But they must be excludable from
+	// any volume floor, or "this deployment saw 3,000 comparisons" turns into
+	// a statement about our own probe rather than about production traffic.
+	// Both readings are needed, so the fact is a LABEL, not a filter.
+	//
+	// # ITS FORGERY DIRECTION IS SAFE, WHICH IS WHY A HEADER CAN CARRY IT
+	//
+	// Call sites set it from a request header, which is caller-assertable. A
+	// tenant that tagged its own traffic synthetic would EXCLUDE that traffic
+	// from the volume floors - making the coverage gate harder to satisfy, not
+	// easier. It cannot manufacture coverage, because a synthetic comparison
+	// is still a comparison and still lands in the same divergence class. It
+	// decides nothing about admission and is never read by VerifyCredential.
+	Synthetic bool
+}
+
+// SyntheticProbeHeader is the request header AxonFlow's own canary sets to
+// mark a comparison as synthetic. See LegacyAuth.Synthetic for why a
+// caller-assertable channel is acceptable for this one fact.
+const SyntheticProbeHeader = "X-Axonflow-Synthetic-Probe"
+
+// IsSyntheticProbeHeader reports whether a header value marks a synthetic
+// probe.
+//
+// A POSITIVE membership test on the two spellings the canary sends, not
+// "non-empty": a header echoed back by a proxy, or one a caller set to "0" or
+// "false" meaning to turn it OFF, must not read as true.
+func IsSyntheticProbeHeader(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
 }
 
 // compatUnverifiableReasons is the closed set a legacy path may report as
@@ -595,6 +637,61 @@ type Counterfactual struct {
 	// Enforced reports whether this record's refusal was applied to the
 	// request. False for every shadow record.
 	Enforced bool
+	// Synthetic echoes LegacyAuth.Synthetic: this comparison was driven by
+	// AxonFlow's own observation-window canary (#3602).
+	Synthetic bool
+}
+
+// FailOpenDirection says which way an admission difference runs.
+//
+// # WHY THIS EXISTS ALONGSIDE CompatDivergence
+//
+// The divergence classes already distinguish the two directions, but they do
+// it by NAME - identity_refused versus identity_admitted_legacy_rejected - and
+// an operator scanning a dashboard has to know which of those two is the
+// dangerous one. Gate 18 is specifically about fail-OPEN differences, so the
+// direction gets its own axis, and the safe direction can be read at a glance
+// rather than decoded.
+//
+// The spellings are IDENTICAL to shadow.FailOpenDirection in
+// platform/decision/legacycompile/shadow/classify.go, deliberately: the CI
+// gate's summary line and the production metric describe the same property,
+// and two vocabularies for one property is how a dashboard and a gate come to
+// disagree about whether the window is clean.
+type FailOpenDirection string
+
+const (
+	// FailOpenNone means the two planes agree on admission.
+	FailOpenNone FailOpenDirection = "none"
+	// FailOpenLegacyPermitted means legacy admitted and the identity plane did
+	// not. The SAFE direction: the new plane is stricter. It is what enforce
+	// mode would act on.
+	FailOpenLegacyPermitted FailOpenDirection = "legacy_permitted_new_denied"
+	// FailOpenNewPermitted means the identity plane admitted a credential
+	// legacy REJECTED. The fail-open direction, and the one gate 18 names.
+	// Unreachable by construction (compat_paths.go sets SignatureVerified from
+	// the legacy decision), which is exactly why it gets its own axis: an
+	// unreachable class that starts moving must be impossible to miss.
+	FailOpenNewPermitted FailOpenDirection = "new_permitted_legacy_denied"
+)
+
+// FailOpen reports which way this record's difference runs.
+//
+// It is derived from the two ADMISSION decisions rather than from the
+// divergence class, so a divergence class added later cannot silently land in
+// "none": the identity side is a closed tri-state and IsAdmitted is its only
+// sanctioned reader.
+func (c Counterfactual) FailOpen() FailOpenDirection {
+	legacyAdmitted := c.LegacyDecision == LegacyDecisionAccepted
+	identityAdmitted := c.IdentityState.IsAdmitted()
+	switch {
+	case legacyAdmitted == identityAdmitted:
+		return FailOpenNone
+	case legacyAdmitted:
+		return FailOpenLegacyPermitted
+	default:
+		return FailOpenNewPermitted
+	}
 }
 
 // CompatRealmSource registers an organization's trust realms into the registry
@@ -1135,6 +1232,7 @@ func (a *CompatAdapter) record(ctx context.Context, in LegacyAuth, out CompatOut
 		RealmID:        out.Subject.Realm.RealmID,
 		IdentityEpoch:  out.Subject.IdentityEpoch,
 		Enforced:       out.refusal != nil,
+		Synthetic:      in.Synthetic,
 	}
 	if out.Subject.Admission.State.IsAdmitted() {
 		rec.Principal = out.Subject.Admission.Principal.String()

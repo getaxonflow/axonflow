@@ -243,6 +243,25 @@ func moduleRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// SYMLINKS ARE RESOLVED, and this is not tidiness (#3564).
+	//
+	// A -overlay entry is matched by the go command against the PHYSICAL path
+	// it computes for a file. With this tree anywhere under a symlinked prefix
+	// - /tmp on macOS is a symlink to /private/tmp, which is where the
+	// community-mirror simulation (scripts/ci/simulate-community-mirror.sh)
+	// stages it - every overlay key misses SILENTLY: the build succeeds
+	// because the ORIGINAL file is compiled, the target case passes because
+	// nothing was mutated, and this harness reports every proof as a survivor.
+	//
+	// That is the worst available failure for a mutation gate, because it
+	// accuses the checks rather than itself. Measured on the staged mirror
+	// before this line existed: all 27 proofs "survived"; with it, all 27 pass.
+	// CI never saw it because a GitHub runner's workspace has no symlinked
+	// component - so the failure was reserved for exactly the two places it
+	// would be least expected, a developer machine and the mirror lane.
+	if resolved, rerr := filepath.EvalSymlinks(root); rerr == nil {
+		root = resolved
+	}
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		t.Fatalf("expected the decision module root at %s: %v", root, err)
 	}

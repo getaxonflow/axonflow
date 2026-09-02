@@ -23,7 +23,7 @@ func dynamicPolicyTestColsWithSegment() []string {
 	return []string{
 		"id", "name", "description", "conditions", "actions", "tenant_id",
 		"org_id", "priority", "policy_id", "policy_type", "category",
-		"risk_level", "allow_override", "created_at", "segment_id",
+		"risk_level", "allow_override", "created_at", "updated_at", "segment_id",
 	}
 }
 
@@ -31,7 +31,7 @@ func dynamicPolicyTestColsWithoutSegment() []string {
 	return []string{
 		"id", "name", "description", "conditions", "actions", "tenant_id",
 		"org_id", "priority", "policy_id", "policy_type", "category",
-		"risk_level", "allow_override", "created_at",
+		"risk_level", "allow_override", "created_at", "updated_at",
 	}
 }
 
@@ -46,10 +46,12 @@ func TestRefreshDynamicPolicies_WithSegment_ScansAllColumns(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	wantCreatedAt := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	wantUpdatedAt := time.Date(2026, 2, 20, 9, 30, 0, 0, time.UTC)
 	mock.ExpectQuery("FROM dynamic_policies").
 		WillReturnRows(sqlmock.NewRows(dynamicPolicyTestColsWithSegment()).
 			AddRow("id-1", "policy one", "desc", `[{"field":"x"}]`, `[{"type":"block"}]`,
-				"tenant-1", "org-1", 10, "pol-1", "content", "custom", "high", true, wantCreatedAt, "seg-1"))
+				"tenant-1", "org-1", 10, "pol-1", "content", "custom", "high", true,
+				wantCreatedAt, wantUpdatedAt, "seg-1"))
 
 	rows, err := RefreshDynamicPolicies(context.Background(), db, true)
 	if err != nil {
@@ -74,6 +76,15 @@ func TestRefreshDynamicPolicies_WithSegment_ScansAllColumns(t *testing.T) {
 	if !got.CreatedAt.Valid || !got.CreatedAt.Time.Equal(wantCreatedAt) {
 		t.Errorf("expected created_at = %v, got %+v", wantCreatedAt, got.CreatedAt)
 	}
+	// updated_at is asserted with a value DISTINCT from created_at, because a
+	// scan that landed created_at in both destinations would satisfy an
+	// assertion written against one timestamp. The ADR-065 decision shadow
+	// keys a bundle on (policy_id, updated_at), so the two columns landing in
+	// the wrong fields would make every comparison compare against a bundle
+	// built from a policy version that never existed.
+	if !got.UpdatedAt.Valid || !got.UpdatedAt.Time.Equal(wantUpdatedAt) {
+		t.Errorf("expected updated_at = %v, got %+v", wantUpdatedAt, got.UpdatedAt)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled expectations: %v", err)
 	}
@@ -91,7 +102,7 @@ func TestRefreshDynamicPolicies_WithoutSegment_LeavesSegmentIDInvalid(t *testing
 
 	mock.ExpectQuery("FROM dynamic_policies").
 		WillReturnRows(sqlmock.NewRows(dynamicPolicyTestColsWithoutSegment()).
-			AddRow("id-2", "policy two", "", `[]`, `[]`, "tenant-2", "org-2", 5, "pol-2", "content", "", "medium", false, time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)))
+			AddRow("id-2", "policy two", "", `[]`, `[]`, "tenant-2", "org-2", 5, "pol-2", "content", "", "medium", false, time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 11, 0, 0, 0, 0, time.UTC)))
 
 	rows, err := RefreshDynamicPolicies(context.Background(), db, false)
 	if err != nil {
@@ -156,7 +167,7 @@ func TestRefreshDynamicPolicies_RowIterationError_DistinguishableFromQueryError(
 	rowErr := errors.New("row decode exploded")
 	mock.ExpectQuery("FROM dynamic_policies").
 		WillReturnRows(sqlmock.NewRows(dynamicPolicyTestColsWithSegment()).
-			AddRow("id-1", "policy one", "", `[]`, `[]`, "tenant-1", "org-1", 1, "pol-1", "content", "", "medium", false, nil, nil).
+			AddRow("id-1", "policy one", "", `[]`, `[]`, "tenant-1", "org-1", 1, "pol-1", "content", "", "medium", false, nil, nil, nil).
 			RowError(0, rowErr))
 
 	_, err = RefreshDynamicPolicies(context.Background(), db, true)

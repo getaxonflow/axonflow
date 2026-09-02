@@ -11,6 +11,1041 @@ community mirror, **Enterprise** changes are EE-only.
 ---
 
 <!--
+  Version decision (Step 0): v10.3.0, MINOR, prepared 2026-09-01 for the
+  operator to tag (HARD RULE 10: the operator tags; nothing here cuts,
+  publishes, syncs or deploys). The train is the TEN commits on main since the
+  v10.2.0 tag `2b8eba320`, re-derived from `git log v10.2.0..origin/main`:
+  #3601, #3606, #3612, #3607, #3608, #3610, #3611, #3609, #3613, plus #3600,
+  which is the post-tag CI-only fix already recorded in the v10.2.0 release
+  record and changes no shipped artifact.
+  Measured against the 2026-07-30 semver policy from the diff, not the PR
+  bodies: `git diff v10.2.0..origin/main` removes ZERO os.Getenv reads and
+  ZERO AXONFLOW_ variables, adds no required credential, and adds no refusal
+  on an existing path. Four items were examined against the "new refusal =
+  MAJOR" clause and ruled MINOR-safe:
+  (1) AXONFLOW_DECISION_SHADOW_MODE is BOOT FATAL on an unrecognized value,
+  which only a deployment that SETS a variable that did not exist before can
+  reach; unset is outcome-identical.
+  (2) `POST /api/v1/access/evaluation` is a NEW route, so it refuses nothing
+  that previously succeeded. It is the one item in this train that is neither
+  dark nor default-off, and it is stated as such in the scope block rather
+  than folded into the ADR-065 "dark infrastructure" framing.
+  (3) The identity-settings admin API's absent-field semantics change from
+  "clear" to "preserve" on `compat_mode`. That is a widening of what a caller
+  keeps, not a new refusal; clearing is still available and is now explicit.
+  (4) The customer-portal decision-proof routes are new, Enterprise-only, and
+  registered only when five environment variables are set and a live KMS
+  answers; unset registers nothing and logs one line.
+  FIVE MIGRATIONS ship and the edition split is NOT the same as v10.2.0's:
+  `enterprise/147`, `148`, `149` and `150` are Enterprise only, and
+  `core/169` is CORE, so a Community deployment DOES apply a migration this
+  release. Every sentence describing a PR is derived from the merged tree.
+  Three PR bodies in this train carry claims the merged tree contradicts and
+  none of them is repeated here: #3609's body and squash message number its
+  migrations 147 and 148 (they are 148 and 149; 147 is #3608's), #3607's body
+  says 18 rules / 10 unit cases (its own file has 20 rules and 10 cases; the
+  rules directory also holds decision-shadow.rules.yml, a later change and
+  not part of that discrepancy),
+  and #3611's body links its SDK companions as `#TBD`.
+  The heading date is the prep date and moves to the tag date if the tag slips.
+-->
+
+## [10.3.0] - 2026-09-01 (every enforcement plane dual-evaluates the new policy decision point, recorded only; an AuthZEN-native evaluation route on the agent; the ADR-065 shadow window gets a denominator; trust realms, reservations, proof execution and decision-proof key custody get durable stores)
+
+> Scope: operators upgrading from 10.2.0. **One thing in this release is
+> neither dark nor default-off, and it is stated first rather than buried**:
+> the agent registers a new route, `POST /api/v1/access/evaluation`, in every
+> edition and at every tier, with no flag and no kill switch. It is a NEW
+> route, so it refuses nothing that previously succeeded, and it is an
+> ADAPTER: it builds the same request `POST /api/v1/decide` already builds and
+> delegates to the same handler, so it returns a real, enforcing verdict from
+> the evaluator that was already there. It is not shadow instrumentation and
+> it is not the ADR-065 policy decision point. Everything ELSE in the train is
+> dark, default-off, or a store nothing writes to.
+>
+> A deployment that sets no new variable, sets no per-organization
+> `decision_shadow_mode` record, and never calls the new route sees no change
+> beyond one `[DECISION-SHADOW] ... =off` startup log line per process: no
+> removed capability, no new required configuration, no status or verdict
+> change on any existing endpoint, and every existing request path evaluates
+> policy exactly as on 10.2.0.
+>
+> The COST of the decision-shadow switch being off differs by edition, and the
+> difference is worth stating precisely. On a **Community** build, or any
+> deployment with no per-organization settings store, it is ONE ATOMIC LOAD
+> per policy evaluation and no allocation: the engines never build an
+> observation. On an **Enterprise** build with a database the per-organization
+> source is wired, so the cheap gate is true even with
+> `AXONFLOW_DECISION_SHADOW_MODE` unset: the engines build an observation and
+> resolve the organization's mode, and only then discard it. That is a small
+> map and slice allocation per evaluation plus a memoized settings read,
+> bounded and measured on
+> `axonflow_decision_shadow_enqueue_seconds{recorded="false"}`. It is
+> deliberate: an organization must be able to opt IN through the admin API on
+> a deployment whose process flag is off, which is the documented rollout, and
+> that is only possible if the record is consulted.
+>
+> **FIVE migrations ship, and unlike 10.2.0 a Community deployment applies one
+> of them.** Four are Enterprise only: `enterprise/147` (decision-proof key
+> custody), `enterprise/148` (the reservation store), `enterprise/149` (the
+> proof execution record) and `enterprise/150` (the per-organization
+> decision-shadow mode). One is CORE: `core/169` (trust realms and the
+> identity epoch), which every deployment applies, Community included. All
+> five are additive: between them they CREATE nine tables and ALTER exactly
+> one existing table, `identity_org_settings`, by ADDing a nullable column.
+> Nothing is backfilled, no data is mutated, and no lock is taken on a
+> relation that carries rows today. Every one of the nine new tables is empty
+> after the migration; **five of the nine have no writer in any shipped code
+> path at all**, and the remaining four are written only after an explicit
+> opt-in. Full per-migration analysis is in the Migration section.
+>
+> **Ordering: an Enterprise deployment that rolls the binaries BEFORE applying
+> any of these evaluates policy exactly as on 10.2.0.** For `enterprise/150`
+> the settings read fails and falls back to the process mode. For
+> `enterprise/147`, `148`, `149` and `core/169` there is nothing to fall back
+> from, because no shipped code path reads or writes those tables at all. In
+> practice the question is moot: the agent self-migrates at boot, so the
+> migrations land with the binary that ships them.
+>
+> **The binaries grow by ~16 MB each** (agent 75.6 -> 91.9 MB, orchestrator
+> 59.2 -> 75.5 MB), measured on the per-plane shadow lane that links OPA
+> v1.19.1 into both. Counted across the whole release rather than per pull
+> request, `platform/go.mod` between the `v10.2.0` tag and this entry **moves
+> 24 module versions, adds 26 and removes 5**, including a JOSE and OPA
+> transitive tree. The moves that change observable behaviour are
+> `prometheus/client_golang` 1.17.0 -> 1.24.0, `prometheus/common` 0.44.0 ->
+> 0.70.0, `prometheus/procfs` 0.11.1 -> 0.21.1 and OpenTelemetry 1.43.0 ->
+> 1.46.0 on `otel`, `otel/metric` and `otel/trace` (1.44.0 on the SDK and the
+> OTLP exporters). `golang.org/x/net` moves 0.56.0 -> 0.57.0 and
+> `golang.org/x/crypto` 0.53.0 -> 0.55.0, the latter for the CVE under
+> Security below. Most of the rest is forced by Minimum Version Selection
+> through OPA, which the ADR-065 decision point needs in-process, and cannot
+> be pinned back.
+>
+> **`/prometheus` output changes with the client library**, which matters to a
+> scrape config or a dashboard that names a Go runtime series:
+> `go_memstats_lookups_total` is REMOVED; `go_gc_gogc_percent`,
+> `go_gc_gomemlimit_bytes` and `go_sched_gomaxprocs_threads` are added by
+> default, as are `process_network_{receive,transmit}_bytes_total` on Linux;
+> and every Go-collector HELP string gains a `Sourced from ...` suffix. No
+> AxonFlow series changes. The one dashboard in this repo that names a Go
+> runtime series (`process_resident_memory_bytes`) is unaffected. They are
+> paid one release early on purpose: a cut-over plane runs the PDP in-process
+> by definition, so paying them here, behind a default-off flag with the full
+> suite green, is what de-risks v11 rather than discovering it on the cutover
+> train.
+>
+> **Ten new Prometheus metric families appear on `/prometheus` with no
+> configuration at all**: the six identity-compat families below, the three
+> AuthZEN families, and `axonflow_decision_shadow_mode`. Four boot-published
+> surfaces sit among and beside them, and boot-publishing is the point rather
+> than an oversight - the `axonflow_identity_compat_mode` and
+> `axonflow_decision_shadow_mode` gauges (two of the ten families), plus the
+> two pre-created decision-shadow CHILDREN that ADR-065 gate 18 is read as a
+> ratio of (children of families already counted above, not families of their
+> own)
+> (`..._fail_open_total` at the gate coordinate and
+> `..._observations_total{disposition="compared"}`). A counter vector with no
+> children renders no sample, no HELP and no TYPE, so before this a watched
+> plane that had compared nothing and a plane nobody was watching produced
+> the SAME empty query result. On a stack in mode `off` that is 48
+> pre-created decision-shadow series per process (12 planes x the two gate
+> operands = 24, plus 12 planes x two modes on the gauge = 24), of which 36
+> read zero - the 24 gate operands and the 12 `mode="shadow"` gauge series -
+> while the 12 `mode="off"` gauge series carry the 1 that says off. That is
+> the price of the window being readable at all. Cardinality is bounded by
+> construction: closed label vocabularies, a plane set derived from the
+> compiler's plane model, and a hard cap of 100 distinct organizations per
+> process.
+>
+> **One behaviour change on an admin API**, stated rather than smuggled: on
+> `PUT /api/v1/admin/organizations/{org_id}/identity-settings`, an ABSENT
+> `compat_mode` now PRESERVES the stored mode; `"compat_mode": null` clears
+> it. Until 10.2.x an absent field cleared it, which was safe while it was the
+> only mode on that body. With `decision_shadow_mode` added to the same body a
+> caller who set one would silently clear the other, which is the omission
+> defect #3596 found in `caep_enabled`. Clearing is still available and is now
+> something a caller says.
+>
+> **What this release does NOT do, so nothing here is read as more than it
+> is.** The gate the ADR-065 release plan sets for this minor is not met at
+> prep time: per-plane shadow is not enabled on any deployment we run, the
+> observation canary shipped here is not deployed, and the conformance gate
+> table has not been rerun since the v10.2.0 run. Three of the five write-less new tables
+> are Enterprise stores with no writer in any shipped path, so the multi
+> replica budget and proof-replay defects they exist to close are NOT closed
+> by this release. Per-organization PER-PLANE rollback did not ship. See
+> "Notes for operators reading the ADR-065 entries" for the full list, each
+> named rather than implied.
+
+### Security
+
+- **Two scanner-feed CVEs fixed in one dependency pass**, both of which
+  appeared AFTER this train's content merged and turned the required Security
+  Scan Summary red on main and on every open PR with no commit changing:
+  `google.golang.org/grpc` v1.82.1 -> v1.83.1 for CVE-2026-84304 (HIGH; all
+  three Go modules; carries `google.golang.org/api` and `genproto` forward to
+  grpc's own minimum requirements), and `golang.org/x/image` v0.43.0 ->
+  v0.45.0 for CVE-2026-46603 (HIGH, vp8l decoder DoS; platform and ee - the
+  two modules that require it). The only source change is two
+  `//nolint:staticcheck` suppressions at the GCS connector's credential
+  sites, forced by the api bump's deprecations and routed to #3645, whose
+  completion is proven by deleting them. All modules build clean.
+- **The AuthZEN route's plural envelope is capped at 64 entries** (413, typed
+  refusal naming `/evaluations` and both numbers), and the delegation loop
+  stops at the first entry boundary after the caller disconnects. The 1 MiB
+  body cap's own rationale says an unbounded list is an unbounded number of
+  policy evaluations from one request — and bounded bytes, not entries: `{}`
+  is a fully valid entry (it inherits everything from the shared base), so one
+  authenticated 1 MiB request could carry ~350,000 full policy evaluations and
+  as many audit-log INSERTs, serially, uncancellable — inside a single request,
+  where edge rate limiting cannot see it. The entries of a bulk envelope are
+  the preconditions of a single operation, so 64 is far beyond legitimate use
+  while capping the amplification at 64x. No released version is affected: the
+  route ships in this same untagged train. The published JSON Schema does not
+  gain `maxItems` in this change — that narrows a contract vendored
+  byte-identically in five SDKs and rides the next surface-sync train; the
+  server refusing above the cap is the security property and needs no schema
+  agreement.
+
+- **`POST /api/v1/access/evaluation` returned a bare `{"decision":true}` and
+  DISCARDED a mandatory obligation attached to that allow** (#3611)
+  *(Community and Enterprise)*. **NO RELEASED VERSION IS AFFECTED, so there is
+  nothing to patch and no upgrade to schedule.** The route itself is new in
+  this same unreleased `10.3.0` section, no `v10.3.*` tag exists, and the defect
+  and its fix are both in the untagged train - the first build any deployment
+  can run already carries the fix. It is written up as a security entry rather
+  than a plain fix so the reasoning is on the record for the profile-negotiation
+  contract, not because a shipped version needs remediation.
+  Everything the AxonFlow profile adds to
+  AuthZEN 1.0 - the four-valued state, the obligations, the approval challenge
+  - rides in the response `context`, which is emitted only to a caller that
+  negotiated the profile with the `X-Axonflow-AuthZEN-Profile` header. That
+  gate applied to MANDATORY obligations as well as to advisory ones. **What
+  was exposed:** a request whose content policy otherwise ALLOWED but which
+  carried PII under `PII_ACTION=redact` was evaluated as an allow carrying a
+  mandatory `field_redact` obligation; a caller that had sent no profile
+  header received `{"decision":true}` with the obligation dropped, and
+  forwarded the UNREDACTED content believing it had been permitted to.
+  **To whom:** not to our own SDKs - all five send the profile header on
+  every request, so none of them can reach the path. The exposure is to
+  direct-HTTP callers and to third-party policy enforcement points written
+  against bare AuthZEN 1.0, which the SDK and route documentation advertises
+  as a supported way to call this surface. **The fix:** when the combined
+  state would be ALLOW, the decision carries at least one mandatory
+  obligation, and the caller did not negotiate the profile, the route now
+  answers `{"decision":false}`. That is what ADR-065 invariant 8 prescribes
+  for a mandatory obligation the enforcement point cannot enforce, and a
+  point that cannot RECEIVE one is the limiting case. Deny rather than a new
+  typed refusal code, because deny is expressible in bare AuthZEN 1.0 and so
+  needs no regeneration of `surface/authzen-surface.json` or of the generated
+  wire types in the five SDKs. Callers that DID negotiate are unaffected and
+  still receive the obligation; denied, challenged and errored evaluations
+  are unchanged; an allow carrying no mandatory obligation is still an allow
+  for every caller. The new denial is counted under its own `outcome` label
+  value `obligation_withheld` on `axonflow_authzen_requests_total` - not
+  folded into `DENY` - and logged, so an operator can find the integrations
+  that need to send the header. **The AUDIT ROW is corrected too, which is the
+  half a counter cannot supply:** the row is written inside the delegated
+  evaluation, before the withholding rule can run, so it recorded `allowed` for
+  a request answered `{"decision":false}` and no compliance query could tell
+  that refusal from an allow that really happened. It is now amended to
+  `blocked`, flagged at `policy_details.authzen_obligation_withheld`, and
+  keeps the evaluator's own verdict at
+  `policy_details.authzen_evaluated_policy_decision`, so the row states both
+  facts - policy permitted this, and the platform refused it anyway because the
+  caller could not receive the precondition. The amendment is best-effort like
+  the write it corrects and never changes the answer already given; both of its
+  failure modes are counted on the existing
+  `axonflow_decision_audit_write_failures_total` under
+  `authzen_withheld_amend` and `authzen_withheld_amend_norow`. The signed
+  `decision_chain` entry is deliberately NOT amended: it is the non-repudiation
+  record of the evaluation, which genuinely was a permit. `Decision.ToAuthZEN`
+  in `platform/decision/contract` carried the identical fail-open and is fixed
+  by the same predicate; it has no non-test caller today and is the renderer
+  the v11 cutover switches to.
+- **`golang.org/x/crypto` 0.53.0 -> 0.55.0 for CVE-2026-56854** (#3612)
+  *(Community and Enterprise)*. A CRITICAL advisory in
+  `golang.org/x/crypto/ssh`. Bumped in `platform/go.mod` and
+  `platform/decision/go.mod`; `ee/go.mod` and
+  `ee/platform/customer-portal/go.mod` already carried 0.55.0. The full set of
+  transitive moves in `platform/`: `golang.org/x/net` 0.56.0 -> 0.57.0,
+  `golang.org/x/sync` 0.21.0 -> 0.22.0, `golang.org/x/sys` 0.46.0 -> 0.47.0,
+  `golang.org/x/text` 0.39.0 -> 0.41.0, and `golang.org/x/mod` 0.40.0 dropped
+  as no longer required. **No source file changed and no behaviour changed**;
+  AxonFlow does not run an SSH server. The bump exists because the advisory
+  reds the required `Security Scan Summary` check on main and on every open
+  pull request with no commit of theirs changing.
+
+### Community
+
+#### Added
+
+- **A new AuthZEN-native authorization route on the agent: `POST
+  /api/v1/access/evaluation`** (#3611). It is registered unconditionally in
+  `run.go`, in every edition and at every tier, behind the existing API
+  authentication middleware; there is no `AXONFLOW_AUTHZEN_*` variable and no
+  kill switch, and the published spec says so ("Available at all tiers - the
+  evaluation behind it is the same one Decision Mode uses"). Boot logs
+  `AuthZEN endpoint registered: POST /api/v1/access/evaluation`.
+- **It is an adapter over the existing evaluator, not a new engine.** Each
+  entry becomes the same internal decide request `POST /api/v1/decide` builds
+  and is handed to the same handler. At v11 the engine behind the route flips
+  to the ADR-065 policy decision point with no wire change. It is deliberately
+  NOT shadow instrumentation: the verdict it returns is the real one, and a
+  caller acting on it is acting on an enforcement decision.
+- **One envelope, two shapes, decided on the KEY SET rather than on
+  nullness.** A body carries exactly one of `evaluation` (singular) or
+  `evaluations` (a bulk envelope with shared `subject`, `action`, `resource`
+  and `context` plus an `evaluations` array); `{"evaluation":{...},
+  "evaluations":null}` is malformed. **A bulk envelope returns ONE decision,
+  not one per entry**: its entries are preconditions of a single operation, so
+  a denied entry denies the operation.
+- **Closed vocabularies, and everything outside them is refused rather than
+  ignored.** `subject.type` must be `gateway`; actions are `llm.completion`,
+  `tool.call`, `agent.invoke`; resource types are `llm`, `tool`, `agent`;
+  the only context members are `args` and `correlation`, and `args.query` is
+  required. `subject.properties`, an unrecognized context member, an argument
+  beside `query`, and an action/resource pair naming two different stages are
+  each a refusal.
+- **A refusal is a different body shape from a decision**, so a client cannot
+  read one as the other: `{code, pointer, message, supported, request_id}`
+  with **no `decision` member**, where `pointer` is an RFC 6901 JSON Pointer
+  into the caller's own request. Eight closed codes: `malformed_envelope`,
+  `incomplete_evaluation`, `unsupported_subject`, `unsupported_action`,
+  `unsupported_resource`, `unevaluable_attribute`,
+  `missing_evaluable_content`, `evaluation_unavailable`. Only the last is
+  retryable.
+- **Profile negotiation on `X-Axonflow-AuthZEN-Profile`.** Send
+  `axonflow-authzen-profile-2026-08-29` to receive the AxonFlow `context`
+  payload alongside the boolean. An absent or empty header returns the bare
+  AuthZEN 1.0 boolean, **with one exception**: an otherwise-ALLOWED decision
+  that carries a MANDATORY obligation returns `{"decision":false}` to such a
+  caller, because the obligation rides in the `context` the caller did not
+  negotiate and it cannot be handed a permission whose precondition it will
+  never see. Everything else is unchanged for a bare caller - an allow carrying
+  no mandatory obligation is still `true`, and the denied, challenged and
+  errored paths are untouched. See the Security entry above for the full rule.
+  A profile version this build does not emit is a `406`
+  naming the version it does emit, never a silent fall-through. Statuses the
+  handler emits: `200`, `400`, `401`, `406`, `413` (a 1 MiB body cap), `422`,
+  `500`, `502`.
+- **A new audit plane, `access_evaluation`.** `POST /api/v1/decide` still
+  records `plane=decision`; the new route records `plane=access_evaluation`,
+  and the plane is now read from the request context rather than hardcoded, so
+  the two surfaces are separable in `audit_logs` from the first request.
+- **`/health` capability discovery advertises the new route** (#3618). The
+  agent's capability list gains `authzen_evaluation` (`since: 10.3.0`), naming
+  the route, the `X-Axonflow-AuthZEN-Profile` contract and the profile version
+  this build emits, the eight refusal codes and their JSON pointer, and the
+  fact that the route is an adapter over the existing evaluator rather than
+  the ADR-065 policy decision point, so an SDK or a PEP feature-detects the
+  surface instead of sniffing the platform version. The orchestrator's list is
+  deliberately unchanged and now says why in the file: that plane registers no
+  AuthZEN route, so advertising one there would send a client to a port that
+  answers 404. **Nothing else in this train earns an entry**, and the reasons
+  are written down rather than left to be re-derived. The per-plane decision
+  shadow (#3613) is recorded-only and changes no response, status or header on
+  any surface; its per-organization mode is an environment variable and a
+  database column with no route of its own. The decision-proof custody routes
+  (#3608) are `/api/v1/internal/...` and `/api/v1/admin/...` on the
+  customer-portal binary, which serves no capability list, and they are not
+  registered at all unless the internal-service secret is set. The durable
+  stores (#3609, #3610) have no writer in any shipped code path, so there is
+  nothing a client could observe. The shadow-window series (#3607) are read by
+  an operator's Prometheus, not by a client branching on discovery. **The list
+  still carries nothing from v10.0, v10.1 or v10.2**, because the release-prep
+  runbook only gained the step that maintains it during this train;
+  back-filling those three needs a per-feature judgement and is deliberately
+  NOT done here.
+- **Every ADR-065 enforcement plane now dual-evaluates against the new policy
+  decision point in production, recorded only, behind
+  `AXONFLOW_DECISION_SHADOW_MODE`** (#3613). ADR-065 Phase 2 is "dual-evaluate
+  every plane and store semantic diffs", and gate 18 - no unexplained
+  fail-open difference for the agreed window - is what v11's cutover is gated
+  on. #3577 built the measurement half offline; nothing consulted the PDP at
+  runtime, so the window had no production evidence to accumulate. Twelve
+  planes now do: `decide`, `gateway_request`, `mcp`, `openai_compatible`,
+  `proxy_request`, `proxy_tier`, `orchestrator_response`, `cowork_ingest`
+  (Enterprise), `wcp`, `map`, `policy_simulation`, `policy_test`.
+- **The observation returns no value and runs off the request path.** The
+  entry point's signature has no result, so "the shadow cannot change a
+  decision" is arithmetic rather than a discipline every call site keeps; the
+  PDP evaluation happens on a bounded worker after the plane's response has
+  been decided. The legacy side of every comparison is the verdict the plane
+  ALREADY computed - never a second evaluation.
+- **A comparison across two policy sets is NOT COMPARABLE, and is counted as
+  its own thing.** The bundle is keyed on a digest of the `(policy_id,
+  updated_at)` pairs the plane actually loaded, and is built only from a read
+  in which every one of those rows is present unchanged. Never a match, which
+  would inflate agreement; never unexplained, which would red the gate every
+  time an operator saves a policy.
+- **Seven decision-shadow counters, so the denominator is readable before the
+  numerator**: `axonflow_decision_shadow_observations_total{plane,disposition}`,
+  `..._comparisons_total{plane,classification}`,
+  `..._fail_open_total{plane,direction,classification}` (gate 18's operand),
+  `..._bundle_builds_total`, `..._evaluation_seconds`, `..._enqueue_seconds`
+  (the only cost a caller waits for) and `..._org_mode_failures_total`.
+- **The per-plane window gets its own vacuity guard, which it shipped
+  without.** Two halves. First, an eighth series:
+  `axonflow_decision_shadow_mode{component,plane,mode}`, a gauge published at
+  process INSTALL - before any request, in both editions, in mode `off` too -
+  reading 1 for the mode this process booted in on that plane and 0 for the
+  others. It is PER PLANE because `AXONFLOW_DECISION_SHADOW_PLANES` narrows
+  which planes observe and gate 18 is stated per plane, so a plane excluded
+  from the list reads `off` whatever the process mode is. Second,
+  `axonflow_decision_shadow_observations_total{plane,disposition="compared"}`
+  is now pre-created at zero for every implemented plane, as the fail-open
+  child already was. Gate 18 is a ratio - "no unexplained fail-open
+  difference OVER the agreed window" - and only its NUMERATOR existed before
+  any traffic; with the divisor absent the expression was not a low reading
+  but no reading, so `fail_open_total{...,classification="UNEXPLAINED"} == 0`
+  read identically for a plane that was watched and clean and one that was
+  never measured at all. That is the same vacuity the v10.2.0 identity window
+  turned out to have - the defect this whole release exists because of -
+  reproduced on the axis v11's cutover is actually signed off from, where it
+  could have authorised the cutover from silence. The other eight
+  dispositions are deliberately NOT pre-created: they are diagnostic rather
+  than operands of any gate, and eight permanently-zero rows per plane is a
+  row an operator learns to read past.
+- **The v10.2.0 identity shadow window gets a denominator** (#3607). Six new
+  Prometheus series on the `/prometheus` endpoint both binaries already serve,
+  on the default registry, with no new port and no new route:
+  `axonflow_identity_compat_comparisons_total{component,path,mode,legacy,identity_state,divergence,fail_open,synthetic,version}`,
+  `axonflow_identity_compat_org_comparisons_total{component,org,synthetic}`,
+  `axonflow_identity_compat_mode{component,mode}` (gauge),
+  `axonflow_identity_compat_build_info{component,version,adapter_contract}`
+  (gauge, always 1),
+  `axonflow_identity_compat_org_mode_failures_total{component}` and
+  `axonflow_identity_compat_org_settings_read_failures_total{component}`.
+  Before this, agreements were sampled 1 in 100,000, the counterfactual
+  recorder's snapshot had no runtime consumer, and no metric carried compat
+  data, so "zero unexplained differences" could not be told apart from "zero
+  comparisons".
+- **The counters are never sampled.** `AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY`
+  still governs one agreement LOG line and nothing else; this release adds no
+  environment variable to the identity axis.
+- **`fail_open` is its own axis, derived from the two admission decisions
+  rather than from the divergence class**, with three values spelled
+  identically to the offline gate's: `none`,
+  `legacy_permitted_new_denied` (the safe direction) and
+  `new_permitted_legacy_denied` (the direction ADR-065 gate 18 names).
+- **The mode gauge publishes at boot with a series for every declared mode**,
+  the configured one at 1 and the other two at 0. That is the vacuity signal's
+  left-hand side: with zero traffic the comparison counter has no series at
+  all, so a floor over it reads as "no reading", not as a low reading.
+- **A synthetic-traffic axis, so a canary can never be mistaken for organic
+  volume.** Request header `X-Axonflow-Synthetic-Probe`, a positive
+  membership test on `1` and `true` only, stamped at authentication, carried
+  on the auth result, propagated onto the agent-to-orchestrator governed
+  forward, and travelling on the context for the shared token-resolution choke
+  point. **It is a metric label only and is never an authorization input.**
+- **Per-organization comparison volume is capped at 100 distinct organizations
+  per process**, first come and never evicted, with overflow in
+  `__over_cap__` and a record with no organization in `__none__`. The
+  uncapped total lives on the comparison counter, which carries no
+  organization label.
+- **Trust realms and the ADR-065 identity epoch become durable** (#3610).
+  `migrations/core/169` creates `identity_trust_realms` and
+  `identity_realm_epochs`, and `platform/shared/identity` gains a database
+  realm store (`NewDBRealmStore`, with `Upsert`, `Remove`, `Get`, `Load`,
+  `LoadRegistry`). Version advance is now enforced by the database as well as
+  per replica: a re-registration at an equal or lower version is refused by an
+  `ON CONFLICT ... WHERE EXCLUDED.version > ...` predicate and returned as an
+  error rather than swallowed. The epoch advances in the same transaction as
+  the realm write, including on delete, and both the read and the write path
+  refuse a partially restored organization (realms present, epoch row
+  missing) with an operator-facing message naming the repair. **`RealmRegistry`'s
+  own API is unchanged, and nothing in a shipped path constructs the store**;
+  hydration is the v11 cutover's work.
+- **A single shared definition of which migration categories a
+  `DEPLOYMENT_MODE` applies**, in the new `platform/shared/deploymode` package
+  (#3607). The agent's migration selector now aliases it rather than declaring
+  its own copy, so the orchestrator can ask the same question without
+  importing package `agent`. Modes that apply `migrations/enterprise/`:
+  `in-vpc-enterprise`, `in-vpc-healthcare`, `in-vpc-banking`, `in-vpc-travel`,
+  `saas`. Modes that do not: `community`, `evaluation`, `community-saas`, and
+  an empty value, which resolves to `community`.
+
+#### Changed
+
+- **ADR-065 acceptance gate 15 becomes executable** (#3555, #3613): 726
+  plane-pair comparisons over the conformance corpus and every plane's real
+  capability profile, in both editions, proving that two planes with the same
+  capabilities produce the identical decision and two with different
+  capabilities differ only by the capability refusal, in the restrictive
+  direction. The conformance corpus gained its plane dimension (495
+  comparisons Community, 594 Enterprise); a planted `mcp` divergence produces
+  177 violation lines.
+- The static and dynamic policy loaders now select `updated_at`, scanned as
+  NULLABLE. Nothing on the enforcement path reads it; it identifies the policy
+  VERSION a comparison ran against.
+- **`POST /api/v1/decide` keeps its members and leaks no AuthZEN member.**
+  The route is additive-only from a caller's point of view, but its handler
+  did change: the audit plane is read from the request context instead of
+  being hardcoded, and per-client version telemetry now records the plane. The
+  guard that pins this is a member-set and leak test, not a byte-stability
+  test, and is named for what it asserts.
+
+#### Fixed
+
+- **The community build no longer polls an Enterprise-only table.** The
+  per-organization identity settings store was being wired on deployments
+  whose schema never creates `identity_org_settings`, producing one failed
+  read per organization per TTL window on the hosted Community SaaS and moving
+  `axonflow_identity_compat_org_mode_failures_total` on a deployment that can
+  hold no records. Both planes now gate the wiring on whether the deployment
+  mode applies the enterprise migration category, and each logs the reason
+  once. The recurring `relation "identity_org_settings" does not exist` line
+  stops. Behaviour is unchanged on an enterprise-schema deployment.
+- **Decision tracing went dark on OpenTelemetry 1.44.** The SDK moved its
+  default resource schema URL to 1.41.0 while `tracer_provider.go` pinned
+  `semconv/v1.40.0`, so `resource.Merge` refused the conflict and the provider
+  took its never-block-boot fallback and returned a NOOP tracer. A deployment
+  with `AXONFLOW_OTEL_ENDPOINT` set would have emitted no spans, with only a
+  WARN line to say so.
+- **Three mutation-proof harnesses were silently vacuous under a symlinked
+  path.** `go test -overlay` matches its keys against the physical path, so
+  with the tree under `/tmp` on macOS - which is where the community-mirror
+  simulation stages it - every overlay key missed, the original file was
+  compiled, and every mutant was reported as a SURVIVOR. Measured: all 27
+  authoring proofs "survived" on the staged mirror and none did in the working
+  tree. CI never saw it because a runner's workspace has no symlinked
+  component, so the failure was reserved for a developer machine and the
+  mirror lane.
+
+### Enterprise
+
+- **`/health` now recommends the client versions this train publishes**: SDKs
+  9.2.0 (Rust 0.9.0) in both binaries' `RecommendedSDKVersion` maps, updated in
+  lockstep with the orchestrator's pin test. Floors unchanged. Plugin
+  recommendations unchanged - **no plugin releases ride this train**, recorded
+  here as a decision rather than an omission: the plugin telemetry code merged
+  in four plugin repos rides their next tags.
+
+#### Added
+
+- **The decision shadow is enablable per organization** (#3613), through
+  `decision_shadow_mode` on the existing `identity_org_settings` row, written
+  by `PUT /api/v1/admin/organizations/{org_id}/identity-settings` and read in
+  the SAME row read the identity compatibility mode uses - one query, one TTL,
+  two axes. The composition rule is #3596's, shared rather than restated: the
+  record wins in both directions, an absent record means the process flag, and
+  an unreadable one means the process flag and is counted.
+- **`enforce` is not a value this axis may hold, and is refused three times**:
+  by the parser at boot (by name, saying the decision plane becomes an
+  authority at v11), by the column's `CHECK`, and again at the single read
+  site - because a `CHECK` governs the writes its own migration governs and
+  says nothing about a row a restore or a later migration might produce.
+- **Decision-proof key custody, rooted in KMS and off by default** (#3608).
+  A new CloudFormation parameter `DecisionProofKeyCustody`
+  (`disabled` | `enabled`, **default `disabled`**) creates, only when
+  `enabled`, two `ECC_NIST_P256` `SIGN_VERIFY` KMS keys
+  (`DecisionProofCertificationRootKey`, `DecisionProofDistributionRootKey`,
+  both `Retain` on delete and replace), their two aliases, and two IAM roles
+  (`DecisionProofPDPRole`, `DecisionProofControlPlaneRole`), and publishes
+  four stack outputs. **Two roots, not one**, so certifying a signing key and
+  distributing a key set are separate authorities and an attacker needs both.
+- **Eight new customer-portal routes, registered all or nothing**: three
+  platform-service routes behind a new internal-service HMAC middleware on
+  `X-Axonflow-Proxy-Auth` (`POST /api/v1/internal/decision-proof/keys`, `GET
+  /api/v1/internal/decision-proof/keyset`, `POST
+  /api/v1/internal/decision-proof/reports`) and five operator routes behind
+  the admin API key (`GET /decision-proof/keys`, `POST
+  /decision-proof/keys/{key_id}/revoke`, `GET
+  /decision-proof/rotation-readiness`, `PUT` and `DELETE
+  /decision-proof/expected-peps/{pep_id}`). They exist only when
+  `AXONFLOW_DECISION_PROOF_CUSTODY=on` and
+  `AXONFLOW_DECISION_PROOF_CERTIFICATION_ROOT_ARN`,
+  `AXONFLOW_DECISION_PROOF_DISTRIBUTION_ROOT_ARN`,
+  `AXONFLOW_DECISION_PROOF_ENVIRONMENT`, `AXONFLOW_DEPLOYMENT_ID` and the
+  internal-service secret are all present and a live KMS answers. Any one
+  missing registers nothing and logs the named reason; **nothing is boot
+  fatal**.
+- **A certificate binds environment, deployment, organization scope, purpose,
+  window, both algorithms and issuer epoch**; freshness fails closed on two
+  independent bounds; a monotonic key-set sequence refuses a replayed older
+  document; and readiness refuses over an empty roster rather than answering
+  "ready" because nobody is listed. Named constants an operator will meet:
+  a 24 hour maximum key-set age, a 1 hour maximum and 1 minute minimum
+  ephemeral signing lifetime. Rotation is two calls, prepare then promote, and
+  promote refuses a prepared key whose signing window has already expired.
+- **A second closed algorithm set, `PermittedRootAlgorithms`, separate from
+  the proof policy's `PermittedAlgorithms`.** KMS has no Ed25519, but the
+  roots sign certificates and key-set documents rather than proofs, so ECDSA
+  is confined to the roots and the proof policy stays Ed25519-only, with a
+  test pinning that no value is in both sets.
+- **A revoked key stays published until its `not_after`** specifically so a
+  compromise reports `verification_key_revoked` and not
+  `verification_key_unknown`. The failure vocabulary is closed:
+  `verification_key_unknown`, `verification_key_revoked`, `proof_expired`,
+  `proof_already_consumed`.
+- **A durable Postgres reservation store** (#3609). `enterprise/148` creates
+  `reservation_counters` and `reservations`. The admission path contains no
+  `SELECT`: the check IS the write, an `UPDATE ... WHERE reserved + committed
+  + n <= limit_amount` whose zero-row result means "no room". Counters are
+  charged in a fixed sorted order, so two transactions charging the same pair
+  in opposite orders cannot deadlock - a deadlock is indistinguishable to a
+  caller from a capacity refusal. `UNIQUE (org_id, reservation_key)` is the
+  idempotency key. Only the administrative limit setter creates a counter row,
+  so an unconfigured counter is a REFUSAL and never "unlimited".
+- **One window-key generator, in UTC, that refuses rather than guesses.**
+  `WindowKeyFor` supports exactly `day`, `month` and `hour`; a rolling window
+  is REFUSED, because silently falling back to a day key would turn a rolling
+  hour into a budget 24 times larger. A hold that spans a window boundary
+  charges the window it was reserved in, by construction, because the window
+  key is stored on the demand at reservation time.
+- **The store constructor refuses to default to the in-memory reference.**
+  With no application database handle and no explicit single-process
+  declaration it returns an error naming `migration enterprise/148`, because
+  falling back silently would turn a missing connection string into a budget
+  system that reports success while enforcing nothing.
+- **A durable proof execution record** (#3609). `enterprise/149` creates
+  `decision_proof_executions`, whose primary key is the `nonce` ALONE and not
+  `(org_id, nonce)`: under a composite key "single use" would mean "once per
+  tenant". The verifier stamps the organization into the context from the
+  SIGNED binding, through an unexported claim type, after verification
+  succeeds; a durable record that finds no claim refuses.
+
+#### Changed
+
+- **On `PUT /api/v1/admin/organizations/{org_id}/identity-settings`, an absent
+  `compat_mode` now PRESERVES the stored mode**; `"compat_mode": null` clears
+  it. See the scope block for why.
+- **Both proof-execution reapers now delete at `now - maxVerifierLeeway`
+  (5 minutes) rather than at `now`.** A reaper keyed on `expires_at < now`
+  deleted the consumption row of a proof that still verifies inside its
+  leeway; measured, a proof presented at one second past its expiry verified
+  while its row was already gone, so the next presentation executed a second
+  time.
+
+#### Fixed
+
+- **`DEPLOYMENT_MODE=invpc` now provisions the deployment org's portal
+  credential on first boot, as every other in-VPC spelling already did.**
+  `invpc` is a legal, still-offered value - it is one of the five
+  `AllowedValues` in the AWS Marketplace CloudFormation template, documented
+  there as "(Legacy) Maps to in-vpc-enterprise for backwards compatibility" -
+  but the customer-portal's bootstrap gate tested the raw string against
+  `"enterprise"` and the `in-vpc-` prefix, and `invpc` has no hyphen, so it
+  matched neither. A marketplace stack launched with it got the in-VPC portal
+  configuration and the Enterprise schema, and then SKIPPED the bootstrap
+  entirely: the portal came up with a NULL `password_hash` on its own
+  deployment org - passwordless and impossible to log into without hand-run
+  SQL - while logging that the mode "owns credentials via its own registration
+  flow", which is false for `invpc`. The same predicate gates the #2997
+  deployment-org owner-role grant, so that was skipped too and is likewise
+  restored. The gate now resolves aliases through `platform/shared/deploymode`
+  IN ADDITION TO its original literal test, so it is a strict superset: no mode
+  that provisioned before stops provisioning, and `invpc` is the only value
+  whose answer changes.
+
+> **UPGRADE-TIME BEHAVIOUR CHANGE, and it is the one thing to check before
+> upgrading a hand-rolled `invpc` stack.** The bootstrap is fail-closed by
+> design: a mode that opts in and has no `AXONFLOW_PORTAL_ADMIN_PASSWORD` set
+> makes the customer-portal `log.Fatalf` on boot rather than come up
+> un-loginable. Because `invpc` did not opt in before, an existing `invpc`
+> deployment with no `AXONFLOW_PORTAL_ADMIN_PASSWORD` currently BOOTS - broken,
+> but up - and after this upgrade it will refuse to start and crash-loop until
+> the variable is set. **Marketplace stacks are not affected**: the
+> CloudFormation template always injects the password. **Hand-rolled `invpc`
+> compose or ECS stacks are.** Set `AXONFLOW_PORTAL_ADMIN_PASSWORD` (8-72
+> bytes, not the `.env.example` placeholder) before upgrading; the portal
+> never clobbers a `password_hash` an operator has already set, so doing so on
+> a stack whose password was fixed by hand is safe and idempotent.
+
+### CI / Testing (this repository only)
+
+- **A dedicated migrations-gate leg for `enterprise/147`**, run under the
+  enterprise build tag against a real Postgres with an explicit
+  `--- PASS:` assertion, because the migration-chain suite applies
+  `migrations/core` only and would otherwise report `ok` having never opened
+  an enterprise migration.
+- **Three new runtime-e2e suites and their runners**: trust-realm persistence
+  (its own workflow; runs on fork pull requests because the agent applies
+  migrations with no licence key), durable stores (35 assertions, against the
+  real agent binary's migration runner, also fork-safe), and decision-proof
+  key custody (13 assertions against a live KMS, needing licence secrets and
+  so not fork-safe). The AuthZEN evaluation suite is a production-posture
+  registry entry rather than a dedicated workflow, so it runs only where that
+  runner runs.
+- **The durable-stores and reservation suites share ONE semantic suite of 27
+  cases**, parameterised by fixture, so the in-memory reference and the
+  Postgres store cannot drift; a guard parses the package's own test files and
+  fails on any case with no in-memory entry point.
+- **A new `monitoring-rules` job** validating all 32 Prometheus rules with
+  promtool (`check rules`, `test rules`, and a config load against the
+  shipped image), pinned to the Prometheus version read out of the monitoring
+  Dockerfile, with no docker-missing skip branch. The same workflow gains a
+  first-ever `cfn-lint` pass over the synthetic-monitoring template. The
+  script (`scripts/testing/check-monitoring-rules.sh`, renamed from
+  `check-identity-compat-rules.sh`) DERIVES its file list from
+  `platform/monitoring/rules/` rather than carrying one, refuses a rule file
+  with no `*.rules_test.yml` beside it, and asserts the shipped image loads
+  each file BY NAME: a hard-coded list fails in the direction that matters,
+  where a new rule file is simply not checked and the job stays green.
+- **A `go-mod-verify` script**, with its own self-test, invoked from the
+  community test workflow, because `platform/go.mod` now carries a local
+  `replace` onto `platform/decision`.
+- **A ratchet pinning the AuthZEN RESPONSE surface to the profile constant.**
+  Every response-side definition is closed (`additionalProperties: false`)
+  and all five SDKs generate their wire types from
+  `surface/authzen-surface.json`, so a changed response shape is a breaking
+  change for every deployed enforcement point - yet changing one, updating
+  the Go field and regenerating the artifact passed every existing gate
+  green, because those three artifacts are generated from one another and
+  agree however wrong they are. The new test records the LITERAL surface of
+  the seven definitions reachable from `authzen_response` and
+  `authzen_error`, keyed by the profile STRING rather than by the constant,
+  so a changed surface is refused until the profile constant moves with it.
+  **Four axes are pinned and those four only**: the member NAMES of each
+  definition, each member's REQUIRED-ness, each member's TYPE, and the VALUE
+  SET of every enumeration reachable from those definitions. So a new
+  `reason_code`, a required `decision_id` turned optional, and
+  `authzen_error.request_id` moving from string to integer are each refused
+  under an unchanged profile - all three of which regenerated cleanly and
+  passed every package in the module green before this change. Not pinned,
+  deliberately: documentation strings, declaration order, `min_items` /
+  `min_length`, and anything request-side. Scope is derived as the transitive
+  `$ref` closure of the two roots rather than listed; a definition or an
+  enumeration LEAVING the response wire is shippable through an explicit
+  retirement entry on the new profile's row rather than by editing history;
+  and an in-process mutation gate drives the checker with mutated documents -
+  seventeen it must reject and five it must accept, one of them the profile
+  bump itself. No wire shape changed.
+- **`scripts/lib/validate-migrations.sh` no longer validates `enterprise`
+  against the SaaS migration set.** The library holds TWO `DEPLOYMENT_MODE`
+  switches and they had drifted: `verify_schema` listed `enterprise` while
+  `get_migration_paths` did not, so `enterprise` - the default of
+  `docker-compose.enterprise.yml` and `docker/docker-compose.base.yaml`, and an
+  alias for `in-vpc-enterprise` - fell to the default arm and was validated
+  against 204 migrations including two industry verticals it never applies,
+  rather than the 197 it does. `evaluation`, `community-saas` and
+  `in-vpc-travel` were missing for the same reason and are added with it; the
+  default arm now fails closed instead of silently widening to SaaS. Both
+  switches are now pinned to `platform/shared/deploymode` by
+  `TestValidateMigrationsShellSwitchesMatchGo`, which is deliberately stronger
+  than diffing them against each other - agreeing with each other and both
+  being wrong is a state a mutual comparison reports as healthy.
+- **A dedicated runner for the `2552_portal_credential_provision` runtime-e2e
+  suite**, which had been `unwired` for months because it needed four
+  hand-set variables. It now self-provisions its Postgres, binaries and
+  Enterprise licence and asserts 20 things across six portal boots. The
+  `invpc` gap above is what an unrun suite costs.
+
+### Notes for operators reading the ADR-065 entries
+
+- **What is live, and it is one thing.** `POST /api/v1/access/evaluation` is
+  registered in every edition at every tier with no flag, and returns a real
+  enforcing verdict from the evaluator that already served
+  `POST /api/v1/decide`. Nothing else in this train evaluates a request
+  differently: the per-plane decision shadow returns void and runs after the
+  plane's response is decided, the identity compatibility mode is unchanged
+  from 10.2.0, and every new store has either no writer or a writer behind an
+  explicit opt-in.
+- **What is dark, and the evidence.** Of the nine tables this release creates,
+  **five have no writer in any shipped code path**: `identity_trust_realms`
+  and `identity_realm_epochs` (nothing constructs the realm store),
+  `reservation_counters` and `reservations` (nothing anywhere imports the
+  reservation package), and `decision_proof_executions` (the durable execution
+  record has no non-test caller). The remaining four, the decision-proof
+  custody tables, are written only by the customer-portal routes above, which
+  do not exist unless an operator sets five variables and a live KMS answers,
+  and the only thing that drives the chain today is a hand-run CLI that no
+  Docker image builds.
+- **So the defects the durable stores exist to close are NOT closed by this
+  release.** On every deployment as of this entry, a budget of 100 still
+  admits 200 across two replicas, and one decision proof is still consumed
+  once per replica, because every deployment still runs the in-memory
+  reference. There is also no Prometheus export of the reservation counters
+  and no scheduler for either reaper: `Reap` is a method with nothing calling
+  it on a timer. The cutover is #3564.
+- **The gate the ADR-065 release plan sets for this minor is NOT met at prep
+  time, and this entry is written on that basis.** The plan requires per-plane
+  shadow enabled on our own stacks with a non-zero, observable comparison
+  denominator. Measured on the live fleet at prep: neither
+  `axonflow-production-us-20260502-204911` nor
+  `axonflow-community-saas-20260502-204911` carries any `DecisionShadow*`
+  parameter at all, because the template that declares them is this release's
+  and has not been deployed, so per-plane shadow is not merely off, it is not
+  yet settable there. The observation canary shipped here is likewise not
+  deployed: the only synthetic-monitoring stack in the account,
+  `axonflow-synthetic-monitoring-prod`, was last updated 2026-05-14 and its
+  `TargetBaseURL` is `https://try.getaxonflow.com`, so **production-US has no
+  canary despite that stack's name**. The denominator is therefore still zero.
+- **The ADR-065 conformance gates have NOT been rerun** since the run recorded
+  on #3555 against `28f3782ea` on 2026-08-31, and gate 15 now has an
+  executable test where the sign-off record says it had none. That is the
+  change most likely to move the table, so the rerun is owed before the tag
+  rather than after it.
+- **ADR-065 Phase 0 to 1 sign-off is RECORDED RETROACTIVELY, with four open
+  gaps, and is not a clean sign-off** (#3606). The record says so in its own
+  words: Phases 1 to 3 shipped in v10.2.0 with no sign-off recorded anywhere
+  on the tree, which is a breached gate, and "this is a record of decisions
+  taken, not a claim that the sign-off happened on time". Gate 15
+  (cross-plane outcome equality) was a GAP at that run and gains its test
+  here; gate 17 (latency and memory budgets) is a GAP with zero benchmarks and
+  no published budgets; gate 19 (security review and threat model) is a GAP
+  with no threat-model artifact; gates 2, 7 and 16 are PARTIAL. The Phase 3 to
+  4 row is deliberately empty and marked as required before any plane
+  enforces.
+- **ADR-066 is Accepted, which is not the same as implemented** (#3601). The
+  ADR itself keeps the caveat this release did not remove: no activation check
+  exists yet, and every sentence in its Decision section describes what will
+  be true after delivery rather than current behaviour. Its effect here is
+  narrow: it settles the reservation package and the decision-proof custody
+  surface as Enterprise.
+- **Per-organization PER-PLANE rollback did not ship.** #3552's Phase-0 note
+  promised three rollback widths and two shipped. There is no per-plane kill
+  switch that avoids a redeploy, so mitigating one misbehaving plane for one
+  organization means taking all twelve out of shadow for that organization or
+  shipping a build. The blast radius is observation loss rather than customer
+  impact, which is why it is recorded here rather than treated as a blocker.
+- **Decision-proof key custody is merged but not usable unattended, and three
+  named controls are owed.** `pep_id` on a key-id report is still SELF-ASSERTED
+  in the request body, authenticated only by one fleet-wide secret, so
+  `ready: true` means no more than "no rostered enforcement point has SAID it
+  is behind". There is no PDP rotation loop and no enforcement-point key-set
+  client. The security review document ships UNSIGNED. And the agent and the
+  customer-portal still share one task role, which both key policies explicitly
+  deny `kms:Sign`, **so the PDP cannot sign at all until the task definitions
+  are pointed at the two new roles** - a follow-on change the operator has to
+  make, stated in the template's own parameter description.
+- **The shadow-window alerts do not page anyone.** There is no Alertmanager on
+  either house stack; the 8 alert rules produce `ALERTS` series that Prometheus
+  serves and Grafana graphs, and nothing else. All 32 rules are baked into the
+  `axonflow-prometheus` image, so merging alone deploys nothing: they reach a
+  stack only through a platform image rebuild and a deploy. The operational
+  runbook for the window lives in a separate repository and is not part of
+  this release.
+- **A community operator gets the metrics but not the observability around
+  them.** The six identity-compat series and the synthetic-probe header
+  semantics are in the community binary; the Prometheus rules, the alerts, the
+  monitoring image and the canary template are all stripped from the community
+  mirror, so a community deployment must write its own.
+- **Do not read a volume claim off the raw comparison counter once a canary is
+  deployed.** Read the organic recording rule instead. The canary would
+  otherwise satisfy the vacuity signal it was shipped to feed, which is
+  precisely why a second, organic verdict exists.
+- **The five SDKs carry the AuthZEN surface UNTAGGED, and nothing here
+  advertises it.** All five merged the surface (go `b7d339494`, typescript
+  `c90a50e28`, python `71bfe47ed`, java `fb1861405`, rust `30c0be2c2`) and
+  all five are version-bumped (9.2.0; Rust 0.9.0) with full CHANGELOG
+  entries - **but no tag has been cut**, so `capabilities.go` deliberately
+  still advertises Go 9.1.1 and Python/TypeScript/Java 9.1.0 (Rust 0.8.2):
+  the release-prep guardrail is that the platform must never advertise a
+  version that is not going to ship. (An earlier revision of this bullet
+  said no SDK had bumped and that Go's CHANGELOG had no entry for the
+  surface; both were false when written - the bumps and entries landed
+  hours before it. It also reported the client-side tri-state attribute
+  type as ABSENT from Go; that gap was real and is now closed, sdk-go#210
+  `9e91a13c8`, so the type is present in ALL FIVE.) Two facts an integrator
+  should still have before reading any parity claim: the evaluation path
+  and the profile header are hand-transcribed literals in every SDK with
+  nothing generating or checking them against the canonical artifact
+  (#3603); and one live AuthZEN end-to-end run is still owed at or after
+  `b7d339494`.
+- **Two SDK defects are open and are not fixed by this train**: an obligation
+  whose `mandatory` member is missing decodes to its zero value and reads as
+  advisory instead of being refused (sdk-go#205, the same class as the
+  production defect #3596 found, in the field that decides whether an
+  unsupported obligation must DENY), and a formatting gate that cannot fail
+  (sdk-java#212).
+- **What to do with this release.** On Enterprise, apply the migrations and
+  prefer the per-organization route:
+  `PUT /api/v1/admin/organizations/{org_id}/identity-settings` with
+  `{"decision_shadow_mode":"shadow"}` puts ONE organization's twelve planes
+  into the decision shadow on a deployment that is otherwise off, which bounds
+  the blast radius of a first look and is reversible by writing `null`.
+  Expect the change to reach the agent and the orchestrator within
+  `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` (default 60), because there is
+  still no invalidation channel. Otherwise, or on Community, set
+  `AXONFLOW_DECISION_SHADOW_MODE=shadow` on both processes. Read the
+  denominator first: `axonflow_decision_shadow_observations_total` and
+  `axonflow_identity_compat_comparisons_total` before any agreement or
+  divergence ratio, because a ratio over zero comparisons is not a reading.
+
+### Infrastructure
+
+- Five `DecisionShadow*` parameters on both services of both CloudFormation
+  stacks, plus the `decision_shadow_mode` dispatch input and env-yaml plumbing
+  in `update-stack.yml`. Landed WITH the code rather than after it: #3582
+  shipped without one and the release plan's own gate to cut was an
+  unexecutable step until #3599 added it.
+- `AXONFLOW_DECISION_SHADOW_*` on the agent and the orchestrator in
+  `docker-compose.yml`, `docker-compose.enterprise.yml` and
+  `docker-compose.scaled.yml`.
+- **An authenticated identity-compat canary in the synthetic-monitoring
+  template, off by default** (#3607). New parameters `BaseCanaryEnabled`
+  (default `true`), `IdentityCompatProbe` (default `off`, with
+  `community-saas` and `enterprise` postures),
+  `IdentityCompatScheduleExpression`, `IdentityCompatOrgID`,
+  `IdentityCompatCredentialSecretArn` and
+  `IdentityCompatUserTokenSecretArn`. **A stack updated onto the new template
+  with parameters untouched changes nothing.** Supplying the user-token secret
+  ARN grants the canary the ability to mint per-user tokens for the
+  deployment; leaving it empty is a supported, narrower posture that probes the
+  client-credential path only.
+- Eight new `workflow_dispatch` inputs on the synthetic-monitoring deploy
+  workflow so both postures and the base canary are settable without editing
+  the template.
+- **`DecisionProofKeyCustody` on the marketplace template, default
+  `disabled`** (#3608). At the default it creates no KMS key, no IAM role and
+  no cost. Enabling then disabling it leaves both KMS keys behind by design,
+  because verifying a historical proof needs the public half. Configure the
+  application with the key ARN and never the alias: an alias can be repointed,
+  and the key id is carried inside every certificate as the issuer.
+- The Prometheus image now bakes `rules/*.rules.yml` into
+  `/etc/prometheus/rules/` and its entrypoint writes the matching `rule_files`
+  stanza.
+- **`decision-shadow.rules.yml`: 12 rules (7 recording, 5 alerting) for the
+  PER-PLANE window**, mirroring `identity-compat.rules.yml` rule for rule.
+  The vacuity verdict intersects the new per-plane mode gauge with the
+  comparison denominator, so a plane that is watched and has compared nothing
+  for an hour raises `AxonFlowDecisionShadowWindowVacuous`; a plane nobody
+  enabled stays silent. The join is on `job` and not on `component`, because
+  the counters carry no `component` label and `service` is set by a
+  relabel_config this repository happens to write - a join on a label that
+  can be absent returns nothing, which is this file's own failure mode. Both
+  binaries pre-create all twelve planes, so aggregating by plane alone would
+  let the orchestrator's traffic cover for the agent going dark on the same
+  plane name. FOUR GAPS are named in the file rather than left to be found
+  (the third: the join is per job, so one busy replica covers for a dark
+  sibling on the same plane - gate 18 evidence is per job, not per process;
+  the fourth: a deliberate shadow->off rollback raises the INFO unattributed
+  alert for up to an hour while the 1h window drains - self-clearing, and it
+  is describing your own rollback). The first two:
+  a per-organization opt-in on an otherwise-`off` process reads `off` on the
+  gauge and is reported by its own INFO alert rather than by the vacuity one
+  (do not read gate 18 for a plane whose gauge says `off` - that silence is
+  unattributable, not clean), and there is no decision-shadow canary, so
+  whoever deploys one owes a `synthetic` label and an organic twin of the
+  vacuity rule or it will satisfy the signal it was shipped to feed.
+- **The hourly telemetry digest now separates client-reported from
+  platform-reported adoption, and breaks each down by licence tier** (#3619).
+  The two tier tables are never pooled, because they are not the same
+  population: client (SDK/plugin) rows are uncensored, while platform rows are
+  filtered upstream by the legacy rule 8 classifier to PAID tiers only. The
+  digest prints that caveat beside the platform table so it is not read as a
+  fact about the fleet. An SDK that cannot report a tier at all is labelled
+  `(not instrumented)` rather than pooled with rows whose tier is merely
+  missing this hour. Each tier table's heading states how many external pings
+  it covers, and a note names the shortfall when the two tables together
+  account for fewer pings than the headline - rows whose emitter class cannot
+  be identified enter neither table by design, and that gap was previously
+  invisible to whoever read the digest.
+
+### Migration
+
+> **FIVE migrations ship. FOUR are Enterprise only and ONE is core, so unlike
+> 10.2.0 a Community deployment DOES apply a migration this release.**
+>
+> The split is not a convention, it is what the migration selector does:
+> `platform/shared/deploymode` maps `community` to the category list
+> `{core}` and `community-saas` to `{core, community-saas}`, neither of which
+> contains `enterprise`, while `in-vpc-enterprise`, `in-vpc-healthcare`,
+> `in-vpc-banking`, `in-vpc-travel` and `saas` all contain both. An unset
+> `DEPLOYMENT_MODE` resolves to `community`. The community mirror additionally
+> strips `migrations/enterprise/` entirely, so the four Enterprise files are
+> not even present in a community distribution.
+>
+> **All five are additive.** Between them they CREATE nine tables and ALTER
+> exactly one existing table, by ADDing a nullable column to it. No migration
+> in this release backfills, rewrites or reindexes an existing relation, and
+> none takes a lock on anything that carries rows today. Every one ships a
+> down file.
+>
+> **`migrations/core/169_identity_trust_realms.sql` - CORE, every deployment
+> applies it.** CREATEs `identity_trust_realms` (one row per organization and
+> realm; the whole realm is round-tripped through a `config` JSONB, and `kind`,
+> `canonical_issuer`, `enabled` and `version` are projections that exist so the
+> database can enforce the issuer constraint and an operator can read the
+> table) and `identity_realm_epochs` (one row per organization). Issuer
+> uniqueness is PER ORGANIZATION, not global, so two customers may federate the
+> same public identity provider. Row Level Security is **ENABLEd and FORCEd on
+> both**, with isolation policies on `app.current_org_id` in both `USING` and
+> `WITH CHECK`; because `current_setting(..., true)` is NULL when unset, a read
+> that forgets its scope returns nothing rather than everything. A terminal
+> verification block raises if a table, a policy, a named constraint or the
+> exact primary-key and issuer-constraint column sets are missing, and every
+> existence probe reads `pg_catalog` rather than the privilege-filtered
+> `information_schema` (#3463). **Nothing in a shipped code path reads or
+> writes either table**, so a deployment that upgrades the binaries before
+> applying it behaves exactly as on 10.2.0. The down file names what it
+> discards: dropping the epochs table resets every organization's identity
+> epoch, so anything bound to a pre-rollback epoch must be invalidated
+> wholesale.
+>
+> **`migrations/enterprise/147_decision_proof_key_custody.sql` - Enterprise
+> only.** CREATEs `decision_proof_signing_keys`, `decision_proof_keyset_state`,
+> `decision_proof_expected_peps` and `decision_proof_pep_reports`, plus one
+> index. **It deliberately carries NO `org_id` and NO RLS**, unlike
+> `enterprise/146`: a decision-proof signing key belongs to the DEPLOYMENT, one
+> decision point mints proofs for every organization on it, and the key set
+> every enforcement point verifies against is the same key set. Adding an
+> `org_id` would invent a tenancy the object does not have. The isolation that
+> does apply is the `deployment` column, enforced the same way the proof
+> enforces its audience: a document naming another deployment is refused rather
+> than filtered. Nothing reads these tables at boot; the portal registers no
+> route unless custody is explicitly enabled, so an unapplied 147 is invisible
+> at the default. The down file names the highest key-set sequence it is about
+> to destroy, because a re-apply must start the counter above it or running
+> enforcement points refuse the new documents as a rollback.
+>
+> **`migrations/enterprise/148_reservation_store.sql` - Enterprise only.**
+> CREATEs `reservation_counters` and `reservations` plus two targeted indexes.
+> `window_key` is IN the counter primary key, without which every daily budget
+> silently becomes a lifetime budget. There is deliberately **no `CHECK
+> (reserved + committed <= limit)`** - lowering a limit below current usage is
+> an emergency budget cut and must stay possible - and the migration's own
+> verification block FAILS if such a constraint is ever added. The `>= 0`
+> checks are the load-bearing ones: a negative counter is minted capacity. Four
+> JSONB integrity checks on `reservations` are written in LAX jsonpath, because
+> strict would suppress the error and admit the row they exist to refuse; the
+> join-keys check closes an unrecoverable capacity-stranding defect, where a
+> missing key makes the refund predicate NULL, the refund matches no counter
+> row, and reconciliation only ever raises a counter and never lowers one. RLS
+> is **ENABLEd and FORCEd** on both tables. Explicit grants to
+> `axonflow_app_role` and `axonflow_platform_admin` ship with it, each guarded
+> by a role-existence check, because `core/098`'s default privileges only cover
+> tables created by the same owner and an in-VPC install with a different
+> migration role would otherwise get permission denied on every reservation.
+> The down file names the count of live holds whose capacity becomes neither
+> released nor charged.
+>
+> **`migrations/enterprise/149_proof_execution_record.sql` - Enterprise only.**
+> CREATEs `decision_proof_executions` and one expiry index. **Its primary key
+> is `nonce` ALONE and not `(org_id, nonce)`**: under a composite key "single
+> use" would mean "once per tenant". The verification block fails on a
+> composite key. RLS is ENABLEd and FORCEd with the same isolation policy and
+> the same explicit grants. The down file names the count of proofs that become
+> replayable again, and until when.
+>
+> **`migrations/enterprise/150_identity_org_settings_decision_shadow.sql` -
+> Enterprise only, and the only migration in this release that touches an
+> existing table.** It ADDs a nullable `decision_shadow_mode TEXT` column to
+> `identity_org_settings` with a `CHECK` restricting it to `off` and `shadow`,
+> and changes no existing row. Additive and reversible; the down migration
+> names how many organizations were recorded shadow and off before removing
+> them, because dropping the column closes an observation window and an
+> operator should see that rather than infer it from a shadow that went quiet.
+> **It is numbered 150 rather than 148** because `enterprise/148_reservation_store`
+> and `enterprise/149_proof_execution_record` reached `main` first; the
+> `schema_migrations` key is the composite `(version, name)`, so two files
+> sharing 148 would both have applied, but in an order decided by nothing more
+> than their alphabetical names, which is why the numbering is a guarded
+> invariant rather than a convention.
+>
+> **Boot requirements.** No boot requirement changes for a deployment that sets
+> none of the new variables. A deployment that sets
+> `AXONFLOW_DECISION_SHADOW_MODE` to an unrecognized value does not start, by
+> design and by the same rule as the identity axis; `enforce` is refused on
+> this axis by name. Every decision-proof custody variable is non-fatal: a
+> missing or malformed one registers no routes and logs the reason.
+
+---
+
+<!--
   Version decision (Step 0): v10.2.0, MINOR, prepared 2026-08-31 for the
   operator to tag (HARD RULE 10: the operator tags; nothing here cuts,
   publishes, syncs or deploys). The train is ADR-065 Phases 0-3 shipped DARK:

@@ -40,11 +40,11 @@ func RunAll(ctx context.Context, rep *legacycompile.Report, rows map[string]RowF
 	// The model is given the SAME content target the compiler used. Both sides
 	// have to name the same field for a static redaction or the correspondence
 	// compares a configured value against a default.
-	contentTarget := compileOpts.ContentTarget
-	if contentTarget == "" {
-		contentTarget = legacycompile.DefaultContentTarget
-	}
-	legacy := &ModelEvaluator{Report: rep, Rows: rows, ContentTarget: contentTarget}
+	// Options.Normalized rather than a local restatement of the default. Two
+	// copies of "what Compile would have done" is how the third caller comes to
+	// forget one; the runtime observer did exactly that, and every static
+	// redaction on every plane classified UNEXPLAINED as a result.
+	legacy := &ModelEvaluator{Report: rep, Rows: rows, ContentTarget: compileOpts.Normalized().ContentTarget}
 
 	merged.Provenance = fmt.Sprintf(
 		"corpus: cases GENERATED from the compiled policy set (not replayed traffic), over %d captured row(s) "+

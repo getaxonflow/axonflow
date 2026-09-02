@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
+	"axonflow/platform/shared/deploymode"
 	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
@@ -154,26 +156,11 @@ func registerFleetValidators() {
 		noteIdentityCompatWiring(nil, cfg, false)
 	}
 
-	// Session ADR65-I: the per-organization identity settings store. It feeds
-	// the adapter's per-org mode, the OIDC realm's Shared Signals opt-in and
-	// the CAEP receiver's audience. ErrEnterpriseOnly is skipped like every
-	// other Enterprise capability here; any other failure is FATAL, because a
-	// deployment whose table exists and whose store cannot be opened would
-	// silently run every organization in the process mode while its records
-	// say otherwise - the one outcome the record exists to rule out.
-	//
-	// A nil db is "nothing to read", the same posture every constructor
-	// above takes (they log and skip), not a construction failure: run.go
-	// refuses to boot without DATABASE_URL long before this runs, so a nil
-	// db here is a test or a no-DB harness, never a deployment whose table
-	// exists and whose store cannot be opened.
-	if db != nil {
-		if settings, serr := sharedidentity.NewDBOrgIdentitySettingsStore(db); serr == nil {
-			noteIdentityOrgSettingsWired(settings)
-		} else if !errors.Is(serr, sharedidentity.ErrEnterpriseOnly) {
-			log.Fatalf("❌ identity compat: per-organization settings store could not be built: %v", serr)
-		}
-	}
+	// Session ADR65-I / #3602: the per-organization identity settings store.
+	// Extracted so the schema gate has a call site a test can reach - see
+	// wireOrgIdentitySettings.
+	wireOrgIdentitySettings(db)
+
 	// Whether this process can host a Shared Signals receiver, derived from
 	// what was actually wired above. Must run AFTER the three constructors.
 	noteIdentityCAEPReceivable(attrsErr == nil)
@@ -529,4 +516,68 @@ func resolveMCPServerSegmentsForPolicy(ctx context.Context, session *mcpSession,
 		return nil, mcpSegmentGateDenyIdentityUnresolved
 	}
 	return nil, mcpSegmentGateProceed
+}
+
+// wireOrgIdentitySettings constructs the per-organization identity settings
+// store and notes it, or explains why it did not.
+//
+// # WHY THIS IS ITS OWN FUNCTION
+//
+// It was inline in registerFleetValidators, which is guarded by a sync.Once
+// and additionally builds a revocation store, a SCIM resolver and an OIDC
+// config provider - so no test could drive the schema gate across deployment
+// modes without a database and a fresh process. R3 round 1 on #3607 proved
+// what that cost: replacing the gate with `if true` left every Go test green
+// while reintroducing the live defect. A guard nothing can call is a guard
+// nothing tests.
+//
+// # THE SCHEMA GATE IS DEPLOYMENT_MODE, NOT THE BUILD TAG
+//
+// identity_org_settings is created by migrations/enterprise/146, and the
+// migration selector applies migrations/enterprise/ only for the in-vpc-* and
+// saas modes (deploymode.CanonicalModes). The community-saas fleet runs THIS
+// binary - enterprise-tagged, so the constructor succeeds - on the
+// `community-saas` schema, where the table was never created. Without the gate
+// the store was wired there and every organization's first read per TTL window
+// failed, live:
+//
+//	[IDENTITY-COMPAT] org=axonflow-internal-canary-... identity settings
+//	could not be read and none were ever read; the process mode applies
+//	for the next 1m0s: ... pq: relation "identity_org_settings" does not exist
+//
+// The fall-back it triggers is safe (the process mode applies, which is the
+// whole answer on a deployment with no organization-management surface), but it
+// is noise on the authentication path, and it moves OrgModeFailures on a
+// deployment where a per-organization mode cannot exist - so the one counter
+// that means "a recorded mode is not being honoured" reads non-zero for a
+// deployment that has no records.
+//
+// A deployment that DOES apply the enterprise schema is unchanged: the store is
+// wired exactly as before, and any construction failure other than
+// ErrEnterpriseOnly is still FATAL, because a deployment whose table exists and
+// whose store cannot be opened would silently run every organization in the
+// process mode while its records say otherwise - the one outcome the record
+// exists to rule out.
+//
+// A nil db is "nothing to read", the posture every constructor in
+// registerFleetValidators takes: run.go refuses to boot without DATABASE_URL
+// long before this runs, so a nil db here is a test or a no-DB harness, never a
+// deployment whose table exists.
+func wireOrgIdentitySettings(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	if !deploymode.AppliesEnterpriseSchema() {
+		log.Printf("[IDENTITY-COMPAT] no per-organization identity settings store: DEPLOYMENT_MODE=%q does not apply migrations/%s/, so identity_org_settings cannot exist here; the process mode is the whole answer for every organization",
+			deploymode.Current(), deploymode.CategoryEnterprise)
+		return
+	}
+	settings, err := sharedidentity.NewDBOrgIdentitySettingsStore(db, "agent")
+	if err == nil {
+		noteIdentityOrgSettingsWired(settings)
+		return
+	}
+	if !errors.Is(err, sharedidentity.ErrEnterpriseOnly) {
+		log.Fatalf("❌ identity compat: per-organization settings store could not be built: %v", err)
+	}
 }

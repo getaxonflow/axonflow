@@ -654,7 +654,12 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				// #2932: surface a presented-token-but-no-validator misconfig
 				// (fail-safe — the token is ignored → least-privilege).
 				warnIfTokenWithoutValidator(perUserToken)
-				if vid, resolveErr := sharedidentity.ResolveToken(r.Context(), auth.OrgID, perUserToken); resolveErr != nil {
+				// #3602: ContextWithSyntheticProbe before ResolveToken (see
+				// mcp_server_handler.go's copy for why the tag travels on the
+				// context here).
+				if vid, resolveErr := sharedidentity.ResolveToken(
+					sharedidentity.ContextWithSyntheticProbe(r.Context(), auth.Synthetic),
+					auth.OrgID, perUserToken); resolveErr != nil {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
 					errBody, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("invalid user token: %v", resolveErr)})

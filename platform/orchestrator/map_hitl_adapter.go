@@ -18,6 +18,7 @@ import (
 	"axonflow/platform/orchestrator/workflow_control"
 	logutil "axonflow/platform/shared/logger"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
@@ -45,6 +46,7 @@ func (c *MAPHITLPolicyChecker) CheckPolicy(ctx context.Context, step WorkflowSte
 		},
 	}
 
+	req.ShadowPlane = legacycompile.PlaneMAP // ADR-065 decision shadow (#3564)
 	result := dynamicPolicyEngine.EvaluateDynamicPolicies(ctx, req)
 	if result == nil {
 		return nil, nil

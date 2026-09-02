@@ -214,20 +214,73 @@ func (e *TierAwarePolicyEngine) GetEffectivePoliciesByTier(ctx context.Context, 
 // behavior: GetEffectivePolicies returns only segment_id IS NULL rows, the
 // segment pass finds nothing to evaluate, and the combiner returns the tier
 // result unchanged.
-func (e *TierAwarePolicyEngine) EvaluatePolicy(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, input string) (*PolicyEvaluationResult, error) {
+func (e *TierAwarePolicyEngine) EvaluatePolicy(ctx context.Context, tenantID string, orgID *string, segmentIDs []string, input string, sc TierShadowContext) (*PolicyEvaluationResult, error) {
 	policies, err := e.GetEffectivePolicies(ctx, tenantID, orgID, segmentIDs)
 	if err != nil {
 		return nil, err
 	}
 
 	startTime := time.Now()
+	// ADR-065 decision shadow (#3564). Nil when the shadow could not observe;
+	// every method on a nil trace is a no-op.
+	trace := newTierShadowTrace(policies)
 	tierPolicies, segmentPolicies := splitBySegment(policies)
 
-	tierResult := e.evaluateFirstMatch(tierPolicies, input)
-	segmentResult := e.evaluateStrictestMatch(segmentPolicies, input)
+	tierResult := e.evaluateFirstMatch(tierPolicies, input, trace)
+	segmentResult := e.evaluateStrictestMatch(segmentPolicies, input, trace)
 	result := combineTierAndSegmentResults(tierResult, segmentResult)
 	result.EvaluationTimeMs = time.Since(startTime).Milliseconds()
+
+	// The at-most-two rows the combined verdict rests on. Built from the two
+	// walks' own results rather than from the combined one, because the
+	// combiner returns ONE result and the determining set is the union of what
+	// each walk contributed before it chose.
+	determining := map[string]bool{}
+	if tierResult != nil && tierResult.Matched {
+		determining[tierResult.PolicyID] = true
+	}
+	if segmentResult != nil && segmentResult.Matched {
+		determining[segmentResult.PolicyID] = true
+	}
+	loadScope := tenantID
+	if orgID != nil && *orgID != "" {
+		loadScope = *orgID
+	}
+	// LAST, after the verdict is final. It returns nothing.
+	//
+	// NO `result == nil` GUARD HERE, and its absence is deliberate.
+	// combineTierAndSegmentResults returns one of its two arguments, and
+	// neither evaluateFirstMatch nor evaluateStrictestMatch can return nil -
+	// every return in both is a non-nil pointer. `result` is already
+	// dereferenced unconditionally two statements above, so a guard here would
+	// assert a possibility that statement has already ruled out. staticcheck
+	// says so (SA5011), and it is right: the guard did not add safety, it
+	// added a contradiction. isBlockingTierAction is nil-safe on its own
+	// account, which is the level a nil belongs at if one ever arrives.
+	trace.emit(ctx, sc, loadScope, segmentIDs, determining, !isBlockingTierAction(result))
+
 	return result, nil
+}
+
+// isBlockingTierAction reports whether a tier verdict stops the request.
+//
+// It is the executability question the shadow compares on, and it is answered
+// from the ACTION rather than from a boolean, because PolicyEvaluationResult
+// on this plane carries no Allowed field - the caller decides what to do with
+// the action. block and require_approval both stop the request in the running
+// system (require_approval sets no CHALLENGE state anywhere in the legacy
+// engines; it refuses and appends a marker), and everything else lets it
+// through.
+func isBlockingTierAction(r *PolicyEvaluationResult) bool {
+	if r == nil || !r.Matched {
+		return false
+	}
+	switch OverrideAction(r.Action) {
+	case ActionBlock, ActionRequireApproval:
+		return true
+	default:
+		return false
+	}
 }
 
 // evaluateFirstMatch is the EXACT pre-P3 EvaluatePolicy algorithm (unchanged
@@ -240,7 +293,7 @@ func (e *TierAwarePolicyEngine) EvaluatePolicy(ctx context.Context, tenantID str
 // this order-dependent walk could let a WEAKER segment match pre-empt a
 // stronger tier match purely by sort position, which would be a loosening
 // bug (the exact R3 risk this split exists to rule out).
-func (e *TierAwarePolicyEngine) evaluateFirstMatch(policies []EffectiveStaticPolicy, input string) *PolicyEvaluationResult {
+func (e *TierAwarePolicyEngine) evaluateFirstMatch(policies []EffectiveStaticPolicy, input string, trace *tierShadowTrace) *PolicyEvaluationResult {
 	for _, policy := range policies {
 		if !policy.EffectiveEnabled() {
 			continue
@@ -250,7 +303,15 @@ func (e *TierAwarePolicyEngine) evaluateFirstMatch(policies []EffectiveStaticPol
 			log.Printf("[TierAwarePolicyEngine] Error compiling pattern for policy %s: %v", policy.PolicyID, err)
 			continue
 		}
+		// The pattern is about to be RUN. Marked here rather than at the top
+		// of the loop, because a disabled row and a row whose pattern will not
+		// compile were both never looked at - and this walk RETURNS on the
+		// first match, so every row after the winner was never looked at
+		// either. That is the tri-state distinction ADR-065 turns into an
+		// unknown attribute.
+		trace.markRan(policy.PolicyID)
 		if re.MatchString(input) {
+			trace.markMatched(policy.PolicyID, policy.EffectiveAction())
 			return &PolicyEvaluationResult{
 				Matched:        true,
 				PolicyID:       policy.PolicyID,
@@ -288,7 +349,7 @@ func (e *TierAwarePolicyEngine) evaluateFirstMatch(policies []EffectiveStaticPol
 // outright, a loosening path strictly worse than a downgraded action. Using
 // the raw fields makes that whole class of bug structurally unreachable from
 // this function, independent of what the repository layer does.
-func (e *TierAwarePolicyEngine) evaluateStrictestMatch(policies []EffectiveStaticPolicy, input string) *PolicyEvaluationResult {
+func (e *TierAwarePolicyEngine) evaluateStrictestMatch(policies []EffectiveStaticPolicy, input string, trace *tierShadowTrace) *PolicyEvaluationResult {
 	var best *PolicyEvaluationResult
 	for _, policy := range policies {
 		if !policy.Enabled {
@@ -299,9 +360,16 @@ func (e *TierAwarePolicyEngine) evaluateStrictestMatch(policies []EffectiveStati
 			log.Printf("[TierAwarePolicyEngine] Error compiling segment pattern for policy %s: %v", policy.PolicyID, err)
 			continue
 		}
+		trace.markRan(policy.PolicyID)
 		if !re.MatchString(input) {
 			continue
 		}
+		// Deliberately policy.Action, the RAW column, matching this walk's own
+		// rule two lines below: reading EffectiveAction() here would report an
+		// override-folded action for a segment row that never enters the
+		// override path, which is the loosening this function is written to
+		// make structurally unreachable.
+		trace.markMatched(policy.PolicyID, policy.Action)
 		candidate := &PolicyEvaluationResult{
 			Matched:        true,
 			PolicyID:       policy.PolicyID,

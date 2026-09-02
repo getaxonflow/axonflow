@@ -736,6 +736,34 @@ func rlsGatedTables() map[string]bool {
 		// this audit can see it; a dynamically built multi-row VALUES list would
 		// be invisible to the walker.
 		"indonesia_pii_detection_events",
+		// core/169 (#3550) - ADR-065 trust-realm persistence, both tables
+		// ENABLE + FORCE RLS with `org_id = current_setting(
+		// 'app.current_org_id', true)` on USING and WITH CHECK.
+		//
+		// Listed at the same time the tables and their only writer land, for
+		// the reason the indonesia_pii_detection_events entry above states:
+		// the wrap discipline is standing from day one rather than
+		// retro-fitted after a silent-zero incident. DBRealmStore keeps `s.db`
+		// as a field - it has to, because rls.WithOrgScope takes a *sql.DB -
+		// so a NEW method could issue a bare s.db.QueryContext against
+		// identity_trust_realms. Under axonflow_app_role with no GUC set the
+		// policy predicate is `org_id = NULL`, so such a read returns ZERO
+		// ROWS WITH NO ERROR: every realm reads as absent, which is
+		// UNKNOWN_REALM, which denies every credential from every issuer -
+		// the #3039/#3048 shape with the blast radius of an authentication
+		// outage.
+		//
+		// THIS AUDIT DOES NOT CATCH THAT READ, and the entry must not be read
+		// as claiming otherwise. matchRLSWriteStatement covers WRITE
+		// statements only, so a bare SELECT is outside it by construction.
+		// Two further limits, stated so nobody infers coverage that is not
+		// here: resolveSQLArg resolves a query argument only within the same
+		// FuncDecl, and upsertRealmSQL/bumpEpochSQL are package-level consts,
+		// so even the existing INSERT sites are invisible to it. What
+		// actually holds the read path today is that realm_store.go is the
+		// only file in the tree touching either table, plus the FORCE RLS
+		// proven from a non-owner role in realm_store_realpg_test.go.
+		"identity_trust_realms", "identity_realm_epochs",
 	}
 	out := make(map[string]bool, len(tables))
 	for _, t := range tables {

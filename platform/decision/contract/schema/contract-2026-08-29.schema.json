@@ -161,6 +161,17 @@
       "additionalProperties": false
     },
 
+    "approval_clause": {
+      "type": "object",
+      "description": "One immutable threshold clause: a quorum of distinct approvers drawn from a named eligible set. It is named here rather than inlined under approval_requirement so it corresponds one-to-one with the Go ApprovalClause, which is what lets the drift guard compare it and every SDK generate it as a type rather than an anonymous shape.",
+      "properties": {
+        "quorum": { "type": "integer", "minimum": 1 },
+        "eligible": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/identifier" } }
+      },
+      "required": ["quorum", "eligible"],
+      "additionalProperties": false
+    },
+
     "approval_requirement": {
       "type": "object",
       "description": "A conjunction of immutable threshold clauses. Clauses are never collapsed by pool intersection or union.",
@@ -168,15 +179,7 @@
         "all_of": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "object",
-            "properties": {
-              "quorum": { "type": "integer", "minimum": 1 },
-              "eligible": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/identifier" } }
-            },
-            "required": ["quorum", "eligible"],
-            "additionalProperties": false
-          }
+          "items": { "$ref": "#/$defs/approval_clause" }
         },
         "separation_of_duties": { "type": "boolean" },
         "expires_at": { "type": "string", "format": "date-time" }
@@ -314,6 +317,170 @@
           "description": "Resolved ancestors are auditor data only.",
           "if": { "properties": { "audience": { "enum": ["pep", "requester", "operator"] } }, "required": ["audience"] },
           "then": { "not": { "required": ["resolved_ancestors"] } }
+        }
+      ]
+    },
+
+    "authzen_subject": {
+      "type": "object",
+      "description": "The AuthZEN subject object. type and id are canonical identifier components; a display name, an email or a token claim is never one of them.",
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 },
+        "properties": { "type": "object" }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+
+    "authzen_action": {
+      "type": "object",
+      "description": "The AuthZEN action object.",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "properties": { "type": "object" }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+
+    "authzen_resource": {
+      "type": "object",
+      "description": "The AuthZEN resource object.",
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 },
+        "properties": { "type": "object" }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+
+    "authzen_request": {
+      "type": "object",
+      "description": "One subject-action-resource-context evaluation. Every member is structurally OPTIONAL here because a plural-envelope entry inherits any member it omits from the envelope's shared base. The completeness invariant - that the MERGED entry carries a subject, an action and a resource - is a cross-object property this document cannot express, and AuthZENEnvelope.Project enforces it. A validator that passes this schema has therefore NOT established completeness, which is why the singular member below carries its own required list.",
+      "properties": {
+        "subject": { "$ref": "#/$defs/authzen_subject" },
+        "action": { "$ref": "#/$defs/authzen_action" },
+        "resource": { "$ref": "#/$defs/authzen_resource" },
+        "context": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+
+    "authzen_bulk": {
+      "type": "object",
+      "description": "The plural envelope: a shared subject, action, resource and context at the top level, with one entry per decision. The number of decisions is fixed by the MAPPING, never by argument data, so an empty evaluations array is malformed rather than a request for zero decisions.",
+      "properties": {
+        "subject": { "$ref": "#/$defs/authzen_subject" },
+        "action": { "$ref": "#/$defs/authzen_action" },
+        "resource": { "$ref": "#/$defs/authzen_resource" },
+        "context": { "type": "object" },
+        "evaluations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/authzen_request" }
+        }
+      },
+      "required": ["evaluations"],
+      "additionalProperties": false
+    },
+
+    "authzen_envelope": {
+      "type": "object",
+      "description": "The top level. Exactly two members are defined and exactly one may be PRESENT. Presence is decided on the KEY SET, not on a decoded pointer, so {\"evaluation\": {...}, \"evaluations\": null} carries both declared members and is malformed.",
+      "properties": {
+        "evaluation": {
+          "description": "The singular member. Unlike a plural entry it has no shared base to inherit from, so it must carry its own subject, action and resource.",
+          "allOf": [
+            { "$ref": "#/$defs/authzen_request" },
+            { "required": ["subject", "action", "resource"] }
+          ]
+        },
+        "evaluations": { "$ref": "#/$defs/authzen_bulk" }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["evaluation"], "not": { "required": ["evaluations"] } },
+        { "required": ["evaluations"], "not": { "required": ["evaluation"] } }
+      ]
+    },
+
+    "authzen_response_context": {
+      "type": "object",
+      "description": "The versioned AxonFlow profile payload. It is present only for a Policy Enforcement Point that NEGOTIATED the profile; one that did not receives the boolean alone, because handing a partial interpretation to a plane that cannot act on it is the failure ADR-065 invariant 12 forbids.",
+      "properties": {
+        "profile": { "const": "axonflow-authzen-profile-2026-08-29" },
+        "state": { "enum": ["ALLOW", "DENY", "CHALLENGE", "ERROR"] },
+        "category": {
+          "enum": ["allowed", "not_permitted", "approval_required", "temporarily_unavailable", "invalid_request"]
+        },
+        "reason": {
+          "enum": [
+            "permitted", "approval_required", "explicit_constraint", "no_matching_permission",
+            "unknown_constraint", "unknown_permission", "unknown_requirement", "invalid_input",
+            "evaluation_error", "unsupported_obligation", "obligation_conflict", "unknown_action",
+            "unknown_realm", "schema_violation", "delegation_depth_exceeded", "budget_exhausted",
+            "binding_mismatch", "approval_unsatisfiable", "approval_expired", "authoring_rejected"
+          ]
+        },
+        "obligations": { "type": "array", "items": { "$ref": "#/$defs/obligation" } },
+        "approval": { "$ref": "#/$defs/approval_requirement" },
+        "decision_id": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "string", "minLength": 1 }
+      },
+      "required": ["profile", "state", "category", "decision_id", "schema_version"],
+      "additionalProperties": false
+    },
+
+    "authzen_error": {
+      "type": "object",
+      "description": "The structured refusal body, returned when a request could not be EVALUATED. It is a separate shape from the response rather than an extra member on it, because a refusal is not a decision: a response carrying decision=false says the request was evaluated and denied, and returning that for a request that was never evaluated would make 'denied' and 'unevaluable' the same event in every audit and every client branch.",
+      "properties": {
+        "code": {
+          "enum": [
+            "malformed_envelope", "incomplete_evaluation", "unsupported_subject",
+            "unsupported_action", "unsupported_resource", "unevaluable_attribute",
+            "missing_evaluable_content", "evaluation_unavailable"
+          ]
+        },
+        "pointer": { "type": "string" },
+        "message": { "type": "string", "minLength": 1 },
+        "supported": { "type": "array", "items": { "type": "string" } },
+        "request_id": { "type": "string" }
+      },
+      "required": ["code", "message"],
+      "additionalProperties": false
+    },
+
+    "authzen_response": {
+      "type": "object",
+      "description": "The AuthZEN reply. `decision` is the collapsed boolean: ALLOW is true and every other state is false. It is the only member an un-negotiated enforcement point receives.",
+      "properties": {
+        "decision": { "type": "boolean" },
+        "context": { "$ref": "#/$defs/authzen_response_context" }
+      },
+      "required": ["decision"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "The collapse is total in BOTH directions. Stating only one of them would let a profile-aware enforcement point read an executable boolean beside a DENY state, or a refusal beside an ALLOW.",
+          "if": {
+            "properties": { "decision": { "const": true } },
+            "required": ["decision", "context"]
+          },
+          "then": {
+            "properties": { "context": { "properties": { "state": { "const": "ALLOW" } } } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "decision": { "const": false } },
+            "required": ["decision", "context"]
+          },
+          "then": {
+            "properties": { "context": { "properties": { "state": { "not": { "const": "ALLOW" } } } } }
+          }
         }
       ]
     }

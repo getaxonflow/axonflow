@@ -100,6 +100,11 @@ func NewUnifiedPolicyEngine(db *sql.DB, config EngineConfig, auditQueue AuditQue
 func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string, opts EvalOptions) *RequestResult {
 	startTime := time.Now()
 
+	// ADR-065 decision shadow (#3564). Nil when the shadow could not observe
+	// on this deployment, and every method on a nil trace is a no-op, so an
+	// off deployment pays one atomic load and allocates nothing.
+	trace := newShadowTrace()
+
 	result := &RequestResult{
 		Blocked:         false,
 		MatchedPolicies: make([]PolicyMatch, 0),
@@ -127,10 +132,17 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 		result.BlockReason = "Policy engine unavailable"
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
 		log.Printf("[PolicyEngine] Failed to load policies, blocking request (fail-closed): %v", err)
+		trace.emit(ctx, PhaseRequest, opts, nil, !result.Blocked, true)
 		return result
 	}
 
 	result.PoliciesEvaluated = len(policies)
+	// The set BEFORE the three filters narrow it: it is what the loader
+	// returned for this phase, and its (policy_id, updated_at) pairs are what
+	// identify the policy version this evaluation ran against. A row the
+	// filters remove is still part of that version - it simply did not run,
+	// which the tri-state records as unknown rather than as a non-match.
+	trace.setLoaded(policies)
 
 	// Filter by categories if specified
 	if len(opts.Categories) > 0 || len(opts.SkipCategories) > 0 {
@@ -153,6 +165,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 	for i := range policies {
 		policy := &policies[i]
 
+		trace.markRan(policy.PolicyID)
 		match := e.evaluator.Evaluate(input, policy)
 		if match != nil {
 			action := policy.GetActionForPhase(PhaseRequest)
@@ -228,6 +241,7 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 
 			for i := range policies {
 				policy := &policies[i]
+				trace.markRan(policy.PolicyID)
 				match := e.evaluator.Evaluate(paramStr, policy)
 				if match != nil {
 					action := policy.GetActionForPhase(PhaseRequest)
@@ -266,6 +280,11 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 		go e.metrics.RecordEvaluation(ctx, "request", opts, result.MatchedPolicies, result.Blocked, result.ProcessingTimeMs)
 	}
 
+	// The ADR-065 shadow, LAST, after the verdict is final. It returns
+	// nothing: there is no value here for this function to read, so no edit to
+	// this function can make the shadow's opinion reach `result`.
+	trace.emit(ctx, PhaseRequest, opts, result.MatchedPolicies, !result.Blocked, result.EvaluationError)
+
 	return result
 }
 
@@ -283,6 +302,9 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		RedactedFields:  make([]RedactedField, 0),
 		MatchedPolicies: make([]PolicyMatch, 0),
 	}
+
+	// ADR-065 decision shadow (#3564); see the request phase for the argument.
+	trace := newShadowTrace()
 
 	// Apply default tenant if not specified
 	if opts.TenantID == "" {
@@ -305,15 +327,20 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 		if e.config.GracefulDegradation {
 			log.Printf("[PolicyEngine] Failed to load policies, returning unprocessed (evaluation_error): %v", err)
 			result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+			trace.emit(ctx, PhaseResponse, opts, nil, !result.Blocked, true)
 			return result
 		}
 		result.Blocked = true
 		result.BlockReason = "Policy engine unavailable"
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+		trace.emit(ctx, PhaseResponse, opts, nil, !result.Blocked, true)
 		return result
 	}
 
 	result.PoliciesEvaluated = len(policies)
+	// See the request phase: the set BEFORE the filters is the policy version
+	// this evaluation ran against.
+	trace.setLoaded(policies)
 
 	// Filter by categories if specified
 	if len(opts.Categories) > 0 || len(opts.SkipCategories) > 0 {
@@ -336,6 +363,12 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	scannable := e.toScannable(content)
 	if scannable == "" {
 		result.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+		// NOTHING WAS SCANNED, so no detector ran and every row is unknown.
+		// This is deliberately still observed: it is a real evaluation the
+		// plane performed and permitted, and an empty response body is exactly
+		// the kind of traffic that would otherwise make a plane look busier
+		// than the window it actually contributes to.
+		trace.emit(ctx, PhaseResponse, opts, result.MatchedPolicies, !result.Blocked, result.EvaluationError)
 		return result
 	}
 
@@ -345,6 +378,7 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	for i := range policies {
 		policy := &policies[i]
 
+		trace.markRan(policy.PolicyID)
 		matches := e.evaluator.EvaluateAll(scannable, policy)
 		for _, match := range matches {
 			action := policy.GetActionForPhase(PhaseResponse)
@@ -396,7 +430,14 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 				if spanBudget > 0 {
 					kept = append(kept, p)
 					spanBudget--
+					continue
 				}
+				// DROPPED, AND THE SHADOW HAS TO KNOW. The policy stays in
+				// result.MatchedPolicies - it did match - so without this the
+				// shadow would attribute a field_redact to a policy that
+				// produced no redaction, on BOTH sides, and record the
+				// resulting agreement as a match.
+				trace.noteRedactionDropped(p.Match.PolicyID)
 			}
 			redactionPlans = kept
 		}
@@ -418,6 +459,10 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 	if e.config.EnableMetrics {
 		go e.metrics.RecordEvaluation(ctx, "response", opts, result.MatchedPolicies, result.Blocked, result.ProcessingTimeMs)
 	}
+
+	// The ADR-065 shadow, LAST, after the verdict and every redaction are
+	// final. It returns nothing.
+	trace.emit(ctx, PhaseResponse, opts, result.MatchedPolicies, !result.Blocked, result.EvaluationError)
 
 	return result
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/decision/legacycompile"
 	sharedidentity "axonflow/platform/shared/identity"
 )
 
@@ -709,7 +710,7 @@ func TestForwardToOrchestrator(t *testing.T) {
 		Enabled: true,
 	}
 
-	result, err := forwardToOrchestrator(req, user, client)
+	result, err := forwardToOrchestrator(req, user, client, false)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -2934,7 +2935,7 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 
 		// Evaluate policy with input that matches the pattern
 		ctx := context.Background()
-		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, nil, "this contains secret_pattern in it")
+		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, nil, "this contains secret_pattern in it", TierShadowContext{Plane: legacycompile.PlaneProxyTier})
 		if err != nil {
 			t.Fatalf("EvaluatePolicy failed: %v", err)
 		}
@@ -2991,7 +2992,7 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 
 		// Evaluate with input that does NOT match
 		ctx := context.Background()
-		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, "test-tenant", nil, nil, "this is a normal query")
+		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, "test-tenant", nil, nil, "this is a normal query", TierShadowContext{Plane: legacycompile.PlaneProxyTier})
 		if err != nil {
 			t.Fatalf("EvaluatePolicy failed: %v", err)
 		}

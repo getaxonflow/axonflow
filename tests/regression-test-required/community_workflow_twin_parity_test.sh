@@ -65,7 +65,7 @@ test-summary :: the two summaries aggregate different job sets (test.yml has the
 
 # Replay exemptions: community jobs that COULD be replayed on the staged copy
 # and deliberately are not.
-REPLAY_EXEMPT=$'race-detector :: runs `go test -race` over the platform/orchestrator root only - a package whose untagged build test.yml\'s "Unit Tests: Orchestrator" executes on every pull request and whose community-build compile the simulation vets; replaying a six-minute race run over an already-proven package is cost without evidence'
+REPLAY_EXEMPT=$'race-detector :: runs `go test -race` over platform/orchestrator and the two decision-shadow packages - all three have untagged builds that test.yml\'s unit-test jobs execute on every pull request and whose community-build compile the simulation vets; replaying a multi-minute race run over already-proven packages is cost without evidence'
 
 python3 - "$ENTERPRISE_WORKFLOW" "$COMMUNITY_WORKFLOW" "$PARITY_EXEMPT" "$REPLAY_EXEMPT" <<'PY'
 import re, sys

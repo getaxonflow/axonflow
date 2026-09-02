@@ -50,6 +50,7 @@ import (
 	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
+	"axonflow/platform/decision/legacycompile"
 	sharedaudit "axonflow/platform/shared/audit"
 	"axonflow/platform/shared/idempotency"
 	logutil "axonflow/platform/shared/logger"
@@ -815,7 +816,25 @@ func evaluateInputPolicies(
 	detectionCfg ModeDetectionConfig,
 	runDynamicPolicy bool,
 	segments []string,
+	shadowPlane ...legacycompile.Plane,
 ) InputPolicyOutcome {
+	// ADR-065 decision shadow (#3564): which enforcement plane this call is
+	// FOR. This one function serves two planes - /decide and MCP - so the
+	// plane cannot be derived here and has to come from the caller.
+	//
+	// IT IS VARIADIC, AND THAT IS A DELIBERATE TRADE, NOT AN OVERSIGHT. A
+	// required parameter cannot be forgotten, which is the property this
+	// codebase reaches for by default (see TierShadowContext, which IS
+	// required). It would also have churned roughly forty existing test call
+	// sites in this package for no behavioural reason, and a mechanical rewrite
+	// of forty assertions is its own risk. The protection is moved instead to
+	// TestEveryPolicyCallSiteNamesItsPlane, which walks the AST of every
+	// PRODUCTION call site named in legacy_call_sites.tsv and fails if one does
+	// not name its plane - so a forgotten plane is caught by a test derived
+	// from the census artifact rather than by the compiler. A test caller that
+	// omits it produces an observation the shadow refuses and counts, never one
+	// attributed to the wrong plane.
+	plane := shadowPlaneOf(shadowPlane)
 	var out InputPolicyOutcome
 
 	// Dynamic policy evaluation (rate limits, budgets, time/role access)
@@ -888,6 +907,7 @@ func evaluateInputPolicies(
 		inputCats = append(inputCats, mcpInputPolicyCategories...)
 		inputCats = append(inputCats, policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(orgID), sharedpolicy.PhaseRequest)...)
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
+			Plane:    plane,
 			TenantID: tenantID,
 			OrgID:    orgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the
@@ -1070,8 +1090,15 @@ func redactInputStatement(ctx context.Context, tenantID, userID, connectorName, 
 	piiCats := policyEngine.EnabledPIICategories(ctx, tenantID, sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), sharedpolicy.PhaseRequest)
 	if len(piiCats) > 0 {
 		result := policyEngine.EvaluateResponse(ctx, []map[string]interface{}{{"statement": working}}, sharedpolicy.EvalOptions{
+			// redactInputStatement serves the MCP plane only, so the plane is
+			// named here rather than taken from a caller.
+			Plane:    legacycompile.PlaneMCP,
 			TenantID: tenantID,
 			OrgScope: sharedpolicy.OrgScopePtr(OrgIDFromContext(ctx)), // #3048 R3 HIGH-3
+			// See the response-pass site: OrgID is the field the ADR-065
+			// per-organization mode is resolved from, and an empty one silently
+			// falls back to the process mode.
+			OrgID: OrgIDFromContext(ctx),
 
 			ConnectorName:   connectorName,
 			UserID:          userID,
@@ -1308,7 +1335,11 @@ func evaluateOutputPolicies(
 	checkExfiltration bool,
 	isGateway bool, // true for PEP/gateway callers (check-output) → bypass the connector allowlist for PII detection
 	segments []string,
+	shadowPlane ...legacycompile.Plane,
 ) OutputPolicyOutcome {
+	// ADR-065 decision shadow (#3564); see evaluateInputPolicies for why this
+	// is variadic and what protects it.
+	plane := shadowPlaneOf(shadowPlane)
 	// #3447 R3: orgID became an explicit parameter here (the response-phase
 	// census needs it). Before that, every org-derived read in this function
 	// took OrgIDFromContext(ctx). Fall back to that when the parameter is
@@ -1560,8 +1591,19 @@ func evaluateOutputPolicies(
 			actionOverrides := mcpDetectionCfg.BuildActionOverrides()
 			actionOverrides[sharedpolicy.CategorySecurityDangerous] = ResolveResponseInjectionAction(ctx, orgID).ToPolicyAction()
 			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
-				TenantID:      tenantID,
-				OrgScope:      sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3
+				Plane:    plane,
+				TenantID: tenantID,
+				OrgScope: sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3
+				// OrgID is what the ADR-065 shadow resolves the PER-ORG mode
+				// from (#3564). OrgScope alone is not enough: an empty OrgID
+				// makes Observer.effectiveMode fall back to the PROCESS mode,
+				// so a per-org enablement would never reach this half of the
+				// MCP plane and a per-org exemption would never release it -
+				// silently, because that early return is deliberately
+				// uncounted. Measured: the documented rollout (process off,
+				// one org on) recorded nothing here while mcp grew on the
+				// request phase, which reads as "no traffic".
+				OrgID:         orgID,
 				ConnectorName: connectorName,
 				UserID:        userID,
 				Categories:    outCats,
@@ -2130,7 +2172,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters,
 		mcpDetectionCfg, true, /* runDynamicPolicy */
-		segmentIDs /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */)
+		segmentIDs, /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */
+		legacycompile.PlaneMCP)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503). Record a canonical
@@ -2211,7 +2254,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		// #3447: the SAME set resolved once above for the request phase -- not
 		// a second resolution, so the two phases of one call can never
 		// disagree about membership.
-		segmentIDs)
+		segmentIDs,
+		legacycompile.PlaneMCP)
 
 	// #2679: the response-phase verdict (SQLi/static-block/exfil-block → blocked;
 	// redact → redacted; else allowed). Computed once; mcpOutputDecisionVerdict's
@@ -2625,7 +2669,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters,
 		mcpDetectionCfg, true, /* runDynamicPolicy */
-		segmentIDs /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */)
+		segmentIDs, /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */
+		legacycompile.PlaneMCP)
 
 	if inputOutcome.EvalUnavailable {
 		// Fail-closed: governance could not be rendered (503) → canonical error row.
@@ -2697,7 +2742,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		// isGateway: managed connector
 		false,
 		// #3447: the SAME set resolved once above for the request phase.
-		segmentIDs)
+		segmentIDs,
+		legacycompile.PlaneMCP)
 
 	// #2679: response-phase verdict, computed once; branch order mirrors the
 	// early-return order below so the recorded verdict matches the HTTP branch.
@@ -3354,7 +3400,8 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			tenantID, orgID, userID, userRole,
 			req.ConnectorType, req.Tool /* toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904) */, operation, req.Statement, req.Parameters,
 			mcpDetectionCfg, true, /* runDynamicPolicy */
-			segmentIDs /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */)
+			segmentIDs, /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */
+			legacycompile.PlaneMCP)
 
 		if outcome.EvalUnavailable {
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
@@ -3876,7 +3923,8 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		// isGateway: check-output is a PEP/gateway caller
 		true,
 		// #3447: the caller's fail-closed-resolved governance-segment set.
-		segmentIDs)
+		segmentIDs,
+		legacycompile.PlaneMCP)
 
 	auditEntry.ExfilRowsReturned = req.RowCount
 	applyResponseRedactionAudit(&auditEntry, outcome)

@@ -48,6 +48,7 @@ import (
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/common/usage"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/orchestrator/cost"
 	"axonflow/platform/shared/idempotency"
 	sharedidentity "axonflow/platform/shared/identity"
@@ -1326,6 +1327,17 @@ func Run() {
 	// nothing on the authentication path.
 	initIdentityCompat()
 
+	// ADR-065 per-plane decision shadow (#3564). AFTER initIdentityCompat and
+	// after ensureFleetValidatorsRegistered, because it reads the same
+	// per-organization settings store the identity axis does - the two modes
+	// are two columns of one row and must come from one store on one TTL.
+	//
+	// Runs unconditionally, in both DB and no-DB mode, so an unrecognized
+	// AXONFLOW_DECISION_SHADOW_MODE refuses to boot even on a deployment where
+	// nothing else would consult it. Default (unset) is off, and off costs one
+	// atomic load per policy evaluation and nothing else.
+	initDecisionShadow(usageDB)
+
 	// DB-independent initializations (work in both DB and no-DB mode)
 	sharedpolicy.InitGlobalExfiltrationChecker()
 	exfilLimits := sharedpolicy.GetGlobalExfiltrationChecker().GetLimits()
@@ -1588,6 +1600,17 @@ func Run() {
 	//       "*" is a prefix match. Default:
 	//       "x-ai-agent,x-session-id,x-leader-identity,x-tenant-*" (#2509).
 	RegisterDecisionHandlers(globalRouter)
+
+	// Register the AuthZEN surface (POST /api/v1/access/evaluation) -- ADR-065
+	// compatibility plan, #3603. It is an ADAPTER over the same evaluation
+	// RegisterDecisionHandlers exposes, not a second evaluator: the AuthZEN
+	// envelope maps onto a DecideRequest, runs through the Decision API handler,
+	// and the verdict is rendered back as an AuthZEN response. /api/v1/decide is
+	// unchanged and stays wire-stable; this route is purely additive.
+	//
+	// At v11 the engine behind this route flips to the new Policy Decision
+	// Point with no wire change, so an SDK user migrates once rather than twice.
+	RegisterAuthZENHandlers(globalRouter)
 
 	// Register OpenAI-compatible gateway endpoint (Issue #2351 / Epic #2360).
 	// POST /v1/chat/completions accepts standard OpenAI SDK requests, runs
@@ -2327,6 +2350,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
 		}
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
+			Plane:           legacycompile.PlaneProxyRequest,
 			TenantID:        user.TenantID,
 			OrgID:           user.OrgID,
 			OrgScope:        sharedpolicy.OrgScopePtr(user.OrgID), // #3048 R3 HIGH-3 (N2)
@@ -2368,7 +2392,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// the RLS scope fell back to the tenant and matched nothing at all.
 		// user.OrgID is the licence-derived org the request already
 		// authenticated as (Phase 1 above passes exactly the same value).
-		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), segmentIDs, req.Query)
+		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, sharedpolicy.OrgScopePtr(user.OrgID), segmentIDs, req.Query,
+			TierShadowContext{Plane: legacycompile.PlaneProxyTier, Principal: user.Email, OrgID: user.OrgID})
 		if err != nil {
 			log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
 		} else if tierResult.Matched && tierResult.Action == "block" {
@@ -2666,7 +2691,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// 6. Forward to AxonFlow Orchestrator (include skip_llm flag for hourly tests)
 	orchestratorStart := time.Now()
 	log.Printf("🚀 Forwarding request to orchestrator: ClientID=%s, RequestType=%s", req.ClientID, req.RequestType)
-	orchestratorResp, err := forwardToOrchestrator(req, user, client)
+	orchestratorResp, err := forwardToOrchestrator(req, user, client, auth.Synthetic)
 	orchestratorTime := time.Since(orchestratorStart)
 	if err != nil {
 		log.Printf("❌ Orchestrator forward failed: %v (time: %v)", err, orchestratorTime)
@@ -3107,7 +3132,7 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 
 // checkRateLimit moved to auth.go as part of license-based authentication
 
-func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (interface{}, error) {
+func forwardToOrchestrator(req ClientRequest, user *User, client *Client, synthetic bool) (interface{}, error) {
 	// Prepare orchestrator request
 	// Copy context and add plan_id if present (for execute-plan requests)
 	context := req.Context
@@ -3210,6 +3235,19 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 	// The orchestrator now requires one on every non-exempt route
 	// (requireInternalProxyAuth), so without this the governed request path
 	// itself would 403. Mirrors the MCP forwarders in mcp_server_handler.go.
+	// #3602: propagate the observation-window canary tag onto the governed
+	// forward.
+	//
+	// Without this the orchestrator would see every canary comparison as
+	// ordinary tenant traffic, and the synthetic split would be readable on
+	// one plane and not the other - which is the "consulted in some planes and
+	// not others" shape the adapter's single-entry design exists to prevent,
+	// applied to the observability half. It is set from the AUTHENTICATED
+	// request's flag, never copied from the inbound headers: this request is
+	// constructed fresh at http.NewRequest above.
+	if synthetic {
+		orchReq.Header.Set(sharedidentity.SyntheticProbeHeader, "1")
+	}
 	if proxyTokenGenerator != nil {
 		orchReq.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))
 	}
@@ -3431,6 +3469,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 				skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
 			}
 			requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
+				Plane:           legacycompile.PlanePolicyTest,
 				TenantID:        testUser.TenantID,
 				OrgID:           testUser.OrgID,
 				OrgScope:        sharedpolicy.OrgScopePtr(testUser.OrgID), // #3048 R3 HIGH-3 (N2)
@@ -3457,7 +3496,8 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 			// Decision 5 (#3490): same org argument the live plane passes (see
 			// clientRequestHandler's Phase 2). A policy TEST that evaluated a
 			// different policy set from the live path would be worse than no test.
-			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, sharedpolicy.OrgScopePtr(testUser.OrgID), segmentIDs, testReq.Query)
+			tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, sharedpolicy.OrgScopePtr(testUser.OrgID), segmentIDs, testReq.Query,
+				TierShadowContext{Plane: legacycompile.PlanePolicyTest, Principal: testUser.Email, OrgID: testUser.OrgID})
 			if err != nil {
 				log.Printf("⚠️ Tier-aware policy test error: %v", err)
 			} else if tierResult.Matched && tierResult.Action == "block" {

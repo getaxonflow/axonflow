@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/shared/deploymode"
 	sharedidentity "axonflow/platform/shared/identity"
 )
 
@@ -99,11 +100,65 @@ func initIdentityCompat() {
 // failure is fatal: a deployment that HAS the store's table and could not
 // open a store for it would silently run every organization in the process
 // mode while its records say otherwise.
+//
+// # THE BUILD TAG IS NOT THE WHOLE GATE; DEPLOYMENT_MODE IS THE OTHER HALF
+//
+// identity_org_settings comes from migrations/enterprise/146, and the
+// migration selector applies migrations/enterprise/ only for the in-vpc-* and
+// saas modes. The community-SaaS fleet runs the enterprise-tagged binary
+// against the `community-saas` schema, so the constructor succeeds and the
+// table does not exist - which is measured, live, on try.getaxonflow.com's
+// agent, one failed read per organization per TTL window. The agent's copy of
+// this gate (mcp_identity.go) carries the log excerpt. Both planes take the
+// same gate so the two cannot disagree about whether an organization has a
+// record, which is the failure this file's header is about.
 func orchestratorOrgModeSource() sharedidentity.CompatOrgModeSource {
+	store := buildOrchestratorOrgSettings()
+	if store == nil {
+		// A TYPED NIL MUST NOT BECOME A NON-NIL INTERFACE. Callers compare the
+		// result against nil to decide whether a per-organization source is
+		// wired at all, and an interface holding a nil concrete value is not
+		// nil - so returning `store` directly here would tell BootstrapCompat
+		// a source exists and give it one that panics on first use.
+		return nil
+	}
+	// Remembered for the OTHER axis, which boots after this one.
+	orchestratorOrgSettingsStore = store
+	return store
+}
+
+// orchestratorOrgSettingsStore is the store built during initIdentityCompat,
+// held so the ADR-065 decision shadow reads THE SAME ONE.
+//
+// ONE STORE, NOT TWO, for the reason the agent's decision_shadow.go states:
+// the identity compatibility mode and the ADR-065 decision shadow mode are two
+// COLUMNS OF ONE ROW. A second store would read the same table twice on its own
+// TTL and give the two axes two different staleness windows on one row, so an
+// operator could not say which instant either mode was true at - and would
+// double the read load for it.
+//
+// A PLAIN VAR ASSIGNED AT BOOT RATHER THAN A sync.Once, and the difference is
+// not style. initDecisionShadow runs AFTER initIdentityCompat in run.go, on
+// purpose, so the ordering that makes this safe is already established and
+// stated there. A Once would memoize the FIRST call for the life of the
+// process, which is indistinguishable in production - DEPLOYMENT_MODE does not
+// change under a running binary - and wrong under test, where
+// TestOrgModeSourceIsGatedOnTheDeployedSchema deliberately calls this once per
+// recognised mode and would then measure the first answer seven times.
+var orchestratorOrgSettingsStore sharedidentity.OrgIdentitySettingsSource
+
+// buildOrchestratorOrgSettings opens the per-organization settings store, or
+// returns nil when this deployment cannot have one.
+func buildOrchestratorOrgSettings() sharedidentity.OrgIdentitySettingsSource {
 	if usageDB == nil {
 		return nil
 	}
-	store, err := sharedidentity.NewDBOrgIdentitySettingsStore(usageDB)
+	if !deploymode.AppliesEnterpriseSchema() {
+		log.Printf("[IDENTITY-COMPAT] no per-organization identity settings store: DEPLOYMENT_MODE=%q does not apply migrations/%s/, so identity_org_settings cannot exist here; the process mode is the whole answer for every organization",
+			deploymode.Current(), deploymode.CategoryEnterprise)
+		return nil
+	}
+	store, err := sharedidentity.NewDBOrgIdentitySettingsStore(usageDB, "orchestrator")
 	switch {
 	case err == nil:
 		return store
@@ -184,12 +239,20 @@ func observeCompatPrincipal(r *http.Request, u *UserContext, orgID string) {
 		// adapter exists to make them.
 		return
 	}
-	_ = sharedidentity.CompatResolve(r.Context(), sharedidentity.TrustedHeaderLegacyAuth(
+	legacy := sharedidentity.TrustedHeaderLegacyAuth(
 		orgID,
 		headerID,
 		u.Email,
 		headerID != "" || u.Email != "",
 		"",
 		time.Now(),
-	))
+	)
+	// #3602: the observation-window canary tag. Read from THIS request, which
+	// is the hop the agent forwards - the agent stamps the header onto its
+	// governed forward, so a probe is tagged on both planes or on neither, and
+	// the synthetic split reads the same on each. A metric label only: it is
+	// not an authorization input and this plane acts on nothing anyway.
+	legacy.Synthetic = sharedidentity.IsSyntheticProbeHeader(
+		r.Header.Get(sharedidentity.SyntheticProbeHeader))
+	_ = sharedidentity.CompatResolve(r.Context(), legacy)
 }

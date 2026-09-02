@@ -54,6 +54,29 @@ func getPlatformVersion() string {
 	return v
 }
 
+// getCapabilities is the orchestrator plane's feature list, served on /health at
+// port 8081. Unlike the SDK and plugin compatibility maps below, which are
+// byte-identical to the agent's by design, this list is a deliberate SUBSET of
+// platform/agent/capabilities.go: it advertises only what THIS plane serves.
+//
+// The rule, and the reason the two files are allowed to differ here: a client
+// discovers a capability in order to call it. Advertising a route the
+// orchestrator does not register would send that client to a port that answers
+// 404. So a capability whose surface exists only on the agent (8080) stays out
+// of this list. That is why decision_obligations, two_touch_redaction,
+// seam_capability_decisioning, client_version_telemetry,
+// identity_header_attribution and the Community-SaaS entries appear only in the
+// agent copy.
+//
+// v10.3.0 (RUNBOOK_RELEASE_PREP.md Step 0b): the train's one client-observable
+// new surface is `authzen_evaluation`, POST /api/v1/access/evaluation. It is
+// added to the AGENT list and deliberately NOT here. RegisterAuthZENHandlers is
+// called only from platform/agent/run.go, and neither platform/orchestrator nor
+// ee/platform/orchestrator registers that path or any AuthZEN handling, so this
+// plane genuinely does not serve it. Nothing else in the v10.3.0 train adds a
+// route, header contract, obligation type or discovery field on either plane
+// (see the PR body for the per-item exclusions), so this list is otherwise
+// unchanged this train.
 func getCapabilities() []PlatformCapability {
 	return []PlatformCapability{
 		{Name: "health_check", Since: "1.0.0", Description: "Basic health endpoint"},
@@ -114,11 +137,11 @@ func getSDKCompatibility() SDKCompatInfo {
 		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
 		// examples baseline). Mirrors platform/agent/capabilities.go.
 		RecommendedSDKVersion: map[string]string{
-			"python":     "9.1.0",
-			"typescript": "9.1.0",
-			"go":         "9.1.1",
-			"java":       "9.1.0",
-			"rust":       "0.8.2",
+			"python":     "9.2.0",
+			"typescript": "9.2.0",
+			"go":         "9.2.0",
+			"java":       "9.2.0",
+			"rust":       "0.9.0",
 		},
 	}
 }

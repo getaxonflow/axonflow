@@ -674,6 +674,12 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 
 		// Create policy data from conditions and actions
 		policyData := map[string]interface{}{
+			// The row's VERSION, rendered by the one shared helper so a
+			// dynamic row and a static row cannot key differently. Read only
+			// by the ADR-065 decision shadow (#3564), which uses (policy_id,
+			// updated_at) to prove the bundle it compares against describes
+			// the policy set this cache actually holds.
+			"updated_at":  sharedpolicy.PolicyVersionStamp(row.UpdatedAt, row.CreatedAt),
 			"policy_id":   row.PolicyID,
 			"name":        row.Name,
 			"description": row.Description,
@@ -1193,7 +1199,13 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	// for why a plain map range made the risk_score escalation above
 	// order-dependent on Go's randomized map iteration, not just on
 	// priority as intended.
-	for _, entry := range sortedDynamicPolicyEntries(policies) {
+	// ADR-065 decision shadow (#3564). Nil when the shadow could not observe
+	// on this deployment; every method on a nil trace is a no-op, so an off
+	// deployment pays one atomic load and allocates nothing.
+	sortedEntries := sortedDynamicPolicyEntries(policies)
+	trace := newDynamicShadowTrace(sortedEntries, orgID)
+
+	for _, entry := range sortedEntries {
 		cacheKey := entry.cacheKey
 		policyMap := entry.policyMap
 
@@ -1272,10 +1284,15 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		// fails to unmarshal is skipped above (`continue`), and a legacy
 		// explicitly-empty `[]` is excluded by the #3384 guard directly
 		// above, never evaluated as indistinguishable from `null`.
+		// The row's conditions are about to be evaluated - or, with none, to
+		// hold vacuously. Either way the legacy engine LOOKED at this row,
+		// which is what the tri-state distinguishes from a row it skipped.
+		trace.markRan(cacheKey)
+
 		if len(conditions) > 0 {
 			allMatch := true
 			for _, cond := range conditions {
-				condResult := e.evaluateCondition(cond, req, result)
+				condResult := e.evaluateCondition(cond, req, result, trace)
 				if !condResult {
 					allMatch = false
 					break
@@ -1402,6 +1419,14 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			actions = actionsRaw
 		}
 
+		// Every instruction this row produces, for the ADR-065 shadow's effect
+		// multiset. Accumulated INSIDE the switch's own arms rather than from
+		// the actions array, so an action type the switch has no case for
+		// contributes nothing - which is the legacy behaviour being preserved
+		// (migration 036's "warn" was inert for exactly that reason) and not a
+		// control this package may invent on the running system's behalf.
+		var shadowApplied []appliedAction
+
 		for _, action := range actions {
 			actionMap, ok := action.(map[string]interface{})
 			if !ok {
@@ -1455,10 +1480,12 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 						}
 					}
 				}
+				shadowApplied = append(shadowApplied, appliedAction{action: "route"})
 				log.Printf("[POLICY_ROUTE] Applied routing: preferred=%s, allowed=%v, reason=%s",
 					result.PreferredProvider, result.AllowedProviders, result.RoutingReason)
 
 			case "block":
+				shadowApplied = append(shadowApplied, appliedAction{action: "block"})
 				result.Allowed = false
 				if reason, ok := actionConfig["reason"].(string); ok {
 					result.RequiredActions = append(result.RequiredActions, "blocked: "+reason)
@@ -1482,6 +1509,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				// are fixed to "add" alongside this comment, rather than
 				// changing the key here and silently breaking every
 				// already-deployed sys_dyn_llm_cost row.
+				shadowApplied = append(shadowApplied, appliedAction{action: "modify_risk"})
 				if add, ok := actionConfig["add"].(float64); ok {
 					result.RiskScore += add
 				}
@@ -1499,6 +1527,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				if message == "" {
 					message = "policy matched"
 				}
+				shadowApplied = append(shadowApplied, appliedAction{action: "log"})
 				log.Printf("[POLICY_LOG] level=%s policy=%q: %s (config=%v)", level, name, message, actionConfig)
 
 			case "alert":
@@ -1516,6 +1545,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				}
 				channel, _ := actionConfig["channel"].(string)
 				message, _ := actionConfig["message"].(string)
+				shadowApplied = append(shadowApplied, appliedAction{action: "alert"})
 				log.Printf("[POLICY_ALERT] severity=%s channel=%s policy=%q: %s", severity, channel, name, message)
 				result.RequiredActions = append(result.RequiredActions, fmt.Sprintf("alert: %s (severity=%s)", name, severity))
 
@@ -1537,6 +1567,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				if reason == "" {
 					reason = "policy matched"
 				}
+				shadowApplied = append(shadowApplied, appliedAction{action: "warn"})
 				log.Printf("[POLICY_WARN] policy=%q: %s", name, reason)
 				result.RequiredActions = append(result.RequiredActions, fmt.Sprintf("warn: %s (policy=%s)", reason, name))
 
@@ -1564,11 +1595,20 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 					fields = fv
 				}
 				if len(fields) > 0 {
+					// ONE INSTRUCTION PER FIELD. A redaction names fields, and
+					// the fields are what the enforcement point is told to do:
+					// three redactions of three fields are three instructions,
+					// and collapsing them lets a compiler that dropped two of
+					// three targets compare as equal.
+					for _, f := range fields {
+						shadowApplied = append(shadowApplied, appliedAction{action: "redact", target: f})
+					}
 					log.Printf("[POLICY_REDACT] policy=%q requested redaction of fields=%v", name, fields)
 					result.RequiredActions = append(result.RequiredActions, fmt.Sprintf("redact_requested: fields=%v", fields))
 				}
 
 			case "require_approval":
+				shadowApplied = append(shadowApplied, appliedAction{action: "require_approval"})
 				// Issue #1082: Trigger HITL workflow - requires human approval before continuing
 				result.Allowed = false
 				result.RequiredActions = append(result.RequiredActions, "require_approval")
@@ -1591,6 +1631,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			}
 		}
 
+		trace.markMatched(cacheKey, shadowApplied)
 		result.AppliedPolicies = append(result.AppliedPolicies, name)
 	}
 
@@ -1679,6 +1720,12 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	log.Printf("Policy evaluation completed in %v. Applied %d policies. Cache age: %v",
 		time.Since(startTime), len(result.AppliedPolicies), time.Since(lastRefresh))
 
+	// The ADR-065 shadow, LAST, after the verdict, the risk clamp and every
+	// action are final. It returns nothing: there is no value here for this
+	// function to read, so no edit to this function can make the shadow's
+	// opinion reach `result`.
+	trace.emit(ctx, req, orgID, segmentIDs, result)
+
 	return result
 }
 
@@ -1706,7 +1753,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 // only "risk_score" reads it (see getFieldValue), restoring the retired
 // in-memory engine's three-parameter getFieldValue signature. Every other
 // field is still sourced from req.
-func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interface{}, req OrchestratorRequest, result *PolicyEvaluationResult) bool {
+func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interface{}, req OrchestratorRequest, result *PolicyEvaluationResult, trace *dynamicShadowTrace) bool {
 	mc, _ := sharedpolicy.MapCondition(cond)
 	if mc.Operator == "regex" {
 		if pattern, ok := mc.Value.(string); ok {
@@ -1716,7 +1763,15 @@ func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interfac
 		}
 	}
 	return dbConditionEvaluator.Match(mc, func(field string) (any, bool) {
-		return e.getFieldValue(field, req, result), true
+		v := e.getFieldValue(field, req, result)
+		// Recorded HERE, inside the resolver the legacy engine itself uses,
+		// rather than re-resolved afterwards. Two resolutions of one field are
+		// two answers whenever anything in between moved - and something does
+		// move: a matched policy's modify_risk raises result.RiskScore
+		// mid-loop, and "risk_score" is a condition field. The ADR-065 side
+		// has to be built from the value the legacy engine actually read.
+		trace.noteField(field, v)
+		return v, true
 	}, dbUnevaluableRecorder)
 }
 
@@ -1928,39 +1983,52 @@ func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req Orchestrat
 // cacheKey identifies the entry for the [BUG] log line only (e.g. the
 // policy_id/name the caller's loop is already keyed on); it plays no role
 // in the org/segment decision itself.
-func dbCachedPolicyAppliesToOrg(policyMap map[string]interface{}, orgID string, callerSegments []string, cacheKey string) bool {
+// dbCachedPolicyBelongsToOrg is the ORG half of dbCachedPolicyAppliesToOrg,
+// split out so the two callers that need different halves share one definition
+// of what "belongs to this tenant" means.
+//
+// The evaluation loop needs the whole gate: org AND segment, because a
+// segment-scoped row the caller is not in must not run. The ADR-065 shadow
+// trace needs only this half, because a segment-scoped row the caller is not in
+// is still part of the TENANT'S POLICY VERSION - it simply did not run, which
+// the tri-state records as unknown rather than as a non-match.
+//
+// Splitting rather than letting the shadow pass nil segments is deliberate: nil
+// segments makes the full gate exclude every segment-scoped row, which would
+// silently drop them from the policy-set digest that identifies what the
+// evaluation ran against.
+func dbCachedPolicyBelongsToOrg(policyMap map[string]interface{}, orgID string, cacheKey string) bool {
 	metadata, ok := policyMap["_metadata"].(map[string]interface{})
 	if !ok {
-		// Every writer (refreshPolicies, loadDefaultPolicies) must populate
-		// _metadata. Reaching here means one didn't — fail closed (exclude)
-		// rather than silently applying the policy to every org.
-		log.Printf("[BUG] dbCachedPolicyAppliesToOrg: cache entry %q has no _metadata - excluding (fail-closed); every writer (refreshPolicies, loadDefaultPolicies) must populate _metadata", cacheKey)
+		log.Printf("[BUG] dbCachedPolicyBelongsToOrg: cache entry %q has no _metadata - excluding (fail-closed); every writer (refreshPolicies, loadDefaultPolicies) must populate _metadata", cacheKey)
 		return false
 	}
 	policyOrg, hasOrg := metadata["org_id"].(string)
 	if !hasOrg {
-		// Same class as the missing-_metadata case above and the same
-		// answer. Both in-tree writers set org_id (Decision 5, #3490); an
-		// entry without it came from a writer that predates or forgot the
-		// key, and admitting it would apply one org's policy to every org
-		// through a cache that is deliberately loaded ALL-TENANTS on a
-		// BYPASSRLS pool.
-		log.Printf("[BUG] dbCachedPolicyAppliesToOrg: cache entry %q has _metadata but no org_id - excluding (fail-closed); every writer (refreshPolicies, loadDefaultPolicies) must populate org_id", cacheKey)
+		log.Printf("[BUG] dbCachedPolicyBelongsToOrg: cache entry %q has _metadata but no org_id - excluding (fail-closed); every writer (refreshPolicies, loadDefaultPolicies) must populate org_id", cacheKey)
 		return false
 	}
 	// An unbound CALLER matches nothing but the shared baseline. Without this
 	// the empty-string caller would match a row whose org_id is likewise
-	// empty - the #3065 fail-open idiom, in the one place where a single
-	// match decides enforcement for a whole plane.
+	// empty - the #3065 fail-open idiom.
 	if orgID == "" {
-		if policyOrg != "global" && policyOrg != "default" {
-			return false
-		}
-	} else if policyOrg != "global" && policyOrg != "default" && policyOrg != orgID {
-		// "global" and "default" (NULL tenant_id rows, and the built-in
-		// fallback set) apply to every org.
+		return policyOrg == "global" || policyOrg == "default"
+	}
+	// "global" and "default" (NULL tenant_id rows, and the built-in fallback
+	// set) apply to every org.
+	return policyOrg == "global" || policyOrg == "default" || policyOrg == orgID
+}
+
+func dbCachedPolicyAppliesToOrg(policyMap map[string]interface{}, orgID string, callerSegments []string, cacheKey string) bool {
+	// THE ORG HALF IS DELEGATED, NOT RESTATED. Two copies of a tenant-boundary
+	// predicate is how the copy that was not edited becomes the fail-open, and
+	// this one decides enforcement for a whole plane.
+	if !dbCachedPolicyBelongsToOrg(policyMap, orgID, cacheKey) {
 		return false
 	}
+	// _metadata and its org_id are both proven present by the call above, which
+	// fails closed on either being absent.
+	metadata, _ := policyMap["_metadata"].(map[string]interface{})
 	policySegment, _ := metadata["segment_id"].(string)
 	if policySegment == "" {
 		return true

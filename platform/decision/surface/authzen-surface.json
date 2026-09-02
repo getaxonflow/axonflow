@@ -1,0 +1,587 @@
+{
+  "artifact": "axonflow-authzen-surface",
+  "artifact_version": 1,
+  "profile": "axonflow-authzen-profile-2026-08-29",
+  "contract_schema_version": "2026-08-29",
+  "source_schema_id": "https://schemas.getaxonflow.com/decision/contract-2026-08-29.schema.json",
+  "source_schema_sha256": "sha256:647e16f769766f0ee8cf4913aaf5ac5c4567660fd2903da6766eead5db279efe",
+  "enums": [
+    {
+      "name": "authzen_error_code",
+      "values": [
+        "malformed_envelope",
+        "incomplete_evaluation",
+        "unsupported_subject",
+        "unsupported_action",
+        "unsupported_resource",
+        "unevaluable_attribute",
+        "missing_evaluable_content",
+        "evaluation_unavailable"
+      ]
+    },
+    {
+      "name": "category",
+      "values": [
+        "allowed",
+        "not_permitted",
+        "approval_required",
+        "temporarily_unavailable",
+        "invalid_request"
+      ]
+    },
+    {
+      "name": "identifier_kind",
+      "values": [
+        "organization",
+        "principal",
+        "group",
+        "resource",
+        "action",
+        "tool",
+        "client",
+        "session"
+      ]
+    },
+    {
+      "name": "obligation_type",
+      "values": [
+        "approval_challenge",
+        "field_remove",
+        "field_redact",
+        "field_hash",
+        "field_mask",
+        "field_annotate",
+        "field_tokenize",
+        "schema_transform",
+        "response_filter",
+        "route_restriction",
+        "step_up_authentication",
+        "quota_reservation",
+        "immutable_audit",
+        "notification"
+      ]
+    },
+    {
+      "name": "operational_state",
+      "values": [
+        "ALLOW",
+        "DENY",
+        "CHALLENGE",
+        "ERROR"
+      ]
+    },
+    {
+      "name": "reason_code",
+      "values": [
+        "permitted",
+        "approval_required",
+        "explicit_constraint",
+        "no_matching_permission",
+        "unknown_constraint",
+        "unknown_permission",
+        "unknown_requirement",
+        "invalid_input",
+        "evaluation_error",
+        "unsupported_obligation",
+        "obligation_conflict",
+        "unknown_action",
+        "unknown_realm",
+        "schema_violation",
+        "delegation_depth_exceeded",
+        "budget_exhausted",
+        "binding_mismatch",
+        "approval_unsatisfiable",
+        "approval_expired",
+        "authoring_rejected"
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "approval_clause",
+      "doc": "One immutable threshold clause: a quorum of distinct approvers drawn from a named eligible set. It is named here rather than inlined under approval_requirement so it corresponds one-to-one with the Go ApprovalClause, which is what lets the drift guard compare it and every SDK generate it as a type rather than an anonymous shape.",
+      "fields": [
+        {
+          "name": "quorum",
+          "required": true,
+          "type": {
+            "kind": "int"
+          }
+        },
+        {
+          "name": "eligible",
+          "required": true,
+          "type": {
+            "kind": "array",
+            "items": {
+              "kind": "ref",
+              "ref": "identifier"
+            }
+          },
+          "min_items": 1
+        }
+      ]
+    },
+    {
+      "name": "approval_requirement",
+      "doc": "A conjunction of immutable threshold clauses. Clauses are never collapsed by pool intersection or union.",
+      "fields": [
+        {
+          "name": "all_of",
+          "required": true,
+          "type": {
+            "kind": "array",
+            "items": {
+              "kind": "ref",
+              "ref": "approval_clause"
+            }
+          },
+          "min_items": 1
+        },
+        {
+          "name": "separation_of_duties",
+          "required": true,
+          "type": {
+            "kind": "bool"
+          }
+        },
+        {
+          "name": "expires_at",
+          "required": true,
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    {
+      "name": "authzen_action",
+      "doc": "The AuthZEN action object.",
+      "fields": [
+        {
+          "name": "name",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "properties",
+          "required": false,
+          "type": {
+            "kind": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "authzen_bulk",
+      "doc": "The plural envelope: a shared subject, action, resource and context at the top level, with one entry per decision. The number of decisions is fixed by the MAPPING, never by argument data, so an empty evaluations array is malformed rather than a request for zero decisions.",
+      "fields": [
+        {
+          "name": "subject",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_subject"
+          }
+        },
+        {
+          "name": "action",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_action"
+          }
+        },
+        {
+          "name": "resource",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_resource"
+          }
+        },
+        {
+          "name": "context",
+          "required": false,
+          "type": {
+            "kind": "object"
+          }
+        },
+        {
+          "name": "evaluations",
+          "required": true,
+          "type": {
+            "kind": "array",
+            "items": {
+              "kind": "ref",
+              "ref": "authzen_request"
+            }
+          },
+          "min_items": 1
+        }
+      ]
+    },
+    {
+      "name": "authzen_envelope",
+      "doc": "The top level. Exactly two members are defined and exactly one may be PRESENT. Presence is decided on the KEY SET, not on a decoded pointer, so {\"evaluation\": {...}, \"evaluations\": null} carries both declared members and is malformed.",
+      "fields": [
+        {
+          "name": "evaluation",
+          "doc": "The singular member. Unlike a plural entry it has no shared base to inherit from, so it must carry its own subject, action and resource.",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_request"
+          },
+          "requires_members": [
+            "action",
+            "resource",
+            "subject"
+          ]
+        },
+        {
+          "name": "evaluations",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_bulk"
+          }
+        }
+      ],
+      "exactly_one_of": [
+        [
+          "evaluation",
+          "evaluations"
+        ]
+      ]
+    },
+    {
+      "name": "authzen_error",
+      "doc": "The structured refusal body, returned when a request could not be EVALUATED. It is a separate shape from the response rather than an extra member on it, because a refusal is not a decision: a response carrying decision=false says the request was evaluated and denied, and returning that for a request that was never evaluated would make 'denied' and 'unevaluable' the same event in every audit and every client branch.",
+      "fields": [
+        {
+          "name": "code",
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "enum": "authzen_error_code"
+          }
+        },
+        {
+          "name": "pointer",
+          "required": false,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "message",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "supported",
+          "required": false,
+          "type": {
+            "kind": "array",
+            "items": {
+              "kind": "string"
+            }
+          }
+        },
+        {
+          "name": "request_id",
+          "required": false,
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    {
+      "name": "authzen_request",
+      "doc": "One subject-action-resource-context evaluation. Every member is structurally OPTIONAL here because a plural-envelope entry inherits any member it omits from the envelope's shared base. The completeness invariant - that the MERGED entry carries a subject, an action and a resource - is a cross-object property this document cannot express, and AuthZENEnvelope.Project enforces it. A validator that passes this schema has therefore NOT established completeness, which is why the singular member below carries its own required list.",
+      "fields": [
+        {
+          "name": "subject",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_subject"
+          }
+        },
+        {
+          "name": "action",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_action"
+          }
+        },
+        {
+          "name": "resource",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_resource"
+          }
+        },
+        {
+          "name": "context",
+          "required": false,
+          "type": {
+            "kind": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "authzen_resource",
+      "doc": "The AuthZEN resource object.",
+      "fields": [
+        {
+          "name": "type",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "id",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "properties",
+          "required": false,
+          "type": {
+            "kind": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "authzen_response",
+      "doc": "The AuthZEN reply. `decision` is the collapsed boolean: ALLOW is true and every other state is false. It is the only member an un-negotiated enforcement point receives.",
+      "fields": [
+        {
+          "name": "decision",
+          "required": true,
+          "type": {
+            "kind": "bool"
+          }
+        },
+        {
+          "name": "context",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "authzen_response_context"
+          }
+        }
+      ]
+    },
+    {
+      "name": "authzen_response_context",
+      "doc": "The versioned AxonFlow profile payload. It is present only for a Policy Enforcement Point that NEGOTIATED the profile; one that did not receives the boolean alone, because handing a partial interpretation to a plane that cannot act on it is the failure ADR-065 invariant 12 forbids.",
+      "fields": [
+        {
+          "name": "profile",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "const": "axonflow-authzen-profile-2026-08-29"
+        },
+        {
+          "name": "state",
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "enum": "operational_state"
+          }
+        },
+        {
+          "name": "category",
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "enum": "category"
+          }
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "type": {
+            "kind": "enum",
+            "enum": "reason_code"
+          }
+        },
+        {
+          "name": "obligations",
+          "required": false,
+          "type": {
+            "kind": "array",
+            "items": {
+              "kind": "ref",
+              "ref": "obligation"
+            }
+          }
+        },
+        {
+          "name": "approval",
+          "required": false,
+          "type": {
+            "kind": "ref",
+            "ref": "approval_requirement"
+          }
+        },
+        {
+          "name": "decision_id",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "schema_version",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        }
+      ]
+    },
+    {
+      "name": "authzen_subject",
+      "doc": "The AuthZEN subject object. type and id are canonical identifier components; a display name, an email or a token claim is never one of them.",
+      "fields": [
+        {
+          "name": "type",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "id",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "properties",
+          "required": false,
+          "type": {
+            "kind": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "identifier",
+      "doc": "A canonical identifier. Display names, emails, token claims, connector names and aliases are never identifiers.",
+      "fields": [
+        {
+          "name": "kind",
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "enum": "identifier_kind"
+          }
+        },
+        {
+          "name": "type",
+          "required": true,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "qualifier",
+          "required": false,
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "local",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        }
+      ]
+    },
+    {
+      "name": "obligation",
+      "doc": "One typed instruction owned by a named enforcement component.",
+      "fields": [
+        {
+          "name": "type",
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "enum": "obligation_type"
+          }
+        },
+        {
+          "name": "target",
+          "required": false,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "params",
+          "required": false,
+          "type": {
+            "kind": "map",
+            "value": {
+              "kind": "string"
+            }
+          }
+        },
+        {
+          "name": "mandatory",
+          "required": true,
+          "type": {
+            "kind": "bool"
+          }
+        },
+        {
+          "name": "source_policy",
+          "required": true,
+          "type": {
+            "kind": "string"
+          },
+          "min_length": 1
+        },
+        {
+          "name": "schema_version",
+          "required": true,
+          "type": {
+            "kind": "int"
+          }
+        }
+      ]
+    }
+  ]
+}

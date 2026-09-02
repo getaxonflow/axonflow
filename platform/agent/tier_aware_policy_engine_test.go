@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/lib/pq"
 )
@@ -263,7 +264,7 @@ func TestTierAwarePolicyEngine_EvaluatePolicy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := engine.EvaluatePolicy(context.Background(), tenantID, nil, nil, tt.input)
+			result, err := engine.EvaluatePolicy(context.Background(), tenantID, nil, nil, tt.input, TierShadowContext{Plane: legacycompile.PlaneProxyTier})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -575,7 +576,7 @@ func TestTierAwarePolicyEngine_EvaluatePolicy_RequireApproval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := engine.EvaluatePolicy(context.Background(), tenantID, nil, nil, tt.input)
+			result, err := engine.EvaluatePolicy(context.Background(), tenantID, nil, nil, tt.input, TierShadowContext{Plane: legacycompile.PlaneProxyTier})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

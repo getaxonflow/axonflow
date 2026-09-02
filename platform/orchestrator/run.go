@@ -40,6 +40,7 @@ import (
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/node_enforcement"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/orchestrator/cloudstorage"     // Cloud storage backends for audit exports (#589)
 	"axonflow/platform/orchestrator/compliancereport" // Unified compliance report facade (#3241) - Community stub or EE impl
 	"axonflow/platform/orchestrator/cost"             // Cost controls & budget management (#764)
@@ -333,6 +334,21 @@ type OrchestratorRequest struct {
 	Context     map[string]interface{} `json:"context"`
 	Media       []MediaContentRequest  `json:"media,omitempty"` // Optional media (images) for multimodal requests
 	Timestamp   time.Time              `json:"timestamp"`
+
+	// ShadowPlane names the ADR-065 enforcement plane this evaluation belongs
+	// to (#3564, session v10.3-A). Nothing on the enforcement path reads it;
+	// the only consumer is the decision shadow's observation site inside
+	// EvaluateDynamicPolicies, which uses it to attribute a comparison to the
+	// surface it came from - gate 18 is stated per plane.
+	//
+	// IT IS `json:"-"` AND THAT IS LOAD-BEARING, NOT TIDINESS. Every other
+	// field on this struct is deserialized from the request body, and a
+	// caller able to set this one could attribute its own traffic to a plane
+	// it never touched - moving a denominator an operator reads to decide
+	// whether that plane may cut over, and doing it from outside the trust
+	// boundary. It is set by the five server-side call sites and by nothing
+	// else, which TestDynamicShadowPlaneIsNotCallerSuppliable pins.
+	ShadowPlane legacycompile.Plane `json:"-"`
 }
 
 // MediaContentRequest represents a media item in the API request.
@@ -1375,6 +1391,13 @@ func initializeComponents() {
 	// SCIM-backed directory exists in this process, and DirectorySourceNone is
 	// a positive declaration that one does not.
 	initIdentityCompat()
+
+	// ADR-065 per-plane decision shadow (#3564). AFTER initIdentityCompat, for
+	// the same reason the agent's copy is: both read the same
+	// identity_org_settings row, and the two per-organization modes must come
+	// from one store on one TTL or an operator cannot say which instant either
+	// was true at.
+	initDecisionShadow(usageDB)
 
 	// Initialize LLM Router context (ADR-007)
 	ctx := context.Background()
@@ -2678,6 +2701,9 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Evaluate dynamic policies
 	policyStartTime := time.Now()
+	// ADR-065 decision shadow (#3564): name the plane this evaluation is for.
+	// Server-set; ShadowPlane is json:"-" precisely so a caller cannot.
+	req.ShadowPlane = legacycompile.PlaneWCP
 	policyResult := dynamicPolicyEngine.EvaluateDynamicPolicies(ctx, req)
 	policyEvalTime := time.Since(policyStartTime)
 
@@ -3139,6 +3165,7 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Evaluate policies
+	req.ShadowPlane = legacycompile.PlanePolicyTest // ADR-065 decision shadow (#3564)
 	result := dynamicPolicyEngine.EvaluateDynamicPolicies(r.Context(), req)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4986,6 +5013,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	policyStartTime := time.Now()
+	policyReq.ShadowPlane = legacycompile.PlaneWCP // ADR-065 decision shadow (#3564)
 	policyResult := dynamicPolicyEngine.EvaluateDynamicPolicies(r.Context(), policyReq)
 	policyEvalTime := time.Since(policyStartTime)
 

@@ -42,7 +42,7 @@ func orgTierControlPolicyRow(rows *sqlmock.Rows, id, policyID, tenantID, categor
 		id, policyID, "Test policy "+policyID, category, "tenant", pattern, severity,
 		nil, phase, actionRequest, nil,
 		true, priority, tenantID, nil, []byte(`{}`),
-		time.Now().UTC(),
+		time.Now().UTC(), time.Now().UTC(),
 	)
 }
 

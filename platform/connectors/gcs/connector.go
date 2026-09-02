@@ -75,9 +75,16 @@ func (c *GCSConnector) Connect(ctx context.Context, cfg *base.ConnectorConfig) e
 
 	// Check for credentials file path
 	if credFile := c.GetCredential("credentials_file"); credFile != "" {
-		opts = append(opts, option.WithCredentialsFile(credFile))
+		// SA1019 suppressed deliberately, not silently: google.golang.org/api
+		// v0.264.0 (pulled in as grpc v1.83.1's own minimum by the
+		// CVE-2026-84304 bump) deprecates both WithCredentials* helpers in
+		// favour of the cloud.google.com/go/auth model. Migrating credential
+		// handling in a production connector is a behavioural change owed its
+		// own reviewed PR - tracked as #3645, whose completion is proven by
+		// deleting these two nolint lines and watching the lint stay green.
+		opts = append(opts, option.WithCredentialsFile(credFile)) //nolint:staticcheck // SA1019: migration tracked in #3645
 	} else if credJSON := c.GetCredential("credentials_json"); credJSON != "" {
-		opts = append(opts, option.WithCredentialsJSON([]byte(credJSON)))
+		opts = append(opts, option.WithCredentialsJSON([]byte(credJSON))) //nolint:staticcheck // SA1019: migration tracked in #3645
 	}
 
 	// Check for custom endpoint (useful for emulator)
@@ -391,24 +398,24 @@ func (c *GCSConnector) getObjectMetadata(ctx context.Context, params map[string]
 	}
 
 	row := map[string]interface{}{
-		"name":                      attrs.Name,
-		"bucket":                    attrs.Bucket,
-		"size":                      attrs.Size,
-		"content_type":              attrs.ContentType,
-		"content_encoding":          attrs.ContentEncoding,
-		"content_language":          attrs.ContentLanguage,
-		"cache_control":             attrs.CacheControl,
-		"updated":                   attrs.Updated,
-		"created":                   attrs.Created,
-		"generation":                attrs.Generation,
-		"metageneration":            attrs.Metageneration,
-		"storage_class":             attrs.StorageClass,
-		"etag":                      attrs.Etag,
-		"md5":                       attrs.MD5,
-		"crc32c":                    attrs.CRC32C,
-		"metadata":                  attrs.Metadata,
-		"owner":                     attrs.Owner,
-		"retention_expires":         attrs.RetentionExpirationTime,
+		"name":              attrs.Name,
+		"bucket":            attrs.Bucket,
+		"size":              attrs.Size,
+		"content_type":      attrs.ContentType,
+		"content_encoding":  attrs.ContentEncoding,
+		"content_language":  attrs.ContentLanguage,
+		"cache_control":     attrs.CacheControl,
+		"updated":           attrs.Updated,
+		"created":           attrs.Created,
+		"generation":        attrs.Generation,
+		"metageneration":    attrs.Metageneration,
+		"storage_class":     attrs.StorageClass,
+		"etag":              attrs.Etag,
+		"md5":               attrs.MD5,
+		"crc32c":            attrs.CRC32C,
+		"metadata":          attrs.Metadata,
+		"owner":             attrs.Owner,
+		"retention_expires": attrs.RetentionExpirationTime,
 	}
 
 	return &base.QueryResult{
@@ -438,14 +445,14 @@ func (c *GCSConnector) listBuckets(ctx context.Context, params map[string]interf
 		}
 
 		row := map[string]interface{}{
-			"name":                      attrs.Name,
-			"location":                  attrs.Location,
-			"location_type":             attrs.LocationType,
-			"storage_class":             attrs.StorageClass,
-			"created":                   attrs.Created,
-			"versioning":                attrs.VersioningEnabled,
-			"requester_pays":            attrs.RequesterPays,
-			"default_event_based_hold":  attrs.DefaultEventBasedHold,
+			"name":                     attrs.Name,
+			"location":                 attrs.Location,
+			"location_type":            attrs.LocationType,
+			"storage_class":            attrs.StorageClass,
+			"created":                  attrs.Created,
+			"versioning":               attrs.VersioningEnabled,
+			"requester_pays":           attrs.RequesterPays,
+			"default_event_based_hold": attrs.DefaultEventBasedHold,
 		}
 
 		rows = append(rows, row)
@@ -473,17 +480,17 @@ func (c *GCSConnector) getBucketMetadata(ctx context.Context, params map[string]
 	}
 
 	row := map[string]interface{}{
-		"name":                      attrs.Name,
-		"location":                  attrs.Location,
-		"location_type":             attrs.LocationType,
-		"storage_class":             attrs.StorageClass,
-		"created":                   attrs.Created,
-		"metageneration":            attrs.MetaGeneration,
-		"versioning":                attrs.VersioningEnabled,
-		"requester_pays":            attrs.RequesterPays,
-		"labels":                    attrs.Labels,
-		"default_event_based_hold":  attrs.DefaultEventBasedHold,
-		"etag":                      attrs.Etag,
+		"name":                     attrs.Name,
+		"location":                 attrs.Location,
+		"location_type":            attrs.LocationType,
+		"storage_class":            attrs.StorageClass,
+		"created":                  attrs.Created,
+		"metageneration":           attrs.MetaGeneration,
+		"versioning":               attrs.VersioningEnabled,
+		"requester_pays":           attrs.RequesterPays,
+		"labels":                   attrs.Labels,
+		"default_event_based_hold": attrs.DefaultEventBasedHold,
+		"etag":                     attrs.Etag,
 	}
 
 	return &base.QueryResult{

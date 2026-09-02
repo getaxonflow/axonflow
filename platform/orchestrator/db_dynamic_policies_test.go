@@ -53,9 +53,9 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 
 				// Expect policy load (refreshPolicies)
-				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-					AddRow("00000000-0000-0000-0000-000000000001", "test_policy", "", "{}", "{}", "tenant1", "tenant1", 10, "policy1", "content", "dynamic-security", "medium", false, nil, nil)
-				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+					AddRow("00000000-0000-0000-0000-000000000001", "test_policy", "", "{}", "{}", "tenant1", "tenant1", 10, "policy1", "content", "dynamic-security", "medium", false, nil, nil, nil)
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			mockDBErr: false,
@@ -276,12 +276,12 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - load multiple policies",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-					AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{"field": "value"}`, `{"action": "allow"}`, "tenant1", "tenant1", 10, "pol1", "content", "dynamic-security", "medium", false, nil, nil).
-					AddRow("00000000-0000-0000-0000-000000000002", "policy2", "", `{"field": "value2"}`, `{"action": "deny"}`, "tenant2", "tenant2", 5, "pol2", "rate-limit", "dynamic-risk", "medium", false, nil, nil).
-					AddRow("00000000-0000-0000-0000-000000000003", "policy3", "", `{"field": "value3"}`, `{"action": "log"}`, sql.NullString{}, sql.NullString{}, 1, "pol3", "content", "", "medium", false, nil, nil)
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+					AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{"field": "value"}`, `{"action": "allow"}`, "tenant1", "tenant1", 10, "pol1", "content", "dynamic-security", "medium", false, nil, nil, nil).
+					AddRow("00000000-0000-0000-0000-000000000002", "policy2", "", `{"field": "value2"}`, `{"action": "deny"}`, "tenant2", "tenant2", 5, "pol2", "rate-limit", "dynamic-risk", "medium", false, nil, nil, nil).
+					AddRow("00000000-0000-0000-0000-000000000003", "policy3", "", `{"field": "value3"}`, `{"action": "log"}`, sql.NullString{}, sql.NullString{}, 1, "pol3", "content", "", "medium", false, nil, nil, nil)
 
-				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			expectError:   false,
@@ -290,9 +290,9 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - empty result",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"})
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"})
 
-				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			expectError:   false,
@@ -301,7 +301,7 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Error - query fails",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnError(errors.New("database connection lost"))
 			},
 			expectError:   true,
@@ -310,10 +310,10 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - handles NULL tenant_id",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-					AddRow("00000000-0000-0000-0000-000000000004", "global_policy", "", `{}`, `{}`, sql.NullString{Valid: false}, sql.NullString{Valid: false}, 0, "global1", "content", "", "medium", false, nil, nil)
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+					AddRow("00000000-0000-0000-0000-000000000004", "global_policy", "", `{}`, `{}`, sql.NullString{Valid: false}, sql.NullString{Valid: false}, 0, "global1", "content", "", "medium", false, nil, nil, nil)
 
-				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			expectError:   false,
@@ -380,10 +380,10 @@ func TestRefreshPolicies_SegmentIDMetadataSurvives(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000009", "finance_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol-seg", "content", "dynamic-security", "medium", false, nil, "seg-finance")
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000009", "finance_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol-seg", "content", "dynamic-security", "medium", false, nil, nil, "seg-finance")
 
-	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 		WillReturnRows(rows)
 
 	engine := &DatabaseDynamicPolicyEngine{db: db, policies: make(map[string]interface{})}
@@ -421,13 +421,13 @@ func TestRefreshPolicies_SegmentColumnMissing_RetriesSegmentLess(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 		WillReturnError(&pq.Error{Code: "42703", Message: `column "segment_id" does not exist`})
 
-	fallbackRows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at"}).
-		AddRow("00000000-0000-0000-0000-000000000010", "pre_migration_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol-premig", "content", "dynamic-security", "medium", false, nil)
+	fallbackRows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at"}).
+		AddRow("00000000-0000-0000-0000-000000000010", "pre_migration_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol-premig", "content", "dynamic-security", "medium", false, nil, nil)
 
-	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 		WillReturnRows(fallbackRows)
 
 	engine := &DatabaseDynamicPolicyEngine{db: db, policies: make(map[string]interface{})}
@@ -469,8 +469,8 @@ func TestRefreshPolicies_FirstSuccessfulLoadPromotesSource(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol1", "content", "custom", "medium", false, nil, nil)
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol1", "content", "custom", "medium", false, nil, nil, nil)
 	mock.ExpectQuery("SELECT id::text, name").WillReturnRows(rows)
 
 	engine := &DatabaseDynamicPolicyEngine{
@@ -514,8 +514,8 @@ func TestRefreshPolicies_FailedRefreshNeverDowngradesSource(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	goodRows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{}`, `{}`, "tenant1", "tenant1", 10, "last-good-policy", "content", "custom", "medium", false, nil, nil)
+	goodRows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{}`, `{}`, "tenant1", "tenant1", 10, "last-good-policy", "content", "custom", "medium", false, nil, nil, nil)
 	mock.ExpectQuery("SELECT id::text, name").WillReturnRows(goodRows)
 	mock.ExpectQuery("SELECT id::text, name").WillReturnError(errors.New("connection reset"))
 
@@ -623,7 +623,7 @@ func TestRefreshPolicies_ZeroRowLoadDistinguishableFromFailedLoad(t *testing.T) 
 	}
 	defer func() { _ = db.Close() }()
 
-	emptyRows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"})
+	emptyRows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"})
 	mock.ExpectQuery("SELECT id::text, name").WillReturnRows(emptyRows)
 
 	engine := &DatabaseDynamicPolicyEngine{
@@ -837,8 +837,8 @@ func TestRefreshPolicies_RecoversAfterUnreachableDatabase_NoReconstruction(t *te
 		t.Fatalf("Failed to create sqlmock: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000001", "recovered_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "recovered", "content", "custom", "medium", false, nil, nil)
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "recovered_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "recovered", "content", "custom", "medium", false, nil, nil, nil)
 	mock.ExpectQuery("SELECT id::text, name").WillReturnRows(rows)
 
 	engine.mu.Lock()
@@ -868,9 +868,9 @@ func TestLookupSegmentID_Hit_Miss_Segmentless(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000001", "scoped_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol-scoped", "content", "custom", "medium", false, nil, "seg-finance").
-		AddRow("00000000-0000-0000-0000-000000000002", "unscoped_policy", "", `{}`, `{}`, "tenant1", "tenant1", 5, "pol-unscoped", "content", "custom", "medium", false, nil, nil)
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "scoped_policy", "", `{}`, `{}`, "tenant1", "tenant1", 10, "pol-scoped", "content", "custom", "medium", false, nil, nil, "seg-finance").
+		AddRow("00000000-0000-0000-0000-000000000002", "unscoped_policy", "", `{}`, `{}`, "tenant1", "tenant1", 5, "pol-unscoped", "content", "custom", "medium", false, nil, nil, nil)
 	mock.ExpectQuery("SELECT id::text, name").WillReturnRows(rows)
 
 	engine := &DatabaseDynamicPolicyEngine{db: db, policies: make(map[string]interface{})}
@@ -1684,10 +1684,10 @@ func TestBackgroundRefresh(t *testing.T) {
 	}
 
 	// Expect policy refresh query to be called
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000001", "test_policy", "", "{}", "{}", "tenant1", "tenant1", 10, "policy1", "content", "dynamic-security", "medium", false, nil, nil)
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "test_policy", "", "{}", "{}", "tenant1", "tenant1", 10, "policy1", "content", "dynamic-security", "medium", false, nil, nil, nil)
 
-	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, org_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override, created_at, updated_at, segment_id FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 		WillReturnRows(rows)
 
 	// Start background refresh in a goroutine
@@ -1877,8 +1877,8 @@ func TestLoadDefaultPoliciesCache_NeverAppendedToDatabaseLoad(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "segment_id"}).
-		AddRow("00000000-0000-0000-0000-000000000001", "db_only_policy", "", "{}", "{}", "tenant1", "tenant1", 10, "db-policy-1", "content", "custom", "medium", false, nil, nil)
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "db_only_policy", "", "{}", "{}", "tenant1", "tenant1", 10, "db-policy-1", "content", "custom", "medium", false, nil, nil, nil)
 	mock.ExpectQuery("SELECT id::text, name").WillReturnRows(rows)
 
 	engine := &DatabaseDynamicPolicyEngine{db: db, policies: loadDefaultPoliciesCache(), policySetSource: policySetSourceDefaults}
@@ -2069,7 +2069,7 @@ func TestEvaluateCondition_Equals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2111,7 +2111,7 @@ func TestEvaluateCondition_NotEquals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2173,7 +2173,7 @@ func TestEvaluateCondition_Contains(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2225,7 +2225,7 @@ func TestEvaluateCondition_ContainsAny(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2277,7 +2277,7 @@ func TestEvaluateCondition_Regex(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2335,7 +2335,7 @@ func TestEvaluateCondition_GreaterThan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2377,7 +2377,7 @@ func TestEvaluateCondition_In(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2408,7 +2408,7 @@ func TestEvaluateCondition_GreaterThan_NumericStringParses(t *testing.T) {
 		"field":    "context.custom_metric",
 		"operator": "greater_than",
 		"value":    float64(5),
-	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "10"}}, nil)
+	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "10"}}, nil, nil)
 	if !got {
 		t.Fatal("expected greater_than to parse a numeric-string field value on the database engine")
 	}
@@ -2430,7 +2430,7 @@ func TestEvaluateCondition_GreaterThan_UnparseableStringNoLongerCoercesToZero(t 
 		"field":    "context.custom_metric",
 		"operator": "less_than",
 		"value":    float64(100),
-	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "not-a-number"}}, nil)
+	}, OrchestratorRequest{Context: map[string]interface{}{"custom_metric": "not-a-number"}}, nil, nil)
 	if got {
 		t.Fatal("regression: an unparseable string field value must NOT satisfy less_than 100 on the database engine (was the legacy silent-0.0-coercion false positive) — expected false, got true")
 	}
@@ -2453,7 +2453,7 @@ func TestEvaluateCondition_ContainsAny_NonStringItemStringified(t *testing.T) {
 		"field":    "query",
 		"operator": "contains_any",
 		"value":    []interface{}{0.9, "unrelated-term"},
-	}, OrchestratorRequest{Query: "risk score is 0.9 today"}, nil)
+	}, OrchestratorRequest{Query: "risk score is 0.9 today"}, nil, nil)
 	if !got {
 		t.Fatal("expected contains_any to stringify and match a non-string list item on the database engine, got no match")
 	}
@@ -2490,7 +2490,7 @@ func TestEvaluateCondition_DatabaseEngine_AllTenOperatorsSupported(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.operator, func(t *testing.T) {
-			got := engine.evaluateCondition(tt.cond, req, nil)
+			got := engine.evaluateCondition(tt.cond, req, nil, nil)
 			if got != tt.want {
 				t.Errorf("operator %q: evaluateCondition = %v, want %v", tt.operator, got, tt.want)
 			}
@@ -2580,7 +2580,7 @@ func TestEvaluateCondition_UnknownOperator(t *testing.T) {
 	}
 	request := OrchestratorRequest{User: UserContext{Role: "admin"}}
 
-	result := engine.evaluateCondition(condition, request, nil)
+	result := engine.evaluateCondition(condition, request, nil, nil)
 	if result != false {
 		t.Error("Unknown operator should return false")
 	}
@@ -2788,7 +2788,7 @@ func TestEvaluateCondition_LessThan(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2830,7 +2830,7 @@ func TestEvaluateCondition_NotContains(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2882,7 +2882,7 @@ func TestEvaluateCondition_NotIn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2936,7 +2936,7 @@ func TestEvaluateCondition_RegexEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -2978,7 +2978,7 @@ func TestEvaluateCondition_ContainsAnyStringSlice(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
@@ -3020,7 +3020,7 @@ func TestEvaluateCondition_InOperator_StringSlice(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.condition, tt.request, nil)
+			result := engine.evaluateCondition(tt.condition, tt.request, nil, nil)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}

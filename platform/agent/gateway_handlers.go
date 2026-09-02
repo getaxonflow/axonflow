@@ -37,6 +37,7 @@ import (
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
@@ -785,6 +786,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
+			Plane:    legacycompile.PlaneGatewayRequest,
 			TenantID: user.TenantID,
 			OrgID:    user.OrgID,
 			// #3048 R3 HIGH-3: scope the loader's tenant pass by the

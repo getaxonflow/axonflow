@@ -11,7 +11,14 @@ on:
     paths:
       - 'CHANGELOG.md'
       - 'VERSION'
-      - 'docker-compose*.yml'
+      # '**/' is load-bearing: an Actions path glob does NOT cross a '/', so a
+      # bare 'docker-compose*.yml' matches root files ONLY. That is the same
+      # blind spot the script itself carried (its `grep -r` ran against a
+      # shell-expanded glob, so -r was inert), which let a nested example sit
+      # pinned at 8.1.0 through every prep PR since v8.1.0. Fixing the script
+      # without fixing this leaves the class half-closed: a PR touching only a
+      # nested compose file would not trigger the gate at all.
+      - '**/docker-compose*.yml'
       - '**/Dockerfile*'
       - '**/capabilities.go'
       - '.github/scripts/validate-version-alignment.sh'

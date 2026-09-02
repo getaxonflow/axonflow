@@ -57,6 +57,7 @@ import (
 	sharedidentity "axonflow/platform/shared/identity"
 	"axonflow/platform/shared/pep"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -122,6 +123,36 @@ const (
 	AuditVerdictRedacted = sharedaudit.DecisionRedacted
 	AuditVerdictError    = sharedaudit.DecisionError
 )
+
+// auditPolicyDecisionFor returns the value written to audit_logs.policy_decision
+// for one plane's verdict.
+//
+// It is a named function rather than an inline condition so a TEST can call the
+// real predicate. The inline version was guarded by a test that iterated planes
+// and then called canonicalAuditVerdict directly, never touching the plane
+// condition at all -- the plane appeared only in the failure message. That test
+// passed with the allow-list mutated, which is exactly the defect it was written
+// to prevent.
+//
+// THE ALLOW-LIST. These planes emit the WIRE vocabulary (`allow`/`deny`) and
+// need canonicalizing. The MCP planes already emit the canonical vocabulary
+// directly and are excluded, per #2643: re-canonicalizing them is a no-op at
+// best, and `override_lifecycle` -- which the column accepts and which is not a
+// verdict -- would be rewritten to `error` by the canonicalizer. So this cannot
+// become an unconditional call.
+//
+// A plane missing from the list writes the raw wire verdict, which violates the
+// audit_logs_policy_decision_check constraint. Because the insert is
+// deliberately non-fatal, that loses the row while the caller still receives a
+// 200 -- silent, and invisible to any sqlmock-backed test.
+func auditPolicyDecisionFor(plane, verdict string) string {
+	switch plane {
+	case PlaneDecision, PlaneOpenAICompat, PlaneAccessEvaluation:
+		return canonicalAuditVerdict(verdict)
+	default:
+		return verdict
+	}
+}
 
 // canonicalAuditVerdict maps a verdict — either a wire Verdict* value OR an
 // already-canonical audit value — onto the canonical audit_logs vocabulary.
@@ -509,10 +540,21 @@ var (
 	// real persistence failure to alert on; reason=nodb is informational. A
 	// write failure on a DENY path never changes the verdict — the request is
 	// already denied — so this is alerting signal, not a control.
+	//
+	// Two further reasons come from the AuthZEN surface's amendment of a row
+	// this writer already committed (authzen_handler.go): the withholding rule
+	// runs after the delegated evaluation has audited its own permit, so the row
+	// has to be corrected to say what the caller was told.
+	// `authzen_withheld_amend` is the UPDATE erroring and
+	// `authzen_withheld_amend_norow` is it matching nothing — the second being
+	// the silent one, since the durable record then still reads `allowed` for a
+	// request answered `{"decision":false}`. They are values on THIS series
+	// rather than a metric of their own because they mean exactly what it
+	// already means: the audit trail does not describe what happened.
 	decideAuditWriteFailures = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "axonflow_decision_audit_write_failures_total",
-			Help: "POST /api/v1/decide canonical audit_logs write failures by reason (nodb|empty_decision_id|marshal|insert)",
+			Help: "Canonical audit_logs write failures by reason (nodb|empty_decision_id|marshal|insert|authzen_withheld_amend|authzen_withheld_amend_norow)",
 		},
 		[]string{"reason"},
 	)
@@ -588,6 +630,9 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// W3C trace_id: reuse the incoming traceparent trace-id when present so
 	// multi-layer gateways stitch into one end-to-end trace (WS4); otherwise mint
 	// a fresh 16-byte (32 hex) id.
+	// Read ONCE per request. Reading it at each use fired the test observer
+	// twice and made the assertion depend on which read happened last.
+	plane := decisionPlaneFromContext(ctx)
 	traceID := traceIDFromHeader(r.Header.Get("traceparent"))
 	if traceID == "" {
 		traceID = newW3CTraceID()
@@ -622,7 +667,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// a version-bearing caller whose POST is later DENIED by policy still
 	// lands in the distribution (denies are traffic too; this plane counts
 	// attempts, unlike the post-decode check-output plane).
-	recordClientVersionTelemetry(PlaneDecision, clientHeader)
+	recordClientVersionTelemetry(plane, clientHeader)
 
 	// Canonicalized request context (#2509) is computed after a successful decode
 	// (it needs req.Context); declared here so the early-deny audit closure can
@@ -638,9 +683,16 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// hops. Captured here, before recordDecideDecision may swap the RETURNED
 	// trace_id for an OTel-assigned one.
 	decisionAudit := &decisionAuditInput{
-		clientID:      authClientID,
-		requestID:     decisionID,
-		plane:         PlaneDecision, // every /api/v1/decide row records plane=decision
+		clientID:  authClientID,
+		requestID: decisionID,
+		// The SURFACE the decision arrived through. It is read from the context
+		// rather than hardcoded because this handler serves more than one
+		// route: the AuthZEN adapter delegates to it, and folding that traffic
+		// into `decision` would make the new surface's adoption unmeasurable
+		// and leave the v11 cutover unable to tell which callers had migrated.
+		// A direct POST to /api/v1/decide carries no override and gets
+		// PlaneDecision, so its rows are unchanged.
+		plane:         plane,
 		correlationID: traceID,
 		origin:        origin, // WS-5 caller bucket, mirrored onto the decision span
 		// #2896: pre-seed the trusted attribution email (empty when absent or
@@ -1098,7 +1150,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		"decision", toolIdentity, "decide", req.Query, fincrimeParams,
 		gwDetectionCfg, false, /* runDynamicPolicy: M2, #2426 */
-		segmentIDs /* #3456: resolved once above, fail-closed; nil here means "resolved to none", never "resolution failed" */)
+		segmentIDs, /* #3456: resolved once above, fail-closed; nil here means "resolved to none", never "resolution failed" */
+		legacycompile.PlaneDecide)
 	// Defensive fail-closed: evaluateInputPolicies sets EvalUnavailable only when
 	// dynamic policy evaluation (runDynamicPolicy) hits a transient store error.
 	// /decide passes runDynamicPolicy=false, so this is never set today — but
@@ -2436,10 +2489,7 @@ func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, 
 	// risk a freshly-merged plane's runtime E2E at worst, so they stay excluded. The
 	// one-time historical rows across ALL planes are normalized by migration 122; the
 	// reader-side normalizer is the #2638 follow-up.
-	policyDecision := verdict
-	if plane == PlaneDecision || plane == PlaneOpenAICompat {
-		policyDecision = canonicalAuditVerdict(verdict)
-	}
+	policyDecision := auditPolicyDecisionFor(plane, verdict)
 
 	// #2643: redacted_fields → JSONB array column (NULL when none). Previously
 	// omitted from the agent INSERT (only the orchestrator BatchWriter populated

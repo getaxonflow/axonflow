@@ -18,7 +18,7 @@ func loaderTestCols() []string {
 		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
 		"description", "phase", "action_request", "action_response",
 		"enabled", "priority", "tenant_id", "segment_id", "metadata",
-		"created_at",
+		"created_at", "updated_at",
 	}
 }
 
@@ -26,7 +26,7 @@ func systemRow(rows *sqlmock.Rows, policyID string, priority int) *sqlmock.Rows 
 	return rows.AddRow(
 		"uuid-"+policyID, policyID, "Policy "+policyID, "security-sqli", "system",
 		`(?i)\bDROP\s+TABLE\b`, "critical", nil, "request", "block", nil,
-		true, priority, "global", nil, []byte(`{}`), time.Now().UTC(),
+		true, priority, "global", nil, []byte(`{}`), time.Now().UTC(), time.Now().UTC(),
 	)
 }
 
@@ -34,7 +34,7 @@ func tenantRow(rows *sqlmock.Rows, policyID, tenantID string, priority int) *sql
 	return rows.AddRow(
 		"uuid-"+policyID, policyID, "Policy "+policyID, "pii-us", "tenant",
 		`\d{3}-\d{2}-\d{4}`, "high", nil, "request", "block", nil,
-		true, priority, tenantID, nil, []byte(`{}`), time.Now().UTC(),
+		true, priority, tenantID, nil, []byte(`{}`), time.Now().UTC(), time.Now().UTC(),
 	)
 }
 
@@ -45,7 +45,7 @@ func segmentRow(rows *sqlmock.Rows, policyID, tenantID, segmentID string, priori
 	return rows.AddRow(
 		"uuid-"+policyID, policyID, "Policy "+policyID, "pii-us", "tenant",
 		`\d{3}-\d{2}-\d{4}`, "high", nil, "request", "block", nil,
-		true, priority, tenantID, segmentID, []byte(`{}`), time.Now().UTC(),
+		true, priority, tenantID, segmentID, []byte(`{}`), time.Now().UTC(), time.Now().UTC(),
 	)
 }
 

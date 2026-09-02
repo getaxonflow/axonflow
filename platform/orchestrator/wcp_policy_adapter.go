@@ -14,6 +14,7 @@ import (
 	"axonflow/platform/orchestrator/workflow_control"
 	logutil "axonflow/platform/shared/logger"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 )
 
@@ -63,6 +64,7 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 
 	// Evaluate policies
 	startTime := time.Now()
+	req.ShadowPlane = legacycompile.PlaneWCP // ADR-065 decision shadow (#3564)
 	result := a.engine.EvaluateDynamicPolicies(ctx, req)
 	durationMs := time.Since(startTime).Milliseconds()
 

@@ -241,7 +241,7 @@ func installSeg3447Engine(t *testing.T, segmentID, tenantID string) {
 			"sensitive-data", "tenant", seg3447RespMarker, "critical",
 			nil, "both", "block", "block",
 			true, 100, tenantID, segmentID, []byte(`{}`),
-			time.Now().UTC(),
+			time.Now().UTC(), time.Now().UTC(),
 		)
 		rows = policytest.SystemPolicyRow(rows,
 			"seg3447-sys", "sys_test_never_matches",

@@ -333,11 +333,206 @@ type AuthZENResponse struct {
 	Context  *AuthZENResponseContext `json:"context,omitempty"`
 }
 
+// AuthZENErrorCode names why a request was refused rather than evaluated.
+//
+// The set is closed for the same reason the unknown reasons are: a code
+// invented at a call site is invisible to the clients that have to branch on
+// it, and a client that cannot distinguish "you sent something I cannot
+// evaluate" from "the evaluator is unavailable" cannot decide whether retrying
+// is sensible.
+type AuthZENErrorCode string
+
+const (
+	// ErrMalformedEnvelope is a body that is not a well-formed envelope:
+	// unknown keys, duplicate members, neither or both top-level members, an
+	// empty plural array. It is ALSO the code on the two size refusals (413):
+	// a body over the byte cap and a plural envelope over the entry cap.
+	// Those envelopes may be well-formed; the code is reused because the
+	// enumeration is closed on the wire, both are non-retryable in the same
+	// way (an identical resend gets an identical answer), and the status plus
+	// the pointer carry the actual diagnosis.
+	ErrMalformedEnvelope AuthZENErrorCode = "malformed_envelope"
+	// ErrIncompleteEvaluation is an entry that, after inheriting from the
+	// shared base, still has no subject, action or resource.
+	ErrIncompleteEvaluation AuthZENErrorCode = "incomplete_evaluation"
+	// ErrUnsupportedSubject is a subject the caller is not authenticated as.
+	ErrUnsupportedSubject AuthZENErrorCode = "unsupported_subject"
+	// ErrUnsupportedAction is an action name outside the evaluable set.
+	ErrUnsupportedAction AuthZENErrorCode = "unsupported_action"
+	// ErrUnsupportedResource is a resource shape the evaluator cannot target.
+	ErrUnsupportedResource AuthZENErrorCode = "unsupported_resource"
+	// ErrUnevaluableAttribute is caller-supplied data the evaluator would not
+	// consider.
+	//
+	// This is the code that exists to prevent a fail-open: accepting an
+	// attribute the decision never read tells the caller a fact was weighed
+	// when it was not, and every subsequent audit of that decision inherits
+	// the lie. Refusing is the only honest answer while the evaluator behind
+	// this surface cannot read the attribute.
+	ErrUnevaluableAttribute AuthZENErrorCode = "unevaluable_attribute"
+	// ErrMissingEvaluableContent is a request carrying nothing to evaluate.
+	ErrMissingEvaluableContent AuthZENErrorCode = "missing_evaluable_content"
+	// ErrEvaluationUnavailable is a dependency failure: the evaluator could
+	// not answer. It is the only code for which retrying is meaningful.
+	ErrEvaluationUnavailable AuthZENErrorCode = "evaluation_unavailable"
+)
+
+// AllAuthZENErrorCodes returns every declared code in a stable order.
+func AllAuthZENErrorCodes() []AuthZENErrorCode {
+	return []AuthZENErrorCode{
+		ErrMalformedEnvelope, ErrIncompleteEvaluation, ErrUnsupportedSubject,
+		ErrUnsupportedAction, ErrUnsupportedResource, ErrUnevaluableAttribute,
+		ErrMissingEvaluableContent, ErrEvaluationUnavailable,
+	}
+}
+
+// Retryable reports whether the caller could get a different answer by sending
+// the same request again. Only a dependency failure is.
+func (c AuthZENErrorCode) Retryable() bool { return c == ErrEvaluationUnavailable }
+
+// AuthZENError is the structured refusal body.
+//
+// It is a SEPARATE shape from AuthZENResponse rather than an extra member on
+// it, because a refusal is not a decision: a response carrying decision=false
+// says the request was evaluated and denied, and returning that for a request
+// that was never evaluated would make "denied" and "unevaluable" the same event
+// in every audit and every client branch.
+type AuthZENError struct {
+	Code AuthZENErrorCode `json:"code"`
+	// Pointer is a JSON Pointer (RFC 6901) into the request, naming the exact
+	// member that could not be evaluated. It is what makes a refusal
+	// actionable rather than a puzzle: "unevaluable_attribute" alone does not
+	// tell an SDK author which of forty context keys to drop.
+	Pointer string `json:"pointer,omitempty"`
+	Message string `json:"message"`
+	// Supported lists what would have been accepted at Pointer, when the set is
+	// closed and small enough to state. An error that names the offending value
+	// without naming the alternatives sends the caller to the documentation.
+	Supported []string `json:"supported,omitempty"`
+	// RequestID correlates the refusal with the server's own records. A
+	// refusal is audited like any other terminal outcome.
+	RequestID string `json:"request_id,omitempty"`
+}
+
+func (e *AuthZENError) Error() string {
+	if e == nil {
+		return "<nil authzen error>"
+	}
+	if e.Pointer != "" {
+		return fmt.Sprintf("authzen: %s at %s: %s", e.Code, e.Pointer, e.Message)
+	}
+	return fmt.Sprintf("authzen: %s: %s", e.Code, e.Message)
+}
+
+// Validate rejects a refusal that would not be actionable.
+func (e *AuthZENError) Validate() error {
+	if e == nil {
+		return fmt.Errorf("authzen error: is nil")
+	}
+	declared := false
+	for _, c := range AllAuthZENErrorCodes() {
+		if c == e.Code {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return fmt.Errorf("authzen error: %q is not a declared code", e.Code)
+	}
+	if e.Message == "" {
+		return fmt.Errorf("authzen error: a refusal must carry a message")
+	}
+	return nil
+}
+
+// MandatoryObligationWithheld reports whether rendering this decision to a
+// caller that negotiated `negotiated` would silently drop an instruction the
+// PEP is not permitted to ignore.
+//
+// # Why this predicate exists at all
+//
+// Everything AxonFlow adds to AuthZEN 1.0 - the four-valued state, the
+// obligations, the approval challenge - rides in the response context, which is
+// returned ONLY to a caller that negotiated the profile. That gating is
+// correct for anything ADVISORY: a bare AuthZEN 1.0 PEP cannot act on it, and a
+// partial interpretation it will ignore is worse than the boolean it
+// understands.
+//
+// It is NOT correct for a MANDATORY obligation. A mandatory obligation is a
+// precondition of the allow, not a decoration on it, so gating it turns
+// "allowed once you have redacted this" into a bare "allowed" - and the caller
+// proceeds with the unredacted content believing it was permitted to. ADR-065
+// invariant 8 prescribes DENY for a mandatory obligation the PEP cannot
+// enforce, and a PEP that cannot even RECEIVE the obligation is the limiting
+// case of one that cannot enforce it.
+//
+// # Why the predicate is on Mandatory rather than on len(obligations) > 0
+//
+// The property that decides the answer is enforceability, not presence. Every
+// obligation this build renders onto the AuthZEN surface today happens to be
+// mandatory (the legacy Decision API has no advisory obligations, so
+// mapObligations stamps Mandatory unconditionally), which would make a
+// len(obligations) > 0 test observationally identical right now. It would stop
+// being identical the first time an advisory obligation is emitted, and it
+// would then deny an operation that a bare PEP was entitled to perform. The
+// emission side is expected to change; the invariant is not.
+//
+// # Why the STATE is a parameter rather than a guard at each call site
+//
+// The rule has three terms, and the state is one of them: nothing is withheld
+// from a decision that was not going to permit execution anyway. That term used
+// to live at ONE of the two call sites - the serving adapter tested
+// `state == StateAllow && MandatoryObligationWithheld(...)` while ToAuthZEN
+// applied the predicate with no state term at all - and the two agreed only
+// because Executable() happens to be `s == StateAllow` today. Two call sites
+// spelling one rule differently is the drift this function was extracted to
+// prevent, so the whole rule is here and neither caller restates any part of
+// it.
+//
+// The term is `state.Executable()` rather than an equality against StateAllow
+// on purpose: the boolean this rule OVERRIDES is exactly `state.Executable()`,
+// so deriving the override from the same function means the two cannot come
+// apart if a further state ever becomes executable.
+//
+// It matters beyond tidiness because it decides the METRIC label, not the
+// boolean. A DENY that happens to carry an obligation - which a plural envelope
+// can assemble, since obligations accumulate across entries while the meet
+// takes the worst state - must count as a policy denial, not as a caller that
+// needs to send a header. A CHALLENGE is the sharper case: it is a PERMIT with
+// an approval outstanding, so Decision.Validate positively ALLOWS it to carry
+// obligations, and without this term every challenge carrying a mandatory
+// obligation would be reported as a withheld-obligation deny.
+//
+// It is declared HERE, beside the profile it gates, so the serving adapter and
+// the decision renderer below apply one rule rather than two copies that drift.
+func MandatoryObligationWithheld(state OperationalState, negotiated AuthZENProfile, obligations []Obligation) bool {
+	if !state.Executable() {
+		// Nothing is withheld from a decision that permits no execution: the
+		// boolean is already false and the PEP has nothing to discharge.
+		return false
+	}
+	if negotiated == AuthZENProfileV1 {
+		// The caller receives the obligations, so nothing is withheld.
+		return false
+	}
+	for _, o := range obligations {
+		if o.Mandatory {
+			return true
+		}
+	}
+	return false
+}
+
 // ToAuthZEN collapses a decision at the edge.
 //
 // ALLOW maps to decision true; every other state maps to false. The boolean is
 // not allowed to leak inward, which is why this is the only function in the
 // package that produces one.
+//
+// AN ALLOW WHOSE MANDATORY OBLIGATIONS CANNOT BE DELIVERED IS RENDERED FALSE.
+// See MandatoryObligationWithheld: withholding the obligation and keeping the
+// true is the fail-open, and deny is both what invariant 8 prescribes and the
+// only answer a bare AuthZEN 1.0 caller can read.
 func (d *Decision) ToAuthZEN(negotiated AuthZENProfile) (*AuthZENResponse, error) {
 	if d == nil {
 		return nil, fmt.Errorf("authzen: decision is nil")
@@ -348,7 +543,12 @@ func (d *Decision) ToAuthZEN(negotiated AuthZENProfile) (*AuthZENResponse, error
 	resp := &AuthZENResponse{Decision: d.State.Executable()}
 	if negotiated != AuthZENProfileV1 {
 		// Not negotiated, or negotiated at a version this build does not
-		// emit. The PEP sees only the boolean.
+		// emit. The PEP sees only the boolean - and the boolean must not say
+		// "go ahead" when the conditions attached to the allow travelled no
+		// further than this function.
+		if MandatoryObligationWithheld(d.State, negotiated, d.Obligations) {
+			resp.Decision = false
+		}
 		return resp, nil
 	}
 	resp.Context = &AuthZENResponseContext{

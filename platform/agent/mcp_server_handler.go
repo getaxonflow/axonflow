@@ -27,6 +27,7 @@ import (
 	"axonflow/platform/shared/serviceauth"
 	"github.com/google/uuid"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/gorilla/mux"
 )
 
@@ -1305,7 +1306,13 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 		// #2932: a token presented with no validator registered is a misconfig
 		// (fail-safe: the token is ignored → least-privilege). Surface it.
 		warnIfTokenWithoutValidator(perUserToken)
-		vid, resolveErr := sharedidentity.ResolveToken(r.Context(), auth.OrgID, perUserToken)
+		// #3602: ContextWithSyntheticProbe before ResolveToken, always. The
+		// shared resolver reads the tag off the context because it has no
+		// request; TestEveryResolveTokenCallerStampsTheSyntheticProbe pins
+		// that every caller here does this.
+		vid, resolveErr := sharedidentity.ResolveToken(
+			sharedidentity.ContextWithSyntheticProbe(r.Context(), auth.Synthetic),
+			auth.OrgID, perUserToken)
 		if resolveErr != nil {
 			// A per-user token WAS presented but no registered validator
 			// accepted it (tampered / expired / revoked / wrong org /
@@ -1447,6 +1454,11 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 	if headerUserID != "" || headerEmail != "" {
 		legacyHeader := sharedidentity.TrustedHeaderLegacyAuth(
 			auth.OrgID, headerUserID, headerEmail, true, "", time.Now())
+		// #3602: the observation-window canary tag, from the AuthResult that
+		// Authenticate already stamped it on. Taken from there rather than
+		// re-read here so one request cannot be tagged on the client-credential
+		// path and untagged on this one.
+		legacyHeader.Synthetic = auth.Synthetic
 		if ref := sharedidentity.CompatResolve(r.Context(), legacyHeader).Refusal(); ref != nil {
 			return "", "", "", "", "", "", "", nil, idInputs,
 				fmt.Errorf("%s: upstream-asserted identity refused by the identity plane (%s)",
@@ -1739,6 +1751,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		mcpDetectionCfg,
 		true, // runDynamicPolicy
 		segmentIDs,
+		legacycompile.PlaneMCP,
 	)
 
 	if outcome.EvalUnavailable {
@@ -1992,6 +2005,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		checkExfil,
 		true, // isGateway: check_output is a PEP/gateway caller (no managed connector)
 		segmentIDs,
+		legacycompile.PlaneMCP,
 	)
 
 	blocked := outcome.SQLiBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)

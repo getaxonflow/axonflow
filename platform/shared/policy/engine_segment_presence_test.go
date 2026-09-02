@@ -24,7 +24,7 @@ func disabledSegmentRow(rows *sqlmock.Rows, policyID, tenantID, segmentID string
 	return rows.AddRow(
 		"uuid-"+policyID, policyID, "Policy "+policyID, "pii-us", "tenant",
 		`\d{3}-\d{2}-\d{4}`, "high", nil, "request", "block", nil,
-		false, priority, tenantID, segmentID, []byte(`{}`), time.Now().UTC(),
+		false, priority, tenantID, segmentID, []byte(`{}`), time.Now().UTC(), time.Now().UTC(),
 	)
 }
 
