@@ -88,7 +88,7 @@ jobs:
       java-examples: ${{ steps.filter.outputs.java-examples }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect Java example changes
         uses: dorny/paths-filter@v4
@@ -117,7 +117,7 @@ jobs:
        (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.java-examples == 'true'))
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Every JDK the example tree declares. 57 of the 58 projects are Java 11
       # or 17; examples/llm-providers/azure-openai/hello-world/java declares 21

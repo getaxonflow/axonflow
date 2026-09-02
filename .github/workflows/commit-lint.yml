@@ -96,7 +96,7 @@ jobs:
           echo "✅ No AI attribution found in PR description"
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

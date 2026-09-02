@@ -117,7 +117,7 @@ jobs:
 
       - name: Checkout PR head with merge-base history
         if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -454,7 +454,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Several of the suite's tests need tools the runner image does not ship.
       # Every install is unconditional and fails the job if it fails: a test
