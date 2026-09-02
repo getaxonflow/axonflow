@@ -54,7 +54,16 @@ func ResolveToken(ctx context.Context, orgID, token string) (*ValidatedIdentity,
 	// Recording those as agreements would inflate the shadow's agreement rate
 	// with requests that carried no credential at all.
 	if id != nil || err != nil {
-		if ref := CompatResolve(ctx, tokenLegacyAuth(orgID, id, outcome, err)).Refusal(); ref != nil {
+		legacy := tokenLegacyAuth(orgID, id, outcome, err)
+		// #3602: the observation-window canary tag, taken off the CONTEXT
+		// because this function is a shared choke point with no request of its
+		// own. Its callers stamp it with ContextWithSyntheticProbe;
+		// TestEveryResolveTokenCallerStampsTheSyntheticProbe walks the agent
+		// package's AST and fails when a caller does not, which is what keeps
+		// "every caller of ResolveToken is covered by construction, including
+		// one added tomorrow" true for this field as well as for the record.
+		legacy.Synthetic = SyntheticProbeFromContext(ctx)
+		if ref := CompatResolve(ctx, legacy).Refusal(); ref != nil {
 			// THE REASON CODE ONLY, never the refusal itself.
 			// CompatRefusal.Error renders Detail, and Detail names realm
 			// configuration built from the credential and the realm: the
@@ -189,4 +198,42 @@ func tokenLegacyAuth(orgID string, id *ValidatedIdentity, outcome tokenOutcome, 
 		return OIDCLegacyAuth(orgID, claims, accepted, reason, unverifiable)
 	}
 	return HS256LegacyAuth(orgID, claims, accepted, reason, unverifiable)
+}
+
+// --- the synthetic-probe context value (#3602) ---
+
+// syntheticProbeCtxKey is the key ContextWithSyntheticProbe stores under. It is
+// an unexported struct type so no other package can collide with it or set the
+// value without going through the constructor below.
+type syntheticProbeCtxKey struct{}
+
+// ContextWithSyntheticProbe marks a context as belonging to a request driven
+// by AxonFlow's own observation-window canary.
+//
+// It exists because ResolveToken is a SHARED choke point that receives a
+// context and a token and nothing else - it has no request to read a header
+// from - while the fact it needs is carried on one. See LegacyAuth.Synthetic
+// for what the flag means and why a caller-assertable channel is acceptable
+// for it. It decides nothing: the value is read at exactly one site, to set
+// one metric label.
+func ContextWithSyntheticProbe(ctx context.Context, synthetic bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, syntheticProbeCtxKey{}, synthetic)
+}
+
+// SyntheticProbeFromContext reports whether the context was marked.
+//
+// AN UNSTAMPED CONTEXT ANSWERS FALSE, which puts the comparison in the ORGANIC
+// bucket. That is the direction that matters: the opposite default would let a
+// caller who forgot to stamp quietly move real tenant traffic out of the volume
+// an operator is measuring, which is the reading the gate's coverage half
+// depends on.
+func SyntheticProbeFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(syntheticProbeCtxKey{}).(bool)
+	return v
 }

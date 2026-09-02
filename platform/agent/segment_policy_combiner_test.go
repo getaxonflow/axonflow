@@ -229,8 +229,8 @@ func TestProperty_AddingSegmentNeverLoosens(t *testing.T) {
 			segPolicies = append(segPolicies, segPolicy("s", action, matches, enabled))
 		}
 
-		tierOnly := engine.evaluateFirstMatch(tierPolicies, testInput)
-		segResult := engine.evaluateStrictestMatch(segPolicies, testInput)
+		tierOnly := engine.evaluateFirstMatch(tierPolicies, testInput, nil)
+		segResult := engine.evaluateStrictestMatch(segPolicies, testInput, nil)
 		combined := combineTierAndSegmentResults(tierOnly, segResult)
 
 		tierRestrictiveness := ActionRestrictiveness(OverrideAction(tierOnly.Action))
@@ -283,10 +283,10 @@ func TestProperty_NonSegmentOrgByteIdentical(t *testing.T) {
 			t.Fatalf("trial %d: an all-tier input must split with zero segment policies, got %d", trial, len(splitSeg))
 		}
 
-		legacy := engine.evaluateFirstMatch(tierPolicies, testInput)
+		legacy := engine.evaluateFirstMatch(tierPolicies, testInput, nil)
 		viaPipeline := combineTierAndSegmentResults(
-			engine.evaluateFirstMatch(splitTier, testInput),
-			engine.evaluateStrictestMatch(splitSeg, testInput),
+			engine.evaluateFirstMatch(splitTier, testInput, nil),
+			engine.evaluateStrictestMatch(splitSeg, testInput, nil),
 		)
 
 		if legacy.Matched != viaPipeline.Matched || legacy.Action != viaPipeline.Action || legacy.PolicyID != viaPipeline.PolicyID {
@@ -326,7 +326,7 @@ func TestEvaluateStrictestMatch_IgnoresOverrideFields_DefenseInDepth(t *testing.
 		OverrideEnabled: &disabledOverride,
 	}
 
-	result := engine.evaluateStrictestMatch([]EffectiveStaticPolicy{policy}, testInput)
+	result := engine.evaluateStrictestMatch([]EffectiveStaticPolicy{policy}, testInput, nil)
 	if !result.Matched {
 		t.Fatal("segment policy must still match — an override must never be able to silently disable it")
 	}

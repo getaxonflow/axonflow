@@ -261,17 +261,23 @@ func authResultLegacyAuth(auth *AuthResult, now time.Time) (sharedidentity.Legac
 		// request of such a deployment.
 		return sharedidentity.LegacyAuth{}, false
 	}
+	var legacy sharedidentity.LegacyAuth
 	switch auth.Kind {
 	case AuthKindCommunity:
-		return sharedidentity.CommunityLegacyAuth(auth.OrgID, auth.ClientID, now), true
+		legacy = sharedidentity.CommunityLegacyAuth(auth.OrgID, auth.ClientID, now)
 	case AuthKindCommunitySaaS, AuthKindEnterprise:
-		return sharedidentity.APICredentialLegacyAuth(
-			auth.OrgID, auth.ClientID, sharedidentity.VerificationAPICredential, true, "", now), true
+		legacy = sharedidentity.APICredentialLegacyAuth(
+			auth.OrgID, auth.ClientID, sharedidentity.VerificationAPICredential, true, "", now)
 	case AuthKindInternalService:
-		return sharedidentity.InternalServiceLegacyAuth(auth.OrgID, auth.ClientID, true, "", now), true
+		legacy = sharedidentity.InternalServiceLegacyAuth(auth.OrgID, auth.ClientID, true, "", now)
 	default:
 		return sharedidentity.LegacyAuth{}, false
 	}
+	// #3602: set AFTER the per-kind builder, once, so a kind added later
+	// cannot forget it - the alternative, a Synthetic argument on each of the
+	// three builders, is three places to forget it in.
+	legacy.Synthetic = auth.Synthetic
+	return legacy, true
 }
 
 // adaptedValidateUserToken is the SINGLE production entry point for the HS256
@@ -300,7 +306,7 @@ func authResultLegacyAuth(auth *AuthResult, now time.Time) (sharedidentity.Legac
 // counterfactual must be recorded even when the caller's context is already
 // cancelled, or the shadow goes blind during exactly the incidents it exists
 // to explain. The adapter bounds anything that touches storage itself.
-func adaptedValidateUserToken(authenticatedOrgID, tokenString, expectedTenantID string) (*User, error) {
+func adaptedValidateUserToken(authenticatedOrgID, tokenString, expectedTenantID string, synthetic bool) (*User, error) {
 	user, err := validateUserToken(tokenString, expectedTenantID)
 
 	// Only the enterprise HS256 branch presents a credential. Community and
@@ -328,6 +334,10 @@ func adaptedValidateUserToken(authenticatedOrgID, tokenString, expectedTenantID 
 		compatLegacyReason(err),
 		"",
 	)
+	// #3602: the observation-window canary tag, carried on the AuthResult
+	// because this function deliberately has no *http.Request. It is a metric
+	// label only and is read by nothing that decides admission.
+	legacy.Synthetic = synthetic
 	if ref := sharedidentity.CompatResolve(context.Background(), legacy).Refusal(); ref != nil {
 		// The reason CODE only, and NAMED so it does not share a code with a
 		// forged token. See compatAuthError for why: this change's own thesis,

@@ -11,7 +11,7 @@ ARG EDITION=community
 # — the SAME source as the io.opencontainer.image.version label below, so the
 # baked binary version and the image label never drift. Re-declared here in the
 # builder stage (ARG scope is per-stage); the final stage declares it again.
-ARG AXONFLOW_VERSION=10.2.0
+ARG AXONFLOW_VERSION=10.3.0
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -21,6 +21,27 @@ WORKDIR /go/src/axonflow/platform
 
 # Copy go.mod and go.sum from platform root (build context is repo root)
 COPY platform/go.mod platform/go.sum* ./
+# platform/go.mod carries `replace axonflow/platform/decision => ./decision`,
+# and `go mod download` resolves the whole module graph including local
+# replacements - so the replaced module's manifest must exist at THIS layer,
+# before any source is copied. Without it the build fails with
+# "reading decision/go.mod: no such file or directory".
+COPY platform/decision/go.mod platform/decision/go.sum* ./decision/
+
+# THE REPLACED MODULE'S MANIFEST, BEFORE `go mod download` (#3564).
+#
+# platform/go.mod carries `replace axonflow/platform/decision => ./decision`,
+# and a filesystem replace is resolved by READING THAT PATH - so `go mod
+# download` fails outright without it:
+#
+#   go: axonflow/platform/decision@v0.0.0-... (replaced by ./decision):
+#       reading decision/go.mod: no such file or directory
+#
+# Only the two manifests are copied here, not the source. That keeps the
+# dependency layer cached on the same key it has always had - it invalidates
+# when a manifest changes, not when a decision-module .go file does - and the
+# source arrives with the `COPY platform/ .` below like every other package.
+COPY platform/decision/go.mod platform/decision/go.sum* ./decision/
 
 # Download dependencies
 RUN go mod download
@@ -138,7 +159,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.24
 
-ARG AXONFLOW_VERSION=10.2.0
+ARG AXONFLOW_VERSION=10.3.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

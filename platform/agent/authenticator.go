@@ -87,6 +87,18 @@ type AuthResult struct {
 	TenantID string // canonical tenant (from credentials, never from body)
 	OrgID    string // canonical org (from license or deployment)
 	ClientID string // canonical client ID (from credentials)
+	// Synthetic marks a request driven by AxonFlow's own observation-window
+	// canary (#3602). It reaches the ADR-065 counterfactual as a metric label
+	// and NOTHING else: it is never an authorization input, never consulted by
+	// realm verification, and never reaches an audit attribution field.
+	//
+	// It is carried on the AuthResult rather than re-read at each recording
+	// site because only THIS function sees the request for the client-
+	// credential and per-user-token paths - ResolveUser and
+	// adaptedValidateUserToken have no *http.Request, deliberately. See
+	// sharedidentity.LegacyAuth.Synthetic for why a caller-assertable header
+	// is an acceptable channel for this one fact.
+	Synthetic bool
 }
 
 // AuthError is protocol-neutral — callers translate to their wire format.
@@ -131,6 +143,32 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 	//
 	// Under the default mode (off) Resolve returns before reading a clock or
 	// touching the registry, so this is one nil-pointer comparison.
+	if auth != nil && authErr == nil {
+		// Stamped BEFORE the adapter runs, on the one function every
+		// client-credential path traverses, so both the client-credential
+		// counterfactual below and the per-user-token one further down
+		// (ResolveUser -> adaptedValidateUserToken) describe the same request
+		// consistently. A request tagged on one path and not the other would
+		// make the synthetic split unreadable.
+		//
+		// IT IS NOT GATED ON THE MODE, AND THAT IS DELIBERATE. Under mode off
+		// this costs one header lookup and a two-element membership test per
+		// authenticated request, and Resolve below still returns before it
+		// reads a clock, touches the registry, or calls a recorder - so the
+		// flag-off guarantee that matters (no behaviour change, nothing
+		// recorded, nothing exported) is unaffected, and
+		// TestModeOffIncrementsNoMetric pins it.
+		//
+		// Gating it would be worse than the lookup it saves: the only way to
+		// ask "is the adapter evaluating" here is to read the mode, and
+		// compat.go's structural invariant is that the mode is read in exactly
+		// ONE function (effectiveMode). TestCompatModeIsConsultedAtExactlyOneSite
+		// walks the AST and fails on a second reader. A cheap optimisation is
+		// not worth reintroducing the shape that whole invariant exists to
+		// prevent.
+		auth.Synthetic = sharedidentity.IsSyntheticProbeHeader(
+			r.Header.Get(sharedidentity.SyntheticProbeHeader))
+	}
 	if legacy, adaptable := authResultLegacyAuth(auth, time.Now()); adaptable && authErr == nil {
 		if ref := sharedidentity.CompatResolve(r.Context(), legacy).Refusal(); ref != nil {
 			return nil, compatAuthError(ref)
@@ -355,7 +393,7 @@ func ResolveUser(auth *AuthResult, userToken string) (*User, *AuthError) {
 		// validateUserToken has a second production caller
 		// (resolveAuditReadAuthority) and a guard at one of two callers is not
 		// a guard. See adaptedValidateUserToken.
-		user, err := adaptedValidateUserToken(auth.OrgID, userToken, auth.TenantID)
+		user, err := adaptedValidateUserToken(auth.OrgID, userToken, auth.TenantID, auth.Synthetic)
 		if err != nil {
 			// An identity-plane refusal carries its own code so it is
 			// distinguishable from a tampered or expired token, which share

@@ -35,12 +35,39 @@ const (
 	SchemaTrace      Schema = "trace"
 	SchemaAttribute  Schema = "attribute"
 	SchemaApproval   Schema = "approval_requirement"
+	// SchemaApprovalClause is named separately because it is generated as a
+	// type in every SDK; an anonymous inline shape would be regenerated under a
+	// different name in each of the five.
+	SchemaApprovalClause Schema = "approval_clause"
+	SchemaIdentifier     Schema = "identifier"
+
+	// The AuthZEN WIRE shapes. They are versioned by AuthZENProfileV1 rather
+	// than by SchemaVersion: SchemaVersion versions the internal contract a
+	// decision is computed against and is what rides in snapshot.schema_version,
+	// whereas the profile constant is what a Policy Enforcement Point negotiates
+	// to receive anything beyond the boolean. Adding these definitions changed no
+	// existing shape, so the contract version is deliberately unchanged.
+	SchemaAuthZENEnvelope        Schema = "authzen_envelope"
+	SchemaAuthZENRequest         Schema = "authzen_request"
+	SchemaAuthZENBulk            Schema = "authzen_bulk"
+	SchemaAuthZENSubject         Schema = "authzen_subject"
+	SchemaAuthZENAction          Schema = "authzen_action"
+	SchemaAuthZENResource        Schema = "authzen_resource"
+	SchemaAuthZENResponse        Schema = "authzen_response"
+	SchemaAuthZENError           Schema = "authzen_error"
+	SchemaAuthZENResponseContext Schema = "authzen_response_context"
 )
 
 // AllSchemas returns every validatable shape, so a test can prove each one
 // compiles rather than only the ones a caller happens to use.
 func AllSchemas() []Schema {
-	return []Schema{SchemaRequest, SchemaDecision, SchemaObligation, SchemaTrace, SchemaAttribute, SchemaApproval}
+	return []Schema{
+		SchemaRequest, SchemaDecision, SchemaObligation, SchemaTrace, SchemaAttribute, SchemaApproval,
+		SchemaApprovalClause, SchemaIdentifier,
+		SchemaAuthZENEnvelope, SchemaAuthZENRequest, SchemaAuthZENBulk,
+		SchemaAuthZENSubject, SchemaAuthZENAction, SchemaAuthZENResource,
+		SchemaAuthZENResponse, SchemaAuthZENResponseContext, SchemaAuthZENError,
+	}
 }
 
 // SchemaDocument returns the raw schema document.

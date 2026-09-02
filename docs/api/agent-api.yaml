@@ -1308,6 +1308,239 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/access/evaluation:
+    post:
+      tags:
+        - AuthZEN
+      summary: AuthZEN-native authorization decision
+      description: |
+        The AuthZEN-native authorization surface (ADR-065 compatibility plan,
+        issue #3603). A Policy Enforcement Point sends a subject / action /
+        resource / context evaluation and receives an AuthZEN decision.
+
+        **This endpoint is an ADAPTER over the same evaluation that serves
+        `POST /api/v1/decide`.** It is not a second policy engine. Through
+        v10.x the verdict is produced by today's evaluator; at v11 the engine
+        behind this route changes to the ADR-065 Policy Decision Point with
+        **no wire change**, so an integration written against this surface
+        migrates once rather than twice. `POST /api/v1/decide` is unchanged and
+        remains wire-stable through all of v11.
+
+        **One route, both shapes.** The body is the AuthZEN *envelope*, which
+        carries exactly one of `evaluation` (singular) or `evaluations`
+        (plural). Presence is decided on the key set, so
+        `{"evaluation": {...}, "evaluations": null}` carries both declared
+        members and is malformed.
+
+        A plural envelope returns **one decision, not a list**. Its entries are
+        preconditions of a single operation, so they *meet*: one denied entry
+        denies the operation. A plural entry inherits any member it omits from
+        the envelope's shared base.
+
+        **Every construct is mapped or refused; nothing is ignored.** A request
+        carrying data this surface cannot evaluate -- caller-supplied
+        `properties`, an unrecognised `context` member, an argument beside the
+        query -- is REFUSED with a structured error naming the offending JSON
+        Pointer. It is never evaluated-and-ignored: reporting that a fact was
+        weighed when it was not is a fail-open, and every audit of such a
+        decision would inherit the claim.
+
+        A refusal is a **different shape** from a decision
+        (`AuthZENError`, no `decision` member), because a request that was never
+        evaluated must not be indistinguishable from one that was evaluated and
+        denied.
+
+        **Profile negotiation.** AuthZEN 1.0's response is a bare boolean.
+        Everything AxonFlow adds -- the four-valued state, obligations, the
+        approval challenge, the safe reason code -- rides in `context` and is
+        returned ONLY to a caller that sent the
+        `X-Axonflow-AuthZEN-Profile` header naming a profile version this build
+        emits. A caller that did not negotiate receives the boolean alone; a
+        caller that named a version this build does not emit is refused with
+        `406` rather than answered with the boolean, because a silent fallback
+        would report that the negotiation succeeded.
+
+        **The one case where not negotiating changes the ANSWER, not just the
+        shape.** An evaluation that would otherwise be `ALLOW` but carries a
+        **mandatory** obligation is answered `{"decision": false}` to a caller
+        that did not negotiate the profile. The obligation is a precondition of
+        the permission, not a decoration on it, and it rides in the `context`
+        such a caller does not receive -- so returning `true` would hand out a
+        permission whose condition the enforcement point never sees and cannot
+        discharge. ADR-065 invariant 8 prescribes deny for a mandatory
+        obligation an enforcement point cannot enforce, and one that cannot
+        *receive* it is the limiting case. Everything else is unchanged for a
+        bare AuthZEN 1.0 caller: an allow carrying no mandatory obligation is
+        still `true`, and the denied, challenged and errored paths are
+        untouched. **Negotiate the profile if you can discharge obligations** --
+        a caller that sends the header gets the `true` and the obligation
+        together. Operationally the denial is counted under
+        `outcome="obligation_withheld"` on `axonflow_authzen_requests_total`,
+        logged, and audited as `blocked` with
+        `policy_details.authzen_obligation_withheld`, so an operator can find
+        the integrations that need the header.
+
+        **Available at all tiers** -- the evaluation behind it is the same one
+        Decision Mode uses.
+      operationId: authzenEvaluation
+      parameters:
+        - $ref: '#/components/parameters/AxonflowClient'
+        - in: header
+          name: X-Axonflow-AuthZEN-Profile
+          description: |
+            The AxonFlow AuthZEN profile the caller can interpret. Send
+            `axonflow-authzen-profile-2026-08-29` to receive the `context`
+            payload. Absent or empty, the caller asked for AuthZEN 1.0 and the
+            response carries the boolean `decision` only -- EXCEPT that an
+            otherwise-allowed decision carrying a mandatory obligation is
+            answered `{"decision": false}`, because that obligation rides in the
+            `context` this caller does not receive and it must not be given a
+            permission whose precondition it will never see. Naming a version
+            this build does not emit is REFUSED with `406`, because answering it
+            with the bare boolean would report that the negotiation succeeded and
+            an enforcement point would proceed on an allow whose mandatory
+            obligation it never saw.
+          required: false
+          schema:
+            type: string
+            example: axonflow-authzen-profile-2026-08-29
+        - in: header
+          name: traceparent
+          description: |
+            W3C trace-context header. When present and valid the trace-id is
+            reused so multi-layer decisions correlate.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthZENEnvelope'
+            examples:
+              singular:
+                summary: One evaluation
+                value:
+                  evaluation:
+                    subject: { type: gateway, id: llm-gateway-01 }
+                    action: { name: llm.completion }
+                    resource: { type: llm, id: llm }
+                    context:
+                      args: { query: "summarise this ticket" }
+              plural:
+                summary: Two preconditions of one operation
+                value:
+                  evaluations:
+                    subject: { type: gateway, id: tool-gateway-01 }
+                    action: { name: tool.call }
+                    context:
+                      args: { query: "move SUP-42 to the LEGAL project" }
+                    evaluations:
+                      - resource: { type: tool, id: jira/move_issue }
+                      - resource: { type: tool, id: jira/update_project }
+      responses:
+        '200':
+          description: |
+            The decision. `decision` is true only for an ALLOW; every other
+            state collapses to false.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENResponse'
+              examples:
+                negotiated:
+                  summary: A negotiated caller receives the profile context
+                  value:
+                    decision: true
+                    context:
+                      profile: axonflow-authzen-profile-2026-08-29
+                      state: ALLOW
+                      category: allowed
+                      reason: permitted
+                      decision_id: 6f1c2f2e-64f7-4f3e-93a1-2b5f0b0d1a77
+                      schema_version: "2026-08-29"
+                unnegotiated:
+                  summary: >-
+                    A caller that did not negotiate receives the boolean alone
+                    (here false, either because policy denied or because the
+                    allow carried a mandatory obligation it cannot receive --
+                    the two are deliberately indistinguishable to a bare
+                    AuthZEN 1.0 caller; negotiate the profile to tell them
+                    apart)
+                  value:
+                    decision: false
+        '400':
+          description: The body is not a well-formed AuthZEN envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENError'
+              example:
+                code: malformed_envelope
+                message: 'authzen: envelope must carry exactly one of "evaluation" or "evaluations", got neither'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '406':
+          description: |
+            The `X-Axonflow-AuthZEN-Profile` header named a profile version this
+            build does not emit. The envelope is not at fault; the caller asked
+            for a representation that cannot be produced, and `supported` names
+            the version that can.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENError'
+              example:
+                code: unevaluable_attribute
+                message: >-
+                  the X-Axonflow-AuthZEN-Profile header names
+                  "axonflow-authzen-profile-2099-01-01", which this build does
+                  not emit.
+                supported:
+                  - axonflow-authzen-profile-2026-08-29
+        '413':
+          description: |
+            The request is too large on either of two axes, each refused with a
+            typed AuthZENError before anything is evaluated: the body exceeds
+            1 MiB, or a plural envelope carries more than 64 entries. The entry
+            cap exists because the body cap bounds bytes, not evaluations — an
+            entry of `{}` is valid (it inherits subject, action, resource and
+            context from the shared base), so a 1 MiB body could otherwise
+            carry hundreds of thousands of full policy evaluations in one
+            request. The entries of a bulk envelope are the preconditions of a
+            single operation, not a batch API; the refusal's `pointer` names
+            `/evaluations` and its `message` carries both the count sent and
+            the maximum.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENError'
+        '422':
+          description: |
+            The envelope was well formed but described something this surface
+            cannot evaluate. The `pointer` names the offending member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENError'
+              example:
+                code: unevaluable_attribute
+                pointer: /evaluation/subject/properties
+                message: >-
+                  this surface cannot evaluate caller-supplied properties;
+                  accepting them would report that they were considered when
+                  they were not.
+        '502':
+          description: The evaluator could not answer. Retrying is meaningful.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENError'
+              example:
+                code: evaluation_unavailable
+                message: the evaluator did not return a verdict
+
   /api/v1/mcp/check-input:
     post:
       tags:
@@ -6351,6 +6584,328 @@ components:
             When the decision expires. PEPs that cache decisions MUST
             re-call by this timestamp.
 
+    AuthZENSubject:
+      type: object
+      description: |
+        The AuthZEN subject. `type` and `id` are canonical identifier
+        components; a display name, an email or a token claim is never one.
+      required: [type, id]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          minLength: 1
+          description: |
+            Only `gateway` can be evaluated today. An end-user subject would
+            have to be trusted from caller-supplied JSON -- an impersonation
+            surface -- or dropped, so it is refused by name until the identity
+            plane can bind it (v11).
+          example: gateway
+        id:
+          type: string
+          minLength: 1
+          example: llm-gateway-01
+        properties:
+          type: object
+          description: |
+            Caller-supplied subject attributes. REFUSED when non-empty: this
+            surface cannot evaluate them, and accepting them would report that
+            they were considered when they were not.
+    AuthZENAction:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          enum: [llm.completion, tool.call, agent.invoke]
+          description: The evaluable action set. Anything else is refused.
+        properties:
+          type: object
+          description: Caller-supplied action attributes. Refused when non-empty.
+    AuthZENResource:
+      type: object
+      required: [type, id]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          minLength: 1
+          enum: [llm, tool, agent]
+          description: |
+            Must describe the same operation as the action. An `llm.completion`
+            action against a `tool` resource is two different questions and is
+            refused rather than resolved.
+        id:
+          type: string
+          minLength: 1
+          description: |
+            `server/tool` for a tool resource; the literal `llm` or `agent`
+            for those stages.
+
+            The asymmetry is measured, not stylistic: a tool resource's server
+            and tool ARE read by the evaluation, whereas an llm provider and
+            model are read by NOTHING -- they reach neither policy, nor the
+            audit row, nor a human approver. Accepting `openai/gpt-4o` would
+            therefore report that the provider and model were considered when
+            they were not, so it is refused. A future release that teaches the
+            evaluator to read a model widens this, in that order.
+          example: llm
+        properties:
+          type: object
+          description: Caller-supplied resource attributes. Refused when non-empty.
+    AuthZENRequest:
+      type: object
+      description: |
+        One evaluation. Every member is structurally optional because a plural
+        entry inherits what it omits from the shared base; the singular member
+        carries its own required set. Completeness of the MERGED entry is
+        enforced by the server, not by this schema.
+      additionalProperties: false
+      properties:
+        subject:
+          $ref: '#/components/schemas/AuthZENSubject'
+        action:
+          $ref: '#/components/schemas/AuthZENAction'
+        resource:
+          $ref: '#/components/schemas/AuthZENResource'
+        context:
+          $ref: '#/components/schemas/AuthZENContext'
+    AuthZENContext:
+      type: object
+      description: |
+        The evaluation context. Only `args` and `correlation` are understood;
+        any other member is refused by name.
+      additionalProperties: false
+      properties:
+        args:
+          type: object
+          additionalProperties: false
+          required: [query]
+          description: |
+            The content to evaluate. Only `query` is read; an argument beside
+            it is refused rather than silently ignored.
+          properties:
+            query:
+              type: string
+              minLength: 1
+        correlation:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Audit correlation keys. Values must be strings.
+    AuthZENBulk:
+      type: object
+      description: |
+        The plural envelope. The decision count is fixed by the mapping, never
+        by argument data, so an empty `evaluations` array is malformed rather
+        than a request for zero decisions.
+      required: [evaluations]
+      additionalProperties: false
+      properties:
+        subject:
+          $ref: '#/components/schemas/AuthZENSubject'
+        action:
+          $ref: '#/components/schemas/AuthZENAction'
+        resource:
+          $ref: '#/components/schemas/AuthZENResource'
+        context:
+          $ref: '#/components/schemas/AuthZENContext'
+        evaluations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AuthZENRequest'
+    AuthZENEnvelope:
+      type: object
+      description: |
+        Exactly two members are defined and exactly one may be PRESENT.
+        Presence is decided on the key set, so a null beside a populated member
+        still counts as present and the envelope is malformed.
+      additionalProperties: false
+      oneOf:
+        - required: [evaluation]
+          not:
+            required: [evaluations]
+        - required: [evaluations]
+          not:
+            required: [evaluation]
+      properties:
+        evaluation:
+          allOf:
+            - $ref: '#/components/schemas/AuthZENRequest'
+            - required: [subject, action, resource]
+          description: |
+            The singular member. It has no shared base to inherit from, so it
+            must carry its own subject, action and resource.
+        evaluations:
+          $ref: '#/components/schemas/AuthZENBulk'
+    AuthZENResponseContext:
+      type: object
+      description: |
+        The AxonFlow profile payload, returned only to a caller that negotiated
+        the profile version.
+      required: [profile, state, category, decision_id, schema_version]
+      additionalProperties: false
+      properties:
+        profile:
+          type: string
+          enum: [axonflow-authzen-profile-2026-08-29]
+        state:
+          type: string
+          enum: [ALLOW, DENY, CHALLENGE, ERROR]
+          description: |
+            The four-valued operational state. `decision` is true for ALLOW and
+            false for every other value.
+        category:
+          type: string
+          enum: [allowed, not_permitted, approval_required, temporarily_unavailable, invalid_request]
+          description: The coarse outcome class safe to show a requester.
+        reason:
+          type: string
+          enum:
+            [permitted, approval_required, explicit_constraint, no_matching_permission,
+             unknown_constraint, unknown_permission, unknown_requirement, invalid_input,
+             evaluation_error, unsupported_obligation, obligation_conflict, unknown_action,
+             unknown_realm, schema_violation, delegation_depth_exceeded, budget_exhausted,
+             binding_mismatch, approval_unsatisfiable, approval_expired, authoring_rejected]
+        obligations:
+          type: array
+          description: |
+            Instructions the enforcement point must discharge. Carried only on
+            an executable decision: a denied operation has nothing to discharge,
+            and attaching instructions to a denial invites a PEP to perform them
+            and proceed.
+          items:
+            $ref: '#/components/schemas/AuthZENObligation'
+        approval:
+          $ref: '#/components/schemas/AuthZENApprovalRequirement'
+        decision_id:
+          type: string
+          minLength: 1
+        schema_version:
+          type: string
+          minLength: 1
+          example: "2026-08-29"
+    AuthZENObligation:
+      type: object
+      required: [type, mandatory, source_policy, schema_version]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [approval_challenge, field_remove, field_redact, field_hash, field_mask,
+                 field_annotate, field_tokenize, schema_transform, response_filter,
+                 route_restriction, step_up_authentication, quota_reservation,
+                 immutable_audit, notification]
+        target:
+          type: string
+          description: The canonical field path for a disclosure transform; empty otherwise.
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        mandatory:
+          type: boolean
+          description: A mandatory obligation that cannot be discharged denies.
+        source_policy:
+          type: string
+          minLength: 1
+        schema_version:
+          type: integer
+          minimum: 1
+    AuthZENApprovalClause:
+      type: object
+      required: [quorum, eligible]
+      additionalProperties: false
+      properties:
+        quorum:
+          type: integer
+          minimum: 1
+        eligible:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AuthZENIdentifier'
+    AuthZENApprovalRequirement:
+      type: object
+      description: A conjunction of threshold clauses; clauses are never collapsed.
+      required: [all_of, separation_of_duties, expires_at]
+      additionalProperties: false
+      properties:
+        all_of:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AuthZENApprovalClause'
+        separation_of_duties:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+          description: Timeout is always deny; a non-response never proves approval.
+    AuthZENIdentifier:
+      type: object
+      required: [kind, type, local]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [organization, principal, group, resource, action, tool, client, session]
+        type:
+          type: string
+        qualifier:
+          type: string
+        local:
+          type: string
+    AuthZENResponse:
+      type: object
+      description: |
+        The AuthZEN reply. `decision` is true only for an ALLOW state; the
+        collapse is total in both directions.
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision:
+          type: boolean
+        context:
+          $ref: '#/components/schemas/AuthZENResponseContext'
+    AuthZENError:
+      type: object
+      description: |
+        A structured refusal. It is a DIFFERENT shape from a decision and
+        carries no `decision` member, because a request that was never
+        evaluated must not be indistinguishable from one that was evaluated
+        and denied.
+      required: [code, message]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          enum: [malformed_envelope, incomplete_evaluation, unsupported_subject,
+                 unsupported_action, unsupported_resource, unevaluable_attribute,
+                 missing_evaluable_content, evaluation_unavailable]
+          description: |
+            Only `evaluation_unavailable` is retryable; every other code names
+            something about the request that will not change on a retry.
+        pointer:
+          type: string
+          description: |
+            RFC 6901 JSON Pointer naming the member that could not be
+            evaluated. A refusal without it sends the caller to the docs.
+          example: /evaluation/subject/properties
+        message:
+          type: string
+          minLength: 1
+        supported:
+          type: array
+          items:
+            type: string
+          description: What would have been accepted at `pointer`, when the set is closed.
+        request_id:
+          type: string
     DecisionObligation:
       type: object
       required:

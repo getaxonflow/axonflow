@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"axonflow/platform/agent/rls"
+	"axonflow/platform/shared/planeshadow"
 )
 
 // globalTenantSentinel is the tenant_id/org_id wildcard used by system-seeded
@@ -146,7 +147,7 @@ func (l *PolicyLoader) loadFromDatabase(ctx context.Context, tenantID string, or
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
 			enabled, priority, tenant_id, segment_id, metadata,
-			created_at
+			created_at, updated_at
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -247,7 +248,7 @@ func (l *PolicyLoader) scopedPolicyRows(ctx context.Context, query, scopeOrg str
 				&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 				&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
 				&p.Enabled, &p.Priority, &p.TenantID, &p.SegmentID, &p.Metadata,
-				&p.CreatedAt,
+				&p.CreatedAt, &p.UpdatedAt,
 			); sErr != nil {
 				log.Printf("[PolicyLoader] Error scanning row: %v", sErr)
 				continue
@@ -281,6 +282,20 @@ type policyRow struct {
 	SegmentID      sql.NullString
 	Metadata       json.RawMessage
 	CreatedAt      time.Time
+	// UpdatedAt is SCANNED AS NULLABLE, and that is not defensive style.
+	//
+	// migrations/core/010 declares it `TIMESTAMP WITH TIME ZONE DEFAULT NOW()`
+	// with no NOT NULL, so a row can hold SQL NULL. A non-nullable time.Time
+	// destination would make rows.Scan fail for such a row, and the scan loop
+	// above logs and CONTINUES - which is #3397 exactly: the policy is
+	// silently never enforced. Adding a column to this scan is therefore the
+	// one edit in this file that can un-enforce policy, and it is made in the
+	// only shape that cannot.
+	//
+	// It is read by the ADR-065 decision shadow, which uses (policy_id,
+	// updated_at) to prove the bundle it compares against describes the same
+	// policy set this load returned. Nothing on the enforcement path reads it.
+	UpdatedAt sql.NullTime
 }
 
 // compilePolicy converts a database row to a CompiledPolicy.
@@ -336,8 +351,40 @@ func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
 		Priority:       row.Priority,
 		TenantID:       row.TenantID,
 		SegmentID:      segmentID,
+		UpdatedAt:      stampOf(row.UpdatedAt, row.CreatedAt),
 		Validator:      l.getValidatorForPolicy(row.PolicyID, PolicyCategory(row.Category)),
 	}, nil
+}
+
+// stampOf renders a row's version for the ADR-065 shadow snapshot key.
+//
+// It falls back to created_at when updated_at is NULL, because
+// migrations/core/010 declares updated_at nullable and a row written before
+// the update trigger existed can hold one. The fallback is not a guess: a row
+// that has never been updated IS at its creation version, and the alternative -
+// an empty key - makes every comparison involving that row permanently
+// not-comparable, which is a silently empty denominator rather than a visible
+// failure. A row with neither renders empty, and the shadow refuses to compare
+// against it rather than assuming the versions match.
+func stampOf(updated sql.NullTime, created time.Time) string {
+	return PolicyVersionStamp(updated, sql.NullTime{Time: created, Valid: !created.IsZero()})
+}
+
+// PolicyVersionStamp is the ONE rendering of a policy row's version, shared by
+// both substrates so a static row and a dynamic row cannot key differently.
+//
+// Exported because the dynamic substrate's cache is built in the orchestrator
+// from DynamicPolicyRow, and a second rendering there would be a second
+// spelling of one instant - which makes every comparison permanently
+// not-comparable, a silently empty denominator that reads as a healthy gate.
+func PolicyVersionStamp(updated, created sql.NullTime) string {
+	if updated.Valid {
+		return planeshadow.StampKey(updated.Time)
+	}
+	if created.Valid {
+		return planeshadow.StampKey(created.Time)
+	}
+	return ""
 }
 
 // getValidatorForPolicy returns the appropriate validator for a policy.
@@ -411,7 +458,8 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, segment_id, metadata
+			enabled, priority, tenant_id, segment_id, metadata,
+			updated_at
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -433,6 +481,7 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 				&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 				&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
 				&p.Enabled, &p.Priority, &p.TenantID, &p.SegmentID, &p.Metadata,
+				&p.UpdatedAt,
 			); sErr != nil {
 				continue
 			}
@@ -671,7 +720,14 @@ type DynamicPolicyRow struct {
 	RiskLevel     string
 	AllowOverride bool
 	CreatedAt     sql.NullTime
-	SegmentID     sql.NullString
+	// UpdatedAt is NULLABLE for migrations/core/010's reason (the column is
+	// declared `TIMESTAMP WITH TIME ZONE DEFAULT NOW()` with no NOT NULL), and
+	// it is typed to match. This scan logs and CONTINUES on a scan error, so a
+	// non-nullable destination here would silently un-enforce every row that
+	// held SQL NULL - #3397's exact shape, in the one file that already models
+	// it. Read only by the ADR-065 decision shadow (#3564).
+	UpdatedAt sql.NullTime
+	SegmentID sql.NullString
 }
 
 // dynamicPoliciesQueryWithSegment / dynamicPoliciesQueryWithoutSegment: two
@@ -696,6 +752,7 @@ const dynamicPoliciesQueryWithSegment = `
 	       COALESCE(risk_level, 'medium') as risk_level,
 	       COALESCE(allow_override, false) as allow_override,
 	       created_at,
+	       updated_at,
 	       segment_id
 	FROM dynamic_policies
 	WHERE enabled = true
@@ -709,7 +766,8 @@ const dynamicPoliciesQueryWithoutSegment = `
 	       COALESCE(category, '') as category,
 	       COALESCE(risk_level, 'medium') as risk_level,
 	       COALESCE(allow_override, false) as allow_override,
-	       created_at
+	       created_at,
+	       updated_at
 	FROM dynamic_policies
 	WHERE enabled = true
 	ORDER BY priority DESC, created_at DESC
@@ -773,9 +831,9 @@ func RefreshDynamicPolicies(ctx context.Context, db *sql.DB, withSegment bool) (
 		var p DynamicPolicyRow
 		var scanErr error
 		if withSegment {
-			scanErr = rows.Scan(&p.ID, &p.Name, &p.Description, &p.Conditions, &p.Actions, &p.TenantID, &p.OrgID, &p.Priority, &p.PolicyID, &p.PolicyType, &p.Category, &p.RiskLevel, &p.AllowOverride, &p.CreatedAt, &p.SegmentID)
+			scanErr = rows.Scan(&p.ID, &p.Name, &p.Description, &p.Conditions, &p.Actions, &p.TenantID, &p.OrgID, &p.Priority, &p.PolicyID, &p.PolicyType, &p.Category, &p.RiskLevel, &p.AllowOverride, &p.CreatedAt, &p.UpdatedAt, &p.SegmentID)
 		} else {
-			scanErr = rows.Scan(&p.ID, &p.Name, &p.Description, &p.Conditions, &p.Actions, &p.TenantID, &p.OrgID, &p.Priority, &p.PolicyID, &p.PolicyType, &p.Category, &p.RiskLevel, &p.AllowOverride, &p.CreatedAt)
+			scanErr = rows.Scan(&p.ID, &p.Name, &p.Description, &p.Conditions, &p.Actions, &p.TenantID, &p.OrgID, &p.Priority, &p.PolicyID, &p.PolicyType, &p.Category, &p.RiskLevel, &p.AllowOverride, &p.CreatedAt, &p.UpdatedAt)
 		}
 		if scanErr != nil {
 			log.Printf("[PolicyLoader] Error scanning dynamic-policy row: %v", scanErr)

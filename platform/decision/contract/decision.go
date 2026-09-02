@@ -62,6 +62,15 @@ const (
 // execution, which is what makes "did we execute?" a one-line audit question.
 func (s OperationalState) Executable() bool { return s == StateAllow }
 
+// AllOperationalStates returns every declared state in a stable order.
+//
+// It exists so the schema-drift tests can enumerate the range rather than
+// restate it. A hand-written list in a test is a second declaration of the
+// enumeration, and a second declaration is the drift the test is there to catch.
+func AllOperationalStates() []OperationalState {
+	return []OperationalState{StateAllow, StateDeny, StateChallenge, StateError}
+}
+
 // ReasonCode is a stable, safe machine reason.
 //
 // There is deliberately no code here for a truncated group or resource closure.

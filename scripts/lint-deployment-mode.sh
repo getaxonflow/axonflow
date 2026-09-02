@@ -99,12 +99,22 @@ LAUNCHER_EXCLUDED_SUFFIXES=(
 #   allow-list. A boolean "is community?" cannot express that allow-list at all,
 #   and isCommunityMode() is package-private to platform/agent and
 #   platform/orchestrator, so the portal cannot call it in any case.
+#
+# - platform/shared/deploymode/deploymode.go: the SHARED schema-mode package
+#   (#3602). It holds the one definition of which migration categories each
+#   mode applies, so a second process can ask "does this deployment have the
+#   Enterprise schema" without restating the list. Its Current() is the single
+#   env read behind that, and it is spelled with the LITERAL this lint greps
+#   for rather than with the package's own EnvDeploymentMode constant — a
+#   constant would evade the grep, which would turn an allow-list entry into a
+#   silent bypass for every future caller.
 ALLOWED_FILES=(
   "platform/agent/run.go"
   "platform/orchestrator/run.go"
   "platform/shared/policy/dynamic_evaluator.go"
   "platform/shared/execution/event_hub.go"
   "platform/agent/migration_helpers.go"
+  "platform/shared/deploymode/deploymode.go"  # #3602 shared schema-mode package: the single env read behind AppliesEnterpriseSchema(), used by the agent AND the orchestrator
   "platform/agent/dev_token_handler.go"  # #2541 fail-closed gate: normalises where isCommunityMode() is exact, and must not inherit its accepting set from the helper that disables auth
   "platform/orchestrator/llm/bootstrap.go"  # community-saas Ollama-only guard (#1500)
   "ee/platform/customer-portal/middleware/admin_auth.go"

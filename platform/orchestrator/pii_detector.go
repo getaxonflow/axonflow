@@ -32,6 +32,7 @@ import (
 	"strings"
 	"unicode"
 
+	"axonflow/platform/decision/legacycompile"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -1033,6 +1034,7 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, 
 	}
 
 	result := engine.EvaluateResponse(ctx, content, sharedpolicy.EvalOptions{
+		Plane:           legacycompile.PlaneOrchestratorResponse,
 		TenantID:        tenantID,
 		OrgID:           orgID,
 		OrgScope:        sharedpolicy.OrgScopePtr(orgID), // #3048 R3 HIGH-3

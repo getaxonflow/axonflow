@@ -109,6 +109,36 @@ func (a *CompatAdapter) OrgModeFailures() uint64 {
 	return a.orgModeFailures.Load()
 }
 
+// EffectiveMode is the COMPOSITION RULE, as a pure function over its two
+// inputs, so that a second per-organization axis composes with it rather than
+// restating it.
+//
+// The rule is the one this file's header argues for: the record wins in both
+// directions when the organization has one, and the process flag applies when
+// it does not. It is exported and pure because ADR-065 grew a second
+// per-organization mode - the per-plane decision shadow (#3564, session
+// v10.3-A) - and a second axis that re-implemented "record wins, absent means
+// process, unreadable means process" would be one edit away from disagreeing
+// with this one. There is one rule; there are two callers.
+//
+// A record whose mode is not a declared one is NOT composed. It returns the
+// process mode together with an error, and the caller counts the fall-back:
+// acting on it would be the tri-state-by-inequality defect one level up, since
+// CompatMode(99) is neither off nor a mode anyone declared, and the safe
+// reading of "the record is unreadable" is the same as any other read failure.
+//
+// found=false means the organization has no record, which is the ordinary
+// answer for almost every organization and is not an error.
+func EffectiveMode(process, record CompatMode, found bool) (CompatMode, error) {
+	if !found {
+		return process, nil
+	}
+	if !record.IsValid() {
+		return process, fmt.Errorf("the recorded mode %s is not a declared mode", record)
+	}
+	return record, nil
+}
+
 // effectiveMode is THE ONE FUNCTION THAT READS THE MODE. It composes the
 // process-wide flag with the organization's record, and every decision the
 // adapter makes reads the value it returns rather than either input.
@@ -124,29 +154,38 @@ func (a *CompatAdapter) effectiveMode(ctx context.Context, orgID string) CompatM
 		// simply has no record to look up.
 		return process
 	}
-	// The same bound the realm source runs under, for the same reason: a
-	// caller with no request context at all (adaptedValidateUserToken has
-	// none, deliberately) would otherwise consult storage unbounded.
-	octx, cancel := boundedRealmContext(ctx)
+	// THE CALLER'S CANCELLATION IS DROPPED, AND THE TIMEOUT IS NOT.
+	//
+	// This is a CONFIGURATION read, not request work: it answers "what posture
+	// is this organization in", which does not stop being true because one
+	// client hung up. The store MEMOIZES FAILURES for the TTL, so inheriting
+	// the request's cancellation means a single client disconnect during a
+	// refresh poisons the entry - and because one row answers BOTH axes, that
+	// moves the whole organization onto the process mode for the identity
+	// compatibility mode AND the decision shadow mode, for up to a minute, on
+	// every request. The #3564 side of this was fixed and this half was left,
+	// which is the same class one file over.
+	//
+	// The 2-second bound is kept, and it is the reason WithoutCancel is safe
+	// here: dropping cancellation without a deadline would be an unbounded
+	// storage read on the authentication path.
+	//
+	// boundedRealmContext itself is deliberately NOT changed. Its other two
+	// callers establish REALMS on the authentication path, where its own doc
+	// argues that inheriting the caller's cancellation is correct.
+	octx, cancel := context.WithTimeout(context.WithoutCancel(nonNilContext(ctx)), compatRealmTimeout)
 	defer cancel()
 	record, found, err := a.orgModes.OrgCompatMode(octx, orgID)
 	if err != nil {
 		a.noteOrgModeFailure(orgID, err)
 		return process
 	}
-	if !found {
+	mode, err := EffectiveMode(process, record, found)
+	if err != nil {
+		a.noteOrgModeFailure(orgID, err)
 		return process
 	}
-	if !record.IsValid() {
-		// A source that answers with an undeclared value has not answered.
-		// Acting on it would be the tri-state-by-inequality defect one level
-		// up: CompatMode(99) is neither off nor a mode anyone declared, and
-		// the safe reading of "the record is unreadable" is the same as any
-		// other read failure.
-		a.noteOrgModeFailure(orgID, fmt.Errorf("the recorded mode %s is not a declared mode", record))
-		return process
-	}
-	return record
+	return mode
 }
 
 // noteOrgModeFailure counts a fall-back and logs it. The log line is
@@ -155,6 +194,12 @@ func (a *CompatAdapter) effectiveMode(ctx context.Context, orgID string) CompatM
 // does not repeat it on every request of an outage.
 func (a *CompatAdapter) noteOrgModeFailure(orgID string, err error) {
 	a.orgModeFailures.Add(1)
+	// The same event, counted a second time as a Prometheus counter (#3602).
+	// The atomic above is a process-memory total that resets on every deploy;
+	// this one can be rated, which is what "is a recorded mode being ignored
+	// RIGHT NOW" needs. The organization is deliberately NOT a metric label -
+	// it is on the log line below. See compat_metrics.go.
+	observeOrgModeFailure(a.component)
 	log.Printf("[IDENTITY-COMPAT] component=%s org=%s per-org mode unavailable, using the process mode (%s): %s",
 		logutil.Sanitize(a.component), logutil.Sanitize(orgID), a.processModeForLog(), logutil.Sanitize(err.Error()))
 }

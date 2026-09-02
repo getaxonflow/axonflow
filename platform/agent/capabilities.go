@@ -47,6 +47,23 @@ type PluginCompatInfo struct {
 	RecommendedPluginVersion map[string]string `json:"recommended_plugin_version"`
 }
 
+// getCapabilities is the hand-maintained feature list served on /health. It is
+// not documentation: SDKs, plugins and customers branch on it to discover what
+// this platform supports, so an omission reads to a client as "not supported".
+//
+// RUNBOOK_RELEASE_PREP.md Step 0b is the control that keeps it current. The test
+// it applies to every item in a release train is: does this add or change a
+// surface a CLIENT can observe, meaning a route, a header contract, an
+// obligation type or a discovery field? Machinery with no client-visible
+// surface (a store with no writer, a recorded-only comparison, an exported
+// metric series, an internal control-plane route on another binary) does NOT
+// get an entry. Nothing enforces the rule yet; #3618 tracks deriving this list
+// or guarding it against the registered routes.
+//
+// Known debt, deliberately not paid here: the list carries nothing from v10.0,
+// v10.1 or v10.2, because Step 0b did not exist for those trains. Back-filling
+// them needs a per-feature judgement against the same test and is item 2 of
+// #3618.
 func getCapabilities() []PlatformCapability {
 	return []PlatformCapability{
 		{Name: "health_check", Since: "1.0.0", Description: "Basic health endpoint"},
@@ -76,6 +93,7 @@ func getCapabilities() []PlatformCapability {
 		{Name: "client_version_telemetry", Since: "9.7.0", Description: "Per-client version-distribution telemetry: validated X-Axonflow-Client client id + version pairs are recorded into the axonflow_client_version_requests_total counter on the decide and MCP check-output planes (Enterprise builds; Community builds no-op and register no series). Telemetry-only — never consulted for auth or a verdict"},
 		{Name: "seam_capability_decisioning", Since: "9.11.0", Description: "Seam-capability-aware obligations: a PEP advertises what its seam can discharge via DecideRequest.fulfillment_capabilities (vocabulary: request_body_redaction, request_header_mutation) and POST /api/v1/decide emits only obligations that caller can fulfill. A request-body redaction suppressed on a non-capable seam (e.g. Envoy ext_authz, which is headers-only) applies the org's obligation-fallback posture — log (default: allow, no obligation, canonical audit row records the suppressed redaction + detected categories) or block (deny) — configurable per org on the obligation_fallback detection-posture category. The posture is resolved server-side from the org, never from the request; absent/empty capabilities means a legacy caller and reproduces pre-9.11.0 behavior exactly (all SDKs unaffected). Replaces the adapter-local allow→403 conversion so every outcome is an engine round-trip (ADR-056)"},
 		{Name: "identity_header_attribution", Since: "9.9.0", Description: "Trust-gated per-user audit attribution: X-User-Email / X-Session-Id (and X-User-ID on the MCP-server plane) attribute audit_logs rows on all four governance planes (decide, MCP check-input, MCP check-output, MCP-server tools/call) when the deployment opts in via AXONFLOW_TRUST_IDENTITY_HEADERS=true (default off — untrusted headers are ignored and a detection warning is logged). Attribution-only — a forged header can never influence a verdict, authz decision, or tenant/org resolution; per-user features (ADR-044 session overrides, user-scoped dynamic policies) key on the trusted identity only under the gate"},
+		{Name: "authzen_evaluation", Since: "10.3.0", Description: "AuthZEN-native authorization on POST /api/v1/access/evaluation. A PEP sends the AuthZEN envelope in either shape (a singular `evaluation` or a plural `evaluations`, exactly one member, enforced by the decoder, the JSON Schema and every generated client alike) and gets back ONE decision: the entries of a plural envelope are preconditions of a single operation, so they meet, and one denied entry denies the operation. Profile negotiation is the X-Axonflow-AuthZEN-Profile request header. No header (or an empty one) means the caller asked for AuthZEN 1.0 and gets exactly that, the bare boolean - with ONE exception, which a PEP feature-detecting this surface must handle: an otherwise-ALLOWED decision carrying a MANDATORY obligation answers such a caller with the boolean false, because the obligation rides in the context it did not negotiate and it must not be handed a permission whose precondition it will never see (ADR-065 invariant 8; the denial is counted under outcome=obligation_withheld and audited as blocked with policy_details.authzen_obligation_withheld). An allow carrying no mandatory obligation is still true for a bare caller, and the denied, challenged and errored paths are unchanged. `axonflow-authzen-profile-2026-08-29` additionally returns the AxonFlow rendering in the response context: four-valued operational state, obligations, approval challenge, safe reason. Any other non-empty profile is REFUSED, naming the profile this build emits, so a PEP negotiating a later profile against an older server can never read a bare allow as a successful negotiation and proceed past an obligation it never saw. Refusals raised before evaluation are typed and carry a JSON pointer to the offending member: malformed_envelope, incomplete_evaluation, unsupported_subject, unsupported_action, unsupported_resource, unevaluable_attribute, missing_evaluable_content, evaluation_unavailable. This route is an ADAPTER over the evaluation POST /api/v1/decide already serves, NOT the ADR-065 Policy Decision Point: the envelope is mapped to a DecideRequest and run through that same handler, so the two surfaces cannot drift, /api/v1/decide is unchanged and wire-stable, and at v11 the engine behind this route changes with no wire change. Registered unconditionally in every edition at every tier, with no flag and no kill switch; audit rows from this surface record plane `access_evaluation` so adoption is measurable separately from /api/v1/decide (ADR-065, #3611)"},
 	}
 }
 
@@ -119,11 +137,11 @@ func getSDKCompatibility() SDKCompatInfo {
 		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
 		// examples baseline).
 		RecommendedSDKVersion: map[string]string{
-			"python":     "9.1.0",
-			"typescript": "9.1.0",
-			"go":         "9.1.1",
-			"java":       "9.1.0",
-			"rust":       "0.8.2",
+			"python":     "9.2.0",
+			"typescript": "9.2.0",
+			"go":         "9.2.0",
+			"java":       "9.2.0",
+			"rust":       "0.9.0",
 		},
 	}
 }

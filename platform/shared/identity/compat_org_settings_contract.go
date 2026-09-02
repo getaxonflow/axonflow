@@ -40,6 +40,46 @@ type OrgIdentitySettings struct {
 	// required whenever CAEPEnabled is true (the migration's CHECK enforces
 	// that too).
 	CAEPAudience string
+	// DecisionShadowMode is the recorded per-plane PDP shadow mode (#3564,
+	// session v10.3-A), meaningful only when HasDecisionShadowMode is true.
+	//
+	// IT IS A SECOND AXIS ON THE SAME ROW, NOT A SECOND SURFACE. The two modes
+	// are independent - an operator shadows identity and decisions on
+	// different schedules - but they are per-organization facts about the same
+	// organization, read on the same TTL, through the same store, in ONE query.
+	// A parallel settings table would have doubled the read cost on the
+	// authentication path and given the two axes two different staleness
+	// windows for no reason a reader could defend.
+	//
+	// Only off and shadow are storable: enforce is v11's, and the column's own
+	// CHECK refuses it. The read side refuses it again (see
+	// parseOrgSettingsRow) because a CHECK added by a migration is not evidence
+	// about a row a different migration might yet write.
+	DecisionShadowMode CompatMode
+	// HasDecisionShadowMode reports whether a decision shadow mode is
+	// recorded, for the reason HasCompatMode gives: "no record" must not be
+	// spelled with a value that means "invalid record".
+	HasDecisionShadowMode bool
+	// DecisionShadowModeUnusable names why the stored decision mode could not
+	// be used, and is empty when there was nothing wrong with it.
+	//
+	// # WHY A FIELD RATHER THAN AN ERROR FROM THE WHOLE READ
+	//
+	// The two modes are INDEPENDENT axes that happen to share a row, and a
+	// failure on one must not decide the other. An earlier revision returned
+	// an error from parseOrgSettingsRow for an unusable decision mode, which
+	// failed the ENTIRE read - so OrgCompatMode errored too, and
+	// CompatAdapter.effectiveMode falls back to the process mode on a read
+	// error. A restore that wrote decision_shadow_mode='enforce' for one
+	// organization would therefore have SILENTLY DOWNGRADED that
+	// organization's identity-plane enforcement to the deployment's mode: a
+	// fail-open on a shipped security axis, caused by a defect on a new
+	// observability one.
+	//
+	// So the defect stays on its own axis. The identity mode and the CAEP
+	// opt-in are returned as read; OrgDecisionShadowMode turns this field into
+	// an error for ITS caller, which counts the fall-back and logs it.
+	DecisionShadowModeUnusable string
 	// UpdatedBy and UpdatedAt are the audit trail the admin API stamps.
 	UpdatedBy string
 	UpdatedAt string
@@ -82,12 +122,30 @@ func WithOIDCRealmCAEPSettings(src CAEPOrgSettingsSource) OIDCRealmSourceOption 
 	return OIDCRealmSourceOption{caep: src}
 }
 
-// OrgIdentitySettingsSource is what the Enterprise store implements: both
+// DecisionShadowModeSource answers "does this organization have a recorded
+// per-plane PDP shadow mode, and what is it" (#3564, session v10.3-A).
+//
+// It is a SEPARATE interface from CompatOrgModeSource although one store
+// implements both, so that the decision shadow depends on the question it
+// asks rather than on the identity plane's adapter. The two axes are
+// independent settings that happen to live on one row.
+type DecisionShadowModeSource interface {
+	// OrgDecisionShadowMode returns the organization's recorded shadow mode.
+	//
+	// The contract is CompatOrgModeSource's, verbatim: found=false with a nil
+	// error is "no record, the process mode applies" and is the ordinary
+	// answer; a non-nil error means the record could not be read and the
+	// caller falls back to the process mode and counts the fall-back.
+	OrgDecisionShadowMode(ctx context.Context, orgID string) (mode CompatMode, found bool, err error)
+}
+
+// OrgIdentitySettingsSource is what the Enterprise store implements: all three
 // read contracts plus the local invalidation hook the admin write path calls
 // when it runs in the same process.
 type OrgIdentitySettingsSource interface {
 	CompatOrgModeSource
 	CAEPOrgSettingsSource
+	DecisionShadowModeSource
 	// Invalidate drops the memoized row for orgID so the next read consults
 	// storage. Local to this process; the cross-process bound is the TTL.
 	Invalidate(orgID string)

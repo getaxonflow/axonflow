@@ -50,6 +50,7 @@ var Templates = []string{
 	"/api/policies/test",
 	"/api/policy/pre-check",
 	"/api/request",
+	"/api/v1/access/evaluation",
 	"/api/v1/audit/chains/{chainID}/verify",
 	"/api/v1/audit/records/{recordID}/verify",
 	"/api/v1/audit/signing-key",

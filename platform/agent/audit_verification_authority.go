@@ -145,7 +145,13 @@ func auditVerificationAuthorized(r *http.Request) bool {
 	// This gate turns a per-user token into TENANT-WIDE AUDIT READ, so an
 	// identity the organization's trust realms refuse must not buy read scope
 	// here while the same token is refused on every other route.
-	user, err := adaptedValidateUserToken(OrgIDFromContext(ctx), token, credentialTenant)
+	//
+	// #3602: the synthetic tag is read from the request here rather than
+	// inherited from an AuthResult, because this gate does not go through
+	// ResolveUser. It is a metric label and nothing else - it buys no read
+	// authority and is not consulted below.
+	user, err := adaptedValidateUserToken(OrgIDFromContext(ctx), token, credentialTenant,
+		sharedidentity.IsSyntheticProbeHeader(r.Header.Get(sharedidentity.SyntheticProbeHeader)))
 	if err != nil || user == nil {
 		return false
 	}

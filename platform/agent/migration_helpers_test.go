@@ -16,11 +16,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/testutil"
 
 	_ "github.com/lib/pq"
@@ -1286,4 +1289,217 @@ func TestValidateMigrationDependencies_MissingDependency(t *testing.T) {
 	if err != nil && !strings.Contains(err.Error(), "depends on") {
 		t.Errorf("Expected dependency error, got: %v", err)
 	}
+}
+
+// TestValidateMigrationsShellSwitchesMatchGo pins BOTH mode switches in
+// scripts/lib/validate-migrations.sh to platform/shared/deploymode.
+//
+// # WHY THIS TEST EXISTS (#3623)
+//
+// That one file contains TWO independent lists of DEPLOYMENT_MODE values —
+// get_migration_paths, which decides which migrations a mode is validated
+// against, and verify_schema, which decides which tables are then expected —
+// and they had DRIFTED from each other. `enterprise` was a case arm in
+// verify_schema and was NOT one in get_migration_paths, so it fell to the
+// latter's `*)` default and was validated against the full SaaS migration set,
+// including two industry verticals it never applies. `enterprise` is not an
+// exotic value: it is the default of docker-compose.enterprise.yml and
+// docker/docker-compose.base.yaml, and deploymode maps it to
+// in-vpc-enterprise → {core, enterprise}.
+//
+// TestShellCopiesOfRecognisedModesMatchGo above explicitly declined to pin this
+// file, on the grounds that it "groups modes by which tables it expects rather
+// than by which are recognised". That was true of verify_schema and false of
+// get_migration_paths, which is a categories map exactly like the Go one — and
+// leaving it unpinned is what let the drift happen.
+//
+// Pinning the two switches to a THIRD thing is deliberately stronger than
+// diffing them against each other: agreeing with each other and both being
+// wrong is a state a mutual comparison reports as healthy.
+func TestValidateMigrationsShellSwitchesMatchGo(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	const rel = "scripts/lib/validate-migrations.sh"
+	path := filepath.Join(repoRoot, filepath.FromSlash(rel))
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// sync-community-repo.yml excludes /scripts/* wholesale and does NOT
+		// re-include this file, so it is legitimately absent from a community
+		// checkout. Absent WITH `ee/` present means somebody moved or deleted
+		// it, and that must fail — "the file is gone" is exactly the drift this
+		// guards.
+		if _, eeErr := os.Stat(filepath.Join(repoRoot, "ee")); os.IsNotExist(err) && os.IsNotExist(eeErr) {
+			t.Skipf("skipping %s: absent and `ee/` is absent too, so this is a community checkout "+
+				"(the file is excluded from the community sync filter); the test runs in full on the enterprise repo", rel)
+		}
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	body := string(data)
+
+	pathsArms := parseShellCaseArms(t, body, "# axonflow-modes: begin", "# axonflow-modes: end", rel+" get_migration_paths")
+	verifyArms := parseShellCaseArms(t, body, "# axonflow-verify-modes: begin", "# axonflow-verify-modes: end", rel+" verify_schema")
+
+	// ANTI-VACUITY BY NAME, not by count. A parser that returned a short list
+	// would make every comparison below pass over whatever it happened to find.
+	// These four are named because each is a mode one of the two switches has
+	// been missing at some point: `enterprise` (#3623, get_migration_paths),
+	// and `evaluation` / `community-saas` / `in-vpc-travel` (#3167,
+	// verify_schema).
+	for _, must := range []string{"enterprise", "invpc", "in-vpc-travel", "community-saas", "evaluation"} {
+		if _, ok := pathsArms[must]; !ok {
+			t.Errorf("get_migration_paths has no case arm for %q", must)
+		}
+		if _, ok := verifyArms[must]; !ok {
+			t.Errorf("verify_schema has no case arm for %q", must)
+		}
+	}
+
+	// Both switches must cover EXACTLY the recognised set — no more, no fewer.
+	// Covering fewer is the #3623 defect (a real mode silently taking the
+	// default arm); covering more means the shell accepts a value the platform
+	// refuses to boot on, which is the direction
+	// TestShellCopiesOfRecognisedModesMatchGo calls out as dangerous.
+	want := map[string]bool{}
+	for _, m := range recognisedDeploymentModes() {
+		want[m] = true
+	}
+	for name, arms := range map[string]map[string][]string{
+		"get_migration_paths": pathsArms,
+		"verify_schema":       verifyArms,
+	} {
+		got := map[string]bool{}
+		for m := range arms {
+			got[m] = true
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s in %s covers a different mode set than recognisedDeploymentModes().\n got: %v\nwant: %v\n"+
+				"A missing mode falls to the default arm and is validated against a migration set it "+
+				"never applies; an extra one lets a deploy proceed to a container that will not boot.",
+				name, rel, sortedModeSet(got), sortedModeSet(want))
+		}
+	}
+
+	// The two switches cannot now disagree with each other, but say so
+	// explicitly: this is the property #3623 was actually about, and a reader
+	// who breaks it should be told which invariant they hit.
+	if !reflect.DeepEqual(sortedModeSet(modeSet(pathsArms)), sortedModeSet(modeSet(verifyArms))) {
+		t.Errorf("the two mode switches in %s disagree.\n get_migration_paths: %v\n verify_schema:       %v",
+			rel, sortedModeSet(modeSet(pathsArms)), sortedModeSet(modeSet(verifyArms)))
+	}
+
+	// get_migration_paths is a categories map, so pin its VALUES too — the
+	// mode being present on an arm that echoes the wrong path list is the same
+	// defect with the symptom moved one step later.
+	for mode, cats := range pathsArms {
+		canonical, recognised := deploymode.Resolve(mode)
+		if !recognised {
+			continue // already reported above
+		}
+		wantCats := canonicalDeploymentModes[canonical]
+		if !reflect.DeepEqual(cats, wantCats) {
+			t.Errorf("%s get_migration_paths %q → %v, but deploymode says %q applies %v",
+				rel, mode, cats, canonical, wantCats)
+		}
+	}
+}
+
+// parseShellCaseArms reads a `case` block delimited by the given markers and
+// returns each pattern token mapped to the whitespace-separated words of the
+// first `echo "..."` in its arm (empty for arms that echo nothing parseable).
+//
+// It is STRICT about the block markers and about the `*)` arm: a block it
+// cannot find, or one with no fail-closed default, is a t.Fatal rather than an
+// empty result, because an empty result would satisfy any comparison drawn
+// against it.
+func parseShellCaseArms(t *testing.T, body, open, close, what string) map[string][]string {
+	t.Helper()
+	start := strings.Index(body, open)
+	if start < 0 {
+		t.Fatalf("%s: marker %q not found — the block moved or was renamed, and without it this "+
+			"test would assert nothing and report success", what, open)
+	}
+	rest := body[start+len(open):]
+	end := strings.Index(rest, close)
+	if end < 0 {
+		t.Fatalf("%s: marker %q is never closed by %q", what, open, close)
+	}
+	block := rest[:end]
+
+	// Only a bare pattern list ending in `)` on its own line is an arm. This
+	// deliberately excludes lines such as the embedded SQL, which also ends in
+	// `)` but starts with a quote.
+	armRe := regexp.MustCompile(`^([a-z0-9*|_-]+)\)$`)
+	echoRe := regexp.MustCompile(`^echo "([^"]*)"`)
+
+	out := map[string][]string{}
+	sawDefault := false
+	var pending []string
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if m := armRe.FindStringSubmatch(trimmed); m != nil {
+			pending = strings.Split(m[1], "|")
+			for _, p := range pending {
+				if p == "*" {
+					sawDefault = true
+				}
+			}
+			continue
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		if m := echoRe.FindStringSubmatch(trimmed); m != nil {
+			for _, p := range pending {
+				if p == "*" {
+					continue // the fail-closed arm echoes a diagnostic, not a path list
+				}
+				out[p] = strings.Fields(m[1])
+			}
+			pending = nil
+			continue
+		}
+		// An arm whose body is not an echo (verify_schema's arms run psql).
+		// Record the pattern with no categories; the mode SET is what matters
+		// there.
+		if strings.HasPrefix(trimmed, "local ") || strings.HasPrefix(trimmed, "return ") {
+			for _, p := range pending {
+				if p == "*" {
+					continue
+				}
+				if _, exists := out[p]; !exists {
+					out[p] = nil
+				}
+			}
+			pending = nil
+		}
+	}
+	if !sawDefault {
+		t.Fatalf("%s has no `*)` arm. Without one an unrecognised DEPLOYMENT_MODE falls through "+
+			"and the check reports success for a mode it does not understand.", what)
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s: parsed zero case arms — the parse broke", what)
+	}
+	return out
+}
+
+func modeSet(m map[string][]string) map[string]bool {
+	out := map[string]bool{}
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+func sortedModeSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

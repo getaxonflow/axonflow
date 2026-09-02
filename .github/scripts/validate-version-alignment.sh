@@ -59,7 +59,12 @@ while IFS= read -r line; do
     else
         echo "  ✅ $file:$lineno — $default"
     fi
-done < <(grep -rn 'AXONFLOW_VERSION.*:-[0-9]' docker-compose*.yml 2>/dev/null || true)
+# NOTE: `-r` with a bare `docker-compose*.yml` glob is INERT - the shell expands
+# the glob to the repository-root matches before grep runs, so no nested compose
+# file is ever read. That blind spot let examples/integrations/decision-mode-adapter
+# stay pinned at 8.1.0 through every prep PR since v8.1.0, in a file customers copy.
+# --include with an explicit directory is what actually recurses.
+done < <(grep -rn --include='docker-compose*.yml' 'AXONFLOW_VERSION.*:-[0-9]' . 2>/dev/null || true)
 
 echo ""
 

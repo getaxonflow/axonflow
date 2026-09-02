@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/decision/legacycompile"
 	"github.com/gorilla/mux"
 )
 
@@ -202,6 +203,7 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 	}
 
 	// Evaluate
+	orchReq.ShadowPlane = legacycompile.PlanePolicySimulation // ADR-065 decision shadow (#3564)
 	result := h.engine.EvaluateDynamicPolicies(r.Context(), orchReq)
 	// Count only the policies visible to the CALLER's org. The raw
 	// ListActivePolicies cache is deployment-wide, so counting it leaked how

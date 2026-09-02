@@ -29,7 +29,7 @@ func LoaderCols() []string {
 		"id", "policy_id", "name", "category", "tier", "pattern", "severity",
 		"description", "phase", "action_request", "action_response",
 		"enabled", "priority", "tenant_id", "segment_id", "metadata",
-		"created_at",
+		"created_at", "updated_at",
 	}
 }
 
@@ -45,7 +45,7 @@ func SystemPolicyRow(rows *sqlmock.Rows, id, policyID, category, pattern, severi
 		id, policyID, "Test policy "+policyID, category, "system", pattern, severity,
 		nil, phase, actionRequest, nil,
 		true, priority, "global", nil, []byte(`{}`),
-		time.Now().UTC(),
+		time.Now().UTC(), time.Now().UTC(),
 	)
 }
 
@@ -58,7 +58,7 @@ func SegmentScopedPolicyRow(rows *sqlmock.Rows, id, policyID, tenantID, segmentI
 		id, policyID, "Test policy "+policyID, category, "tenant", pattern, severity,
 		nil, phase, actionRequest, nil,
 		true, priority, tenantID, segmentID, []byte(`{}`),
-		time.Now().UTC(),
+		time.Now().UTC(), time.Now().UTC(),
 	)
 }
 

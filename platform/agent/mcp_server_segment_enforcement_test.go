@@ -111,7 +111,7 @@ func installSharedEngineWithSegmentScopedResponsePolicy(t *testing.T, segmentID,
 			"sensitive-data", "tenant", segRespMarker, "critical",
 			nil, "both", "block", "block",
 			true, 100, tenantID, segmentID, []byte(`{}`),
-			time.Now().UTC(),
+			time.Now().UTC(), time.Now().UTC(),
 		)
 		rows = policytest.SystemPolicyRow(rows,
 			"sys-never-matches", "sys_test_never_matches",

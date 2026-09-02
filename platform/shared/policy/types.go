@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"axonflow/platform/decision/legacycompile"
 )
 
 // Phase represents when a policy is evaluated in the request lifecycle.
@@ -243,6 +245,19 @@ type CompiledPolicy struct {
 	// UnifiedPolicyEngine's segment gate) instead of not knowing about
 	// segments at all.
 	SegmentID string
+
+	// UpdatedAt is the row's updated_at, rendered in the one stable spelling
+	// both halves of an ADR-065 shadow snapshot key use, and empty when the
+	// column held SQL NULL.
+	//
+	// It is carried for ONE purpose and no enforcement path reads it: the
+	// decision shadow (#3564) keys a compiled bundle on (policy_id,
+	// updated_at) of the set the plane actually evaluated, so a bundle
+	// compiled from a policy that has since been edited is recognised as
+	// describing a different policy set instead of producing a difference the
+	// migration did not cause. An empty value makes the comparison
+	// not-comparable, which is the safe direction.
+	UpdatedAt string
 
 	// Optional validator for semantic validation
 	Validator ValidatorFunc
@@ -538,6 +553,24 @@ type EvalOptions struct {
 	// a column retirement. Tracked on #3490.
 	OrgScope *string
 	UserID   string
+
+	// Plane names the ADR-065 enforcement plane this evaluation belongs to
+	// (#3564, session v10.3-A).
+	//
+	// It is DATA, not a decision: nothing in the enforcement path branches on
+	// it, and the only consumer is the decision shadow's observation site,
+	// which uses it to attribute a comparison to the surface it came from -
+	// ADR-065 gate 18 is stated per plane. The declared planes are
+	// legacycompile.AllPlanes(); the nineteen call sites behind them are
+	// enumerated in platform/decision/legacycompile/legacy_call_sites.tsv, and
+	// TestEveryPolicyCallSiteNamesItsPlane derives the required set from that
+	// artifact so a new call site fails on the PR that adds it.
+	//
+	// Its zero value is REFUSED by the observation site rather than defaulted.
+	// An observation attributed to no plane cannot be counted at all, and
+	// attributing it to some plane would move a denominator an operator is
+	// reading to decide whether a plane may cut over.
+	Plane legacycompile.Plane
 
 	// Request context
 	ConnectorName string

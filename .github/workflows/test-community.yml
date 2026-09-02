@@ -132,7 +132,12 @@ jobs:
         run: |
           cd platform
           go mod download
-          go mod verify
+          # platform/ now has a filesystem replace (platform/decision, #3603), which
+          # `go mod verify` cannot check: a replaced module has no downloaded zip.
+          # The helper tolerates exactly that case, cross-checked against `go list -m`,
+          # and still fails on any other verification problem -- rather than skipping
+          # the check for ~200 real dependencies to accommodate one local path.
+          bash "$GITHUB_WORKSPACE/scripts/ci/go-mod-verify.sh"
 
       - name: Set up test database
         env:
@@ -269,12 +274,33 @@ jobs:
         run: |
           cd platform
           go mod download
-          go mod verify
+          # platform/ now has a filesystem replace (platform/decision, #3603), which
+          # `go mod verify` cannot check: a replaced module has no downloaded zip.
+          # The helper tolerates exactly that case, cross-checked against `go list -m`,
+          # and still fails on any other verification problem -- rather than skipping
+          # the check for ~200 real dependencies to accommodate one local path.
+          bash "$GITHUB_WORKSPACE/scripts/ci/go-mod-verify.sh"
 
       - name: Run tests with race detector
         run: |
           cd platform/orchestrator
           go test -race -timeout 10m
+
+      # THE SHADOW'S CONCURRENCY IS ONLY MEANINGFUL UNDER -race.
+      #
+      # planeshadow runs a worker POOL (up to 64) sharing a recorder, a
+      # refcounted build-lock map and a bounded world cache, and every
+      # deployment wires it. Round 1 of this PR's review found a plain uint64
+      # incremented from every worker in code that ships enabled - and nothing
+      # in CI would have caught it, because no -race job covered this package
+      # and the one concurrent test wired a different recorder.
+      #
+      # shared/policy is included because it owns the emit sites the workers
+      # read their Observation from.
+      - name: Run the decision-shadow packages with the race detector
+        run: |
+          cd platform
+          go test -race -count=1 -timeout 10m ./shared/planeshadow/ ./shared/policy/
 
   integration-tests:
     name: Integration Tests
@@ -329,7 +355,12 @@ jobs:
         run: |
           cd platform
           go mod download
-          go mod verify
+          # platform/ now has a filesystem replace (platform/decision, #3603), which
+          # `go mod verify` cannot check: a replaced module has no downloaded zip.
+          # The helper tolerates exactly that case, cross-checked against `go list -m`,
+          # and still fails on any other verification problem -- rather than skipping
+          # the check for ~200 real dependencies to accommodate one local path.
+          bash "$GITHUB_WORKSPACE/scripts/ci/go-mod-verify.sh"
 
       - name: Set up test database
         env:
@@ -377,7 +408,8 @@ jobs:
   unit-tests-decision:
     name: "Unit Tests: Decision Contracts (Community)"
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Raised alongside test.yml, keeping this lane's existing +5 over its twin.
+    timeout-minutes: 37
     needs: [detect-changes]
     if: |
       github.repository == 'getaxonflow/axonflow' &&
@@ -600,6 +632,33 @@ jobs:
       # subprocesses are not instrumented, so running them again here would add
       # minutes of build time while telling the race detector nothing the rest
       # of the module has not.
+
+      # ADR-065 gate 15 is "every plane produces the same normalized outcome and
+      # reason codes". Named here rather than left to the `./...` sweep below
+      # for this job's stated reason: a gate that stops existing must show up as
+      # a missing test name, not as a slightly shorter run nobody reads.
+      #
+      # -v so the per-edition comparison counts and the observed outcome spread
+      # land in the log. That spread is the operand: the first version of this
+      # gate ran 726 comparisons in which every decision was a DENY, so it
+      # compared a state to itself and would have passed with the permit path
+      # entirely broken.
+      - name: "ADR-065 gate 15: cross-plane outcome equality"
+        run: |
+          cd platform/decision
+          go test ./conformance/ -count=1 -timeout 10m -v \
+            -run 'TestGate15CrossPlaneOutcomeEquality|TestGate15CapabilityRefusalArmIsExercised|TestPlaneVocabularyIsShared'
+
+      # And the proof that gate 15's anti-vacuity floors can actually fail. It
+      # has its own step because it is skipped by -short below, like the other
+      # two mutation harnesses, and because a floor nobody has watched go red is
+      # what the gate had before.
+      - name: "ADR-065 gate 15: mutation proofs for the anti-vacuity floors"
+        run: |
+          cd platform/decision
+          go test ./conformance/gate15mutation/ -count=1 -timeout 25m -v \
+            -run 'TestGate15FloorsCanFail|TestEveryMutantAnchorIsUniqueAndPresent'
+
       - name: Full module test with the race detector
         run: |
           cd platform/decision
@@ -647,7 +706,12 @@ jobs:
         run: |
           cd platform
           go mod download
-          go mod verify
+          # platform/ now has a filesystem replace (platform/decision, #3603), which
+          # `go mod verify` cannot check: a replaced module has no downloaded zip.
+          # The helper tolerates exactly that case, cross-checked against `go list -m`,
+          # and still fails on any other verification problem -- rather than skipping
+          # the check for ~200 real dependencies to accommodate one local path.
+          bash "$GITHUB_WORKSPACE/scripts/ci/go-mod-verify.sh"
 
       - name: Vet the untagged build
         run: |

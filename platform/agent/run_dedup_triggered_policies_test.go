@@ -61,7 +61,7 @@ func installSharedEngineWithNonBlockingWarnPolicy(t *testing.T, tenantID, scopeO
 			"dup-uuid-1", dupTestPolicyID, "Dup Test Policy", "compliance-rbi", "tenant",
 			pattern, "low", nil, "request", "warn", nil,
 			true, 100, tenantID, nil, []byte(`{}`),
-			time.Now().UTC(),
+			time.Now().UTC(), time.Now().UTC(),
 		)
 		mockSQL.ExpectQuery("SELECT").WithArgs(scopeOrg).WillReturnRows(tenantRows)
 

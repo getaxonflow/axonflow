@@ -4,10 +4,12 @@
 package agent
 
 import (
-	"axonflow/platform/shared/plugincompat"
 	"os"
 	"strings"
 	"testing"
+
+	"axonflow/platform/decision/contract"
+	"axonflow/platform/shared/plugincompat"
 )
 
 func TestGetCapabilities(t *testing.T) {
@@ -169,6 +171,63 @@ func TestGetCapabilitiesContainsClientVersionTelemetry(t *testing.T) {
 		}
 	}
 	t.Error("expected client_version_telemetry capability to be present")
+}
+
+// TestGetCapabilitiesContainsAuthZENEvaluation pins the 10.3.0
+// `authzen_evaluation` capability (#3611), the AuthZEN-native authorization
+// surface all five SDKs call.
+//
+// It is deliberately stronger than the two pins above, which compare a name and
+// a Since to hand-written literals and would therefore keep passing if the
+// route moved or the profile header were renamed. This one checks the
+// description against the SAME constants the handler registers and negotiates
+// with: authzenHandlerPath, authzenProfileHeader and contract.AuthZENProfileV1.
+// So the failure it catches is not only "someone deleted the entry" but
+// "someone changed the wire and left /health advertising the old one", which is
+// the class of drift a hand-maintained discovery list exists to produce.
+//
+// What it does NOT assert, so nobody reads more into a green run than is there:
+// that the route is reachable. This is a unit test over a literal list; the
+// registration is exercised by authzen_handler_test.go and the live suite.
+//
+// The prose claims were UNPINNED until an R3 mutant proved it: a description
+// keeping all three constants while asserting the exact opposite of the truth
+// ("this route IS the ADR-065 Policy Decision Point, NOT an adapter") passed a
+// green run. Naming the constants only proves they APPEAR. The adapter-vs-PDP
+// sentence is the most consequential claim in the entry - it is what tells a
+// customer whether their decisions are being made by the engine they have
+// authorised policy against - so it is pinned below by phrase, not by constant.
+func TestGetCapabilitiesContainsAuthZENEvaluation(t *testing.T) {
+	caps := getCapabilities()
+	var found *PlatformCapability
+	for i := range caps {
+		if caps[i].Name == "authzen_evaluation" {
+			found = &caps[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected authzen_evaluation capability to be present: POST " +
+			authzenHandlerPath + " is registered unconditionally and all five SDKs call it")
+	}
+	if found.Since != "10.3.0" {
+		t.Errorf("authzen_evaluation since = %q, want %q", found.Since, "10.3.0")
+	}
+	for _, want := range []string{
+		authzenHandlerPath,
+		authzenProfileHeader,
+		string(contract.AuthZENProfileV1),
+		// The load-bearing claim, pinned as a phrase because no constant
+		// carries it. Inverting it is the mutant that survived the
+		// constants-only version of this test.
+		"is an ADAPTER over the evaluation POST " + decisionHandlerPath,
+		"NOT the ADR-065 Policy Decision Point",
+	} {
+		if !strings.Contains(found.Description, want) {
+			t.Errorf("authzen_evaluation description does not name %q; /health would advertise a contract the handler does not speak.\ngot: %s",
+				want, found.Description)
+		}
+	}
 }
 
 func TestGetPlatformVersion(t *testing.T) {

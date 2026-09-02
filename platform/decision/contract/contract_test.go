@@ -263,12 +263,85 @@ func TestRequesterAudienceReceivesNoPolicyStructure(t *testing.T) {
 	}
 }
 
+// inheritingSchemas are the shapes for which "rejects the empty object" is NOT
+// a property, because every one of their members is legitimately optional.
+//
+// There is exactly one: a plural-envelope entry inherits any member it omits
+// from the envelope's shared base, so `{}` is a well-formed entry meaning
+// "inherit everything". The exemption is a set rather than a skip so it cannot
+// widen unnoticed - TestSchemasCompile fails both when an unlisted schema
+// accepts `{}` AND when a listed one stops accepting it, which is the direction
+// people leave out and the one that turns an exemption into a blanket.
+//
+// Nothing here weakens the COMPILE assertion, which is the anti-vacuity half:
+// it still runs over every schema, exempted or not.
+var inheritingSchemas = map[Schema]string{
+	SchemaAuthZENRequest: "a plural-envelope entry inherits the members it omits from the shared base",
+}
+
 func TestSchemasCompile(t *testing.T) {
 	for _, s := range AllSchemas() {
-		if err := ValidateAgainstSchema(s, map[string]any{}); err == nil {
-			t.Errorf("schema %q accepted an empty object", s)
-		} else if strings.Contains(err.Error(), "compiling schema") {
+		err := ValidateAgainstSchema(s, map[string]any{})
+		// The compile check is asserted for EVERY schema. A schema that does not
+		// compile reports through the same error value as a validation failure,
+		// so a test that only counted rejections would read "does not compile" as
+		// "correctly refused" and go green over a schema that never ran.
+		if err != nil && strings.Contains(err.Error(), "compiling schema") {
 			t.Errorf("schema %q does not compile: %v", s, err)
+			continue
+		}
+		reason, exempt := inheritingSchemas[s]
+		switch {
+		case exempt && err != nil:
+			t.Errorf("schema %q is listed as an inheriting shape (%s) but refused the empty object; "+
+				"if that is now correct, delete its row from inheritingSchemas in the same change", s, reason)
+		case !exempt && err == nil:
+			t.Errorf("schema %q accepted an empty object", s)
+		}
+	}
+}
+
+// TestAuthZENRequestIsConstrainedDespiteTheEmptyObjectExemption pins what the
+// exemption above costs and what it does not.
+//
+// Exempting a shape from "rejects `{}`" is only safe if the shape still refuses
+// everything it should; otherwise the exemption is where an unconstrained schema
+// hides. These are the constraints the entry shape carries on its own.
+func TestAuthZENRequestIsConstrainedDespiteTheEmptyObjectExemption(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  map[string]any
+	}{
+		{"an undeclared member", map[string]any{"subjekt": map[string]any{"type": "user", "id": "u1"}}},
+		{"a subject with no id", map[string]any{"subject": map[string]any{"type": "user"}}},
+		{"a subject with an empty id", map[string]any{"subject": map[string]any{"type": "user", "id": ""}}},
+		{"an action with no name", map[string]any{"action": map[string]any{}}},
+		{"a resource with no type", map[string]any{"resource": map[string]any{"id": "r1"}}},
+		{"a subject carrying an undeclared member", map[string]any{
+			"subject": map[string]any{"type": "user", "id": "u1", "roles": []any{"admin"}},
+		}},
+		{"a context that is not an object", map[string]any{"context": "args"}},
+	} {
+		if err := ValidateAgainstSchema(SchemaAuthZENRequest, tc.doc); err == nil {
+			t.Errorf("the entry shape accepted %s: %v", tc.name, tc.doc)
+		}
+	}
+
+	// ...and what it must still accept, so the negatives above are not passing
+	// because the schema refuses everything.
+	for _, tc := range []struct {
+		name string
+		doc  map[string]any
+	}{
+		{"the inheriting entry", map[string]any{}},
+		{"a complete entry", map[string]any{
+			"subject":  map[string]any{"type": "user", "id": "u1"},
+			"action":   map[string]any{"name": "read"},
+			"resource": map[string]any{"type": "ticket", "id": "SUP-42"},
+		}},
+	} {
+		if err := ValidateAgainstSchema(SchemaAuthZENRequest, tc.doc); err != nil {
+			t.Errorf("the entry shape refused %s: %v", tc.name, err)
 		}
 	}
 }

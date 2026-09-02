@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"axonflow/platform/shared/deploymode"
 )
 
 // =============================================================================
@@ -56,41 +58,36 @@ import (
 // "which categories" and "which values are recognised at all".
 // =============================================================================
 
-// canonicalDeploymentModes maps every RECOGNISED DEPLOYMENT_MODE to the
-// migration categories it loads, in apply order, as slash-separated paths
-// relative to the migrations/ root.
+// canonicalDeploymentModes and deploymentModeAliases are init-time COPIES of
+// the shared definitions in platform/shared/deploymode, referred to by the
+// names every test and every reader in this package already uses.
 //
-// This map is the ONLY definition of "recognised". A value that is neither a
-// key here nor a key of deploymentModeAliases is REFUSED — getMigrationPaths
+// Copies rather than the shared map objects, so that neither this package nor
+// any other can mutate the definition the migration selector reads - and the
+// selector decides which database schema a deployment applies. deploymode's
+// accessors return fresh maps for exactly that reason.
+//
+// They moved out of this file because they answer a question a SECOND process
+// has to ask. platform/shared/deploymode's package comment carries the full
+// argument; the short form is that "does this deployment apply
+// migrations/enterprise/" decides whether an Enterprise-only table can exist,
+// the orchestrator needs that answer too, and it cannot import package agent.
+// Restating the list there would put a predicate and the migration selector on
+// two lists that disagree the first time one is edited alone.
+//
+// The map is still the ONLY definition of "recognised". A value that is
+// neither a key of it nor a key of the alias map is REFUSED - getMigrationPaths
 // returns an error and the agent refuses to boot. It does not fall through to
-// the widest set, which is what shipped before #3167: `enterprise` — the value
-// our own docker-compose.enterprise.yml has always defaulted to — was not a
+// the widest set, which is what shipped before #3167: `enterprise` - the value
+// our own docker-compose.enterprise.yml has always defaulted to - was not a
 // case, so every self-hosted enterprise stack silently applied the SaaS set,
 // including all three industry verticals it never asked for.
-var canonicalDeploymentModes = map[string][]string{
-	"community":         {"core"},
-	"evaluation":        {"core"},
-	"community-saas":    {"core", "community-saas"},
-	"in-vpc-enterprise": {"core", "enterprise"},
-	"in-vpc-healthcare": {"core", "enterprise", "industry/healthcare"},
-	"in-vpc-banking":    {"core", "enterprise", "industry/banking"},
-	"in-vpc-travel":     {"core", "enterprise", "industry/travel"},
-	"saas":              {"core", "enterprise", "industry/healthcare", "industry/banking", "industry/travel"},
-}
+var canonicalDeploymentModes = deploymode.CanonicalModes()
 
 // deploymentModeAliases maps accepted non-canonical spellings onto a canonical
-// mode. An alias is recognised; anything outside these two maps is not.
-//
-//   - "invpc"      predates the in-vpc-<vertical> split and is still accepted
-//     by the marketplace CloudFormation template's AllowedValues.
-//   - "enterprise" is what docker-compose.enterprise.yml, docker-compose.test.yml
-//     and docker/docker-compose.base.yaml default to, and what
-//     scripts/setup-e2e-testing.sh writes into .env. It denotes a single-tenant
-//     self-hosted enterprise deployment, which is in-vpc-enterprise. (#3167)
-var deploymentModeAliases = map[string]string{
-	"invpc":      "in-vpc-enterprise",
-	"enterprise": "in-vpc-enterprise",
-}
+// mode. An alias is recognised; anything outside these two maps is not. See
+// platform/shared/deploymode for the per-alias history.
+var deploymentModeAliases = deploymode.Aliases()
 
 // unsetDeploymentMode is what an EMPTY DEPLOYMENT_MODE resolves to.
 //
@@ -115,7 +112,7 @@ var deploymentModeAliases = map[string]string{
 // An unrecognised value IS fatal, because that is an operator asserting
 // something the platform cannot honour — a distinction the old `default:` arm
 // could not make.
-const unsetDeploymentMode = "community"
+const unsetDeploymentMode = deploymode.Unset
 
 // neverSelectedMigrationCategories are directories under migrations/ that NO
 // deployment mode loads, in any configuration.
@@ -179,14 +176,11 @@ func recognisedDeploymentModes() []string {
 // or case slip surfaces as a named boot failure instead of a silent schema
 // choice.
 func resolveDeploymentMode(raw string) (string, error) {
-	if raw == "" {
-		return unsetDeploymentMode, nil
-	}
-	if canonical, ok := deploymentModeAliases[raw]; ok {
-		return canonical, nil
-	}
-	if _, ok := canonicalDeploymentModes[raw]; ok {
-		return raw, nil
+	// Resolution ORDER lives in exactly one place too (deploymode.Resolve):
+	// aliases first, then canonical names, empty to the unset default. A copy
+	// of the order here would be a second thing to keep in step with the maps.
+	if mode, recognised := deploymode.Resolve(raw); recognised {
+		return mode, nil
 	}
 	return "", fmt.Errorf(
 		"unrecognised DEPLOYMENT_MODE=%q — refusing to guess which database schema to apply. "+

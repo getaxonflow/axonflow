@@ -56,6 +56,15 @@ const (
 	CategoryInvalidRequest  Category = "invalid_request"
 )
 
+// AllCategories returns every declared category in a stable order, so the
+// schema-drift tests enumerate the range instead of restating it.
+func AllCategories() []Category {
+	return []Category{
+		CategoryAllowed, CategoryNotPermitted, CategoryApprovalPending,
+		CategoryUnavailable, CategoryInvalidRequest,
+	}
+}
+
 // CategoryFor maps a reason code to the coarse requester-safe category.
 //
 // The mapping is total by construction: an unmapped code returns

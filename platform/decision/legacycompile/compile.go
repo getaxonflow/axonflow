@@ -53,6 +53,28 @@ const DefaultRealm = "legacy_segment"
 // one.
 const DefaultContentTarget = "response.content"
 
+// Normalized returns the options with every empty field replaced by the
+// default Compile would have applied.
+//
+// EXPORTED BECAUSE A CALLER THAT KEEPS ITS OWN COPY OF THE OPTIONS MUST BE ABLE
+// TO KEEP THE SAME COPY COMPILE USED, and until this was exported the only way
+// to do that was to restate the defaults - which two callers did, and a third
+// forgot.
+//
+// Compile normalizes internally, so a caller passing Options{} gets a report
+// compiled against response.content while its own copy still says "". Anything
+// that later reads its copy - to build the OTHER side of a comparison, say -
+// then names a different field than the compiled side does, and every
+// comparison involving a static redaction differs for a reason that is entirely
+// an artifact of who normalized what. Measured before this existed: every
+// static redaction on every plane classified UNEXPLAINED on a default
+// deployment, because the legacy effect carried an empty target and the
+// ADR-065 effect carried response.content.
+//
+// Compile still normalizes, so this is a convenience for callers rather than a
+// precondition: passing un-normalized options to Compile remains correct.
+func (o Options) Normalized() Options { return o.withDefaults() }
+
 func (o Options) withDefaults() Options {
 	if o.ContentTarget == "" {
 		o.ContentTarget = DefaultContentTarget

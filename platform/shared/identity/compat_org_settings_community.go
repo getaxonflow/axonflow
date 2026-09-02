@@ -12,6 +12,10 @@ import "database/sql"
 // process-wide mode is the whole answer there, which is exactly #3582's
 // behaviour. Callers skip on ErrEnterpriseOnly, as they do for
 // NewOIDCRealmSource.
-func NewDBOrgIdentitySettingsStore(_ *sql.DB) (OrgIdentitySettingsSource, error) {
+//
+// The component argument is accepted and ignored so the two editions present
+// one signature. It names the binary for the Enterprise store's read-failure
+// metric; a store that is never constructed reports no failures.
+func NewDBOrgIdentitySettingsStore(_ *sql.DB, _ string) (OrgIdentitySettingsSource, error) {
 	return nil, ErrEnterpriseOnly
 }

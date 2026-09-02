@@ -96,7 +96,7 @@ services:
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.2.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.3.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -203,6 +203,37 @@ services:
       # identity headers. A value on one and not the other is the "consulted in
       # some planes and not others" split the adapter exists to prevent.
       AXONFLOW_IDENTITY_COMPAT_MODE: ${AXONFLOW_IDENTITY_COMPAT_MODE:-}
+      # --- ADR-065 per-plane decision shadow (#3564, v10.3.0+) ---
+      #
+      # Set on BOTH services, for the same reason the identity mode above is:
+      # seven of the twelve enforcement planes evaluate in the agent and five
+      # in the orchestrator, and ADR-065 gate 18 is stated PER PLANE, so a
+      # value on one and not the other produces a window with no evidence at
+      # all for the other binary's planes.
+      #
+      # off (the default) | shadow. There is deliberately NO 'enforce': the
+      # decision plane becomes an authority at v11, and both binaries refuse
+      # the value BY NAME at boot rather than downgrading it silently.
+      AXONFLOW_DECISION_SHADOW_MODE: ${AXONFLOW_DECISION_SHADOW_MODE:-}
+      # Comma-separated planes that dual-evaluate. Empty is EVERY plane, which
+      # is the only value that produces a complete window; the list exists so
+      # one plane can be withdrawn without closing it.
+      AXONFLOW_DECISION_SHADOW_PLANES: ${AXONFLOW_DECISION_SHADOW_PLANES:-}
+      # Sampling rate in (0, 1]. Empty is 1.0. A value outside the range is
+      # FATAL rather than clamped: 0 is a deployment that believes it is
+      # measuring and is not.
+      AXONFLOW_DECISION_SHADOW_SAMPLE_RATE: ${AXONFLOW_DECISION_SHADOW_SAMPLE_RATE:-}
+      # The pool that runs the PDP evaluation OFF the request path, and the
+      # queue in front of it. Neither can add latency to a request; too small a
+      # queue costs DROPPED observations, which is a hole in the denominator.
+      AXONFLOW_DECISION_SHADOW_WORKERS: ${AXONFLOW_DECISION_SHADOW_WORKERS:-}
+      AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH: ${AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH:-}
+      # How many MATCHES pass between log lines (default 10000). Every
+      # expected_change and every UNEXPLAINED difference is logged in full and
+      # is never sampled away; turn this down while reading a window, because
+      # a plane producing no differences is otherwise indistinguishable from a
+      # shadow that never ran. It changes no decision.
+      AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY: ${AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY:-}
       # How many identity-compat AGREEMENTS pass between log lines (default
       # 100000). Turn it down while reading a shadow phase: an agreement is the
       # common case, so at the default an operator cannot tell "the adapter ran
@@ -333,6 +364,37 @@ services:
       # resolves this independently and a value on the agent alone would leave
       # this plane unadapted. See the agent service for the full contract.
       AXONFLOW_IDENTITY_COMPAT_MODE: ${AXONFLOW_IDENTITY_COMPAT_MODE:-}
+      # --- ADR-065 per-plane decision shadow (#3564, v10.3.0+) ---
+      #
+      # Set on BOTH services, for the same reason the identity mode above is:
+      # seven of the twelve enforcement planes evaluate in the agent and five
+      # in the orchestrator, and ADR-065 gate 18 is stated PER PLANE, so a
+      # value on one and not the other produces a window with no evidence at
+      # all for the other binary's planes.
+      #
+      # off (the default) | shadow. There is deliberately NO 'enforce': the
+      # decision plane becomes an authority at v11, and both binaries refuse
+      # the value BY NAME at boot rather than downgrading it silently.
+      AXONFLOW_DECISION_SHADOW_MODE: ${AXONFLOW_DECISION_SHADOW_MODE:-}
+      # Comma-separated planes that dual-evaluate. Empty is EVERY plane, which
+      # is the only value that produces a complete window; the list exists so
+      # one plane can be withdrawn without closing it.
+      AXONFLOW_DECISION_SHADOW_PLANES: ${AXONFLOW_DECISION_SHADOW_PLANES:-}
+      # Sampling rate in (0, 1]. Empty is 1.0. A value outside the range is
+      # FATAL rather than clamped: 0 is a deployment that believes it is
+      # measuring and is not.
+      AXONFLOW_DECISION_SHADOW_SAMPLE_RATE: ${AXONFLOW_DECISION_SHADOW_SAMPLE_RATE:-}
+      # The pool that runs the PDP evaluation OFF the request path, and the
+      # queue in front of it. Neither can add latency to a request; too small a
+      # queue costs DROPPED observations, which is a hole in the denominator.
+      AXONFLOW_DECISION_SHADOW_WORKERS: ${AXONFLOW_DECISION_SHADOW_WORKERS:-}
+      AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH: ${AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH:-}
+      # How many MATCHES pass between log lines (default 10000). Every
+      # expected_change and every UNEXPLAINED difference is logged in full and
+      # is never sampled away; turn this down while reading a window, because
+      # a plane producing no differences is otherwise indistinguishable from a
+      # shadow that never ran. It changes no decision.
+      AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY: ${AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY:-}
       # How many identity-compat AGREEMENTS pass between log lines (default
       # 100000). Turn it down while reading a shadow phase: an agreement is the
       # common case, so at the default an operator cannot tell "the adapter ran
@@ -356,7 +418,7 @@ services:
       # unrecognized code is fatal at boot, like an unrecognized mode.
       AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS: ${AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.2.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.3.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
