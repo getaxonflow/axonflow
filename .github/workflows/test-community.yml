@@ -58,7 +58,7 @@ jobs:
       go-code: ${{ steps.filter.outputs.go-code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect Go code changes
         uses: dorny/paths-filter@v4
@@ -151,7 +151,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -301,7 +301,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         # CACHE OFF ON THE FLEET (#3685 convention, completed 2026-09-06).
@@ -401,7 +401,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -485,7 +485,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         # CACHE OFF ON THE FLEET (#3685 convention, completed 2026-09-06).
@@ -895,7 +895,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         # CACHE OFF ON THE FLEET (#3685 convention, completed 2026-09-06).
@@ -1017,7 +1017,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6

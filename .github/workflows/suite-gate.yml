@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 115
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: On a pull request there is nothing to gate
         if: github.event_name == 'pull_request'
