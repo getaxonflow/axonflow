@@ -4,9 +4,11 @@
 package orchestrator
 
 import (
-	"axonflow/platform/shared/plugincompat"
 	"regexp"
 
+	"axonflow/platform/shared/capability"
+	"axonflow/platform/shared/plugincompat"
+	"axonflow/platform/shared/sdkcompat"
 	"axonflow/platform/shared/version"
 )
 
@@ -55,94 +57,53 @@ func getPlatformVersion() string {
 }
 
 // getCapabilities is the orchestrator plane's feature list, served on /health at
-// port 8081. Unlike the SDK and plugin compatibility maps below, which are
-// byte-identical to the agent's by design, this list is a deliberate SUBSET of
-// platform/agent/capabilities.go: it advertises only what THIS plane serves.
+// port 8081. Like the agent's, it is PROJECTED from platform/shared/capability
+// rather than hand-maintained (#3618); see the long note on
+// platform/agent/capabilities.go for why the literal that used to be here is
+// gone.
 //
-// The rule, and the reason the two files are allowed to differ here: a client
-// discovers a capability in order to call it. Advertising a route the
-// orchestrator does not register would send that client to a port that answers
-// 404. So a capability whose surface exists only on the agent (8080) stays out
-// of this list. That is why decision_obligations, two_touch_redaction,
-// seam_capability_decisioning, client_version_telemetry,
-// identity_header_attribution and the Community-SaaS entries appear only in the
-// agent copy.
+// This plane's list is a deliberate SUBSET of the agent's, and the projection
+// preserves that: a registry entry names the planes that advertise it, so a
+// capability whose surface exists only on the agent simply does not list
+// "orchestrator". The rule is unchanged — a client discovers a capability in
+// order to CALL it, and advertising a route the orchestrator does not register
+// sends that client to a port that answers 404. That is why
+// decision_obligations, two_touch_redaction, seam_capability_decisioning,
+// client_version_telemetry, identity_header_attribution, authzen_evaluation and
+// the Community-SaaS entries are agent-only.
 //
-// v10.3.0 (RUNBOOK_RELEASE_PREP.md Step 0b): the train's one client-observable
-// new surface is `authzen_evaluation`, POST /api/v1/access/evaluation. It is
-// added to the AGENT list and deliberately NOT here. RegisterAuthZENHandlers is
-// called only from platform/agent/run.go, and neither platform/orchestrator nor
-// ee/platform/orchestrator registers that path or any AuthZEN handling, so this
-// plane genuinely does not serve it. Nothing else in the v10.3.0 train adds a
-// route, header contract, obligation type or discovery field on either plane
-// (see the PR body for the per-item exclusions), so this list is otherwise
-// unchanged this train.
+// What the projection additionally buys: agent-vs-orchestrator drift is failure
+// mode 1 in RUNBOOK_RELEASE_PREP.md and has happened in a real train. Two
+// literals could disagree about a shared entry's Since or description and each
+// would look right on its own; a registry entry has ONE Since, and a
+// per-plane description takes a `description_overrides` key that the validator
+// checks. So the two planes can still differ — they do, for
+// platform_identity_discovery, whose orchestrator copy carries an extra
+// paragraph — but only deliberately and visibly, in one place.
 func getCapabilities() []PlatformCapability {
-	return []PlatformCapability{
-		{Name: "health_check", Since: "1.0.0", Description: "Basic health endpoint"},
-		{Name: "proxy_llm_call", Since: "1.0.0", Description: "Proxy mode LLM calls with policy enforcement"},
-		{Name: "audit_llm_call", Since: "1.0.0", Description: "Audit logging for LLM calls"},
-		{Name: "static_policies", Since: "2.0.0", Description: "System policy CRUD"},
-		{Name: "gateway_mode", Since: "3.0.0", Description: "Gateway mode integration"},
-		{Name: "dynamic_policies", Since: "3.2.0", Description: "Runtime dynamic policy engine"},
-		{Name: "multi_agent_planning", Since: "4.3.0", Description: "MAP plan and execute lifecycle"},
-		{Name: "workflow_control", Since: "4.3.0", Description: "WCP workflow lifecycle management"},
-		{Name: "execution_replay", Since: "4.3.0", Description: "Execution recording and replay"},
-		{Name: "cost_controls", Since: "4.4.0", Description: "Budget and cost management"},
-		{Name: "media_governance", Since: "4.4.0", Description: "Multimodal image governance"},
-		{Name: "wcp_step_metrics", Since: "4.5.0", Description: "WCP step-complete post-execution metrics"},
-		{Name: "mcp_check_endpoints", Since: "4.7.0", Description: "Standalone MCP policy check-input/check-output"},
-		{Name: "circuit_breaker", Since: "4.7.0", Description: "Circuit breaker pipeline enforcement"},
-		{Name: "version_discovery", Since: "4.8.0", Description: "Version and capability discovery"},
-		{Name: "hitl_response_parity", Since: "7.4.0", Description: "WCP + MAP approve/reject responses share retry_context, approver metadata, policies_matched (ADR-046)"},
+	adv := capability.Advertise(capability.PlaneOrchestrator)
+	out := make([]PlatformCapability, 0, len(adv))
+	for _, a := range adv {
+		out = append(out, PlatformCapability{Name: a.Name, Since: a.Since, Description: a.Description})
 	}
+	return out
 }
 
 func getSDKCompatibility() SDKCompatInfo {
+	// Both values come from platform/shared/sdkcompat, the single source of
+	// truth for the two planes. These literals used to live here AND in the
+	// sibling plane, and /health serves both -- the same duplication the plugin
+	// maps below carried, and were consolidated to end (#3229). The SDK maps
+	// were left behind by that fix; #3712 is the omission. The guard that stood
+	// over them meanwhile was a source-parsing parity test comparing the two
+	// copies, which is the instrument plugincompat's own package doc records as
+	// insufficient: two files that agree at a stale value agree.
+	//
+	// The release-train narrative that used to sit inline moved to the sdkcompat
+	// package doc, next to the values it explains.
 	return SDKCompatInfo{
-		// Floor of the current major line. The SDK major bumped from
-		// v7 to v8 during the v7.9.0 release-train (#2016 pre-emptive
-		// floor bump 2026-05-08, folded into the v7.9.0 community sync
-		// at #2102 on 2026-05-09). The current v8.0.0 platform bump
-		// (#2308) did NOT change the SDK floor — it stayed at v8.0.0.
-		// Callers below 8.0.0 lack the typed 429 RateLimitError
-		// upgrade-envelope handling and the list_decisions method
-		// (Session γ / #1982). Kept in lockstep with
-		// platform/agent/capabilities.go so /health on agent (8080)
-		// and orchestrator (8081) report identical pins.
-		// rust joined the compat maps in the 9.7.0 release-train. Its 0.x
-		// preview line is versioned independently of the 8.x SDKs; the
-		// floor is 0.7.0 — the first rust release that speaks the current
-		// Decision Mode PEP contract (decide → fulfill → forward, engine-
-		// only fulfill, fail-closed on missing verdict; epic #2563). The
-		// 0.5/0.6 previews predate that contract. Mirrors
-		// platform/agent/capabilities.go.
-		MinSDKVersion: map[string]string{
-			"python":     "8.0.0",
-			"typescript": "8.0.0",
-			"go":         "8.0.0",
-			"java":       "8.0.0",
-			"rust":       "0.7.0",
-		},
-		// Latest tag this platform was tested against. Kept in lockstep
-		// with each SDK's release-train tag. java bumped 8.5.0 -> 8.5.1 in
-		// the 9.1.1 security patch (2026-06-16): 8.5.1 adds a production
-		// guard around the opt-in insecure-TLS dev hatch plus dependency
-		// CVE clears. python/typescript/go bumped 8.5.0 -> 8.5.1 in the
-		// 9.7.0 release-train (epic #2861 SDK hostile sweep): go 8.5.1
-		// fails closed on 4xx auth errors instead of silently allowing,
-		// python 8.5.1 bridges sync interceptors onto a persistent event
-		// loop + detects AsyncOpenAI clients, typescript 8.5.1 sends auth
-		// on getPlanStatus. java stays 8.5.1 (no new java tag this train).
-		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
-		// examples baseline). Mirrors platform/agent/capabilities.go.
-		RecommendedSDKVersion: map[string]string{
-			"python":     "9.2.0",
-			"typescript": "9.2.0",
-			"go":         "9.2.0",
-			"java":       "9.2.0",
-			"rust":       "0.9.0",
-		},
+		MinSDKVersion:         sdkcompat.MinVersions(),
+		RecommendedSDKVersion: sdkcompat.RecommendedVersions(),
 	}
 }
 

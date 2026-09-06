@@ -252,7 +252,7 @@ func TestMcpToolCheckPolicy_DynamicBlock_EmitsCanonicalAudit(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres", // not an integration prefix → AutoDetect no-ops
 		"statement":      "SELECT 1",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestMcpToolCheckOutput_SQLiBlock_EmitsCanonicalAudit(t *testing.T) {
 		"response_data": []interface{}{
 			map[string]interface{}{"id": 1, "data": "admin' UNION SELECT password FROM users--"},
 		},
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"message":        validNIKResponse, // contains a valid NIK
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestMcpToolCheckOutput_CleanAllow_NoAuditRow(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"message":        "1 row affected",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

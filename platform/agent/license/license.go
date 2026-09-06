@@ -316,18 +316,9 @@ func IsEvaluationOrHigherTier(ctx context.Context) bool {
 // GetCurrentTier returns the current license tier based on AXONFLOW_LICENSE_KEY.
 // Returns TierCommunity if no valid license is found or if the license is expired.
 func GetCurrentTier(ctx context.Context) Tier {
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		return TierCommunity
-	}
-	result, err := ValidateLicense(ctx, licenseKey)
-	if err != nil || result == nil || !result.Valid {
-		return TierCommunity
-	}
-	if time.Now().After(result.ExpiresAt) {
-		return TierCommunity
-	}
-	return result.Tier
+	// One implementation for both build tags, with the refusal observable:
+	// see tier_read.go.
+	return ReadCurrentTier(ctx).Tier
 }
 
 // GetCurrentLimits returns the resource limits based on the current license.

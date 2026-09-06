@@ -1,7 +1,11 @@
 package contract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -216,6 +220,9 @@ func TestAuthZENSchemaFieldsMatchTheGoStructs(t *testing.T) {
 						"a generated SDK would carry a field the server cannot produce",
 						name, b.schema, b.goType)
 				}
+			}
+			for _, finding := range assertGoTypesMatchTheContract(t, b, goFields, shippedSurfaceDocument(t)) {
+				t.Error(finding)
 			}
 		})
 	}
@@ -563,5 +570,483 @@ func TestProjectRefusesAnIncompleteEvaluation(t *testing.T) {
 				t.Errorf("the projection accepted %s", tc.name)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The TYPE axis (#3641).
+// ---------------------------------------------------------------------------
+
+// The comparison above pins field NAMES and REQUIRED-NESS. It did not pin
+// TYPES, and the gap was demonstrated live rather than imagined: the R3 on
+// #3632 changed `authzen_error.request_id` from string to integer in the schema
+// and regenerated the artifact, and contract/authzen.go went on declaring
+// `RequestID string` with all nine platform/decision packages green. The Go
+// server and the artifact every SDK generates from described different wires.
+//
+// #3632 closed the half that protects the SDKs - the artifact's field types are
+// pinned to the profile constant - but it is caught at the ARTIFACT, not at the
+// Go struct. This closes the remaining hole:
+//
+//	schema <-> artifact                 pinned (byte identity, TestCommittedArtifactIsCurrent)
+//	artifact <-> profile                pinned (#3632, all four axes)
+//	schema <-> Go names + requiredness  pinned (above)
+//	schema <-> Go TYPES                 this
+//
+// WHY IT READS THE ARTIFACT RATHER THAN THE SCHEMA. The artifact is the schema
+// REDUCED - one flat document with every reference resolved and every type in
+// the vocabulary the SDK generators consume - and it is byte-pinned to the
+// schema by cmd/authzen-codegen's TestCommittedArtifactIsCurrent, in the same
+// sweep. Re-deriving the type from raw JSON Schema here would put a SECOND
+// implementation of that reducer in the test suite, free to disagree with the
+// real one, and this file would then pin Go against its own opinion of the
+// contract rather than against the contract. It is the same argument the
+// response-surface ratchet already makes for reading required-ness and enum
+// values off the artifact. The artifact's CURRENCY is asserted rather than
+// assumed - see shippedSurfaceDocument.
+
+// goWireType renders a Go struct field into the artifact's own TypeRef
+// vocabulary, so the two can be compared as strings.
+//
+// The vocabulary is the reducer's, not one invented here: "string", "bool",
+// "int", "object", "array<...>", "map<...>", "ref:<definition>". A third
+// naming would certify the naming rather than the contract.
+//
+// ENUMS COLLAPSE TO THEIR UNDERLYING JSON TYPE, and the reason is stated rather
+// than hidden. A Go named string type IS a string; nothing in the type system
+// distinguishes OperationalState from string, so demanding
+// "enum:operational_state" would assert a NAMING CONVENTION this test invented.
+// The enum axis is covered by VALUE in
+// TestAuthZENSchemaEnumerationsMatchTheGoDeclarations. What is asserted here is
+// the one enum property the type system can carry: a member the contract
+// declares as a closed set must not sit in a bare `string`.
+func goWireType(t *testing.T, ft reflect.Type, bindings map[reflect.Type]Schema) string {
+	t.Helper()
+	for ft.Kind() == reflect.Pointer {
+		ft = ft.Elem()
+	}
+	if schema, bound := bindings[ft]; bound {
+		return "ref:" + string(schema)
+	}
+	// THE RENDERER READS THE DECLARATION; encoding/json reads the MARSHALLER.
+	// Where the two disagree this function is guessing, and one of the guesses
+	// is wrong-but-AGREEING: json.Number is declared as a string and goes on the
+	// wire as a bare number, so a contract `string` and a Go json.Number would
+	// compare equal while the wire carried something else. []byte (base64
+	// string, declared as a slice) and json.RawMessage (any shape at all) are
+	// the same class in the loud direction. So an unrecognised marshaller is
+	// refused rather than rendered, which also makes the time.Time carve-out
+	// below self-policing instead of a comment about today.
+	switch {
+	case ft == reflect.TypeOf(json.Number("")):
+		t.Fatalf("json.Number is declared as a string and marshals as a bare NUMBER; this comparison reads the " +
+			"declaration and would report agreement with a contract `string` while the wire carried a number")
+	case ft == reflect.TypeOf(json.RawMessage(nil)):
+		t.Fatalf("json.RawMessage marshals as whatever it holds; there is no single contract type to compare it to")
+	case ft.Kind() == reflect.Slice && ft.Elem().Kind() == reflect.Uint8:
+		t.Fatalf("a []byte marshals as a base64 STRING, not as an array; rendering it from the declaration would " +
+			"report a spurious mismatch against a correct contract `string`")
+	case ft != reflect.TypeOf(time.Time{}) &&
+		(ft.Implements(jsonMarshalerType) || reflect.PointerTo(ft).Implements(jsonMarshalerType)):
+		t.Fatalf("%s carries a MarshalJSON of its own, so its wire form is not its declaration. Either add it here "+
+			"with the type it actually emits, or give it a binding.", ft)
+	}
+	switch ft.Kind() {
+	case reflect.String:
+		return "string"
+	case reflect.Bool:
+		return "bool"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "int"
+	case reflect.Slice, reflect.Array:
+		return "array<" + goWireType(t, ft.Elem(), bindings) + ">"
+	case reflect.Map:
+		if ft.Key().Kind() != reflect.String {
+			return "map<!non-string key>"
+		}
+		// map[string]any IS the contract's opaque `object`, not a typed map, and
+		// the distinction is the reducer's own: it emits `object` for a JSON
+		// Schema object with no additionalProperties schema, and `map<X>` only
+		// when additionalProperties carries one. AuthZEN's `properties` and
+		// `context` are declared the first way on purpose; obligation.params is
+		// declared the second, as map<string>, which is why reducing both to
+		// "some map" would let a generated SDK accept values the server refuses.
+		// Collapsing here keeps the two DISTINCT while spelling each the way the
+		// contract does.
+		if ft.Elem().Kind() == reflect.Interface && ft.Elem().NumMethod() == 0 {
+			return "object"
+		}
+		return "map<" + goWireType(t, ft.Elem(), bindings) + ">"
+	case reflect.Interface:
+		// `any` encodes as whatever it holds; the contract calls that an opaque
+		// object, which is what AuthZEN's own `properties` and `context` are.
+		return "object"
+	case reflect.Struct:
+		// time.Time is the one struct with a marshaller of its own this contract
+		// uses, and it goes on the wire as an RFC 3339 string.
+		if ft.PkgPath() == "time" && ft.Name() == "Time" {
+			return "string"
+		}
+		return "object"
+	default:
+		return "!unsupported " + ft.Kind().String()
+	}
+}
+
+// jsonMarshalerType is checked against, rather than a name, so a type that
+// takes control of its own encoding cannot be rendered from its declaration.
+var jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+
+// artifactFieldTypesFor returns one artifact type's field name -> rendered type
+// map, plus which of those members reach an enumeration.
+func artifactFieldTypesFor(t *testing.T, doc map[string]any, typeName string) (rendered map[string]string, enumMembers map[string]bool) {
+	t.Helper()
+	rendered = map[string]string{}
+	enumMembers = map[string]bool{}
+	types, ok := doc["types"].([]any)
+	if !ok {
+		t.Fatalf("the surface artifact declares no types array")
+	}
+	for _, raw := range types {
+		entry, ok := raw.(map[string]any)
+		if !ok || entry["name"] != typeName {
+			continue
+		}
+		fields, ok := entry["fields"].([]any)
+		if !ok || len(fields) == 0 {
+			t.Fatalf("artifact type %q declares no fields", typeName)
+		}
+		for _, rawField := range fields {
+			field, ok := rawField.(map[string]any)
+			if !ok {
+				t.Fatalf("artifact type %q has a malformed field entry", typeName)
+			}
+			name, _ := field["name"].(string)
+			encoded, err := json.Marshal(field["type"])
+			if err != nil {
+				t.Fatalf("re-encoding %s/%s's type: %v", typeName, name, err)
+			}
+			var ref artifactTypeRef
+			if err := json.Unmarshal(encoded, &ref); err != nil {
+				t.Fatalf("decoding %s/%s's type: %v", typeName, name, err)
+			}
+			enums := map[string]bool{}
+			enumsReachedBy(&ref, enums)
+			enumMembers[name] = len(enums) > 0
+			rendered[name] = collapseEnums(renderArtifactType(&ref))
+		}
+		return rendered, enumMembers
+	}
+	t.Fatalf("the surface artifact declares no type %q", typeName)
+	return nil, nil
+}
+
+// collapseEnums rewrites "enum:<name>" as "string" in a rendered TypeRef.
+//
+// Lossless with respect to the JSON type, which is the axis this comparison is
+// about - and the premise is asserted rather than assumed by
+// TestEveryArtifactEnumerationIsOverStrings.
+func collapseEnums(rendered string) string {
+	const token = "enum:"
+	out := rendered
+	from := 0
+	for {
+		i := strings.Index(out[from:], token)
+		if i < 0 {
+			return out
+		}
+		i += from
+		// A TOKEN BOUNDARY, not a substring. "enum:" only opens a type when it
+		// starts the rendering or follows a `<`; inside a definition name -
+		// "ref:has_enum:inside" - it is part of the name, and collapsing there
+		// would produce a WRONG answer rather than a loud one. Unreachable
+		// today (the codegen's enum names carry no colon and no $defs key
+		// does), which is exactly why it is worth pinning: nothing else would
+		// notice if it became reachable.
+		if i != 0 && out[i-1] != '<' {
+			from = i + len(token)
+			continue
+		}
+		j := i + len(token)
+		for j < len(out) && out[j] != '>' {
+			j++
+		}
+		out = out[:i] + "string" + out[j:]
+		from = i + len("string")
+	}
+}
+
+// assertGoTypesMatchTheContract compares one binding's Go field types against
+// the contract's and reports every disagreement.
+//
+// It RETURNS the findings rather than calling t.Errorf, and that is not a
+// style choice. A comparison that reports through t is one whose call site
+// cannot be driven: with the comparison correct and the single call in
+// TestAuthZENSchemaFieldsMatchTheGoStructs deleted - or its `if got != want`
+// turned into `if false && got != want` - the entire package stayed green.
+// Testing the predicate is not testing the call site, and the plant recorded in
+// this change's own commit message was a one-off run rather than something the
+// merged artifact keeps. Returning findings lets
+// TestTheTypeComparisonReportsARealMismatch drive this function over a binding
+// that genuinely disagrees.
+func assertGoTypesMatchTheContract(t *testing.T, b wireBinding, goFields map[string]bool, doc map[string]any) []string {
+	t.Helper()
+	artifactTypes, enumMembers := artifactFieldTypesFor(t, doc, string(b.schema))
+
+	bindings := map[reflect.Type]Schema{}
+	for _, other := range authzenWireBindings() {
+		bindings[reflect.TypeOf(other.goType)] = other.schema
+	}
+
+	var findings []string
+	rt := reflect.TypeOf(b.goType)
+	compared := 0
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		if _, declared := goFields[name]; !declared {
+			continue
+		}
+		want, present := artifactTypes[name]
+		if !present {
+			// The name comparison already reports a member the contract does
+			// not declare; saying it twice adds noise.
+			continue
+		}
+		compared++
+		got := goWireType(t, f.Type, bindings)
+		if got != want {
+			findings = append(findings, fmt.Sprintf(
+				"%T field %q is %s in Go and %s in the contract. The server would serialise something other than "+
+					"what the contract says, on the surface five SDKs and every third-party PEP decode strictly.",
+				b.goType, name, got, want))
+		}
+		// The one enum property the Go type system can carry, and its reach is
+		// stated rather than overclaimed: for a member that ALREADY has a
+		// defined type, widening it to a bare `string` does not compile, because
+		// existing call sites assign the constants. This guard is for the case
+		// with no such call site - a NEW enumerated member declared as a plain
+		// string - where nothing else would object, and where the value-level
+		// enum comparison cannot help: that one compares the schema's list
+		// against the package's declared constants, never against the field
+		// holding them.
+		if enumMembers[name] && f.Type.Kind() == reflect.String && f.Type.PkgPath() == "" {
+			findings = append(findings, fmt.Sprintf(
+				"%T field %q holds a contract ENUMERATION in a bare `string`; a defined type is what stops a value "+
+					"outside the closed set being assigned without a conversion", b.goType, name))
+		}
+	}
+	// Anti-vacuity, per binding. A binding whose fields all fell through the
+	// filters above would report clean having compared nothing, which is the
+	// same silent-narrowing shape this whole file exists to prevent.
+	if compared == 0 {
+		findings = append(findings, fmt.Sprintf(
+			"no field of %T was type-compared against the contract; this binding is reporting clean without "+
+				"asserting anything", b.goType))
+	}
+	return findings
+}
+
+// TestTheTypeComparisonReportsARealMismatch is the survivor test the axis
+// needs, and it drives the COMPARISON rather than the renderer.
+//
+// TestTheTypeComparisonCanFail below pins goWireType's answers, which proves
+// the renderer works and says nothing about whether anything reads it. This
+// binds a Go shape that genuinely disagrees with the committed contract to the
+// contract's own schema name and asserts the comparison says so - and asserts
+// the matching shape does not, so it is not a function that complains about
+// everything.
+//
+// The mismatch planted is the one that survived #3632's review: the contract
+// declares authzen_error.request_id a string, and this Go type declares it an
+// integer.
+func TestTheTypeComparisonReportsARealMismatch(t *testing.T) {
+	doc := shippedSurfaceDocument(t)
+
+	type driftedError struct {
+		Code      AuthZENErrorCode `json:"code"`
+		Pointer   string           `json:"pointer,omitempty"`
+		Message   string           `json:"message"`
+		Supported []string         `json:"supported,omitempty"`
+		RequestID int              `json:"request_id,omitempty"`
+	}
+	drifted := wireBinding{SchemaAuthZENError, driftedError{}}
+	findings := assertGoTypesMatchTheContract(t, drifted, goWireFields(t, drifted.goType), doc)
+	if len(findings) == 0 {
+		t.Fatal("the comparison reported nothing for a Go type declaring request_id as an integer where the " +
+			"contract declares a string. That is the exact drift that stayed green through all nine " +
+			"platform/decision packages during the review of #3632, and it is the reason this axis exists.")
+	}
+	joined := strings.Join(findings, "\n")
+	if !strings.Contains(joined, "request_id") || !strings.Contains(joined, "int in Go") {
+		t.Errorf("the comparison reported something other than the planted drift:\n%s", joined)
+	}
+
+	// The control. The real type, against the same contract, must report
+	// NOTHING - or the function above is one that complains about everything and
+	// the assertion is meaningless.
+	real := wireBinding{SchemaAuthZENError, AuthZENError{}}
+	if clean := assertGoTypesMatchTheContract(t, real, goWireFields(t, real.goType), doc); len(clean) != 0 {
+		t.Errorf("the comparison reported a disagreement for the committed type:\n%s", strings.Join(clean, "\n"))
+	}
+}
+
+// shippedSurfaceDocument reads and parses the committed surface artifact, and
+// asserts it is CURRENT with respect to the embedded schema.
+//
+// The currency check is what makes reading the artifact equivalent to reading
+// the schema. Without it this file would pin Go against a document that may
+// have stopped describing the contract, and would report green while doing it.
+// cmd/authzen-codegen's TestCommittedArtifactIsCurrent asserts byte identity in
+// its own package; this asserts the half reachable from here - the artifact
+// records the digest of the schema it was reduced from, and that digest must be
+// the digest of the schema THIS build embeds.
+func shippedSurfaceDocument(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(authzenSurfaceArtifact)
+	if err != nil {
+		// Not a skip: a guard keyed on a file that may be absent, and that skips
+		// when it is absent, is invisible exactly where it stopped running.
+		t.Fatalf("reading %s: %v", authzenSurfaceArtifact, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parsing %s: %v", authzenSurfaceArtifact, err)
+	}
+	schemaDoc, err := SchemaDocument()
+	if err != nil {
+		t.Fatalf("reading the embedded schema: %v", err)
+	}
+	digest := sha256.Sum256(schemaDoc)
+	recorded, _ := doc["source_schema_sha256"].(string)
+	if recorded == "" {
+		t.Fatal("the surface artifact records no source_schema_sha256, so nothing here can tell whether it still " +
+			"describes the schema this build embeds")
+	}
+	// Compared against the FULL spelling the codegen writes, prefix included,
+	// rather than by stripping the prefix first. Stripping accepts a bare hex
+	// digest as well as a prefixed one - two different strings reading as
+	// agreement - and it would also accept a "sha512:" prefix over a SHA-256
+	// digest. Rebuilding the expected string rejects both.
+	if recorded != "sha256:"+hex.EncodeToString(digest[:]) {
+		t.Fatalf("the surface artifact records source_schema_sha256=%q, and this build embeds a schema whose digest is "+
+			"%q. Every type comparison would be against a document that has stopped describing the contract. "+
+			"Regenerate: (cd platform/decision && go run ./cmd/authzen-codegen -out surface/authzen-surface.json)",
+			recorded, "sha256:"+hex.EncodeToString(digest[:]))
+	}
+	return doc
+}
+
+// TestEveryArtifactEnumerationIsOverStrings is the premise collapseEnums rests
+// on, asserted rather than assumed.
+//
+// If an enumeration were ever declared over integers, collapsing it to "string"
+// would make the type comparison AGREE with a Go field of the wrong type - the
+// exact failure this file exists to catch, introduced by its own normalisation.
+func TestEveryArtifactEnumerationIsOverStrings(t *testing.T) {
+	doc := shippedSurfaceDocument(t)
+	enums, ok := doc["enums"].([]any)
+	if !ok || len(enums) == 0 {
+		t.Fatal("the surface artifact declares no enumerations, so the premise below is vacuous")
+	}
+	for _, raw := range enums {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatal("a malformed enumeration entry")
+		}
+		name, _ := entry["name"].(string)
+		values, ok := entry["values"].([]any)
+		if !ok || len(values) == 0 {
+			t.Errorf("enumeration %q declares no values", name)
+			continue
+		}
+		for _, v := range values {
+			if _, isString := v.(string); !isString {
+				t.Errorf("enumeration %q carries the non-string value %v; collapsing it to `string` in the type "+
+					"comparison would make a Go field of the wrong type compare equal", name, v)
+			}
+		}
+	}
+}
+
+// TestTheTypeComparisonCanFail is the anti-vacuity half.
+//
+// A comparison that renders both sides through the same code can agree because
+// both are wrong, or because the rendering is degenerate. This drives goWireType
+// over every shape the bindings contain and pins each answer.
+func TestTheTypeComparisonCanFail(t *testing.T) {
+	bindings := map[reflect.Type]Schema{}
+	for _, b := range authzenWireBindings() {
+		bindings[reflect.TypeOf(b.goType)] = b.schema
+	}
+	for _, tc := range []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"a plain string", struct{ F string }{}, "string"},
+		{"a defined string type", struct{ F ReasonCode }{}, "string"},
+		{"a bool", struct{ F bool }{}, "bool"},
+		{"an int", struct{ F int }{}, "int"},
+		{"an int64", struct{ F int64 }{}, "int"},
+		{"a time", struct{ F time.Time }{}, "string"},
+		{"an any", struct{ F any }{}, "object"},
+		// The two map shapes the contract distinguishes, and they must not
+		// collapse into each other: an opaque object accepts any value, a typed
+		// map accepts one type, and reducing both to "some map" is how a
+		// generated SDK comes to accept values the server refuses.
+		{"a map of any is the contract's opaque object", struct{ F map[string]any }{}, "object"},
+		{"a typed map stays a typed map", struct{ F map[string]string }{}, "map<string>"},
+		{"a slice of a bound type", struct{ F []Obligation }{}, "array<ref:obligation>"},
+		{"a pointer to a bound type", struct{ F *ApprovalRequirement }{}, "ref:approval_requirement"},
+		{"a slice of a bound identifier", struct{ F []ID }{}, "array<ref:identifier>"},
+		// AuthZENError.Supported. Present in the bindings and previously absent
+		// from this table, which made the header's claim that the table covers
+		// "every shape the bindings contain" wider than the table.
+		{"a slice of plain strings", struct{ F []string }{}, "array<string>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := goWireType(t, reflect.TypeOf(tc.in).Field(0).Type, bindings)
+			if got != tc.want {
+				t.Errorf("goWireType rendered %s, want %s", got, tc.want)
+			}
+		})
+	}
+
+	// THE PLANTED DRIFT: the contract says integer, Go says string. This is the
+	// literal mutation that stayed green through all nine packages during the
+	// R3 on #3632, and it is the reason this axis exists.
+	planted := struct {
+		RequestID string `json:"request_id"`
+	}{}
+	if goWireType(t, reflect.TypeOf(planted).Field(0).Type, bindings) == "int" {
+		t.Fatal("a Go string rendered as an int, so the comparison could never report the drift it was built for")
+	}
+	doc := shippedSurfaceDocument(t)
+	types, _ := artifactFieldTypesFor(t, doc, string(SchemaAuthZENError))
+	if types["request_id"] != "string" {
+		t.Fatalf("the contract declares authzen_error.request_id as %q; if that is deliberate, the Go type must move with it", types["request_id"])
+	}
+
+	// ...and the collapse is not degenerate: it rewrites the enum and leaves
+	// everything around it alone.
+	for in, want := range map[string]string{
+		"enum:reason_code":              "string",
+		"array<enum:operational_state>": "array<string>",
+		"map<enum:category>":            "map<string>",
+		"ref:obligation":                "ref:obligation",
+		"array<ref:obligation>":         "array<ref:obligation>",
+		"string":                        "string",
+	} {
+		if got := collapseEnums(in); got != want {
+			t.Errorf("collapseEnums(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -187,14 +187,28 @@ const InsertHistorySQL = `
 // path uses removes the class of divergence where one of them updates a
 // column the other forgets.
 //
-// IT IS NOT THE ONLY STATUS MUTATION on the table, and an earlier version of
-// this comment claimed it was. Untruncated census, non-test: six authored
-// `UPDATE hitl_approval_queue` statements - this one, Override and
-// ExpireStaleReturning in each Repository copy (four), and
-// expireEvalApprovals in platform/orchestrator/hitl_wcp_community.go. The
-// last is also the one that reads WITHOUT an org scope and therefore matches
-// nothing under axonflow_app_role (the #3048 shape); tracked in #3520, not
-// fixed here.
+// IT IS NOT THE ONLY STATUS MUTATION on the table, and no version of this
+// comment has ever been right about how many there are.
+//
+//	round 1: "this is the only one."                        Wrong: five others.
+//	round 2: "six - this one, Override and ExpireStaleReturning in each
+//	          Repository copy, and expireEvalApprovals."     Wrong: EIGHT. It
+//	          was written before ConsumeGrant arrived (#3509) and nothing
+//	          updated it, so it named five of the eight and asserted six.
+//
+// THAT IS WHY THE COUNT NO LONGER LIVES IN A COMMENT (#3714). Every statement
+// that writes this table is now in this package - UpdateStatusSQL here,
+// Override / ExpireByIDs / ExpireDueReturning / ConsumeGrant in
+// transitions.go - and scripts/lint-hitl-queue-choke-point.sh counts them per
+// file against an allow-list, matching every write VERB against the TABLE NAME
+// rather than the one statement somebody thought of. A prose census is bounded
+// by the day it was written; the guard is bounded by the table.
+//
+// The two writers OUTSIDE this package are both allow-listed by name with a
+// justification, and neither is Go: the schema's own expire_hitl_requests()
+// function, and one inert fixture. #3520's unscoped sweeper - which matched
+// nothing under axonflow_app_role and reported success (#3048) - is gone: it
+// runs ExpireDueReturning on a BYPASSRLS pool, or does not start.
 //
 // `AND status = 'pending'` is the concurrent-actor guard: a second caller that
 // lost the race matches no row and gets ErrNotPending, so the service layer

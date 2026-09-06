@@ -66,6 +66,8 @@ import (
 	"strings"
 
 	"github.com/rs/cors"
+
+	"axonflow/platform/shared/deploymode"
 )
 
 // AllowedOriginsEnv configures the browser origins allowed to make cross-origin
@@ -76,18 +78,6 @@ import (
 //
 // Unset is a supported posture, not a missing one — see Resolve.
 const AllowedOriginsEnv = "AXONFLOW_CORS_ALLOWED_ORIGINS"
-
-// deploymentModeEnv and communityMode mirror isCommunityMode() in
-// platform/agent/run.go and platform/orchestrator/run.go. Deliberately NOT
-// trimmed or case-folded, exactly as those helpers are not: every widening of
-// the accepting set here WIDENS cross-origin access, so the accepted set is
-// precisely the canonical token. " community" and "Community" are therefore not
-// the Community posture, and land in the deny branch — which is the direction a
-// malformed value should fail in.
-const (
-	deploymentModeEnv = "DEPLOYMENT_MODE"
-	communityMode     = "community"
-)
 
 // Policy is a resolved origin policy, separated from the two ways it gets
 // applied: as rs/cors options on a router (Apply), and as headers written by a
@@ -175,7 +165,29 @@ func ResolveWithCommunityFallback(communityFallback Policy) Policy {
 	case len(origins) > 0:
 		return Policy{Origins: origins, Credentials: true}
 
-	case IsCommunityMode():
+	// The Community-posture branch. The DEFINITION lives in
+	// platform/shared/deploymode (#3713); this package used to carry its own
+	// copy, and the comment justifying that copy is worth recording because it
+	// was TRUE and reached the wrong conclusion:
+	//
+	//	"duplicated rather than imported because those live in the two
+	//	 binaries' own packages, and importing either from here would make
+	//	 this package depend on a binary."
+	//
+	// Both halves are still true. What it missed is that the answer did not
+	// have to come from either binary - a shared package that neither imports
+	// is the third option, and platform/shared/deploymode had already shipped
+	// (#3602) when the comment was written. A justification that rules out two
+	// options and never considers a third defends the duplication better than
+	// no comment at all, because the next reader stops at it.
+	//
+	// The contract - exactly one token, no trim, no case-fold, unset fails
+	// closed - is stated once, on deploymode.IsCommunityPosture. It matters
+	// here for the same reason it matters there: every widening of the
+	// accepting set WIDENS cross-origin access, so " community" and "Community"
+	// land in the deny branch below, which is the direction a malformed value
+	// should fail in.
+	case deploymode.CurrentIsCommunityPosture():
 		// The fallback comes from the caller, so it has been through none of
 		// the checks above. Put it through the same one that matters: a caller
 		// whose fallback list carries a `*` — bare or as a pattern — would
@@ -194,7 +206,7 @@ func ResolveWithCommunityFallback(communityFallback Policy) Policy {
 	default:
 		return Policy{
 			Credentials: false,
-			Notice: "[CORS] " + AllowedOriginsEnv + " is not set and " + deploymentModeEnv + " is not community: " +
+			Notice: "[CORS] " + AllowedOriginsEnv + " is not set and " + deploymode.EnvDeploymentMode + " is not community: " +
 				"cross-origin browser requests are denied. Set " + AllowedOriginsEnv +
 				" if a browser on another origin must call this API.",
 		}
@@ -329,12 +341,4 @@ func containsPatternOrigin(origins []string) bool {
 		}
 	}
 	return false
-}
-
-// IsCommunityMode mirrors isCommunityMode() in platform/agent/run.go and
-// platform/orchestrator/run.go. It is duplicated rather than imported because
-// those live in the two binaries' own packages, and importing either from here
-// would make this package depend on a binary.
-func IsCommunityMode() bool {
-	return os.Getenv(deploymentModeEnv) == communityMode
 }

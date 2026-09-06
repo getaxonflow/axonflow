@@ -7,10 +7,11 @@
 #     ^//go:build enterprise|^// \+build enterprise
 #
 # Every Go file it matches is deleted from the staged community copy. That
-# expression is now read in seven places: the sync workflow, the leak gate, the
-# mirror simulation, and four Go tests that must know whether a file they cite
-# will exist on the mirror (a census row for an enterprise-tagged file is
-# absent there by construction, not deleted). A classifier that drifts from the
+# expression is now read in eight places: the sync workflow, the leak gate, the
+# mirror simulation, four Go tests that must know whether a file they cite will
+# exist on the mirror (a census row for an enterprise-tagged file is absent
+# there by construction, not deleted), and the capability registry's route and
+# build-tag derivation, which classifies every file it parses. A classifier that drifts from the
 # sync's expression classifies a DIFFERENT mirror - it would report a stripped
 # file as deleted, or accept a leaked one as expected - and nothing else would
 # notice, because each site compiles and passes on its own.
@@ -36,15 +37,18 @@ scripts/ci/simulate-community-mirror.sh
 platform/shared/policy/legacy_call_site_census_test.go
 platform/decision/registry/legacy_planes_test.go
 platform/agent/hitl_twin_census_test.go
-platform/shared/identity/conformance_registry_test.go'
+platform/shared/identity/conformance_registry_test.go
+platform/shared/capability/derive.go'
 
 # Go files the sweep below finds that are NOT classifiers of arbitrary source
 # and so need not carry the sync's expression. `file :: reason`; each entry is
 # load-bearing (the sweep must actually find the file, or the entry is stale).
-EXEMPT_SITES=$'platform/shared/egress/conformance_test.go :: asserts that ONE named file has exactly the constraint line "//go:build enterprise", via buildConstraints() over that file; an equality on the canonical spelling of a known file, not a classifier deciding whether arbitrary source is enterprise-only'
+EXEMPT_SITES=$'platform/shared/egress/conformance_test.go :: asserts that ONE named file has exactly the constraint line "//go:build enterprise", via buildConstraints() over that file; an equality on the canonical spelling of a known file, not a classifier deciding whether arbitrary source is enterprise-only
+platform/shared/capability/derive_test.go :: writes synthetic Go files carrying the directive as FIXTURE INPUT to SourceEdition, the classifier that lives in derive.go and is on the list above; the strings here are the source being classified, not an expression deciding the classification
+platform/shared/sdkcompat/no_second_copy_test.go :: writes synthetic Go sources carrying the directive as FIXTURE INPUT to a go/ast walk that searches for SDK-version map literals; the walk is deliberately NOT build-tag aware - a tagged file must be searched like any other, which is the property TestTheWalkIsNotBuildTagAware pins - so the strings here are the source being searched, never an expression deciding an edition'
 
-# The mirror carries the four Go sites and nothing else on the list; this suite
-# runs in the enterprise repository only, so all seven must be present here.
+# The mirror carries the five Go sites and nothing else on the list; this suite
+# runs in the enterprise repository only, so all eight must be present here.
 if [ ! -d ee ]; then
   echo "SKIP: community checkout; the sync-side sites do not exist on the mirror"
   exit 0

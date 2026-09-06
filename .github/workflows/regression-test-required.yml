@@ -77,10 +77,18 @@ on:
     #                  list precisely because it changes gating eligibility, and
     #                  `unlabeled` changes it identically — in the direction that
     #                  REINSTATES the gate. That asymmetry was the #3120 bypass.
-    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled, ready_for_review]
   # Required-check compatibility with the merge queue: see the #3124 note above.
   merge_group:
     types: [checks_requested]
+  # Manual dispatch (#3755): the suite job runs on the real runner image
+  # against any ref, which is how a flake is measured where it happened
+  # rather than on a developer's docker daemon. There is no PR to classify,
+  # so the presence job SKIPS as a job on a dispatch (its own `if:` below):
+  # a job whose every step is event-keyed would otherwise conclude `success`
+  # having done nothing, and put a green `Check Regression Test Present` on
+  # the dispatched head - the vacuous-pass shape this issue is about.
+  workflow_dispatch:
 
 # Cancel superseded runs. Sessions on this repo push in rapid bursts, and a
 # run for a push that is no longer the tip proves nothing while billing the
@@ -105,8 +113,20 @@ permissions:
 jobs:
   check-regression-test:
     name: Check Regression Test Present
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Every step below is keyed on pull_request / merge_group. On a
+    # workflow_dispatch they would all skip and the JOB would still conclude
+    # `success` - a green check run for a classification that never happened
+    # (#3755 R3). Skip the job itself instead, so the conclusion is `skipped`.
+    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - name: Pass on merge_group (PR gate already enforced)
@@ -438,7 +458,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   run-regression-suite:
     name: Run regression-test suite
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 15
     # Enterprise repo only, same precedent and same reason as
     # e2e-production-posture in sdk-smoke-tests.yml: the community sync excludes
@@ -450,7 +470,10 @@ jobs:
     # this is where the guard has to hold. Making the mirror's copy of the suite
     # self-contained means adding those two files to sync-community-repo.yml's
     # exclude list — a change in another workflow, tracked separately.
-    if: github.repository == 'getaxonflow/axonflow-enterprise'
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: (github.repository == 'getaxonflow/axonflow-enterprise') && github.event.pull_request.draft != true
 
     steps:
       - name: Checkout
@@ -462,7 +485,17 @@ jobs:
       - name: Ensure PyYAML (workflows_yaml_parse_test.sh dependency)
         run: |
           set -euo pipefail
-          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          # The fallback below would hit PEP 668 on the fleet host
+          # (/usr/lib/python3.12/EXTERNALLY-MANAGED), so it installs into a
+          # per-job venv instead. It does NOT fire today - the host carries
+          # python3-yaml and this prints "PyYAML 6.0.1" - but a host rebuilt
+          # without that package would otherwise fail here rather than recover.
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            python3 -m venv "$RUNNER_TEMP/pyvenv"
+            "$RUNNER_TEMP/pyvenv/bin/pip" install --quiet pyyaml
+            echo "$RUNNER_TEMP/pyvenv/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/pyvenv/bin:$PATH"
+          fi
           python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
 
       - name: Ensure yq (saas_perf_testing_env_config_test.sh dependency)
@@ -474,9 +507,18 @@ jobs:
           YQ_VERSION: v4.53.3
         run: |
           set -euo pipefail
+          # HOST-GLOBAL FROM A FLEET JOB. `wget -O /usr/bin/yq` truncates the
+          # target and then fills it, so on the shared host a concurrent slot
+          # can exec a partial binary. Download to a private temp file, chmod
+          # it there, then `mv` it into place - a rename is atomic, so a
+          # concurrent reader sees either the old yq or the new one and never
+          # half of one. yq is preinstalled by runner-bootstrap.sh, so on the
+          # fleet this short-circuits and nothing is written at all.
           if ! command -v yq >/dev/null 2>&1; then
-            sudo wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O /usr/bin/yq
-            sudo chmod +x /usr/bin/yq
+            tmp="$(mktemp "${RUNNER_TEMP:-/tmp}/yq.XXXXXX")"
+            wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O "$tmp"
+            chmod +x "$tmp"
+            sudo mv -f "$tmp" /usr/bin/yq
           fi
           yq --version
 
@@ -501,7 +543,18 @@ jobs:
           SPECTRAL_CLI_VERSION: 6.15.1
         run: |
           set -euo pipefail
-          npm install -g "@apidevtools/swagger-cli@${SWAGGER_CLI_VERSION}"
+          # NOT `npm install -g` (2026-09-05). `npm config get prefix` on the
+          # fleet host is /usr, so a global install writes /usr/lib/node_modules
+          # - host-global across all eight slots, and two concurrent runs of
+          # this job race there. Same per-job shape as the spectral install
+          # below, which already does this correctly.
+          npm install --prefix "$RUNNER_TEMP/swagger-cli" \
+            "@apidevtools/swagger-cli@${SWAGGER_CLI_VERSION}"
+          echo "$RUNNER_TEMP/swagger-cli/node_modules/.bin" >> "$GITHUB_PATH"
+          # $GITHUB_PATH reaches only LATER steps; the `swagger-cli --version`
+          # check below runs in THIS step, so extend PATH here too (exit 127
+          # on #3783 run 33994256580 otherwise).
+          export PATH="$RUNNER_TEMP/swagger-cli/node_modules/.bin:$PATH"
 
           # Spectral needs its whole transitive tree pinned, not just the CLI.
           # 6.15.1 caret-ranges @stoplight/spectral-core and >=1 for the
@@ -535,6 +588,18 @@ jobs:
           swagger-cli --version
 
       - name: Execute tests/regression-test-required/*.sh
+        env:
+          # required_check_name_uniqueness_test.sh reads ruleset 9199766 to
+          # check every required context has a producer that reports on
+          # pull_request. Without a token that read is unauthenticated, the
+          # guard degrades to a hardcoded snapshot, and it now FAILS rather
+          # than passing blind - which is how this omission surfaced.
+          # Measured on main-guard-freshness.yml today: the default token
+          # reads this ruleset successfully with no `administration: read`,
+          # so this is missing plumbing, not a scope limitation. Setting
+          # ALLOW_PINNED_SNAPSHOT=1 here would re-open the fail-open and make
+          # the escape hatch the default path on every run, so it is not set.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # No `if [ -x ... ]` guard. A missing runner is a broken repo, not a

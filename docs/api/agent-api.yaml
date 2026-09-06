@@ -593,6 +593,7 @@ paths:
       operationId: decide
       parameters:
         - $ref: '#/components/parameters/AxonflowClient'
+        - $ref: '#/components/parameters/AxonflowPEPHandshake'
         - in: header
           name: traceparent
           description: |
@@ -1351,14 +1352,26 @@ paths:
         denied.
 
         **Profile negotiation.** AuthZEN 1.0's response is a bare boolean.
-        Everything AxonFlow adds -- the four-valued state, obligations, the
-        approval challenge, the safe reason code -- rides in `context` and is
+        What AxonFlow adds -- the four-valued state, obligations, the safe
+        reason code -- rides in `context` and is
         returned ONLY to a caller that sent the
         `X-Axonflow-AuthZEN-Profile` header naming a profile version this build
         emits. A caller that did not negotiate receives the boolean alone; a
         caller that named a version this build does not emit is refused with
         `406` rather than answered with the boolean, because a silent fallback
         would report that the negotiation succeeded.
+
+        **What the context does NOT carry, stated so you do not wait for it.**
+        There is no approval challenge on this surface. The route is an
+        *adapter* over `POST /api/v1/decide`, and that response names no
+        eligible approver set, no quorum and no challenge expiry -- so there is
+        no requirement to render, and synthesising one would hand your
+        enforcement point a fabricated approval policy to enforce. A decision
+        awaiting approval arrives as `state: CHALLENGE` with `decision: false`;
+        act on it by holding, and obtain the challenge itself from the
+        human-approval surfaces. Earlier revisions of this document and of the
+        `authzen_evaluation` capability entry promised the challenge here, and
+        no response ever carried one.
 
         **The one case where not negotiating changes the ANSWER, not just the
         shape.** An evaluation that would otherwise be `ALLOW` but carries a
@@ -1385,6 +1398,7 @@ paths:
       operationId: authzenEvaluation
       parameters:
         - $ref: '#/components/parameters/AxonflowClient'
+        - $ref: '#/components/parameters/AxonflowPEPHandshake'
         - in: header
           name: X-Axonflow-AuthZEN-Profile
           description: |
@@ -1480,7 +1494,17 @@ paths:
                 code: malformed_envelope
                 message: 'authzen: envelope must carry exactly one of "evaluation" or "evaluations", got neither'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: |
+            Missing or invalid authentication. This is the ONE refusal on this
+            route that is NOT an `AuthZENError`: it is written by the platform's
+            auth middleware before the AuthZEN handler runs, so it carries the
+            platform envelope (`ErrorResponse` / `JSONError`), not `code` +
+            `pointer`. A client must branch on the status, not on the body
+            shape, for this one case (#3637).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '406':
           description: |
             The `X-Axonflow-AuthZEN-Profile` header named a profile version this
@@ -1531,6 +1555,21 @@ paths:
                   this surface cannot evaluate caller-supplied properties;
                   accepting them would report that they were considered when
                   they were not.
+        '500':
+          description: |
+            The per-entry verdicts could not be combined into one decision
+            (`meetStates` refused). A typed refusal, not a verdict: no
+            `decision` member is present, so "could not evaluate" stays
+            distinguishable from "denied". Retrying is meaningful only if the
+            cause was transient; the code is `evaluation_unavailable` for that
+            reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthZENError'
+              example:
+                code: evaluation_unavailable
+                message: 'authzen: cannot meet an empty state set'
         '502':
           description: The evaluator could not answer. Retrying is meaningful.
           content:
@@ -5499,6 +5538,44 @@ components:
         pattern: '^[A-Za-z0-9_.:\-/]+$'
         example: "n8n-exec-abc123-node-Approve"
 
+    AxonflowPEPHandshake:
+      name: X-Axonflow-PEP-Handshake
+      in: header
+      required: false
+      description: |
+        The ADR-065 **PEP capability handshake**: base64url of a compact JSON
+        document in which an external enforcement point declares what it is and
+        which obligations it can discharge. See `PEPHandshake` for the document.
+
+        **Absent is the default and changes nothing.** A caller that omits the
+        header takes byte-for-byte the path it took before this header existed.
+
+        A header that is PRESENT and cannot be read is **refused**, never
+        treated as absent: degrading a malformed declaration to "legacy caller"
+        would go on handing an enforcement point obligations it had just said it
+        cannot discharge. The refusal is `400` and its message names this header,
+        which matters on `/api/v1/access/evaluation` where the refusal is
+        rendered through that surface's existing `incomplete_evaluation` code and
+        the message is the only thing distinguishing a malformed HEADER from a
+        malformed body ENVELOPE.
+
+        Present more than once is refused: RFC 7230 permits an intermediary to
+        join repeated field lines with a comma, and a comma is outside the
+        base64 alphabet, so a joined pair can only decode to malformed. That is
+        why the document is base64 rather than raw JSON, which would join into
+        something a lenient parser might accept.
+
+        When a decision carries a **mandatory** obligation the declared set does
+        not cover, the request is answered `200` with `verdict: deny` and a
+        reason beginning `pep_capability_unsupported` (ADR-065 invariant 8) - a
+        decision about the request, not a transport error. Enterprise
+        deployments only; a Community deployment records the declaration and
+        emits the obligation as it does today.
+      schema:
+        type: string
+        maxLength: 4096
+        description: base64url (padding optional) of the PEPHandshake document.
+
     AxonflowClient:
       name: X-Axonflow-Client
       in: header
@@ -5577,10 +5654,16 @@ components:
       type: object
       description: |
         SDK version compatibility information. Each key in the maps below
-        is one of `python` / `typescript` / `go` / `java`. SDKs that find
-        their own runtime version below `min_sdk_version[<their lang>]`
-        log a one-time upgrade warning; below `recommended_sdk_version`
-        is informational only.
+        is one of `python` / `typescript` / `go` / `java` / `rust`. SDKs
+        that find their own runtime version below
+        `min_sdk_version[<their lang>]` log a one-time upgrade warning;
+        below `recommended_sdk_version` is informational only.
+
+        The examples below are the values this platform actually serves.
+        They are not illustrative: a regression test compares them against
+        platform/shared/sdkcompat, the single source of truth both /health
+        planes read, so a stale example fails CI rather than misleading a
+        reader.
       properties:
         min_sdk_version:
           type: object
@@ -5591,30 +5674,39 @@ components:
             platform. Pre-v4.8.0 platforms returned a bare string; SDKs
             v6.0.0+ accept either shape.
           example:
-            python: "6.0.0"
-            typescript: "5.0.0"
-            go: "5.0.0"
-            java: "5.0.0"
+            python: "8.0.0"
+            typescript: "8.0.0"
+            go: "8.0.0"
+            java: "8.0.0"
+            rust: "0.7.0"
         recommended_sdk_version:
           type: object
           additionalProperties:
             type: string
           description: Per-language SDK version this platform was tested against.
           example:
-            python: "6.9.0"
-            typescript: "6.2.0"
-            go: "6.0.0"
-            java: "6.2.0"
+            python: "9.3.0"
+            typescript: "9.3.0"
+            go: "9.3.0"
+            java: "9.3.0"
+            rust: "0.10.0"
 
     PluginCompatInfo:
       type: object
       description: |
         Plugin version compatibility information. Mirrors `SDKCompatInfo`
-        for the four AxonFlow plugins (`openclaw`, `claude-code`,
-        `cursor`, `codex`). Plugins read this from `/health` and warn
-        when their runtime version is below `min_plugin_version[<their id>]`.
-        Keys match the canonical plugin IDs the agent tracks in
+        for the five AxonFlow clients (`openclaw`, `claude-code`,
+        `cursor`, `codex`, `claude-desktop`). Plugins read this from
+        `/health` and warn when their runtime version is below
+        `min_plugin_version[<their id>]`. Keys match the canonical plugin
+        IDs the agent tracks in
         `integration_activation.go::knownIntegrations`.
+
+        The examples below are the values this platform actually serves.
+        They are not illustrative: a regression test compares them against
+        platform/shared/plugincompat, the single source of truth both
+        /health planes read, so a stale example fails CI rather than
+        misleading a reader.
       properties:
         min_plugin_version:
           type: object
@@ -5622,20 +5714,22 @@ components:
             type: string
           description: Per-plugin minimum version compatible with this platform.
           example:
-            openclaw: "2.0.0"
-            claude-code: "1.0.0"
-            cursor: "1.0.0"
-            codex: "1.0.0"
+            openclaw: "2.4.0"
+            claude-code: "1.4.0"
+            cursor: "1.4.0"
+            codex: "1.4.0"
+            claude-desktop: "0.2.0"
         recommended_plugin_version:
           type: object
           additionalProperties:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.0.0"
-            claude-code: "1.0.0"
-            cursor: "1.0.0"
-            codex: "1.0.0"
+            openclaw: "2.9.0"
+            claude-code: "1.12.0"
+            cursor: "1.8.0"
+            codex: "1.8.0"
+            claude-desktop: "0.4.0"
 
     # =========================================================================
     # Static Policies Schemas (ADR-018)
@@ -6412,6 +6506,102 @@ components:
           format: date-time
           description: When the rate limit resets
 
+    PEPHandshake:
+      type: object
+      description: |
+        What an external enforcement point declares about itself. Carried
+        base64url-encoded on `X-Axonflow-PEP-Handshake`, never as a body member:
+        one governed route (`/api/v1/access/evaluation`) carries the
+        standardised AuthZEN envelope, which this platform does not own.
+
+        **Every member is required, and an unknown member is refused.** There is
+        deliberately no `edition`, `realm`, `tier` or `license` member: an
+        enforcement point may declare what it can DO, never what the platform
+        already knows about it. A Community build claiming Enterprise would
+        defeat exactly the over-advertising rule that exists to catch it, so the
+        edition is derived server-side from the deployment.
+      required: [profile_version, pep_id, audience, capabilities]
+      additionalProperties: false
+      properties:
+        profile_version:
+          type: integer
+          enum: [1]
+          description: |
+            The handshake profile. Matched by EXACT equality - not a floor and
+            not a range. A build that cannot read the named profile refuses
+            rather than answering as though negotiation succeeded.
+
+            The JSON NUMBER TYPE is part of the contract, not only the value:
+            this member is decoded as an integer, so `1.0`, `"1"` and `1e0` are
+            refused with a message naming the member. A client whose language
+            has a single number type must emit an integral literal.
+        pep_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[a-z0-9][a-z0-9._-]*$'
+          description: |
+            This enforcement point's name **within the caller's credential**.
+            It is not the platform's identifier and a caller cannot supply that
+            one: the platform builds `client:<credential>:<pep_id>`, so naming
+            another credential's enforcement point is impossible by construction
+            rather than refused by a comparison.
+
+            The colon is excluded so a name cannot smuggle the namespace
+            separator, or the `plane:` prefix the in-process planes use, into an
+            identifier that logs and metrics render as text.
+
+            Two enforcement points behind ONE credential are distinguishable
+            only if they choose DIFFERENT names - which is what a gateway
+            adapter needs, since its body-capable and headers-only call paths
+            authenticate identically and declare differently.
+          example: "sdk-go"
+        audience:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: |
+            The audience this enforcement point expects a decision proof to be
+            bound to. Recorded and bound; it **authorises nothing**. Whether a
+            proof may be minted for an audience is the Decision Proof Service's
+            decision.
+          example: "axonflow-decision-proof"
+        capabilities:
+          type: array
+          maxItems: 64
+          description: |
+            The EXACT obligation types and schema versions this enforcement
+            point can discharge.
+
+            **An empty array is a legitimate declaration** - "I discharge
+            nothing" - and is NOT the same as omitting the member, which is
+            refused. A handshake exists to declare capabilities, so one that
+            omits them has said nothing, and reading "nothing said" as "nothing
+            can be discharged" would put a caller's typo and a caller's
+            deliberate declaration on the same code path.
+
+            A surplus beyond `maxItems` is REFUSED, never truncated: truncating
+            narrows what the enforcement point claims, and a narrowed claim
+            produces a denial whose cause the operator cannot see.
+          items:
+            type: object
+            required: [type, version]
+            additionalProperties: false
+            properties:
+              type:
+                type: string
+                description: An obligation type this build declares.
+                example: "field_redact"
+              version:
+                type: integer
+                minimum: 1
+                description: |
+                  The obligation schema version, matched by EXACT equality in
+                  BOTH directions. A build claiming v1 is not assumed to
+                  implement v2's semantics, and a build claiming v2 does not
+                  satisfy an obligation at v1.
+                example: 1
+
     DecideRequest:
       type: object
       required:
@@ -6463,6 +6653,38 @@ components:
             (surplus dropped, flagged `context_truncated`). The persisted map
             is returned (full) by `GET /api/v1/decisions/{id}/explain` and
             (truncated to 5 keys) by `GET /api/v1/decisions`.
+        fulfillment_capabilities:
+          type: array
+          items:
+            type: string
+            enum: [request_body_redaction, request_header_mutation]
+          description: |
+            What this PEP's **seam** can mechanically do to a request before
+            forwarding it. A different axis from the capability handshake, which
+            declares which OBLIGATIONS the enforcement point can discharge:
+            `request_header_mutation` has no obligation type at all, and
+            `immutable_audit` has no seam mechanic, so neither list is derivable
+            from the other.
+
+            Three wire states, three meanings:
+
+            * **member omitted** - a legacy (pre-9.11.0) caller. Obligations are
+              emitted exactly as before.
+            * **`[]`** - still a **legacy caller**, deliberately. These bytes
+              have always been acceptable to the server and any non-Go client
+              could send them, so giving them a new meaning would move an
+              unchanged caller from "obligation emitted, the PEP fails closed"
+              to "obligation suppressed, organization fallback posture" - default
+              `log`, i.e. allowed without the redaction. Since v10.4.0 the state
+              is representable in the Go client and distinguishable in the type;
+              its reading is unchanged.
+            * **non-empty** - only the obligations these capabilities can
+              discharge are emitted; the organization's obligation-fallback
+              posture decides what happens to any the platform suppresses.
+
+            Unknown values are ignored, never an error and never a block, so an
+            older platform meeting a newer PEP's vocabulary degrades instead of
+            failing.
 
     DecisionCallerIdentity:
       type: object
@@ -6493,7 +6715,35 @@ components:
       properties:
         type:
           type: string
-          description: "Target type: llm, tool, or agent."
+          description: |
+            What kind of thing is being called: `llm`, `tool`, `agent`, or
+            `http` (an LLM-shaped target under the transport name the ext_proc
+            and ext_authz seams send).
+
+            `tool` IS LOAD-BEARING, not descriptive. It is the only value for
+            which the platform records `server` and `tool` as the decision's
+            tool attribution -- onto the audit row (`policy_details.tool_server`
+            / `.tool_name`) and into the descriptor a human approver sees on a
+            HITL queue entry. A tool call sent under any other value is decided
+            and enforced exactly the same way, and its audit row carries neither
+            field: a complete-looking record that does not say which tool it was
+            about. Matching is case-insensitive, so `TOOL` and `Tool` are the
+            same value; there is no second accepted WORD and no alias (#3717).
+
+            Capability-scoped policy evaluation is a separate question and is
+            NOT offered for every tool target. A target that also names a
+            `server` describes a call the caller routes to a backend it does not
+            itself execute, so its `tool` is not used to relax evaluation --
+            those requests always get full evaluation.
+
+            SO SETTING `server` IS A TRADE, AND IT IS THE SAFE DIRECTION OF ONE:
+            it is what puts `tool_server` on the audit row, and it also opts the
+            request out of any evaluation relaxation. It cannot weaken
+            enforcement. What it costs is false positives on prose that looks
+            like a statement, and the ADR-065 shadow comparison's tool label,
+            which follows the scoping key and is empty for these requests. Audit
+            attribution, the HITL descriptor and the FinCrime scoring context
+            all still carry the tool name.
         model:
           type: string
           description: Model identifier when type is llm.
@@ -6716,6 +6966,7 @@ components:
         evaluations:
           type: array
           minItems: 1
+          maxItems: 64
           items:
             $ref: '#/components/schemas/AuthZENRequest'
     AuthZENEnvelope:
@@ -6747,6 +6998,24 @@ components:
       description: |
         The AxonFlow profile payload, returned only to a caller that negotiated
         the profile version.
+
+        **`approval` is RESERVED and is not emitted by this route.** It is
+        declared so that a client generated from this document does not change
+        shape the day it starts being sent, and so a decoder written against the
+        AxonFlow profile is complete -- but it is always absent here. The reason
+        is structural rather than temporary: this route is an *adapter* over
+        `POST /api/v1/decide`, and that response names no eligible approver set,
+        no quorum and no challenge expiry, so there is no requirement to render
+        and synthesising one would hand your enforcement point a fabricated
+        approval policy to enforce. A decision awaiting approval arrives as
+        `state: CHALLENGE` with `decision: false`; hold, and obtain the
+        challenge itself from the human-approval surfaces.
+
+        (The note sits on this schema rather than on the `approval` member
+        because a `description` beside a `$ref` is ignored under OpenAPI 3.0.3.
+        Wrapping the `$ref` in an `allOf` to carry one is a generator-visible
+        shape change -- oasdiff reports the referenced schema's required members
+        as removed -- so the prose moved instead of the shape.)
       required: [profile, state, category, decision_id, schema_version]
       additionalProperties: false
       properties:
@@ -6774,10 +7043,16 @@ components:
         obligations:
           type: array
           description: |
-            Instructions the enforcement point must discharge. Carried only on
-            an executable decision: a denied operation has nothing to discharge,
-            and attaching instructions to a denial invites a PEP to perform them
-            and proceed.
+            Instructions the enforcement point must discharge. Carried on a
+            decision that PERMITS -- `ALLOW`, and `CHALLENGE`, which is a permit
+            with an approval outstanding. Not carried on `DENY` or `ERROR`: a
+            refused operation has nothing to discharge, and attaching
+            instructions to a refusal invites an enforcement point to perform
+            them and proceed.
+
+            On a `CHALLENGE` these tell you what you will additionally have to
+            discharge once the approval is granted. Do not act on them yet --
+            `decision` is `false` and the operation is not permitted.
           items:
             $ref: '#/components/schemas/AuthZENObligation'
         approval:

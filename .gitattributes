@@ -6,3 +6,46 @@ CLAUDE.md export-ignore
 CLAUDE*.md export-ignore
 **/CLAUDE.md export-ignore
 **/CLAUDE*.md export-ignore
+
+# ---------------------------------------------------------------------------
+# The runtime-e2e suite ledger is APPEND-ONLY, so every pair of concurrent
+# lanes conflicts on it by construction (#3722).
+#
+# Each lane that adds a suite appends one row at the end of a 369-line file.
+# Two such branches always produce `CONFLICT (content)` on the same final
+# hunk, and the cost is not the rebase: a conflicted PR is DIRTY, and a dirty
+# PR runs NO CI at all - its check list is EMPTY rather than red, which is
+# indistinguishable from a clean board under any readiness check that scores
+# "nothing failing and nothing pending". So each merge silently zeroes the
+# evidence for every open sibling.
+#
+# `merge=union` removes the class permanently for this file and ONLY this
+# file, because it is the one place where the correct resolution is always
+# "keep both rows" - the ledger is a set of independent suite declarations,
+# not a document with an order that means anything. It is deliberately NOT
+# applied to CHANGELOG.md, where union glues a section's closing line onto the
+# following bullet (measured three times on this train) and where the
+# resolution genuinely depends on which edition heading an entry belongs
+# under.
+#
+# WHAT UNION CAN STILL GET WRONG, and what catches it. Union concatenates both
+# sides of the hunk verbatim; if either side lacked a trailing newline the two
+# rows are glued into ONE line carrying more than four tab-separated fields.
+# The ledger loader in scripts/e2e/lint-runtime-e2e-executors.sh reads fields
+# with `cut -f1..4`, which returns the FOURTH of however many there are and
+# reports the row as well-formed - so union without a field-COUNT check trades
+# a loud conflict for a silent malformed row. Measured, not argued: appending a
+# fifth field to a real row left that loader at rc=0 with the row's note
+# silently truncated, and at rc=1 with the NF!=4 assertion this change adds to
+# the same loader. It runs in CI on every PR.
+#
+# The loader's own bijection check catches SOME glue shapes by accident - a
+# suite name swallowed into a note leaves its directory without a row - but it
+# reports "no ledger row", which sends the reader after a missing suite rather
+# than after the merge that ate one, and it sees nothing at all when the
+# swallowed row is in the legitimate row-before-directory window.
+#
+# Union also cannot merge two edits to the SAME row (it keeps both copies,
+# which the loader's duplicate-suite check then rejects) - the loud outcome,
+# which is correct for the one case where a human really must choose.
+scripts/e2e/runtime_e2e_suites.tsv merge=union

@@ -58,7 +58,8 @@ import "strings"
 //
 // Threat-model note on caller-controlled tool NAMES: capability scoping
 // applies ONLY on the ADVISORY planes (check-input / check-output /
-// mcp-server check_policy + check_output / /decide target.tool), where the
+// mcp-server check_policy + check_output / /decide target.tool, minus the
+// gateway-mediated shapes named in the exception below), where the
 // enforcing client itself executes the tool and reports its name (e.g. the
 // Claude Code plugin hook). A client that lies about the tool name could
 // equally not call the PEP at all — the name is already the trust anchor for
@@ -67,6 +68,27 @@ import "strings"
 // shell-executing tool "editJiraIssue" is a trojan connector: it controls
 // execution regardless of what this evaluation decides, and is governed by
 // connector registration/allowlisting, not by request-content scanning.
+//
+// THE /decide EXCEPTION (#3717). Two request shapes are not advisory and get no
+// scoping key, and it takes BOTH to cover the population:
+//
+//   - the target NAMES A HOSTING SERVER (the AuthZEN plane, whose tool resource
+//     ids are "server/tool" by construction; the MCP seam when agentgateway
+//     reports exactly one backend);
+//   - the request DECLARES ITSELF an MCP-gateway call.
+//
+// The second is not redundant, and assuming it was is how the first version of
+// this fix failed open: the MCP seam leaves Server EMPTY whenever service_names
+// is absent or names several backends, so the server condition alone let a
+// fully client-chosen tool name back into the scoping path on three of four
+// request shapes.
+//
+// The premise above is what fails on both: the tool name is a field of an MCP
+// client's own JSON-RPC body, the gateway is in-path, and "could equally not
+// call the PEP at all" is not available to the party that chose the name.
+// handleDecide withholds it there; measured before that split, the same payload
+// came back blocked under tool="run_sql_query" and allowed under
+// tool="editJiraIssue".
 //
 // The managed-connector planes (resources/query, tools/execute) — where the
 // AGENT executes the statement against a real connector — NEVER apply

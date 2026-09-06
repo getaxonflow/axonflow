@@ -178,6 +178,23 @@ func Parse(raw []byte) (*Document, error) {
 	// It is a SHAPE check and not a substitute for Validate. The schema can say
 	// that a condition names an operator; it cannot say that the operator
 	// compares caller-supplied input against a trusted term.
+	// THE RAW BYTES ARE VALIDATED, NOT THE RE-RENDERED DOCUMENT.
+	//
+	// ValidateAgainstSchema renders the decoded value and validates that, which
+	// makes every `required` declaration in the published schema unenforced at
+	// the wire: a member the author omitted is re-materialised at its Go zero
+	// value on the way back out and satisfies `required`. So a document could
+	// omit a member the schema calls mandatory, be accepted here, and be stored
+	// with a value its author never wrote - the authoring-plane form of the
+	// defect #3630 closes in the decision contract.
+	//
+	// The rendered form is checked TOO, immediately below. The two answer
+	// different questions: the raw check says the author supplied what the
+	// schema requires, and the rendered check says this build can round-trip it
+	// without loss. Dropping either would leave one of those unasserted.
+	if err := ValidateRawAgainstSchema(raw); err != nil {
+		return nil, err
+	}
 	if err := ValidateAgainstSchema(&d); err != nil {
 		return nil, err
 	}

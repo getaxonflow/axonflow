@@ -1,0 +1,22 @@
+[
+  {
+    "name": "no capabilities at all (every SDK, every plugin, the desktop proxy)",
+    "body": "{\"stage\":\"llm\",\"caller_identity\":{\"gateway_id\":\"gw-1\",\"org_id\":\"acme\",\"tenant_id\":\"acme\"},\"target\":{\"type\":\"llm\",\"model\":\"gpt-4\",\"provider\":\"openai\"},\"query\":\"hello\"}"
+  },
+  {
+    "name": "ext_authz / ext_proc bodyless: headers-only seam",
+    "body": "{\"stage\":\"llm\",\"caller_identity\":{\"gateway_id\":\"gw-1\",\"org_id\":\"acme\",\"tenant_id\":\"acme\"},\"target\":{\"type\":\"llm\",\"model\":\"gpt-4\",\"provider\":\"openai\"},\"query\":\"hello\",\"fulfillment_capabilities\":[\"request_header_mutation\"]}"
+  },
+  {
+    "name": "ExtMcp / ext_proc body: body-capable seam",
+    "body": "{\"stage\":\"llm\",\"caller_identity\":{\"gateway_id\":\"gw-1\",\"org_id\":\"acme\",\"tenant_id\":\"acme\"},\"target\":{\"type\":\"llm\",\"model\":\"gpt-4\",\"provider\":\"openai\"},\"query\":\"hello\",\"fulfillment_capabilities\":[\"request_body_redaction\"]}"
+  },
+  {
+    "name": "explicit nil slice",
+    "body": "{\"stage\":\"llm\",\"caller_identity\":{\"gateway_id\":\"gw-1\",\"org_id\":\"acme\",\"tenant_id\":\"acme\"},\"target\":{\"type\":\"llm\",\"model\":\"gpt-4\",\"provider\":\"openai\"},\"query\":\"hello\"}"
+  },
+  {
+    "name": "explicit EMPTY slice (unsendable before #3704 - omitempty erased it)",
+    "body": "{\"stage\":\"llm\",\"caller_identity\":{\"gateway_id\":\"gw-1\",\"org_id\":\"acme\",\"tenant_id\":\"acme\"},\"target\":{\"type\":\"llm\",\"model\":\"gpt-4\",\"provider\":\"openai\"},\"query\":\"hello\"}"
+  }
+]

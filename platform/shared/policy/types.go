@@ -1047,25 +1047,131 @@ func DefaultDynamicPolicyConfig() DynamicPolicyConfig {
 	}
 }
 
+// UnlimitedCustomPolicyConnectors is the limit value meaning "no ceiling".
+const UnlimitedCustomPolicyConnectors = -1
+
+// Defaults applied ONLY by the exported CustomPolicyConnectorLimitForTier when
+// the corresponding config field is unset. The consumers deliberately do not
+// apply them - see connectorTierClass.
+const (
+	defaultCommunityConnectorLimit  = 2
+	defaultEvaluationConnectorLimit = 5
+)
+
+// connectorTierClass is the ONE classification of a licence tier for the
+// connector ceiling. Everything that needs the ceiling classifies here and then
+// reads the number it wants, so a tier cannot mean two things on two paths.
+//
+// # THE TIER SET FOLLOWS THE LICENCE PACKAGE, AND A TEST SAYS SO
+//
+// platform/agent/license.GetTierLimits maps
+// `TierProfessional, TierEnterprise, TierEnterprisePlus` alike onto
+// EnterpriseLimits (CustomPolicyConnectors: -1), in all three of its
+// definitions. The two switches this replaces recognised only "enterprise" and
+// let `professional` and `plus` fall into the COMMUNITY ceiling of 2 - latent
+// while the licence path was reachable from `community` and unset alone, and
+// ARMED by #3713 routing community-saas, evaluation and unrecognised modes onto
+// it.
+//
+// This is a hand-written correspondence, not an import: platform/shared cannot
+// take platform/agent/license as a dependency of the ceiling itself without
+// making every config read do licence I/O. So the correspondence is PINNED from
+// the other side - platform/agent/connector_tier_authority_test.go fails if
+// license.GetTierLimits and this classification ever disagree for any tier the
+// licence package defines. R3 measured that without it, planting
+// `EnterpriseLimits.CustomPolicyConnectors: -1 -> 3` was invisible here.
+//
+// Case is folded because the exported method is documented to take the licence
+// package's capitalised spellings while resolveConnectorLimitTier lower-cases.
+// That makes the accepting set a strict SUPERSET of the authority's (which
+// matches exactly); no spelling is narrowed by it.
+type connectorTierClass int
+
+const (
+	tierClassCommunity connectorTierClass = iota
+	tierClassEvaluation
+	tierClassUnlimited
+)
+
+// classifyConnectorTier is the single tier→class decision.
+//
+// An unrecognised tier gets the Community class: the narrowest, and the same
+// direction the deployment-mode axis fails.
+func classifyConnectorTier(tier string) connectorTierClass {
+	switch strings.ToLower(tier) {
+	case "enterprise", "professional", "plus":
+		return tierClassUnlimited
+	case "evaluation":
+		return tierClassEvaluation
+	default:
+		return tierClassCommunity
+	}
+}
+
+// configuredConnectorLimit returns the ceiling the CONSUMERS apply: the raw
+// configured field, with no default substituted.
+//
+// # WHY RAW, AND WHY THAT IS NOT A DETAIL (R3 round 2)
+//
+// The two switches this replaced read config.Max… raw, so a field left at its
+// zero value fell through their `limit > 0` guard and meant NO CEILING. The
+// first version of this consolidation reused the exported method's
+// `if field > 0 … else <literal>` fallback and thereby changed that: a config
+// with the fields unset went from unlimited to a ceiling of 2, and UpdateConfig
+// began REFUSING a configuration it had previously accepted. Nothing in the
+// tree reaches it, because every config starts from DefaultDynamicPolicyConfig
+// - but these functions are exported in a source-available repo, and JSON that
+// omits max_custom_policy_connectors_community decodes to exactly that.
+//
+// An undeclared behaviour change is what this PR exists to avoid, so the
+// consumers keep the raw read and the `limit > 0` guard stays LIVE. The
+// literal defaults belong to the exported method, which documents them.
+func configuredConnectorLimit(c DynamicPolicyConfig, tier string) int {
+	switch classifyConnectorTier(tier) {
+	case tierClassUnlimited:
+		return UnlimitedCustomPolicyConnectors
+	case tierClassEvaluation:
+		return c.MaxCustomPolicyConnectorsEvaluation
+	default:
+		return c.MaxCustomPolicyConnectorsCommunity
+	}
+}
+
 // CustomPolicyConnectorLimitForTier returns the custom policy connector limit based on the license tier.
 // This limits the number of connectors that can have tenant-level policies (rate limiting, budgets,
 // time/role access) enabled. All connectors can be registered in all tiers.
-// Returns -1 for unlimited (Enterprise).
+// Returns UnlimitedCustomPolicyConnectors (-1) for the paid tiers.
+//
+// Unlike the consumers, this method substitutes a documented default when the
+// config field is unset — behaviour it has always had and which is preserved
+// exactly. Until #3713 it was a SECOND mapping that DISAGREED with the switches
+// actually applying the ceiling, reading `Plus` and `Professional` as unlimited
+// where those fell through to the Community default of 2. Nothing called it, so
+// the disagreement was invisible — and "unreferenced" is not "harmless", because
+// the next caller picks whichever copy they find first.
+//
+// A nil receiver returns the Community default rather than panicking: the body
+// this replaced returned before touching the receiver for the four paid
+// spellings, so a nil-receiver call that used to succeed must not start
+// crashing (R3 round 2).
 func (c *DynamicPolicyConfig) CustomPolicyConnectorLimitForTier(tier string) int {
-	switch tier {
-	case "enterprise", "Enterprise", "Plus", "Professional":
-		return -1 // Unlimited
-	case "evaluation", "Evaluation":
-		if c.MaxCustomPolicyConnectorsEvaluation > 0 {
-			return c.MaxCustomPolicyConnectorsEvaluation
-		}
-		return 5 // Default Evaluation limit
-	default:
-		if c.MaxCustomPolicyConnectorsCommunity > 0 {
-			return c.MaxCustomPolicyConnectorsCommunity
-		}
-		return 2 // Default Community limit
+	class := classifyConnectorTier(tier)
+	if class == tierClassUnlimited {
+		return UnlimitedCustomPolicyConnectors
 	}
+	if c == nil {
+		if class == tierClassEvaluation {
+			return defaultEvaluationConnectorLimit
+		}
+		return defaultCommunityConnectorLimit
+	}
+	if limit := configuredConnectorLimit(*c, tier); limit > 0 {
+		return limit
+	}
+	if class == tierClassEvaluation {
+		return defaultEvaluationConnectorLimit
+	}
+	return defaultCommunityConnectorLimit
 }
 
 // DynamicPolicyRequest is sent to Orchestrator for policy evaluation.

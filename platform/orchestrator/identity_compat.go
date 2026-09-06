@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -77,13 +76,15 @@ func noteOrchestratorDirectoryWired() {
 // that keeps the OIDC realm source off this plane: nothing is registered,
 // and the row has one writer.
 func initIdentityCompat() {
-	boot, err := sharedidentity.BootstrapCompat(sharedidentity.CompatBootstrapConfig{
-		RawMode:           os.Getenv(sharedidentity.EnvCompatMode),
-		RawEnforceReasons: os.Getenv(sharedidentity.EnvEnforceReasons),
-		Deployment:        orchestratorCompatDeployment,
-		Component:         "orchestrator",
-		OrgModes:          orchestratorOrgModeSource(),
-	})
+	// EVERY ENVIRONMENT-DERIVED FIELD COMES FROM ONE READER. This used to
+	// list the variables itself, and when the per-path lever was added
+	// (#3634) this copy did not grow: the orchestrator kept evaluating every
+	// path while its compose line and the documentation said otherwise.
+	cfg := sharedidentity.EnvCompatConfig()
+	cfg.Deployment = orchestratorCompatDeployment
+	cfg.Component = "orchestrator"
+	cfg.OrgModes = orchestratorOrgModeSource()
+	boot, err := sharedidentity.BootstrapCompat(cfg)
 	if err != nil {
 		log.Fatalf("❌ %v", err)
 	}

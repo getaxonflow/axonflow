@@ -43,6 +43,11 @@ on:
       - 'ee/go.sum'
       - 'ee/platform/customer-portal/go.sum'
       - '.github/workflows/cache-seed.yml'
+  # Daily, for the golangci-lint seed below: lint.yml no longer runs on push
+  # to main, and a cache saved on a PR branch is invisible to every other
+  # branch, so main is the only place a shared lint cache can come from.
+  schedule:
+    - cron: '30 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -60,6 +65,9 @@ jobs:
   # build-community.yml gates its community-only jobs. This job carries only
   # paths that exist in BOTH repositories.
   seed:
+    # The daily schedule exists for seed-golangci only; the module seeds run
+    # on go.sum changes and on dispatch (R3 L-b on #3683).
+    if: github.event_name != 'schedule'
     name: Seed ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -112,7 +120,7 @@ jobs:
   # build-community.yml gates its community-only jobs.
   seed-enterprise:
     name: Seed ${{ matrix.name }}
-    if: github.repository != 'getaxonflow/axonflow'
+    if: github.event_name != 'schedule' && github.repository != 'getaxonflow/axonflow'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -157,7 +165,7 @@ jobs:
   seed-risk-scorer:
     name: Seed risk-scorer (go-version-file)
     # Its cache key hashes ee/go.sum, which the community mirror does not carry.
-    if: github.repository != 'getaxonflow/axonflow'
+    if: github.event_name != 'schedule' && github.repository != 'getaxonflow/axonflow'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -173,3 +181,53 @@ jobs:
         run: |
           set -euo pipefail
           (cd ee && go mod download)
+
+  # golangci-lint cache seed (2026-09-03, CI-cost round 3). lint.yml restores
+  # ~/.cache/golangci-lint + ~/.cache/go-build with restore-keys, but GitHub
+  # only lets a run restore caches created on its own branch or on the default
+  # branch, and lint.yml no longer runs on main (push-to-main tier retired,
+  # #3537). Without this job every PR's first lint run is cold. This runs the
+  # SAME five-module lint as lint.yml under the SAME key prefix, once a day
+  # and whenever a go.sum changes on main, so a PR restores a cache at most a
+  # day old from which only its changed packages re-lint.
+  seed-golangci:
+    name: Seed golangci-lint cache
+    if: github.repository != 'getaxonflow/axonflow'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+      # Key form mirrors lint.yml's cache step: prefix, OS, the go.sum +
+      # .golangci.yml hash, then the SHA so this run always saves.
+      - name: Restore the newest lint cache, save this run's
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/golangci-lint
+            ~/.cache/go-build
+          key: golangci-${{ runner.os }}-${{ hashFiles('**/go.sum', '.golangci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            golangci-${{ runner.os }}-${{ hashFiles('**/go.sum', '.golangci.yml') }}-
+            golangci-${{ runner.os }}-
+      - name: Install golangci-lint (same pin as lint.yml)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+      - name: Lint the five modules to populate the cache
+        run: |
+          set -euo pipefail
+          status=0
+          for path in platform/agent platform/orchestrator platform/connectors platform/shared platform/decision; do
+            echo "--- golangci-lint: $path"
+            (cd "$path" && golangci-lint run --timeout=10m --config="${{ github.workspace }}/.golangci.yml") || status=1
+          done
+          # A lint failure on main is lint.yml's business, not the seed's: the
+          # cache is populated either way, so report and exit 0.
+          [ "$status" -eq 0 ] || echo "::warning::lint findings on main - cache populated regardless"
+          du -sh ~/.cache/golangci-lint ~/.cache/go-build 2>/dev/null || true
+

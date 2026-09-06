@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "case_id": "unresolvable-attribute-is-indeterminate",
+  "description": "the risk signal could not be resolved, so a policy that reads it cannot be evaluated",
+  "environment_digest": "sha256:aedf17935e167c823dfd08dc3381d759565238f52ff0e20ffad1fba402b55363",
+  "bundle_pins": [
+    {
+      "root": "organization",
+      "digest": "sha256:fafe6c63da63897b2af1afcb0f597e3fcb35a72f35dc1f4fa3f97a678eebf329"
+    },
+    {
+      "root": "system",
+      "digest": "sha256:dff5063380cea338ed604a53fbdf17dbaa3cd9564e6d6df4f33fd5059c828c84"
+    }
+  ],
+  "request": {
+    "request_id": "req_replay_unknown_signal",
+    "organization": {
+      "kind": "organization",
+      "type": "Organization",
+      "local": "org_acme"
+    },
+    "principal": {
+      "kind": "principal",
+      "type": "User",
+      "qualifier": "realm_ws",
+      "local": "alice"
+    },
+    "action": {
+      "kind": "action",
+      "type": "Action",
+      "local": "stripe.create_refund"
+    },
+    "resource": {
+      "kind": "resource",
+      "type": "Ticket",
+      "qualifier": "connector",
+      "local": "SUP-42"
+    },
+    "context": {
+      "actor_chain": [
+        {
+          "id": {
+            "kind": "principal",
+            "type": "User",
+            "qualifier": "realm_ws",
+            "local": "alice"
+          },
+          "attributes": {
+            "principal.groups": {
+              "state": "known",
+              "value": [
+                "Group::realm_ws:all-staff",
+                "Group::realm_ws:support",
+                "Group::realm_ws:support-tier2"
+              ],
+              "source": "directory",
+              "source_version": 83,
+              "observed_at": "2026-08-29T12:00:00Z"
+            },
+            "principal.id": {
+              "state": "known",
+              "value": "User::realm_ws:alice",
+              "source": "authentication",
+              "source_version": 83,
+              "observed_at": "2026-08-29T12:00:00Z"
+            }
+          }
+        }
+      ],
+      "tool_call": {
+        "registry_id": {
+          "kind": "tool",
+          "type": "Tool",
+          "local": "stripe.create_refund"
+        },
+        "registry_version": 18,
+        "arguments_digest": "sha256:d65ddd5f3ab7560c2982978272a840e5d18974d569f60877110dd9f5bc137e0d"
+      }
+    },
+    "snapshot": {
+      "identity_epoch": 83,
+      "resource_epoch": 14,
+      "policy_bundle": "sha256:dff5063380cea338ed604a53fbdf17dbaa3cd9564e6d6df4f33fd5059c828c84",
+      "registry_version": 18,
+      "schema_version": "2026-08-29",
+      "policy_epoch": 1
+    },
+    "attributes": {
+      "action.id": {
+        "state": "known",
+        "value": "Action::stripe.create_refund",
+        "source": "platform",
+        "source_version": 18,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "action.tags": {
+        "state": "known",
+        "value": [
+          "irreversible",
+          "spend"
+        ],
+        "source": "platform",
+        "source_version": 18,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "agent.trust_level": {
+        "state": "known",
+        "value": "trusted",
+        "source": "authentication",
+        "source_version": 7,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "args.amount_cents": {
+        "state": "known",
+        "value": 300000,
+        "source": "caller",
+        "source_version": 0,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "env.new_device": {
+        "state": "absent",
+        "source": "platform",
+        "source_version": 1,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "resource.closure": {
+        "state": "absent",
+        "source": "resource",
+        "source_version": 14,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "resource.customer.risk_tier": {
+        "state": "absent",
+        "source": "resource",
+        "source_version": 14,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "resource.owner": {
+        "state": "known",
+        "value": "User::realm_ws:alice",
+        "source": "resource",
+        "source_version": 14,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "resource.project": {
+        "state": "known",
+        "value": "Project::connector:SUPPORT",
+        "source": "resource",
+        "source_version": 14,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "resource.project.classification": {
+        "state": "known",
+        "value": "internal",
+        "source": "resource",
+        "source_version": 14,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "signal.risk_score": {
+        "state": "unknown",
+        "source": "detector",
+        "source_version": 1,
+        "observed_at": "2026-08-29T12:00:00Z",
+        "reason": "resolution_failed"
+      },
+      "state.amount_anomaly_threshold": {
+        "state": "absent",
+        "source": "platform",
+        "source_version": 1,
+        "observed_at": "2026-08-29T12:00:00Z"
+      },
+      "state.velocity_10m": {
+        "state": "absent",
+        "source": "platform",
+        "source_version": 1,
+        "observed_at": "2026-08-29T12:00:00Z"
+      }
+    },
+    "evaluated_at": "2026-08-29T12:00:00Z"
+  },
+  "expected": {
+    "decision_id": "dec_e84e7c27bb583b2c",
+    "request_id": "req_replay_unknown_signal",
+    "authorization": "indeterminate",
+    "state": "ERROR",
+    "reason": "unknown_constraint",
+    "determining": {
+      "matched_permissions": null,
+      "matched_constraints": null,
+      "matched_requirements": null,
+      "matched_inspections": null,
+      "unknown": [
+        {
+          "policy_id": "S1-DENY",
+          "authority": "constraint",
+          "reason": "resolution_failed",
+          "paths": [
+            "signal.risk_score"
+          ]
+        }
+      ]
+    },
+    "snapshot": {
+      "identity_epoch": 83,
+      "resource_epoch": 14,
+      "policy_bundle": "sha256:dff5063380cea338ed604a53fbdf17dbaa3cd9564e6d6df4f33fd5059c828c84",
+      "registry_version": 18,
+      "schema_version": "2026-08-29",
+      "policy_epoch": 1
+    }
+  }
+}
