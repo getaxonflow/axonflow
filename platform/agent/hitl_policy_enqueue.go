@@ -222,6 +222,20 @@ type policyStepUpInput struct {
 	// an auditor) can join the queue entry back to the audit_logs row that
 	// holds the full evaluated request.
 	DecisionID string
+	// CorrelationID is the W3C trace-id shared by every decision row of one
+	// logical request (#2598, migration core/121).
+	//
+	// Recorded on the queue entry for #3718: when the approval is later decided,
+	// the HITL audit row stamps it as its OWN correlation_id, which is what puts
+	// the human decision into the SAME chain as the machine decision that asked
+	// for it. Without it the approval row can be found in the decisions feed
+	// (its decision_id is minted from the request) but groups as a singleton,
+	// so an exporter reconstructing the chain shows the request and the block
+	// and not the person who decided.
+	//
+	// Empty is legitimate and common: a caller that propagated no traceparent
+	// has no chain to join.
+	CorrelationID string
 	// Stage is the gateway layer the PEP declared, where the plane has one.
 	Stage string
 	// Query is the caller's request text. It is used ONLY to derive the
@@ -452,6 +466,14 @@ func enqueuePolicyStepUp(ctx context.Context, in policyStepUpInput) policyStepUp
 		"source":      "policy_step_up",
 		"decision_id": in.DecisionID,
 		"query_hash":  hitlQueryHash(in.Query),
+	}
+	// Only when present. An empty correlation_id written as "" would be read
+	// back by the HITL audit writer as a value and stamped on the compliance
+	// row, where the exporters' `correlation_id IS NOT NULL` predicate would
+	// group every untraced approval into one bogus chain (#3718). Absent means
+	// absent.
+	if in.CorrelationID != "" {
+		reqCtx["correlation_id"] = in.CorrelationID
 	}
 	if in.Stage != "" {
 		reqCtx["stage"] = in.Stage

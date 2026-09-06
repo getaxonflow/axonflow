@@ -1,0 +1,134 @@
+name: Suite Gate
+
+# MAKES THE POST-MERGE SUITES ABLE TO BLOCK A MERGE.
+#
+# The 62 stack-booting suites lost their `pull_request` trigger on 2026-09-04
+# and run in the merge queue instead. But NONE of them is a required status
+# check, and a merge-queue entry is gated ONLY by the required checks - so a
+# red suite in the queue would be visible and merge anyway. This repository
+# also proved (2026-08-28, ruleset experiment) that a merge_group-ONLY context
+# cannot be made required: adding one put a PR at mergeState=BLOCKED with every
+# PR check green, because a required context must also report on
+# `pull_request`.
+#
+# This job squares that circle. It runs on BOTH events, so it is legal to
+# require:
+#   * on `pull_request` it passes immediately - by design nothing stack-booting
+#     runs on a PR, so there is nothing to check and nothing to wait for;
+#   * on `merge_group` it waits for every suite run at this SHA and FAILS if
+#     any of them failed, was cancelled or timed out.
+#
+# Add `Suite Gate` to ruleset 9199766's required_status_checks once a real
+# queue build has been observed passing through it. Until then it is advisory,
+# which is honest: it reports, and the operator reads it.
+#
+# ANTI-VACUITY, the failure this job would otherwise have: if the selector
+# matched nothing - a renamed workflow, a broken manifest, suites that never
+# started - "no failures found" would read as success while nothing had been
+# verified. So a merge_group run FAILS unless it observes at least
+# MIN_SUITE_RUNS completed suite runs.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: suite-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  suite-gate:
+    name: Suite Gate
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: this job is a few API calls, and it must be
+    # able to report even when the self-hosted fleet is stopped by a spot
+    # interruption. A gate that cannot run cannot gate.
+    #
+    # THREE NUMBERS BOUND THIS JOB AND THEY MUST NEST STRICTLY. Two of them
+    # were reasoned about together below; this one was left at a default, and
+    # that is the whole defect:
+    #
+    #     DEADLINE_MINUTES (110)  <  timeout-minutes (115)  <  queue patience (120)
+    #
+    #   * DEADLINE_MINUTES, set below, is when the GATE gives up waiting for
+    #     suites and reports a deadline error. It is the gate's own decision.
+    #   * timeout-minutes is when the RUNNER kills the job. It is not a
+    #     decision, it is an execution. A job killed here reports NOTHING -
+    #     no pass, no fail, no deadline error - because the code that would
+    #     write the verdict never runs.
+    #   * check_response_timeout_minutes on ruleset 9199766 is 120: the queue
+    #     stops waiting at 120 whatever this file says. So this is a CEILING,
+    #     not a floor. A cap of 120 would expire in the same minute the queue
+    #     gives up; a cap above 120 is unreachable and only looks generous.
+    #
+    # It was 45 while the deadline was 110, so the runner killed the job
+    # 65 minutes before the gate was entitled to conclude. Measured on drain
+    # 12: run 34006941562 cancelled at 45m15s with 32 suites still queued
+    # behind eight fleet slots. The gate had never reached a verdict over a
+    # full queue build, and at that cap it never could.
+    #
+    # IF A FULL BUILD LEGITIMATELY NEEDS MORE THAN ~110 MINUTES, RAISING THIS
+    # IS THE WRONG FIX. 120 is the hard ceiling, so the answer then is fleet
+    # capacity or a ruleset change - not a bigger number here, which would
+    # simply be killed by the queue instead of by the runner.
+    timeout-minutes: 115
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: On a pull request there is nothing to gate
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          echo "The stack-booting suites have no pull_request trigger (2026-09-04):"
+          echo "two opt-in gates cut zero (129 billable minutes per push before,"
+          echo "133 after), so the trigger was removed outright. They run in the"
+          echo "merge queue, and this gate enforces them there."
+          echo ""
+          echo "Nothing to wait for on a PR. Passing."
+
+      - name: Wait for the suites and fail on any red
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 110, and the number comes from arithmetic on the observed floor,
+          # not from taste.
+          #
+          # THE CONSTRAINT IS CAPACITY, NOT BATCHING - which is the opposite of
+          # what this comment said at 55, and of what the README's priced list
+          # recommended. Measured on #3741's own queue entry: 71 suites, ZERO
+          # scoped out, 8 in_progress and 71 QUEUED behind 8 runner slots. That
+          # entry is k=1. 71 suites at a ~9.8 min median across 8 slots is
+          # ~87 wall-minutes with a SINGLE PR in the batch, so no batch-size
+          # change touches it. Cutting max_entries_to_merge addresses the k=5
+          # multiplier and leaves the k=1 floor exactly where it is.
+          #
+          # WHY 71 SCOPED OUT TO NOTHING, and why this is the permanent tail of
+          # the design rather than a tuning failure: every suite's `paths:`
+          # names its own workflow file, so a PR that EDITS THE WORKFLOWS
+          # always matches all of them. #3741 changes 93 of them. Scoping can
+          # never help a CI-infrastructure PR. A normal feature PR scopes most
+          # suites out - the measured k=1 median there is 12.8 wall-minutes.
+          #
+          # So the wall bites CI PRs specifically, which are a small minority
+          # of entries, and the fix is a free timeout rather than bought
+          # capacity. 110 sits inside the ruleset's own
+          # check_response_timeout_minutes, raised 60 -> 120 for the same
+          # reason: a gate that gives up before the queue does fails an entry
+          # the queue would still have waited for.
+          DEADLINE_MINUTES: '110'
+          # A sanity floor on the TREE, not on observed runs: below this many
+          # stack-booting merge_group workflows, the selector is broken rather
+          # than the day quiet. Sufficiency itself is a derived set comparison
+          # (every such workflow must produce a completed run; a scoped-out
+          # suite still reports completed/skipped, which counts).
+          MIN_SUITE_RUNS: '20'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/suite-gate.py

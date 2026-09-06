@@ -1,0 +1,75 @@
+name: Self-Hosted Runner Canary
+
+# Proves the AWS runner host can do the work a GitHub-hosted runner does for
+# this repository, BEFORE any real workflow is moved onto it: the Go
+# toolchain, a compose stack with Postgres, and the docker/buildx plugins the
+# e2e suites need. Dispatch-only; it never runs on a PR.
+
+on:
+  workflow_dispatch:
+  # Also on pushes to its own branch, so the host can be proven before this
+  # file exists on the default branch (workflow_dispatch requires that).
+  push:
+    branches: ['ci/**']
+
+permissions:
+  contents: read
+
+env:
+  AXONFLOW_TELEMETRY: 'off'
+
+jobs:
+  canary:
+    name: Self-hosted runner can build and boot what CI needs
+    runs-on: [self-hosted, linux, x64, axonflow]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Host facts
+        run: |
+          set -euo pipefail
+          echo "runner=$RUNNER_NAME  cpus=$(nproc)  mem=$(free -g | awk '/Mem:/{print $2}')GB"
+          echo "disk: $(df -h / | awk 'NR==2{print $4" free of "$2}')"
+          docker --version && docker compose version && docker buildx version
+
+      - name: Set up Go (the version the workflows pin)
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Compile a real module
+        run: |
+          set -euo pipefail
+          cd platform && go build ./agent/... && echo "platform/agent builds"
+
+      - name: Run a real unit package
+        run: |
+          set -euo pipefail
+          cd platform && go test ./shared/planeshadow/ -count=1 -timeout 5m
+
+      - name: Boot Postgres in Docker and query it
+        run: |
+          set -euo pipefail
+          # --tmpfs at the declared VOLUME path: without it postgres orphans an
+          # anonymous volume per container, and `docker rm -fv` reclaims it
+          # only if cleanup actually runs (not on a timeout kill or a panic).
+          docker run -d --name canary-pg \
+            --tmpfs /var/lib/postgresql/data:rw,size=1g \
+            -e POSTGRES_PASSWORD=canary -e POSTGRES_DB=canary -p 55432:5432 postgres:16-alpine
+          for i in $(seq 1 40); do
+            docker exec canary-pg pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec canary-pg psql -U postgres -d canary -c 'select version();' | head -3
+          echo "postgres boots and answers"
+
+      - name: Teardown
+        if: always()
+        run: docker rm -fv canary-pg 2>/dev/null || true
+
+      - name: Cache warmth (the second half of the saving)
+        if: always()
+        run: du -sh ~/.cache/go-build /home/runner/go/pkg/mod 2>/dev/null || true

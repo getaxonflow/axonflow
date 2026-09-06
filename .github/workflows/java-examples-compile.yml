@@ -59,6 +59,7 @@ on:
   # detect-changes so the Summary job is always reported.
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -76,11 +77,21 @@ concurrency:
 jobs:
   detect-changes:
     name: Detect Changes
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && github.event.pull_request.draft != true
     permissions:
       contents: read
       pull-requests: read
@@ -106,7 +117,7 @@ jobs:
 
   compile-java-examples:
     name: Compile Java examples
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 30
     needs: [detect-changes]
     # Run if: push/workflow_dispatch OR (PR/merge_group touching the examples)
@@ -157,8 +168,77 @@ jobs:
         if: always()
         run: bash tests/regression-test-required/java_examples_compile_gate_test.sh
 
+  # #3649 - A PATH-FILTERED WORKFLOW CAN REPORT SUCCESS HAVING EXECUTED NOTHING.
+  # At the v10.3.0 release head the community twin reported `success` with every
+  # job `skipped`, and on the checks list that is indistinguishable from a green
+  # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
+  # The summary job above cannot carry this - it is a REQUIRED context and must
+  # stay satisfiable on a docs-only change, so it accepts a skip. This job is
+  # NOT required: it counts the jobs that executed, writes the count to the step
+  # summary and goes RED when the count is zero, so "nothing ran" is a
+  # first-class outcome a citer sees on the checks list rather than a detail
+  # inside a green run. Red, not neutral: a skipped or neutral conclusion
+  # satisfies a required check exactly as success does (#3755), and a census
+  # that could be satisfied by not running would be the defect it counts.
+  # `needs` mirrors the summary's so the two report on one set. Pinned by
+  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  tests-executed-census:
+    name: Tests executed census
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [detect-changes, compile-java-examples]
+    if: always()
+    steps:
+      - name: Count the jobs that executed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CHANGE_DETECTOR: detect-changes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          detector = os.environ["CHANGE_DETECTOR"]
+          rows = sorted((job, (info or {}).get("result", "?")) for job, info in needs.items())
+          substantive = [(j, r) for j, r in rows if j != detector]
+          if not substantive:
+              print("::error::the census needs no job besides the change detector; it is counting nothing")
+              sys.exit(1)
+          executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
+          skipped = [j for j, r in substantive if r == "skipped"]
+          verdict = f"{len(executed)} of {len(substantive)} jobs executed"
+          lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
+          lines += [f"| `{j}` | {r} |" for j, r in rows]
+          if not executed:
+              detector_result = dict(rows).get(detector, "absent")
+              if detector_result == "success":
+                  why = "the change detector ran and matched no relevant path"
+              elif detector_result == "skipped":
+                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
+              else:
+                  why = f"the change detector reported {detector_result}"
+              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
+                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
+                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          if not executed:
+              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+              sys.exit(1)
+          PY
+
   java-examples-summary:
     name: Java Examples Summary
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.

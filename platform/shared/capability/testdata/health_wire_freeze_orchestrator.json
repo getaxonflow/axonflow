@@ -1,0 +1,87 @@
+[
+  {
+    "name": "health_check",
+    "since": "1.0.0",
+    "description": "Basic health endpoint"
+  },
+  {
+    "name": "proxy_llm_call",
+    "since": "1.0.0",
+    "description": "Proxy mode LLM calls with policy enforcement"
+  },
+  {
+    "name": "audit_llm_call",
+    "since": "1.0.0",
+    "description": "Audit logging for LLM calls"
+  },
+  {
+    "name": "static_policies",
+    "since": "2.0.0",
+    "description": "System policy CRUD"
+  },
+  {
+    "name": "gateway_mode",
+    "since": "3.0.0",
+    "description": "Gateway mode integration"
+  },
+  {
+    "name": "dynamic_policies",
+    "since": "3.2.0",
+    "description": "Runtime dynamic policy engine"
+  },
+  {
+    "name": "multi_agent_planning",
+    "since": "4.3.0",
+    "description": "MAP plan and execute lifecycle"
+  },
+  {
+    "name": "workflow_control",
+    "since": "4.3.0",
+    "description": "WCP workflow lifecycle management"
+  },
+  {
+    "name": "execution_replay",
+    "since": "4.3.0",
+    "description": "Execution recording and replay"
+  },
+  {
+    "name": "cost_controls",
+    "since": "4.4.0",
+    "description": "Budget and cost management"
+  },
+  {
+    "name": "media_governance",
+    "since": "4.4.0",
+    "description": "Multimodal image governance"
+  },
+  {
+    "name": "wcp_step_metrics",
+    "since": "4.5.0",
+    "description": "WCP step-complete post-execution metrics"
+  },
+  {
+    "name": "mcp_check_endpoints",
+    "since": "4.7.0",
+    "description": "Standalone MCP policy check-input/check-output"
+  },
+  {
+    "name": "circuit_breaker",
+    "since": "4.7.0",
+    "description": "Circuit breaker pipeline enforcement"
+  },
+  {
+    "name": "version_discovery",
+    "since": "4.8.0",
+    "description": "Version and capability discovery"
+  },
+  {
+    "name": "hitl_response_parity",
+    "since": "7.4.0",
+    "description": "WCP + MAP approve/reject responses share retry_context, approver metadata, policies_matched (ADR-046)"
+  },
+  {
+    "name": "platform_identity_discovery",
+    "since": "10.4.0",
+    "description": "Two additive /health members beside `tier` and `version` that say WHICH BUILD of AxonFlow, configured WHICH WAY, is answering: `edition` (`community` | `enterprise`, from the binary's own build tag, so it is a fact about the compilation and not about the licence) and `deployment_mode` (this deployment's own DEPLOYMENT_MODE setting, resolved to its canonical spelling with aliases folded — `enterprise` reports as `in-vpc-enterprise`). Served identically on the agent (8080) and orchestrator (8081) planes from one implementation (platform/shared/heartbeat.HealthIdentityMembers), so a client that probes whichever port it can reach gets the same answer - agent-vs-orchestrator /health drift is failure mode 1 in RUNBOOK_RELEASE_PREP.md and has happened in a real train, which is why this is one function rather than two literals. ABSENT IS NOT EMPTY: a member the platform cannot determine is OMITTED, never present with an empty value — `deployment_mode` is absent when DEPLOYMENT_MODE is unset, and that absence is a real observation (`the operator configured nothing`) which must not be read as the `community` default the SCHEMA selector applies, because the RUNTIME posture for an unset value is not community. A RELAYING CLIENT MUST MAP THIS `deployment_mode` ONTO THE TELEMETRY FIELD `platform_deployment_mode`, NOT ONTO THE FIELD OF THE SAME NAME ON A PING, which is the coarse topology (self_hosted | community_saas) the SDK derives from its own endpoint URL — the two are different dimensions and conflating them corrupts every existing deployment-mode dashboard. NEITHER MEMBER IS AN ENTITLEMENT FACT: whoever operates the endpoint controls both values completely, so they are adoption analytics only and must never gate a feature, an authorization decision or a billing decision (#3660, #3619 trust boundary)"
+  }
+]

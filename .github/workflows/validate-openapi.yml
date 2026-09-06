@@ -2,6 +2,7 @@ name: Validate OpenAPI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'docs/api/**/*.yaml'
       - 'docs/api/**/*.yml'
@@ -27,6 +28,10 @@ jobs:
   validate:
     name: Validate OpenAPI Spec
     runs-on: ubuntu-latest
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: github.event.pull_request.draft != true
     timeout-minutes: 15
 
     steps:
@@ -197,7 +202,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: validate
-    if: github.ref == 'refs/heads/main'
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: (github.ref == 'refs/heads/main') && github.event.pull_request.draft != true
 
     steps:
       - name: Checkout code

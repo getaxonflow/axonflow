@@ -172,23 +172,19 @@ func TestTheAdapterStampCoversTheTranslationLayer(t *testing.T) {
 	// was embedded and CALLS normalizeStamp, so the stamp covered the caller and
 	// not the decision. TestEveryPackageFileIsEmbeddedOrExcludedWithAReason now
 	// makes the next such omission a build failure rather than a reading.
-	for name, src := range map[string][]byte{
-		"translate.go":   srcTranslate,
-		"worlds.go":      srcWorlds,
-		"rows.go":        srcRows,
-		"observation.go": srcObservation,
-		"mode.go":        srcMode,
-		"stamp.go":       srcStamp,
-	} {
-		if len(src) == 0 {
-			t.Fatalf("%s embedded as empty; the adapter stamp is not covering it", name)
+	if len(adapterDigestSources) == 0 {
+		t.Fatal("the adapter stamp covers no sources at all; the loop below would prove nothing")
+	}
+	for _, part := range adapterDigestSources {
+		if len(part.src) == 0 {
+			t.Fatalf("%s embedded as empty; the adapter stamp is not covering it", part.name)
 		}
 	}
 	// And the stamp must actually depend on each of them: a part accidentally
 	// left out of digestOf's argument list is invisible to the check above.
-	base := digestOf([]byte("adapter\x00"), srcTranslate, srcWorlds, srcRows, srcObservation, srcMode, srcStamp)
+	base := digestOf(append([][]byte{[]byte("adapter\x00")}, adapterDigestParts()...)...)
 	if base != AdapterVersion() {
-		t.Fatal("AdapterVersion() is not the digest of the six embedded adapter files; the stamp and its documented coverage disagree")
+		t.Fatalf("AdapterVersion() is not the digest of the %d embedded adapter files; the stamp and its documented coverage disagree", len(adapterDigestSources))
 	}
 }
 

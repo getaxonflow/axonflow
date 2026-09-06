@@ -210,18 +210,36 @@ func TestTemplatesAreSorted(t *testing.T) {
 // `paths:`-section key has a corresponding entry in Templates (and vice
 // versa). Drift is a CI-fail.
 //
-// Skipped if the YAML can't be located (e.g. when this package is
-// vendored into a separate Lambda's go.mod with replace directives —
-// the YAML doesn't ship with the Lambda zip). Locally and in main-repo
-// CI, the file resolves.
+// IT FAILS, IT DOES NOT SKIP, WHEN IT CANNOT FIND ITS INPUT (#3639).
+//
+// Both the locate and the read used to `t.Skip`, so a moved, renamed or
+// unreadable file made this test report PASS having compared nothing — and
+// on a green board a skipped test and a passing test are indistinguishable.
+// The tell that it was never a decision: this same function already treats an
+// empty PARSE as fatal ("parser regression?") one step later, so the vacuity
+// question was asked and answered differently for two adjacent failure modes.
+//
+// The skip's stated reason does not hold either, and was checked rather than
+// argued with: "when this package is vendored into a separate Lambda's go.mod
+// with replace directives". No go.mod in this repository references
+// path_template — `grep -rn path_template $(find . -name go.mod)` returns
+// nothing — and its only importer is platform/agent, in the same module. If a
+// consumer outside this repository ever does vendor the package without the
+// document, the honest answer is a build tag or a skip THAT CONSUMER opts into,
+// not a check that silently stops guarding for everyone.
+//
+// The failure names every path searched, so "it cannot find the file" is
+// actionable rather than a puzzle.
 func TestTemplatesMatchAgentAPISpec(t *testing.T) {
-	yamlPath := locateAgentAPIYAML()
+	yamlPath, searched := locateAgentAPIYAML()
 	if yamlPath == "" {
-		t.Skip("docs/api/agent-api.yaml not located from this checkout — drift check skipped")
+		t.Fatalf("docs/api/agent-api.yaml was not found, so the lockstep check compared NOTHING. "+
+			"A guard that stops guarding when its input moves is indistinguishable from one that found no drift. "+
+			"Searched:\n  %s", strings.Join(searched, "\n  "))
 	}
-	body, err := os.ReadFile(yamlPath)
+	body, err := os.ReadFile(yamlPath) //nolint:gosec // a path resolved from this package's own source location
 	if err != nil {
-		t.Skipf("read %s: %v", yamlPath, err)
+		t.Fatalf("reading %s: %v. The file was located and could not be read, so the lockstep check compared nothing.", yamlPath, err)
 	}
 	yamlPaths := extractAgentAPIPaths(string(body))
 	if len(yamlPaths) == 0 {
@@ -259,18 +277,37 @@ func TestTemplatesMatchAgentAPISpec(t *testing.T) {
 	}
 }
 
-// locateAgentAPIYAML walks upward from the package source directory
-// looking for docs/api/agent-api.yaml. Returns "" if not found.
-func locateAgentAPIYAML() string {
+// locateAgentAPIYAML walks upward from the package source directory looking for
+// docs/api/agent-api.yaml.
+//
+// It returns the resolved path and EVERY candidate it tried. The candidate list
+// is not decoration: the failure this function's caller now raises is "the file
+// is not where I looked", and an operator or CI reader cannot act on that
+// without knowing where that was. Returning it also makes the search itself
+// testable, which is what TestTheSpecLocatorReportsWhereItLooked drives.
+func locateAgentAPIYAML() (path string, searched []string) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		return ""
+		return "", []string{"runtime.Caller(0) failed, so the package source directory is unknown"}
 	}
-	dir := filepath.Dir(file)
+	return walkUpFor(filepath.Dir(file), filepath.Join("docs", "api", "agent-api.yaml"))
+}
+
+// walkUpFor climbs from startDir looking for relPath, returning the resolved
+// path and every candidate it tried.
+//
+// Split out from locateAgentAPIYAML so the NOT-FOUND branch is drivable. The
+// caller above always finds the document in this repository, so a test of it
+// exercises only the found case - and the found case never produces the failure
+// message the candidate list exists to fill in. A guard whose message is only
+// built on a path no test reaches is a guard whose message rots.
+func walkUpFor(startDir, relPath string) (path string, searched []string) {
+	dir := startDir
 	for i := 0; i < 8; i++ {
-		candidate := filepath.Join(dir, "docs", "api", "agent-api.yaml")
+		candidate := filepath.Join(dir, relPath)
+		searched = append(searched, candidate)
 		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+			return candidate, searched
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -278,15 +315,94 @@ func locateAgentAPIYAML() string {
 		}
 		dir = parent
 	}
-	return ""
+	return "", searched
+}
+
+// TestTheSpecLocatorReportsWhereItLooked is the anti-vacuity half of the change
+// above.
+//
+// Turning a skip into a failure is only an improvement if the failure is
+// actionable, and the message is built from this list. Asserting the list is
+// non-empty, ascending toward the repo root, and that it CONTAINS the path
+// actually resolved, is what stops the message degrading into "not found"
+// with nothing after it.
+func TestTheSpecLocatorReportsWhereItLooked(t *testing.T) {
+	path, searched := locateAgentAPIYAML()
+	if len(searched) == 0 {
+		t.Fatal("the locator reported no candidates, so the failure message it feeds would name nowhere")
+	}
+	if path == "" {
+		t.Fatalf("the spec was not located from this checkout; searched:\n  %s", strings.Join(searched, "\n  "))
+	}
+	if searched[len(searched)-1] != path {
+		t.Errorf("the resolved path %q is not the last candidate tried (%q); the search stops at the first hit, "+
+			"so the two must agree", path, searched[len(searched)-1])
+	}
+
+	// THE NOT-FOUND CASE, which the call above can never reach because the
+	// document is always there. This is the branch whose message the candidate
+	// list exists for, so it is the branch that has to be driven.
+	base := t.TempDir()
+	deep := filepath.Join(base, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("building the synthetic tree: %v", err)
+	}
+	missing, tried := walkUpFor(deep, filepath.Join("docs", "api", "nothing-here.yaml"))
+	if missing != "" {
+		t.Fatalf("the locator resolved a document that does not exist: %q", missing)
+	}
+	if len(tried) == 0 {
+		t.Fatal("the not-found case reported no candidates, so its failure message would name nowhere")
+	}
+	for i, c := range tried {
+		if !strings.HasSuffix(filepath.ToSlash(c), "docs/api/nothing-here.yaml") {
+			t.Errorf("candidate %d (%q) is not the document that was asked for", i, c)
+		}
+		if i > 0 && len(c) >= len(tried[i-1]) {
+			t.Errorf("candidate %d (%q) is not shorter than candidate %d (%q); the walk is meant to climb toward the "+
+				"repo root", i, c, i-1, tried[i-1])
+		}
+	}
+	// It climbs from where it was asked to start, and it stops. Eight levels is
+	// the bound; a walk that ran away would still "work" and would name paths
+	// outside the checkout in its failure message.
+	if !strings.HasPrefix(tried[0], deep) {
+		t.Errorf("the first candidate %q is not under the directory the walk was given (%q)", tried[0], deep)
+	}
+	if len(tried) > 8 {
+		t.Errorf("the walk tried %d candidates; it is bounded at 8", len(tried))
+	}
+
+	// And the FOUND case, driven the same way, so the two branches are proved by
+	// the same function rather than one being inferred from the other.
+	if err := os.MkdirAll(filepath.Join(base, "docs", "api"), 0o755); err != nil {
+		t.Fatalf("building the synthetic spec: %v", err)
+	}
+	target := filepath.Join(base, "docs", "api", "nothing-here.yaml")
+	if err := os.WriteFile(target, []byte("paths:\n"), 0o600); err != nil {
+		t.Fatalf("writing the synthetic spec: %v", err)
+	}
+	found, tried := walkUpFor(deep, filepath.Join("docs", "api", "nothing-here.yaml"))
+	if found != target {
+		t.Errorf("the locator resolved %q, want %q", found, target)
+	}
+	if tried[len(tried)-1] != found {
+		t.Errorf("the resolved path is not the last candidate tried")
+	}
 }
 
 // extractAgentAPIPaths is a deliberately tiny "good enough" YAML parser
 // for the specific shape of docs/api/agent-api.yaml. We don't import a
 // full YAML library because (a) the file's `paths:` section follows a
 // rigid two-space-indent OpenAPI 3.0 layout, (b) keeping the package
-// dependency-light avoids cascading import-path churn into every Lambda
-// that pulls in path_template via replace directive.
+// dependency-light is worth more than a parser this shape does not need.
+//
+// It used to give a third reason - avoiding "import-path churn into every
+// Lambda that pulls in path_template via replace directive". No such consumer
+// exists: no go.mod in this repository references path_template, and a
+// dependency module's _test.go is never compiled by a consumer anyway
+// (`go mod vendor` omits test files). The claim was the same one that justified
+// the lockstep check's fail-open, and it is removed here for the same reason.
 //
 // The parser walks the YAML line-by-line, finds the top-level `paths:`
 // block, and collects path keys (lines indented exactly two spaces and

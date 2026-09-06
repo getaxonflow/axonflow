@@ -74,11 +74,32 @@ func documentSchema() (*jsonschema.Schema, error) {
 // that a condition names an operator; it cannot say that the operator compares
 // caller-supplied input against a trusted term, which is the rule that matters.
 func ValidateAgainstSchema(d *Document) error {
-	sch, err := documentSchema()
+	raw, err := Render(d)
 	if err != nil {
 		return err
 	}
-	raw, err := Render(d)
+	return validateBytesAgainstSchema(raw)
+}
+
+// ValidateRawAgainstSchema checks the document AS IT ARRIVED, before decoding.
+//
+// The difference from ValidateAgainstSchema is the whole point, and it is a
+// difference the schema's `required` lists depend on. That function validates a
+// RE-RENDERED document: the bytes go through Parse into a Go value and back
+// out, so a member the author OMITTED is re-materialised at its Go zero value
+// and satisfies `required` on the way past. Every `required` declaration in the
+// published schema is therefore unenforced at the wire for any member whose
+// zero value serialises - which is every scalar without omitempty.
+//
+// That is the authoring-plane form of the same defect #3630 closes in the
+// decision contract: an absent member and a member carrying its zero value are
+// different facts, and only one of them is what the author wrote.
+func ValidateRawAgainstSchema(raw []byte) error {
+	return validateBytesAgainstSchema(raw)
+}
+
+func validateBytesAgainstSchema(raw []byte) error {
+	sch, err := documentSchema()
 	if err != nil {
 		return err
 	}

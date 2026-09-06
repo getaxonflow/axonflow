@@ -65,7 +65,8 @@ test-summary :: the two summaries aggregate different job sets (test.yml has the
 
 # Replay exemptions: community jobs that COULD be replayed on the staged copy
 # and deliberately are not.
-REPLAY_EXEMPT=$'race-detector :: runs `go test -race` over platform/orchestrator and the two decision-shadow packages - all three have untagged builds that test.yml\'s unit-test jobs execute on every pull request and whose community-build compile the simulation vets; replaying a multi-minute race run over already-proven packages is cost without evidence'
+REPLAY_EXEMPT=$'race-detector :: runs `go test -race` over platform/orchestrator and the two decision-shadow packages - all three have untagged builds that test.yml\'s unit-test jobs execute on every pull request and whose community-build compile the simulation vets; replaying a multi-minute race run over already-proven packages is cost without evidence
+tests-executed-census :: reads the `needs` context of the run it is in (#3649); a replay has no needs context to count, and the job is byte-identical to test.yml\'s census, which executes on every enterprise pull request - the twin parity rule above is what proves the mirror copy is the executed one'
 
 python3 - "$ENTERPRISE_WORKFLOW" "$COMMUNITY_WORKFLOW" "$PARITY_EXEMPT" "$REPLAY_EXEMPT" <<'PY'
 import re, sys

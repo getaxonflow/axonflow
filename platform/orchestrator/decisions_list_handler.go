@@ -317,9 +317,18 @@ func queryDecisionList(tenantID, scopeUserEmail string, since time.Time, decisio
 	// NO flag-day. The WHERE predicate mirrors the same fallback. The partial
 	// index idx_audit_logs_decision_id (WHERE decision_id IS NOT NULL) backs
 	// the column arm of the predicate.
+	//
+	// #3718: the decision-id expression and the "is this a decision row"
+	// predicate now come from platform/shared/audit, which is also where the
+	// HITL writer's statement lives. They were identical string literals in
+	// this file before, and the pair they had to agree with was in a module
+	// that cannot import this one - so nothing connected them, and for the
+	// life of this feed every human approval failed the predicate silently.
+	// Declaring the reader beside the writer is what makes the next omission a
+	// visible edit rather than an absence.
 	q := `
 		SELECT
-			COALESCE(decision_id, policy_details->>'decision_id')  AS decision_id,
+			` + audit.DecisionIDSQLExpr + `  AS decision_id,
 			timestamp,
 			policy_decision                                        AS decision,
 			NULLIF(` + audit.PolicyIdentitySQLExpr("policy_details") + `, '') AS policy_id,
@@ -330,7 +339,7 @@ func queryDecisionList(tenantID, scopeUserEmail string, since time.Time, decisio
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
-		  AND (decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL)
+		  AND ` + audit.DecisionRowPredicate + `
 		  AND (cardinality($3::text[]) = 0 OR policy_decision = ANY($3))
 		  AND ($4::text = '' OR (
 		        policy_details->>'policy_id' = $4

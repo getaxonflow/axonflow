@@ -32,6 +32,7 @@ on:
   # This ensures the required Build Summary check is present for merge queue entry.
   # Actual builds are skipped on PRs - only validated in merge queue.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
   merge_group:
@@ -54,13 +55,16 @@ jobs:
   # =============================================================================
   detect-changes:
     name: Detect Changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
     if: |
-      github.repository == 'getaxonflow/axonflow' &&
-      (github.event_name == 'merge_group' || github.event_name == 'pull_request')
+      (github.repository == 'getaxonflow/axonflow' &&
+      (github.event_name == 'merge_group' || github.event_name == 'pull_request')) && github.event.pull_request.draft != true
     permissions:
       contents: read
       pull-requests: read
@@ -108,7 +112,7 @@ jobs:
       github.event_name != 'pull_request' &&
       needs.detect-changes.result != 'failure' &&
       (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.agent == 'true')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 60
 
     steps:
@@ -147,7 +151,7 @@ jobs:
       github.event_name != 'pull_request' &&
       needs.detect-changes.result != 'failure' &&
       (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.orchestrator == 'true')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 60
 
     steps:
@@ -180,6 +184,11 @@ jobs:
   # =============================================================================
   docker-compose-test:
     name: Test Docker Compose Stack
+    # GITHUB-HOSTED, NOT THE FLEET. This job runs `docker compose up -d` at
+    # the repo root, i.e. the ROOT docker-compose.yml with its FIXED host ports
+    # (127.0.0.1:5432, 6379, 8080, 8081). It ships no `ports: !override`
+    # overlay - the pattern the 60 suite workflows use to share one host - so
+    # two jobs in this group overlapping fail with "port is already allocated".
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [build-agent, build-orchestrator]
@@ -264,7 +273,7 @@ jobs:
     #
     # Pinned by tests/regression-test-required/required_check_name_uniqueness_test.sh.
     name: ${{ github.repository == 'getaxonflow/axonflow' && 'Build Summary' || 'Build Summary (Community)' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10

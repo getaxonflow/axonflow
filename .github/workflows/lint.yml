@@ -5,6 +5,7 @@ on:
   # This ensures the required Lint Summary check is present for merge queue entry.
   # Actual linting is skipped on PRs - only run in merge queue.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
       - develop
@@ -37,11 +38,21 @@ jobs:
   # =============================================================================
   detect-changes:
     name: Detect Changes
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && github.event.pull_request.draft != true
     permissions:
       contents: read
       pull-requests: read
@@ -65,7 +76,7 @@ jobs:
 
   golangci-lint:
     name: Lint All Modules
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 15
     needs: [detect-changes]
     # Run if: push/workflow_dispatch OR (PR/merge_group with Go changes)
@@ -83,11 +94,49 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-          cache: false  # golangci-lint has its own cache
+          cache: false  # golangci-lint has its own cache - restored below
+
+      # golangci-lint's own cache (per-package, keyed by source hash) was never
+      # persisted between runs, so every run linted five modules from cold:
+      # 7.8 billable minutes on ~37 runs a day (2026-09-01 sample). Rolling
+      # cache: the key carries the SHA so every run saves, and the restore key
+      # falls back to the newest cache for the same go.sum set, from which
+      # only the changed packages re-lint. The Go build cache is included
+      # because golangci-lint type-checks through it. The size line in the log
+      # is the number to watch: if it grows past ~1 GiB, scope the save to
+      # merge_group and let PRs restore only.
+      - name: Restore golangci-lint + Go build caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/golangci-lint
+            ~/.cache/go-build
+          key: golangci-${{ runner.os }}-${{ hashFiles('**/go.sum', '.golangci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            golangci-${{ runner.os }}-${{ hashFiles('**/go.sum', '.golangci.yml') }}-
+            golangci-${{ runner.os }}-
 
       - name: Install golangci-lint
+        # INSTALLED PER JOB, NOT INTO $(go env GOPATH)/bin (2026-09-05).
+        # GOPATH is not in the fleet slots' .env - only GOCACHE and
+        # GOMODCACHE are - so it defaults to $HOME/go, and all eight slots
+        # share one /home/runner. Measured on the host: a single 41 MB
+        # /home/runner/go/bin/golangci-lint, rewritten by whichever slot
+        # linted last. Two concurrent runs of this job (two queue entries, or
+        # a PR push beside an entry) leave one exec'ing a partially written
+        # binary - exit 126, "cannot execute", which is exactly how the Trivy
+        # scans ejected a merge-queue entry the same day.
+        #
+        # $RUNNER_TEMP is private per job on hosted AND self-hosted runners,
+        # which is the isolation primitive to reach for here; the spectral
+        # install in regression-test-required.yml uses the same shape. The
+        # bare `golangci-lint` calls below resolve through $GITHUB_PATH.
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.11.4
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$RUNNER_TEMP/bin" v2.11.4
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/golangci-lint" --version
 
       - name: Lint All Modules (Parallel)
         shell: bash
@@ -155,6 +204,10 @@ jobs:
           echo ""
           echo "✅ All modules passed linting!"
 
+      - name: Cache size (watch this; see the cache step above)
+        if: always()
+        run: du -sh ~/.cache/golangci-lint ~/.cache/go-build 2>/dev/null || true
+
       - name: Lint DEPLOYMENT_MODE pattern (Issue #1133)
         run: bash scripts/lint-deployment-mode.sh
 
@@ -187,6 +240,13 @@ jobs:
   # onto every migration-only push for no added coverage.
   org-column-guard:
     name: Lint - no second org column on the policy tables
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -216,6 +276,13 @@ jobs:
   # and would have skipped the one job that could catch it.
   hitl-queue-choke-point:
     name: Lint - one writer for the HITL approval queue
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -246,6 +313,13 @@ jobs:
   # why this is a guard and not just a patch.
   docker-rm-volumes:
     name: Lint - docker rm must remove anonymous volumes
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -262,13 +336,114 @@ jobs:
       - name: Lint docker rm removes anonymous volumes
         run: bash scripts/lint-docker-rm-removes-volumes.sh
 
+  # #3715: a trap on INT/TERM whose handler does not exit returns to the script
+  # body, which then runs against the state it just tore down.
+  #
+  # Same job shape and same reasoning as the two guards above: no `if:`. The
+  # class lives entirely in shell - an operator provisioning script, an e2e
+  # suite, a capture harness - and none of those PRs carry a Go change, so a
+  # Go-gated job would skip exactly the PRs it exists to catch.
+  trap-handlers-exit:
+    name: Lint - a trap on INT/TERM must exit
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Both directions over fixtures it builds itself, including the three
+      # already-correct sites as the positive control and an anti-vacuity
+      # assertion that the walk really reaches the tree.
+      - name: Self-test the guard (both directions)
+        run: bash scripts/lint-trap-handlers-exit.sh --self-test
+
+      - name: Lint trap handlers exit (#3715)
+        run: bash scripts/lint-trap-handlers-exit.sh
+
+  # #3649 - A PATH-FILTERED WORKFLOW CAN REPORT SUCCESS HAVING EXECUTED NOTHING.
+  # At the v10.3.0 release head the community twin reported `success` with every
+  # job `skipped`, and on the checks list that is indistinguishable from a green
+  # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
+  # The summary job above cannot carry this - it is a REQUIRED context and must
+  # stay satisfiable on a docs-only change, so it accepts a skip. This job is
+  # NOT required: it counts the jobs that executed, writes the count to the step
+  # summary and goes RED when the count is zero, so "nothing ran" is a
+  # first-class outcome a citer sees on the checks list rather than a detail
+  # inside a green run. Red, not neutral: a skipped or neutral conclusion
+  # satisfies a required check exactly as success does (#3755), and a census
+  # that could be satisfied by not running would be the defect it counts.
+  # `needs` mirrors the summary's so the two report on one set. Pinned by
+  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  tests-executed-census:
+    name: Tests executed census
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point, docker-rm-volumes, trap-handlers-exit]
+    if: always()
+    steps:
+      - name: Count the jobs that executed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CHANGE_DETECTOR: detect-changes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          detector = os.environ["CHANGE_DETECTOR"]
+          rows = sorted((job, (info or {}).get("result", "?")) for job, info in needs.items())
+          substantive = [(j, r) for j, r in rows if j != detector]
+          if not substantive:
+              print("::error::the census needs no job besides the change detector; it is counting nothing")
+              sys.exit(1)
+          executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
+          skipped = [j for j, r in substantive if r == "skipped"]
+          verdict = f"{len(executed)} of {len(substantive)} jobs executed"
+          lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
+          lines += [f"| `{j}` | {r} |" for j, r in rows]
+          if not executed:
+              detector_result = dict(rows).get(detector, "absent")
+              if detector_result == "success":
+                  why = "the change detector ran and matched no relevant path"
+              elif detector_result == "skipped":
+                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
+              else:
+                  why = f"the change detector reported {detector_result}"
+              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
+                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
+                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          if not executed:
+              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+              sys.exit(1)
+          PY
+
   lint-summary:
     name: Lint Summary
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
-    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point, docker-rm-volumes]
+    needs: [detect-changes, golangci-lint, org-column-guard, hitl-queue-choke-point, docker-rm-volumes, trap-handlers-exit]
     if: always()
 
     steps:
@@ -282,13 +457,14 @@ jobs:
           echo "  org-column-guard: ${{ needs.org-column-guard.result }}"
           echo "  hitl-queue-choke-point: ${{ needs.hitl-queue-choke-point.result }}"
           echo "  docker-rm-volumes: ${{ needs.docker-rm-volumes.result }}"
+          echo "  trap-handlers-exit: ${{ needs.trap-handlers-exit.result }}"
 
       - name: Fail if lint failed
         # Accept 'success' or 'skipped' (skipped = no Go code changes)
         # detect-changes is 'skipped' for push/workflow_dispatch events
         #
-        # org-column-guard, hitl-queue-choke-point and docker-rm-volumes are
-        # held to 'success'
+        # org-column-guard, hitl-queue-choke-point, docker-rm-volumes and
+        # trap-handlers-exit are held to 'success'
         # ONLY - no 'skipped' tolerance.
         # 'Lint Summary' is the REQUIRED status check (repository ruleset
         # "Main Branch Protection"); the individual jobs are not. So a job
@@ -302,7 +478,8 @@ jobs:
           (needs.golangci-lint.result != 'success' && needs.golangci-lint.result != 'skipped') ||
           needs.org-column-guard.result != 'success' ||
           needs.hitl-queue-choke-point.result != 'success' ||
-          needs.docker-rm-volumes.result != 'success'
+          needs.docker-rm-volumes.result != 'success' ||
+          needs.trap-handlers-exit.result != 'success'
         run: |
           echo "❌ Linting failed - please fix issues before merging"
           exit 1

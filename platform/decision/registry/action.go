@@ -179,14 +179,11 @@ func validateCapabilities(subject, label string, caps []contract.Capability) Fin
 	for _, t := range contract.AllObligationTypes() {
 		declared[t] = true
 	}
-	sorted := append([]contract.Capability(nil), caps...)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Type != sorted[j].Type {
-			return sorted[i].Type < sorted[j].Type
-		}
-		return sorted[i].Version < sorted[j].Version
-	})
-	for _, c := range sorted {
+	// One canonical order, from the contract. Three copies of a comparator is
+	// three chances for one of them to disagree about what canonical means, and
+	// the disagreement would show up as findings reported in a different order
+	// depending on which package sorted the slice.
+	for _, c := range contract.SortCapabilities(caps) {
 		if !declared[c.Type] {
 			out = out.errorf(CodeObligationTypeUndeclared, subject,
 				"%s names obligation type %q, which the contract does not declare", label, c.Type)

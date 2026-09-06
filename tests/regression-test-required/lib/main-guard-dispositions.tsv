@@ -1,0 +1,82 @@
+# Dispositions for the invisible-on-main class (#3730). ONE LINE PER MEMBER.
+#
+# Format, tab-separated:   <file> :: <job_id>  <TAB>  WATCH|ADVISORY  <TAB>  reason
+#
+# A MEMBER of the class is a job that runs on `push: branches: [main]` under a
+# path filter and is not itself a required status-check context. See
+# scripts/ci/lib/main_guard_census.py for the definition and for why
+# `needs:`-closure is deliberately NOT part of it.
+#
+# WATCH     scripts/ci/check-main-guard-freshness.sh walks main's history and
+#           FAILS when this context's most recent verdict on main is a red.
+# ADVISORY  the reader reports the context's most recent verdict and does not
+#           fail on it. The reason must say WHY a red here is not a
+#           correctness claim about main - either something else enforces the
+#           same property where people look, or the failure costs money rather
+#           than meaning the tree is wrong.
+#
+# WHY BOTH VALUES EXIST. Guarding all 26 would red this repo's board daily for
+# a cold build cache, and a guard that cries wolf gets ignored - which
+# reintroduces the exact defect, because the next real stale red is invisible
+# again. Exempting all 26 would be a census with no consequence. So every
+# member is dispositioned individually, and
+# tests/regression-test-required/main_guard_visibility_test.sh fails if this
+# file and the live census disagree in EITHER direction.
+#
+# The reason column is where a claim like "a required summary reads this job's
+# result" gets made. That is deliberately a human claim in a reviewed diff:
+# `needs:` alone does not prove it (measured - `Security Scan Summary`
+# `needs:` seven jobs and compares four), and no static test in this repo can.
+#
+# Blank lines and lines beginning with # are ignored.
+
+# --- infra-validation.yml (8) -------------------------------------------------
+# The workflow has NO required status-check context, so all eight of its jobs
+# fail into a void. Every one asserts a property of a shipped artifact; none is
+# cost-only. This is where #3730 was found.
+infra-validation.yml :: partner-template-parity	WATCH	the #3730 instance. Documented "advisory on PR and STRICT on push to enterprise main", so push-to-main is its ONLY enforcing arm. Red for 23 consecutive runs over 3.5 days while every PR board was legitimately green. Deliberately advisory on PR: a cross-repo re-sync round legitimately runs with the canonical ahead of the partner copy.
+infra-validation.yml :: partner-preflight-parity	WATCH	same vendored-copy contract and same strict-on-main-only arm as partner-template-parity.
+infra-validation.yml :: partner-operator-script-parity	WATCH	same vendored-copy contract and same strict-on-main-only arm as partner-template-parity.
+infra-validation.yml :: cfn-lint	WATCH	a CloudFormation template that fails cfn-lint on main is a deploy-time break in a customer-facing marketplace artifact. Nothing requires this context.
+infra-validation.yml :: monitoring-rules	WATCH	validates the ADR-065 observation-window Prometheus rules that ship with the product. A red is a correctness claim about shipped alerting.
+infra-validation.yml :: community-saas-regression	WATCH	structural pins on the community-SaaS CloudFormation stack that is actually deployed. A red means the deployed shape drifted.
+infra-validation.yml :: telemetry-filter-regression	WATCH	pins the telemetry filter and the P5a scrub script. A regression here is a data-egress correctness claim, not a cost one.
+infra-validation.yml :: no-compliance-overlay	WATCH	asserts the compliance module is absent from the enterprise image - an edition-boundary and licensing claim about a shipped artifact.
+
+# --- deploy-infrastructure.yml (1) --------------------------------------------
+deploy-infrastructure.yml :: deploy-ecr-replication	WATCH	an actual AWS deploy of ECR cross-region replication, triggered by a push to main. A failure is an infrastructure incident with no other reader; it is meant to be escalated, not to gate a PR.
+
+# --- security.yml (8) ---------------------------------------------------------
+# `Security Scan Summary` IS required and IS excluded from the class for that
+# reason - a required context re-runs on every PR, so the property cannot rot
+# unnoticed. Its seven dependencies are a different matter: it compares only
+# some of their results, so `needs:` does not settle any of these rows.
+security.yml :: trivy-docker-agent	WATCH	`Security Scan Summary` needs: this job but its "Determine overall status" step never compares its result, so a failing agent-image scan fails nothing. Runs only on push and merge_group, so main is where its verdict lands. Deliberately watched rather than added to the summary's checks: image CVEs arrive from Trivy's vulnerability DB with no commit changing, and making the required summary red fleet-wide on every newly published base-image CVE would block all merges for a cause outside every diff. Escalating it here is the proportionate reader.
+security.yml :: trivy-docker-orchestrator	WATCH	same as trivy-docker-agent, for the orchestrator image.
+security.yml :: trivy-config-scan	ADVISORY	`Security Scan Summary` (required) now compares this job's result and exit 1s on a non-success, non-skipped verdict - added in this change, because it was needs:-ed and only echoed. Deterministic (it scans the tree, not a vulnerability DB), so unlike the image scans it can gate without red-flagging the fleet on a DB update.
+security.yml :: trivy-filesystem-scan	ADVISORY	`Security Scan Summary` (required) compares this job's result via FS_RESULT and exit 1s on a non-success, non-skipped verdict. Re-verified on every PR, where it does gate.
+security.yml :: trivy-secret-scan	ADVISORY	`Security Scan Summary` (required) compares this job's result via SECRET_RESULT and exit 1s on a non-success, non-skipped verdict. Re-verified on every PR, where it does gate.
+security.yml :: detect-changes	ADVISORY	`if:` restricts it to pull_request and merge_group, so it never reports on a main commit at all; and `Security Scan Summary` (required) compares its result == 'failure' on the tiers where it does run.
+security.yml :: codeql-analysis	ADVISORY	`if: github.event_name == 'schedule'` - it never runs on push. On the schedule event, which does land on main, `Security Scan Summary` (required) compares its result and exit 1s, so a red is carried by a required context in the same run.
+security.yml :: dependency-review	ADVISORY	`if: github.event_name == 'pull_request'` - it can only ever report on a PR head, never on a main commit. There is no verdict on main for the reader to read.
+
+# --- build-community.yml (5) --------------------------------------------------
+# MEASURED, and it corrects the first draft of this census, which called these
+# "producers that seed the layer cache PR builds restore": in axonflow-enterprise
+# this workflow is a NO-OP. Its own header says so and the `if:` on each build
+# job is gated on `github.repository == 'getaxonflow/axonflow'`. Its real
+# enforcement lives in the community mirror, where this file syncs.
+build-community.yml :: detect-changes	ADVISORY	gated on `github.repository == 'getaxonflow/axonflow'`, so in this tree it is always skipped and can never produce a red on enterprise main. Enforced in the community mirror.
+build-community.yml :: build-agent	ADVISORY	gated on `github.repository == 'getaxonflow/axonflow'`; always skipped in this tree. Enforced in the community mirror.
+build-community.yml :: build-orchestrator	ADVISORY	gated on `github.repository == 'getaxonflow/axonflow'`; always skipped in this tree. Enforced in the community mirror.
+build-community.yml :: docker-compose-test	ADVISORY	gated on `github.repository == 'getaxonflow/axonflow'`; always skipped in this tree. Enforced in the community mirror.
+build-community.yml :: build-summary	ADVISORY	the one job here with no repository gate (`if: always()`), but its check_result helper accepts `skipped`, and all four jobs it needs: are skipped in this tree - so on enterprise main it can only ever report success. Its display name evaluates to `Build Summary (Community)` here, which is NOT the required `Build Summary` (that comes from build.yml).
+
+# --- cache-seed.yml (4) -------------------------------------------------------
+# Created by #3537's push-to-main tier retirement to keep main's Go module and
+# lint caches warm. A red costs a cold cache on the next PR - billable minutes,
+# not a claim about the tree - which is the textbook ADVISORY case.
+cache-seed.yml :: seed	ADVISORY	seeds the platform/decision Go module cache. A failure costs cache warmth and billable minutes on the next PR; it asserts nothing about the tree's correctness.
+cache-seed.yml :: seed-enterprise	ADVISORY	seeds the platform+ee/portal Go module caches. Cost, not correctness.
+cache-seed.yml :: seed-risk-scorer	ADVISORY	seeds the risk-scorer toolchain cache. Cost, not correctness.
+cache-seed.yml :: seed-golangci	ADVISORY	seeds the golangci-lint cache. Cost, not correctness.

@@ -395,6 +395,45 @@ func TestRealmStore_RealPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("a realm outside the qualifier grammar is refused by Upsert before any row is written", func(t *testing.T) {
+		// #3709 row 3. The column's CHECKs enforce only colon-free and
+		// non-empty; the full grammar is enforced on the write path, because
+		// a stored non-conforming realm would fail the whole organization's
+		// LoadRegistry rather than just itself.
+		org := "org_grammar"
+		bad := realmFixture(org, "acme+prod", "https://idp.grammar.example", 1)
+		bad.DelegateRealms = []RealmID{"peer"}
+		if _, err := store.Upsert(ctx, bad, "admin"); err == nil {
+			t.Fatal("Upsert stored realm id acme+prod, which every principal minted under it would carry as an unparseable qualifier")
+		} else if !strings.Contains(err.Error(), "qualifier") {
+			t.Errorf("the refusal does not name the qualifier grammar: %v", err)
+		}
+		// Counted INSIDE the org's RLS scope: a count outside it reads zero
+		// under FORCE RLS whether or not a row exists, which would make this
+		// assertion pass for the wrong reason.
+		var n int
+		if err := rls.WithOrgScope(ctx, appDB, org, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, `SELECT count(*) FROM identity_trust_realms WHERE org_id = $1`, org).Scan(&n)
+		}); err != nil {
+			t.Fatalf("count rows: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("a refused Upsert left %d row(s) behind", n)
+		}
+		// A conforming realm with a NON-conforming delegate is refused too.
+		delegate := realmFixture(org, "acme-prod", "https://idp.grammar.example", 1)
+		delegate.DelegateRealms = []RealmID{"eu/central"}
+		if _, err := store.Upsert(ctx, delegate, "admin"); err == nil {
+			t.Fatal("Upsert stored a realm whose delegate realm id eu/central is outside the grammar")
+		}
+		// The control: the same realm with a legal id and delegate is stored.
+		ok := realmFixture(org, "acme-prod", "https://idp.grammar.example", 1)
+		ok.DelegateRealms = []RealmID{"peer"}
+		if _, err := store.Upsert(ctx, ok, "admin"); err != nil {
+			t.Fatalf("the control realm acme-prod was refused, so the refusals above are not evidence about the grammar: %v", err)
+		}
+	})
+
 	t.Run("a realm id at the validator's bound is storable", func(t *testing.T) {
 		// AGAINST THE REAL COLUMN, not against a second copy of its width.
 		// The previous check compared maxPrincipalComponent to a hand-copied
@@ -454,12 +493,35 @@ func TestRealmStore_RealPostgres(t *testing.T) {
 		if _, err := store.Upsert(ctx, realmFixture(org, "realm-seed", "https://idp.snap-seed.example", 1), "admin"); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
+		// THE WRITER IS PACED BY THE READER, NOT BY THE CLOCK (#3648). The
+		// first version raced a free-running writer against a free-running
+		// reader and then required `reads >= 3` as an anti-vacuity floor. On
+		// CI (run 33623146131 attempt 1) the twelve Upserts finished before
+		// the third Load returned and the case failed on ITS OWN FLOOR -
+		// "only 2 load(s) ran against the concurrent writer" - while the
+		// invariant it pins had held on every load. A floor that depends on
+		// the RELATIVE speed of two goroutines is a flake by construction;
+		// the same shape passed 50 of 50 locally because a laptop's Load is
+		// faster than a loaded runner's. So the writer now waits, after each
+		// Upsert, until the reader has completed a Load that finished AFTER
+		// that Upsert started: every write is sampled by at least one Load
+		// whatever the machine, the two still overlap in time (the Load that
+		// releases the writer began before or during the write), and the
+		// floor below is structural rather than a bet on speed.
+		// readerPacedWriter and its deterministic regression test live in
+		// realm_store_pacing_test.go.
+		var pacer readerPacedWriter
 		done := make(chan error, 1)
 		go func() {
 			for i := 0; i < writes; i++ {
+				mark := pacer.loadsCompleted()
 				r := realmFixture(org, fmt.Sprintf("realm-%02d", i), fmt.Sprintf("https://idp.snap-%02d.example", i), 1)
 				if _, err := store.Upsert(ctx, r, "admin"); err != nil {
 					done <- err
+					return
+				}
+				if err := pacer.awaitLoadAfter(ctx, mark); err != nil {
+					done <- fmt.Errorf("waiting for the reader to sample write %d: %w", i, err)
 					return
 				}
 			}
@@ -474,9 +536,13 @@ func TestRealmStore_RealPostgres(t *testing.T) {
 				t.Fatalf("load during concurrent writes: %v", err)
 			}
 			reads++
+			pacer.recordLoad()
 			if epoch != int64(len(realms)) {
 				mismatches++
-				worst = fmt.Sprintf("%d realm(s) with epoch %d", len(realms), epoch)
+				// The direction discriminates the cause: epoch > realms is a
+				// doubled bump (a retried transaction re-running the epoch
+				// write), epoch < realms is a genuinely stale epoch read.
+				worst = fmt.Sprintf("%d realm(s) with epoch %d (epoch - realms = %+d)", len(realms), epoch, epoch-int64(len(realms)))
 			}
 		}
 		for {
@@ -494,8 +560,11 @@ func TestRealmStore_RealPostgres(t *testing.T) {
 				if len(realms) != writes+1 {
 					t.Fatalf("final load holds %d realm(s), want %d", len(realms), writes+1)
 				}
-				if reads < 3 {
-					t.Fatalf("only %d load(s) ran against the concurrent writer; the window was never sampled and this case proves nothing", reads)
+				if reads < writes {
+					// Structural now: the pacer releases the writer only after a
+					// completed Load, so fewer loads than writes means the pacer
+					// is broken, not that the runner was slow.
+					t.Fatalf("only %d load(s) ran against %d concurrent writes; the reader-paced writer should have made at least one load per write, so the pacing is broken and this case proves nothing", reads, writes)
 				}
 				if mismatches != 0 {
 					t.Fatalf("%d of %d loads returned realms and an epoch that do not describe each other (worst: %s).\nA replica holding that answer mints proofs binding a current-looking epoch to a stale realm set.", mismatches, reads, worst)

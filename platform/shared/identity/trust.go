@@ -80,7 +80,7 @@ func IdentityWasGated(headerValue string) bool {
 // MUST treat that as untrusted and log loudly, so a "1"/"TRUE" typo cannot
 // silently downgrade the operator's intent without a trace. These are the
 // exact semantics the gateway adapters shipped in #2889
-// (ee/platform/agent/gateway_adapters/config.go trustIdentityFromEnv).
+// (platform/gateway-adapters/config.go trustIdentityFromEnv).
 func Parse(raw string) (trusted, recognized bool) {
 	switch strings.TrimSpace(raw) {
 	case "true":
