@@ -52,17 +52,31 @@ import (
 // allocation, and it keeps /api/v1/decide byte-stable because nothing about it
 // changed.
 
+// authzenHandlerPath is the route this handler is registered on. Its VALUE is
+// owned by the contract - contract.AuthZENRoutePath, which the SDKs generate
+// from (#3603) - and TestAuthZENHandlerPathIsTheContractsRoute fails the
+// moment the two differ. It is spelled as a literal here rather than as
+// `= contract.AuthZENRoutePath` because platform/shared/capability derives the
+// served URL space by scanning route registrations and resolves only
+// package-local constants; a cross-package constant is an UNRESOLVED site that
+// would need a route_exemption, and an exemption for the surface's one route is
+// worse than a guarded copy.
 const authzenHandlerPath = "/api/v1/access/evaluation"
 
 // authzenProfileHeader is how a Policy Enforcement Point negotiates the AxonFlow
 // profile.
 //
-// AuthZEN 1.0's response is a bare boolean. Everything AxonFlow adds - the
-// four-valued state, the obligations, the approval challenge, the safe reason -
-// rides in the response context and is returned ONLY to a caller that asked for
-// it by version. A PEP that did not negotiate cannot act on an obligation, and
-// handing it a partial interpretation it will ignore is worse than handing it
-// the boolean it understands.
+// AuthZEN 1.0's response is a bare boolean. What AxonFlow adds - the
+// four-valued state, the obligations, the safe reason - rides in the response
+// context and is returned ONLY to a caller that asked for it by version. It
+// does NOT include an approval challenge - see the rendering site below and
+// capabilities.go for why this adapter cannot produce one (#3631). This
+// sentence promised it until then, which made it the third copy of a promise
+// nothing kept.
+//
+// A PEP that did not negotiate cannot act on an obligation, and handing it a
+// partial interpretation it will ignore is worse than handing it the boolean it
+// understands.
 //
 // THE ONE THING NEGOTIATION CHANGES BESIDES THE SHAPE. An evaluation that would
 // otherwise be ALLOW but carries a MANDATORY obligation is answered `false` to a
@@ -81,7 +95,7 @@ const authzenHandlerPath = "/api/v1/access/evaluation"
 // server would then proceed on an allow whose mandatory obligation it never
 // saw. So a non-empty profile this build does not emit is REFUSED, naming the
 // version it does emit, which is a renegotiation the caller can act on.
-const authzenProfileHeader = "X-Axonflow-AuthZEN-Profile"
+const authzenProfileHeader = contract.AuthZENProfileHeader
 
 // PlaneAccessEvaluation is the audit plane discriminator for this surface.
 //
@@ -305,6 +319,20 @@ func handleAuthZENEvaluation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #3704: resolve the handshake ONCE for this HTTP request, before the entry
+	// loop, and thread it through delegateToDecide's inner requests. A plural
+	// envelope delegates to handleDecide once per entry - up to 64 - and
+	// resolving there would make the adoption counter a function of the entry
+	// count the CALLER chose. See resolveAndRecordPEPHandshakeOnce.
+	//
+	// The refusal itself still travels the ordinary delegated path: the first
+	// entry answers 4xx, the loop below stops, and this surface renders it
+	// through the one branch it renders every delegated 4xx through. Refusing
+	// here instead would be a SECOND validation site for the same input.
+	handshakeCtx, _ := resolveAndRecordPEPHandshakeOnce(
+		r.Context(), r, ClientIDFromContext(r.Context()), PlaneAccessEvaluation)
+	r = r.WithContext(handshakeCtx)
+
 	mapped, mapErr := mapEnvelope(env)
 	if mapErr != nil {
 		// A construct the adapter cannot evaluate is refused BEFORE anything is
@@ -402,23 +430,45 @@ func handleAuthZENEvaluation(w http.ResponseWriter, r *http.Request) {
 
 	out := contract.AuthZENResponse{Decision: rendered.decision}
 	if negotiated == contract.AuthZENProfileV1 {
+		// ONE producer, shared with Decision.ToAuthZEN. This used to be a
+		// second struct literal, and the two had already drifted on exactly one
+		// member - `Approval`, which this site never set - while the capability
+		// entry and the OpenAPI document both advertised it. Building the
+		// context here again would reintroduce the drift surface on the next
+		// member added to the profile, so the rendering is a call rather than a
+		// literal, and contract.AuthZENContextInput is what a new member has to
+		// pass through.
+		//
+		// The obligation gate moved INTO the producer with it. It was stated
+		// here as `state == contract.StateAllow`, narrower than the contract's
+		// own rule: a CHALLENGE is a permit with an approval outstanding and may
+		// carry obligations, and a plural envelope reaches that combination
+		// because obligations accumulate across entries while the meet takes the
+		// worst state. See contract.OperationalState.CarriesObligations.
+		//
+		// APPROVAL IS PASSED AS nil, DELIBERATELY, AND THE ADVERTISEMENTS NOW
+		// SAY SO (#3631). This route is an adapter over POST /api/v1/decide, and
+		// DecideResponse carries no approval requirement: a needs_approval
+		// verdict raises a HITL queue entry, but nothing in the response names
+		// the eligible groups, the quorum or the challenge expiry that
+		// contract.ApprovalRequirement.Validate requires. Populating it would
+		// mean INVENTING an approval policy - a fabricated quorum over a
+		// fabricated eligible set - which is worse than the omission, because a
+		// PEP would enforce it. Surfacing the real requirement needs the
+		// evaluator to carry it on /api/v1/decide, which is a wire change to the
+		// route this surface exists not to change; it is out of this fix's class
+		// and is recorded as such rather than half-done here. The nil is
+		// explicit rather than an omitted struct member so it is a decision on
+		// the page instead of an absence nobody can see.
 		reason := authzenReasonFor(state)
-		ctxOut := &contract.AuthZENResponseContext{
-			Profile:       contract.AuthZENProfileV1,
+		out.Context = contract.NewAuthZENResponseContext(contract.AuthZENContextInput{
 			State:         state,
-			Category:      contract.CategoryFor(reason),
 			Reason:        reason,
+			Obligations:   obligations,
+			Approval:      nil,
 			DecisionID:    determiningDecisionID(states, decisionIDs, state),
 			SchemaVersion: contract.SchemaVersion,
-		}
-		// Obligations ride only on an executable decision, matching the
-		// contract: a denied operation has nothing for a PEP to discharge, and
-		// attaching instructions to a denial invites a PEP to perform them and
-		// proceed.
-		if state == contract.StateAllow {
-			ctxOut.Obligations = obligations
-		}
-		out.Context = ctxOut
+		})
 	}
 
 	if rendered.withheld {
@@ -720,12 +770,44 @@ func delegateToDecide(r *http.Request, req DecideRequest) (decideOutcome, int, e
 	// every header would forward Authorization into a handler that has already
 	// been authenticated through the context, and would let a header this
 	// adapter has never considered change the evaluation.
+	//
+	// THE COPY LIST IS A SECOND PLACE THE CONTRACT LIVES, and a header omitted
+	// from it is not "not forwarded" - it is SILENTLY STRIPPED, so the
+	// evaluator sees the absent case and takes the unchanged path. #3704's
+	// capability handshake is on the list for exactly that reason: without it a
+	// caller presenting a perfectly valid declaration on this surface would
+	// have every capability refusal, every identity binding and every
+	// over-advertising check go inert, with no error and no counter. A leg of
+	// the runtime-e2e asserts the REFUSAL on this plane rather than the allow,
+	// because the allow is what a stripped header also produces.
 	for _, h := range []string{
 		"X-Axonflow-Client", "traceparent",
+		contract.PEPHandshakeHeader,
 		identityHeaderUserEmail, identityHeaderSessionID,
 	} {
-		if v := r.Header.Get(h); v != "" {
-			inner.Header.Set(h, v)
+		// Values, not Get, for the handshake's sake: a repeated header must
+		// reach the evaluator AS a repeat so it is refused there, rather than
+		// being silently collapsed to its first value on the way through.
+		//
+		// AND THE EMPTINESS FILTER IS EXEMPTED FOR THE HANDSHAKE, which the
+		// first version of this loop got wrong. `v != ""` is right for the other
+		// four headers, where an empty value means "nothing to attribute" and
+		// forwarding it is noise. For the handshake it is a DEFECT: a
+		// present-but-empty declaration would be dropped here, the evaluator
+		// would see the ABSENT case, and the request would take the unchanged
+		// path with no refusal and no counter - the exact degrade-to-legacy this
+		// change exists to close, reintroduced one frame above the resolver that
+		// refuses it. Worse, `["", <valid>]` would collapse a REPEAT into a
+		// single accepted declaration, defeating the Values/Add rewrite's own
+		// purpose.
+		//
+		// So an empty handshake line is forwarded and refused downstream, where
+		// the refusal names the header.
+		for _, v := range r.Header.Values(h) {
+			if v == "" && h != contract.PEPHandshakeHeader {
+				continue
+			}
+			inner.Header.Add(h, v)
 		}
 	}
 

@@ -950,7 +950,7 @@ func TestMcpToolCheckPolicy_SharedServiceIdentity_BlockStands(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"statement":      "SELECT * FROM t WHERE FORBIDDEN_MARKER",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("check_policy: %v", err)
 	}
@@ -988,7 +988,7 @@ func TestMcpToolCheckOutput_SharedServiceIdentity_BlockStands(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"message":        "credentials: FORBIDDEN_MARKER leaked",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("check_output: %v", err)
 	}

@@ -1,0 +1,84 @@
+name: Runner Fleet Health
+
+# THE FLEET IS NOW A SINGLE POINT OF FAILURE, so something has to notice when
+# it dies. 157 jobs across 88 workflows run on `[self-hosted, linux, x64,
+# axonflow]`, hosted on ONE spot instance. If AWS reclaims it, the persistent
+# spot request stops and later restarts the same instance - but while it is
+# stopped, jobs targeting those labels QUEUE SILENTLY. They do not fail, so
+# nothing goes red and nothing is emailed; work simply stops moving, which is
+# the worst failure shape to leave behind an absent operator.
+#
+# This job runs on GITHUB-HOSTED runners - it must be able to report precisely
+# when the self-hosted fleet cannot - and goes red when no self-hosted runner
+# is online. A red scheduled workflow is visible in the Actions list and in
+# GitHub's own failed-run notifications, so it needs no AWS alarm and no
+# subscription confirmation to be useful.
+#
+# The EC2-side alert (EventBridge rule axonflow-ci-runner-spot-interruption ->
+# SNS axonflow-ci-runner-alerts -> dev@getaxonflow.com) covers the same event
+# from the other side. Two independent paths, because the interesting failure
+# is precisely the one where the box is gone.
+
+on:
+  schedule:
+    # Every 30 minutes. A stopped fleet is noticed within half an hour, which
+    # is well inside the time it takes anyone to wonder why a PR is quiet.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: runner-fleet-health
+  cancel-in-progress: false
+
+jobs:
+  fleet:
+    name: Self-hosted fleet has online runners
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Count online runners carrying the axonflow label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 8 runners are configured. Below 4, capacity is halved and the
+          # queue's 742-job-minute worst case stops fitting in the timeouts,
+          # so warn well before zero.
+          WARN_BELOW: '4'
+        run: |
+          set -euo pipefail
+          json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100")
+          total=$(jq '.total_count' <<<"$json")
+          online=$(jq '[.runners[] | select(.status=="online")
+                        | select([.labels[].name] | index("axonflow"))] | length' <<<"$json")
+          busy=$(jq '[.runners[] | select(.busy)] | length' <<<"$json")
+          echo "registered=$total  online(axonflow)=$online  busy=$busy"
+          jq -r '.runners[] | "  \(.name)\t\(.status)\tbusy=\(.busy)"' <<<"$json"
+
+          {
+            echo "### Self-hosted fleet"
+            echo ""
+            echo "| registered | online | busy |"
+            echo "|---|---|---|"
+            echo "| $total | $online | $busy |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$online" -eq 0 ]; then
+            echo "::error::NO self-hosted runner is online. Every job targeting" \
+                 "[self-hosted, linux, x64, axonflow] is queueing silently -" \
+                 "157 jobs across 88 workflows, including the merge queue."
+            echo "::error::The host is a persistent spot instance" \
+                 "(axonflow-ci-runner-spot, us-east-1b). AWS stops it on" \
+                 "interruption and restarts the same instance when capacity" \
+                 "returns; if it has not come back, check the spot request and" \
+                 "see infrastructure/ci-runners/README.md."
+            exit 1
+          fi
+          if [ "$online" -lt "$WARN_BELOW" ]; then
+            echo "::warning::only $online of $total runners online; queue" \
+                 "capacity is degraded (see the capacity note in" \
+                 "infrastructure/ci-runners/README.md)."
+          fi
+          echo "ok: $online self-hosted runner(s) online"

@@ -60,6 +60,23 @@ type OrgIdentitySettings struct {
 	// recorded, for the reason HasCompatMode gives: "no record" must not be
 	// spelled with a value that means "invalid record".
 	HasDecisionShadowMode bool
+	// DecisionShadowPlanesRaw is the organization's per-plane narrowing as
+	// STORED, uninterpreted (#3552 gap 3).
+	//
+	// THIS PACKAGE DELIBERATELY DOES NOT PARSE IT. The vocabulary belongs to
+	// planeshadow.ParsePlanes, and planeshadow imports THIS package - so the
+	// parse cannot live here without a cycle. Carrying the raw string keeps
+	// ONE parser in the tree: the settings writer validates with it, the
+	// reader applies it, and identity stores a value it does not interpret.
+	//
+	// Empty means "no per-organization narrowing: every implemented plane",
+	// which is also what a NULL column and a pre-153 database yield. The
+	// column's CHECK refuses an empty or whitespace-only string precisely so
+	// that NULL is the only encoding of that posture in storage.
+	DecisionShadowPlanesRaw string
+	// HasDecisionShadowPlanes reports whether a per-plane narrowing is
+	// recorded. False means every implemented plane.
+	HasDecisionShadowPlanes bool
 	// DecisionShadowModeUnusable names why the stored decision mode could not
 	// be used, and is empty when there was nothing wrong with it.
 	//
@@ -139,13 +156,33 @@ type DecisionShadowModeSource interface {
 	OrgDecisionShadowMode(ctx context.Context, orgID string) (mode CompatMode, found bool, err error)
 }
 
-// OrgIdentitySettingsSource is what the Enterprise store implements: all three
+// DecisionShadowPlanesSource is the per-organization, per-plane narrowing
+// (#3552 gap 3), read by the same store that answers DecisionShadowModeSource.
+//
+// A SEPARATE INTERFACE RATHER THAN A WIDENED METHOD, so a caller that only
+// needs the mode is unaffected and no existing implementation breaks. The
+// concrete store answers both from ONE cached row read, so asking for both
+// costs one query, not two.
+//
+// The raw string is returned UNPARSED for the reason DecisionShadowPlanesRaw
+// carries it: the vocabulary lives in planeshadow, which imports this package.
+type DecisionShadowPlanesSource interface {
+	// OrgDecisionShadowPlanes returns the organization's recorded plane
+	// narrowing, uninterpreted.
+	//
+	// found=false with a nil error is "no narrowing recorded: every
+	// implemented plane", and is the ordinary answer.
+	OrgDecisionShadowPlanes(ctx context.Context, orgID string) (raw string, found bool, err error)
+}
+
+// OrgIdentitySettingsSource is what the Enterprise store implements: all FOUR
 // read contracts plus the local invalidation hook the admin write path calls
 // when it runs in the same process.
 type OrgIdentitySettingsSource interface {
 	CompatOrgModeSource
 	CAEPOrgSettingsSource
 	DecisionShadowModeSource
+	DecisionShadowPlanesSource
 	// Invalidate drops the memoized row for orgID so the next read consults
 	// storage. Local to this process; the cross-process bound is the TTL.
 	Invalidate(orgID string)

@@ -524,6 +524,35 @@ var identityConformanceCases = []ConformanceCase{
 		TestFile: "directory_states_test.go",
 	},
 
+	// Graph deletion and invalidation (ADR-065 acceptance gate 7, #3689).
+	//
+	// Every other graph case closes over ONE snapshot. These three are about
+	// the difference between two, which is where a deletion and an
+	// invalidation live and where both fail in the direction that grants
+	// access. AXC-253 covers DEACTIVATION, which is not deletion: a
+	// deactivated entity is still in the export.
+	{
+		ID: "AXC-257", Edition: ConformanceEnterpriseOnly,
+		Title:    "A group deleted from the directory leaves no decision reachable through it",
+		Asserts:  "After a re-export without the group, the closure drops it and a permission scoped to it no longer permits; a PARTIAL export that deletes the entity and leaves its membership row quarantines the orphan edge, reports it, and still does not resolve the deleted group back in.",
+		TestName: "TestDeletingAGroupLeavesNoDecisionReachableThroughIt",
+		TestFile: "directory_deletion_test.go",
+	},
+	{
+		ID: "AXC-258", Edition: ConformanceEnterpriseOnly,
+		Title:    "A revoked membership drops exactly the ancestors that edge reached",
+		Asserts:  "Both failure directions are asserted in one closure: an ancestor reachable only through the revoked edge must go (under-propagation is fail-open), and an ancestor a surviving edge still reaches must stay (over-propagation breaks access nobody changed).",
+		TestName: "TestDeletingOneMembershipEdgeDropsOnlyTheAncestorsItReached",
+		TestFile: "directory_deletion_test.go",
+	},
+	{
+		ID: "AXC-259", Edition: ConformanceEnterpriseOnly,
+		Title:    "A new directory snapshot invalidates the one it replaces",
+		Asserts:  "SetGraph replaces rather than installs-once; a resolution during an outage refuses even though the last good snapshot is retained; and recovery resumes on the CURRENT snapshot, not the retained one. SourceVersion is asserted at every step, because a group set alone cannot distinguish reading the new snapshot from reading a stale one that agrees.",
+		TestName: "TestANewDirectorySnapshotInvalidatesTheOneItReplaces",
+		TestFile: "directory_deletion_test.go",
+	},
+
 	{
 		ID: "AXC-269", Edition: ConformanceEnterpriseOnly,
 		Title:    "A self-inconsistent SCIM export is refused rather than resolved silently",

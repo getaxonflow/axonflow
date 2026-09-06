@@ -561,24 +561,24 @@ func TestMcpToolDeleteOverride_MissingArg(t *testing.T) {
 // TestMcpToolCheckPolicy_MissingArgs — connector_type + statement required.
 func TestMcpToolCheckPolicy_MissingArgs(t *testing.T) {
 	ctx := context.Background()
-	if _, err := mcpToolCheckPolicy(ctx, &mcpSession{}, map[string]interface{}{}); err == nil {
+	if _, err := mcpToolCheckPolicy(ctx, &mcpSession{}, map[string]interface{}{}, pepHandshakeResolution{}); err == nil {
 		t.Error("expected error when both args missing")
 	}
 	if _, err := mcpToolCheckPolicy(ctx, &mcpSession{}, map[string]interface{}{
 		"connector_type": "postgresql",
-	}); err == nil {
+	}, pepHandshakeResolution{}); err == nil {
 		t.Error("expected error when statement missing")
 	}
 	if _, err := mcpToolCheckPolicy(ctx, &mcpSession{}, map[string]interface{}{
 		"statement": "SELECT 1",
-	}); err == nil {
+	}, pepHandshakeResolution{}); err == nil {
 		t.Error("expected error when connector_type missing")
 	}
 }
 
 // TestMcpToolCheckOutput_MissingArgs — connector_type required.
 func TestMcpToolCheckOutput_MissingArgs(t *testing.T) {
-	if _, err := mcpToolCheckOutput(context.Background(), &mcpSession{}, map[string]interface{}{}); err == nil {
+	if _, err := mcpToolCheckOutput(context.Background(), &mcpSession{}, map[string]interface{}{}, pepHandshakeResolution{}); err == nil {
 		t.Error("expected error when connector_type missing")
 	}
 }
@@ -613,7 +613,7 @@ func TestMcpToolCheckPolicy_AllowedPath(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"statement":      "SELECT 1",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -668,7 +668,7 @@ func TestMcpToolCheckPolicy_DynamicBlocked(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"statement":      "SELECT 1",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestMcpToolCheckPolicy_DefaultOperation(t *testing.T) {
 		"connector_type": "postgres",
 		"statement":      "SELECT 1",
 		// operation intentionally omitted → defaults to "execute"
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestMcpToolCheckOutput_AllowedPath(t *testing.T) {
 		"response_data": []interface{}{
 			map[string]interface{}{"id": 1, "email": "a@b.c"},
 		},
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -778,7 +778,7 @@ func TestMcpToolCheckOutput_SQLiBlocked(t *testing.T) {
 				"data": "admin' UNION SELECT password FROM users--",
 			},
 		},
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -820,7 +820,7 @@ func TestMcpToolCheckOutput_SQLiBlocked_MessageMode(t *testing.T) {
 	}, map[string]interface{}{
 		"connector_type": "postgres",
 		"message":        "admin' UNION SELECT password FROM users--",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

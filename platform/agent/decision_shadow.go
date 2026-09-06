@@ -28,6 +28,7 @@ func initDecisionShadow(db *sql.DB) {
 		Component: "agent",
 		DB:        db,
 		OrgModes:  decisionShadowOrgModes(),
+		OrgPlanes: decisionShadowOrgPlanes(),
 	})
 	if err != nil {
 		log.Fatalf("❌ %v", err)
@@ -44,6 +45,22 @@ func initDecisionShadow(db *sql.DB) {
 // different staleness windows, so an operator could not say which instant
 // either mode was true at.
 func decisionShadowOrgModes() planeshadow.OrgModeSource {
+	if identityOrgSettings == nil {
+		return nil
+	}
+	return identityOrgSettings
+}
+
+// decisionShadowOrgPlanes is the per-organization PLANE narrowing source
+// (#3552 gap 3), or nil when none was wired.
+//
+// THE SAME STORE, AND THE SAME GUARD, as decisionShadowOrgModes above: the
+// narrowing is one more column of the row that carries the two modes, so
+// reading it through a second store would give one row two staleness windows.
+// Written as its own function rather than by passing identityOrgSettings twice
+// at the call site, so that the nil guard cannot be satisfied for one axis and
+// skipped for the other.
+func decisionShadowOrgPlanes() planeshadow.OrgPlanesSource {
 	if identityOrgSettings == nil {
 		return nil
 	}

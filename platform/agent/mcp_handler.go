@@ -809,9 +809,38 @@ type InputPolicyOutcome struct {
 // below) so a verified member does not get segment-scoped DYNAMIC policies
 // silently skipped while the static half enforces them. Threading it into
 // the static EvalOptions alone would close only half the bypass.
+// The tool identity arrives as TWO parameters because it answers two different
+// questions, and #3717 nearly shipped a security change on the assumption that
+// it was one:
+//
+//   - toolIdentity is ATTRIBUTION and TELEMETRY. It reaches the FinCrime
+//     scorer's agent context (an ML feature). Withholding it there is not
+//     "safer" — it removes a feature from a model's input vector, which moves a
+//     score in an unknown direction, and a transaction that used to clear a
+//     human-review threshold may stop clearing it.
+//   - capabilityScopeIdentity is an ENFORCEMENT INPUT. When it positively
+//     classifies as a text-document tool the engine SKIPS execution-class
+//     detectors, so a name that reaches it can only ever turn a deny into an
+//     allow. Empty means FULL evaluation, the fail-closed direction.
+//
+// Every ADVISORY plane passes the same string twice — the caller executes the
+// tool and reports its own name, which is the premise capability scoping rests
+// on. handleDecide is the one caller that passes different values; see the
+// separation there for why.
+//
+// A REQUIRED parameter rather than a wrapper with a default, deliberately. A
+// delegating wrapper was written first and TestLegacyCallSiteCensusIsComplete
+// refused it: the evaluator call moved into a function the census does not
+// record, so the ADR-065 shadow gate would have stopped measuring this
+// enforcement surface. (An earlier version of this comment credited
+// plane_naming_census_test.go instead. Re-tested by rebuilding the wrapper:
+// that one PASSES. A false reason inside a correct conclusion does not correct
+// itself, so the reason is named accurately here.) Requiring the argument also
+// means it cannot be forgotten, which for a value that decides whether
+// detectors run is the right side of the churn trade.
 func evaluateInputPolicies(
 	ctx context.Context,
-	tenantID, orgID, userID, userRole, connectorName, toolIdentity, operation, statement string,
+	tenantID, orgID, userID, userRole, connectorName, toolIdentity, capabilityScopeIdentity, operation, statement string,
 	parameters map[string]interface{},
 	detectionCfg ModeDetectionConfig,
 	runDynamicPolicy bool,
@@ -922,7 +951,13 @@ func evaluateInputPolicies(
 			// claude_code.mcp__atlassian__editJiraIssue); managed-connector
 			// planes pass "" (see the function doc). Unclassified/empty
 			// identities get full evaluation.
-			ToolIdentity:    toolIdentity,
+			//
+			// #3717: this is the SCOPING value, which is the attribution value
+			// for every plane but one. EvalOptions.ToolIdentity is documented
+			// as the capability-scoping input and filterByToolCapability is its
+			// only enforcement reader, so the split belongs here and not at the
+			// telemetry consumers below.
+			ToolIdentity:    capabilityScopeIdentity,
 			SkipCategories:  detectionCfg.SkipCategories,
 			ActionOverrides: detectionCfg.BuildActionOverrides(),
 			// #3430/#3447: the caller-supplied, already
@@ -2170,7 +2205,9 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	ctx = fincrime.WithDecisionMeta(ctx, "mcp", auditEntry.DecisionID)
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "query", statement, req.Parameters,
+		req.Connector,
+		"" /* toolIdentity */, "", /* capabilityScopeIdentity */ // agent-executed plane: no tool identity at all (#2801)
+		"query", statement, req.Parameters,
 		mcpDetectionCfg, true, /* runDynamicPolicy */
 		segmentIDs, /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */
 		legacycompile.PlaneMCP)
@@ -2667,7 +2704,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	ctx = fincrime.WithDecisionMeta(ctx, "mcp", auditEntry.DecisionID)
 	inputOutcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		req.Connector, "" /* toolIdentity: agent-executed plane, never capability-scoped (#2801) */, "execute", req.Statement, req.Parameters,
+		req.Connector,
+		"" /* toolIdentity */, "", /* capabilityScopeIdentity */ // agent-executed plane: no tool identity at all (#2801)
+		"execute", req.Statement, req.Parameters,
 		mcpDetectionCfg, true, /* runDynamicPolicy */
 		segmentIDs, /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */
 		legacycompile.PlaneMCP)
@@ -3012,6 +3051,49 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			time.Since(startTime).Milliseconds(), // #3424: agent-local check-input evaluation, no downstream hop
 			req.ConnectorType, req.Tool)          // #2904: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
+
+	// #3766: the ADR-065 capability handshake on the MCP plane.
+	//
+	// Resolved immediately after the authenticated identity is captured, which
+	// is #3704 §4.5's primary rule. It is NOT resolved before the body decode
+	// the way the decide plane does it, and that divergence is forced rather
+	// than chosen: this plane authenticates from hints carried IN THE BODY, so
+	// the client identity the declaration binds to does not exist until the
+	// decode has run. See resolveMCPPEPHandshake for the denominator skew that
+	// costs and why it is in the safe direction.
+	//
+	// A caller that presents NO handshake resolves to `absent`, refuses
+	// nothing, and takes byte-for-byte the path it took before this existed.
+	//
+	// Bound to auth.ClientID, the CANONICAL client identity Authenticate
+	// derived from the credentials - never req.ClientID, which is a
+	// caller-supplied hint. Composing the enforcement point's identifier from a
+	// value the caller chooses would put the namespace back under the caller's
+	// control, which is the whole point of §4.2's server-owned prefix.
+	ctx, pepHandshake := resolveMCPPEPHandshake(r.Context(), r, auth.ClientID)
+	r = r.WithContext(ctx)
+	if pepHandshake.refused {
+		// The request was never evaluated, so this is an HTTP error rather than
+		// a policy deny. Reporting an unevaluated request as a policy denial
+		// would put a client-side defect into the compliance record as a policy
+		// outcome - the same reasoning, and the same split, as the decide
+		// plane's malformed-handshake path.
+		writeMCPDecisionAudit(r.Context(), usageDB,
+			uuid.New().String(), "",
+			auth.TenantID, auth.OrgID, auth.ClientID, "",
+			"", "service",
+			"mcp_check_input", "mcp check-input: "+req.ConnectorType, "",
+			mcpVerdictBlocked,
+			[]string{pepHandshake.reason},
+			[]string{pepHandshake.reason + ": " + pepHandshake.detail},
+			nil,
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,
+			time.Since(startTime).Milliseconds(),
+			req.ConnectorType, req.Tool)
+		sendErrorResponse(w, pepHandshake.reason+": "+pepHandshake.detail, pepHandshake.status, nil)
 		return
 	}
 
@@ -3398,7 +3480,12 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		ctx = fincrime.WithDecisionMeta(ctx, "mcp", decisionID)
 		outcome := evaluateInputPolicies(ctx,
 			tenantID, orgID, userID, userRole,
-			req.ConnectorType, req.Tool /* toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904) */, operation, req.Statement, req.Parameters,
+			req.ConnectorType,
+			// ADVISORY plane: the caller executes the tool and reports its own
+			// name, which is the premise capability scoping rests on, so the
+			// same identity serves both roles (#2801, #2904, #3717).
+			req.Tool /* toolIdentity */, req.Tool, /* capabilityScopeIdentity */
+			operation, req.Statement, req.Parameters,
 			mcpDetectionCfg, true, /* runDynamicPolicy */
 			segmentIDs, /* #3447: fail-closed-resolved above; nil means "org-only", never "resolution failed" */
 			legacycompile.PlaneMCP)
@@ -3638,6 +3725,47 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			// evaluated allow path, absent only when no detection config is enabled.
 			RedactionEvaluated: redaction.Evaluated,
 		}
+		// #3766 / ADR-065 invariant 8: an enforcement point that DECLARED it
+		// cannot discharge field_redact must not be handed masked content and
+		// trusted to substitute it.
+		//
+		// This is a DENY of the decision, not an HTTP error: the request was
+		// evaluated, and the outcome is a decision about it that belongs in the
+		// audit trail as a block. It runs BEFORE the masked statement is
+		// written onto the response - handing over the content and then
+		// reporting a refusal would leak exactly what the refusal exists to
+		// withhold.
+		//
+		// A caller that presented no handshake, or one that declared
+		// field_redact@1, reaches none of this and gets the byte-identical
+		// response it got before.
+		if reason, denied := applyMCPRedactionRefusal(pepHandshake, didRedact); denied {
+			log.Printf("[pep-handshake] check-input denied on plane %s: the advertising enforcement point cannot discharge the inline redaction (decision_id=%s)",
+				PlaneMCP, decisionID)
+			descriptor := fmt.Sprintf("mcp check-input: %s", req.ConnectorType)
+			writeMCPDecisionAudit(ctx, usageDB,
+				decisionID, auditEntry.AuditID,
+				tenantID, orgID, auth.ClientID, userEmail,
+				userID, userRole,
+				"mcp_check_input", descriptor, computeStatementHash(descriptor),
+				mcpVerdictBlocked,
+				[]string{pepCapabilityUnsupportedCode},
+				[]string{reason},
+				nil,
+				traceIDFromHeader(r.Header.Get("traceparent")),
+				nil,
+				time.Since(startTime).Milliseconds(),
+				req.ConnectorType, req.Tool)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+				Allowed:     false,
+				BlockReason: reason,
+				DecisionID:  decisionID,
+				// RedactedStatement is deliberately ABSENT. The refusal is that
+				// this caller cannot be trusted to substitute it.
+			})
+			return
+		}
 		if didRedact {
 			resp.Redacted = true
 			resp.RedactedStatement = redactedStmt
@@ -3695,6 +3823,33 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			time.Since(startTime).Milliseconds(), // #3424: agent-local check-output evaluation, no downstream hop
 			req.ConnectorType, req.Tool)          // #2955: tool_server, tool_name
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
+
+	// #3766: the ADR-065 capability handshake on the MCP response plane.
+	// Resolved immediately after the authenticated identity is captured and
+	// bound to the CANONICAL auth.ClientID, never the caller-supplied
+	// req.ClientID. See resolveMCPPEPHandshake.
+	pepCtx, pepHandshake := resolveMCPPEPHandshake(r.Context(), r, auth.ClientID)
+	r = r.WithContext(pepCtx)
+	if pepHandshake.refused {
+		// Never evaluated, so an HTTP error rather than a policy deny - the
+		// same split the decide plane makes, so a client-side defect does not
+		// enter the compliance record as a policy outcome.
+		writeMCPDecisionAudit(r.Context(), usageDB,
+			uuid.New().String(), "",
+			auth.TenantID, auth.OrgID, auth.ClientID, "",
+			"", "service",
+			"mcp_check_output", "mcp check-output: "+req.ConnectorType, "",
+			mcpVerdictBlocked,
+			[]string{pepHandshake.reason},
+			[]string{pepHandshake.reason + ": " + pepHandshake.detail},
+			nil,
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,
+			time.Since(startTime).Milliseconds(),
+			req.ConnectorType, req.Tool)
+		sendErrorResponse(w, pepHandshake.reason+": "+pepHandshake.detail, pepHandshake.status, nil)
 		return
 	}
 
@@ -4058,6 +4213,47 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		policyInfo.ExfiltrationCheck = outcome.ExfilInfo
 	} else if policyInfo == nil && outcome.ExfilInfo != nil {
 		policyInfo = &sharedpolicy.PolicyInfo{ExfiltrationCheck: outcome.ExfilInfo}
+	}
+
+	// #3766 / ADR-065 invariant 8: an enforcement point that DECLARED it cannot
+	// discharge field_redact must not be handed redacted_data and trusted to
+	// forward it in place of the original response.
+	//
+	// The gate is `redactedData != nil` - the response plane's exact analogue
+	// of check-input's didRedact - so a caller that declares no redaction
+	// capability keeps using this plane freely for output that needed none.
+	// Placed BEFORE the encode, because handing over the content and then
+	// reporting a refusal would leak what the refusal exists to withhold.
+	if reason, denied := applyMCPRedactionRefusal(pepHandshake, redactedData != nil); denied {
+		log.Printf("[pep-handshake] check-output denied on plane %s: the advertising enforcement point cannot discharge the inline redaction (decision_id=%s)",
+			PlaneMCP, decisionID)
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = reason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		descriptor := fmt.Sprintf("mcp check-output: %s", req.ConnectorType)
+		writeMCPDecisionAudit(r.Context(), usageDB,
+			decisionID, auditEntry.AuditID,
+			auth.TenantID, auth.OrgID, auth.ClientID, "",
+			"", "service",
+			"mcp_check_output", descriptor, computeStatementHash(descriptor),
+			mcpVerdictBlocked,
+			[]string{pepCapabilityUnsupportedCode},
+			[]string{reason},
+			nil,
+			traceIDFromHeader(r.Header.Get("traceparent")),
+			nil,
+			time.Since(startTime).Milliseconds(),
+			req.ConnectorType, req.Tool)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
+			Allowed:     false,
+			BlockReason: reason,
+			DecisionID:  decisionID,
+			// RedactedData is deliberately ABSENT.
+		})
+		return
 	}
 
 	auditEntry.Success = true

@@ -430,7 +430,7 @@ func TestDecide3456_ResolutionErrorAndEvalUnavailableAreDistinctChannels(t *test
 
 	outcome := evaluateInputPolicies(context.Background(),
 		seg3456Tenant, seg3456Org, "1", "developer",
-		"decision", "", "decide", seg3447Benign, nil,
+		"decision", "", "", "decide", seg3447Benign, nil,
 		ResolveGatewayDetectionConfig(context.Background(), seg3456Org),
 		true, /* runDynamicPolicy: forced ON here so the outage channel is real */
 		[]string{seg3447MemberSegment})

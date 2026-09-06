@@ -500,6 +500,29 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 	ctx := r.Context()
 
+	// #3778: the ADR-065 capability handshake on the gateway pre-check plane.
+	//
+	// Resolved immediately after the authenticated identity is captured, which
+	// is #3704 §4.5's primary rule, and BEFORE any policy outcome is acted on.
+	// Bound to authClientID - the identity apiAuthMiddleware stamped from the
+	// credential - never to req.ClientID, which is a caller-supplied body field:
+	// composing the enforcement point's identifier from a value the caller
+	// chooses would put the namespace back under the caller's control, which is
+	// the whole point of §4.2's server-owned prefix.
+	//
+	// A caller that presents NO handshake resolves to `absent`, refuses nothing,
+	// and takes byte-for-byte the path it took before this existed.
+	preCheckCtx, pepHandshake := resolvePreCheckPEPHandshake(ctx, r, authClientID)
+	ctx = preCheckCtx
+	r = r.WithContext(ctx)
+	if pepHandshake.refused {
+		// Never evaluated, so an HTTP error rather than a policy deny: a
+		// client-side defect must not enter the compliance record as a policy
+		// outcome. The same split the decide and MCP planes make.
+		sendGatewayError(w, pepHandshake.reason+": "+pepHandshake.detail, pepHandshake.status)
+		return
+	}
+
 	effectiveClientID := authClientID
 	if isCommunityMode() && (authClientID == "" || authClientID == "community") {
 		// Community mode: no credentials → use body client_id for context records
@@ -955,8 +978,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			Reason:     "human approval required by policy",
 			Severity:   policyResult.Severity,
 			DecisionID: contextID,
-			Stage:      precheckStage,
-			Query:      req.Query,
+			// The same trace-id preCheckAudit records, so the approval and the
+			// gate decision land in one chain (#3718).
+			CorrelationID: preCheckAudit.correlationID,
+			Stage:         precheckStage,
+			Query:         req.Query,
 		})
 		preCheckAudit.approvalEnqueue = hitlEnqueue.Outcome
 		preCheckAudit.approvalRequestID = hitlEnqueue.RequestID
@@ -966,9 +992,25 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// Issue #891: Combine redaction flags from static policies and RBI PII detection
 	requiresRedaction := policyResult.RequiresRedaction || rbiPIIRequiresRedaction || indonesiaPIIRequiresRedaction
 
+	// #3778 / ADR-065 invariant 8: an enforcement point that DECLARED it cannot
+	// discharge field_redact must not be told `requires_redaction: true` and
+	// trusted to act on it.
+	//
+	// This plane does not redact inline. It sets RequiresRedaction and the
+	// CALLING SDK obtains the engine-masked content and forwards that instead of
+	// the original; ADR-056 forbids the caller from redacting for itself, so
+	// that substitution is the only sanctioned discharge. A caller that cannot
+	// perform it and is answered `approved: true, requires_redaction: true`
+	// proceeds with the original while the record says a redaction applied.
+	//
+	// Scoped to requiresRedaction, so a caller declaring no redaction capability
+	// keeps using this plane freely for the traffic that needs none - which is
+	// nearly all of it. The obligation exists only where the redaction does.
+	pepRefusalReason, pepRefused := applyPreCheckRedactionRefusal(pepHandshake, requiresRedaction)
+
 	// Determine if request should be blocked
 	// Block if: policy blocked OR HITL required (Enterprise only - pending human approval)
-	isBlocked := policyResult.Blocked || requiresHITL
+	isBlocked := policyResult.Blocked || requiresHITL || pepRefused
 
 	response := PreCheckResponse{
 		ContextID:         contextID,
@@ -977,6 +1019,21 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		Policies:          policyResult.TriggeredPolicies,
 		BudgetInfo:        budgetInfo, // Issue #1082: Include budget status
 		ExpiresAt:         expiresAt,
+	}
+
+	// #3778: on a capability refusal the answer is a DENY that also withholds
+	// the instruction the caller cannot carry out.
+	//
+	// RequiresRedaction is cleared deliberately. Leaving it true on a denied
+	// response would tell a caller that could not discharge the obligation to go
+	// and discharge it anyway, which is the confusion this refusal exists to
+	// remove; and shouldPrefetchApprovedData already withholds approved_data on
+	// any block, so no masked or unmasked content rides this response.
+	if pepRefused {
+		response.RequiresRedaction = false
+		response.BlockReason = pepRefusalReason
+		log.Printf("[pep-handshake] pre-check denied on plane %s: the advertising enforcement point cannot discharge the required redaction (context_id=%s)",
+			PlaneGateway, contextID)
 	}
 
 	// Add RBI PII policy to triggered policies if redaction required

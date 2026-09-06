@@ -96,7 +96,7 @@ services:
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.3.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.4.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -203,6 +203,18 @@ services:
       # identity headers. A value on one and not the other is the "consulted in
       # some planes and not others" split the adapter exists to prevent.
       AXONFLOW_IDENTITY_COMPAT_MODE: ${AXONFLOW_IDENTITY_COMPAT_MODE:-}
+      # Per-path rollback lever (#3634). UNSET means every path, which is the
+      # only complete window; a list narrows to the paths it names (hs256,
+      # oidc, trusted_header, api_credential) and the paths it omits evaluate
+      # as off - recording nothing, refusing nothing. It exists for the failure
+      # the other two widths are the wrong shape for: ONE credential path going
+      # wrong for everyone, where lowering an organization loses its other
+      # three paths and lowering the deployment loses the window entirely.
+      # An unrecognised name is FATAL at boot, so a typo is a container that
+      # never becomes healthy rather than a window quietly measuring fewer
+      # paths than its operator believes. Set on BOTH services for the same
+      # reason the mode above is.
+      AXONFLOW_IDENTITY_COMPAT_PATHS: ${AXONFLOW_IDENTITY_COMPAT_PATHS:-}
       # --- ADR-065 per-plane decision shadow (#3564, v10.3.0+) ---
       #
       # Set on BOTH services, for the same reason the identity mode above is:
@@ -364,6 +376,18 @@ services:
       # resolves this independently and a value on the agent alone would leave
       # this plane unadapted. See the agent service for the full contract.
       AXONFLOW_IDENTITY_COMPAT_MODE: ${AXONFLOW_IDENTITY_COMPAT_MODE:-}
+      # Per-path rollback lever (#3634). UNSET means every path, which is the
+      # only complete window; a list narrows to the paths it names (hs256,
+      # oidc, trusted_header, api_credential) and the paths it omits evaluate
+      # as off - recording nothing, refusing nothing. It exists for the failure
+      # the other two widths are the wrong shape for: ONE credential path going
+      # wrong for everyone, where lowering an organization loses its other
+      # three paths and lowering the deployment loses the window entirely.
+      # An unrecognised name is FATAL at boot, so a typo is a container that
+      # never becomes healthy rather than a window quietly measuring fewer
+      # paths than its operator believes. Set on BOTH services for the same
+      # reason the mode above is.
+      AXONFLOW_IDENTITY_COMPAT_PATHS: ${AXONFLOW_IDENTITY_COMPAT_PATHS:-}
       # --- ADR-065 per-plane decision shadow (#3564, v10.3.0+) ---
       #
       # Set on BOTH services, for the same reason the identity mode above is:
@@ -418,7 +442,7 @@ services:
       # unrecognized code is fatal at boot, like an unrecognized mode.
       AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS: ${AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.3.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.4.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.

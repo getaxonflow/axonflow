@@ -13,8 +13,10 @@ package identity
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +61,9 @@ func resolveAgreementLogEvery(raw string) uint64 {
 type CompatBootstrapConfig struct {
 	// RawMode is the configured mode string, normally os.Getenv(EnvCompatMode).
 	RawMode string
+	// RawPaths narrows which legacy credential paths evaluate (#3634).
+	// Normally os.Getenv(EnvCompatPaths). Empty means every path.
+	RawPaths string
 	// RawEnforceReasons narrows what enforce refuses. Empty means every
 	// reason. See EnvEnforceReasons.
 	RawEnforceReasons string
@@ -109,6 +114,8 @@ type CompatBootstrap struct {
 	// whose mode is off nothing else ever would, and every push would read
 	// as an undeclared issuer.
 	Realms CompatRealmSource
+	// Paths is the parsed per-path lever (#3634); nil means every path.
+	Paths map[LegacyPath]bool
 	// PerOrg reports whether a per-organization mode source was wired.
 	PerOrg bool
 }
@@ -122,12 +129,45 @@ type CompatBootstrap struct {
 // deployment that will not start is the one failure mode an operator notices
 // immediately.
 //
+// IT ALSO REFUSES `enforce` BY NAME ON THIS PATH (#3633), which is the whole
+// of the asymmetry this closes. The decision axis has always refused its
+// process-wide enforce at parse (ParseDecisionShadowMode, decision_shadow_mode.go),
+// while the identity axis accepted it in one unconditioned call: an operator
+// could set AXONFLOW_IDENTITY_COMPAT_MODE=enforce and the process began
+// refusing requests at boot, with no shadow phase behind it, no observed
+// denominator, and nothing recorded about why it was safe.
+//
+// THE REFUSAL IS HERE, NOT IN ParseCompatMode, and that placement is the
+// design. ParseCompatMode serves TWO callers: this process-wide boot path and
+// the per-organization stored value, which reads a mode a reviewer set through
+// the customer-portal handler against the full observed gate (shadow first, a
+// non-zero organic denominator, zero unexplained divergences, an enforce-reason
+// set, audited). Refusing inside the shared parser would take the per-org route
+// away with it and leave no route to enforce at all. So the parser stays
+// three-valued and the BOOT path is narrowed, which is exactly the split the
+// two axes already have.
+//
 // It does NOT install the adapter. Installation is a separate call so a test
 // can build one without touching process state.
 func BootstrapCompat(cfg CompatBootstrapConfig) (*CompatBootstrap, error) {
 	mode, err := ParseCompatMode(cfg.RawMode)
 	if err != nil {
 		return nil, err
+	}
+	if mode == CompatModeEnforce {
+		// POSITIVE MEMBERSHIP ON THE ONE VALUE THAT ENFORCES, never
+		// `mode != CompatModeShadow && mode != CompatModeOff`: the two differ
+		// on CompatMode(99) and on the Unspecified zero value, and an
+		// inequality that happens to be true for those would admit them. The
+		// parser cannot return either today, and this must not become the
+		// reason that stays true.
+		return nil, fmt.Errorf(
+			"identity: %s=enforce is not available at boot: process-wide enforcement would refuse requests "+
+				"before any shadow phase has measured what it would refuse, on every organization at once. "+
+				"Enforcement is granted per organization, through the identity settings surface, and only "+
+				"where that organization is already in shadow with a non-zero observed denominator, zero "+
+				"unexplained divergences and %s set; use shadow here to measure it",
+			EnvCompatMode, EnvEnforceReasons)
 	}
 	registry := NewRealmRegistry()
 	var extra []CompatRealmSource
@@ -143,6 +183,16 @@ func BootstrapCompat(cfg CompatBootstrapConfig) (*CompatBootstrap, error) {
 	}
 	recorder := NewLogCounterfactualRecorder(resolveAgreementLogEvery(os.Getenv(EnvAgreementLogEvery)))
 	reasons, err := ParseEnforceReasons(cfg.RawEnforceReasons)
+	if err != nil {
+		return nil, err
+	}
+	// FATAL ON AN UNRECOGNIZED PATH, for the reason the mode is fatal on an
+	// unrecognized spelling: an operator who narrowed to a path name that
+	// matches nothing believes that path is being measured, and a list that
+	// silently dropped the entry would measure fewer paths than the operator
+	// reads off their own configuration. The error is returned, and this
+	// function's contract is that the caller refuses to boot.
+	paths, err := ParseCompatPaths(cfg.RawPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +213,7 @@ func BootstrapCompat(cfg CompatBootstrapConfig) (*CompatBootstrap, error) {
 	opts := []CompatAdapterOption{
 		WithCompatComponent(cfg.Component),
 		WithCompatEnforceReasons(reasons),
+		WithCompatPaths(paths),
 	}
 	if cfg.Revocations != nil {
 		opts = append(opts, WithCompatRevocations(cfg.Revocations))
@@ -177,6 +228,7 @@ func BootstrapCompat(cfg CompatBootstrapConfig) (*CompatBootstrap, error) {
 	return &CompatBootstrap{
 		Mode: mode, EnforceReasons: reasons, Registry: registry, Recorder: recorder, Adapter: adapter,
 		Realms: source, PerOrg: cfg.OrgModes != nil,
+		Paths: paths,
 	}, nil
 }
 
@@ -213,6 +265,30 @@ func (b *CompatBootstrap) InstallProcessCompat(component string) {
 		log.Printf("[IDENTITY-COMPAT] %s: %s=%v (every OTHER reason is recorded and NOT applied)",
 			component, EnvEnforceReasons, b.EnforceReasons)
 	}
+	// A NARROWED PATH LIST IS SAID OUT LOUD, AND THE OMITTED PATHS ARE NAMED.
+	//
+	// Logged only when narrowed, following the enforce-reason line above: a
+	// line on every boot saying "every path, as usual" is noise that teaches a
+	// reader to skip the line, and this one has to be readable in the incident
+	// it was set during. What an operator needs then is not what is being
+	// measured but what has STOPPED being measured - a path recording nothing
+	// looks identical to a path that never diverges, and the two are opposite
+	// conclusions.
+	if len(b.Paths) > 0 {
+		var on, off []string
+		for _, p := range legacyPaths {
+			if b.Paths[p] {
+				on = append(on, string(p))
+				continue
+			}
+			off = append(off, string(p))
+		}
+		sort.Strings(on)
+		sort.Strings(off)
+		log.Printf("[IDENTITY-COMPAT] %s: %s=%s narrows compat to %v; %v evaluate as OFF and record NOTHING "+
+			"(no evidence, which is not the same as clean evidence) until this variable is unset",
+			component, EnvCompatPaths, strings.Join(on, ","), on, off)
+	}
 }
 
 // compatModeDescription spells out the consequence of each mode, so the
@@ -240,16 +316,36 @@ func compatModeDescription(m CompatMode) string {
 //
 // orgModes is the per-organization mode source; nil means the process mode
 // alone (every community build).
-func BootstrapCompatFromEnv(component string, dep BuiltinRealmDeployment, extra func(*RealmRegistry) ([]CompatRealmSource, error), revocations RevocationOracle, orgModes CompatOrgModeSource) (*CompatBootstrap, error) {
-	b, err := BootstrapCompat(CompatBootstrapConfig{
+// EnvCompatConfig returns the ENVIRONMENT-DERIVED half of a bootstrap config,
+// and it exists because there is more than one binary and they drifted.
+//
+// The agent bootstraps through BootstrapCompatFromEnv; the orchestrator builds
+// its own CompatBootstrapConfig because it wires a different realm deployment
+// and no revocation oracle. Both read the same variables, so both had a copy of
+// the list - and when AXONFLOW_IDENTITY_COMPAT_PATHS was added (#3634) only one
+// copy grew. The lever was declared in compose for both services, documented as
+// applying to both, and read by ONE: the orchestrator kept evaluating every
+// path, and its compose line was dead configuration that changed nothing
+// observable.
+//
+// One reader means the next variable cannot drift the same way. Callers fill
+// the non-environment fields on the returned value.
+func EnvCompatConfig() CompatBootstrapConfig {
+	return CompatBootstrapConfig{
 		RawMode:           os.Getenv(EnvCompatMode),
 		RawEnforceReasons: os.Getenv(EnvEnforceReasons),
-		Deployment:        dep,
-		ExtraRealmSources: extra,
-		Revocations:       revocations,
-		Component:         component,
-		OrgModes:          orgModes,
-	})
+		RawPaths:          os.Getenv(EnvCompatPaths),
+	}
+}
+
+func BootstrapCompatFromEnv(component string, dep BuiltinRealmDeployment, extra func(*RealmRegistry) ([]CompatRealmSource, error), revocations RevocationOracle, orgModes CompatOrgModeSource) (*CompatBootstrap, error) {
+	cfg := EnvCompatConfig()
+	cfg.Deployment = dep
+	cfg.ExtraRealmSources = extra
+	cfg.Revocations = revocations
+	cfg.Component = component
+	cfg.OrgModes = orgModes
+	b, err := BootstrapCompat(cfg)
 	if err != nil {
 		return nil, err
 	}

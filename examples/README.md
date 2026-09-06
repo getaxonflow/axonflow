@@ -140,9 +140,9 @@ All examples use the latest SDK versions:
 |-----|---------|---------|
 | Python | `axonflow` | >=9.0.0 |
 | TypeScript | `@axonflow/sdk` | >=9.0.0 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v9` | v9.0.0 |
-| Java | `com.getaxonflow:axonflow-sdk` | 9.0.0 |
-| Rust _(preview)_ | `axonflow-sdk-rust` | 0.8.1 |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v9` | v9.3.0 |
+| Java | `com.getaxonflow:axonflow-sdk` | 9.3.0 |
+| Rust _(preview)_ | `axonflow-sdk-rust` | 0.10.0 |
 
 ## Environment Configuration
 

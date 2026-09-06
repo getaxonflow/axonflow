@@ -53,7 +53,16 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     correlation_id VARCHAR(255),
     decision_id VARCHAR(255),
     plane VARCHAR(32),
-    session_id VARCHAR(255)
+    session_id VARCHAR(255),
+    -- migration core/126. Added when the decisions feed own realpg proof
+    -- (#3718) tried to run queryDecisionList against this fixture and got
+    -- ERROR: column "transfer_basis" does not exist. The production SELECT has
+    -- read these two since #2954, and a fixture missing a column the query
+    -- names fails the query outright rather than returning a wrong answer -
+    -- the loud direction, but it also meant no test in this package could
+    -- exercise that query at all until now.
+    transfer_basis VARCHAR(64),
+    data_residency VARCHAR(64)
 );`
 
 func seedAuditRow(t *testing.T, al *AuditLogger, id, tenant, decision, query, resp string, latency int64, ts time.Time) {

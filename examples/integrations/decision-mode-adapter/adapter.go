@@ -30,8 +30,8 @@ func (e *decisionRejectedError) Error() string {
 }
 
 const (
-	maxRequestBodySize         = 10 * 1024 * 1024 // 10 MB
-	maxDecisionResponseSize    = 1 * 1024 * 1024  // 1 MB
+	maxRequestBodySize      = 10 * 1024 * 1024 // 10 MB
+	maxDecisionResponseSize = 1 * 1024 * 1024  // 1 MB
 )
 
 // Config controls how the adapter talks to the AxonFlow Decision API.
@@ -113,7 +113,28 @@ type Target struct {
 	Provider string `json:"provider,omitempty"`
 }
 
-// DecideResponse mirrors the platform's POST /api/v1/decide response shape.
+// DecideResponse mirrors the platform's POST /api/v1/decide 200 response shape.
+//
+// IT HAS NO `Error` MEMBER, AND THAT IS DELIBERATE (#3724). One was carried
+// here, and in platform/shared/pep, and in all five SDKs, and no server has
+// ever populated it: the platform's 200 body has no such field. The error
+// envelope is a DIFFERENT shape - `{error, verdict, ...}`, published as
+// DecideErrorResponse - and it arrives as a NON-200, which this adapter (like
+// the blessed client) surfaces as an error return rather than decoding into
+// this type. An integrator writing `if resp.Error != ""` got a branch that
+// could never be true while every real failure came back through the error
+// return they were not checking.
+//
+// THIS IS ONE OF FOUR IN-TREE MIRRORS of the Decision API DTOs, and it is in
+// its own Go module, so the spec-versus-code guard in platform/orchestrator
+// cannot reach it. The others are platform/agent, platform/shared/pep, and
+// examples/integrations/decision-mode-mcp-adapter - which already diverges,
+// carrying ExpiresAt as a string where the other three carry a time.Time. A
+// first version of this comment said THIRD; review round 2 found the fourth,
+// which is the point: nobody can count mirrors reliably, and that is why the
+// guard exists for the two it can reach. Recorded on #3709. Until it is
+// addressed, a change to the Decision API contract has to be made here by
+// hand.
 type DecideResponse struct {
 	Verdict           string       `json:"verdict"`
 	DecisionID        string       `json:"decision_id"`
@@ -123,7 +144,6 @@ type DecideResponse struct {
 	EvaluatedPolicies []string     `json:"evaluated_policies"`
 	Stage             string       `json:"stage,omitempty"`
 	ExpiresAt         time.Time    `json:"expires_at"`
-	Error             string       `json:"error,omitempty"`
 }
 
 type Obligation struct {
