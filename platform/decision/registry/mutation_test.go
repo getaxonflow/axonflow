@@ -192,10 +192,15 @@ func sourceMutations() []sourceMutation {
 				"the range cannot register as declared",
 		},
 		{
-			Name:     "a community enforcement point may advertise an Enterprise-only family",
-			File:     "pep.go",
-			Old:      `	if p.Edition == EditionCommunity {`,
-			New:      `	if false && p.Edition == EditionCommunity {`,
+			Name: "a community enforcement point may advertise an Enterprise-only family",
+			File: "pep.go",
+			// The mutant moved with #3704: the community rule now reads
+			// SplitOverAdvertised, so the one predicate serves both remedies
+			// (Validate REFUSES a registered record, the external path DROPS
+			// and counts). Disarming the predicate's community arm is what the
+			// old `if false &&` did to the inlined check.
+			Old:      `		if err != nil || edition != EditionCommunity || !enterpriseOnlyFamilies[family] {`,
+			New:      `		if err != nil || edition != EditionCommunity || !enterpriseOnlyFamilies[family] || true {`,
 			Test:     "TestCommunityEnforcementPointCannotAdvertiseEnterpriseFamilies",
 			Property: "a community enforcement point cannot claim a capability its build does not have",
 		},

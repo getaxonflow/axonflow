@@ -70,7 +70,7 @@ func TestReadOnlyPosture_WriteBlockedAtGate(t *testing.T) {
 	resp, err := mcpToolCheckPolicy(context.Background(), testMCPSession(), map[string]interface{}{
 		"connector_type": "claude_code.Bash",
 		"statement":      "rm -rf /tmp/x",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestReadOnlyPosture_ReadAllowedAtGate(t *testing.T) {
 	resp, err := mcpToolCheckPolicy(context.Background(), testMCPSession(), map[string]interface{}{
 		"connector_type": "claude_code.Read",
 		"statement":      "/etc/hosts",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestReadOnlyPosture_ToggleOffNoBlock(t *testing.T) {
 	resp, err := mcpToolCheckPolicy(context.Background(), testMCPSession(), map[string]interface{}{
 		"connector_type": "claude_code.Bash",
 		"statement":      "rm -rf /tmp/x",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

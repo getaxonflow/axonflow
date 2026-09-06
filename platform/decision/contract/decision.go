@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -271,13 +272,26 @@ func (d *Decision) Validate() error {
 	if d.Authorization != AuthzPermit && d.Approval != nil {
 		return fmt.Errorf("decision: an approval requirement is only carried on a permit, got one on %q", d.Authorization)
 	}
+	// A refusal raised on a nested shape is re-rooted in the DECISION rather
+	// than wrapped in prose. The pointer is the actionable half of the refusal -
+	// "/obligations/2/mandatory" tells a caller which member of which entry to
+	// supply, where "/mandatory" alone names an offset within a shape the caller
+	// never addressed by itself.
 	for i, o := range d.Obligations {
 		if err := o.Validate(); err != nil {
+			var missing *MissingMemberError
+			if errors.As(err, &missing) {
+				return missing.Prefixed(fmt.Sprintf("/obligations/%d", i))
+			}
 			return fmt.Errorf("decision: obligations[%d]: %w", i, err)
 		}
 	}
 	if d.Approval != nil {
 		if err := d.Approval.Validate(); err != nil {
+			var missing *MissingMemberError
+			if errors.As(err, &missing) {
+				return missing.Prefixed("/approval")
+			}
 			return fmt.Errorf("decision: %w", err)
 		}
 	}

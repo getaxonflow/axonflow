@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"axonflow/platform/decision/contract"
+
+	"axonflow/platform/shared/pep"
 )
 
 // The AuthZEN adapter: the total translation between the AuthZEN wire surface
@@ -566,7 +568,14 @@ func mapOne(r contract.AuthZENRequest, at string) (DecideRequest, *contract.Auth
 // assumed:
 //
 //	tool   server + tool  ARE read (decision_handler.go binds both to the
-//	                      capability-scoped evaluation and to the audit row)
+//	                      audit row and to the HITL queue descriptor). NOT to
+//	                      capability-scoped evaluation since #3717: a target
+//	                      that names a hosting SERVER — which every tool
+//	                      resource id here does, by construction — supplies no
+//	                      scoping key, because the caller is routing to a
+//	                      backend it does not itself execute. Those requests
+//	                      get FULL evaluation. Attribution is unchanged, which
+//	                      is what the asymmetry below is about.
 //	llm    provider/model are read by NOTHING. `grep -rn "Target.Provider|
 //	                      Target.Model"` over the non-test tree returns zero
 //	                      hits; the HITL descriptor for an llm target is the
@@ -595,7 +604,7 @@ func mapTarget(stage string, res *contract.AuthZENResource, at string) (Decision
 				Message: fmt.Sprintf("a tool resource id must be \"server/tool\", got %q", res.ID),
 			}
 		}
-		t = DecisionTarget{Type: "tool", Server: server, Tool: tool}
+		t = DecisionTarget{Type: pep.TargetTypeTool, Server: server, Tool: tool}
 	case DecisionStageLLM, DecisionStageAgent:
 		// The id must name the stage itself, because nothing finer is read.
 		if res.ID != stage {

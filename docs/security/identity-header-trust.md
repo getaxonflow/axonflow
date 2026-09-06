@@ -1,6 +1,6 @@
 # Identity-Header Trust Model (Per-User Audit Attribution)
 
-**Platform Version:** v9.14.0 (feature introduced in v9.9.0)
+**Platform Version:** v10.3.0 (feature introduced in v9.9.0)
 
 **Status:** Active
 

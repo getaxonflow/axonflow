@@ -17,7 +17,7 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-SDK versions: Python / TypeScript / Go / Java v9.0.0 + Rust v0.8.1 (preview).
+SDK versions: Python / TypeScript / Go / Java v9.3.0 + Rust v0.10.0 (preview).
 
 | Language | Package | Repository |
 |----------|---------|------------|
@@ -40,7 +40,7 @@ pip3 install axonflow==9.0.0
 #   <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>9.0.0</version>
+#     <version>9.3.0</version>
 #   </dependency>
 
 # TypeScript

@@ -1,0 +1,3034 @@
+{
+  "schema": "1.0",
+  "platform_version": "10.4.0",
+  "generated": "2026-09-03",
+  "scan_roots": [
+    "platform/agent",
+    "platform/orchestrator",
+    "platform/shared",
+    "platform/common",
+    "platform/connectors",
+    "ee/platform/agent",
+    "ee/platform/orchestrator"
+  ],
+  "capabilities": [
+    {
+      "id": "audit.trail",
+      "title": "Audit trail read API",
+      "family": "audit",
+      "summary": "GET /api/v1/audit and its search, summary, tenant, session-summary, report and export routes over the canonical audit log.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/proxy.go"
+      ],
+      "owner": "platform/agent/audit_coverage_test.go",
+      "routes": [
+        "/api/v1/audit"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "AuditRetentionDays"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "Core Platform"
+      ],
+      "health_absent_reason": "The audit TRAIL is advertised as audit_llm_call; these are the read routes over it, and a second name would not change what a client does.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_stale_citation",
+      "notes": "Retention 3 / 14 / 3650 days (tier_support.go AuditRetentionDays) bounds what the read routes can return, so the routes are open in every edition and the DATA behind them is tiered."
+    },
+    {
+      "id": "audit.verification",
+      "title": "Audit record and chain verification",
+      "family": "audit",
+      "summary": "GET /api/v1/audit/records/{id}/verify, /chains/{id}/verify and /signing-key expose the Ed25519 attribution chain for independent verification.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/audit_verification_handler.go"
+      ],
+      "owner": "platform/agent/audit_verification_handler_test.go",
+      "routes": [
+        "/api/v1/audit/records",
+        "/api/v1/audit/chains",
+        "/api/v1/audit/signing-key"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "health_absent_reason": "Verification is a property of the audit trail rather than a separate capability; a verifier discovers the routes from the OpenAPI document.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "circuit.breaker",
+      "title": "Circuit breaker and emergency stop",
+      "family": "circuit",
+      "summary": "/api/v1/circuit-breaker (trip, reset, check, status, history, config, notifications) and /api/v1/emergency-stop.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/circuitbreaker/handler.go",
+        "platform/agent/circuitbreaker/circuitbreaker_community.go"
+      ],
+      "owner": "platform/agent/circuitbreaker/circuitbreaker_community_test.go",
+      "routes": [
+        "/api/v1/circuit-breaker",
+        "/api/v1/emergency-stop"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "health": {
+        "name": "circuit_breaker",
+        "since": "4.7.0",
+        "description": "Circuit breaker pipeline enforcement",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 13
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "platform/agent/circuitbreaker/handler.go is //go:build enterprise and the !enterprise twin's RegisterRoutes registers NOTHING, so a Community build serves no circuit-breaker route at all — while its /health advertises circuit_breaker since 4.7.0. This is the clearest instance of the edition-blind /health finding."
+    },
+    {
+      "id": "compliance.euaiact",
+      "title": "EU AI Act compliance package",
+      "family": "compliance",
+      "summary": "The EU AI Act evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/euaiact"
+      ],
+      "owner": "platform/orchestrator/euaiact/export_handlers_test.go",
+      "routes": [
+        "/api/v1/euaiact"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.evidence_export",
+      "title": "Evidence export",
+      "family": "compliance",
+      "summary": "GET /api/v1/evidence/export and /summary produce a bounded evidence bundle over the audit trail.",
+      "minimum_edition": "evaluation",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/evidence_export_handler.go"
+      ],
+      "owner": "platform/orchestrator/evidence_export_handler_test.go",
+      "routes": [
+        "/api/v1/evidence"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "EvidenceExportEnabled",
+        "MaxEvidenceExportRecords",
+        "MaxEvidenceWindowDays",
+        "MaxEvidenceExportsPerDay"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "health_absent_reason": "CENSUS GAP: the flagship Evaluation-tier capability has no capability name, so an Evaluation deployment cannot feature-detect what its licence bought.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "health_gap": true,
+      "notes": "EvidenceExportEnabled false / true / true; 0 / 5000 / unlimited records; 0 / 14 / unlimited days; 0 / 3 / unlimited exports a day. The handler carries no build constraint, so this is a genuine community_core implementation under an Evaluation runtime gate."
+    },
+    {
+      "id": "compliance.masfeat",
+      "title": "MAS FEAT compliance package",
+      "family": "compliance",
+      "summary": "The MAS FEAT (Singapore) evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/masfeat"
+      ],
+      "owner": "platform/orchestrator/masfeat/registry_handlers_test.go",
+      "routes": [
+        "/api/v1/masfeat"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.ojk",
+      "title": "OJK compliance package",
+      "family": "compliance",
+      "summary": "The OJK (Indonesia) evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/ojk"
+      ],
+      "owner": "platform/orchestrator/ojk/wire_test.go",
+      "routes": [
+        "/api/v1/ojk"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.rbi",
+      "title": "RBI FREE-AI compliance package",
+      "family": "compliance",
+      "summary": "The RBI (India banking) evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/rbi"
+      ],
+      "owner": "platform/orchestrator/rbi/registry_handlers_test.go",
+      "routes": [
+        "/api/v1/rbi"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.reports",
+      "title": "Compliance report generation",
+      "family": "compliance",
+      "summary": "POST /api/v1/compliance/reports renders a regulator package and serves it back for download.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/compliancereport"
+      ],
+      "owner": "platform/orchestrator/compliancereport/handlers_test.go",
+      "routes": [
+        "/api/v1/compliance"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxEvidenceExportsPerDay"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "Same reasoning as the individual packages it renders.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "Three reports per day at Evaluation, unlimited at Enterprise, but the renderer is enterprise-tagged so Evaluation cannot reach it."
+    },
+    {
+      "id": "compliance.sebi",
+      "title": "SEBI AI/ML compliance package",
+      "family": "compliance",
+      "summary": "The SEBI (India capital markets) evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/sebi"
+      ],
+      "owner": "platform/orchestrator/sebi/sebi_audit_export_handlers_test.go",
+      "routes": [
+        "/api/v1/sebi"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.usbanking",
+      "title": "US banking examination package",
+      "family": "compliance",
+      "summary": "The US federal banking supervision evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/usbanking"
+      ],
+      "owner": "platform/orchestrator/usbanking/usbanking_community_test.go",
+      "routes": [
+        "/api/v1/usbanking"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.usinsurance",
+      "title": "NAIC AI Systems Evaluation package",
+      "family": "compliance",
+      "summary": "The US insurance (NAIC) evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/usinsurance"
+      ],
+      "owner": "platform/orchestrator/usinsurance/handlers_test.go",
+      "routes": [
+        "/api/v1/usinsurance"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "compliance.ussecurities",
+      "title": "US securities examination package",
+      "family": "compliance",
+      "summary": "The SEC advisers and FINRA broker-dealers evidence package: its registry, assessments, exports and dashboard routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/ussecurities"
+      ],
+      "owner": "platform/orchestrator/ussecurities/handlers_test.go",
+      "routes": [
+        "/api/v1/ussecurities"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "No compliance package has a capability name. The packages are discovered from the compliance report index rather than from /health, and every one of them is enterprise-tagged, so advertising them on the edition-blind list would repeat this census's headline finding.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_cites_wrong_mechanism",
+      "notes": "Held to Enterprise by the build tag, which is the row's own build_tag and sync. This row and the living feature matrix disagree about the MECHANISM; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "connector.mcp_gateway",
+      "title": "MCP connector gateway",
+      "family": "connector",
+      "summary": "/mcp/connectors, /mcp/tools/execute, /mcp/resources/query and /mcp/health are the connector-facing MCP seam.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/mcp_handler.go"
+      ],
+      "owner": "platform/agent/mcp_handler_test.go",
+      "routes": [
+        "/mcp/connectors",
+        "/mcp/tools",
+        "/mcp/resources",
+        "/mcp/health"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "license_gate": [
+        "CustomPolicyConnectors"
+      ],
+      "matrix": [
+        "MCP Connectors (v1.0)",
+        "MCP Policy Enforcement (v3.2.0)"
+      ],
+      "health_absent_reason": "Advertised as mcp_check_endpoints for the policy legs; the connector legs are discovered by listing connectors.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "All connectors register in every edition; only the number carrying CUSTOM policies is capped (2 / 5 / unlimited)."
+    },
+    {
+      "id": "connector.refresh",
+      "title": "Connector credential refresh",
+      "family": "connector",
+      "summary": "POST /api/v1/connectors/refresh re-reads connector credentials without a restart, per tenant or per connector.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/connector_refresh_api.go"
+      ],
+      "owner": "platform/agent/connector_refresh_api_test.go",
+      "routes": [
+        "/api/v1/connectors/refresh",
+        "/api/v1/connectors/cache"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "health_absent_reason": "An operational control on a surface already reachable; no client branches on it.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "connector.registry",
+      "title": "Connector registry and lifecycle",
+      "family": "connector",
+      "summary": "CRUD over /api/v1/connectors with health, install and uninstall.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/proxy.go",
+        "platform/connectors/registry/registry.go"
+      ],
+      "owner": "platform/agent/connector_routes_tenant_isolation_test.go",
+      "routes": [
+        "/api/v1/connectors"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "CustomPolicyConnectors"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "MCP Connectors (v1.0)",
+        "Connector Routing"
+      ],
+      "health_absent_reason": "A client lists connectors rather than feature-detecting the list.",
+      "score": {
+        "basis": "CHOSEN",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full",
+        "reason": "Nine connectors are Community and seven are Enterprise-only by the matrix; the registry itself is open to every edition."
+      }
+    },
+    {
+      "id": "cost.budgets",
+      "title": "Budget management",
+      "family": "cost",
+      "summary": "CRUD over /api/v1/budgets with status, alerts and the check route.",
+      "minimum_edition": "enterprise",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/cost/handlers.go"
+      ],
+      "owner": "platform/orchestrator/cost/handlers_test.go",
+      "routes": [
+        "/api/v1/budgets",
+        "/api/v1/cost"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "Cost Controls & Budget Management"
+      ],
+      "health_absent_reason": "Advertised as cost_controls.",
+      "score": {
+        "basis": "CHOSEN",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full",
+        "reason": "Scored from the matrix rather than from the tree. The disagreement is recorded, not resolved: resolving it either way would be an entitlement change."
+      },
+      "matrix_disagreement": "matrix_stricter_than_tree",
+      "notes": "The matrix and the tree disagree about this row; the class is on matrix_disagreement. The narrative behind this row is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes; matrix_disagreement carries its class."
+    },
+    {
+      "id": "cost.controls",
+      "title": "Cost controls capability",
+      "family": "cost",
+      "summary": "The umbrella capability an SDK feature-detects before reading cost fields or calling a budget route.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/cost/service.go"
+      ],
+      "owner": "platform/orchestrator/cost/handlers_test.go",
+      "matrix": [
+        "Cost Controls & Budget Management"
+      ],
+      "health": {
+        "name": "cost_controls",
+        "since": "4.4.0",
+        "description": "Budget and cost management",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 9
+      },
+      "score": {
+        "basis": "CHOSEN",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full",
+        "reason": "Scored as the union of cost.pricing (community), cost.usage (partial) and cost.budgets (enterprise), which is partial for the lower two."
+      },
+      "notes": "Scored as the union of its three parts and the caps are theirs: cost.pricing is uncapped, cost.usage is capped by what the matrix marks Enterprise-only (breakdown, records) and cost.budgets by the same, while MaxCostEstimatesPerDay (10 / 100 / unlimited) caps the estimate leg."
+    },
+    {
+      "id": "cost.pricing",
+      "title": "LLM pricing reference",
+      "family": "cost",
+      "summary": "GET /api/v1/pricing returns the model pricing table cost estimates are computed from.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/cost/pricing.go"
+      ],
+      "owner": "platform/orchestrator/cost/handlers_test.go",
+      "routes": [
+        "/api/v1/pricing"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "matrix": [
+        "Cost Controls & Budget Management"
+      ],
+      "health_absent_reason": "Advertised as cost_controls.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "cost.usage",
+      "title": "Usage summary and analytics",
+      "family": "cost",
+      "summary": "The usage summary, and the analytics views over it.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/cost/handlers.go"
+      ],
+      "owner": "platform/orchestrator/cost/handlers_test.go",
+      "routes": [
+        "/api/v1/usage"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "matrix": [
+        "Cost Controls & Budget Management"
+      ],
+      "health_absent_reason": "Advertised as cost_controls.",
+      "score": {
+        "basis": "CHOSEN",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full",
+        "reason": "Partial rather than absent: one route is uncapped in every edition and the others are not."
+      },
+      "matrix_disagreement": "matrix_stricter_than_tree",
+      "notes": "The class of the disagreement is on matrix_disagreement. The narrative behind this row is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes; matrix_disagreement carries its class."
+    },
+    {
+      "id": "decision.pdp",
+      "title": "Deterministic policy decision point",
+      "family": "decision",
+      "summary": "The edition-neutral evaluator in platform/decision: one semantics for every edition, with its own Go module so it cannot import an entitlement.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/decision"
+      ],
+      "owner": "platform/decision/registry/conformance_registry_test.go",
+      "portal": "Policies page, typed authoring section (ee/platform/customer-portal-ui/components/policies/TypedAuthoringSection.tsx), behind identity_org_settings.typed_authoring_enabled",
+      "health_absent_reason": "An internal engine reached only through the routes already advertised (decide, the MCP checks, AuthZEN).",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "ADR-066 conformance item 11: platform/decision is a separate Go module and imports nothing from the rest of the platform, which is what makes 'the PDP cannot read an entitlement' checkable at the source level."
+    },
+    {
+      "id": "decision.proof",
+      "title": "Decision proof issuance and verification",
+      "family": "decision",
+      "summary": "The signed permit that binds a decision to the execution it authorises, with expiry, audience binding and replay protection.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/shared/requirements/proof"
+      ],
+      "owner": "platform/shared/requirements/proof/custody_test.go",
+      "migrations": [
+        "enterprise"
+      ],
+      "health_absent_reason": "#3618 names the proof execution record as a candidate. It carries no route on either /health plane and adds no field to a decide response — measured: zero json tags naming proof, reservation, realm or shadow across platform/decision/contract. Recorded as a decision, per #3618 item 2.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "adr_target_differs_from_tree",
+      "notes": "This row states TODAY, which its own build_tag and sync record. It disagrees with ADR-066's target classification; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes."
+    },
+    {
+      "id": "decision.proof_custody",
+      "title": "Decision-proof key custody service",
+      "family": "decision",
+      "summary": "The separate custody service that holds proof signing keys, distributes the keyset to PEPs and reports on expected PEPs.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "enterprise",
+      "sync": "excluded",
+      "implementation": [
+        "ee/platform/proofcustody"
+      ],
+      "owner": "platform/shared/requirements/proof/distribution_test.go",
+      "migrations": [
+        "enterprise"
+      ],
+      "health_absent_reason": "#3618 names decision-proof key custody as a candidate. Its routes (/api/v1/internal/decision-proof/*, /api/v1/admin/decision-proof/*) are served by ee/platform/proofcustody and the customer portal, NOT by the agent or orchestrator, so they are outside both /health planes. Recorded as a decision, per #3618 item 2.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "decision.reservations",
+      "title": "Budget reservation service",
+      "family": "decision",
+      "summary": "Durable reservations that admit an execution against a budget before it runs and release the hold afterwards.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/shared/requirements/reservation"
+      ],
+      "owner": "platform/shared/requirements/reservation/reservation_test.go",
+      "migrations": [
+        "enterprise"
+      ],
+      "health_absent_reason": "#3618 names durable reservations as a candidate. No route, no response field, no header: it is a store the coordinator reads. Recorded as a decision, per #3618 item 2.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "decision.shadow",
+      "title": "Per-organization decision shadow",
+      "family": "decision",
+      "summary": "The shadow-diff observer that runs the ADR-065 evaluator beside the legacy one and records disagreement, narrowed per organization and per plane.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/planeshadow",
+        "platform/agent/decision_shadow.go"
+      ],
+      "owner": "platform/shared/planeshadow/observer_test.go",
+      "health_absent_reason": "#3618 names per-plane decision shadow as a candidate. It registers no route and adds no response field: it emits Prometheus series and audit rows. Under the served list's own rule an exported metric series does NOT get an entry, and a client cannot act on it. Recorded as a decision, per #3618 item 2.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "adr_target_differs_from_tree",
+      "notes": "This row and ADR-066's table disagree; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes. The structural facts are the row itself: no build constraint, sync mirrored, minimum_edition community."
+    },
+    {
+      "id": "execution.replay",
+      "title": "Execution recording and replay",
+      "family": "execution",
+      "summary": "GET /api/v1/executions with its steps, timeline and export routes replays a recorded execution.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/replay/handlers.go"
+      ],
+      "owner": "platform/orchestrator/replay/handlers_test.go",
+      "routes": [
+        "/api/v1/executions"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxExecutionHistory"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "Multi-Agent Planning (MAP)"
+      ],
+      "health": {
+        "name": "execution_replay",
+        "since": "4.3.0",
+        "description": "Execution recording and replay",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 8
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "History depth 50 / 500 / unlimited (MaxExecutionHistory)."
+    },
+    {
+      "id": "execution.ui",
+      "title": "Execution browser UI",
+      "family": "execution",
+      "summary": "GET /ui/executions serves the built-in execution browser.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/ui/handler.go"
+      ],
+      "owner": "platform/orchestrator/ui/handler_test.go",
+      "routes": [
+        "/ui/executions"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "health_absent_reason": "A human-facing page, not a machine surface; nothing branches on its presence.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "execution.unified",
+      "title": "Unified execution view and stream",
+      "family": "execution",
+      "summary": "GET /api/v1/unified/executions collapses MAP plans and WCP workflows into one list, with an SSE stream and a cancel route.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/unified_execution_handler.go"
+      ],
+      "owner": "platform/orchestrator/unified_execution_handler_test.go",
+      "routes": [
+        "/api/v1/unified"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxSSEConnections"
+      ],
+      "matrix": [
+        "Real-time Streaming (SSE)"
+      ],
+      "health_absent_reason": "Part of execution_replay and workflow_control as a client sees it; the unified view is a convenience over both.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "5 concurrent SSE connections per tenant on Community, 25 on Evaluation, unlimited on Enterprise."
+    },
+    {
+      "id": "governance.audit_llm_call",
+      "title": "Audit logging for proxied calls",
+      "family": "governance",
+      "summary": "Every governed call writes a canonical audit row; this is the capability an integrator checks before relying on the audit trail.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/gateway_handlers.go"
+      ],
+      "owner": "platform/agent/audit_coverage_test.go",
+      "matrix": [
+        "Core Platform"
+      ],
+      "health": {
+        "name": "audit_llm_call",
+        "since": "1.0.0",
+        "description": "Audit logging for LLM calls",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 2
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.authzen",
+      "title": "AuthZEN evaluation endpoint",
+      "family": "governance",
+      "summary": "POST /api/v1/access/evaluation is the AuthZEN-native adapter over the same evaluation /api/v1/decide serves, registered in every edition at every tier with no flag and no kill switch.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/authzen_handler.go"
+      ],
+      "owner": "platform/agent/authzen_handler_test.go",
+      "routes": [
+        "/api/v1/access/evaluation"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "health": {
+        "name": "authzen_evaluation",
+        "since": "10.3.0",
+        "description": "AuthZEN-native authorization on POST /api/v1/access/evaluation. A PEP sends the AuthZEN envelope in either shape (a singular `evaluation` or a plural `evaluations`, exactly one member, enforced by the decoder, the JSON Schema and every generated client alike) and gets back ONE decision: the entries of a plural envelope are preconditions of a single operation, so they meet, and one denied entry denies the operation. Profile negotiation is the X-Axonflow-AuthZEN-Profile request header. No header (or an empty one) means the caller asked for AuthZEN 1.0 and gets exactly that, the bare boolean - with ONE exception, which a PEP feature-detecting this surface must handle: an otherwise-ALLOWED decision carrying a MANDATORY obligation answers such a caller with the boolean false, because the obligation rides in the context it did not negotiate and it must not be handed a permission whose precondition it will never see (ADR-065 invariant 8; the denial is counted under outcome=obligation_withheld and audited as blocked with policy_details.authzen_obligation_withheld). An allow carrying no mandatory obligation is still true for a bare caller, and the denied, challenged and errored paths are unchanged. `axonflow-authzen-profile-2026-08-29` additionally returns the AxonFlow rendering in the response context: four-valued operational state, obligations, safe reason. What it does NOT carry is an approval challenge, and that is stated rather than left to be discovered: this route is an ADAPTER over POST /api/v1/decide, whose response names no eligible approver set, no quorum and no challenge expiry, so there is no requirement to render and inventing one would hand an enforcement point a fabricated approval policy. A decision awaiting approval is reported as state CHALLENGE with decision:false, which a PEP acts on by holding rather than executing; the challenge itself is obtained from the HITL surfaces. Earlier text here promised the challenge on this surface and no response ever carried one (#3631). Any other non-empty profile is REFUSED, naming the profile this build emits, so a PEP negotiating a later profile against an older server can never read a bare allow as a successful negotiation and proceed past an obligation it never saw. Refusals raised before evaluation are typed and carry a JSON pointer to the offending member: malformed_envelope, incomplete_evaluation, unsupported_subject, unsupported_action, unsupported_resource, unevaluable_attribute, missing_evaluable_content, evaluation_unavailable. This route is an ADAPTER over the evaluation POST /api/v1/decide already serves, NOT the ADR-065 Policy Decision Point: the envelope is mapped to a DecideRequest and run through that same handler, so the two surfaces cannot drift, /api/v1/decide is unchanged and wire-stable, and at v11 the engine behind this route changes with no wire change. Registered unconditionally in every edition at every tier, with no flag and no kill switch; audit rows from this surface record plane `access_evaluation` so adoption is measurable separately from /api/v1/decide (ADR-065, #3611)",
+        "planes": [
+          "agent"
+        ],
+        "order": 27
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.decide",
+      "title": "Decision Mode decide endpoint",
+      "family": "governance",
+      "summary": "POST /api/v1/decide is the PDP surface every gateway adapter and PEP calls. It is registered unconditionally in both editions.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/decision_handler.go"
+      ],
+      "owner": "platform/agent/decision_handler_test.go",
+      "routes": [
+        "/api/v1/decide"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "matrix": [
+        "Gateway PEP Adapters (agentgateway / Envoy)"
+      ],
+      "health_absent_reason": "CENSUS GAP, recorded rather than fixed here. The platform's primary governance route has no /health capability NAME of its own: it is advertised only through the refinements built on it (decision_obligations, two_touch_redaction, seam_capability_decisioning). Adding a name is a wire addition and belongs to a release train, not to a census PR.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "health_gap": true
+    },
+    {
+      "id": "governance.decision_list",
+      "title": "Decision history and explanation",
+      "family": "governance",
+      "summary": "GET /api/v1/decisions and /api/v1/decisions/{id}/explain let an operator read back what was decided and why.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/proxy.go"
+      ],
+      "owner": "platform/orchestrator/unified_execution_handler_test.go",
+      "routes": [
+        "/api/v1/decisions"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "DecisionListWindowHours",
+        "DecisionListMaxPage"
+      ],
+      "health_absent_reason": "Reached through the same list SDKs discover from the OpenAPI document; no capability name was minted for it in the 8.x train and adding one now is a wire addition.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "Community 24h/5 per page, Evaluation 14d/100, Enterprise unbounded lookback and 1000 per page (tier_support.go DecisionList*)."
+    },
+    {
+      "id": "governance.decision_obligations",
+      "title": "Engine-fulfillable obligations",
+      "family": "governance",
+      "summary": "The decide response carries self-describing obligations a PEP can discharge through the engine instead of hand-rolling redaction.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/decision_handler.go"
+      ],
+      "owner": "platform/agent/decision_handler_test.go",
+      "docs": "docs/api/agent-api.yaml",
+      "health": {
+        "name": "decision_obligations",
+        "since": "8.6.0",
+        "description": "Decision Mode /api/v1/decide emits self-describing, engine-fulfillable redact_pii obligations carrying a fulfillment block (endpoint, method, phase, content_types) so a PEP discharges them via the engine instead of hand-rolling redaction (ADR-056/057)",
+        "planes": [
+          "agent"
+        ],
+        "order": 22
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.gateway_mode",
+      "title": "Gateway-mode pre-check and audit",
+      "family": "governance",
+      "summary": "POST /api/policy/pre-check and POST /api/audit/llm-call let a caller keep its own provider connection and use AxonFlow as a decision point.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/gateway_handlers.go"
+      ],
+      "owner": "platform/agent/gateway_handlers_test.go",
+      "routes": [
+        "/api/policy/pre-check",
+        "/api/audit/llm-call"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "matrix": [
+        "Core Platform"
+      ],
+      "health": {
+        "name": "gateway_mode",
+        "since": "3.0.0",
+        "description": "Gateway mode integration",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 4
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.mcp_check",
+      "title": "Standalone MCP policy check endpoints",
+      "family": "governance",
+      "summary": "POST /api/v1/mcp/check-input, /check-output and /evaluate-policies are the MCP-shaped decision seam.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/mcp_handler.go"
+      ],
+      "owner": "platform/agent/mcp_handler_test.go",
+      "routes": [
+        "/api/v1/mcp/check-input",
+        "/api/v1/mcp/check-output",
+        "/api/v1/mcp/evaluate-policies"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "matrix": [
+        "MCP Policy Enforcement (v3.2.0)"
+      ],
+      "health": {
+        "name": "mcp_check_endpoints",
+        "since": "4.7.0",
+        "description": "Standalone MCP policy check-input/check-output",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 12
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.mcp_server",
+      "title": "Hosted MCP server",
+      "family": "governance",
+      "summary": "POST /api/v1/mcp-server exposes AxonFlow itself as an MCP server, with the two OAuth discovery documents an MCP client fetches first.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/mcp_server_handler.go"
+      ],
+      "owner": "platform/agent/mcp_server_handler_test.go",
+      "routes": [
+        "/api/v1/mcp-server",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "license_gate": [
+        "MaxActiveCustomPolicies",
+        "MaxHITLApprovalsPerWeek"
+      ],
+      "health": {
+        "name": "v1_pro_mcp_tools",
+        "since": "7.8.0",
+        "description": "Five new MCP tools on /api/v1/mcp-server (axonflow_get_tenant_id, axonflow_request_approval, axonflow_create_tenant_policy, axonflow_get_cost_estimate, axonflow_list_pro_features) with tier-aware tools/list filtering and graduated FreeUsageLimit gates",
+        "planes": [
+          "agent"
+        ],
+        "order": 20
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "tools/list is tier-filtered: the Free SaaS Plugin tier sees a subset, which is why community scores limited rather than full."
+    },
+    {
+      "id": "governance.openai_compatible",
+      "title": "OpenAI-compatible chat completions",
+      "family": "governance",
+      "summary": "POST /v1/chat/completions accepts the OpenAI wire shape so an existing client can be pointed at AxonFlow without a code change.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/openai_compat_handler.go"
+      ],
+      "owner": "platform/agent/openai_compat_handler_test.go",
+      "routes": [
+        "/v1/chat/completions"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "health_absent_reason": "CENSUS GAP. A public wire surface with no capability name, so an SDK cannot feature-detect it. Same class as governance.decide and routed with it rather than fixed in a census PR.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "health_gap": true
+    },
+    {
+      "id": "governance.pep_capability_handshake",
+      "title": "PEP capability handshake",
+      "family": "governance",
+      "summary": "An enforcement point declares, per governed request, the obligation types and schema versions it can DISCHARGE, in the X-Axonflow-PEP-Handshake header; a MANDATORY obligation the declaration does not cover is refused instead of emitted.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/pep_handshake.go",
+        "platform/agent/pep_handshake_enforce_community.go",
+        "platform/agent/pep_handshake_enforce_enterprise.go",
+        "platform/agent/pep_handshake_mcp.go",
+        "platform/agent/pep_handshake_mcp_enforce_community.go",
+        "platform/agent/pep_handshake_mcp_enforce_enterprise.go",
+        "platform/agent/pep_handshake_precheck.go",
+        "platform/agent/pep_handshake_precheck_enforce_community.go",
+        "platform/agent/pep_handshake_precheck_enforce_enterprise.go",
+        "platform/shared/requirements/obligation/capability.go"
+      ],
+      "owner": "platform/agent/pep_handshake_test.go",
+      "planes": [
+        "agent"
+      ],
+      "health": {
+        "name": "pep_capability_handshake",
+        "since": "10.4.0",
+        "description": "Declare, on every governed call, the obligation types and schema versions this enforcement point can DISCHARGE, as a base64url-encoded compact JSON document in the X-Axonflow-PEP-Handshake request header. The header is OPTIONAL and ABSENT IS NOT EMPTY: no header is the legacy caller and is byte-for-byte today's behaviour, while a header present with an empty value is malformed and refuses. Read on three planes and one vocabulary serves all three, so one declaration satisfies them all: POST /api/v1/decide (and the AuthZEN adapter over it), the MCP plane (/api/v1/mcp/check-input, /api/v1/mcp/check-output and the MCP server's check tools), and the gateway pre-check plane (POST /api/policy/pre-check). WHAT A DECLARATION MEANS: discharging field_redact@1 is substituting the platform's engine-masked content for the original, which ADR-056 makes the only sanctioned discharge because a client may not redact for itself - so a client that performs no substitution declares the EMPTY SET and is denied rather than allowed on the strength of a discharge nobody performs. A mandatory obligation outside the declared set is refused with reason pep_capability_unsupported, and the refusal withholds the instruction as well as the content. The three planes reach that refusal differently and a PEP integrating against one must not assume the others: decide EMITS an obligation naming a fulfillment endpoint, the MCP plane IS that endpoint and returns masked text inline, and pre-check issues an INSTRUCTION (requires_redaction) which is cleared on a refusal. Structural refusals are their own reasons and are not capability refusals: pep_handshake_malformed (unreadable document), pep_handshake_identity_unbindable (the authenticated channel carries no client identity, so the declaration cannot be bound to a name the server owns), pep_handshake_edition_unresolvable. A capability claimed beyond what this deployment's edition can hold is DROPPED rather than refused and the request proceeds on the narrowed set. Every outcome is counted, absence included, because a window with no malformed handshakes is equally well explained by a correct fleet and by a fleet presenting nothing. EDITION SPLIT: presenting, validating, binding, narrowing and counting a declaration happen in every edition; turning an uncoverable mandatory obligation into a deny the platform can see, audit and count is Enterprise, and a Community build hands the obligation over exactly as it does today, where the enforcement point fails closed at its own seam (ADR-065 invariant 8, ADR-066 decision 5)",
+        "planes": [
+          "agent"
+        ],
+        "order": 29
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "ADR-066 decision 5 split with BOTH halves operational, which is why the classification is community_core and not enterprise_protocol: platform/agent/pep_handshake.go and the whole read/validate/bind/narrow/count path compile into a Community build unconditionally, and what sits behind the tag is the DECIDING half - THREE files, one per plane (pep_handshake_enforce_enterprise.go, pep_handshake_mcp_enforce_enterprise.go, pep_handshake_precheck_enforce_enterprise.go), each with a !enterprise twin that returns the verdict untouched. (The design document calls the wire contract enterprise_protocol; in THIS registry's vocabulary that classification means source kept OUT of a Community build, which is the opposite of what ships, and the validator refuses the pairing. Same shape as license.validation.) IMPLEMENTATION LISTS ALL NINE FILES UNDER platform/agent, not just the decide plane's three: the edition-fact derivation walks exactly the paths listed here, and the backstop that catches a trimmed list is scoped to route-REGISTERING files - which this capability deliberately has none of, so a short list would be checked by nothing. The cap on the two lower editions is the DENY, and only the deny: the three community twins return the verdict untouched, so those builds emit the mandatory obligation anyway - today's behaviour, where the enforcement point fails closed at its own seam rather than forwarding ungoverned content. The structural refusals (pep_handshake_malformed, pep_handshake_identity_unbindable, pep_handshake_edition_unresolvable) and the over-advertisement narrowing DO fire in every edition; community mode is in fact the one deployment class where the over-advertising rule can fire at all. OWNER names the decide plane's test because the field takes one path. It is one of ELEVEN: pep_handshake_test.go, pep_handshake_mcp_test.go and pep_handshake_precheck_test.go for the three planes' shared halves; each plane's enforcement half under its own _enforce_{community,enterprise}_test.go pair, six more; plus pep_handshake_authzen_test.go and pep_handshake_openapi_contract_test.go. Counted with `ls`, because an earlier revision of this sentence said seven and its own enumeration came to nine. No route of its own: the header is read on routes governance.decide, the MCP capabilities and the gateway pre-check already own, which is why this entry claims planes and not routes."
+    },
+    {
+      "id": "governance.proxy_request",
+      "title": "Proxy-mode LLM calls",
+      "family": "governance",
+      "summary": "POST /api/request is the original proxy seam: AxonFlow receives the prompt, enforces policy, calls the provider and audits the result.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/proxy.go"
+      ],
+      "owner": "platform/agent/proxy_test.go",
+      "routes": [
+        "/api/request",
+        "/api/clients"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "matrix": [
+        "Core Platform"
+      ],
+      "health": {
+        "name": "proxy_llm_call",
+        "since": "1.0.0",
+        "description": "Proxy mode LLM calls with policy enforcement",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 1
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.seam_capability",
+      "title": "Seam-capability-aware obligations",
+      "family": "governance",
+      "summary": "A PEP advertises what its seam can discharge and the engine emits only obligations that caller can fulfil, applying the org's fallback posture.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/decision_handler.go"
+      ],
+      "owner": "platform/agent/decision_handler_test.go",
+      "health": {
+        "name": "seam_capability_decisioning",
+        "since": "9.11.0",
+        "description": "Seam-capability-aware obligations: a PEP advertises what its seam can discharge via DecideRequest.fulfillment_capabilities (vocabulary: request_body_redaction, request_header_mutation) and POST /api/v1/decide emits only obligations that caller can fulfill. A request-body redaction suppressed on a non-capable seam (e.g. Envoy ext_authz, which is headers-only) applies the org's obligation-fallback posture — log (default: allow, no obligation, canonical audit row records the suppressed redaction + detected categories) or block (deny) — configurable per org on the obligation_fallback detection-posture category. The posture is resolved server-side from the org, never from the request; absent/empty capabilities means a legacy caller and reproduces pre-9.11.0 behavior exactly (all SDKs unaffected). Replaces the adapter-local allow→403 conversion so every outcome is an engine round-trip (ADR-056)",
+        "planes": [
+          "agent"
+        ],
+        "order": 25
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "governance.two_touch_redaction",
+      "title": "Request- and response-phase redaction",
+      "family": "governance",
+      "summary": "Both MCP check legs return engine-masked content, so a PEP never hand-rolls redaction on either.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/mcp_handler.go"
+      ],
+      "owner": "platform/agent/mcp_handler_test.go",
+      "health": {
+        "name": "two_touch_redaction",
+        "since": "8.6.0",
+        "description": "Request-phase (POST /api/v1/mcp/check-input → redacted_statement + redaction_evaluated) and response-phase (POST /api/v1/mcp/check-output → redacted_data) PII redaction both return engine-masked content, so PEPs never hand-roll redaction on either leg",
+        "planes": [
+          "agent"
+        ],
+        "order": 23
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "hitl.map_approvals",
+      "title": "MAP pending-approval queue",
+      "family": "hitl",
+      "summary": "GET /api/v1/plans/approvals/pending and the per-step approve and reject routes, the MAP-plane twin of the WCP queue (#1680).",
+      "minimum_edition": "enterprise",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/run.go"
+      ],
+      "owner": "platform/orchestrator/plan_handlers_test.go",
+      "routes": [
+        "/api/v1/plans/approvals",
+        "/api/v1/plans/{id}/steps"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "license_gate": [
+        "HITLApprovalEnabled"
+      ],
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health_absent_reason": "Part of the same unadvertised HITL surface as hitl.queue.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "health_gap": true,
+      "notes": "RECONCILIATION: same shape as hitl.wcp_approvals — untagged source, runtime gate on HITLApprovalEnabled."
+    },
+    {
+      "id": "hitl.queue",
+      "title": "Human-in-the-loop approval queue",
+      "family": "hitl",
+      "summary": "GET/POST /api/v1/hitl/queue and its approve, reject, override, history, stats, status and expire routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/hitl/handler.go",
+        "platform/agent/hitl/hitl_community.go"
+      ],
+      "owner": "platform/agent/hitl/hitl_community_test.go",
+      "routes": [
+        "/api/v1/hitl"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "license_gate": [
+        "HITLApprovalEnabled",
+        "MaxPendingApprovals",
+        "HITLExpiryHours"
+      ],
+      "migrations": [
+        "core",
+        "enterprise"
+      ],
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health_absent_reason": "CENSUS GAP with a live consequence: the HITL queue has no capability name, so an SDK cannot feature-detect the surface whose entitlement moved to Enterprise-only on 2026-08-26. Recorded and routed; adding a name is a wire addition.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "health_gap": true,
+      "notes": "platform/agent/hitl/handler.go is //go:build enterprise and hitl_community.go is the !enterprise stub whose RegisterRoutes registers nothing. HITLApprovalEnabled is false on both CommunityLimits and EvaluationLimits since the 2026-08-26 operator decision, and true only on EnterpriseLimits."
+    },
+    {
+      "id": "hitl.response_parity",
+      "title": "WCP and MAP approval response parity",
+      "family": "hitl",
+      "summary": "Approve and reject responses on both planes carry the same retry_context, approver metadata and policies_matched (ADR-046).",
+      "minimum_edition": "enterprise",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/unified_execution_handler.go"
+      ],
+      "owner": "platform/orchestrator/approval_enqueue_spec_lockstep_test.go",
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health": {
+        "name": "hitl_response_parity",
+        "since": "7.4.0",
+        "description": "WCP + MAP approve/reject responses share retry_context, approver metadata, policies_matched (ADR-046)",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 15
+      },
+      "score": {
+        "basis": "CHOSEN",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full",
+        "reason": "Parity is a property of the approval responses, which only an Enterprise deployment can produce, so it inherits hitl.queue's availability."
+      },
+      "notes": "RECONCILIATION: the response-shaping code carries no build constraint and publishes to the mirror, so its SOURCE classification is community_core. It is unreachable in a Community build because no approval can be created there, which is what minimum_edition records. ADR-066's table classifies approval authority as enterprise_implementation; that is the target."
+    },
+    {
+      "id": "hitl.wcp_approvals",
+      "title": "WCP pending-approval queue",
+      "family": "hitl",
+      "summary": "GET /api/v1/workflows/approvals/pending and the per-step approve and reject routes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/unified_execution_handler.go"
+      ],
+      "owner": "platform/orchestrator/hitl_wcp_community_test.go",
+      "routes": [
+        "/api/v1/workflows/approvals"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "license_gate": [
+        "HITLApprovalEnabled"
+      ],
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health_absent_reason": "Part of the same unadvertised HITL surface as hitl.queue.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "health_gap": true,
+      "notes": "Evaluation is RESOLVE-ONLY on the matrix: existing entries can be drained but no new ones are created, so no Evaluation deployment can reach the state these routes resolve. RECONCILIATION: the handler carries no build constraint and reaches the mirror; the gate is HITLApprovalEnabled, false on both CommunityLimits and EvaluationLimits."
+    },
+    {
+      "id": "identity.approval_authority",
+      "title": "Approval authority and separation of duties",
+      "family": "identity",
+      "summary": "Actor-chain self-exclusion and quorum reachability for approvals.",
+      "minimum_edition": "enterprise",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/identity/approver_realm.go",
+        "platform/shared/identity/approver_quorum.go"
+      ],
+      "owner": "platform/shared/identity/approver_realm_test.go",
+      "health_absent_reason": "No route: the approval engine consumes it in-process.",
+      "score": {
+        "basis": "UNSCORABLE",
+        "reason": "UNSCORABLE for the same reason as identity.realms: ADR-066 records that these two files have no live call site, and a capability nothing calls cannot be said to be available to one edition and not another."
+      },
+      "matrix_disagreement": "adr_target_differs_from_tree",
+      "notes": "RECONCILIATION MISMATCH, and ADR-066 predicted it: approver_realm.go and approver_quorum.go have no build constraint, so they publish to the mirror. Nothing Enterprise is reachable through them (their only consumer is enterprise-tagged and they have no live call site), but neither enterprise_implementation nor enterprise_protocol describes them as written. #3590 must rule."
+    },
+    {
+      "id": "identity.caep",
+      "title": "CAEP event ingestion",
+      "family": "identity",
+      "summary": "POST /api/v1/identity/caep/events accepts Shared Signals CAEP events from an external identity provider.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/identity_caep.go",
+        "platform/agent/identity_caep_community.go"
+      ],
+      "owner": "platform/agent/identity_caep_test.go",
+      "routes": [
+        "/api/v1/identity/caep"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "migrations": [
+        "enterprise"
+      ],
+      "health_absent_reason": "CENSUS GAP: an INBOUND route an external IdP must discover, with no capability name. It is also enterprise-only, so adding a name to the edition-blind /health list would repeat the finding this census records. Routed to #3590 for the edition-awareness decision rather than fixed here.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "health_gap": true
+    },
+    {
+      "id": "identity.enforce_precondition",
+      "title": "Identity enforcement precondition",
+      "family": "identity",
+      "summary": "GET /api/v1/identity/internal/enforce-precondition reports whether the deployment is ready to move the identity compat mode to enforce.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/identity_enforce_precondition.go",
+        "platform/agent/identity_enforce_precondition_community.go"
+      ],
+      "owner": "platform/agent/identity_enforce_precondition_test.go",
+      "routes": [
+        "/api/v1/identity/internal"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "health_absent_reason": "An internal operator control, named `internal` in its own path. Advertising it would invite a client to depend on a route the rollout removes.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "identity.realms",
+      "title": "Trust realms and approver identity",
+      "family": "identity",
+      "summary": "The realm registry, realm codec and realm store that carry an approver's trust realm across processes.",
+      "minimum_edition": "enterprise",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/identity/realm_store.go",
+        "platform/shared/identity/realm_registry_test.go"
+      ],
+      "owner": "platform/shared/identity/realm_store_shape_test.go",
+      "migrations": [
+        "enterprise"
+      ],
+      "health_absent_reason": "#3618 names trust-realm persistence as a candidate. It has NO route, no header contract, no obligation type and no discovery field on either /health plane: it is a store the approval engine reads. Under the rule the served list already documents, machinery with no client-visible surface gets no entry. Recorded as a decision, per #3618 item 2.",
+      "score": {
+        "basis": "UNSCORABLE",
+        "reason": "UNSCORABLE, and not for want of trying. realm_store.go carries no build constraint, its table is migrations/core/169 so every edition gets it, and a whole-tree search for a caller returns the file itself and nothing else. 'Available' has no operational meaning for a store nothing writes to, and scoring it either way would move the derived bands on a capability no deployment can exercise."
+      },
+      "notes": "MEASURED: `grep -rln 'RealmStore|NewRealmStore' --include=*.go --exclude=*_test.go platform ee` returns realm_store.go alone. ADR-066's table has no row for realm persistence; its approval row is the closest and it classifies the neighbouring files the same way this row does."
+    },
+    {
+      "id": "license.keygen",
+      "title": "Licence key generation",
+      "family": "license",
+      "summary": "Minting a signed licence key for a customer deployment.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "enterprise",
+      "sync": "excluded",
+      "implementation": [
+        "platform/agent/license/keygen.go"
+      ],
+      "owner": "platform/agent/license/keygen_test.go",
+      "matrix": [
+        "Licensing & Metering"
+      ],
+      "health_absent_reason": "An internal commercial operation with no platform route.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "The community build ships a stub that returns 'license generation is not available in Community builds'."
+    },
+    {
+      "id": "license.node_enforcement",
+      "title": "Node capacity enforcement",
+      "family": "license",
+      "summary": "Counting deployed nodes against the licence's capacity allowance.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/node_enforcement"
+      ],
+      "owner": "platform/agent/node_enforcement/enforcement_community_test.go",
+      "matrix": [
+        "Licensing & Metering"
+      ],
+      "health_absent_reason": "An entitlement control with no client surface.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "license.validation",
+      "title": "Licence key validation",
+      "family": "license",
+      "summary": "The signed V2/V3 licence key, its tier, expiry, deployment binding and the limits every gate reads.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/license/tier.go",
+        "platform/agent/license/license.go",
+        "platform/agent/license/tier_support.go",
+        "platform/agent/license/validation.go"
+      ],
+      "owner": "platform/agent/license/validation_test.go",
+      "matrix": [
+        "Licensing & Metering"
+      ],
+      "health_absent_reason": "A deployment property, already reported as the /health `tier` member. A capability name would duplicate it.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "ADR-029 build-tag replacement with BOTH halves operational: platform/agent/license/tier.go is the !enterprise implementation and tier_support.go the enterprise one, and the community half carries the full three-tier limit tables and Ed25519 verification. That is why the classification is community_core and not enterprise_protocol: the mirror receives a working validator, not a stub. Scored full in every edition because every edition RESOLVES a tier — Community resolves to TierCommunity with no key at all. Key GENERATION is a separate capability (license.keygen) and its community half returns an error."
+    },
+    {
+      "id": "llm.providers",
+      "title": "LLM provider registry",
+      "family": "llm",
+      "summary": "CRUD over /api/v1/llm-providers with health, test, routing and status, plus the /api/v1/llm-provider-types catalogue.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/llm_provider_api_handlers.go"
+      ],
+      "owner": "platform/orchestrator/llm_provider_api_handlers_test.go",
+      "routes": [
+        "/api/v1/llm-providers",
+        "/api/v1/llm-provider-types",
+        "/api/v1/providers"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxLLMProviders"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "LLM Providers"
+      ],
+      "health_absent_reason": "A client lists providers rather than feature-detecting the list.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "2 / 3 / unlimited providers. Bedrock and Ollama are Enterprise-only on the matrix; platform/orchestrator/llmadapters carries enterprise-tagged adapters, which is the mechanism."
+    },
+    {
+      "id": "map.agents",
+      "title": "Agent registry",
+      "family": "map",
+      "summary": "GET /api/v1/agents and the validate route are open to every edition; create, update, delete, activate and version history are Enterprise.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/orchestrator/agents_api_handler.go",
+        "platform/orchestrator/ee/agents"
+      ],
+      "owner": "platform/orchestrator/agents_api_handler_test.go",
+      "routes": [
+        "/api/v1/agents"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "migrations": [
+        "core",
+        "enterprise"
+      ],
+      "matrix": [
+        "Multi-Agent Planning (MAP)"
+      ],
+      "health_absent_reason": "The agent registry is part of multi_agent_planning as a client sees it; MAP is what an SDK feature-detects.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "platform/orchestrator/ee/agents/handler.go carries the write half under //go:build enterprise, so a Community build serves the read routes only. Measured from the build constraint."
+    },
+    {
+      "id": "map.plan_cost",
+      "title": "Plan cost estimation",
+      "family": "map",
+      "summary": "POST /api/v1/plans/estimate and GET /api/v1/plans/{id}/cost return the estimated and actual cost of a plan.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/cost/handlers.go"
+      ],
+      "owner": "platform/orchestrator/cost/handlers_test.go",
+      "routes": [
+        "/api/v1/plans/estimate",
+        "/api/v1/plans/{id}/cost"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxCostEstimatesPerDay"
+      ],
+      "matrix": [
+        "Cost Controls & Budget Management"
+      ],
+      "health_absent_reason": "Advertised as cost_controls, which is the capability a client branches on before reading a cost field.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "10 / 100 / unlimited estimates per day."
+    },
+    {
+      "id": "map.planning",
+      "title": "Multi-agent plan lifecycle",
+      "family": "map",
+      "summary": "POST /api/v1/plan, /plan/execute and the per-plan status, cancel, update, version and rollback routes.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/run.go"
+      ],
+      "owner": "platform/orchestrator/plan_handlers_test.go",
+      "routes": [
+        "/api/v1/plan",
+        "/api/v1/plans"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxPlans",
+        "MaxVersionsPerPlan",
+        "MaxConcurrentExec"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "docs": "docs/api/orchestrator-api.yaml",
+      "matrix": [
+        "Multi-Agent Planning (MAP)",
+        "Connector Routing"
+      ],
+      "health": {
+        "name": "multi_agent_planning",
+        "since": "4.3.0",
+        "description": "MAP plan and execute lifecycle",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 6
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "Community 25 plans / 10 versions / 5 concurrent; Evaluation 100 / 25 / 25; Enterprise unlimited. Plan resume is Enterprise-only."
+    },
+    {
+      "id": "media.governance",
+      "title": "Multimodal media governance",
+      "family": "media",
+      "summary": "GET/POST /api/v1/media-governance with config, status and audit export.",
+      "minimum_edition": "evaluation",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/media_governance_handlers.go"
+      ],
+      "owner": "platform/orchestrator/media_governance_handlers_test.go",
+      "routes": [
+        "/api/v1/media-governance"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MediaGovernanceEnabled"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "health": {
+        "name": "media_governance",
+        "since": "4.4.0",
+        "description": "Multimodal image governance",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 10
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "MediaGovernanceEnabled is false on CommunityLimits and true from Evaluation up — one of the few gates that is a boolean rather than a cap. ADVERTISED ON /health IN EVERY EDITION, including builds where the gate is false; see the census's edition-blind /health finding."
+    },
+    {
+      "id": "observability.client_version",
+      "title": "Per-client version telemetry",
+      "family": "observability",
+      "summary": "Validated X-Axonflow-Client id and version pairs are recorded into the axonflow_client_version_requests_total counter.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "enterprise",
+      "sync": "excluded",
+      "implementation": [
+        "platform/agent/client_version_telemetry.go"
+      ],
+      "owner": "platform/agent/client_version_telemetry_test.go",
+      "matrix": [
+        "Observability"
+      ],
+      "health": {
+        "name": "client_version_telemetry",
+        "since": "9.7.0",
+        "description": "Per-client version-distribution telemetry: validated X-Axonflow-Client client id + version pairs are recorded into the axonflow_client_version_requests_total counter on the decide and MCP check-output planes (Enterprise builds; Community builds no-op and register no series). Since 10.4.0 the counter also carries `deployment_mode` and `licensed`, which say what kind of deployment the fleet reading the counter is. BOTH ARE PROCESS PROPERTIES RESOLVED SERVER-SIDE, never read from a request — a label a caller could influence would let one client rewrite the population every other series is read against. `deployment_mode` is this binary's own DEPLOYMENT_MODE resolved through the canonical map (aliases folded; an unset variable reports `unset`, which is deliberately NOT `community`, and an unrecognised value reports `unknown`); `licensed` is `true` only once the licence validator has resolved a non-Community tier, so the boot window and an unlicensed enterprise build both report `false`. READ THE POPULATION BEFORE READING THE NUMBERS: the counter exists only on Enterprise builds, so `deployment_mode` here can never observe a Community BUILD and this metric structurally cannot answer \"how many Community installs exist\" — it answers \"which modes do our Enterprise-build deployments run as\". Telemetry-only — never consulted for auth or a verdict",
+        "planes": [
+          "agent"
+        ],
+        "order": 24
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "Enterprise builds only: the community build no-ops and registers no series. ADVERTISED ON /health IN EVERY EDITION, so a community deployment claims a counter it does not export."
+    },
+    {
+      "id": "observability.cowork_otel",
+      "title": "Cowork OTEL ingestion",
+      "family": "observability",
+      "summary": "POST /v1/logs and /v1/metrics accept OTLP from a cowork agent.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_implementation",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/cowork_otel_ingest.go",
+        "platform/agent/cowork_otel_ingest_community.go"
+      ],
+      "owner": "platform/agent/cowork_otel_ingest_community_test.go",
+      "routes": [
+        "/v1/logs",
+        "/v1/metrics"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "matrix": [
+        "Observability"
+      ],
+      "health_absent_reason": "An ingestion seam a collector is configured to reach, not one it discovers. Its community twin registers the paths and refuses them, so a client that probed /health would learn nothing useful.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "observability.identity_attribution",
+      "title": "Trust-gated identity attribution",
+      "family": "observability",
+      "summary": "X-User-Email, X-Session-Id and X-User-ID attribute audit rows on all four governance planes when the deployment opts in.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/identity_trust.go"
+      ],
+      "owner": "platform/agent/identity_attribution_planes_test.go",
+      "health": {
+        "name": "identity_header_attribution",
+        "since": "9.9.0",
+        "description": "Trust-gated per-user audit attribution: X-User-Email / X-Session-Id (and X-User-ID on the MCP-server plane) attribute audit_logs rows on all four governance planes (decide, MCP check-input, MCP check-output, MCP-server tools/call) when the deployment opts in via AXONFLOW_TRUST_IDENTITY_HEADERS=true (default off — untrusted headers are ignored and a detection warning is logged). Attribution-only — a forged header can never influence a verdict, authz decision, or tenant/org resolution; per-user features (ADR-044 session overrides, user-scoped dynamic policies) key on the trusted identity only under the gate",
+        "planes": [
+          "agent"
+        ],
+        "order": 26
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "Attribution only: a forged header can never influence a verdict, an authz decision or tenant resolution."
+    },
+    {
+      "id": "platform.dev_token",
+      "title": "Development token issuance",
+      "family": "platform",
+      "summary": "POST /api/v1/dev/token mints a short-lived local JWT for development against a non-production deployment.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/dev_token_handler.go"
+      ],
+      "owner": "platform/agent/dev_token_role_test.go",
+      "routes": [
+        "/api/v1/dev/token"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "health_absent_reason": "A development convenience, not a governed surface: advertising it on /health would invite a production client to depend on it.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "platform.health",
+      "title": "Health endpoint",
+      "family": "platform",
+      "summary": "GET /health on both planes: liveness plus the tier, version, edition, deployment mode, capability list and SDK/plugin compatibility maps.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/capability/health.go"
+      ],
+      "owner": "platform/agent/capabilities_test.go",
+      "routes": [
+        "/health"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "docs": "docs/api/agent-api.yaml",
+      "matrix": [
+        "Core Platform"
+      ],
+      "health": {
+        "name": "health_check",
+        "since": "1.0.0",
+        "description": "Basic health endpoint",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 0
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "platform.identity_discovery",
+      "title": "Build and deployment-mode discovery",
+      "family": "platform",
+      "summary": "The /health `edition` and `deployment_mode` members, which say which build of AxonFlow, configured which way, is answering.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/heartbeat/heartbeat.go"
+      ],
+      "owner": "platform/shared/heartbeat/vocabulary_pin_test.go",
+      "health": {
+        "name": "platform_identity_discovery",
+        "since": "10.4.0",
+        "description": "Two additive /health members beside `tier` and `version` that say WHICH BUILD of AxonFlow, configured WHICH WAY, is answering: `edition` (`community` | `enterprise`, from the binary's own build tag, so it is a fact about the compilation and not about the licence) and `deployment_mode` (this deployment's own DEPLOYMENT_MODE setting, resolved to its canonical spelling with aliases folded — `enterprise` reports as `in-vpc-enterprise`). Served identically on the agent (8080) and orchestrator (8081) planes from one implementation, so a client that probes whichever port it can reach gets the same answer. ABSENT IS NOT EMPTY: a member the platform cannot determine is OMITTED, never present with an empty value — `deployment_mode` is absent when DEPLOYMENT_MODE is unset, and that absence is a real observation (`the operator configured nothing`) which must not be read as the `community` default the SCHEMA selector applies, because the RUNTIME posture for an unset value is not community. A RELAYING CLIENT MUST MAP THIS `deployment_mode` ONTO THE TELEMETRY FIELD `platform_deployment_mode`, NOT ONTO THE FIELD OF THE SAME NAME ON A PING, which is the coarse topology (self_hosted | community_saas) the SDK derives from its own endpoint URL — the two are different dimensions and conflating them corrupts every existing deployment-mode dashboard. NEITHER MEMBER IS AN ENTITLEMENT FACT: whoever operates the endpoint controls both values completely, so they are adoption analytics only and must never gate a feature, an authorization decision or a billing decision (#3660, #3619 trust boundary)",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 28,
+        "description_overrides": {
+          "orchestrator": "Two additive /health members beside `tier` and `version` that say WHICH BUILD of AxonFlow, configured WHICH WAY, is answering: `edition` (`community` | `enterprise`, from the binary's own build tag, so it is a fact about the compilation and not about the licence) and `deployment_mode` (this deployment's own DEPLOYMENT_MODE setting, resolved to its canonical spelling with aliases folded — `enterprise` reports as `in-vpc-enterprise`). Served identically on the agent (8080) and orchestrator (8081) planes from one implementation (platform/shared/heartbeat.HealthIdentityMembers), so a client that probes whichever port it can reach gets the same answer - agent-vs-orchestrator /health drift is failure mode 1 in RUNBOOK_RELEASE_PREP.md and has happened in a real train, which is why this is one function rather than two literals. ABSENT IS NOT EMPTY: a member the platform cannot determine is OMITTED, never present with an empty value — `deployment_mode` is absent when DEPLOYMENT_MODE is unset, and that absence is a real observation (`the operator configured nothing`) which must not be read as the `community` default the SCHEMA selector applies, because the RUNTIME posture for an unset value is not community. A RELAYING CLIENT MUST MAP THIS `deployment_mode` ONTO THE TELEMETRY FIELD `platform_deployment_mode`, NOT ONTO THE FIELD OF THE SAME NAME ON A PING, which is the coarse topology (self_hosted | community_saas) the SDK derives from its own endpoint URL — the two are different dimensions and conflating them corrupts every existing deployment-mode dashboard. NEITHER MEMBER IS AN ENTITLEMENT FACT: whoever operates the endpoint controls both values completely, so they are adoption analytics only and must never gate a feature, an authorization decision or a billing decision (#3660, #3619 trust boundary)"
+        }
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "platform.metrics",
+      "title": "Prometheus metrics endpoints",
+      "family": "platform",
+      "summary": "GET /metrics, /prometheus and /api/v1/metrics expose the platform's Prometheus exposition on both planes.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/run.go",
+        "platform/orchestrator/run.go"
+      ],
+      "owner": "platform/agent/run_test.go",
+      "routes": [
+        "/metrics",
+        "/prometheus",
+        "/api/v1/metrics"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "matrix": [
+        "Observability"
+      ],
+      "health_absent_reason": "Not a capability a client branches on: a scraper discovers the endpoint from its own configuration, never from /health. Recorded as a decision so the next reader does not add it reflexively.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "platform.plugin_compatibility",
+      "title": "Plugin version compatibility floor",
+      "family": "platform",
+      "summary": "min_plugin_version and recommended_plugin_version per plugin id, the plugin-side mirror of the SDK compatibility gate.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/plugincompat"
+      ],
+      "owner": "platform/shared/plugincompat/plugincompat_test.go",
+      "health": {
+        "name": "plugin_compatibility",
+        "since": "7.5.0",
+        "description": "Health response advertises min_plugin_version + recommended_plugin_version per plugin id (mirrors sdk_compatibility)",
+        "planes": [
+          "agent"
+        ],
+        "order": 16
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "platform.sdk_compatibility",
+      "title": "SDK version compatibility floor",
+      "family": "platform",
+      "summary": "min_sdk_version and recommended_sdk_version per SDK on /health, so a client below the floor can warn rather than fail obscurely.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/sdkcompat/sdkcompat.go",
+        "platform/agent/capabilities.go",
+        "platform/orchestrator/capabilities.go"
+      ],
+      "owner": "platform/shared/sdkcompat/sdkcompat_test.go",
+      "matrix": [
+        "SDK Feature Coverage (v3.2.0+)"
+      ],
+      "health_absent_reason": "Advertised as the sdk_compatibility MEMBER of the /health body rather than as a capability NAME. Adding a name for it now would duplicate a member SDKs already read; recorded as a deliberate absence, not an omission.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "The matrix's SDK section carried a matrix_stale_citation until the v10.4.0 prep train: it cited 'platform/agent/capabilities.go RecommendedSDKVersion, lines 121-126' with the 9.1.x values, and by then neither the line numbers nor the values were right - the map had moved to platform/shared/sdkcompat in PR #3735 (closing issue #3712) and the two capabilities.go files hold no literal at all. The matrix now cites the package and the values with NO line number, because a file:line citation drifts with every edit to the file it names, so the disagreement is cured at its cause rather than re-recorded at new numbers."
+    },
+    {
+      "id": "platform.version_discovery",
+      "title": "Version and capability discovery",
+      "family": "platform",
+      "summary": "The /health payload carries the platform version and this capability list, which is how an SDK decides what it may call.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/shared/capability/registry.go",
+        "platform/shared/capability/health.go"
+      ],
+      "owner": "platform/agent/capabilities_test.go",
+      "docs": "docs/api/agent-api.yaml",
+      "health": {
+        "name": "version_discovery",
+        "since": "4.8.0",
+        "description": "Version and capability discovery",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 14
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "policy.catalog",
+      "title": "Policy catalogue, import and export",
+      "family": "policy",
+      "summary": "GET/POST /api/v1/policies with its conflict, import and export routes.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/policy_api_handlers.go"
+      ],
+      "owner": "platform/orchestrator/policy_api_handlers_test.go",
+      "routes": [
+        "/api/v1/policies"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "A CRUD surface over the policy sets already advertised as static_policies and dynamic_policies; a third name would tell a client nothing the first two do not.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "policy.overrides",
+      "title": "Policy overrides",
+      "family": "policy",
+      "summary": "Per-request and per-session policy overrides: /api/v1/overrides and the /api/v1/policy-overrides alias.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/static_policy_api_handlers.go"
+      ],
+      "owner": "platform/agent/static_policy_api_handlers_test.go",
+      "routes": [
+        "/api/v1/overrides",
+        "/api/v1/policy-overrides"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "health_absent_reason": "An operator control over policies already advertised; no client branches on its presence.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "policy.simulation",
+      "title": "Policy simulation and impact analysis",
+      "family": "policy",
+      "summary": "POST /api/v1/policies/simulate and /api/v1/policies/impact-report run a candidate policy against recorded traffic without enforcing it.",
+      "minimum_edition": "evaluation",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/policy_simulation_handler.go"
+      ],
+      "owner": "platform/orchestrator/policy_simulation_handler_test.go",
+      "routes": [
+        "/api/v1/policies/simulate",
+        "/api/v1/policies/impact-report"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "PolicySimulationEnabled",
+        "MaxSimulationsPerDay",
+        "MaxImpactReportInputs"
+      ],
+      "health_absent_reason": "CENSUS GAP: an Evaluation-tier surface with no capability name, so an Evaluation deployment cannot feature-detect the thing its licence unlocked. Routed rather than fixed here.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "health_gap": true,
+      "notes": "PolicySimulationEnabled is false on CommunityLimits and true from Evaluation up; MaxSimulationsPerDay 0 / 300 / unlimited."
+    },
+    {
+      "id": "policy.system",
+      "title": "System (static) policy CRUD",
+      "family": "policy",
+      "summary": "The deployment-wide policy set: /api/v1/system-policies with its /api/v1/static-policies legacy alias.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/static_policy_api_handlers.go"
+      ],
+      "owner": "platform/agent/static_policy_api_handlers_test.go",
+      "routes": [
+        "/api/v1/system-policies",
+        "/api/v1/static-policies",
+        "/api/v1/policies/test",
+        "/api/policies/test"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "docs": "docs/api/policy-api.yaml",
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health": {
+        "name": "static_policies",
+        "since": "2.0.0",
+        "description": "System policy CRUD",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 3
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "policy.templates",
+      "title": "Policy templates",
+      "family": "policy",
+      "summary": "GET /api/v1/templates and POST /api/v1/templates/{id}/apply install a starter or regulatory policy set.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/run.go"
+      ],
+      "owner": "platform/orchestrator/us_compliance_templates_apply_test.go",
+      "routes": [
+        "/api/v1/templates"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "license_gate": [
+        "TenantPolicies"
+      ],
+      "migrations": [
+        "core",
+        "industry"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "health_absent_reason": "Templates are data the policy surfaces already advertised consume; a client discovers them by listing, not by /health.",
+      "score": {
+        "basis": "CHOSEN",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full",
+        "reason": "Community and Evaluation reach the template routes, but applying an industry template lands policies that count against the tenant-policy cap, so the capability is real and bounded rather than absent."
+      }
+    },
+    {
+      "id": "policy.tenant",
+      "title": "Tenant (dynamic) policy CRUD",
+      "family": "policy",
+      "summary": "Per-tenant runtime policies: /api/v1/tenant-policies and the /api/v1/dynamic-policies alias, plus the per-policy test and version routes.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/dynamic_policy_handlers.go"
+      ],
+      "owner": "platform/orchestrator/dynamic_policy_handlers_test.go",
+      "routes": [
+        "/api/v1/tenant-policies",
+        "/api/v1/dynamic-policies",
+        "/api/v1/policies/dynamic"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "TenantPolicies",
+        "OrgPolicies"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "docs": "docs/api/policy-api.yaml",
+      "matrix": [
+        "Three-Tier Licensing Model"
+      ],
+      "health": {
+        "name": "dynamic_policies",
+        "since": "3.2.0",
+        "description": "Runtime dynamic policy engine",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 5
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "matrix_disagreement": "matrix_internally_inconsistent",
+      "notes": "Community 20 tenant / 0 org, Evaluation 50 / 5, Enterprise unlimited (tier_support.go TenantPolicies, OrgPolicies)."
+    },
+    {
+      "id": "saas.graduated_freemium",
+      "title": "Graduated freemium caps",
+      "family": "saas",
+      "summary": "The Free tier gets a taste of Pro — two active tenant policies and one HITL approval per rolling seven days — with a structured 403 on cap hit.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/auth_daily_limit.go"
+      ],
+      "owner": "platform/agent/auth_daily_limit_community_test.go",
+      "license_gate": [
+        "MaxActiveCustomPolicies",
+        "MaxHITLApprovalsPerWeek"
+      ],
+      "health": {
+        "name": "v1_pro_graduated_freemium",
+        "since": "7.8.0",
+        "description": "Free tier exposes a taste of Pro capabilities — 2 active custom tenant policies + 1 HITL approval per rolling 7d — with structured 403 envelope on cap-hit; Pro tier removes both caps (Community SaaS only)",
+        "planes": [
+          "agent"
+        ],
+        "order": 21
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "saas.plugin_license",
+      "title": "Plugin licence claim and validation",
+      "family": "saas",
+      "summary": "POST /api/v1/billing/stripe-webhook issues a Pro plugin licence and every request revalidates the X-License-Token that carries it.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_protocol",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/billing",
+        "platform/agent/billing_register.go",
+        "platform/agent/billing_register_community.go"
+      ],
+      "owner": "platform/agent/billing/register_test.go",
+      "routes": [
+        "/api/v1/billing"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "license_gate": [
+        "DailyEventQuota"
+      ],
+      "migrations": [
+        "community-saas"
+      ],
+      "health": {
+        "name": "plugin_claim_license",
+        "since": "7.7.0",
+        "description": "Stripe-driven Pro v1 plugin license issuance (POST /api/v1/billing/stripe-webhook) + per-request X-License-Token validation (Community SaaS only)",
+        "planes": [
+          "agent"
+        ],
+        "order": 18
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "The whole platform/agent/billing package is //go:build enterprise, and the agent-level community half (billing_register_community.go) is an empty RegisterBillingWebhook - it registers NOTHING. So a Community BUILD serves no webhook route at all. enterprise_protocol is the exact fit: the mirror receives the symbol as an empty stub, not the operational implementation. The hosted Community SaaS deployment runs an ENTERPRISE build, which is why the capability is real there, and why the EDITION and the SaaS TIER are different axes."
+    },
+    {
+      "id": "saas.portal_proxy",
+      "title": "Customer portal proxy surface",
+      "family": "saas",
+      "summary": "The agent proxies /api/v1/auth, /api/v1/portal, /api/v1/code-governance and /api/v1/git-providers to the customer portal.",
+      "minimum_edition": "enterprise",
+      "source_classification": "enterprise_protocol",
+      "build_tag": "split",
+      "sync": "stub",
+      "implementation": [
+        "platform/agent/proxy.go",
+        "ee/platform/customer-portal"
+      ],
+      "owner": "platform/agent/proxy_test.go",
+      "routes": [
+        "/api/v1/auth",
+        "/api/v1/portal",
+        "/api/v1/code-governance",
+        "/api/v1/git-providers"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "matrix": [
+        "Licensing & Metering"
+      ],
+      "health_absent_reason": "A proxy to a separate Enterprise service. Advertising it would tell a community client to call a portal that is not deployed.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full"
+      },
+      "notes": "enterprise_protocol is the exact fit: the mirror receives the proxy prefixes and not the portal behind them, which is ADR-066's 'an unavailable stub, but not the operational implementation'. THE PREFIXES ARE REGISTERED IN EVERY EDITION, so on a Community build these paths exist and answer with whatever an absent upstream produces."
+    },
+    {
+      "id": "saas.process",
+      "title": "Cowork process ingestion",
+      "family": "saas",
+      "summary": "POST /api/v1/process is the cowork ingest seam the agent proxies to the orchestrator.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/proxy.go"
+      ],
+      "owner": "platform/agent/proxy_test.go",
+      "routes": [
+        "/api/v1/process"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "health_absent_reason": "An ingest seam discovered from the OpenAPI document rather than from /health.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "saas.recovery",
+      "title": "Community SaaS credential recovery",
+      "family": "saas",
+      "summary": "POST /api/v1/recover and /recover/verify send and redeem an emailed magic link for a free-tier tenant.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/community_saas_recovery.go"
+      ],
+      "owner": "platform/agent/community_saas_recovery_test.go",
+      "routes": [
+        "/api/v1/recover"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "migrations": [
+        "community-saas"
+      ],
+      "health": {
+        "name": "community_saas_recovery",
+        "since": "7.7.0",
+        "description": "POST /api/v1/recover[/verify] free-tier credential recovery via emailed magic link (Community SaaS only)",
+        "planes": [
+          "agent"
+        ],
+        "order": 17
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      },
+      "notes": "Community SaaS deployments only. The routes register in every edition; the capability is meaningful only where AxonFlow operates the deployment."
+    },
+    {
+      "id": "saas.registration",
+      "title": "Community SaaS self-registration",
+      "family": "saas",
+      "summary": "POST /api/v1/register creates a free-tier tenant on the hosted deployment.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/community_saas_register.go"
+      ],
+      "owner": "platform/agent/community_saas_register_test.go",
+      "routes": [
+        "/api/v1/register"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "migrations": [
+        "community-saas"
+      ],
+      "health_absent_reason": "Meaningful only on the deployment AxonFlow operates; a self-hosted client has nothing to do with it.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "saas.tenant_deletion",
+      "title": "Tenant deletion request and confirmation",
+      "family": "saas",
+      "summary": "POST /api/v1/tenant/{id}/delete-request and /delete-confirm run the two-step tenant erasure flow.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/tenant_delete.go"
+      ],
+      "owner": "platform/agent/tenant_delete_test.go",
+      "routes": [
+        "/api/v1/tenant"
+      ],
+      "planes": [
+        "agent"
+      ],
+      "migrations": [
+        "community-saas"
+      ],
+      "health_absent_reason": "An account-lifecycle control on the hosted deployment; not a governance capability a client branches on.",
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "saas.upgrade_envelope",
+      "title": "Structured Pro upgrade envelope",
+      "family": "saas",
+      "summary": "Every Free-tier limit hit returns a structured envelope with a locked compare_url, buy_url and Retry-After.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/agent/auth_daily_limit.go"
+      ],
+      "owner": "platform/agent/auth_daily_limit_community_test.go",
+      "license_gate": [
+        "DailyEventQuota",
+        "MaxActiveCustomPolicies",
+        "MaxHITLApprovalsPerWeek"
+      ],
+      "health": {
+        "name": "v1_pro_upgrade_envelope",
+        "since": "7.8.0",
+        "description": "Structured V1 upgrade envelope on every Free-tier limit hit (429 daily_quota + 403 active_policies / hitl_approvals_window / feature_pro_only) with locked compare_url + buy_url + Retry-After header (Community SaaS only)",
+        "planes": [
+          "agent"
+        ],
+        "order": 19
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "wcp.checkpoints",
+      "title": "Workflow checkpoints and resume",
+      "family": "wcp",
+      "summary": "Reading a workflow's step-gate checkpoints, and resuming from one.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/unified_execution_handler.go"
+      ],
+      "owner": "platform/orchestrator/hitl_wcp_community_test.go",
+      "routes": [
+        "/api/v1/workflows/{id}/checkpoints"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health_absent_reason": "Part of workflow_control as a client sees it.",
+      "score": {
+        "basis": "CHOSEN",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full",
+        "reason": "Scored limited for Community and Evaluation because each has strictly less than the whole."
+      },
+      "matrix_disagreement": "matrix_stricter_than_tree",
+      "notes": "The class of the disagreement is on matrix_disagreement. The narrative behind this row is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes; matrix_disagreement carries its class."
+    },
+    {
+      "id": "wcp.step_metrics",
+      "title": "WCP step-complete metrics",
+      "family": "wcp",
+      "summary": "The step-complete leg records post-execution metrics for a governed workflow step.",
+      "minimum_edition": "community",
+      "source_classification": "community_core",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/unified_execution_handler.go"
+      ],
+      "owner": "platform/orchestrator/unified_execution_handler_test.go",
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health": {
+        "name": "wcp_step_metrics",
+        "since": "4.5.0",
+        "description": "WCP step-complete post-execution metrics",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 11
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "full",
+        "evaluation": "full",
+        "enterprise": "full"
+      }
+    },
+    {
+      "id": "wcp.workflows",
+      "title": "Workflow control plane lifecycle",
+      "family": "wcp",
+      "summary": "POST /api/v1/workflows and the execute, complete, fail, abort, resume and step routes that drive a governed workflow.",
+      "minimum_edition": "community",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/run.go"
+      ],
+      "owner": "platform/orchestrator/unified_execution_handler_test.go",
+      "routes": [
+        "/api/v1/workflows"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "license_gate": [
+        "MaxConcurrentExec",
+        "MaxSSEConnections"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "docs": "docs/api/orchestrator-api.yaml",
+      "matrix": [
+        "Workflow Control Plane (WCP)"
+      ],
+      "health": {
+        "name": "workflow_control",
+        "since": "4.3.0",
+        "description": "WCP workflow lifecycle management",
+        "planes": [
+          "agent",
+          "orchestrator"
+        ],
+        "order": 7
+      },
+      "score": {
+        "basis": "MEASURED",
+        "community": "limited",
+        "evaluation": "limited",
+        "enterprise": "full"
+      },
+      "notes": "The lifecycle is open to every edition; the APPROVAL half of it is not — see hitl.wcp_approvals."
+    },
+    {
+      "id": "webhook.subscriptions",
+      "title": "Webhook subscriptions and delivery",
+      "family": "webhook",
+      "summary": "CRUD over /api/v1/webhooks, with signed, retrying async delivery of lifecycle events.",
+      "minimum_edition": "enterprise",
+      "source_classification": "evaluation_preview",
+      "build_tag": "none",
+      "sync": "mirrored",
+      "implementation": [
+        "platform/orchestrator/run.go"
+      ],
+      "owner": "platform/orchestrator/unified_execution_handler_test.go",
+      "routes": [
+        "/api/v1/webhooks"
+      ],
+      "planes": [
+        "agent",
+        "orchestrator"
+      ],
+      "migrations": [
+        "core"
+      ],
+      "matrix": [
+        "Webhooks"
+      ],
+      "health_absent_reason": "CENSUS GAP: an Enterprise integration surface with no capability name.",
+      "score": {
+        "basis": "CHOSEN",
+        "community": "none",
+        "evaluation": "none",
+        "enterprise": "full",
+        "reason": "Scored from the matrix. The disagreement is recorded, not resolved."
+      },
+      "health_gap": true,
+      "matrix_disagreement": "matrix_stricter_than_tree",
+      "notes": "The class of the disagreement is on matrix_disagreement. The narrative behind this row is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes; matrix_disagreement carries its class."
+    }
+  ],
+  "matrix_sections_out_of_scope": [
+    {
+      "heading": "Overview",
+      "reason": "Prose framing the document; states no capability."
+    },
+    {
+      "heading": "Feature Matrix",
+      "reason": "A container heading over the per-area sections below it; every one of those is claimed or excluded in its own right."
+    },
+    {
+      "heading": "Design Principles",
+      "reason": "The reasoning behind where limits are drawn, not a statement about any capability."
+    },
+    {
+      "heading": "Community Numeric Limits",
+      "reason": "A second presentation of caps that the licence gates already carry and that TestTheMatrixLicensingTableAgreesWithTheExecutableLimits reconciles from the Three-Tier Licensing Model table. Two of its rows are themselves in the recorded disagreements: the matrix's own coverage-gap note records that its 'Policy version history' figure and its 'Policy versioning' row contradict each other."
+    },
+    {
+      "heading": "Connector SDK (v1.0)",
+      "reason": "The connector SDK is a separate distributable for third-party connector authors. It registers no route and applies no entitlement on either /health plane, so it is not a platform capability."
+    },
+    {
+      "heading": "Deployment",
+      "reason": "Infrastructure packaging - CloudFormation, ECS, multi-region, in-VPC. Real commercial differentiation, but it lives in infrastructure/ and in the deployment workflows, not in a capability either plane serves."
+    },
+    {
+      "heading": "Support",
+      "reason": "A commercial service. Nothing in this repository implements it."
+    },
+    {
+      "heading": "Decision Framework",
+      "reason": "A checklist for deciding Community versus Enterprise for a FUTURE feature; it classifies nothing that exists."
+    },
+    {
+      "heading": "Community Criteria",
+      "reason": "Half of the Decision Framework checklist."
+    },
+    {
+      "heading": "Enterprise Criteria",
+      "reason": "Half of the Decision Framework checklist."
+    },
+    {
+      "heading": "Related Documents",
+      "reason": "A link list."
+    },
+    {
+      "heading": "Change Log",
+      "reason": "The matrix's own revision history."
+    }
+  ],
+  "route_exemptions": [
+    {
+      "pattern": "platform/agent/static_policy_api_handlers.go:166 HandleFunc(<subrouter with an unresolved prefix>rt.suffix)",
+      "reason": "Two unknowns in one call, and round 8 made the second one visible. The suffixes live in a struct slice, so the argument is a field read the scanner does not follow; and the receiver is the RANGE VARIABLE of `for _, sub := range []*mux.Router{legacy, successor}`, which is not a proven shape either, so the prefix is reported rather than guessed. Both subrouters it ranges over ARE priced where they are declared (/api/v1/system-policies and its /api/v1/static-policies legacy alias) and policy.system claims both, so the URL space is covered even though this one call site is not."
+    },
+    {
+      "pattern": "platform/agent/run.go:757 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /health, the readiness-aware handler registered before initialisation finishes so ECS health checks pass during boot, and platform.health claims exactly that route — the URL space is covered by that entry."
+    },
+    {
+      "pattern": "platform/agent/run.go:1530 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /metrics, the JSON performance endpoint; platform.metrics claims it alongside /prometheus and /api/v1/metrics, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:1533 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /prometheus, the Prometheus exposition endpoint, which platform.metrics claims, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:1536 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/request, which every governed client call flows through; governance.proxy_request claims it, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:1539 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on GET, the client listing, which governance.proxy_request claims, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:1540 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on POST, client creation on the same path, which governance.proxy_request claims, so the URL space is covered."
+    },
+    {
+      "pattern": "platform/agent/run.go:1543 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
+      "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/policies/test, the policy dry-run endpoint, one of the four routes policy.system claims, so the URL space is covered."
+    }
+  ]
+}

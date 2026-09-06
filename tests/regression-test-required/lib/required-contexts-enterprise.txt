@@ -1,0 +1,47 @@
+# The eight required status-check contexts on axonflow-enterprise `main`.
+#
+# SINGLE DEFINITION. Three consumers need this list and a second copy of it
+# would drift:
+#   tests/regression-test-required/required_check_name_uniqueness_test.sh
+#       a non-required job must not collide with a required name;
+#   tests/regression-test-required/main_guard_visibility_test.sh
+#       a push-to-main job that is NOT one of these is invisible when it fails,
+#       because nothing re-verifies it on the pull-request tier;
+#   scripts/ci/check-main-guard-freshness.sh
+#       subtracts this list to derive what it watches - and RECONCILES the file
+#       against the live ruleset on every run before trusting it.
+#
+# THE FILE IS NOT THE AUTHORITY, THE RULESET IS. A hand-kept literal is the
+# author-bounded census that #3730 is about: a ninth required context would
+# silently widen the invisible-on-main class and a renamed one would silently
+# narrow it. So the reader fails (exit 1) when this file and the live branch
+# ruleset(s) disagree in either direction, and fails closed (exit 2) if it
+# cannot read the ruleset at all. Re-derive with:
+#
+#   gh api repos/getaxonflow/axonflow-enterprise/rulesets \
+#     --jq '.[] | select(.target=="branch") | .id'
+#   gh api repos/getaxonflow/axonflow-enterprise/rulesets/<id> \
+#     --jq '.rules[]|select(.type=="required_status_checks")
+#          |.parameters.required_status_checks[].context'
+#
+# Verified byte-identical to the single active branch ruleset (9199766) on
+# 2026-09-04: `diff` of the sorted API output against the sorted file was empty.
+# When it changes, re-review the dispositions in
+# tests/regression-test-required/lib/main-guard-dispositions.tsv in the SAME
+# diff - a change here moves the class boundary.
+#
+# ENTERPRISE TREE ONLY. The community mirror protects four contexts, and the
+# uniqueness guard keeps that list inline in its own `else` branch - the
+# mirror never reads this file.
+#
+# Blank lines and lines beginning with # are ignored. The first context
+# carries a U+2014 EM DASH; the last carries an ASCII hyphen. That is not a
+# typo - branch protection matches a context by exact bytes.
+Build Summary
+Test Summary
+Lint Summary
+Security Scan Summary
+Lint — no mocks in runtime-e2e/
+Runtime E2E required for user-facing changes
+Migrations apply cleanly
+Lint - no HTTP-code-only stack readiness waits

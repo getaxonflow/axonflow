@@ -1,0 +1,1303 @@
+# Nightly dispatch path filters, recovered 2026-09-04.
+#
+# WHY THIS FILE EXISTS. Each stack-booting suite used to carry its correctness
+# inputs as a `pull_request: paths:` filter - "run me when any of these files
+# change". Removing the PR trigger (per-push cost did not move under the
+# 2026-09-03 label gate: 129 minutes before, 133 after) would have deleted that
+# information with it, and nightly-e2e.yml would then dispatch every suite
+# every night regardless of what changed. The lists below ARE those filters,
+# copied verbatim from the last commit that carried them.
+#
+# THIS IS NOT A SECOND COPY. The filters no longer exist in the workflows -
+# they were MOVED here, not duplicated - so there is one definition, and
+# `no_pr_trigger_for_stack_booting_suites_test.sh` fails any workflow that
+# grows a `pull_request:` block again (which is the only way a competing copy
+# could reappear).
+#
+# WHAT KEEPS IT HONEST, AND WHAT DOES NOT. The guard checks PRESENCE, not
+# accuracy: every suite in the nightly set must appear here, so a new suite
+# cannot silently become unconditional. Nothing mechanically proves a list
+# still names everything a suite's correctness depends on - and nothing did
+# when the same list lived in the workflow either. A stale entry costs
+# coverage in the nightly only: the merge queue runs every suite with no
+# `paths:` filter at all, because `merge_group` does not take one. So the
+# blast radius of a stale list is "the nightly missed a suite it should have
+# re-run against main", never "an untested change merged".
+#
+# A suite with no entry here is dispatched unconditionally, which is the safe
+# direction.
+#
+# Edit this file when you would have edited the suite's `paths:` filter.
+#
+# `unconditional:` lists suites that fire every night regardless of the diff.
+# Ten of them share one real reason rather than ten invented ones: they ran on
+# `merge_group` only, and `merge_group` takes no `paths:` filter, so no list
+# has ever existed for them. Writing one now would be a guess presented as a
+# recovered fact, so they stay unconditional at ~10 min each. The other three
+# (sdk-smoke-tests, sync-community-repo, self-hosted-canary) have their own
+# reasons inline. The guard requires every suite in the nightly set to appear
+# in one list or the other, so nothing becomes unconditional by accident.
+suites:
+  agentgateway-pep-adapters-e2e.yml:
+  - runtime-e2e/2886_agentgateway_pep_adapters/**
+  - platform/gateway-adapters/**
+  - platform/shared/pep/**
+  - platform/shared/heartbeat/**
+  - .github/workflows/agentgateway-pep-adapters-e2e.yml
+  approvals-decide-plane-e2e.yml:
+  - runtime-e2e/3346_approvals_decide_plane/**
+  - runtime-e2e/3329_fincrime_pack/stub_scorer/**
+  - runtime-e2e/lib/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/approvals/**
+  - ee/platform/customer-portal-ui/components/Navigation.tsx
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/tableCell.tsx
+  - ee/platform/customer-portal/api/hitl_approvals.go
+  - ee/platform/customer-portal/api/orchestrator_proxy.go
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - ee/platform/customer-portal/middleware/**
+  - ee/platform/customer-portal/main.go
+  - ee/platform/agent/hitl/**
+  - platform/agent/hitl/**
+  - platform/agent/hitl_bridge.go
+  - platform/agent/auth.go
+  - platform/agent/authenticator.go
+  - platform/shared/serviceauth/**
+  - platform/agent/fincrime/**
+  - platform/agent/fincrime_seam.go
+  - platform/orchestrator/workflow_control/**
+  - ee/policy-packs/fincrime/**
+  - .github/workflows/approvals-decide-plane-e2e.yml
+  audit-date-range-e2e.yml:
+  - runtime-e2e/3363_audit_date_range/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/audit/**
+  - ee/platform/customer-portal-ui/lib/dateRange.ts
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/policyDecision.ts
+  - ee/platform/customer-portal-ui/lib/identity.ts
+  - ee/platform/customer-portal-ui/components/compliance/StateNotice.tsx
+  - ee/platform/customer-portal-ui/Dockerfile
+  - ee/platform/customer-portal-ui/package.json
+  - ee/platform/customer-portal-ui/package-lock.json
+  - platform/orchestrator/audit_summary_handler.go
+  - platform/orchestrator/audit_read_handlers.go
+  - platform/orchestrator/audit_logger.go
+  - platform/agent/fincrime/**
+  - platform/agent/fincrime_seam.go
+  - platform/agent/decision_handler.go
+  - platform/shared/audit/**
+  - ee/policy-packs/fincrime/**
+  - .github/workflows/audit-date-range-e2e.yml
+  audit-display-names-e2e.yml:
+  - runtime-e2e/3347_audit_display_names/**
+  - runtime-e2e/3329_fincrime_pack/stub_scorer/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/audit/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/dateRange.ts
+  - ee/platform/customer-portal-ui/lib/policyDecision.ts
+  - ee/platform/customer-portal-ui/lib/identity.ts
+  - ee/platform/customer-portal-ui/components/compliance/StateNotice.tsx
+  - ee/platform/customer-portal-ui/Dockerfile
+  - ee/platform/customer-portal-ui/package.json
+  - ee/platform/customer-portal-ui/package-lock.json
+  - platform/agent/fincrime/**
+  - platform/agent/fincrime_seam.go
+  - platform/agent/decision_handler.go
+  - platform/agent/policy_identity_stamp.go
+  - platform/agent/policy_result_convert.go
+  - platform/agent/static_policies.go
+  - platform/shared/audit/**
+  - ee/policy-packs/fincrime/**
+  - .github/workflows/audit-display-names-e2e.yml
+  audit-latency-tile-e2e.yml:
+  - runtime-e2e/3424_audit_latency_tile/**
+  - runtime-e2e/lib/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/audit/**
+  - ee/platform/customer-portal-ui/lib/latency.ts
+  - ee/platform/customer-portal-ui/lib/tableCell.tsx
+  - ee/platform/customer-portal-ui/lib/policyDetails.ts
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/app/login/**
+  - ee/platform/customer-portal-ui/app/api/v1/**
+  - platform/orchestrator/audit_summary_handler.go
+  - platform/orchestrator/audit_read_handlers.go
+  - platform/orchestrator/session_summary_handler.go
+  - platform/orchestrator/audit_logger.go
+  - platform/shared/audit/latency.go
+  - platform/agent/decision_handler.go
+  - platform/agent/gateway_handlers.go
+  - platform/agent/mcp_richer_context.go
+  - platform/agent/mcp_handler.go
+  - platform/agent/mcp_server_handler.go
+  - platform/agent/cowork_otel_ingest.go
+  - platform/agent/openai_compat_handler.go
+  - ee/platform/agent/hitl/repository.go
+  - migrations/core/161_null_fabricated_zero_response_times.sql
+  - migrations/core/162_null_fabricated_zero_token_usage.sql
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - ee/policy-packs/fincrime/**
+  - .github/workflows/audit-latency-tile-e2e.yml
+  client-version-telemetry-e2e.yml:
+  - runtime-e2e/2860_client_version_telemetry/**
+  - platform/agent/client_version_telemetry.go
+  - platform/agent/client_version_telemetry_community.go
+  - platform/agent/decision_handler.go
+  - platform/agent/mcp_handler.go
+  - platform/shared/deploymode/**
+  - scripts/lint-deployment-mode.sh
+  - .github/workflows/client-version-telemetry-e2e.yml
+  - platform/gateway-adapters/telemetry.go
+  - platform/gateway-adapters/pdp.go
+  - platform/gateway-adapters/cmd/**
+  - platform/shared/pep/**
+  - platform/shared/heartbeat/**
+  community-saas-reads-e2e.yml:
+  - runtime-e2e/3060_community_saas_reads/**
+  - runtime-e2e/lib/**
+  - platform/**
+  - migrations/**
+  - docker-compose.yml
+  - docker-compose.community-saas.yml
+  - config/axonflow.yaml
+  - .github/workflows/community-saas-reads-e2e.yml
+  compliance-report-facade-e2e.yml:
+  - platform/orchestrator/compliancereport/**
+  - platform/orchestrator/euaiact/**
+  - platform/orchestrator/sebi/**
+  - platform/orchestrator/rbi/**
+  - platform/orchestrator/masfeat/**
+  - platform/orchestrator/ojk/**
+  - platform/orchestrator/read_scope.go
+  - platform/orchestrator/run.go
+  - migrations/enterprise/136_compliance_report_jobs*.sql
+  - runtime-e2e/3241_compliance_report_facade/**
+  - runtime-e2e/3241_admin_authority_cross_plane/**
+  - platform/shared/identity/readscope.go
+  - platform/agent/proxy.go
+  - ee/platform/customer-portal/api/orchestrator_proxy.go
+  - ee/platform/customer-portal/api/roles/**
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - ee/platform/customer-portal/main.go
+  - ee/platform/customer-portal/middleware/**
+  - migrations/enterprise/138_euaiact_export_cloud_storage*.sql
+  - migrations/core/151_policy_admin_backfill_zero_assignment_orgs.sql
+  - migrations/industry/banking/**
+  - .github/workflows/compliance-report-facade-e2e.yml
+  compliance-reports-portal-e2e.yml:
+  - runtime-e2e/3243_compliance_reports_portal/**
+  - scripts/ws2892c-compliance-e2e-up.sh
+  - docker-compose.ws2892c.yml
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/**
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - ee/platform/customer-portal/api/orchestrator_proxy.go
+  - ee/platform/customer-portal/main.go
+  - platform/orchestrator/euaiact/**
+  - platform/orchestrator/sebi/**
+  - platform/orchestrator/rbi/**
+  - platform/orchestrator/masfeat/**
+  - platform/orchestrator/ojk/**
+  - platform/orchestrator/evidence_export_handler.go
+  - platform/orchestrator/read_scope.go
+  - ee/platform/orchestrator/**
+  - migrations/enterprise/116_euaiact_orchestrator_tables.sql
+  - migrations/enterprise/127_ojk_compliance_tables.sql
+  - migrations/industry/banking/300_sebi_ai_ml_templates.sql
+  - migrations/industry/banking/301_rbi_free_ai_compliance.sql
+  - migrations/industry/banking/400_mas_feat_tables.sql
+  - platform/agent/migration_helpers.go
+  - platform/agent/cowork_otel_ingest.go
+  - platform/agent/decision_handler.go
+  - platform/agent/mcp_richer_context.go
+  - platform/shared/audit/**
+  - platform/orchestrator/compliancereport/**
+  - platform/orchestrator/Dockerfile
+  - platform/agent/Dockerfile
+  - .github/workflows/compliance-reports-portal-e2e.yml
+  computed-risk-score-e2e.yml:
+  - runtime-e2e/3321_computed_risk_score/**
+  - platform/orchestrator/risk_calculator.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/shared/policy/loader.go
+  - migrations/core/031_seed_system_policies.sql
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - runtime-e2e/lib/proxy_auth.sh
+  - .github/workflows/computed-risk-score-e2e.yml
+  connector-entitlement-e2e.yml:
+    - 'runtime-e2e/3713_connector_entitlement/**'
+    - 'runtime-e2e/lib/**'
+    - 'platform/shared/policy/dynamic_evaluator.go'
+    - 'platform/shared/policy/types.go'
+    - 'platform/shared/deploymode/**'
+    - 'platform/agent/mcp_v1_pro_tools.go'
+    - 'platform/agent/migration_helpers.go'
+    - 'platform/agent/run.go'
+    - 'ee/platform/agent/license/cmd/keygen/**'
+    - 'docker-compose.yml'
+    - 'docker-compose.enterprise.yml'
+    - '.github/workflows/connector-entitlement-e2e.yml'
+    - 'platform/shared/policy/license_tier_source.go'
+    - 'platform/agent/license_tier_source.go'
+    - 'platform/agent/license/**'
+    - 'ee/platform/agent/license/**'
+    - 'platform/agent/Dockerfile'
+  decision-proof-key-custody-e2e.yml:
+  - runtime-e2e/3605_decision_proof_key_custody/**
+  - ee/platform/proofcustody/**
+  - platform/shared/requirements/proof/**
+  - ee/platform/customer-portal/api/decision_proof_keys.go
+  - ee/platform/customer-portal/api/decision_proof_keys_community.go
+  - ee/platform/customer-portal/middleware/internal_service_auth.go
+  - ee/platform/customer-portal/middleware/admin_auth.go
+  - ee/platform/customer-portal/main.go
+  - ee/platform/customer-portal/Dockerfile
+  - platform/shared/serviceauth/serviceauth.go
+  - platform/shared/serviceauth/subject_context.go
+  - platform/shared/secretenv/**
+  - migrations/enterprise/147_decision_proof_key_custody.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/license/cmd/keygen/**
+  - .github/workflows/decision-proof-key-custody-e2e.yml
+  digest-license-tier-e2e.yml:
+  - runtime-e2e/3619_digest_license_tier/**
+  - ee/platform/checkpoint-service/cmd/local-ingest-digest/**
+  - ee/platform/checkpoint-service/pkg/notification/**
+  - ee/platform/checkpoint-service/pkg/handler/**
+  - ee/platform/checkpoint-service/pkg/storage/**
+  - ee/platform/checkpoint-service/pkg/telemetry/**
+  - ee/platform/telemetry-filter/**
+  - .github/workflows/digest-license-tier-e2e.yml
+  durable-stores-e2e.yml:
+  - runtime-e2e/3604_durable_stores/**
+  - migrations/enterprise/148_reservation_store.sql
+  - migrations/enterprise/148_reservation_store_down.sql
+  - migrations/enterprise/149_proof_execution_record.sql
+  - migrations/enterprise/149_proof_execution_record_down.sql
+  - platform/agent/migration_helpers.go
+  - platform/agent/run.go
+  - platform/cmd/agent/**
+  - platform/shared/requirements/reservation/**
+  - platform/shared/requirements/proof/**
+  - migrations/core/**
+  - .github/workflows/durable-stores-e2e.yml
+  e2e-tests.yml:
+  - ee/platform/customer-portal-ui/**
+  - ee/platform/customer-portal/**
+  - platform/**
+  - ee/platform/agent/**
+  - ee/platform/orchestrator/**
+  - ee/go.mod
+  - ee/go.sum
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - scripts/seed-portal-playwright.sh
+  - .github/workflows/e2e-tests.yml
+  - migrations/**
+  evaluator-convergence-e2e.yml:
+  - runtime-e2e/3296_evaluator_convergence/**
+  - platform/shared/policy/condition_evaluator.go
+  - platform/shared/policy/override.go
+  - platform/shared/policy/loader.go
+  - platform/orchestrator/mcp_dynamic_policy_handler.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/dynamic_policy_handlers.go
+  - platform/orchestrator/policy_api_service.go
+  - platform/agent/static_policy_repository.go
+  - platform/orchestrator/run.go
+  - platform/agent/run.go
+  - platform/agent/mcp_handler.go
+  - platform/agent/proxy.go
+  - platform/agent/static_policy_api_handlers.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/010_policy_tables.sql
+  - migrations/core/030_policy_tier_columns.sql
+  - migrations/core/110_v9_phase8_pr_c2_policy_overrides_org_id.sql
+  - .github/workflows/evaluator-convergence-e2e.yml
+  forgot-password-email-e2e.yml:
+  - runtime-e2e/2330_forgot_password_email/**
+  - ee/platform/customer-portal/api/organizations.go
+  - ee/platform/customer-portal/api/password_reset_email.go
+  - ee/platform/customer-portal/api/sso.go
+  - ee/platform/customer-portal/main.go
+  - ee/platform/customer-portal/middleware/ratelimit.go
+  - ee/platform/customer-portal-ui/app/forgot-password/**
+  - ee/platform/customer-portal-ui/app/reset-password/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/proxy.ts
+  - migrations/enterprise/112_password_reset_tokens.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - ee/platform/customer-portal/Dockerfile
+  - ee/platform/customer-portal-ui/Dockerfile
+  - .github/workflows/forgot-password-email-e2e.yml
+  gateway-segment-enforcement-e2e.yml:
+  - runtime-e2e/3312_gateway_segment_enforcement/**
+  - platform/agent/gateway_handlers.go
+  - platform/agent/segment_policy_gate.go
+  - platform/shared/identity/segment_policy_gate.go
+  - platform/shared/policy/types.go
+  - platform/shared/policy/loader.go
+  - platform/shared/policy/engine.go
+  - platform/shared/policy/evaluator.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - platform/shared/identity/segment_cache.go
+  - platform/agent/mcp_identity.go
+  - platform/agent/authenticator.go
+  - platform/agent/db_auth.go
+  - migrations/core/157_static_policies_segment_id.sql
+  - migrations/enterprise/117_*.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/**
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/gateway-segment-enforcement-e2e.yml
+  governed-plane-principal-e2e.yml:
+  - runtime-e2e/3152_governed_plane_principal/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - platform/orchestrator/run.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/audit_logger.go
+  - platform/agent/proxy.go
+  - platform/shared/identity/readscope.go
+  - platform/shared/identity/trust.go
+  - platform/agent/auth.go
+  - platform/agent/authenticator.go
+  - platform/orchestrator/authn_middleware.go
+  - platform/agent/run.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - .github/workflows/governed-plane-principal-e2e.yml
+  health-capability-projection-e2e.yml:
+  - runtime-e2e/3618_health_capability_projection/**
+  - runtime-e2e/lib/wait_for_stack.sh
+  - platform/shared/capability/**
+  - platform/shared/sdkcompat/**
+  - platform/shared/plugincompat/**
+  - platform/agent/capabilities.go
+  - platform/agent/run.go
+  - platform/orchestrator/capabilities.go
+  - platform/orchestrator/run.go
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - .github/workflows/health-capability-projection-e2e.yml
+  identity-compat-adapters-e2e.yml:
+  - runtime-e2e/3550_identity_compat_adapters/**
+  - runtime-e2e/lib/wait_for_stack.sh
+  - platform/shared/identity/compat.go
+  - platform/shared/identity/compat_paths.go
+  - platform/shared/identity/compat_realms.go
+  - platform/shared/identity/compat_recorder.go
+  - platform/shared/identity/compat_bootstrap.go
+  - platform/shared/identity/compat_oidc.go
+  - platform/shared/identity/compat_oidc_community.go
+  - platform/shared/identity/admission.go
+  - platform/shared/identity/realm.go
+  - platform/shared/identity/realm_verify.go
+  - platform/shared/identity/resolver.go
+  - platform/shared/identity/validator.go
+  - platform/shared/identity/oidc_verifier.go
+  - platform/shared/identity/oidc_config.go
+  - platform/shared/identity/compat_metrics.go
+  - platform/shared/identity/compat_org_mode.go
+  - platform/shared/identity/compat_org_settings.go
+  - platform/shared/identity/compat_org_settings_community.go
+  - platform/shared/deploymode/**
+  - platform/agent/identity_compat.go
+  - platform/agent/authenticator.go
+  - platform/agent/mcp_server_handler.go
+  - platform/agent/mcp_identity.go
+  - platform/agent/identity_trust.go
+  - platform/orchestrator/identity_compat.go
+  - platform/agent/proxy.go
+  - platform/agent/audit_verification_authority.go
+  - platform/agent/run.go
+  - platform/orchestrator/run.go
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/143_sso_configurations_oidc.sql
+  - migrations/core/106_v9_b9_completion_sso_configurations.sql
+  - ee/platform/agent/license/cmd/keygen/**
+  - .github/workflows/identity-compat-adapters-e2e.yml
+  identity-per-org-shadow-caep-e2e.yml:
+  - runtime-e2e/3550_per_org_shadow_caep/**
+  - runtime-e2e/lib/wait_for_stack.sh
+  - platform/shared/identity/compat.go
+  - platform/shared/identity/compat_org_mode.go
+  - platform/shared/identity/compat_org_mode_enterprise.go
+  - platform/shared/identity/compat_org_settings.go
+  - platform/shared/identity/compat_org_settings_contract.go
+  - platform/shared/identity/compat_org_settings_community.go
+  - platform/shared/identity/compat_paths.go
+  - platform/shared/identity/compat_realms.go
+  - platform/shared/identity/compat_recorder.go
+  - platform/shared/identity/compat_bootstrap.go
+  - platform/shared/identity/compat_oidc.go
+  - platform/shared/identity/compat_oidc_community.go
+  - platform/shared/identity/admission.go
+  - platform/shared/identity/realm.go
+  - platform/shared/identity/realm_verify.go
+  - platform/shared/identity/resolver.go
+  - platform/shared/identity/validator.go
+  - platform/shared/identity/oidc_verifier.go
+  - platform/shared/identity/oidc_config.go
+  - platform/shared/identity/oidc_http_client.go
+  - platform/shared/identity/hs256_validator.go
+  - platform/shared/identity/idtoken_verifier.go
+  - platform/shared/identity/compat_caep.go
+  - platform/shared/identity/compat_caep_push.go
+  - platform/shared/identity/segment_cache.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - platform/shared/identity/principal.go
+  - platform/agent/identity_compat.go
+  - platform/agent/identity_caep.go
+  - platform/agent/identity_caep_community.go
+  - platform/agent/mcp_identity.go
+  - platform/agent/authenticator.go
+  - platform/agent/mcp_server_handler.go
+  - platform/agent/identity_trust.go
+  - platform/agent/run.go
+  - platform/orchestrator/identity_compat.go
+  - platform/orchestrator/run.go
+  - ee/platform/customer-portal/api/identity_org_settings.go
+  - ee/platform/customer-portal/middleware/admin_auth.go
+  - ee/platform/customer-portal/main.go
+  - ee/platform/customer-portal/Dockerfile
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/enterprise/146_identity_org_settings.sql
+  - migrations/enterprise/117_scim_provisioning.sql
+  - migrations/core/143_sso_configurations_oidc.sql
+  - migrations/core/106_v9_b9_completion_sso_configurations.sql
+  - migrations/core/157_static_policies_segment_id.sql
+  - ee/platform/agent/license/cmd/keygen/**
+  - .github/workflows/identity-per-org-shadow-caep-e2e.yml
+  map-hitl-approver-identity-e2e.yml:
+  - runtime-e2e/3135_map_hitl_approver_identity/**
+  - platform/orchestrator/map_hitl_adapter.go
+  - platform/orchestrator/agent_proxy_guard.go
+  - platform/orchestrator/authn_middleware.go
+  - platform/orchestrator/workflow_control/service.go
+  - platform/orchestrator/workflow_control/repository.go
+  - platform/orchestrator/workflow_control/handlers.go
+  - platform/agent/proxy.go
+  - platform/agent/identity_trust.go
+  - platform/shared/identity/trust.go
+  - platform/agent/run.go
+  - platform/orchestrator/run.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/041_workflows.sql
+  - .github/workflows/map-hitl-approver-identity-e2e.yml
+  map-segment-policy-e2e.yml:
+  - runtime-e2e/3297_map_segment_policy/**
+  - platform/orchestrator/run.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/segment_policy_gate.go
+  - platform/orchestrator/map_hitl_adapter.go
+  - platform/orchestrator/hitl_execution.go
+  - platform/orchestrator/workflow_engine.go
+  - platform/orchestrator/agent_proxy_guard.go
+  - platform/orchestrator/override_enforcement.go
+  - platform/orchestrator/planning/service.go
+  - platform/orchestrator/planning/types.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - platform/shared/identity/segment_policy_gate.go
+  - platform/shared/identity/segment_cache.go
+  - platform/shared/identity/scim_role_resolver.go
+  - platform/shared/tenantscope/tenantscope.go
+  - platform/agent/run.go
+  - platform/agent/proxy.go
+  - platform/agent/authenticator.go
+  - platform/shared/serviceauth/serviceauth.go
+  - migrations/core/159_dynamic_policies_segment_id.sql
+  - migrations/core/037_plans.sql
+  - migrations/enterprise/117_scim_provisioning.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/**
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/map-segment-policy-e2e.yml
+  masfeat-app-role-rls-e2e.yml:
+  - platform/orchestrator/masfeat/**
+  - platform/agent/rls/**
+  - migrations/industry/banking/**
+  - runtime-e2e/3133_masfeat_app_role_rls/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - .github/workflows/masfeat-app-role-rls-e2e.yml
+  mcp-evaluate-policies-scope-e2e.yml:
+  - runtime-e2e/3066_mcp_evaluate_policies_tenant_scope/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - platform/orchestrator/mcp_dynamic_policy_handler.go
+  - platform/shared/tenantscope/tenantscope.go
+  - platform/agent/proxy.go
+  - platform/agent/auth.go
+  - platform/agent/authenticator.go
+  - platform/orchestrator/authn_middleware.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/dynamic_policy_engine.go
+  - platform/orchestrator/run.go
+  - platform/agent/run.go
+  - platform/shared/policy/dynamic_evaluator.go
+  - platform/agent/mcp_handler.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/154_global_policy_org_id_default.sql
+  - migrations/core/155_policy_tenant_id_no_empty_string.sql
+  - .github/workflows/mcp-evaluate-policies-scope-e2e.yml
+  mcp-human-segment-e2e.yml:
+  - runtime-e2e/3430_mcp_human_segment/**
+  - platform/agent/mcp_handler.go
+  - platform/agent/mcp_server_handler.go
+  - platform/agent/mcp_identity.go
+  - platform/agent/segment_policy_gate.go
+  - platform/shared/identity/segment_policy_gate.go
+  - platform/shared/policy/types.go
+  - platform/shared/policy/loader.go
+  - platform/shared/policy/engine.go
+  - platform/shared/policy/evaluator.go
+  - platform/agent/mcp_richer_context.go
+  - platform/agent/mcp_readonly_posture.go
+  - platform/agent/policy_identity_stamp.go
+  - platform/agent/detection_config.go
+  - platform/agent/detection_override.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - platform/shared/identity/segment_cache.go
+  - platform/shared/identity/scim_role_resolver.go
+  - platform/shared/identity/hs256_validator.go
+  - platform/shared/identity/validator.go
+  - platform/shared/identity/revocation.go
+  - platform/agent/identity_trust.go
+  - platform/agent/authenticator.go
+  - platform/agent/db_auth.go
+  - migrations/core/157_static_policies_segment_id.sql
+  - migrations/enterprise/117_scim_provisioning.sql
+  - scripts/generate-jwt.sh
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/**
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/mcp-human-segment-e2e.yml
+  mcp-override-refusal-e2e.yml:
+  - runtime-e2e/3077_mcp_override_refusal_diagnostic/**
+  - platform/shared/identity/identity_required.go
+  - platform/shared/identity/trust.go
+  - platform/shared/identity/readscope.go
+  - platform/agent/identity_trust.go
+  - platform/agent/mcp_server_handler.go
+  - platform/orchestrator/overrides_handler.go
+  - platform/orchestrator/identity_required_error.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - .github/workflows/mcp-override-refusal-e2e.yml
+  mcp-tenant-policy-e2e.yml:
+  - runtime-e2e/3061_mcp_tenant_policy_enforcement/**
+  - platform/orchestrator/mcp_dynamic_policy_handler.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/dynamic_policy_engine.go
+  - platform/shared/policy/dynamic_evaluator.go
+  - platform/orchestrator/run.go
+  - platform/agent/mcp_handler.go
+  - platform/agent/proxy.go
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/154_global_policy_org_id_default.sql
+  - migrations/core/155_policy_tenant_id_no_empty_string.sql
+  - .github/workflows/mcp-tenant-policy-e2e.yml
+  ojk-pii-export-e2e.yml:
+  - platform/orchestrator/ojk/**
+  - platform/orchestrator/run.go
+  - platform/agent/indonesia/**
+  - platform/agent/indonesia_pii_events*.go
+  - platform/agent/gateway_handlers.go
+  - platform/agent/decision_handler.go
+  - platform/agent/mcp_handler.go
+  - migrations/enterprise/137_*
+  - runtime-e2e/3242_ojk_pii_export/**
+  - .github/workflows/ojk-pii-export-e2e.yml
+  orchestrator-segment-policy-e2e.yml:
+  - runtime-e2e/3052_orchestrator_segment_policy/**
+  - platform/orchestrator/dynamic_policy_engine.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/segment_policy_gate.go
+  - platform/orchestrator/override_enforcement.go
+  - platform/orchestrator/run.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - migrations/core/159_dynamic_policies_segment_id.sql
+  - migrations/enterprise/117_*.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/**
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/orchestrator-segment-policy-e2e.yml
+  org-keyed-policy-selection-e2e.yml:
+  - runtime-e2e/3490_org_keyed_policy_selection/**
+  - platform/shared/policy/loader.go
+  - platform/agent/static_policy_repository.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/mcp_dynamic_policy_handler.go
+  - platform/orchestrator/policy_simulation_handler.go
+  - platform/orchestrator/evidence_export_handler.go
+  - platform/agent/mcp_handler.go
+  - platform/agent/run.go
+  - platform/orchestrator/run.go
+  - platform/shared/policy/dynamic_evaluator.go
+  - platform/shared/policy/types.go
+  - platform/agent/db_auth.go
+  - platform/agent/proxy.go
+  - migrations/core/090_v9_policy_tables_client_id.sql
+  - migrations/core/153_backfill_global_policy_org_id.sql
+  - migrations/core/154_global_policy_org_id_default.sql
+  - migrations/core/165_policy_org_id_not_null.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/**
+  - .github/workflows/org-keyed-policy-selection-e2e.yml
+  override-identity-gate-e2e.yml:
+  - runtime-e2e/3062_override_identity_gate/**
+  - platform/agent/proxy.go
+  - platform/agent/identity_trust.go
+  - platform/shared/identity/trust.go
+  - platform/orchestrator/identity_required_error.go
+  - platform/orchestrator/overrides_handler.go
+  - platform/agent/run.go
+  - platform/orchestrator/run.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/031_seed_system_policies.sql
+  - .github/workflows/override-identity-gate-e2e.yml
+  per-plane-decision-shadow-e2e.yml:
+  - runtime-e2e/3564_per_plane_decision_shadow/**
+  - runtime-e2e/lib/wait_for_stack.sh
+  - platform/shared/planeshadow/**
+  - platform/shared/policy/engine.go
+  - platform/shared/policy/shadowobserve.go
+  - platform/shared/policy/loader.go
+  - platform/shared/policy/types.go
+  - platform/orchestrator/shadowobserve.go
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/agent/tier_shadow_observe.go
+  - platform/agent/tier_aware_policy_engine.go
+  - platform/agent/shadow_plane.go
+  - platform/agent/decision_shadow.go
+  - platform/agent/mcp_handler.go
+  - platform/agent/mcp_server_handler.go
+  - platform/agent/decision_handler.go
+  - platform/agent/gateway_handlers.go
+  - platform/agent/openai_compat_handler.go
+  - platform/agent/cowork_otel_ingest.go
+  - platform/agent/run.go
+  - platform/orchestrator/decision_shadow.go
+  - platform/orchestrator/run.go
+  - platform/decision/legacycompile/**
+  - platform/decision/contract/**
+  - platform/shared/identity/compat_org_mode.go
+  - platform/shared/identity/compat_org_settings.go
+  - platform/shared/identity/compat_org_settings_contract.go
+  - platform/shared/identity/compat_org_settings_community.go
+  - platform/shared/identity/decision_shadow_mode.go
+  - ee/platform/customer-portal/api/identity_org_settings.go
+  - ee/platform/customer-portal/middleware/admin_auth.go
+  - ee/platform/customer-portal/main.go
+  - ee/platform/customer-portal/Dockerfile
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/enterprise/146_identity_org_settings.sql
+  - migrations/enterprise/150_identity_org_settings_decision_shadow.sql
+  - ee/platform/agent/license/cmd/keygen/**
+  - .github/workflows/per-plane-decision-shadow-e2e.yml
+  pii-action-posture-e2e.yml:
+  - runtime-e2e/3360_pii_action_posture/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/shared/policy/engine.go
+  - platform/shared/policy/types.go
+  - platform/agent/policy_result_convert.go
+  - platform/agent/detection_config.go
+  - platform/agent/detection_override.go
+  - platform/agent/profile.go
+  - platform/agent/decision_handler.go
+  - migrations/core/116_indonesia_injection_ktp_policies.sql
+  - .github/workflows/pii-action-posture-e2e.yml
+  platform-ping-identity-e2e.yml:
+  - runtime-e2e/3660_platform_ping_edition_mode/**
+  - platform/shared/heartbeat/**
+  - platform/shared/edition/**
+  - platform/shared/deploymode/**
+  - platform/agent/startup_telemetry.go
+  - platform/agent/run.go
+  - platform/agent/capabilities.go
+  - platform/orchestrator/startup_telemetry.go
+  - platform/orchestrator/run.go
+  - platform/orchestrator/capabilities.go
+  - ee/platform/checkpoint-service/pkg/telemetry/**
+  - ee/platform/checkpoint-service/pkg/handler/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - .github/workflows/platform-ping-identity-e2e.yml
+  policy-authored-hitl-e2e.yml:
+  - runtime-e2e/3509_policy_authored_hitl/**
+  - runtime-e2e/lib/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - platform/agent/hitl_policy_enqueue.go
+  - platform/agent/hitl_bridge.go
+  - platform/agent/fincrime_seam.go
+  - platform/agent/decision_handler.go
+  - platform/agent/gateway_handlers.go
+  - platform/agent/run.go
+  - platform/agent/policy_result_convert.go
+  - platform/agent/static_policies.go
+  - platform/agent/hitl/**
+  - ee/platform/agent/hitl/**
+  - platform/agent/license/tier_support.go
+  - ee/platform/agent/license/tier_support.go
+  - migrations/core/025_hitl_oversight_queue.sql
+  - migrations/core/167_hitl_grant_consumption.sql
+  - migrations/core/167_hitl_grant_consumption_down.sql
+  - ee/platform/customer-portal-ui/app/approvals/**
+  - ee/platform/customer-portal-ui/components/Navigation.tsx
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal/api/hitl_approvals.go
+  - .github/workflows/policy-authored-hitl-e2e.yml
+  policy-category-vocabulary-e2e.yml:
+  - runtime-e2e/3441_policy_category_vocabulary/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/policies/**
+  - ee/platform/customer-portal-ui/components/policies/**
+  - ee/platform/customer-portal-ui/app/login/**
+  - ee/platform/customer-portal-ui/app/api/v1/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/proxy.ts
+  - ee/platform/customer-portal/api/policy_categories.go
+  - ee/platform/customer-portal/api/unified_policies.go
+  - ee/platform/customer-portal/main.go
+  - platform/shared/policy/types.go
+  - platform/agent/detection_config.go
+  - platform/agent/static_policy_api_handlers.go
+  - platform/agent/static_policy_repository.go
+  - platform/orchestrator/policy_api_handlers.go
+  - ee/policy-packs/fincrime/**
+  - migrations/core/**
+  - .github/workflows/policy-category-vocabulary-e2e.yml
+  policy-path-alias-e2e.yml:
+  - runtime-e2e/1431_policy_path_alias/**
+  - runtime-e2e/lib/wait_for_stack.sh
+  - platform/shared/policypath/**
+  - platform/agent/static_policy_api_handlers.go
+  - platform/orchestrator/dynamic_policy_handlers.go
+  - platform/agent/proxy.go
+  - platform/agent/run.go
+  - platform/orchestrator/run.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - .github/workflows/policy-path-alias-e2e.yml
+  portal-admin-org-scope-e2e.yml:
+  - runtime-e2e/3108_portal_admin_org_scope/**
+  - ee/platform/customer-portal/api/org_scope.go
+  - ee/platform/customer-portal/api/nodes.go
+  - ee/platform/customer-portal/api/rls_session.go
+  - ee/platform/customer-portal/middleware/admin_auth.go
+  - ee/platform/customer-portal/config/deployment.go
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - .github/workflows/portal-admin-org-scope-e2e.yml
+  portal-cors-origins-e2e.yml:
+  - runtime-e2e/3161_portal_cors_origins/**
+  - ee/platform/customer-portal/cors.go
+  - ee/platform/customer-portal/main.go
+  - platform/shared/corspolicy/**
+  - platform/agent/cors.go
+  - platform/orchestrator/cors.go
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - ee/platform/customer-portal/Dockerfile
+  - .github/workflows/portal-cors-origins-e2e.yml
+  portal-credential-provision-e2e.yml:
+  - runtime-e2e/2552_portal_credential_provision/**
+  - ee/platform/customer-portal/api/provision_admin_password.go
+  - ee/platform/customer-portal/api/owner_bootstrap.go
+  - ee/platform/customer-portal/api/auth.go
+  - ee/platform/customer-portal/main.go
+  - platform/shared/deploymode/**
+  - scripts/operators/reset-portal-credential.sh
+  - migrations/**
+  - .github/workflows/portal-credential-provision-e2e.yml
+  portal-parity-e2e.yml:
+  - runtime-e2e/3364_portal_parity/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/policies/**
+  - ee/platform/customer-portal-ui/components/policies/**
+  - ee/platform/customer-portal-ui/app/login/**
+  - ee/platform/customer-portal-ui/app/api/v1/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/proxy.ts
+  - ee/platform/customer-portal/api/unified_policies.go
+  - ee/platform/customer-portal/api/policies.go
+  - platform/agent/static_policy_api_handlers.go
+  - platform/agent/static_policy_repository.go
+  - platform/orchestrator/policy_api_handlers.go
+  - platform/orchestrator/policy_api_service.go
+  - ee/policy-packs/fincrime/**
+  - ee/platform/agent/license/**
+  - platform/agent/license/**
+  - platform/shared/secretenv/**
+  - .github/workflows/portal-parity-e2e.yml
+  # #3762 typed authoring, relocated here from this workflow's
+  # pull_request.paths when the PR tier was removed (#3774 added them
+  # there). The relevance job reads THIS file, so an entry dropped in
+  # the merge would make the queue answer "not relevant" for exactly
+  # the changes the arm was extended to cover.
+  - ee/platform/customer-portal/api/typed_authoring.go
+  - ee/platform/customer-portal/api/typed_authoring_community.go
+  - ee/platform/customer-portal/api/identity_org_settings.go
+  - ee/platform/customer-portal/api/identity_org_settings_upsert.go
+  - ee/platform/customer-portal/main.go
+  - migrations/enterprise/154_identity_org_settings_typed_authoring.sql
+  - platform/decision/authoring/**
+  - platform/decision/conformance/**
+  - platform/decision/pdp/**
+  - platform/decision/contract/**
+  - platform/shared/identity/**
+  - ee/platform/customer-portal/middleware/**
+  portal-sso-browser-e2e.yml:
+  - runtime-e2e/3289_portal_sso_browser/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal/auth/oidc/**
+  - ee/platform/customer-portal/auth/saml/**
+  - ee/platform/customer-portal/api/sso.go
+  - ee/platform/customer-portal/api/auth.go
+  - ee/platform/customer-portal/main.go
+  - platform/shared/identity/**
+  - migrations/core/158_sso_oidc_client_credentials.sql
+  - ee/platform/customer-portal-ui/**
+  - .github/workflows/portal-sso-browser-e2e.yml
+  proof-binding-contract-e2e.yml:
+  - runtime-e2e/3614_proof_binding_contract/**
+  - runtime-e2e/lib/**
+  - ee/platform/proofcustody/**
+  - platform/shared/requirements/proof/**
+  - ee/platform/customer-portal/api/decision_proof_keys.go
+  - ee/platform/customer-portal/api/decision_proof_keys_community.go
+  - ee/platform/customer-portal/middleware/internal_service_auth.go
+  - ee/platform/customer-portal/middleware/admin_auth.go
+  - ee/platform/customer-portal/main.go
+  - ee/platform/customer-portal/Dockerfile
+  - platform/shared/serviceauth/serviceauth.go
+  - platform/shared/serviceauth/subject_context.go
+  - platform/shared/secretenv/**
+  - migrations/enterprise/147_decision_proof_key_custody.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/license/cmd/keygen/**
+  - platform/decision/contract/tristate.go
+  - platform/shared/identity/compat_metrics.go
+  - .github/workflows/proof-binding-contract-e2e.yml
+  rbi-app-role-rls-e2e.yml:
+  - platform/orchestrator/rbi/**
+  - ee/platform/agent/rbi/**
+  - platform/agent/rbi/**
+  - platform/agent/rls/**
+  - migrations/industry/banking/**
+  - runtime-e2e/3103_rbi_app_role_rls/**
+  - .github/workflows/rbi-app-role-rls-e2e.yml
+  rbi-org-scope-e2e.yml:
+  - platform/orchestrator/rbi/**
+  - migrations/industry/banking/**
+  - runtime-e2e/3066_rbi_org_scope/**
+  - .github/workflows/rbi-org-scope-e2e.yml
+  saml-sp-keypair-fail-closed-e2e.yml:
+  - runtime-e2e/3341_saml_sp_keypair_fail_closed/**
+  - runtime-e2e/lib/wait_for_stack.sh
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - ee/platform/customer-portal/auth/saml/**
+  - ee/platform/customer-portal/api/sso.go
+  - ee/platform/customer-portal/main.go
+  - migrations/enterprise/108_sso_configuration.sql
+  - .github/workflows/saml-sp-keypair-fail-closed-e2e.yml
+  scim-preauth-app-role-e2e.yml:
+  - ee/platform/customer-portal/scim/**
+  - ee/platform/customer-portal/main.go
+  - migrations/enterprise/117_scim_provisioning.sql
+  - runtime-e2e/3134_scim_preauth_app_role/**
+  - .github/workflows/scim-preauth-app-role-e2e.yml
+  segment-policy-targeting-e2e.yml:
+  - runtime-e2e/2989_segment_policy_targeting/**
+  - platform/agent/static_policy_repository.go
+  - platform/agent/tier_aware_policy_engine.go
+  - platform/agent/segment_policy_gate.go
+  - platform/agent/run.go
+  - platform/agent/policy_types.go
+  - platform/shared/policy/types.go
+  - platform/shared/policy/loader.go
+  - platform/shared/policy/engine.go
+  - platform/shared/policy/evaluator.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - migrations/core/157_static_policies_segment_id.sql
+  - migrations/enterprise/117_*.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/**
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/segment-policy-targeting-e2e.yml
+  single-policy-engine-e2e.yml:
+  - runtime-e2e/3319_single_policy_engine/**
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/dynamic_policy_metrics.go
+  - platform/orchestrator/policy_defaults.go
+  - platform/shared/policy/loader.go
+  - platform/orchestrator/run.go
+  - platform/orchestrator/authn_middleware.go
+  - docker-compose.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - migrations/core/010_policy_tables.sql
+  - migrations/core/031_seed_system_policies.sql
+  - runtime-e2e/lib/proxy_auth.sh
+  - .github/workflows/single-policy-engine-e2e.yml
+  template-apply-repair-e2e.yml:
+  - runtime-e2e/3528_template_apply_repair/**
+  - runtime-e2e/lib/**
+  - docker-compose.yml
+  - migrations/core/168_repair_wrapped_template_variable.sql
+  - migrations/core/168_repair_wrapped_template_variable_down.sql
+  - migrations/core/024_policy_templates.sql
+  - migrations/enterprise/139_us_compliance_templates.sql
+  - platform/orchestrator/template_api_service.go
+  - platform/orchestrator/template_api_handlers.go
+  - platform/orchestrator/template_api_repository.go
+  - platform/orchestrator/template_api_types.go
+  - platform/orchestrator/policy_api_repository.go
+  - platform/orchestrator/policy_api_service.go
+  - platform/orchestrator/dynamic_policy_handlers.go
+  - platform/agent/policy_categories.go
+  - platform/shared/policy/condition_evaluator.go
+  - platform/orchestrator/run.go
+  - platform/orchestrator/authn_middleware.go
+  - platform/agent/migration_helpers.go
+  - .github/workflows/template-apply-repair-e2e.yml
+  top-policies-identity-e2e.yml:
+  - runtime-e2e/3426_top_policies_identity/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - platform/orchestrator/audit_summary_handler.go
+  - platform/orchestrator/audit_read_handlers.go
+  - platform/shared/audit/top_policies.go
+  - platform/shared/audit/policy_identity.go
+  - platform/shared/audit/policy_decision.go
+  - ee/platform/customer-portal-ui/app/audit/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/app/login/**
+  - ee/platform/customer-portal-ui/app/api/v1/**
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - platform/agent/decision_handler.go
+  - platform/agent/policy_identity_stamp.go
+  - platform/agent/fincrime/types.go
+  - platform/agent/mcp_richer_context.go
+  - platform/agent/cowork_otel_ingest.go
+  - platform/orchestrator/audit_logger.go
+  - platform/orchestrator/override_audit.go
+  - ee/platform/agent/hitl/repository.go
+  - ee/platform/agent/hitl/service.go
+  - ee/policy-packs/fincrime/**
+  - .github/workflows/top-policies-identity-e2e.yml
+  trust-realm-persistence-e2e.yml:
+  - runtime-e2e/3550_trust_realm_persistence/**
+  - migrations/core/169_identity_trust_realms.sql
+  - migrations/core/169_identity_trust_realms_down.sql
+  - platform/agent/migration_helpers.go
+  - platform/agent/run.go
+  - platform/cmd/agent/**
+  - platform/shared/identity/realm.go
+  - platform/shared/identity/realm_store.go
+  - platform/shared/identity/realm_codec.go
+  - migrations/core/**
+  - .github/workflows/trust-realm-persistence-e2e.yml
+  us-compliance-templates-e2e.yml:
+  - runtime-e2e/3529_us_compliance_templates/**
+  - runtime-e2e/lib/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - migrations/enterprise/139_us_compliance_templates.sql
+  - migrations/enterprise/139_us_compliance_templates_down.sql
+  - migrations/enterprise/109_compliance_templates.sql
+  - migrations/core/024_policy_templates.sql
+  - migrations/core/026_audit_retention_config.sql
+  - platform/orchestrator/template_api_service.go
+  - platform/orchestrator/template_api_handlers.go
+  - platform/orchestrator/template_api_repository.go
+  - platform/orchestrator/policy_api_repository.go
+  - platform/shared/policy/condition_evaluator.go
+  - platform/shared/policy/types.go
+  - platform/orchestrator/run.go
+  - platform/orchestrator/authn_middleware.go
+  - platform/agent/migration_helpers.go
+  - .github/workflows/us-compliance-templates-e2e.yml
+  usage-latency-tile-e2e.yml:
+  - runtime-e2e/3436_usage_latency_tile/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/usage/**
+  - ee/platform/customer-portal-ui/lib/latency.ts
+  - ee/platform/customer-portal-ui/app/login/**
+  - ee/platform/customer-portal-ui/contexts/DeploymentContext.tsx
+  - ee/platform/customer-portal/api/usage.go
+  - platform/common/usage/recorder_enterprise.go
+  - platform/agent/cowork_otel_metrics_ingest.go
+  - platform/agent/run.go
+  - scripts/generate-jwt.sh
+  - platform/orchestrator/**
+  - migrations/core/081_usage_metering.sql
+  - migrations/enterprise/126_fix_usage_aggregator_idempotency.sql
+  - .github/workflows/usage-latency-tile-e2e.yml
+  usbanking-compliance-e2e.yml:
+  - runtime-e2e/3530_usbanking_compliance_report/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - runtime-e2e/lib/wait_for_stack.sh
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/orchestrator/usbanking/**
+  - platform/orchestrator/compliancereport/**
+  - platform/orchestrator/read_scope.go
+  - platform/orchestrator/run.go
+  - platform/agent/rls/scope.go
+  - migrations/enterprise/**
+  - migrations/core/021_runtime_connector_configuration.sql
+  - migrations/core/025_hitl_oversight_queue.sql
+  - migrations/core/059_runtime_tables_to_migrations.sql
+  - migrations/core/119_audit_logs_decision_id_plane.sql
+  - .github/workflows/usbanking-compliance-e2e.yml
+  usinsurance-naic-exhibits-e2e.yml:
+  - runtime-e2e/3531_usinsurance_naic_exhibits/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - runtime-e2e/lib/wait_for_stack.sh
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/orchestrator/usinsurance/**
+  - platform/orchestrator/compliancereport/**
+  - platform/orchestrator/read_scope.go
+  - platform/orchestrator/run.go
+  - platform/shared/audit/policy_identity.go
+  - migrations/enterprise/136_compliance_report_jobs.sql
+  - migrations/enterprise/142_usinsurance_report_vocabulary.sql
+  - migrations/core/059_runtime_tables_to_migrations.sql
+  - migrations/core/025_hitl_oversight_queue.sql
+  - .github/workflows/usinsurance-naic-exhibits-e2e.yml
+  ussecurities-compliance-e2e.yml:
+  - runtime-e2e/3532_ussecurities_exam_package/**
+  - runtime-e2e/lib/proxy_auth.sh
+  - runtime-e2e/lib/wait_for_stack.sh
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/orchestrator/ussecurities/**
+  - platform/orchestrator/compliancereport/**
+  - platform/orchestrator/read_scope.go
+  - platform/orchestrator/run.go
+  - platform/agent/rls/scope.go
+  - platform/shared/policy/loader.go
+  - migrations/enterprise/**
+  - migrations/core/018_row_level_security.sql
+  - migrations/core/021_runtime_connector_configuration.sql
+  - migrations/core/025_decision_chain.sql
+  - migrations/core/025_hitl_oversight_queue.sql
+  - migrations/core/059_runtime_tables_to_migrations.sql
+  - migrations/core/119_audit_logs_decision_id_plane.sql
+  - migrations/core/125_audit_record_signing.sql
+  - .github/workflows/ussecurities-compliance-e2e.yml
+  wcp-hitl-chokepoint-e2e.yml:
+  - runtime-e2e/3408_wcp_hitl_chokepoint/**
+  - platform/agent/hitl/queue/**
+  - platform/orchestrator/hitl_wcp_adapter.go
+  - platform/orchestrator/hitl_wcp_community.go
+  - platform/orchestrator/hitl_wcp_enterprise.go
+  - platform/orchestrator/hitl_wcp_mirror.go
+  - platform/orchestrator/wcp_policy_adapter.go
+  - platform/orchestrator/hitl_execution.go
+  - platform/orchestrator/workflow_control/**
+  - platform/orchestrator/run.go
+  - platform/agent/hitl/**
+  - ee/platform/agent/hitl/**
+  - platform/agent/license/tier.go
+  - platform/agent/license/tier_support.go
+  - ee/platform/agent/license/tier_support.go
+  - platform/agent/rls/**
+  - migrations/core/025_hitl_oversight_queue.sql
+  - migrations/core/114_hitl_notify_url.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/wcp-hitl-chokepoint-e2e.yml
+  wcp-stepgate-segment-e2e.yml:
+  - runtime-e2e/3281_wcp_stepgate_segment/**
+  - platform/orchestrator/wcp_policy_adapter.go
+  - platform/orchestrator/workflow_control/**
+  - platform/orchestrator/db_dynamic_policies.go
+  - platform/orchestrator/segment_policy_gate.go
+  - platform/shared/identity/segment_policy_gate.go
+  - platform/shared/policy/types.go
+  - platform/shared/policy/loader.go
+  - platform/shared/policy/engine.go
+  - platform/shared/policy/evaluator.go
+  - platform/shared/identity/identity_attribute_resolver.go
+  - platform/shared/identity/segment_cache.go
+  - platform/agent/mcp_identity.go
+  - platform/shared/identity/scim_role_resolver.go
+  - platform/shared/tenantscope/tenantscope.go
+  - migrations/core/159_dynamic_policies_segment_id.sql
+  - migrations/enterprise/117_*.sql
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - platform/agent/Dockerfile
+  - platform/orchestrator/Dockerfile
+  - ee/platform/agent/**
+  - ee/go.mod
+  - ee/go.sum
+  - .github/workflows/wcp-stepgate-segment-e2e.yml
+  workflow-identifier-e2e.yml:
+  - runtime-e2e/3442_workflow_identifier/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - platform/orchestrator/workflow_control/ids.go
+  - platform/orchestrator/workflow_control/service.go
+  - platform/orchestrator/workflow_control/repository.go
+  - platform/shared/execution/**
+  - platform/orchestrator/workflow_engine.go
+  - platform/orchestrator/hitl_execution.go
+  - platform/orchestrator/wcp_execution_tracker.go
+  - platform/orchestrator/map_execution_tracker.go
+  - platform/orchestrator/unified_execution_handler.go
+  - platform/orchestrator/run.go
+  - ee/platform/customer-portal-ui/app/approvals/**
+  - ee/platform/customer-portal-ui/app/executions/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal-ui/lib/tableCell.tsx
+  - ee/platform/customer-portal/api/orchestrator_proxy.go
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - ee/platform/customer-portal/api/auth.go
+  - ee/platform/customer-portal/main.go
+  - migrations/core/041_workflows.sql
+  - migrations/core/042_unified_execution_history.sql
+  - .github/workflows/workflow-identifier-e2e.yml
+  workflows-run-counter-e2e.yml:
+  - runtime-e2e/3367_workflows_run_counter/**
+  - docker-compose.yml
+  - docker-compose.enterprise.yml
+  - docker-compose.portal-ui.yml
+  - ee/platform/customer-portal-ui/app/dashboard/**
+  - ee/platform/customer-portal-ui/app/executions/**
+  - ee/platform/customer-portal-ui/lib/api.ts
+  - ee/platform/customer-portal/api/orchestrator_proxy.go
+  - ee/platform/customer-portal/api/orchestrator_proxy_allowlist.go
+  - ee/platform/customer-portal/api/auth.go
+  - ee/platform/customer-portal/middleware/**
+  - ee/platform/customer-portal/main.go
+  - platform/orchestrator/unified_execution_handler.go
+  - platform/orchestrator/read_scope.go
+  - platform/orchestrator/read_scope_domains.go
+  - platform/shared/execution/**
+  - platform/shared/identity/**
+  - platform/shared/tenantscope/**
+  - platform/agent/proxy.go
+  - platform/orchestrator/wcp_execution_tracker.go
+  - platform/orchestrator/map_execution_tracker.go
+  - platform/orchestrator/workflow_control/**
+  - platform/agent/auth.go
+  - platform/agent/authenticator.go
+  - platform/agent/db_auth.go
+  - migrations/core/042_unified_execution_history.sql
+  - migrations/core/049_execution_history_drop_tenant_fk.sql
+  - migrations/core/104_v9_b9_security_definer_helpers.sql
+  - .github/workflows/workflows-run-counter-e2e.yml
+
+unconditional:
+  cross-system-hitl-e2e.yml: merge_group-only before 2026-09-04; merge_group takes no paths filter, so none exists to copy
+  decide-segments-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)
+  fincrime-engine-a-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)
+  governed-plane-scope-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this
+    suite dressed as a recovered fact; it fires nightly instead (~10 min)
+  mcp-rest-segments-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)
+  mcp-rest-token-rejected-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this
+    suite dressed as a recovered fact; it fires nightly instead (~10 min)
+  require-user-token-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)
+  sdk-smoke-tests.yml: 'on: [merge_group, workflow_dispatch] - no pull_request trigger at all. Its detect-changes job scopes the smoke job; the ~12 min production-posture job runs unscoped on every queue
+    entry, a known fixed cost'
+  sebi-llm-export-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)
+  segment-resolution-e2e.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)
+  self-hosted-canary.yml: cheap host proof (~3 min); dispatched nightly on purpose as a health check that the AWS runner host still builds, tests and boots Docker
+  sync-community-repo.yml: operator-run mirror sync; the nightly reaches it but it is dispatch-gated in practice
+  tier-gate-contract.yml: ran on merge_group only before 2026-09-04, and merge_group takes no `paths:` filter, so there has never been a list to copy. Deriving one now would be a guess about this suite
+    dressed as a recovered fact; it fires nightly instead (~10 min)

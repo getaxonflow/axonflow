@@ -84,6 +84,19 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the 10.4.0 train moves all five: openclaw 2.8.6 -> 2.9.0
+//     (openclaw-plugin#191 + #193), claude-code 1.11.0 -> 1.12.0
+//     (claude-plugin#124), cursor 1.7.0 -> 1.8.0 (cursor-plugin#94), codex
+//     1.7.0 -> 1.8.0 (codex-plugin#95) and claude-desktop 0.3.2 -> 0.4.0
+//     (claude-desktop-plugin#34). Each of those releases carries the client
+//     half of the PEP capability handshake: the client declares the obligation
+//     types it can DISCHARGE, and a client below the recommended version sends
+//     no declaration at all. That is not a refusal today -- an ABSENT header is
+//     the legacy caller the platform still serves -- so the floor stays where
+//     it is and only the recommendation moves. The bump is written here at
+//     PREP, in the release commit, so the release's own images advertise the
+//     train's targets; the tags themselves are cut in the release phase, after
+//     the community platform release.
 //   - claude-desktop 0.3.1 -> 0.3.2 (claude-desktop-plugin#26, published
 //     2026-07-11, corrected here on the v10.0.0 train). This is a CATCH-UP, not
 //     a bump riding a new plugin release: 0.3.2 went live during the 9.10.0
@@ -114,11 +127,11 @@ var minVersion = map[string]string{
 //     recommended version a client keeps working but reads the shared-identity
 //     zero-rows fallback until upgraded.
 var recommendedVersion = map[string]string{
-	"openclaw":       "2.8.6",
-	"claude-code":    "1.11.0",
-	"cursor":         "1.7.0",
-	"codex":          "1.7.0",
-	"claude-desktop": "0.3.2",
+	"openclaw":       "2.9.0",
+	"claude-code":    "1.12.0",
+	"cursor":         "1.8.0",
+	"codex":          "1.8.0",
+	"claude-desktop": "0.4.0",
 }
 
 // MinVersions returns the floor map.

@@ -48,10 +48,40 @@ type mutant struct {
 	// why states the defect this mutant restores, so a reader can tell a
 	// meaningful mutation from a syntactic one.
 	why string
+	// runPattern overrides the test the mutant must turn red.
+	//
+	// Empty means the default, "TestSaveTimeChecks/<code>$", which is right for
+	// every check relayed from the deterministic PDP. A mutant aimed at the
+	// PARSE BOUNDARY has no save-time subtest to name, and pointing it at one
+	// anyway would report a survivor for a guard that works.
+	runPattern string
 }
 
 func mutants() []mutant {
 	return []mutant{
+		// THE PARSE BOUNDARY, not a save-time check - so it names its own test.
+		//
+		// ValidateAgainstSchema validates a RE-RENDERED document: the bytes go
+		// through the decoder into a Go value and back out, so a member the
+		// author OMITTED comes back at its zero value and satisfies `required`.
+		// Deleting the raw call leaves the boundary accepting a document whose
+		// obligation never declared `mandatory`, stored as advisory, with the
+		// author's own document saying nothing of the kind.
+		//
+		// It is here rather than left as a claim because the first version of
+		// that change was not held by its own tests: with the call deleted, both
+		// new tests stayed green - the top-level members are already refused by
+		// the rendered validator's nested constraints, and the comparison test
+		// did not yet assert that the rendered validator ACCEPTS. This is the
+		// third guard in this lane whose CALL SITE was unpinned while its
+		// predicate was tested.
+		{
+			code: "AUTHORING_RAW_SCHEMA", file: "authoring/document.go",
+			why:        "lets Parse accept a document whose obligation omitted `mandatory`, because the re-rendered document supplies it at its zero value",
+			old:        "\tif err := ValidateRawAgainstSchema(raw); err != nil {\n\t\treturn nil, err\n\t}\n",
+			new:        "",
+			runPattern: "TestTheRawValidatorSeesWhatTheRenderedOneCannot$",
+		},
 		// Relayed from the deterministic PDP. Mutating pdp/policy.go is
 		// deliberate: the relayed checks are only as good as the rules behind
 		// them, and a harness that mutated only this package would report the
@@ -342,7 +372,10 @@ func TestMutationProofsForEverySaveTimeCheck(t *testing.T) {
 	for _, m := range all {
 		m := m
 		t.Run(m.code, func(t *testing.T) {
-			pattern := "TestSaveTimeChecks/" + m.code + "$"
+			pattern := m.runPattern
+			if pattern == "" {
+				pattern = "TestSaveTimeChecks/" + m.code + "$"
+			}
 			built, passed, out := runMutant(t, root, m, pattern)
 			if !built {
 				// Reported apart from a failing assertion on purpose. `go test`
@@ -378,16 +411,32 @@ func TestMutationProofsForEverySaveTimeCheck(t *testing.T) {
 			sort.Strings(missing)
 			t.Fatalf("declared checks with no mutant proving their case can fail: %v", missing)
 		}
+		// A mutant may name a declared save-time check, OR carry its own
+		// runPattern. The second kind exists because not every guard in this
+		// package IS a save-time check: the PARSE BOUNDARY is one, and forcing
+		// it to invent a check code so this loop accepts it would put a
+		// non-existent entry in AllChecks() - which the operator-facing check
+		// list is generated from.
+		boundary := 0
 		for _, m := range all {
-			if _, ok := declared[m.code]; !ok {
-				t.Fatalf("mutant %s does not name a declared check", m.code)
-			}
 			if m.why == "" {
 				t.Fatalf("mutant %s does not say what defect it restores", m.code)
 			}
+			if _, ok := declared[m.code]; ok {
+				if m.runPattern != "" {
+					t.Fatalf("mutant %s names a declared check AND overrides its test pattern; one of the two is "+
+						"wrong, and the override would silently stop exercising the check's own case", m.code)
+				}
+				continue
+			}
+			if m.runPattern == "" {
+				t.Fatalf("mutant %s names no declared check and no test to turn red, so nothing says what it proves", m.code)
+			}
+			boundary++
 		}
-		if len(all) != len(declared) {
-			t.Fatalf("%d mutants for %d declared checks", len(all), len(declared))
+		if len(all)-boundary != len(declared) {
+			t.Fatalf("%d save-time mutants for %d declared checks (plus %d boundary mutants)",
+				len(all)-boundary, len(declared), boundary)
 		}
 	})
 

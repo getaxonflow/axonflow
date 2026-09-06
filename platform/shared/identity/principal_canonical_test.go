@@ -205,6 +205,16 @@ func TestValidateRealmIDRejectsSeparatorsAndWhitespace(t *testing.T) {
 		"newline":      "realm\nokta",
 		"control rune": "realm\x00okta",
 		"too long":     strings.Repeat("a", maxPrincipalComponent+1),
+		// Outside the decision contract's qualifier grammar (#3709 row 3).
+		// Every one of these was ACCEPTED before, and every principal minted
+		// under such a realm was unparseable by the PDP.
+		"plus":          "acme+prod",
+		"slash":         "eu/central",
+		"at":            "realm@okta",
+		"non-ascii":     "réalm",
+		"leading dash":  "-leading",
+		"leading dot":   ".leading",
+		"leading under": "_leading",
 	}
 	for name, id := range bad {
 		t.Run(name, func(t *testing.T) {
@@ -252,9 +262,11 @@ func TestSubjectTypeVocabularyIsClosed(t *testing.T) {
 // Changing the value is therefore a deliberate, cross-plane act, and this test
 // exists to make an incidental edit fail.
 func TestCanonicalFormVersionIsStable(t *testing.T) {
-	const want = "identity/1"
+	const want = "identity/2" // bumped by #3709 row 3: the realm-id character set narrowed
 	if CanonicalFormVersion != want {
-		t.Fatalf("CanonicalFormVersion changed from %q to %q. This value is bound into decision proofs by the obligation plane; "+
-			"if the change is intended, coordinate the bump rather than editing this test alone", want, CanonicalFormVersion)
+		t.Fatalf("CanonicalFormVersion changed from %q to %q. This value is DECLARED as bound into decision proofs "+
+			"(proof.Binding.IdentityCanonicalFormVersion) - though as of #3709 row 3 no production writer populates that "+
+			"field, which is filed - so if the change is intended, coordinate the bump rather than editing this test alone",
+			want, CanonicalFormVersion)
 	}
 }

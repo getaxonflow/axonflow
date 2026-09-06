@@ -23,8 +23,10 @@
         <java.version>17</java.version>
         <!-- Override Tomcat version to fix CVE-2026-29145, CVE-2026-29129, CVE-2026-34483,
              CVE-2026-34487 and, from #3116, CVE-2026-41293 / CVE-2026-43512 / CVE-2026-43515
-             (CRITICAL) plus CVE-2026-41284 / CVE-2026-42498 / CVE-2026-43513 (HIGH) -->
-        <tomcat.version>10.1.55</tomcat.version>
+             (CRITICAL) plus CVE-2026-41284 / CVE-2026-42498 / CVE-2026-43513 (HIGH), and
+             CVE-2026-65182 (CRITICAL) / CVE-2026-65905 / CVE-2026-68525 fixed in 10.1.58,
+             which Maven Central never published; 10.1.59 is the first release above it -->
+        <tomcat.version>10.1.59</tomcat.version>
         <!-- Override Spring Framework to fix CVE-2025-41249 and, from the
              #3038 security scan, CVE-2026-41850 (spring-expression DoS via
              crafted SpEL expressions), CVE-2026-41842 (spring-webmvc DoS
@@ -76,7 +78,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>9.1.0</version>
+            <version>9.2.0</version>
         </dependency>
 
         <!-- OpenAI for Gateway Mode demo -->

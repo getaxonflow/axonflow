@@ -80,6 +80,30 @@ var (
 	qualifierRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 )
 
+// QualifierGrammar is the qualifier rule as a reader would state it. It is
+// the text every refusal carries, so an operator naming a realm learns the
+// rule from the error rather than from this file.
+const QualifierGrammar = "a letter or digit, then letters, digits, '_', '.' or '-' ([A-Za-z0-9][A-Za-z0-9_.-]*); " +
+	"never ':', which separates the qualifier from the local segment of a Type::qualifier:local identifier"
+
+// ValidateQualifier reports whether s is a legal qualifier - the realm of a
+// principal, the connector of a resource - under the ONE grammar the wire
+// contract parses with.
+//
+// It is exported for the producer side (#3709 row 3): identity.ValidateRealmID
+// admits the realm ids that later become the qualifier of every principal a
+// decision proof binds, and until it delegated here it kept its own, wider
+// rule (any printable, colon-free, whitespace-free rune). An operator who
+// named a realm `acme+prod` minted principals the PDP refused to parse. One
+// grammar, defined here because this is the module the wire form belongs to
+// and the module identity may import; the reverse import is impossible.
+func ValidateQualifier(s string) error {
+	if !qualifierRe.MatchString(s) {
+		return fmt.Errorf("contract: qualifier %q does not match the qualifier grammar: %s", s, QualifierGrammar)
+	}
+	return nil
+}
+
 // ID is a canonical identifier. Display names, emails, token claims, connector
 // names and aliases are never identifiers (ADR-065 invariant 3).
 type ID struct {
@@ -87,6 +111,59 @@ type ID struct {
 	// inferred, because two kinds can share a type string across connectors.
 	Kind Kind `json:"kind"`
 	// Type is the entity type, for example "User", "Agent", "JiraIssue".
+	//
+	// FOR KindPrincipal THIS IS DELIBERATELY OPEN, AND THE CLOSED CHECK LIVES
+	// SOMEWHERE ELSE (#3711). identity.SubjectType in
+	// platform/shared/identity/principal.go is the closed vocabulary of six -
+	// User, Service, Workload, Agent, Client, Group - and it is the VERSIONED
+	// definition: identity.CanonicalFormVersion is bound into every decision
+	// proof as proof.Binding.IdentityCanonicalFormVersion, so a change to the
+	// canonical principal form invalidates outstanding proofs loudly instead of
+	// two spellings of one principal silently comparing unequal. This regex is
+	// not that vocabulary and must never be read as it: `Robot::okta-prod:00u1`
+	// is a valid identifier here and a hard error there.
+	//
+	// THE OPENNESS IS A MODULE FACT, NOT A PREFERENCE. axonflow/platform/decision
+	// is a separate Go module with a deliberately minimal dependency set, and
+	// axonflow/platform depends on IT (platform/shared/planeshadow imports this
+	// package). Importing identity from here would invert that, so the
+	// vocabulary cannot be shared as code and the two grammars are held
+	// together by a test that can see both instead:
+	// platform/shared/identity/principal_contract_lockstep_test.go sweeps them
+	// over one corpus in both directions and requires every disagreement to
+	// match a DECLARED class carrying a reason and a disposition. The type
+	// vocabulary is one of four; the other three (component length, realm
+	// charset, subject charset) are filed on #3709.
+	//
+	// THE CENSUS BEHIND THE v11.0.0 DISPOSITION, STATED PRECISELY. No Go
+	// CONSTRUCTOR in this tree emits a principal type outside the six: the only
+	// live producers are legacycompile/shadow (a literal "User") and the
+	// conformance fixtures. A DECODED principal is a different matter, and the
+	// reason is THIS REGEX rather than a missing check.
+	//
+	// An earlier version of this comment said the decode paths reach the engine
+	// "without calling Validate". That is false and was caught in review:
+	// Engine.Decide calls req.Validate, which calls ID.Validate on the
+	// principal. What Validate does NOT do is consult a vocabulary - it matches
+	// the open regex above - so a request naming `Robot::okta-prod:00u1` is
+	// VALID today and is decided. The distinction matters because a maintainer
+	// who believed the first version would "fix" it by adding a Validate call
+	// and close nothing.
+	//
+	// The paths that carry a decoded principal are replay records
+	// (replay.LoadRecord -> Replay -> Engine.Decide; Record.Validate does not
+	// reach the embedded Request, and Engine.Decide's own Validate is the open
+	// check above), compiled policy scopes (pdp.compileScope reads
+	// ID.String() with no Kind and no Validate at all), and authoring documents
+	// (which check Kind only). The published schema
+	// (contract/schema/contract-2026-08-29.schema.json, $defs/identifier)
+	// carries this regex verbatim and no enum of six. So closing this set would
+	// REJECT artifacts every one of those paths accepts today, which is why it
+	// is a wire break and not a tidy-up.
+	//
+	// If you close it here, that lockstep test fails and you must reconcile the
+	// two definitions there rather than growing a second vocabulary in this
+	// package.
 	Type string `json:"type"`
 	// Qualifier is the realm or connector identifier for qualified kinds and
 	// is empty for unqualified kinds.
@@ -129,8 +206,8 @@ func (id ID) Validate() error {
 		return fmt.Errorf("contract: %s identifier local segment %q contains a control character", id.Kind, id.Local)
 	}
 	if qualified {
-		if !qualifierRe.MatchString(id.Qualifier) {
-			return fmt.Errorf("contract: %s identifier requires a colon-free qualifier, got %q", id.Kind, id.Qualifier)
+		if err := ValidateQualifier(id.Qualifier); err != nil {
+			return fmt.Errorf("contract: %s identifier requires a colon-free qualifier, got %q: %w", id.Kind, id.Qualifier, err)
 		}
 	} else if id.Qualifier != "" {
 		return fmt.Errorf("contract: %s identifier must not carry a qualifier, got %q", id.Kind, id.Qualifier)

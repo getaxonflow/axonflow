@@ -153,6 +153,37 @@ var (
 		Name: "axonflow_decision_shadow_org_mode_failures_total",
 		Help: "Per-organization decision shadow mode reads that failed and fell back to the process-wide mode.",
 	})
+
+	// Per-organization PLANE narrowing failures (#3552 gap 3). A SEPARATE
+	// counter from the mode's, because the two failures move a window in
+	// OPPOSITE directions and an operator reading one series could not tell
+	// them apart: a failed MODE read drops an organization out of the window
+	// entirely, while a failed PLANE read leaves it measuring MORE planes than
+	// its record asks for - an inflated denominator rather than an empty one.
+	//
+	// AND IT CARRIES NO org LABEL, DELIBERATELY. The organization is in the LOG
+	// line beside the raw value and the parser's own message; the counter
+	// answers "how often, fleet-wide" and the log answers "which organization".
+	//
+	// An org label here would be UNBOUNDED CARDINALITY on a path that a caller
+	// drives: the resolution runs per observation, so every request for an
+	// organization with an unusable record increments it, and the label's value
+	// space is whatever org ids reach the deployment. That is a memory lever on
+	// the scrape target, and it is the hazard the identity axis has already
+	// paid for - see maxOrgLabelValues, labelOverflowOrg and
+	// labelUnattributedOrg in identity's compat_metrics.go, which cap the
+	// distinct values per process and bucket the rest.
+	//
+	// If a per-organization breakdown is ever judged worth it, REUSE that
+	// capped scheme rather than adding a raw label: two implementations of one
+	// cap is two things that must not disagree, and the one that drifted would
+	// be the newer one nobody is watching. planeshadow already imports
+	// identity, so exporting the helper is the smaller change of the two.
+	shadowOrgPlanesFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "axonflow_decision_shadow_org_planes_failures_total",
+		Help: "Per-organization decision shadow plane-narrowing reads that failed and fell back to the deployment's plane list. " +
+			"The organization is named in the log line rather than in a label, to keep an unbounded label off a per-request path.",
+	})
 )
 
 // gateOperandDirection and gateOperandClass are the coordinates ADR-065 gate

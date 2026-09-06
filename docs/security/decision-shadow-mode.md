@@ -104,6 +104,25 @@ Raising is the ordinary case: shadow one organization on a deployment that is ot
 
 `enforce` cannot be stored: the column's `CHECK` refuses it, the parser refuses it, and the read path refuses it a third time - because a `CHECK` governs the writes its own migration governs and says nothing about a row a restore or a later migration might put there.
 
+### Narrowing one organization to some planes
+
+The mode above is all-or-nothing for the organization it names. `decision_shadow_planes` (enterprise migration 153) narrows *which planes* that organization dual-evaluates, on the same row and the same read:
+
+```
+PUT /api/v1/admin/organizations/{org_id}/identity-settings
+{ "decision_shadow_planes": "mcp,wcp" }
+```
+
+It exists for the failure the other two widths are the wrong shape for: **one plane, for one tenant**. A customer whose `mcp` traffic floods `not_comparable`, or whose policy set makes one plane's bundle compilation expensive. Withdrawing that plane deployment-wide discards every other tenant's evidence for it; withdrawing the organization discards its evidence on the other eleven planes. Gate 18 is stated **per plane**, so both remedies throw away exactly the measurements v11 is waiting for.
+
+**It can only ever NARROW.** The resolved set is the intersection of the deployment's `AXONFLOW_DECISION_SHADOW_PLANES` and the organization's list - unlike the *mode*, which wins in both directions. A deployment withdraws a plane for reasons that belong to the deployment (its worker pool cannot afford that plane's compilations; that plane's comparisons are known-bad on this build), and a per-tenant row that re-enabled it would let one tenant's settings spend the deployment's money. In the ordinary case the deployment list is unset, which means every implemented plane, and the intersection is the organization's list exactly.
+
+- **Absent (`null`)** means no narrowing: the deployment's plane list decides. That is the state of every existing row, and an empty string is refused rather than stored, because `''` reads to a human scanning the table as "no planes" - the opposite posture.
+- A **name outside the declared set** is refused at write time by the same parser the reader applies (`planeshadow.ParsePlanes`), so a value the API accepts is one the agent and the orchestrator can act on.
+- A stored value this build **cannot parse** - a restore, a hand-written row, a plane removed by a later build - falls back to the deployment's list and is **counted** (`axonflow_decision_shadow_org_planes_failures_total`). Not to *no* planes: a closed window is invisible in the evidence, and an operator reads an empty series as agreement.
+- The narrowing is stored **canonically** (sorted, lower-cased), so two spellings of one posture cannot sit in the column as two values.
+- On a database without migration 153 the API answers **409 and names the migration** rather than 200 without storing it.
+
 ## Rolling It Out
 
 1. **Deploy with the flag off.** This is the default and it changes nothing: one atomic load per policy evaluation, no allocation, no behaviour change.
@@ -119,11 +138,12 @@ Every disposition counter below is scoped to organizations that are IN the windo
 
 | Width | How | Takes effect |
 |---|---|---|
-| One organization | `PUT .../identity-settings` with `decision_shadow_mode: "off"` | within the settings TTL (60s default) - **no redeploy** |
+| One plane, one organization | `PUT .../identity-settings` with `decision_shadow_planes` listing the planes to **keep** | within the settings TTL (60s default) - **no redeploy** |
+| One organization, every plane | `PUT .../identity-settings` with `decision_shadow_mode: "off"` | within the settings TTL (60s default) - **no redeploy** |
 | One plane, whole deployment | `AXONFLOW_DECISION_SHADOW_PLANES` | redeploy |
 | Whole deployment | `AXONFLOW_DECISION_SHADOW_MODE=off` | redeploy |
 
-Only the per-organization path avoids a redeploy, and that is the point of it: it is the lever to reach for during an incident.
+Only the two per-organization paths avoid a redeploy, and that is the point of them: they are the levers to reach for during an incident. Reach for the narrowest one that covers the problem - a noisy plane on one tenant costs that tenant's evidence on one plane, where dropping the tenant costs eleven planes of it.
 
 Turning the shadow off never changes an enforcement outcome, in either direction, because it never contributed to one.
 
@@ -167,6 +187,7 @@ The site stamp is the one an operator would otherwise never see. A plane's obser
 | `axonflow_decision_shadow_evaluation_seconds` | `plane` | worker cost (off the request path) |
 | `axonflow_decision_shadow_enqueue_seconds` | `plane`, `recorded` | **the only cost a caller waits for.** `recorded="true"` is an observation that entered the window; `recorded="false"` is one whose organization resolved to `off` - it still paid the mode read, and on the documented rollout (process mode off, one organization shadowing) that is the overwhelming majority of requests |
 | `axonflow_decision_shadow_org_mode_failures_total` | - | per-organization records that could not be read |
+| `axonflow_decision_shadow_org_planes_failures_total` | - | per-organization plane narrowings that could not be read or parsed, and fell back to the deployment's plane list. **A separate counter from the mode's on purpose**: a failed mode read drops an organization out of the window, while a failed plane read leaves it measuring *more* planes than its record asks for - opposite directions, and one series could not tell them apart |
 
 The dispositions, and what each one tells you to do:
 

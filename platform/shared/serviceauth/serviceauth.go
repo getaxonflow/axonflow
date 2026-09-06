@@ -114,33 +114,13 @@ func (v *TokenValidator) ValidateToken(token string) (valid bool, isLegacy bool,
 		return false, true, nil
 	}
 
-	// Parse: AXON-INTERNAL-{timestamp}-{signature}
-	rest := token[len(TokenPrefix):]
-	dashIdx := strings.Index(rest, "-")
-	if dashIdx < 0 {
-		return false, false, fmt.Errorf("invalid token format: missing signature separator")
-	}
-
-	tsStr := rest[:dashIdx]
-	sig := rest[dashIdx+1:]
-
-	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	// The split and the skew bound are SHARED with ValidateTokenForSubject
+	// rather than written twice. Two copies of "what a well-formed, in-window
+	// token is" is two things to fix when one of them is wrong, and the looser
+	// copy would decide.
+	ts, sig, err := parseToken(token, v.clock.Now().Unix(), v.maxSkew)
 	if err != nil {
-		return false, false, fmt.Errorf("invalid token format: bad timestamp: %w", err)
-	}
-
-	if len(sig) != SignatureLength {
-		return false, false, fmt.Errorf("invalid token format: signature length %d, expected %d", len(sig), SignatureLength)
-	}
-
-	// Check timestamp within allowed skew
-	now := v.clock.Now().Unix()
-	diff := now - ts
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > int64(v.maxSkew/time.Second) {
-		return false, false, fmt.Errorf("token expired: timestamp %d is %ds from current time (max %ds)", ts, diff, int64(v.maxSkew/time.Second))
+		return false, false, err
 	}
 
 	// Verify HMAC signature
@@ -264,4 +244,115 @@ func computeSignature(secret, clientID string, timestamp int64) string {
 	_, _ = fmt.Fprintf(mac, "%s:%d", clientID, timestamp)
 	fullSig := hex.EncodeToString(mac.Sum(nil))
 	return fullSig[:SignatureLength]
+}
+
+// Subject-bound tokens: WHAT THEY DO AND, AS IMPORTANTLY, WHAT THEY DO NOT DO.
+//
+// The token above proves exactly one thing: the caller holds
+// AXONFLOW_INTERNAL_SERVICE_SECRET. ClientID is a compile-time constant, so the
+// covered material is a constant plus a timestamp and every internal caller in
+// the fleet is the SAME principal to anything validating it. An endpoint that
+// then reads a caller identity out of the REQUEST BODY is reading a value
+// nothing authenticated - which is #3629: any secret holder could file a
+// decision-proof key-id report under any other PEP's identity, and the
+// rotation-readiness gate would count it.
+//
+// The functions below move the claimed identity INTO the covered material, so
+// a token minted for one subject cannot be presented for another. That closes
+// the body-versus-credential gap: a caller can no longer file under an identity
+// its own credential did not name.
+//
+// IT DOES NOT MAKE THE IDENTITY UNFORGEABLE, and this comment is the place to
+// say so rather than a place to imply otherwise. The secret is fleet-wide by
+// construction, so any holder can mint a token for any subject it likes. What
+// changes is that the identity is now a property of the CREDENTIAL rather than
+// of the payload, so the residual is a credential-distribution problem
+// (per-caller secrets) rather than a code one - and the day per-caller secrets
+// exist, this same code becomes a real binding with no further change. The
+// residual is recorded, with what an attacker gains, in
+// technical-docs/ADR-065-GATE-19-THREAT-MODEL.md.
+
+// SubjectHeader is where a caller declares the identity its token is bound to.
+// The token alone does not carry it: the wire format is fixed and consumed by
+// deployed services, so the subject travels beside the token and is covered by
+// the signature rather than embedded in it.
+const SubjectHeader = "X-Axonflow-Internal-Subject"
+
+// subjectSignatureDomain separates a subject-bound signature from the
+// constant-client one. Without it a subject that happened to equal ClientID
+// would produce the same signature as a plain token, so a plain token would
+// authenticate as that subject.
+const subjectSignatureDomain = "axonflow.internal-service.subject.v1"
+
+// GenerateTokenForSubject produces a token whose signature covers `subject`.
+//
+// The token FORMAT is identical to GenerateToken's; only the covered material
+// differs, so nothing on the wire or in a proxy has to learn a second shape.
+func (g *TokenGenerator) GenerateTokenForSubject(subject string) (string, error) {
+	if strings.TrimSpace(subject) == "" {
+		return "", fmt.Errorf("serviceauth: a subject is required; an empty one would bind the token to nothing while looking bound")
+	}
+	ts := g.clock.Now().Unix()
+	return fmt.Sprintf("%s%d-%s", TokenPrefix, ts, computeSubjectSignature(g.secret, subject, ts)), nil
+}
+
+// ValidateTokenForSubject checks a token against the subject it must be bound
+// to. There is no legacy or fallback branch: a subject-bound endpoint accepts
+// only this form, so nothing can reach it by presenting a weaker credential.
+func (v *TokenValidator) ValidateTokenForSubject(token, subject string) (bool, error) {
+	if strings.TrimSpace(subject) == "" {
+		return false, fmt.Errorf("serviceauth: a subject is required")
+	}
+	ts, sig, err := parseToken(token, v.clock.Now().Unix(), v.maxSkew)
+	if err != nil {
+		return false, err
+	}
+	expected := computeSubjectSignature(v.secret, subject, ts)
+	if subtle.ConstantTimeCompare([]byte(sig), []byte(expected)) != 1 {
+		return false, fmt.Errorf("token signature mismatch for the declared subject")
+	}
+	return true, nil
+}
+
+// computeSubjectSignature covers the domain tag, the subject and the timestamp.
+//
+// The subject is LENGTH-PREFIXED. Interpolating it directly would make
+// ("a:1", 2) and ("a", ...) ambiguous the moment a subject may contain the
+// separator, and two subjects that produce one signed message are two
+// identities that authenticate as each other - which is the whole property
+// this function exists to provide.
+func computeSubjectSignature(secret, subject string, timestamp int64) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = fmt.Fprintf(mac, "%s|%d:%s|%d", subjectSignatureDomain, len(subject), subject, timestamp)
+	return hex.EncodeToString(mac.Sum(nil))[:SignatureLength]
+}
+
+// parseToken splits a token and enforces the skew bound, shared by both
+// validators so they cannot disagree about what a well-formed, in-window token
+// is. Everything after the split differs; everything before it must not.
+func parseToken(token string, now int64, maxSkew time.Duration) (int64, string, error) {
+	if !strings.HasPrefix(token, TokenPrefix) {
+		return 0, "", fmt.Errorf("invalid token format: not an HMAC token")
+	}
+	rest := token[len(TokenPrefix):]
+	dashIdx := strings.Index(rest, "-")
+	if dashIdx < 0 {
+		return 0, "", fmt.Errorf("invalid token format: missing signature separator")
+	}
+	ts, err := strconv.ParseInt(rest[:dashIdx], 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("invalid token format: bad timestamp: %w", err)
+	}
+	sig := rest[dashIdx+1:]
+	if len(sig) != SignatureLength {
+		return 0, "", fmt.Errorf("invalid token format: signature length %d, expected %d", len(sig), SignatureLength)
+	}
+	diff := now - ts
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > int64(maxSkew/time.Second) {
+		return 0, "", fmt.Errorf("token expired: timestamp %d is %ds from current time (max %ds)", ts, diff, int64(maxSkew/time.Second))
+	}
+	return ts, sig, nil
 }
