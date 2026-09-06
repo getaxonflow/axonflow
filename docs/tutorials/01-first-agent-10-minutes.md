@@ -71,7 +71,7 @@ npx tsc --init
 # <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>9.0.0</version>
+#     <version>9.3.0</version>
 # </dependency>
 ```
 

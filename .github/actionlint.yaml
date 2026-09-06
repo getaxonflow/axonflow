@@ -1,0 +1,6 @@
+# Custom runner labels for the AWS self-hosted runner host (2026-09-04).
+# Without this, actionlint rejects `runs-on: [self-hosted, linux, x64, axonflow]`
+# as an unknown label.
+self-hosted-runner:
+  labels:
+    - axonflow

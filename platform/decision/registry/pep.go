@@ -84,23 +84,56 @@ func (p PEPRecord) Validate() Findings {
 			p.Edition)
 	}
 	out = append(out, validateCapabilities(subject, "advertised capability", p.Capabilities)...)
-	if p.Edition == EditionCommunity {
-		for _, c := range sortedCapabilities(p.Capabilities) {
-			family, err := contract.FamilyOf(c.Type)
-			if err != nil {
-				// The undeclared type is already reported by
-				// validateCapabilities; reporting it twice would make one
-				// typo look like two defects.
-				continue
-			}
-			if enterpriseOnlyFamilies[family] {
-				out = out.errorf(CodeCapabilityMissing, subject,
-					"a community enforcement point advertises %q, whose family %q is Enterprise-only; over-advertising is the dangerous direction, because the decision is issued on the strength of the claim",
-					c.Type, family)
-			}
-		}
+	_, overAdvertised := SplitOverAdvertised(p.Edition, p.Capabilities)
+	for _, c := range overAdvertised {
+		// FamilyOf cannot fail here: SplitOverAdvertised only reports a
+		// capability whose family it resolved. An undeclared type is reported
+		// once, by validateCapabilities; reporting it twice would make one typo
+		// look like two defects.
+		family, _ := contract.FamilyOf(c.Type)
+		out = out.errorf(CodeCapabilityMissing, subject,
+			"a community enforcement point advertises %q, whose family %q is Enterprise-only; over-advertising is the dangerous direction, because the decision is issued on the strength of the claim",
+			c.Type, family)
 	}
 	return out
+}
+
+// SplitOverAdvertised partitions a declared capability set into what this
+// edition of enforcement point may claim and what it may not.
+//
+// ONE PREDICATE, TWO REMEDIES, and the split of remedies is deliberate.
+// PEPRecord.Validate REFUSES an over-advertisement, which is right for a
+// REGISTERED record: those come from the checked-in legacy plane fixture and
+// from a deployment's own wiring, so a mis-declared one is a defect somebody
+// can fix before shipping. An EXTERNAL enforcement point's declaration arrives
+// on the wire from an independently released client, and refusing the request
+// would 400 every call from a correctly-built client that happens to name a
+// family this deployment does not issue - so the external path DROPS the
+// over-advertised entries and counts them instead. Dropping is the fail-safe
+// direction: it can only make an enforcement point look LESS capable, which
+// produces a deny at the moment the capability is actually needed, never a
+// permit.
+//
+// Both remedies read this one function, so "which families may this edition
+// claim" has a single definition. A second copy would be a second thing to
+// drift, and the drift would be silent: each copy would keep passing its own
+// tests.
+//
+// A capability naming an UNDECLARED obligation type is returned in kept, not in
+// overAdvertised. It is not an over-advertisement - it is a type this build
+// cannot identify at all - and validateCapabilities is the check that owns it.
+func SplitOverAdvertised(edition Edition, caps []contract.Capability) (kept, overAdvertised []contract.Capability) {
+	kept = []contract.Capability{}
+	overAdvertised = []contract.Capability{}
+	for _, c := range sortedCapabilities(caps) {
+		family, err := contract.FamilyOf(c.Type)
+		if err != nil || edition != EditionCommunity || !enterpriseOnlyFamilies[family] {
+			kept = append(kept, c)
+			continue
+		}
+		overAdvertised = append(overAdvertised, c)
+	}
+	return kept, overAdvertised
 }
 
 // CapabilityStatus is why a capability check answered as it did.
@@ -282,15 +315,22 @@ func distinctTypes(caps []contract.Capability) []contract.ObligationType {
 	return out
 }
 
+// sortedCapabilities is the package's alias for the contract's canonical order.
+//
+// It DELEGATES rather than reimplementing, and that fixed a real defect rather
+// than removing a duplicate. The previous body was `append([]Capability(nil),
+// caps...)`, which returns NIL when the input is an explicitly empty set - so
+// RegisterPEP stored a declared-empty record whose capability slice was nil,
+// and Profile() rendered it as `"capabilities": null`, an ABSENT member on the
+// wire. That is precisely the collapse PEPRecord.clone's own comment forbids
+// ("a declared-empty set that came back as nil would round-trip through JSON as
+// an absent field, which is precisely the collapse CapabilityStatus exists to
+// prevent") and precisely the #2958 defect this package was written to correct:
+// the one enforcement point that says "I discharge nothing" was serialised as
+// one that had said nothing at all. contract.SortCapabilities uses make+copy
+// and is non-nil for every input.
 func sortedCapabilities(caps []contract.Capability) []contract.Capability {
-	out := append([]contract.Capability(nil), caps...)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type < out[j].Type
-		}
-		return out[i].Version < out[j].Version
-	})
-	return out
+	return contract.SortCapabilities(caps)
 }
 
 // clone returns a deep copy of the record. See ActionRecord.clone.

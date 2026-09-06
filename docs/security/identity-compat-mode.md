@@ -27,22 +27,69 @@ The built-in realms declare **what the legacy path already enforces**, plus the 
 # Agent AND orchestrator environment. Default: unset, which is off.
 AXONFLOW_IDENTITY_COMPAT_MODE=off      # identity-plane verification does not run
 AXONFLOW_IDENTITY_COMPAT_MODE=shadow   # runs, and is RECORDED ONLY
-AXONFLOW_IDENTITY_COMPAT_MODE=enforce  # runs, records, and REFUSES what the identity plane does not admit
+# NOT ACCEPTED (#3633). The process REFUSES to boot on enforce; see below.
+# AXONFLOW_IDENTITY_COMPAT_MODE=enforce
 ```
 
 Parse semantics, and how they differ from `AXONFLOW_TRUST_IDENTITY_HEADERS`:
 
 - unset or empty: `off`. This is the only spelling of "off by omission".
-- `off` (also accepted: `false`, `0`, `disabled`), `shadow`, `enforce`, case-insensitive and whitespace trimmed: that mode.
-- **anything else is FATAL at boot.** The process logs the value and exits. `AXONFLOW_TRUST_IDENTITY_HEADERS` treats a typo as `false` with a warning, because its safe direction is "ignore the header". This flag has no safe direction to fall back to: `off` would leave an operator who typed `enfore` believing their deployment enforces, and `enforce` would take authentication down on a typo. A deployment that will not start is the one failure an operator notices immediately.
+- `off` (also accepted: `false`, `0`, `disabled`) and `shadow`, case-insensitive and whitespace trimmed: that mode.
+- **`enforce` is REFUSED at boot, by name** (#3633). The process-wide flag has no per-organization dimension, so a process-wide enforce begins refusing requests on **every organization at once**, before any shadow phase has measured what it would refuse - and the divergences it refuses on are per-`(organization, path)` constants rather than tail events, so the blast radius is a whole population rather than a tail. The refusal names the route that exists instead: **enforcement is granted per organization** (below), where it is gated on that organization already being in `shadow` with a non-zero observed denominator, zero unexplained divergences, and `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS` set. This mirrors the decision axis, whose `AXONFLOW_DECISION_SHADOW_MODE` has always refused `enforce` by name.
 
-**Set it on both services.** The agent binds a caller's principal from every credential path; the orchestrator binds one from the trust-gated identity headers (and notes at boot whether a SCIM-backed directory is wired, so the built-in realms declare the directory source the deployment actually has). A value on one and not the other is exactly the "consulted in some planes and not others" split the adapter exists to prevent. `docker-compose.yml`, `docker-compose.enterprise.yml` and `docker-compose.scaled.yml` carry all three compat variables on both services; `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` (below) is carried on both services in the first two but **not** in `docker-compose.scaled.yml`, where the 60-second default applies and cannot be tuned from compose. `docker-compose.community-saas.yml` and `docker-compose.test.yml` do not pass any of them through, and the CloudFormation stack templates have no parameter for any of them yet, so on an ECS deployment the switch cannot be set until that parameter exists.
+  **Rollback width:** the process flag rolls the whole deployment between `off` and `shadow`. Per-organization enforcement rolls back one organization with a single call, without a redeploy.
+
+  Because the process refuses it, `enforce` is **not offered** on any deployment surface either: the CloudFormation `IdentityCompatMode` parameter lists only `''`, `off` and `shadow`, so a change set carrying `enforce` is rejected before a container is ever replaced.
+- **anything else is FATAL at boot.** The process logs the value and exits. `AXONFLOW_TRUST_IDENTITY_HEADERS` treats a typo as `false` with a warning, because its safe direction is "ignore the header". This flag has no safe direction to fall back to: `off` would leave an operator who typed `shdaow` believing their deployment records, and guessing a stricter mode would take authentication down on a typo. A deployment that will not start is the one failure an operator notices immediately.
+
+**Set it on both services.** The agent binds a caller's principal from every credential path; the orchestrator binds one from the trust-gated identity headers (and notes at boot whether a SCIM-backed directory is wired, so the built-in realms declare the directory source the deployment actually has). A value on one and not the other is exactly the "consulted in some planes and not others" split the adapter exists to prevent. `docker-compose.yml`, `docker-compose.enterprise.yml` and `docker-compose.scaled.yml` carry all **four** compat variables on both services; `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` (below) is carried on both services in the first two but **not** in `docker-compose.scaled.yml`, where the 60-second default applies and cannot be tuned from compose. `docker-compose.community-saas.yml` and `docker-compose.test.yml` do not pass any of them through, and the CloudFormation stack templates carry parameters for the mode, the enforce-reason allow-list, the agreement log rate and the per-path lever (`IdentityCompatMode`, `IdentityCompatEnforceReasons`, `IdentityCompatAgreementLogEvery`, `IdentityCompatPaths`) on both the community-SaaS and marketplace templates, so an ECS deployment sets them at change-set time. `IdentityCompatMode` offers only `''`, `off` and `shadow` — `enforce` is refused by the binaries at boot and is therefore not advertised (#3633). `IdentityCompatPaths` defaults to empty, which means every path; its `AllowedPattern` enumerates the four declared path names, so a typo is rejected at change-set time rather than becoming a container that never converges. `AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` remains compose-only.
+### Narrowing to specific credential paths
+
+```bash
+# Absent (the default) evaluates EVERY path — the only complete window.
+AXONFLOW_IDENTITY_COMPAT_PATHS=hs256,oidc
+```
+
+The declared paths are `hs256`, `oidc`, `api_credential` and `trusted_header`.
+A path **omitted** from the list evaluates as `off` **for that path only**: it
+records nothing, refuses nothing, and takes the identical early return an `off`
+mode takes — no clock read, no registry touch, no recorder call.
+
+**Why the lever exists.** The failure that actually happens is one path going
+wrong for everyone: a fleet asserting only an email on `trusted_header`, an IdP
+whose JWKS endpoint starts timing out on `oidc`. Without this, the only remedies
+are lowering an organization (which loses its other three paths) or lowering the
+deployment (which loses the window entirely) — neither proportionate to "one
+credential path is noisy", and both discarding measurements that were fine.
+
+**An unrecognised path is FATAL at boot**, exactly as `AXONFLOW_DECISION_SHADOW_PLANES`
+is on the decision axis. Case and surrounding whitespace are normalised
+(`Trusted_Header ` is fine), but a name that matches nothing — `trusted-header`
+with a hyphen — refuses to boot rather than being dropped: a list that silently
+omitted the entry would measure three paths while its author read four. Note
+this is stricter than `AXONFLOW_IDENTITY_COMPAT_MODE`, which accepts `false`,
+`0` and `disabled` as spellings of `off`; a *mode* is a posture written by hand,
+where synonyms are kind, and a *path list* is a set of identifiers, where they
+are how a typo becomes a silent narrowing.
+
+**An empty list is refused too.** Unset means every path; a list naming none
+would evaluate nothing while reading as configured. Those are opposite postures
+and one is reachable by accident (a trailing comma, an unset shell variable), so
+it is refused rather than honoured.
+
+| | Rollback width | Takes effect |
+|---|---|---|
+| `AXONFLOW_IDENTITY_COMPAT_PATHS` | one **credential path**, deployment-wide | restart |
+| `AXONFLOW_IDENTITY_COMPAT_MODE` | the whole **deployment** (`off` / `shadow`) | restart |
+| per-organization record | one **organization**, all its paths | settings TTL, no restart |
+
+**Set it on both services.** The agent binds a caller's principal from every credential path; the orchestrator binds one from the trust-gated identity headers (and notes at boot whether a SCIM-backed directory is wired, so the built-in realms declare the directory source the deployment actually has). A value on one and not the other is exactly the "consulted in some planes and not others" split the adapter exists to prevent. The wiring is the same for the lever as for the mode: `docker-compose.yml`, `docker-compose.enterprise.yml` and `docker-compose.scaled.yml` carry it on both services, and both CloudFormation templates expose it as `IdentityCompatPaths`. See the paragraph under **Set it on both services** above for the full per-file picture, which this section previously restated in a copy that had gone stale.
 
 ## Per-Organization Enablement (Enterprise)
 
 The process flag above is the deployment-wide default. On an **Enterprise** deployment the same mode is also settable **per organization**, which is the recommended way to start: it bounds the blast radius of a first look to one tenant and is reversible with a single call.
 
-A per-organization record **wins over the process flag in both directions**. It can raise one organization to `shadow` on a deployment that is otherwise `off`, and it can lower one organization to `off` on a deployment running `enforce`. An organization with **no** record runs on the process flag, and that is byte-for-byte the behaviour of every release before v10.2.0.
+A per-organization record **wins over the process flag in both directions**. It can raise one organization to `shadow` (or, once gated, `enforce`) on a deployment that is otherwise `off`, and it can lower one organization to `off` on a deployment running `shadow`. **It is the only route to `enforce` at all**, since the process flag refuses it. An organization with **no** record runs on the process flag, and that is byte-for-byte the behaviour of every release before v10.2.0.
 
 Resolution happens in exactly one function, `effectiveMode`, which composes the two inputs and is the only reader of either. Three cases all resolve to the process flag: no record exists, the record could not be read, and the record names a mode the reader does not accept. Only the last two are counted and logged, because an absent record is the ordinary state and not a fault.
 
@@ -64,6 +111,63 @@ DELETE /api/v1/admin/organizations/{org_id}/identity-settings
 ```
 
 All three are platform-operator routes on the customer portal, behind the existing `X-Admin-API-Key` admin middleware, and every database access is scoped to the named organization. They are not reachable from a tenant session.
+
+### Raising an organization to `enforce`
+
+`enforce` is the one mode that can refuse live traffic, so the `PUT` above does
+not simply store it. It is granted only when **all four** hold, and refused with
+**409** and a machine-readable `reason` otherwise:
+
+| Precondition | `reason` on refusal | What to do |
+|---|---|---|
+| The organization is currently in `shadow` | `org_not_in_shadow` | Put it in shadow first. Enforcement is entered from a measured shadow phase, never in one step from `off` — and an organization with **no record** runs on the process flag, which is never `enforce`, so it has no shadow phase of its own to have completed. |
+| It has a non-zero **organic** comparison count | `org_not_measured` | Run real traffic through it. Synthetic (canary) comparisons are deliberately excluded: a canary exists to give the window a denominator, so letting it satisfy this would unlock enforcement for traffic nobody has served. |
+| It has **zero** unexplained divergences | `org_still_diverging` | Drive the named divergence classes to zero in shadow. The refusal names them. |
+| The deployment sets `AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS` | `enforce_reasons_unset` | Name the reasons you have driven to zero. Unset means enforcement would refuse on **every** enforceable reason at once. |
+
+The two observed preconditions are read from Prometheus counters the agent
+exports:
+
+| Metric | What it answers |
+|---|---|
+| `axonflow_identity_compat_org_comparisons_total{org,synthetic}` | the **denominator** — was this organization measured at all. Read with `synthetic="false"`, so a canary cannot satisfy it. |
+| `axonflow_identity_compat_org_divergences_total{org,synthetic,divergence}` | the **numerator** — is it still diverging, and in which class. |
+
+They are read **in that order**, and the order is the soundness argument rather
+than a preference: a `CounterVec` with no children exports no series, so an
+absent divergence series is equally consistent with "nothing diverged" and
+"nothing ran". Only a non-zero organic denominator makes the absence readable as
+zero. A dashboard built on the divergence metric alone would present an
+organization nobody has measured as one that is ready to enforce.
+
+Recording rules for both are in `platform/monitoring/rules/identity-compat.rules.yml`
+(`axonflow:identity_compat_org_comparisons:increase1h` and
+`axonflow:identity_compat_org_divergences:increase1h`).
+
+A fifth reason, `precondition_unavailable`, means the portal could not **ask** —
+the agent was unreachable, answered a non-200, or returned something that did
+not parse. It is deliberately distinct from the four above: "we could not check"
+needs a different remedy from "this organization is not ready", and the request
+is **refused** rather than granted, so a broken internal call can never become
+the easiest way to enable enforcement.
+
+The observed preconditions are read from the agent, not from the portal, over
+the internal-service channel:
+
+```
+GET /api/v1/identity/internal/enforce-precondition?org_id={org_id}
+```
+
+That route is internal, enterprise-only, read-only, and requires
+internal-service credentials — a tenant credential gets **403**. It exists
+because the comparison and divergence counters live in the **agent's process**
+and the enforce-reason allow-list is wired onto the agent and the orchestrator
+and deliberately not onto the portal; a portal-side read would compile, find
+nothing, and refuse every organization for ever.
+
+**Rollback is one call and takes effect within the settings TTL:** `PUT` the
+organization back to `shadow` or `off`, or `DELETE` the record to fall back to
+the process flag. Lowering is never gated — only raising is.
 
 Put one organization into shadow:
 
@@ -260,7 +364,7 @@ Named here so the gap is visible rather than assumed closed:
 - **Further in-process `X-User-Email` readers** (overrides, explain, the MAP HITL adapter, read scope, reviewer binding, circuit breaker, the static policy API handlers, workflow control). They are downstream of an adapted decision under both postures; consolidating them onto one choke point is its own change.
 - **An exporter for the shadow counters.** The recorder's divergence counters, the per-organization mode fall-back count and the settings store's read-failure count exist in-process and nothing exports them; the log is still the surface to read. The two Prometheus counters v10.2.0 does export cover the Shared Signals receiver alone.
 - **A cross-process invalidation channel.** An admin write reaches the reading processes only when their memo window expires (above).
-- **`AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` in `docker-compose.scaled.yml`**, and CloudFormation parameters for any of the four variables.
+- **`AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS` in `docker-compose.scaled.yml`**, and a CloudFormation parameter for it. It is the last compat variable without one: the mode, the enforce-reason allow-list, the agreement log rate and the per-path lever all have parameters on both templates.
 - **A correlation id** joining the four to six records one request produces across two processes.
 - **Realm-registry persistence**, which needs a migration number the operator allocates. `enterprise/146` covers the per-organization settings row and nothing else.
 - **Per-organization enablement on Community.** The composition machinery ships, but no source is wired, so the process flag is the whole story there.

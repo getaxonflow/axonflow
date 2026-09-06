@@ -379,6 +379,7 @@
         "evaluations": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 64,
           "items": { "$ref": "#/$defs/authzen_request" }
         }
       },

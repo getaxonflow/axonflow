@@ -50,6 +50,9 @@ import (
 	"axonflow/platform/common/usage"
 	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/orchestrator/cost"
+	"axonflow/platform/shared/deploymode"
+	"axonflow/platform/shared/edition"
+	"axonflow/platform/shared/heartbeat"
 	"axonflow/platform/shared/idempotency"
 	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
@@ -81,53 +84,30 @@ func envIntDefault(key string, def int) int {
 
 // isCommunityMode reports whether this process runs the Community posture.
 //
-// Community mode bypasses license validation AND authentication
-// (authenticator.go:158 returns a synthetic identity with no credential),
-// skips the MCP connector permission check (mcp_handler.go:92), auto-approves
-// require_approval policies (gateway_handlers.go:782) and lets a request body
-// assert its own tenant (decision_handler.go:717). It is the single most
-// permissive posture the agent has.
+// The DEFINITION lives in platform/shared/deploymode. Until #3713 it was
+// written out here, byte-identically in platform/orchestrator/run.go, and a
+// third time in platform/shared/corspolicy - so the contract (exactly one
+// token, no trim, no case-fold, unset fails closed) and its #3096 history were
+// stated three times and were free to drift. deploymode.IsCommunityPosture
+// carries all of it now; this is a local name for the shared answer, not a
+// second decision.
 //
-// #3096: it used to be the posture you got by FORGETTING to configure one.
-// `mode == ""` was in the true set, so a deployment that simply never set
-// DEPLOYMENT_MODE — the standalone docker-compose stacks, a bare `docker run`
-// of the published image (neither Dockerfile sets a default), `go run
-// ./platform/agent` — silently ran with authentication disabled. That is the
-// identical fail-open-on-unset shape #2287/#3068 fixed in the portal's
-// isAdminAuthRequired, whose default now denies.
-//
-// The burden of proof is now inverted: the permissive posture must be ASKED
-// for by name, and everything else — including the empty string — gets the
-// enterprise posture.
-//
-//	| DEPLOYMENT_MODE        | Community posture? |
-//	|------------------------|--------------------|
-//	| "community"            | YES                |
-//	| "" (unset)             | no  (was YES)      |
-//	| any other known mode   | no                 |
-//	| unrecognised / typo    | no                 |
-//
-// Deliberately NOT trimmed or case-folded, unlike isAdminAuthRequired. There,
-// normalising the input could only ever make auth MORE likely, because the
-// environment=="production" and adminAPIKey!="" rules dominate the switch.
-// Here every widening of the accepting set DISABLES authentication and there is
-// no dominating rule, so the set is exactly the canonical token. A value like
-// " community" therefore fails closed — and fails loudly, because the agent
-// then demands a license it was not given, which is the outcome you want from
-// a malformed mode string.
-//
-// Sibling: platform/orchestrator/run.go carries the same helper with the same
-// contract; the two are kept byte-identical in logic on purpose.
+// It is kept as a package-local helper because 100-odd call sites read better
+// for it and because platform/shared/corspolicy cannot import a package main.
 func isCommunityMode() bool {
-	return os.Getenv("DEPLOYMENT_MODE") == "community"
+	return deploymode.CurrentIsCommunityPosture()
 }
 
-// isCommunitySaasMode returns true when running as the shared community SaaS server.
-// community-saas mode: no Ed25519 license, but DOES require registration credentials.
-// Rate limits are enforced (20/min + 500/day). Ollama LLM only.
-// This is intentionally NOT community mode — isCommunityMode() returns false.
+// isCommunitySaasMode returns true when running as the shared community SaaS
+// server: no Ed25519 license, but registration credentials ARE required, rate
+// limits are enforced (20/min + 500/day), Ollama only. Intentionally NOT in
+// isCommunityMode's true set.
+//
+// Same story as isCommunityMode: three copies before #3713 (here,
+// platform/orchestrator/run.go, and platform/orchestrator/llm/bootstrap.go,
+// which wrote the comparison inline rather than calling either).
 func isCommunitySaasMode() bool {
-	return os.Getenv("DEPLOYMENT_MODE") == "community-saas"
+	return deploymode.CurrentIsCommunitySaasPosture()
 }
 
 // getDeploymentOrgID returns the canonical deployment org_id from the ORG_ID env var.
@@ -820,7 +800,7 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 	if appReady.Load() {
 		status = "healthy"
 	}
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	body := map[string]interface{}{
 		"status":               status,
 		"service":              "axonflow-agent",
 		"tier":                 currentLicenseTier(),
@@ -829,7 +809,22 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 		"capabilities":         getCapabilities(),
 		"sdk_compatibility":    getSDKCompatibility(),
 		"plugin_compatibility": getPluginCompatibility(),
-	}); err != nil {
+	}
+	// Platform-identity members (#3660): `edition` and `deployment_mode`,
+	// ADDITIVE beside `tier`. They are here because /health is the response the
+	// SDK heartbeats already fetch, so an SDK can relay them with no new
+	// request — the design rule for the whole lane.
+	//
+	// A member the platform cannot determine is OMITTED rather than emitted
+	// empty, so a client can tell "not reported" from a real value. See
+	// heartbeat.HealthIdentityMembers, including the warning that a relaying
+	// client must map this `deployment_mode` onto the ping's
+	// `platform_deployment_mode` and NOT onto the ping's own `deployment_mode`,
+	// which is a different dimension.
+	for k, v := range heartbeat.HealthIdentityMembers(edition.Current) {
+		body[k] = v
+	}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}
 }
@@ -1561,6 +1556,7 @@ func Run() {
 	// BuiltinRealmDeployment exists to prevent. Community builds resolve to a
 	// no-op.
 	RegisterCAEPReceiver(globalRouter, usageDB)
+	RegisterEnforcePrecondition(globalRouter)
 
 	// Register connector refresh API endpoints (ADR-007)
 	// These endpoints allow manual cache invalidation for connector configurations.
@@ -1669,6 +1665,44 @@ func Run() {
 			}
 		}()
 	}
+
+	// ADR-065 requirements cleanup (#3625). The reservation and proof-execution
+	// stores shipped in v10.3.0 with a correct, tested Reap and NO CALLER: no
+	// ticker, no cron, no boot-time goroutine. Lapsed holds therefore never
+	// released their capacity - an organization's budget stayed pinned at its
+	// high-water mark for ever - and consumed proof nonces were never deleted
+	// from a table whose insert is on the execution path.
+	//
+	// The admin pool is opened through the same triple every cross-org worker
+	// here uses. StartRequirementsReaper is a no-op on a community build and
+	// when either pool is absent: the two tables are created by
+	// migrations/enterprise/148 and /149, which a community deployment does not
+	// apply, so there is nothing to reap and a loop that ran anyway would error
+	// every interval against tables that do not exist.
+	// The POOL guard only, not the name guard.
+	//
+	// RequirePlatformAdminOrFatal fires when the app-role gate is on and the
+	// admin DSN is blank - it tests only that the DSN is a non-empty STRING -
+	// and calling it here unconditionally would make a missing admin DSN FATAL
+	// for a population that has never needed one: every existing cross-org
+	// worker pairs it with a condition (the CSAAS sweep with
+	// communitySaasSweepShouldStart, the idempotency and HITL sites with their
+	// own). This loop's own gate is the deployment mode above, and its answer
+	// to an unusable pool is to log and not start - which is strictly better
+	// than killing an agent over a cleanup.
+	reqReapAdminDB, reqReapAdminErr := OpenPlatformAdminConnection(context.Background(), 3)
+	RequirePlatformAdminPoolOrFatal("REQUIREMENTS-REAP", reqReapAdminDB, reqReapAdminErr)
+	if reqReapAdminErr != nil {
+		log.Printf("⚠️ [REQUIREMENTS-REAP] admin pool unavailable, cleanup DISABLED — lapsed reservation holds will "+
+			"not release their capacity and decision_proof_executions will grow unbounded: %v", reqReapAdminErr)
+		reqReapAdminDB = nil
+	}
+	// The rate source is nil here on purpose: this owner only reaps and sweeps,
+	// and neither path converts units. A conversion attempted without a rate
+	// source is REFUSED by the store rather than assumed to be identity, so a
+	// future caller that does need one cannot silently get the wrong answer
+	// through this construction.
+	StartRequirementsReaper(context.Background(), usageDB, reqReapAdminDB, nil)
 
 	// HITL expire ticker — open admin pool once and reuse for the process
 	// lifetime. The previous shape (open + close per tick) was wasteful
@@ -1989,8 +2023,12 @@ func Run() {
 	// Anonymous platform startup telemetry (#2004 PR2). Fire-and-forget
 	// in a goroutine — the call has a 5s ceiling but we don't block the
 	// startup log on it, and the agent is already serving requests by
-	// this point. AXONFLOW_TELEMETRY=off short-circuits inside the call;
-	// community_saas mode also short-circuits per the user-locked design.
+	// this point. AXONFLOW_TELEMETRY=off short-circuits inside the call.
+	//
+	// Community-SaaS mode NO LONGER short-circuits (#3660): suppressing at
+	// the emitter made the platform table's deployment-mode column
+	// single-valued by construction. AxonFlow-operated stacks now report and
+	// are classified internal at the receiver from their `axonflow-` org_id.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -2538,8 +2576,11 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Reason:     "human approval required by policy",
 			Severity:   policyResult.Severity,
 			DecisionID: proxyDecisionID,
-			Stage:      DecisionStageLLM,
-			Query:      req.Query,
+			// The same trace-id proxyAudit records, so the approval and the
+			// hold decision land in one chain (#3718).
+			CorrelationID: proxyTraceID,
+			Stage:         DecisionStageLLM,
+			Query:         req.Query,
 		})
 		proxyAudit.approvalEnqueue = hitlEnqueue.Outcome
 		proxyAudit.approvalRequestID = hitlEnqueue.RequestID

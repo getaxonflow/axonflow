@@ -16,6 +16,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -1681,7 +1683,18 @@ func TestBackgroundRefresh(t *testing.T) {
 		policies:     make(map[string]interface{}),
 		cacheTimeout: 100 * time.Millisecond, // Short timeout for testing
 		lastRefresh:  time.Now(),
+		stopCh:       make(chan struct{}),
 	}
+	// #3798: this loop used to be started with a nil stopCh and never stopped,
+	// so its 100 ms ticker kept firing for the rest of the package run and
+	// every tick logged "sql: database is closed" once the deferred db.Close()
+	// ran - 3,812 lines and ~520 s of a 600 s -race budget on the fleet. The
+	// cleanup stops the loop AND proves it stopped: with the old nil stopCh
+	// the wait below times out and this test fails instead of the race lane.
+	t.Cleanup(func() {
+		close(engine.stopCh)
+		requireNoRefreshLoop(t, 2*time.Second)
+	})
 
 	// Expect policy refresh query to be called
 	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "org_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override", "created_at", "updated_at", "segment_id"}).
@@ -1707,6 +1720,32 @@ func TestBackgroundRefresh(t *testing.T) {
 	// The goroutine should have attempted to refresh policies
 	// Note: We can't strictly enforce mock expectations due to goroutine timing
 	t.Log("backgroundRefresh test completed")
+}
+
+// refreshLoopsRunning counts goroutines currently inside backgroundRefresh,
+// read from the runtime's own stacks - the instrument for "no loop was left
+// behind", independent of any channel the test remembered to close.
+func refreshLoopsRunning() int {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return strings.Count(string(buf[:n]), "(*DatabaseDynamicPolicyEngine).backgroundRefresh(")
+}
+
+// requireNoRefreshLoop fails the test if a backgroundRefresh goroutine is
+// still running once the bounded wait expires.
+func requireNoRefreshLoop(t *testing.T, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		n := refreshLoopsRunning()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d backgroundRefresh goroutine(s) still running %v after the test stopped its engine: the loop is leaking into the rest of the package run (#3798)", n, within)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // =============================================================================

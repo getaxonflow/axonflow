@@ -30,6 +30,7 @@ func initDecisionShadow(db *sql.DB) {
 		Component: "orchestrator",
 		DB:        db,
 		OrgModes:  decisionShadowOrgModes(db),
+		OrgPlanes: decisionShadowOrgPlanes(db),
 	})
 	if err != nil {
 		log.Fatalf("❌ %v", err)
@@ -64,6 +65,22 @@ func decisionShadowOrgModes(db *sql.DB) planeshadow.OrgModeSource {
 	// second one, and not a lazily-built one whose first caller decides the
 	// deployment mode it was gated on.
 	if orchestratorOrgSettingsStore == nil {
+		return nil
+	}
+	return orchestratorOrgSettingsStore
+}
+
+// decisionShadowOrgPlanes is the per-organization PLANE narrowing source
+// (#3552 gap 3), or nil where none can exist.
+//
+// It resolves through decisionShadowOrgModes rather than repeating that
+// function's guards, because the two sources MUST be the same object: the
+// narrowing and the mode are columns of one row, and a deployment that wired
+// one and not the other would compose a mode from one instant with a plane
+// list from another. Returning nil whenever the mode source is nil also keeps
+// the pair in step with no second copy of the deployment-mode gate.
+func decisionShadowOrgPlanes(db *sql.DB) planeshadow.OrgPlanesSource {
+	if decisionShadowOrgModes(db) == nil {
 		return nil
 	}
 	return orchestratorOrgSettingsStore

@@ -1,10 +1,10 @@
 # AxonFlow Rust SDK — Quick Start Guide
 
-**Last Updated:** May 2026
+**Last Updated:** September 2026
 
-**SDK Status:** Preview (v0.8.1) | **Platform Version:** v9.14.0
+**SDK Status:** Preview (v0.10.0) | **Platform Version:** v10.4.0
 
-> The Rust SDK is in **preview**. v0.8.1 covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix. Track upcoming work on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues) page.
+> The Rust SDK is in **preview**. v0.10.0 covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix. Track upcoming work on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues) page.
 
 ---
 
@@ -19,7 +19,7 @@
 ```toml
 # Cargo.toml
 [dependencies]
-axonflow-sdk-rust = "0.8.1"
+axonflow-sdk-rust = "0.10.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -216,12 +216,12 @@ match client.list_connectors().await {
 
 ---
 
-## What's not in v0.8.1 yet
+## What's not in v0.10.0 yet
 
-The Rust SDK is being filled out incrementally. v0.8.1 carries the v0.5.0 foundation (auth, proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `X-Client-ID` outbound header, `create_hitl_request`, Indonesia PII category, cross-border audit fields) plus the v0.7.0 Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction) and the v0.8.x performance/reliability pass (bounded LRU response cache, connection pooling). Coming in subsequent releases:
+The Rust SDK is being filled out incrementally. v0.10.0 carries the v0.5.0 foundation (auth, proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `X-Client-ID` outbound header, `create_hitl_request`, Indonesia PII category, cross-border audit fields) plus the v0.7.0 Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction) and the v0.8.x performance/reliability pass (bounded LRU response cache, connection pooling), plus the v0.9.0 AuthZEN-native decide surface (generated wire types, typed refusals with an explicit retryable set) and the v0.10.0 telemetry-parity pass (the heartbeat relays `platform_version`, `license_tier`, `edition` and `platform_deployment_mode` from the platform's own `/health`, and `register_adapter` declares a framework integration). Coming in subsequent releases:
 
 - **Universal surface:** `health_check`, `execute_query`, `get_policy_approved_context`, full MAP (resume / rollback / versions / update), `mcp_check_input` / `mcp_check_output`, `retry_context` / `idempotency_key` wire fields.
-- **Interceptors:** Anthropic / Gemini / Bedrock / Ollama (currently OpenAI-only).
+- **Interceptors:** Gemini / Bedrock / Ollama (currently OpenAI + Anthropic).
 - **Governance:** policies (CRUD + simulation), decisions, HITL queue, audit search, code/media governance.
 - **Workflows + executions, cost / budgets / circuit breaker, MASFEAT compliance, webhooks.**
 

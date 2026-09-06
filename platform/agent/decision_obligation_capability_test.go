@@ -8,6 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log"
 	"os"
 	"path/filepath"
@@ -33,8 +36,8 @@ import (
 // capableSeam / headersOnlySeam are the two advertisements under test, named so
 // the assertions read as behavior rather than as string literals.
 var (
-	capableSeam     = []string{pep.CapabilityRequestBodyRedaction}
-	headersOnlySeam = []string{pep.CapabilityRequestHeaderMutation}
+	capableSeam     = pep.AdvertiseCapabilities([]string{pep.CapabilityRequestBodyRedaction})
+	headersOnlySeam = pep.AdvertiseCapabilities([]string{pep.CapabilityRequestHeaderMutation})
 )
 
 // redactObligations returns the obligation slice a PII-matching policy produces.
@@ -160,13 +163,22 @@ func TestApplySeamCapabilityObligations_LegacyCallerUnchanged(t *testing.T) {
 		"org-strict": {DetectionCategoryObligationFallback: DetectionActionBlock},
 	}}, time.Minute)
 
+	// "explicit empty" IS STILL IN THIS TABLE, and #3704 briefly took it out
+	// before putting it back. The argument for removing it was that `[]string` +
+	// omitempty could not put an empty list on the wire, so the state was new.
+	// That was true of the Go ENCODER and false of the wire: the server's
+	// decoder has always accepted `"fulfillment_capabilities":[]`, and any
+	// non-Go PEP could send it. Reading it as an advertisement would have moved
+	// an always-sendable input from "obligation emitted, PEP fails closed" to
+	// "obligation suppressed, org fallback posture" - default `log`, i.e. ALLOW
+	// without the redaction. This row is the one that catches that.
 	for _, tc := range []struct {
 		name string
-		caps []string
+		caps *[]string
 	}{
 		{"absent (nil)", nil},
-		{"explicit empty", []string{}},
-		{"blank entries only", []string{"", "   "}},
+		{"explicit empty", pep.AdvertiseCapabilities(nil)},
+		{"blank entries only", pep.AdvertiseCapabilities([]string{"", "   "})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := redactObligations()
@@ -220,6 +232,69 @@ func TestApplySeamCapabilityObligations_LegacyResponseIsByteIdentical(t *testing
 	}
 }
 
+// TestExplicitEmptyOnTheWireStillReadsAsALegacyCaller.
+//
+// THE REGRESSION THIS EXISTS FOR IS ONE #3704 ALMOST SHIPPED. The pointer
+// change was justified as "strictly additive - no byte sequence a caller could
+// produce before this change reaches a different answer", and that was a claim
+// about the Go ENCODER. The SERVER's decoder has always accepted
+// `"fulfillment_capabilities":[]`.
+//
+// So this test starts from the LITERAL BYTES rather than from a Go value. A
+// test that constructed `pep.AdvertiseCapabilities(nil)` could not tell the two
+// eras apart at all: it would be asserting today's reading of today's type,
+// which is exactly the shape that let the claim stand unchecked.
+//
+// MUTANT: make a present-and-empty list set `advertised = true` in
+// canonicalizeFulfillmentCapabilities - the change that was there first - and
+// this dies.
+func TestExplicitEmptyOnTheWireStillReadsAsALegacyCaller(t *testing.T) {
+	installTestOverrideCache(t, &fakeOverrideReader{data: map[string]map[string]DetectionAction{
+		// A LENIENT org, on purpose: `log` is the documented default, so this is
+		// the posture the widening would actually have been observed under. A
+		// `block` org would have denied either way and hidden the difference.
+		"org-lenient": {DetectionCategoryObligationFallback: DetectionActionLog},
+	}}, time.Minute)
+
+	var req DecideRequest
+	if err := json.Unmarshal([]byte(`{"stage":"llm","query":"q","fulfillment_capabilities":[]}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.FulfillmentCapabilities == nil {
+		t.Fatal("fixture invalid: the decoder read an explicit [] as an ABSENT member, so this test cannot see the distinction it is about")
+	}
+	if len(*req.FulfillmentCapabilities) != 0 {
+		t.Fatalf("fixture invalid: decoded %v", *req.FulfillmentCapabilities)
+	}
+
+	set, advertised := canonicalizeFulfillmentCapabilities(req.FulfillmentCapabilities)
+	if advertised {
+		t.Fatal("an explicitly empty capability list read as an ADVERTISEMENT. Those bytes were always sendable by a " +
+			"non-Go PEP and always read as a legacy caller, so giving them a new meaning moves an unchanged caller from " +
+			"\"obligation emitted, PEP fails closed\" to \"obligation suppressed, org fallback posture\" - default log, " +
+			"i.e. ALLOW without the redaction. That is a widening of a security control, not an additive change.")
+	}
+	if set != nil {
+		t.Errorf("a legacy caller must produce no capability set, got %v", set)
+	}
+
+	// And end to end through the gate: the obligation is still EMITTED.
+	verdict, _, obs, fb := applySeamCapabilityObligations(
+		context.Background(), "org-lenient", req.FulfillmentCapabilities, VerdictAllow, []string{}, redactObligations())
+	if verdict != VerdictAllow || !hasRedactObligation(obs) || fb != nil {
+		t.Errorf("the wire bytes [] moved: verdict=%q obligations=%d fallback=%v", verdict, len(obs), fb)
+	}
+
+	// The CONTROL that keeps the assertion above about the EMPTY list rather
+	// than about the gate being inert: a non-empty declaration this seam cannot
+	// satisfy DOES suppress.
+	_, _, capableObs, capableFb := applySeamCapabilityObligations(
+		context.Background(), "org-lenient", headersOnlySeam, VerdictAllow, []string{}, redactObligations())
+	if hasRedactObligation(capableObs) || capableFb == nil {
+		t.Error("control failed: a headers-only declaration did not suppress, so the gate is inert and the assertion above proves nothing")
+	}
+}
+
 func TestApplySeamCapabilityObligations_GarbageCapabilitiesAreNotCapable(t *testing.T) {
 	// Unknown/forged tokens must never be mistaken for a capability, and must
 	// never raise an error — an older PDP meeting a newer PEP's vocabulary has
@@ -237,7 +312,7 @@ func TestApplySeamCapabilityObligations_GarbageCapabilitiesAreNotCapable(t *test
 		{" request_body_redaction "}, // padded — canonicalization trims, so VALID
 	} {
 		verdict, _, obs, fb := applySeamCapabilityObligations(
-			context.Background(), "org-1", caps, VerdictAllow, []string{}, redactObligations())
+			context.Background(), "org-1", pep.AdvertiseCapabilities(caps), VerdictAllow, []string{}, redactObligations())
 
 		if verdict != VerdictAllow {
 			t.Errorf("caps=%q: verdict = %q, want allow (garbage must never block)", caps, verdict)
@@ -270,7 +345,7 @@ func TestApplySeamCapabilityObligations_CapabilitySetIsBounded(t *testing.T) {
 	for i := range huge {
 		huge[i] = "junk"
 	}
-	got, advertised := canonicalizeFulfillmentCapabilities(huge)
+	got, advertised := canonicalizeFulfillmentCapabilities(&huge)
 	if len(got) > maxFulfillmentCapabilities {
 		t.Errorf("canonicalized set size = %d, want <= %d", len(got), maxFulfillmentCapabilities)
 	}
@@ -281,7 +356,7 @@ func TestApplySeamCapabilityObligations_CapabilitySetIsBounded(t *testing.T) {
 	// Over-long entries are not stored (an unbounded key would let a caller size
 	// the map) but DO still count as an advertisement — otherwise a long garbage
 	// token would masquerade as a legacy caller.
-	long, advertisedLong := canonicalizeFulfillmentCapabilities([]string{strings.Repeat("a", maxFulfillmentCapabilityLen+1)})
+	long, advertisedLong := canonicalizeFulfillmentCapabilities(pep.AdvertiseCapabilities([]string{strings.Repeat("a", maxFulfillmentCapabilityLen+1)}))
 	if len(long) != 0 {
 		t.Errorf("an over-long capability must not be stored, got %v", long)
 	}
@@ -290,7 +365,7 @@ func TestApplySeamCapabilityObligations_CapabilitySetIsBounded(t *testing.T) {
 	}
 
 	// Blank padding alone is NOT an advertisement.
-	if _, adv := canonicalizeFulfillmentCapabilities([]string{"", "  "}); adv {
+	if _, adv := canonicalizeFulfillmentCapabilities(pep.AdvertiseCapabilities([]string{"", "  "})); adv {
 		t.Error("blank entries must not count as an advertisement")
 	}
 
@@ -299,7 +374,7 @@ func TestApplySeamCapabilityObligations_CapabilitySetIsBounded(t *testing.T) {
 	installTestOverrideCache(t, &fakeOverrideReader{}, time.Minute)
 	overflow := append(append([]string{}, huge[:maxFulfillmentCapabilities]...), pep.CapabilityRequestBodyRedaction)
 	_, _, obs, fb := applySeamCapabilityObligations(
-		context.Background(), "org-1", overflow, VerdictAllow, []string{}, redactObligations())
+		context.Background(), "org-1", pep.AdvertiseCapabilities(overflow), VerdictAllow, []string{}, redactObligations())
 	if hasRedactObligation(obs) {
 		t.Error("a capability truncated away by the bound must read as NOT capable (fail-safe), not as capable")
 	}
@@ -406,13 +481,51 @@ func TestObligationAttachmentSiteCensus(t *testing.T) {
 	// Every producer of a DecideResponse.Obligations value must be a file whose
 	// obligations went through the gate. decision_handler.go is the only one
 	// today (the response write + the two mapPolicyResultToVerdict returns).
+	//
+	// One file is censused CONSCIOUSLY rather than routed, and the exemption is
+	// checked rather than asserted. authzen_handler.go writes an `Obligations`
+	// member of contract.AuthZENContextInput - a DIFFERENT type from the one
+	// this census protects. The value it writes is []contract.Obligation,
+	// rendered by mapObligations from a DecideResponse that has ALREADY been
+	// through applySeamCapabilityObligations inside the delegated handler, so
+	// the gate ran; the AuthZEN route cannot bypass it without bypassing
+	// handleDecide itself.
+	//
+	// The premise is verified below: the exempted file must construct no
+	// []DecisionObligation of its own. If it ever does, the exemption stops
+	// applying and this census reports it again.
+	const authzenConsciousCensus = "authzen_handler.go"
 	for f := range writers {
-		if f != "decision_handler.go" {
-			t.Errorf("%s writes an Obligations field outside decision_handler.go — if that value reaches a PEP "+
-				"without passing applySeamCapabilityObligations, a non-capable seam can be handed an obligation "+
-				"it cannot discharge (#2958). Route it through the gate or census it consciously.", f)
+		if f == "decision_handler.go" {
+			continue
 		}
+		if f == authzenConsciousCensus {
+			continue
+		}
+		t.Errorf("%s writes an Obligations field outside decision_handler.go — if that value reaches a PEP "+
+			"without passing applySeamCapabilityObligations, a non-capable seam can be handed an obligation "+
+			"it cannot discharge (#2958). Route it through the gate or census it consciously.", f)
 	}
+	// THE EXEMPTION IS PINNED TO ONE LITERAL, NOT TO A FILE.
+	//
+	// A file-wide exemption guarded by a substring is an exemption for anything
+	// that file ever comes to contain: a second `Obligations:` added later -
+	// on a DecideResponse, on an audit row - would inherit it silently, which
+	// is the #2958 hole re-opening behind the very census that exists to
+	// prevent it.
+	//
+	// So the file is allowed EXACTLY ONE writer, and the AST is asked which
+	// literal it belongs to. It must be a contract.AuthZENContextInput - the
+	// typed profile payload, whose obligations were rendered by mapObligations
+	// from a DecideResponse that already went through
+	// applySeamCapabilityObligations inside the delegated handler. Any other
+	// composite literal, including a DecideResponse, is reported.
+	if n := writers[authzenConsciousCensus]; n != 1 {
+		t.Errorf("%s writes %d Obligations fields; its census exemption covers exactly ONE, the "+
+			"contract.AuthZENContextInput the profile payload is built from. A second writer here would inherit "+
+			"an exemption that was never argued for it.", authzenConsciousCensus, n)
+	}
+	assertTheOnlyObligationsKeyBelongsToTheContextInput(t, filepath.Join(filepath.Dir(pkg[0]), authzenConsciousCensus))
 
 	// The gate must run on the terminal path, between the attachment sites and
 	// the response write. If someone deletes the call, every test above still
@@ -437,9 +550,9 @@ func TestObligationAttachmentSiteCensus(t *testing.T) {
 // forces a conscious review instead of tribal knowledge.
 func TestFulfillmentCapabilityReadCensus(t *testing.T) {
 	allowed := map[string]string{
-		"platform/agent/decision_handler.go":        "THE gate: DecideRequest schema + applySeamCapabilityObligations, the single site that reads the advertised set",
-		"platform/shared/pep/pep.go":                "client-side mirror of the published contract + the capability vocabulary constants (no read — this is the PEP's own request it is building)",
-		"ee/platform/agent/gateway_adapters/pdp.go": "PEP side: stamps the per-seam capability set onto its OWN outbound request (a write, not an ingest read)",
+		"platform/agent/decision_handler.go": "THE gate: DecideRequest schema + applySeamCapabilityObligations, the single site that reads the advertised set",
+		"platform/shared/pep/pep.go":         "client-side mirror of the published contract + the capability vocabulary constants (no read — this is the PEP's own request it is building)",
+		"platform/gateway-adapters/pdp.go":   "PEP side: stamps the per-seam capability set onto its OWN outbound request (a write, not an ingest read)",
 	}
 	found := userTokenCensusScan(t, func(c string) bool {
 		return strings.Contains(c, "FulfillmentCapabilities") ||
@@ -456,7 +569,7 @@ func TestFulfillmentCapabilityReadCensus(t *testing.T) {
 	for f := range deciders {
 		switch f {
 		case "platform/agent/decision_handler.go", "platform/shared/pep/pep.go",
-			"ee/platform/agent/gateway_adapters/pdp.go":
+			"platform/gateway-adapters/pdp.go":
 		default:
 			t.Errorf("%s consults the capability vocabulary outside the single gate — "+
 				"the outcome of a suppressed obligation must be resolved from the ORG posture at one place, not per-caller (#2958)", f)
@@ -731,4 +844,82 @@ func TestObligationFallbackMetricSkipsTypelessObligation(t *testing.T) {
 	if got := testutil.CollectAndCount(decideObligationFallbacks); got != before {
 		t.Errorf("a type-less obligation created a metric series (%d -> %d)", before, got)
 	}
+}
+
+// assertTheOnlyObligationsKeyBelongsToTheContextInput parses the consciously
+// censused file and checks which composite literal its sole `Obligations:` key
+// sits in.
+//
+// A regexp can say that the file writes an Obligations field; only the parser
+// can say WHICH TYPE it is writing it on, and that is the whole basis of the
+// exemption. The named-type check is deliberately exact rather than a prefix or
+// a suffix: `AuthZENContextInput` is the profile payload's input, and a literal
+// of any other type - most of all a DecideResponse - is the case the census
+// protects.
+func assertTheOnlyObligationsKeyBelongsToTheContextInput(t *testing.T, path string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		// NOT a skip. A census whose parse failed has checked nothing, and a
+		// skip here is indistinguishable from a clean result.
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	found := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		carries := false
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "Obligations" {
+				carries = true
+			}
+		}
+		if !carries {
+			return true
+		}
+		found++
+		name := literalTypeName(lit.Type)
+		if name != "AuthZENContextInput" {
+			t.Errorf("%s writes an Obligations field on a %s literal at %s. The exemption rests on it being a "+
+				"contract.AuthZENContextInput, whose obligations already passed applySeamCapabilityObligations "+
+				"inside the delegated handler; a literal of any other type has no such history.",
+				filepath.Base(path), name, fset.Position(lit.Pos()))
+		}
+		return true
+	})
+	// Anti-vacuity: a parse that found no literal at all would report clean
+	// while checking nothing, which is the shape this whole census exists to
+	// prevent one level down.
+	if found == 0 {
+		t.Errorf("no composite literal carrying an Obligations key was found in %s. Either the write moved to a "+
+			"form this check does not model - a field assignment, say - in which case the exemption no longer "+
+			"describes the file, or the parse reached nothing.", filepath.Base(path))
+	}
+}
+
+// literalTypeName renders a composite literal's type for the message above.
+func literalTypeName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		if t.Sel != nil {
+			return t.Sel.Name
+		}
+	case *ast.StarExpr:
+		return literalTypeName(t.X)
+	case *ast.ArrayType:
+		return "[]" + literalTypeName(t.Elt)
+	case nil:
+		return "<untyped>"
+	}
+	return "<unrecognised>"
 }

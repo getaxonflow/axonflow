@@ -838,7 +838,29 @@ func containsHelper(s, substr string) bool {
 	return false
 }
 
+// evaluationLicenceWhenKeySet registers the licence source these older tables
+// assume: any AXONFLOW_LICENSE_KEY they set is an Evaluation licence.
+//
+// Before #3709 row 1 the package parsed the key itself and the fixture string
+// "AXON-test-evaluation-key" reached the Evaluation tier through the
+// UNPARSEABLE-key fallback - a malformed key was worth five connectors. The
+// package no longer reads the key; the registered source decides, and these
+// tables keep their meaning by registering a source that grants Evaluation
+// exactly when the fixture set a key. The fallback itself is gone (see
+// license_tier_source_test.go).
+func evaluationLicenceWhenKeySet(t *testing.T) {
+	t.Helper()
+	SetLicenseTierSource(func(context.Context) string {
+		if os.Getenv("AXONFLOW_LICENSE_KEY") != "" {
+			return "Evaluation"
+		}
+		return ""
+	})
+	t.Cleanup(func() { SetLicenseTierSource(nil) })
+}
+
 func TestValidateCustomPolicyConnectorLimit_CommunityMode(t *testing.T) {
+	evaluationLicenceWhenKeySet(t)
 	origMode := os.Getenv("DEPLOYMENT_MODE")
 	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	defer restoreEnv("DEPLOYMENT_MODE", origMode)
@@ -966,6 +988,7 @@ func TestValidateCustomPolicyConnectorLimit_CommunityMode(t *testing.T) {
 }
 
 func TestEnforceCustomPolicyConnectorLimit(t *testing.T) {
+	evaluationLicenceWhenKeySet(t)
 	origMode := os.Getenv("DEPLOYMENT_MODE")
 	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	defer restoreEnv("DEPLOYMENT_MODE", origMode)
@@ -1091,6 +1114,7 @@ func TestEnforceCustomPolicyConnectorLimit(t *testing.T) {
 }
 
 func TestResolveConnectorLimitTier(t *testing.T) {
+	evaluationLicenceWhenKeySet(t)
 	origMode := os.Getenv("DEPLOYMENT_MODE")
 	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	defer restoreEnv("DEPLOYMENT_MODE", origMode)
@@ -1104,8 +1128,8 @@ func TestResolveConnectorLimitTier(t *testing.T) {
 	}{
 		{"community mode no license", "community", "", "community"},
 		{"empty mode no license", "", "", "community"},
-		{"community mode with license", "community", "AXON-key", "evaluation"},
-		{"empty mode with license", "", "AXON-key", "evaluation"},
+		{"community mode with an Evaluation licence", "community", "AXON-key", "evaluation"},
+		{"empty mode with an Evaluation licence", "", "AXON-key", "evaluation"},
 		{"enterprise mode no license", "enterprise", "", "enterprise"},
 		{"enterprise mode with license", "enterprise", "AXON-key", "enterprise"},
 		{"saas mode", "saas", "", "enterprise"},
@@ -1134,6 +1158,7 @@ func TestResolveConnectorLimitTier(t *testing.T) {
 }
 
 func TestUpdateConfig_ConnectorLimitEnforced(t *testing.T) {
+	evaluationLicenceWhenKeySet(t)
 	origMode := os.Getenv("DEPLOYMENT_MODE")
 	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	defer restoreEnv("DEPLOYMENT_MODE", origMode)
@@ -1176,6 +1201,7 @@ func TestUpdateConfig_ConnectorLimitEnforced(t *testing.T) {
 }
 
 func TestUpdateConfig_EvaluationTierLimit(t *testing.T) {
+	evaluationLicenceWhenKeySet(t)
 	origMode := os.Getenv("DEPLOYMENT_MODE")
 	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
 	defer restoreEnv("DEPLOYMENT_MODE", origMode)

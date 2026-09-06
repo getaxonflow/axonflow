@@ -388,3 +388,12 @@ in API GET /api/v1/audit/session-summary the response property `buckets/items/to
 # `UNKNOWN`, `unknown`), so a generated strict client could not deserialise the
 # COMMON response on a stock deployment.
 in API POST /api/v1/sebi/audit/export the response property `summary/compliance_score` became nullable for the status `200`
+
+# PR axonflow-enterprise#3654 - bulk entry cap declared, not introduced.
+# The server has refused plural envelopes above 64 entries with a typed
+# 413 since v10.3.0 (the release that created the route; the cap shipped
+# in the same train, #3642). The YAML omitting maxItems was the bug: a
+# spec-generated client believed unbounded bulks were legal and met a
+# 413 the contract never mentioned. A cross-pin test now holds the
+# schema's maxItems and the server constant equal in both directions.
+POST /api/v1/access/evaluation the `evaluations/evaluations` request property's maxItems was set to `64`

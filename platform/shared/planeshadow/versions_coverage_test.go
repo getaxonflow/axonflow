@@ -146,7 +146,7 @@ func TestEveryPackageFileIsEmbeddedOrExcludedWithAReason(t *testing.T) {
 // requires the two to differ - so "the file is embedded" means "editing it
 // moves the stamp" rather than "its name appears in a directive".
 func TestTheAdapterDigestMovesWhenAnEmbeddedFileChanges(t *testing.T) {
-	base := digestOf([]byte("adapter\x00"), srcTranslate, srcWorlds, srcRows, srcObservation, srcMode, srcStamp)
+	base := digestOf(append([][]byte{[]byte("adapter\x00")}, adapterDigestParts()...)...)
 	if base != AdapterVersion() {
 		t.Fatalf("recomputing the adapter digest over the same inputs gave a different value:\n"+
 			"  AdapterVersion() = %s\n  recomputed        = %s\n"+
@@ -154,15 +154,25 @@ func TestTheAdapterDigestMovesWhenAnEmbeddedFileChanges(t *testing.T) {
 			AdapterVersion(), base)
 	}
 
-	// One byte changed in ONE of the parts.
-	mutated := append([]byte(nil), srcStamp...)
-	if len(mutated) == 0 {
-		t.Fatal("stamp.go embedded as zero bytes; the go:embed did not take")
-	}
-	mutated[0] ^= 0xFF
-	if got := digestOf([]byte("adapter\x00"), srcTranslate, srcWorlds, srcRows, srcObservation, srcMode, mutated); got == base {
-		t.Fatal("changing a byte of an embedded file did NOT move the adapter digest, so the " +
-			"reset stamp cannot see a change to the semantics it covers")
+	// ONE BYTE CHANGED IN EVERY PART, ONE PART AT A TIME.
+	//
+	// The earlier version mutated stamp.go alone, which proves the digest
+	// depends on stamp.go and says nothing about the other parts - a file
+	// embedded but accidentally left out of the argument list would pass it.
+	// Mutating each in turn is the same test repeated across the whole list,
+	// and it now grows by itself when a source is added.
+	for i, part := range adapterDigestSources {
+		if len(part.src) == 0 {
+			t.Fatalf("%s embedded as zero bytes; the go:embed did not take", part.name)
+		}
+		mutated := append([]byte(nil), part.src...)
+		mutated[0] ^= 0xFF
+		parts := append([][]byte{[]byte("adapter\x00")}, adapterDigestParts()...)
+		parts[i+1] = mutated // +1 for the "adapter\x00" prefix
+		if got := digestOf(parts...); got == base {
+			t.Fatalf("changing a byte of %s did NOT move the adapter digest, so the reset stamp "+
+				"cannot see a change to the semantics it covers", part.name)
+		}
 	}
 
 	// And the separator does its job: moving a byte ACROSS a part boundary must
@@ -174,7 +184,9 @@ func TestTheAdapterDigestMovesWhenAnEmbeddedFileChanges(t *testing.T) {
 	}
 	shiftedA := srcTranslate[:len(srcTranslate)-1]
 	shiftedB := append(append([]byte(nil), srcTranslate[len(srcTranslate)-1]), srcWorlds...)
-	if got := digestOf([]byte("adapter\x00"), shiftedA, shiftedB, srcRows, srcObservation, srcMode, srcStamp); got == base {
+	shifted := append([][]byte{[]byte("adapter\x00")}, adapterDigestParts()...)
+	shifted[1], shifted[2] = shiftedA, shiftedB
+	if got := digestOf(shifted...); got == base {
 		t.Fatal("moving one byte across a part boundary did not move the digest; the length " +
 			"prefix in digestOf is not separating the parts, and a refactor that relocates a " +
 			"rule between two embedded files would leave the reset stamp unmoved")

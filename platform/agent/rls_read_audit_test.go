@@ -311,6 +311,22 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// function whose scoped branch sits alongside it (#3048). The bare
 		// branch runs only when the caller org is genuinely unknown —
 		// single-tenant/community contexts on owner pools (RLS bypassed).
+		// platform/orchestrator/hitl_wcp_community.go::expireEvalApprovals — the
+		// BACKLOG COUNT the sweeper logs on a full batch (#3520). It reads
+		// hitl_approval_queue with no org scope, deliberately: it is a
+		// CROSS-TENANT count, the same population the sweep it annotates has
+		// just operated on, and scoping it per-org would report a number that
+		// does not describe the thing the operator is being warned about.
+		//
+		// THE JUSTIFICATION IS STRUCTURAL, NOT A PROMISE. This function now
+		// REFUSES TO RUN without a cross-tenant BYPASSRLS pool: InitializeWCPHITL
+		// does not start the sweeper at all when one is unavailable
+		// (hitl_expiry_pool.go), and ExpireDueReturning rejects a nil pool. So
+		// the receiver here cannot be an RLS-scoped pool on any path that
+		// reaches this line - which is exactly what the analyser cannot see, and
+		// exactly what the pre-#3520 code could NOT have claimed.
+		"platform/orchestrator/hitl_wcp_community.go::expireEvalApprovals": "admin-pool by construction: cross-tenant backlog COUNT beside the cross-tenant sweep; the sweeper refuses to start without a BYPASSRLS pool (#3520).",
+
 		"platform/agent/mcp_richer_context.go::lookupPolicyMeta":         "dual-shape reader: scoped two-pass (org → 'global') when scopeOrg set; bare branch = owner-pool legacy contexts only (#3048).",
 		"platform/agent/mcp_richer_context.go::lookupPolicyVersionsByID": "dual-shape reader: scoped org+'global' merge when caller org known; bare branch = owner-pool legacy contexts only (#3048).",
 		"platform/agent/mcp_richer_context.go::lookupActiveOverride":     "dual-shape reader: scoped resolve+override when scopeOrg set; the flagged single-statement is the owner-pool legacy branch (#3048).",
