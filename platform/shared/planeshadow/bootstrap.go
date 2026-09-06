@@ -67,6 +67,10 @@ type BootstrapConfig struct {
 	// OrgModes is the per-organization mode source, nil where none exists
 	// (every community build, and any deployment with no settings store).
 	OrgModes identity.DecisionShadowModeSource
+	// OrgPlanes is the per-organization plane narrowing (#3552 gap 3), nil
+	// where none exists. It is normally the SAME store as OrgModes, which
+	// answers both from one memoized row read.
+	OrgPlanes identity.DecisionShadowPlanesSource
 }
 
 // Bootstrap resolves the configuration, assembles the observer and returns it.
@@ -111,6 +115,7 @@ func Bootstrap(cfg BootstrapConfig) (*Observer, error) {
 	return NewObserver(conf, rows, recorder,
 		WithComponent(cfg.Component),
 		WithOrgModes(cfg.OrgModes),
+		WithOrgPlanes(cfg.OrgPlanes),
 		WithCompileOptions(opts),
 	)
 }

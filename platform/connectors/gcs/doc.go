@@ -31,6 +31,13 @@ Optional credentials:
   - credentials_file: Path to service account JSON key file
   - credentials_json: Inline service account JSON credentials
 
+Both are loaded as SERVICE ACCOUNT keys and nothing else (#3645): a file or
+blob of another credential type (authorized_user, external_account, ...) is
+refused at Connect with the type it found. For Workload Identity or any other
+Application Default Credentials source, set neither and the client detects
+them. When both are set, credentials_file takes precedence and a warning is
+logged.
+
 Optional configuration:
 
   - project_id: GCP project ID (required for listing buckets)

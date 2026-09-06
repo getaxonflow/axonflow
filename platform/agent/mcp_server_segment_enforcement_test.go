@@ -432,13 +432,13 @@ func toolRespMap(t *testing.T, resp interface{}, err error) map[string]interface
 // values) because Go forbids mixing a multi-value call with other arguments.
 func runCheckPolicy(t *testing.T, session *mcpSession, args map[string]interface{}) map[string]interface{} {
 	t.Helper()
-	resp, err := mcpToolCheckPolicy(context.Background(), session, args)
+	resp, err := mcpToolCheckPolicy(context.Background(), session, args, pepHandshakeResolution{})
 	return toolRespMap(t, resp, err)
 }
 
 func runCheckOutput(t *testing.T, session *mcpSession, args map[string]interface{}) map[string]interface{} {
 	t.Helper()
-	resp, err := mcpToolCheckOutput(context.Background(), session, args)
+	resp, err := mcpToolCheckOutput(context.Background(), session, args, pepHandshakeResolution{})
 	return toolRespMap(t, resp, err)
 }
 
@@ -507,7 +507,7 @@ func TestMCPToolCheckPolicy_SegmentNonMember_NotBlocked(t *testing.T) {
 	// evaluation entirely, not merely fail to fire.
 	mcpDetectionCfg := ResolveMCPDetectionConfig(context.Background(), orgID)
 	outcome := evaluateInputPolicies(context.Background(),
-		tenantID, orgID, email, "developer", "postgres", "",
+		tenantID, orgID, email, "developer", "postgres", "", "",
 		"execute", "please read the "+segTestMarker+" for Q3", nil,
 		mcpDetectionCfg, false, []string{"engineering"})
 	if outcome.StaticResult == nil {

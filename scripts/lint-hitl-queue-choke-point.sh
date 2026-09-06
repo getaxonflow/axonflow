@@ -11,11 +11,30 @@
 #
 # THE INVARIANT
 #
-#   Exactly ONE non-test file in the tree may contain the literal
-#   `INSERT INTO`, `MERGE INTO` or `COPY` against hitl_approval_queue, and it is
-#   platform/agent/hitl/queue/writer.go - the shared writer that
+#   Every statement in the non-test tree that WRITES hitl_approval_queue lives
+#   in the package platform/agent/hitl/queue - the shared writer that
 #   platform/agent/hitl/queue.Enqueuer fronts with the licence-tier gate, the
 #   MaxPendingApprovals cap and the hitl_approval_history trail.
+#
+#   "WRITES" IS DERIVED FROM THE TABLE, NOT FROM A LIST OF STATEMENTS (#3714).
+#   Every SQL verb that can modify a table is matched: INSERT INTO, MERGE INTO,
+#   COPY, UPDATE, DELETE FROM and TRUNCATE. That widening is the whole point of
+#   this change and it is not hypothetical:
+#
+#     the first version of this guard matched `INSERT INTO hitl_approval_queue`
+#     and nothing else. It sat, green, beside EIGHT authored
+#     `UPDATE hitl_approval_queue` statements - Override, ExpireStaleReturning
+#     and ConsumeGrant duplicated across the platform/ ↔ ee/ twin pair, plus
+#     UpdateStatusSQL and the orchestrator's expireEvalApprovals - and the
+#     transitions are the DANGEROUS half. A creation that diverges produces a
+#     malformed row, which is visible; a transition that diverges approves on
+#     one path and not the other, and nothing is malformed enough to notice.
+#
+#     writer.go carried a hand-written census of those statements. It said SIX
+#     and named five, because ConsumeGrant arrived after it was written (#3509)
+#     and nothing updated it. A guard keyed on the one statement somebody
+#     thought of is a census bounded by its author; a guard keyed on the TABLE
+#     is bounded by the table.
 #
 # WHY THIS GUARD EXISTS AT ALL
 #
@@ -51,8 +70,9 @@
 #   Tests legitimately seed rows and legitimately assert on the statement text
 #   (sqlmock's ExpectQuery takes the SQL as a regex). Excluding them is not a
 #   loophole: a bypass that only exists in _test.go writes to no customer's
-#   database. The exclusion is by FILENAME SUFFIX, checked below, not by
-#   directory - a non-test helper parked in a test directory is still a writer.
+#   database. The exclusion is by FILENAME, checked below, not by directory - a
+#   non-test helper parked in a test directory is still a writer. Mostly by
+#   SUFFIX; pytest's `test_*.py` is necessarily a PREFIX, which is KNOWN LIMIT 9.
 
 set -euo pipefail
 
@@ -62,12 +82,44 @@ set -euo pipefail
 # sentence is not a line to add here.
 # ---------------------------------------------------------------------------
 #
-#   platform/agent/hitl/queue/writer.go - THE choke point. Its count is a
-#   ratchet on the one file that is allowed to grow, not an argument that it
-#   belongs here; adding a second INSERT to it must still be a reviewed act.
+#   platform/agent/hitl/queue/writer.go   - the CREATE statement plus the
+#                                           shared status transition
+#                                           (UpdateStatusSQL). 2 statements.
+#   platform/agent/hitl/queue/transitions.go - the state transitions: Override,
+#                                           ExpireByIDs, ExpireDueReturning and
+#                                           ConsumeGrant. 4 statements.
+#
+#   Both files are IN THE SAME PACKAGE, which is the invariant; they are listed
+#   separately because a count keyed per FILE is what makes adding a statement
+#   to an existing allow-listed file a reviewed act too. A bare "this package is
+#   fine" entry would permit an unbounded number of new writers inside it.
+#
+#   TWO ENTRIES ARE NOT GO CODE, and both were surfaced by the #3714 widening
+#   rather than known about. Each is justified in one sentence, which is the bar
+#   this list's own header sets:
+#
+#   migrations/core/025_hitl_oversight_queue.sql - the body of
+#     `expire_hitl_requests()`, the canonical expiry function the schema
+#     defines and Repository.ExpireStale calls. It cannot live in a Go package
+#     because it IS the schema, it bypasses no gate (an expiry is not a
+#     creation, so there is no tier check, no pending cap and no reviewer to
+#     skip), and it writes its own hitl_approval_history row in the same CTE.
+#
+#   scripts/e2e/fixtures/readiness-gate-shape/decoy/05-curl-fail-flag.sh - an
+#     INERT FIXTURE. It is one of the negative inputs
+#     scripts/e2e/lint-readiness-gate-shape.sh analyses to prove its own
+#     matcher works; nothing executes it, and its `DELETE FROM
+#     hitl_approval_queue WHERE org_id = 'fixture'` is fixture text rather than
+#     a code path. Allow-listed by NAME AND COUNT rather than by excluding
+#     scripts/e2e/fixtures/ as a directory: a directory exclusion is a hole a
+#     real writer can be parked in, and this guard's own header condemns
+#     exactly that shape.
 #
 ALLOW_LIST=$(cat <<'EOF'
-1 platform/agent/hitl/queue/writer.go
+2 platform/agent/hitl/queue/writer.go
+4 platform/agent/hitl/queue/transitions.go
+1 migrations/core/025_hitl_oversight_queue.sql
+1 scripts/e2e/fixtures/readiness-gate-shape/decoy/05-curl-fail-flag.sh
 EOF
 )
 
@@ -209,6 +261,58 @@ scan() {
 #      rewrites), and an export of this table in non-test code would deserve a
 #      look regardless. The parenthesised form `COPY (SELECT ...) TO` is not
 #      flagged - the table name there is not adjacent to the verb.
+#   4a. A TRAILING `//` COMMENT IS STRIPPED TOO, not just a leading one.
+#      The leading-token rule only ever removed lines that BEGIN with a comment
+#      token, so prose after code survived into the joined text and matched:
+#      `// truncate hitl_history, hitl_approval_queue between arms` is the same
+#      token sequence as a real multi-table TRUNCATE, and no regex can tell them
+#      apart. Stripping the comment removes the ambiguity at its source.
+#      Guarded two ways so it cannot hide a writer: it needs whitespace before
+#      the `//`, and it SKIPS ANY LINE CONTAINING `://` so a URL in a string is
+#      never truncated. `#` and `--` are deliberately NOT stripped mid-line -
+#      both appear inside ordinary SQL and shell text, and stripping them would
+#      swallow real statements.
+#   4b. THE COMMA LIST IS SCOPED TO `TRUNCATE`, AND THAT IS A CORRECTION.
+#      A first cut allowed a comma-separated table list after EVERY write verb,
+#      to catch `TRUNCATE a, hitl_approval_queue`. R3 round 2 measured the cost:
+#      the comment strip only removes lines that START with a comment token, so
+#      a TRAILING comment survives into the joined text, and ordinary English
+#      then matched -
+#        `// we update status, updated_at, hitl_approval_queue rows here`
+#        `// truncate hitl_history, hitl_approval_queue between arms`
+#      each scoring 1 under the new regex and 0 under the old. Those red the
+#      check on an unrelated PR, which is the false-positive direction and the
+#      expensive one.
+#      `TRUNCATE a, b` is the ONLY one of these verbs that takes a table list in
+#      PostgreSQL - `UPDATE a, b` and `DELETE FROM a, b` are not valid - so
+#      scoping the list to TRUNCATE keeps the real shape and removes the prose.
+#   5. `UPDATE ... FROM hitl_approval_queue` and `DELETE ... USING
+#      hitl_approval_queue` write ANOTHER table while READING this one, and are
+#      not flagged: the table name is not adjacent to the verb, which is the
+#      same boundary as limit 1. That direction is the correct one to leave
+#      open - the statement does not modify hitl_approval_queue - but it is
+#      stated rather than assumed, and pinned by a fixture.
+#   6. A SELECT is never flagged, including the `SELECT id FROM
+#      hitl_approval_queue` subselect inside ConsumeGrant's own UPDATE. Verb
+#      adjacency is what distinguishes them: the UPDATE names the table, the
+#      subselect's FROM does not follow a write verb.
+#   7. A file containing a NUL BYTE is skipped entirely, before any verb
+#      matching: `grep -rIl --binary-files=without-match` classifies it as
+#      binary and never lists it. Dropping -I would make the scan read every
+#      compiled artifact in the tree. This is a deliberate-evasion vector, not
+#      an accident shape - a source file does not acquire a NUL by mistake -
+#      and it is named rather than closed. Pinned as a negative fixture.
+#   8. `--exclude-dir=dist|vendor|node_modules|coverage|.next` matches those
+#      NAMES AT ANY DEPTH, not just at the repo root, so `foo/vendor/x.go` is
+#      skipped. For a Go tree `vendor/` is compiled code, so this is a real
+#      hole; it is inherited from the exclusion list's original shape and is
+#      left because narrowing it to top-level would need `--exclude-dir` to be
+#      replaced with a find-based walk. Named, pinned, not claimed closed.
+#   9. `test_*.py` is excluded by PREFIX anywhere in the tree, which the header
+#      above describes as a suffix rule. A production module named
+#      `test_data_loader.py` is therefore exempt. Kept because pytest's
+#      convention really is a prefix; the header's wording is corrected rather
+#      than the rule.
 count_statements() {
   # ORDER MATTERS, and getting it wrong is a documented incident. #3334's
   # guard stripped BLOCK comments in a pass BEFORE line comments, so a `/*`
@@ -257,11 +361,12 @@ count_statements() {
   # text may then be counted as a writer - rather than silent). Both
   # directions are pinned as fixtures below.
   LC_ALL=C grep -v -E '^[[:space:]]*(//|#|--)' "$1" 2>/dev/null \
+    | perl -pe 's{(?<=[ \t])//(?![/]).*$}{}g unless m{://}' \
     | tr '\n' ' ' \
     | perl -0pe 's{(?<!["\x27\x60])/\*(?!["\x27\x60]).*?\*/}{ }gs' \
     | perl -0pe 's{\\[nrt]}{ }gs' \
     | tr -s '[:space:]' ' ' \
-    | LC_ALL=C grep -o -i -E '(insert[[:space:]]+into|merge[[:space:]]+into|copy)[[:space:]]*("?[a-z_][a-z0-9_]*"?[[:space:]]*\.[[:space:]]*)?"?hitl_approval_queue"?([^a-z0-9_"]|$)' \
+    | LC_ALL=C grep -o -i -E '((insert[[:space:]]+into|merge[[:space:]]+into|copy|update|delete[[:space:]]+from)[[:space:]]*(only[[:space:]]+)?|truncate([[:space:]]+table)?[[:space:]]*(only[[:space:]]+)?("?[a-z_][a-z0-9_]*"?[[:space:]]*,[[:space:]]*)*)("?[a-z_][a-z0-9_]*"?[[:space:]]*\.[[:space:]]*)?"?hitl_approval_queue"?([^a-z0-9_"]|$)' \
     | wc -l \
     | tr -d ' '
   # `|| true` is NOT enough here and its absence is a latent trap: the pipeline
@@ -281,7 +386,7 @@ run_lint() {
   got=$(scan "$root")
 
   if [ "$want" = "$got" ]; then
-    echo "✅ HITL queue choke point intact - the only non-test write statement (INSERT/MERGE/COPY into hitl_approval_queue) is in the shared writer."
+    echo "✅ HITL queue choke point intact - every non-test statement that WRITES hitl_approval_queue (INSERT/MERGE/COPY/UPDATE/DELETE/TRUNCATE) is where the allow-list says."
     printf '%s\n' "$got" | sed 's/^/   /'
     return 0
   fi
@@ -298,6 +403,11 @@ run_lint() {
   echo "platform/agent/hitl/queue - the chokepoint that applies the licence-tier"
   echo "gate (#1998), the MaxPendingApprovals cap and the hitl_approval_history"
   echo "trail. A direct INSERT skips all three, silently, on every edition."
+  echo ""
+  echo "A direct UPDATE is worse (#3714): a CREATE that diverges produces a"
+  echo "malformed row you can see, while a TRANSITION that diverges approves,"
+  echo "rejects or expires on one path and not the other - the compliance record"
+  echo "and the enforcement decision disagree and nothing looks wrong."
   echo ""
   echo "If a new writer is genuinely required, extend queue.Enqueuer instead."
   echo "If you are moving the statement, update the allow-list above IN THE"
@@ -333,10 +443,25 @@ self_test() {
 
   mk() { mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" > "$1"; }
 
-  # 1. The sanctioned layout passes.
+  # 1. The sanctioned layout passes. It is now FOUR files, because the #3714
+  #    widening put the transitions, the schema's own expiry function and one
+  #    inert fixture inside the guard's reach. `mkok` builds exactly the
+  #    allow-listed shape so every fixture below starts from a passing tree.
+  mkok() { # mkok <root>
+    mk "$1/platform/agent/hitl/queue/writer.go" "const ins = \`$NEEDLE (a) VALUES (\$1)\`
+const upd = \`UPDATE hitl_approval_queue SET status = \$1 WHERE request_id = \$2\`"
+    mk "$1/platform/agent/hitl/queue/transitions.go" "const a = \`UPDATE hitl_approval_queue SET status = 'overridden'\`
+const b = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE id = ANY(\$1)\`
+const c = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE request_id IN (SELECT request_id FROM hitl_approval_queue)\`
+const d = \`UPDATE hitl_approval_queue SET consumed_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM hitl_approval_queue)\`"
+    mk "$1/migrations/core/025_hitl_oversight_queue.sql" "WITH expired AS (
+        UPDATE hitl_approval_queue SET status = 'expired' RETURNING request_id
+    ) SELECT 1;"
+    mk "$1/scripts/e2e/fixtures/readiness-gate-shape/decoy/05-curl-fail-flag.sh" "\$PSQL -c \"DELETE FROM hitl_approval_queue WHERE org_id = 'fixture';\""
+  }
   local ok="$tmp/ok"
-  mk "$ok/platform/agent/hitl/queue/writer.go" "const q = \`$NEEDLE (a) VALUES (\$1)\`"
-  check "sanctioned single writer passes" 0 "$ok"
+  mkok "$ok"
+  check "the sanctioned four-file layout passes" 0 "$ok"
 
   # 2. A SECOND writer fails. This is the regression the guard exists for -
   #    it is the exact shape hitl_wcp_enterprise.go had.
@@ -348,9 +473,11 @@ self_test() {
   # 3. A second occurrence inside the ALLOW-LISTED file fails too. A bare path
   #    allow-list would pass this, which is why the entries carry counts.
   local grow="$tmp/grow"
-  mk "$grow/platform/agent/hitl/queue/writer.go" "$NEEDLE (a)
-$NEEDLE (b)"
-  check "a second statement in the allow-listed file fails" 1 "$grow"
+  mkok "$grow"
+  mk "$grow/platform/agent/hitl/queue/writer.go" "const ins = \`$NEEDLE (a)\`
+const ins2 = \`$NEEDLE (b)\`
+const upd = \`UPDATE hitl_approval_queue SET status = \$1 WHERE request_id = \$2\`"
+  check "a THIRD statement in the allow-listed file fails" 1 "$grow"
 
   # 4. DELETING the sanctioned writer fails. A count-keyed list must not drift
   #    silently stale in either direction, and 'the choke point vanished' is
@@ -358,6 +485,14 @@ $NEEDLE (b)"
   local gone="$tmp/gone"
   mkdir -p "$gone/platform"
   check "the choke point disappearing fails" 1 "$gone"
+
+  # 4b. HALF the choke point disappearing fails too. Deleting transitions.go
+  #     while leaving writer.go is the shape a revert of #3714 takes, and a
+  #     guard keyed only on "writer.go is present" would pass it.
+  local halfgone="$tmp/halfgone"
+  mkok "$halfgone"
+  rm -f "$halfgone/platform/agent/hitl/queue/transitions.go"
+  check "deleting the TRANSITIONS file alone fails" 1 "$halfgone"
 
   # 5. A _test.go writer is ignored.
   local tst="$tmp/tst"
@@ -625,6 +760,109 @@ $NEEDLE (a) VALUES ('x');
 \`\`\`"
   check "a .md documenting the statement does not trip it" 0 "$doc"
 
+  # 19b. THE #3714 WIDENING, both directions.
+  #
+  #      The DoD asks for a planted UPDATE in a NEW file, which is the shape
+  #      the pre-widening guard sat green beside eight times over.
+  local plantupd="$tmp/plantupd"
+  mkok "$plantupd"
+  mk "$plantupd/platform/orchestrator/sneaky_transition.go" "q := \`UPDATE hitl_approval_queue SET status = 'approved' WHERE request_id = \$1\`"
+  check "a planted UPDATE in a NEW file is caught (#3714)" 1 "$plantupd"
+
+  local plantdel="$tmp/plantdel"
+  mkok "$plantdel"
+  mk "$plantdel/platform/orchestrator/sneaky_delete.go" "q := \`DELETE FROM hitl_approval_queue WHERE org_id = \$1\`"
+  check "a planted DELETE FROM is caught" 1 "$plantdel"
+
+  local planttrunc="$tmp/planttrunc"
+  mkok "$planttrunc"
+  mk "$planttrunc/migrations/core/998_reset.sql" "TRUNCATE TABLE hitl_approval_queue;"
+  check "a planted TRUNCATE TABLE is caught" 1 "$planttrunc"
+
+  local plantlower="$tmp/plantlower"
+  mkok "$plantlower"
+  mk "$plantlower/platform/orchestrator/sneaky_lower.go" "q := \`update  public . hitl_approval_queue set status = 'x'\`"
+  check "a lowercase, spaced, schema-qualified UPDATE is caught" 1 "$plantlower"
+
+  #      ...and the widening must not have turned every READ into a violation.
+  #      The chokepoint's OWN ConsumeGrant statement contains
+  #      `SELECT id FROM hitl_approval_queue` inside its UPDATE, so a matcher
+  #      that counted the table name after any keyword would score transitions.go
+  #      higher than its allow-listed count and red the tree.
+  local reads="$tmp/reads"
+  mkok "$reads"
+  mk "$reads/platform/orchestrator/reader.go" "q := \`SELECT status FROM hitl_approval_queue WHERE org_id = \$1\`
+q2 := \`WITH x AS (SELECT id FROM hitl_approval_queue) SELECT * FROM x\`"
+  check "a plain SELECT/CTE read is NOT flagged" 0 "$reads"
+
+  local histupd="$tmp/histupd"
+  mkok "$histupd"
+  mk "$histupd/platform/orchestrator/hist.go" "q := \`UPDATE hitl_approval_history SET action = \$1\`"
+  check "an UPDATE on hitl_approval_HISTORY does not trip it" 0 "$histupd"
+
+  local prefixupd="$tmp/prefixupd"
+  mkok "$prefixupd"
+  mk "$prefixupd/platform/orchestrator/arch.go" "q := \`UPDATE hitl_approval_queue_archive SET status = 'x'\`"
+  check "UPDATE hitl_approval_queue_archive does not trip it" 0 "$prefixupd"
+
+  # 19c. NEGATIVE FIXTURE for KNOWN LIMIT 5. `UPDATE other FROM
+  #      hitl_approval_queue` MODIFIES ANOTHER TABLE while reading this one, so
+  #      the table name is not adjacent to a write verb and the guard does not
+  #      flag it. Asserted at rc=0 as a pin on a STATED limit, not an oversight:
+  #      the statement genuinely does not write hitl_approval_queue.
+  local updfrom="$tmp/updfrom"
+  mkok "$updfrom"
+  mk "$updfrom/platform/orchestrator/joinupd.go" "q := \`UPDATE workflow_steps ws SET approval_status = 'expired' FROM hitl_approval_queue q WHERE q.request_id = ws.request_id\`"
+  check "KNOWN LIMIT: UPDATE another-table FROM hitl_approval_queue is NOT flagged" 0 "$updfrom"
+
+  # 19d. THE `ONLY` AND COMMA-LIST ARMS, pinned. R3 round 1 defeated the widened
+  #      matcher with `UPDATE ONLY` / `DELETE FROM ONLY` / `TRUNCATE ONLY` and
+  #      with a multi-table `TRUNCATE a, b`; both were fixed and NEITHER WAS
+  #      PINNED. A mutation run on the finished tree proved it: deleting the
+  #      `(only[[:space:]]+)?` arm left this self-test at 44/0. A behaviour
+  #      change without a fixture is a demonstration, not a pin - which is this
+  #      script's own header, applied to its own fix.
+  local only1="$tmp/only1"
+  cp -R "$ok" "$only1"
+  mk "$only1/platform/orchestrator/sneak.go" "q := \`UPDATE ONLY hitl_approval_queue SET status = 'x'\`"
+  check "UPDATE ONLY is caught" 1 "$only1"
+
+  local only2="$tmp/only2"
+  cp -R "$ok" "$only2"
+  mk "$only2/platform/orchestrator/sneak.go" "q := \`DELETE FROM ONLY hitl_approval_queue WHERE id = 1\`"
+  check "DELETE FROM ONLY is caught" 1 "$only2"
+
+  local only3="$tmp/only3"
+  cp -R "$ok" "$only3"
+  mk "$only3/migrations/core/996_x.sql" "TRUNCATE ONLY hitl_approval_queue;"
+  check "TRUNCATE ONLY is caught" 1 "$only3"
+
+  local only4="$tmp/only4"
+  cp -R "$ok" "$only4"
+  mk "$only4/platform/orchestrator/sneak.go" "q := \`delete from only public . hitl_approval_queue where id=1\`"
+  check "lowercase + spaced + schema-qualified ONLY is caught" 1 "$only4"
+
+  local multi="$tmp/multi"
+  cp -R "$ok" "$multi"
+  mk "$multi/migrations/core/995_x.sql" "TRUNCATE audit_log, hitl_approval_queue;"
+  check "a multi-table TRUNCATE naming it SECOND is caught" 1 "$multi"
+
+  #      ...and the comma list is scoped to TRUNCATE, because allowing it after
+  #      every verb made ordinary English in a trailing comment match. Both
+  #      halves pinned: the prose must NOT trip it, and a trailing comment must
+  #      not hide a real writer on the same line.
+  local prose2="$tmp/prose2"
+  cp -R "$ok" "$prose2"
+  mk "$prose2/platform/orchestrator/notes.go" "x := 1 // we update status, updated_at, hitl_approval_queue rows here
+y := 2 // truncate hitl_history, hitl_approval_queue between arms
+z := 3 // delete from decisions, hitl_history, hitl_approval_queue in that order"
+  check "English prose in TRAILING comments does not trip it" 0 "$prose2"
+
+  local urlline="$tmp/urlline"
+  cp -R "$ok" "$urlline"
+  mk "$urlline/platform/orchestrator/sneak.go" "q := \`UPDATE hitl_approval_queue SET s=1\` // see https://example/x"
+  check "a URL on the line does not hide a real writer" 1 "$urlline"
+
   # 20. The REAL repository passes. Fixtures prove the matcher; only this
   #     proves the matcher is pointed at the tree it is supposed to guard.
   #     [[feedback_a_verification_command_that_did_nothing_still_exits_zero]]
@@ -634,11 +872,18 @@ $NEEDLE (a) VALUES ('x');
   #     all would satisfy 12 while guarding nothing - the exact way #3334's
   #     first guard went green. Assert the choke point is actually seen.
   ran=$((ran + 1))
-  if scan "$REPO_ROOT" | grep -qx '1 platform/agent/hitl/queue/writer.go'; then
-    echo "  ok   the real scan actually FINDS the choke point"
+  #     BOTH chokepoint files, not just one. The pre-#3714 version pinned
+  #     writer.go alone, which would have stayed satisfied if the widening had
+  #     silently stopped seeing transitions.go - i.e. if the UPDATE verb had
+  #     been dropped from the matcher, which is the exact regression this whole
+  #     change is about.
+  real_scan=$(scan "$REPO_ROOT")
+  if printf '%s\n' "$real_scan" | grep -qx '2 platform/agent/hitl/queue/writer.go' &&
+     printf '%s\n' "$real_scan" | grep -qx '4 platform/agent/hitl/queue/transitions.go'; then
+    echo "  ok   the real scan actually FINDS both chokepoint files (INSERT and the transitions)"
   else
     echo "  FAIL the real scan found no choke point - it is passing vacuously"
-    echo "       scan output was: [$(scan "$REPO_ROOT" | tr '\n' '|')]"
+    echo "       scan output was: [$(printf '%s' "$real_scan" | tr '\n' '|')]"
     fails=$((fails + 1))
   fi
 

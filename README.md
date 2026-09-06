@@ -448,7 +448,7 @@ Set `AXONFLOW_TRY=1` in your environment and any SDK will auto-connect. Rate-lim
 pip install axonflow              # Python
 npm install @axonflow/sdk         # TypeScript
 go get github.com/getaxonflow/axonflow-sdk-go/v9  # Go
-cargo add axonflow-sdk-rust       # Rust (preview, v0.8.2)
+cargo add axonflow-sdk-rust       # Rust (preview, v0.10.0)
 ```
 
 ```xml
@@ -456,7 +456,7 @@ cargo add axonflow-sdk-rust       # Rust (preview, v0.8.2)
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>9.1.0</version>
+    <version>9.3.0</version>
 </dependency>
 ```
 
@@ -559,7 +559,7 @@ let response = client.proxy_llm_call(
 ).await?;
 ```
 
-The Rust SDK is at v0.8.2 preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
+The Rust SDK is at v0.10.0 preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
 
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview/)**
 

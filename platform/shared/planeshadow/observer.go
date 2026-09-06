@@ -60,6 +60,17 @@ type Observer struct {
 	// others", which is indistinguishable from a clean window.
 	orgModes identity.DecisionShadowModeSource
 
+	// orgPlanes is the per-organization plane narrowing (#3552 gap 3). Nil
+	// means the deployment's plane list is the whole answer for every
+	// organization. Read in exactly one function, observesForOrg, for the
+	// reason orgModes is read in exactly one: a narrowing honored on some
+	// planes and not others is indistinguishable from a clean window.
+	orgPlanes identity.DecisionShadowPlanesSource
+
+	// planeSets memoizes ParsePlanes by its raw stored input, because the
+	// resolution happens on the request path.
+	planeSets *planeSetCache
+
 	// processMode is the deployment-wide mode from AXONFLOW_DECISION_SHADOW_MODE.
 	//
 	// IT IS A FIELD OF ITS OWN RATHER THAN cfg.Mode, and that is what makes the
@@ -100,8 +111,9 @@ type Observer struct {
 	stopped sync.Once
 	wg      sync.WaitGroup
 
-	orgModeFailures atomic.Uint64
-	dropped         atomic.Uint64
+	orgModeFailures   atomic.Uint64
+	orgPlanesFailures atomic.Uint64
+	dropped           atomic.Uint64
 }
 
 // OrgModeSource is the per-organization mode source this package consumes. It
@@ -110,6 +122,13 @@ type Observer struct {
 // binary's wiring cannot accidentally hand the shadow a different store than
 // the identity plane reads.
 type OrgModeSource = identity.DecisionShadowModeSource
+
+// OrgPlanesSource is the per-organization plane narrowing this package
+// consumes (#3552 gap 3). An alias for OrgModeSource's reason: the one store
+// that answers both axes satisfies both by construction, so a binary cannot
+// hand the shadow a plane source that describes a different instant than the
+// mode source it also handed it.
+type OrgPlanesSource = identity.DecisionShadowPlanesSource
 
 // Option customizes an Observer.
 type Option func(*Observer)
@@ -172,6 +191,7 @@ func NewObserver(cfg Config, rows RowSource, recorder Recorder, opts ...Option) 
 	for _, opt := range opts {
 		opt(o)
 	}
+	o.planeSets = newPlaneSetCache()
 	o.worlds = newWorldCache(rows, o.compileOpts, maxWorlds)
 	// Read from the LOCAL cfg and the field set by the options, once, here.
 	// See Observer.couldObserve for why this over-approximation is safe in
@@ -369,7 +389,12 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 			logutil.Sanitize(o.component), logutil.Sanitize(defect))
 		return
 	}
-	if !o.cfg.Observes(obs.Plane) {
+	// THE DEPLOYMENT'S LIST AND THE ORGANIZATION'S, COMPOSED IN ONE FUNCTION
+	// (#3552 gap 3). The disposition label is unchanged on purpose: from the
+	// window's point of view a plane withdrawn for this organization and one
+	// withdrawn for the deployment are the same absence, and splitting the
+	// label would silently break every dashboard and rule that reads it.
+	if !o.observesForOrg(ctx, obs.OrgID, obs.Plane) {
 		shadowObservations.WithLabelValues(plane, dispositionPlaneDisabled).Inc()
 		return
 	}

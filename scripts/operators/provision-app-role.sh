@@ -112,7 +112,21 @@ cleanup() {
         fi
     fi
 }
-trap cleanup EXIT INT TERM
+# EXIT and the two signals are SEPARATE traps, and the signal handlers END IN
+# `exit` (#3715).
+#
+# `trap cleanup EXIT INT TERM` looks like it covers three cases and covers two:
+# a handler that does not exit RETURNS TO THE SCRIPT BODY. On SIGINT the
+# tempfile is shredded and then the body carries on provisioning a database
+# role against the state it just tore down, and cleanup runs a second time at
+# exit. This is the one script in the fleet-wide sweep where continuing past a
+# Ctrl-C touches a live database, so it is fixed first.
+#
+# 130 = 128 + SIGINT(2), 143 = 128 + SIGTERM(15): the conventional shell
+# encoding, and the status a caller reads to tell "interrupted" from "failed".
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 printf "%b%bv9 Provision App Role — Epic #2230%b\n" "$BOLD" "$BLUE" "$NC"
 printf "Date: %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

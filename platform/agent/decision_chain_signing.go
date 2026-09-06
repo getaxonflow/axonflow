@@ -49,6 +49,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -56,6 +57,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+
+	"axonflow/platform/shared/secretenv"
 )
 
 // =============================================================================
@@ -212,11 +215,13 @@ func (t *DecisionChainTracker) sealEntry(e *DecisionEntry, prevHash string, seq 
 // do not sign" mode. Returns an error only when a value is present but invalid,
 // so a typo'd key fails loudly rather than silently disabling signing.
 func LoadAuditSigningKeyFromEnv() (ed25519.PrivateKey, string, error) {
-	raw := strings.TrimSpace(os.Getenv(auditSigningKeyEnvVar))
-	if raw == "" {
+	// Same decoder as the licence signing seed (#3710): trim, then any of the
+	// four base64 dialects. This used to be a third package-local copy of that
+	// logic, with its own error text.
+	decoded, err := secretenv.GetBase64Seed(auditSigningKeyEnvVar)
+	if errors.Is(err, secretenv.ErrNotSet) {
 		return nil, "", nil
 	}
-	decoded, err := decodeBase64Tolerant(raw)
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid %s: %w", auditSigningKeyEnvVar, err)
 	}
@@ -263,7 +268,7 @@ func LoadAuditVerifyKeysFromEnv() (map[string]ed25519.PublicKey, error) {
 		if part == "" {
 			continue
 		}
-		decoded, err := decodeBase64Tolerant(part)
+		decoded, err := secretenv.DecodeBase64Tolerant(part)
 		if err != nil {
 			return nil, fmt.Errorf("invalid %s entry: %w", auditVerifyKeysEnvVar, err)
 		}
@@ -275,26 +280,6 @@ func LoadAuditVerifyKeysFromEnv() (map[string]ed25519.PublicKey, error) {
 		out[deriveSigningKeyID(pub)] = pub
 	}
 	return out, nil
-}
-
-// decodeBase64Tolerant decodes a base64 string in any of the four common
-// dialects (standard, raw-standard, URL-safe, raw-URL-safe). Mirrors the
-// tolerant decoder in platform/agent/license/keygen.go so operators can paste
-// whichever form their secrets store produced.
-func decodeBase64Tolerant(s string) ([]byte, error) {
-	s = strings.TrimSpace(s)
-	encs := []*base64.Encoding{
-		base64.StdEncoding,
-		base64.RawStdEncoding,
-		base64.URLEncoding,
-		base64.RawURLEncoding,
-	}
-	for _, enc := range encs {
-		if b, err := enc.DecodeString(s); err == nil {
-			return b, nil
-		}
-	}
-	return nil, fmt.Errorf("not valid base64 (tried standard, raw-standard, URL-safe, raw-URL-safe)")
 }
 
 // PublicSigningKey returns the base64 (std) public key this tracker signs with

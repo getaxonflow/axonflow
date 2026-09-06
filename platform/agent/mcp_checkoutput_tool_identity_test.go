@@ -226,9 +226,9 @@ func TestMcpToolCheckOutput_ToolIdentity_ScopesExecutionClassResponseScan(t *tes
 			"connector_type": connectorType,
 			"tool":           tool,
 			"message":        sqliMessage,
-		})
+		}, pepHandshakeResolution{})
 		if err != nil {
-			t.Fatalf("mcpToolCheckOutput(%q,%q): %v", connectorType, tool, err)
+			t.Fatalf("mcpToolCheckOutput(%q,%q, pepHandshakeResolution{}): %v", connectorType, tool, err)
 		}
 		m, _ := resp.(map[string]interface{})
 		v, _ := m["allowed"].(bool)
@@ -302,7 +302,7 @@ func TestMcpToolCheckOutput_ToolIdentity_PersistedOnAuditRow(t *testing.T) {
 		"response_data": []interface{}{
 			map[string]interface{}{"id": 1, "data": "admin' UNION SELECT password FROM users--"},
 		},
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("mcpToolCheckOutput: %v", err)
 	}

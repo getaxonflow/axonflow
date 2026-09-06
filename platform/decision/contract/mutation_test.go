@@ -28,12 +28,17 @@ import (
 //     full sweep rather than needing a workflow step of its own. The siblings
 //     skip because their harnesses cost minutes; a gate that runs everywhere
 //     cannot be lost by a workflow edit.
-//   - the mutants are aimed at the DECODER rather than at Project. The decoder
-//     is what the route runs; Project is this package's projection step for the
-//     PDP. That distinction is the whole reason the schema-agreement test was
-//     re-pointed - see the comment on TestTheDecoderAndTheSchemaAgreeOnShape -
-//     so the mutation gate is aimed the same way, with one mutant on Project
-//     under the name that says whose rule it is.
+//   - the decoder mutants are aimed at the DECODER rather than at Project. The
+//     decoder is what the route runs; Project is this package's projection step
+//     for the PDP. That distinction is the whole reason the schema-agreement
+//     test was re-pointed - see the comment on
+//     TestTheDecoderAndTheSchemaAgreeOnShape - so those mutants are aimed the
+//     same way, with one on Project under the name that says whose rule it is.
+//
+// The set has since grown past the decoder: the presence boundary
+// (presence.go) and the obligation algebra (obligation.go) carry mutants of
+// their own, because the fail-open class #3630 names lives there rather than in
+// the envelope decoder.
 type sourceMutation struct {
 	// Name describes the defect being introduced.
 	Name string
@@ -84,6 +89,115 @@ func sourceMutations() []sourceMutation {
 			Test: "TestTheDecoderAndTheSchemaAgreeOnShape",
 			Property: "strict decoding fails closed, so a request built for another profile version is refused " +
 				"rather than evaluated as if it were this one",
+		},
+		{
+			Name:     "an obligation document omitting `mandatory` is admitted",
+			File:     "obligation.go",
+			Old:      "	if refusal, missing := o.absent.firstMissing(SchemaObligation); missing {\n\t\treturn refusal\n\t}\n\tfam, err := FamilyOf(o.Type)",
+			New:      "	if refusal, missing := o.absent.firstMissing(SchemaObligation); missing && false {\n\t\treturn refusal\n\t}\n\tfam, err := FamilyOf(o.Type)",
+			Test:     "TestAnObligationOmittingMandatoryIsRefused",
+			Property: "a required boolean whose absence reads as the permissive value is refused rather than defaulted",
+		},
+		{
+			Name:     "an approval requirement omitting `separation_of_duties` is admitted",
+			File:     "obligation.go",
+			Old:      `	if refusal, missing := a.absent.firstMissing(SchemaApproval); missing {`,
+			New:      `	if refusal, missing := a.absent.firstMissing(SchemaApproval); false && missing {`,
+			Test:     "TestAnApprovalRequirementOmittingSeparationOfDutiesIsRefused",
+			Property: "absence of a restrictive control's flag is refused rather than read as `no separation required`",
+		},
+		{
+			Name: "composition splits an obligation whose mandatory member was never supplied",
+			File: "obligation.go",
+			Old:  "	for _, o := range in.Obligations {\n\t\tif refusal, missing := o.absent.firstMissing(SchemaObligation); missing {",
+			New:  "	for _, o := range in.Obligations {\n\t\tif refusal, missing := o.absent.firstMissing(SchemaObligation); missing && false {",
+			Test: "TestComposingAnObligationDecodedWithoutMandatoryDenies",
+			Property: "an obligation whose advisory-ness is unknown is refused BEFORE the mandatory/advisory split, so it " +
+				"cannot sort itself into the advisory bucket and have its own refusal dropped as a composition conflict",
+		},
+		{
+			Name:     "a carried separation_of_duties parameter is not held to a declared spelling",
+			File:     "obligation.go",
+			Old:      "	if raw, carried := o.Params[\"separation_of_duties\"]; carried {",
+			New:      "	if raw, carried := o.Params[\"separation_of_duties\"]; carried && false {",
+			Test:     "TestACarriedSeparationOfDutiesParameterMustBeADeclaredSpelling",
+			Property: "the LIVE path to SeparationOfDuties is a string parameter, where every spelling but \"true\" reads as the permissive answer",
+		},
+		{
+			Name:     "the approval decoder reads an undeclared spelling as false",
+			File:     "obligation.go",
+			Old:      "	sod, declared := parseObligationBool(raw)\n\tif !declared {",
+			New:      "	sod, declared := parseObligationBool(raw)\n\tif !declared && false {",
+			Test:     "TestTheApprovalDecoderRefusesAnUndeclaredSpellingOfItsOwn",
+			Property: "the read is two-valued in its own right, so the property does not depend on the order of two checks in different functions",
+		},
+		{
+			Name:     "the approval decoder does not record an absent separation_of_duties",
+			File:     "presence.go",
+			Old:      "		a.absent |= absentSeparationOfDuties\n\t\tif wasNull {",
+			New:      "		a.absent |= 0\n\t\tif wasNull {",
+			Test:     "TestAnApprovalRequirementOmittingSeparationOfDutiesIsRefused",
+			Property: "presence is resolved at the decode boundary for BOTH tracked members, not only the obligation's",
+		},
+		{
+			Name: "an explicit null is read as a supplied value",
+			File: "presence.go",
+			Old:  `	if string(bytes.TrimSpace(raw)) == "null" {`,
+			New:  `	if false && string(bytes.TrimSpace(raw)) == "null" {`,
+			Test: "TestAnExplicitNullIsRefusedAndSaysSo",
+			Property: "a member present as `null` carries no value and is refused, and the refusal says NULL rather than " +
+				"claiming the document omitted a member it plainly carries",
+		},
+		{
+			Name: "a duplicated member is read last-wins",
+			File: "presence.go",
+			Old:  "	if err := rejectDuplicateKeys(json.NewDecoder(bytes.NewReader(raw)), \"$\"); err != nil {\n\t\treturn err\n\t}",
+			New:  "	if err := rejectDuplicateKeys(json.NewDecoder(bytes.NewReader(raw)), \"$\"); err != nil && false {\n\t\treturn err\n\t}",
+			Test: "TestADuplicatedMemberIsRefusedRatherThanReadLastWins",
+			Property: "encoding/json keeps the LAST of a repeated member, so a document stating an obligation is " +
+				"mandatory would be read as advisory - and a layer that read the FIRST occurrence saw a different request",
+		},
+		{
+			Name:     "the decoder does not record an absent `mandatory`",
+			File:     "presence.go",
+			Old:      "		o.absent |= absentMandatory\n\t\tif wasNull {",
+			New:      "		o.absent |= 0\n\t\tif wasNull {",
+			Test:     "TestAnObligationOmittingMandatoryIsRefused",
+			Property: "presence is resolved at the decode boundary, which is the only place that can still see it",
+		},
+		{
+			Name:     "the presence decoders admit an undeclared member",
+			File:     "presence.go",
+			Old:      `	dec.DisallowUnknownFields()`,
+			New:      `	_ = dec.Buffered()`,
+			Test:     "TestTheCustomDecodersDidNotWidenTheBoundary",
+			Property: "a custom UnmarshalJSON applies none of the enclosing decoder's settings, so these two shapes carry their own strictness rather than inheriting it",
+		},
+		{
+			Name: "the producer reads a member it never assigns",
+			File: "authzen.go",
+			Old:  "		Reason:        in.Reason,\n",
+			New:  "",
+			Test: "TestEveryInputMemberReachesTheProfilePayload",
+			Property: "every member of the producer's input reaches the payload. Category is DERIVED from Reason, so the " +
+				"reason is still read and the code still compiles - and the shape ratchet, which compares struct " +
+				"members rather than assignments, cannot see the safe reason code vanish from every negotiated response",
+		},
+		{
+			Name:     "the profile payload carries instructions on a decision that permits nothing",
+			File:     "authzen.go",
+			Old:      `	if in.State.CarriesObligations() {`,
+			New:      `	if true || in.State.CarriesObligations() {`,
+			Test:     "TestTheProducerDropsInstructionsOnADecisionThatPermitsNothing",
+			Property: "a denied or errored decision carries no obligations and no approval; attaching instructions to a denial invites a PEP to perform them and proceed",
+		},
+		{
+			Name:     "the obligation gate stops being derived from the authorization mapping",
+			File:     "authzen.go",
+			Old:      `	for _, approvalOutstanding := range []bool{false, true} {`,
+			New:      `	for _, approvalOutstanding := range []bool{false} {`,
+			Test:     "TestCarriesObligationsAgreesWithTheAuthorizationMapping",
+			Property: "the predicate is derived from StateFor rather than restated, so a state reachable from a permit cannot silently stop carrying what the contract says it may carry",
 		},
 		{
 			Name:     "the projection admits an evaluation with no subject type",
@@ -150,7 +264,7 @@ func TestContractSourceMutationsAreKilled(t *testing.T) {
 
 // TestTheContractMutationGateCanReportASurvivor is the anti-vacuity half.
 //
-// Five killed mutants prove the guards are load bearing only if the runner is
+// Killed mutants prove the guards are load bearing only if the runner is
 // capable of reporting that one was NOT killed. A runner that always reported a
 // non-zero exit code, or one whose overlay never reached the compiler, would
 // produce the same green result. This introduces a change that alters no

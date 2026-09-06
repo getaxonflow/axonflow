@@ -17,9 +17,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/auth/credentials"
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -70,26 +72,9 @@ func (c *GCSConnector) Connect(ctx context.Context, cfg *base.ConnectorConfig) e
 	c.defaultBucket = c.GetStringOption("default_bucket", "")
 	c.projectID = c.GetStringOption("project_id", "")
 
-	// Build client options
-	var opts []option.ClientOption
-
-	// Check for credentials file path
-	if credFile := c.GetCredential("credentials_file"); credFile != "" {
-		// SA1019 suppressed deliberately, not silently: google.golang.org/api
-		// v0.264.0 (pulled in as grpc v1.83.1's own minimum by the
-		// CVE-2026-84304 bump) deprecates both WithCredentials* helpers in
-		// favour of the cloud.google.com/go/auth model. Migrating credential
-		// handling in a production connector is a behavioural change owed its
-		// own reviewed PR - tracked as #3645, whose completion is proven by
-		// deleting these two nolint lines and watching the lint stay green.
-		opts = append(opts, option.WithCredentialsFile(credFile)) //nolint:staticcheck // SA1019: migration tracked in #3645
-	} else if credJSON := c.GetCredential("credentials_json"); credJSON != "" {
-		opts = append(opts, option.WithCredentialsJSON([]byte(credJSON))) //nolint:staticcheck // SA1019: migration tracked in #3645
-	}
-
-	// Check for custom endpoint (useful for emulator)
-	if endpoint := c.GetStringOption("endpoint", ""); endpoint != "" {
-		opts = append(opts, option.WithEndpoint(endpoint))
+	opts, err := c.clientOptions()
+	if err != nil {
+		return base.NewConnectorError(cfg.Name, "Connect", "invalid GCS credentials configuration", err)
 	}
 
 	// Create the GCS client
@@ -121,6 +106,71 @@ func (c *GCSConnector) Connect(ctx context.Context, cfg *base.ConnectorConfig) e
 	c.Log("Connected to GCS (project: %s, bucket: %s)", c.projectID, c.defaultBucket)
 
 	return nil
+}
+
+// gcsCredentialScopes are the OAuth scopes the connector's credentials are
+// minted for. cloud.google.com/go/auth requires the scopes up front (the
+// deprecated option.WithCredentials* helpers let the storage client fill them
+// in); full_control covers every operation this connector exposes, from
+// list_buckets to delete_object.
+var gcsCredentialScopes = []string{storage.ScopeFullControl}
+
+// clientOptions builds the storage client options from the connector's
+// configuration.
+//
+// CREDENTIALS ARE LOADED BY TYPE, NOT BY SHAPE (#3645). google.golang.org/api
+// v0.264.0 deprecated option.WithCredentialsFile and option.WithCredentialsJSON
+// "because of a potential security risk": they accepted ANY credential
+// configuration, so a file or blob an operator did not fully control - an
+// external-account configuration pointing at an attacker's token source, for
+// instance - was loaded and used without the caller ever stating what it
+// expected. The connector documents both inputs as SERVICE ACCOUNT keys, so
+// that is what it now loads, through credentials.NewCredentialsFromFile /
+// NewCredentialsFromJSON with credentials.ServiceAccount: a configuration of
+// any other type is refused with the type it found, and a deployment that
+// wants Workload Identity or another Application Default Credentials source
+// gets it the documented way, by setting neither input.
+//
+// Precedence is unchanged: when both inputs are set the file wins, as it did
+// before, and the connector says so rather than guessing silently.
+func (c *GCSConnector) clientOptions() ([]option.ClientOption, error) {
+	var opts []option.ClientOption
+
+	credFile := c.GetCredential("credentials_file")
+	credJSON := c.GetCredential("credentials_json")
+	if credFile != "" && credJSON != "" {
+		c.Log("Warning: both credentials_file and credentials_json are set; credentials_file takes precedence")
+	}
+	switch {
+	case credFile != "":
+		// Read here and load as JSON rather than through
+		// credentials.NewCredentialsFromFile: that helper defers the read, so
+		// a missing or unreadable file surfaced on the first request instead
+		// of at Connect, where an operator is looking. The type check is the
+		// same either way.
+		keyJSON, err := os.ReadFile(credFile)
+		if err != nil {
+			return nil, fmt.Errorf("credentials_file: %w", err)
+		}
+		creds, err := credentials.NewCredentialsFromJSON(credentials.ServiceAccount, keyJSON, &credentials.DetectOptions{Scopes: gcsCredentialScopes})
+		if err != nil {
+			return nil, fmt.Errorf("credentials_file: %w (the connector loads service-account keys only; for any other credential type set neither credentials_file nor credentials_json and use Application Default Credentials)", err)
+		}
+		opts = append(opts, option.WithAuthCredentials(creds))
+	case credJSON != "":
+		creds, err := credentials.NewCredentialsFromJSON(credentials.ServiceAccount, []byte(credJSON), &credentials.DetectOptions{Scopes: gcsCredentialScopes})
+		if err != nil {
+			return nil, fmt.Errorf("credentials_json: %w (the connector loads service-account keys only; for any other credential type set neither credentials_file nor credentials_json and use Application Default Credentials)", err)
+		}
+		opts = append(opts, option.WithAuthCredentials(creds))
+	}
+
+	// A custom endpoint (the emulator). The storage client also honours
+	// STORAGE_EMULATOR_HOST, which additionally disables authentication.
+	if endpoint := c.GetStringOption("endpoint", ""); endpoint != "" {
+		opts = append(opts, option.WithEndpoint(endpoint))
+	}
+	return opts, nil
 }
 
 // Disconnect closes the GCS client

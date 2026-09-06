@@ -44,7 +44,7 @@ cd "$ROOT"
 # ════════════════════════════════════════════════════════════════════════════
 # MUST equal recognisedDeploymentModes() in platform/agent/migration_helpers.go
 # — canonicalDeploymentModes plus deploymentModeAliases. Drift between the two
-# is caught by TestLintScriptRecognisedModesMatchGo in
+# is caught by TestShellCopiesOfRecognisedModesMatchGo in
 # platform/agent/migration_helpers_test.go, which parses this very array.
 #
 # Keep sorted; the Go test compares sorted lists.
@@ -108,18 +108,33 @@ LAUNCHER_EXCLUDED_SUFFIXES=(
 #   for rather than with the package's own EnvDeploymentMode constant — a
 #   constant would evade the grep, which would turn an allow-list entry into a
 #   silent bypass for every future caller.
+# NARROWED BY #3713, from 11 entries to 7 - FOUR entries removed.
+#
+# Three no longer read the variable: platform/agent/run.go,
+# platform/orchestrator/run.go and platform/orchestrator/llm/bootstrap.go now
+# ask platform/shared/deploymode.
+#
+# The fourth, platform/shared/execution/event_hub.go, was STALE. It is not that
+# the file never read the variable - it did, added by #1172 (5088d87bb) and
+# removed by #1177 (fdf70045d) TWELVE HOURS LATER, on the same day. The
+# allow-list entry then outlived the read by roughly SEVEN MONTHS
+# (2026-02-10 to 2026-09-04). An allow-list wider than the
+# reads it permits is a ratchet that has already slipped: a fresh raw read in
+# any of these four files would have passed this lint silently, while the entry
+# read as a decision somebody had made.
+#
+# platform/shared/corspolicy is NOT one of the removals, and is worth a line
+# because it is the reason #3713's guard is a test rather than an addition to
+# this lint: it spelled the read `os.Getenv(deploymentModeEnv)` through a local
+# constant, so this grep never saw it, it was never allow-listed, and the lint
+# was green over one of the four copies #3713 is named for.
 ALLOWED_FILES=(
-  "platform/agent/run.go"
-  "platform/orchestrator/run.go"
-  "platform/shared/policy/dynamic_evaluator.go"
-  "platform/shared/execution/event_hub.go"
+  "platform/shared/deploymode/deploymode.go"  # #3602 shared package: the single env read behind AppliesEnterpriseSchema() and, since #3713, the posture predicates; used by the agent AND the orchestrator
   "platform/agent/migration_helpers.go"
-  "platform/shared/deploymode/deploymode.go"  # #3602 shared schema-mode package: the single env read behind AppliesEnterpriseSchema(), used by the agent AND the orchestrator
-  "platform/agent/dev_token_handler.go"  # #2541 fail-closed gate: normalises where isCommunityMode() is exact, and must not inherit its accepting set from the helper that disables auth
-  "platform/orchestrator/llm/bootstrap.go"  # community-saas Ollama-only guard (#1500)
+  "platform/agent/dev_token_handler.go"  # #2541 fail-closed gate: normalises where the posture predicate is exact, and must not inherit its accepting set from the helper that disables auth
   "ee/platform/customer-portal/middleware/admin_auth.go"
   "ee/platform/customer-portal/config/deployment.go"
-  "ee/platform/customer-portal/main.go"  # #2552 portal-credential bootstrap gate needs the FULL mode string (enterprise / in-vpc-*) for a fail-closed allow-list; a boolean cannot express it, and isCommunityMode() is package-private to platform/
+  "ee/platform/customer-portal/main.go"  # #2552 portal-credential bootstrap gate needs the FULL mode string (enterprise / in-vpc-*) for a fail-closed allow-list; a boolean cannot express it
 )
 
 # Build grep -v exclusion pattern for allowed files.
@@ -170,7 +185,7 @@ if [ -n "$VIOLATIONS" ]; then
   exit 1
 fi
 
-echo "✅ DEPLOYMENT_MODE lint check passed — all non-test code uses isCommunityMode()"
+echo "✅ DEPLOYMENT_MODE lint check passed — every non-test read of DEPLOYMENT_MODE is allow-listed"
 
 # ════════════════════════════════════════════════════════════════════════════
 # Check 2 (#3117 / #3170 / #3137) — every deployment surface must SET
@@ -589,6 +604,52 @@ BEGIN {
         cmode_state = "REF:" p
       } else if (v == "") {
         cmode_state = "empty value"
+      } else if (v ~ /^!If[[:space:]]*\[/) {
+        # #3737 put `DEPLOYMENT_MODE: !If [IsLicenceTransition, \x27community\x27, !Ref DeploymentMode]`
+        # on the marketplace template, and the catch-all below reported BADVALUE
+        # and reddened `Lint All Modules` on main. The !If has to stay -- it is the
+        # licence-transition lever shipped to a partner -- so the lint learns it.
+        #
+        # SEMANTICS: an !If can produce EITHER arm at deploy time, so EVERY arm
+        # must be a recognised mode. Checking one and ignoring the other would be
+        # a fail-open, which is the whole class this lint exists to catch.
+        inner = v
+        sub(/^!If[[:space:]]*\[/, "", inner)
+        sub(/\][[:space:]]*$/, "", inner)
+        narm = split(inner, arm, /,[[:space:]]*/)
+        if (narm != 3) {
+          cmode_state = "\"" v "\" is an !If this lint cannot parse -- expected !If [Cond, A, B]"
+        } else {
+          a1 = unquote(arm[2]); a2 = unquote(arm[3])
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", a1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", a2)
+          r1 = (a1 ~ /^!Ref[[:space:]]/); r2 = (a2 ~ /^!Ref[[:space:]]/)
+          if (r1 && r2) {
+            # Both arms deferred would need two REF verdicts and cmode_state holds
+            # one. Refused rather than half-checked: a stated limit, not a gap.
+            cmode_state = "\"" v "\" has a !Ref in BOTH !If arms; this lint resolves at most one -- use a literal in one arm"
+          } else if (!r1 && !r2) {
+            if (!(a1 in recognised)) {
+              cmode_state = "\"" a1 "\" (first !If arm) is not a recognised DEPLOYMENT_MODE"
+            } else if (!(a2 in recognised)) {
+              cmode_state = "\"" a2 "\" (second !If arm) is not a recognised DEPLOYMENT_MODE"
+            } else {
+              cmode_state = "ok"
+            }
+          } else {
+            # One literal arm, one !Ref arm. Check the literal NOW and defer the
+            # !Ref to the existing Parameters/AllowedValues resolution, so BOTH
+            # arms are checked rather than only the convenient one.
+            lit = r1 ? a2 : a1
+            rf  = r1 ? a1 : a2
+            if (!(lit in recognised)) {
+              cmode_state = "\"" lit "\" (the literal !If arm) is not a recognised DEPLOYMENT_MODE"
+            } else {
+              p = rf; sub(/^!Ref[[:space:]]+/, "", p)
+              cmode_state = "REF:" p
+            }
+          }
+        }
       } else if (v ~ /^!/) {
         cmode_state = "\"" v "\" uses an intrinsic this lint cannot resolve — use a literal or !Ref to a parameter with AllowedValues"
       } else if (v in recognised) {

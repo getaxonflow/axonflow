@@ -72,7 +72,7 @@ func TestMCPToolCheckPolicy_PIIRedact_RequiresRedactionField(t *testing.T) {
 		"connector_type": "claude_code.Write",
 		"statement":      validNIKStatement,
 		"operation":      "execute",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestMCPToolCheckPolicy_BlockedPath_NoRequiresRedaction(t *testing.T) {
 		"connector_type": "claude_code.Write",
 		"statement":      validNIKStatement,
 		"operation":      "execute",
-	})
+	}, pepHandshakeResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

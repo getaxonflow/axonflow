@@ -82,6 +82,20 @@ var (
 	// caller and not the decision.
 	//go:embed stamp.go
 	srcStamp []byte
+	// org_planes.go IS SEMANTIC for the same reason mode.go is, one scope
+	// down: mode.go decides which planes the DEPLOYMENT observes, and this
+	// decides which of those an ORGANIZATION observes. Both change the
+	// window's POPULATION - which planes have evidence at all - and gate 18 is
+	// stated per plane, so a change to the composition rule changes what a
+	// per-plane reading is a reading OF.
+	//
+	// Concretely: if the intersection rule became a replacement rule, an
+	// organization's record could re-open a plane the deployment withdrew, and
+	// comparisons for that plane would start appearing in a window an operator
+	// believes excludes it. That is two windows read as one, which is the
+	// failure this stamp exists to make visible.
+	//go:embed org_planes.go
+	srcOrgPlanes []byte
 )
 
 // EvaluatorVersion is the digest of the ADR-065 side's evaluation semantics:
@@ -103,11 +117,46 @@ var (
 		[]byte(shadow.EngineVersion()),
 	)
 
-	adapterVersion = digestOf(
-		[]byte("adapter\x00"),
-		srcTranslate, srcWorlds, srcRows, srcObservation, srcMode, srcStamp,
-	)
+	adapterVersion = digestOf(append([][]byte{[]byte("adapter\x00")}, adapterDigestParts()...)...)
 )
+
+// adapterDigestParts is the ORDERED list of sources the adapter stamp covers,
+// written ONCE.
+//
+// It exists because this list was written in three places - the digest itself
+// and two tests that recompute it - and the failure mode of that shape is not
+// a compile error: adding a file to one copy leaves the other two computing a
+// DIFFERENT digest, and the test that then fails says "the stamp and its
+// documented coverage disagree" while the disagreement is between two copies
+// of the same sentence.
+//
+// ORDER IS PART OF THE VALUE: digestOf length-prefixes each part, so a
+// reordering changes the digest. That is correct - it is a reset stamp, and an
+// unexplained reset is cheap while a missed one is the failure this exists to
+// prevent - but it means this function DEFINES the order rather than being a
+// convenience over it.
+func adapterDigestParts() [][]byte {
+	out := make([][]byte, 0, len(adapterDigestSources))
+	for _, s := range adapterDigestSources {
+		out = append(out, s.src)
+	}
+	return out
+}
+
+// adapterDigestSources names each covered source beside its bytes, so a check
+// on the parts can say WHICH file it is talking about without a second list.
+var adapterDigestSources = []struct {
+	name string
+	src  []byte
+}{
+	{"translate.go", srcTranslate},
+	{"worlds.go", srcWorlds},
+	{"rows.go", srcRows},
+	{"observation.go", srcObservation},
+	{"mode.go", srcMode},
+	{"stamp.go", srcStamp},
+	{"org_planes.go", srcOrgPlanes},
+}
 
 // digestOf hashes its parts with an explicit separator between them.
 //

@@ -43,6 +43,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"axonflow/platform/decision/contract"
 )
 
 // CanonicalFormVersion identifies the canonical principal encoding. It is
@@ -53,7 +55,12 @@ import (
 // Bump this when the wire form, the admissible realm-id character set, or the
 // subject-type vocabulary changes. Do not bump it for additive changes that
 // cannot alter how an existing valid principal encodes.
-const CanonicalFormVersion = "identity/1"
+//
+// identity/2 (#3709 row 3): the admissible realm-id character set narrowed
+// from "any printable, colon-free, whitespace-free rune" to the decision
+// contract's qualifier grammar. A principal such as `User::acme+prod:00u1`
+// was well-formed under identity/1 and is refused under identity/2.
+const CanonicalFormVersion = "identity/2"
 
 // Wire-form separators. Named rather than inlined because the parse and the
 // render must agree by construction, and because a test asserts the render of
@@ -126,12 +133,29 @@ type RealmID string
 
 // ValidateRealmID enforces the admissible character set for a realm id.
 //
-// Rejected: empty, over-long, any colon (the wire-form separator), any
-// whitespace, and any non-printable rune. Accepted: printable, colon-free,
-// whitespace-free text. The set is deliberately permissive about which
-// printable characters are allowed, because realm ids are operator-chosen
-// labels, and deliberately absolute about colons and whitespace, because those
-// two are what a parser or a log line depends on.
+// Rejected: empty, over-long, any colon (the wire-form separator), and
+// anything outside the decision contract's qualifier grammar - a leading
+// letter or digit, then letters, digits, '_', '.' and '-'. Accepted: exactly
+// what contract.ValidateQualifier accepts, bounded at maxPrincipalComponent.
+//
+// # WHY THE GRAMMAR IS THE CONTRACT'S, NOT THIS PACKAGE'S (#3709 row 3)
+//
+// This used to admit any printable, colon-free, whitespace-free rune, on the
+// argument that realm ids are operator-chosen labels. But a realm id is also
+// the QUALIFIER of every principal this package mints - realm_verify.go calls
+// NewPrincipalID(realm.RealmID, ...) on every credential it admits - and the
+// decision contract parses that qualifier with [A-Za-z0-9][A-Za-z0-9_.-]*.
+// So an operator who named a realm `acme+prod`, `eu/central`, `realm@okta`,
+// `-leading` or `réalm` minted principals every decision proof bound and the
+// PDP could not parse: the dangerous direction, found by #3751's lockstep
+// sweep and left declared there because narrowing this was not a v10.4.0
+// change. It is now: the fix is on the permissive side, and it is a
+// DELEGATION rather than a second regex, so the two cannot drift again.
+// contract's rule is the one that already refuses; nothing was loosened.
+//
+// The colon check stays as its own refusal ahead of the grammar because its
+// message names the property that matters most - the wire-form separator -
+// and because ParsePrincipalID's correctness argument cites it by name.
 func ValidateRealmID(id RealmID) error {
 	s := string(id)
 	if s == "" {
@@ -143,13 +167,10 @@ func ValidateRealmID(id RealmID) error {
 	if strings.Contains(s, principalRealmSep) {
 		return fmt.Errorf("identity: realm id %q contains %q, which is the wire-form separator", s, principalRealmSep)
 	}
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			return fmt.Errorf("identity: realm id %q contains whitespace", s)
-		}
-		if !unicode.IsPrint(r) {
-			return fmt.Errorf("identity: realm id %q contains a non-printable rune", s)
-		}
+	if err := contract.ValidateQualifier(s); err != nil {
+		return fmt.Errorf("identity: realm id %q is refused: a realm id is the qualifier of every principal "+
+			"(Type::realm:subject) and must follow the decision contract's qualifier grammar - %s: %w",
+			s, contract.QualifierGrammar, err)
 	}
 	return nil
 }

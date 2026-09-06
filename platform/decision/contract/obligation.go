@@ -211,6 +211,12 @@ type Obligation struct {
 	SourcePolicy string `json:"source_policy"`
 	// SchemaVersion is the obligation schema version the PEP must support.
 	SchemaVersion int `json:"schema_version"`
+
+	// absent records required members that were missing from the document this
+	// obligation was DECODED from. It is never set by construction in Go, so a
+	// hand-built obligation is unaffected; see presence.go for why the presence
+	// question is answered once, here, rather than at the reads of Mandatory.
+	absent wireAbsence
 }
 
 // Family returns the obligation's composition family.
@@ -218,6 +224,14 @@ func (o Obligation) Family() (ObligationFamily, error) { return FamilyOf(o.Type)
 
 // Validate rejects a structurally invalid obligation.
 func (o Obligation) Validate() error {
+	// Presence first. A document that omitted a required member is refused
+	// before anything reads the value it did not carry - and `mandatory` is
+	// read by the family checks below only indirectly, so a later position
+	// would let an incomplete document get part-way through validation and
+	// report the second-order complaint instead of the actual defect.
+	if refusal, missing := o.absent.firstMissing(SchemaObligation); missing {
+		return refusal
+	}
 	fam, err := FamilyOf(o.Type)
 	if err != nil {
 		return err
@@ -249,7 +263,68 @@ func (o Obligation) Validate() error {
 			return fmt.Errorf("obligation %q from policy %q: %w", o.Type, o.SourcePolicy, err)
 		}
 	}
+	// separation_of_duties is checked here for the same reason, and it is the
+	// LIVE half of the class #3630 names.
+	//
+	// ApprovalRequirement.SeparationOfDuties is a wire boolean, and the presence
+	// boundary in presence.go covers it as one. But nothing in this product
+	// decodes that shape: the value that actually reaches a composed approval
+	// requirement comes from HERE, out of a map[string]string, through
+	// decodeApprovalParams' `o.Params["separation_of_duties"] == "true"`. In a
+	// string-typed parameter every spelling that is not exactly "true" -
+	// "TRUE", "1", "yes", a typo, a trailing space - read as FALSE, which is
+	// "no separation required": the permissive reading of a control whose
+	// entire purpose is to be restrictive, arriving through the one path a
+	// policy author can actually reach.
+	//
+	// ABSENCE STAYS LEGAL and means false. That is the authored default and
+	// always has been, exactly as an audit obligation carrying no delivery
+	// guarantee demands none; refusing it would refuse every approval policy
+	// written to date. What is refused is a value that is CARRIED and is not a
+	// declared spelling - the case where an author stated an intention and the
+	// evaluator read the opposite one.
+	//
+	// TWO REFUSALS, NOT ONE, and the second is worth naming: the parameter on a
+	// NON-APPROVAL family is refused as well, because nothing would read it
+	// there. That mirrors the delivery guarantee's family check above verbatim
+	// and is a widening of what Validate refuses; it is stated here and in the
+	// changelog rather than left to be discovered, since a widening is exactly
+	// what this change declines to do elsewhere. Nothing in the tree emits the
+	// key on any family - the obligation Params producers in legacycompile and
+	// in the AuthZEN adapter each write a fixed key set that does not include
+	// it - so no committed policy, pack, fixture or corpus is affected.
+	if raw, carried := o.Params["separation_of_duties"]; carried {
+		if fam != FamilyApproval {
+			return fmt.Errorf("obligation %q: family %q declares no separation of duties, so the %q parameter would be read by nothing",
+				o.Type, fam, "separation_of_duties")
+		}
+		if _, declared := parseObligationBool(raw); !declared {
+			return fmt.Errorf("obligation %q from policy %q: separation_of_duties is %q, which is not a declared boolean spelling; "+
+				"the declared spellings are %q and %q, and every other value reads as %q - the permissive answer for a restrictive control",
+				o.Type, o.SourcePolicy, raw, "true", "false", "false")
+		}
+	}
 	return nil
+}
+
+// parseObligationBool reads a boolean-valued obligation parameter.
+//
+// Two-value, never bare. A parameter map is string-typed, so the ONLY thing
+// standing between an author's "TRUE" and the evaluator's "false" is a
+// comparison that says so; a bare `== "true"` answers "false" for every input
+// it does not recognise, and for a restrictive control that is the permissive
+// answer. The declared set is exactly the two JSON boolean literals, because
+// this parameter is the wire form of a member the schema types `boolean` and
+// admitting a second spelling here would make the two forms disagree.
+func parseObligationBool(raw string) (value bool, declared bool) {
+	switch raw {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // paramsKey renders the parameter map canonically so that two obligations can
@@ -393,12 +468,20 @@ type ApprovalRequirement struct {
 	// non-response never proves approval, and permitting after timeout also
 	// admits execution against a released budget reservation.
 	ExpiresAt time.Time `json:"expires_at"`
+
+	// absent records required members that were missing from the document this
+	// requirement was DECODED from. See presence.go.
+	absent wireAbsence
 }
 
 // Validate rejects a structurally invalid requirement.
 func (a *ApprovalRequirement) Validate() error {
 	if a == nil {
 		return fmt.Errorf("approval requirement: is nil")
+	}
+	// Presence first; see Obligation.Validate.
+	if refusal, missing := a.absent.firstMissing(SchemaApproval); missing {
+		return refusal
 	}
 	if len(a.AllOf) == 0 {
 		return fmt.Errorf("approval requirement: at least one clause is required")
@@ -465,6 +548,18 @@ type ObligationOutcome struct {
 	Reason ReasonCode
 	// Detail explains the denial for the operator audience.
 	Detail string
+	// Err is the TYPED cause, when the denial has one.
+	//
+	// Detail is prose and is what an operator reads; Err is what an adapter
+	// rendering a wire refusal reads. Without it the JSON Pointer that makes a
+	// MissingMemberError actionable would be recoverable only by parsing
+	// Detail, which is the thing typing the error was supposed to stop.
+	// Deliberately absent on some denials rather than universal: a composition
+	// CONFLICT is a property of a SET and has no single offending member to
+	// point at, so there is nothing typed to carry. Callers must treat it as
+	// optional - `errors.As(out.Err, &target)` on a nil error is false, which is
+	// the correct answer, where `out.Err.Error()` would panic.
+	Err error
 	// DroppedAdvisory names the advisory obligations that could not be
 	// composed alongside the required set. They are recorded rather than
 	// promoted into a denial, because an advisory control that can deny is an
@@ -507,6 +602,49 @@ type ComposeInput struct {
 // is the structural form of "obligation failure is propagated into the final
 // verdict" rather than something a caller has to remember to check.
 func ComposeObligations(in ComposeInput) ObligationOutcome {
+	// AN OBLIGATION WHOSE `mandatory` MEMBER WAS NEVER SUPPLIED CANNOT BE SPLIT,
+	// SO IT IS REFUSED BEFORE THE SPLIT IS ATTEMPTED.
+	//
+	// The split below reads o.Mandatory to decide which obligations may be
+	// dropped - and Mandatory is exactly the member a document can omit. An
+	// obligation missing it therefore sorted itself into the ADVISORY bucket,
+	// composeSet's refusal of it was reclassified by the advisory rule below as
+	// "the advisory contribution does not compose alongside what policy
+	// requires", and it was DROPPED with the request allowed to proceed.
+	// Measured, not reasoned: an obligation document omitting `mandatory`
+	// reached ObligationOutcome{Denied:false} with the refusal parked in
+	// DropDetail, where nothing reads it.
+	//
+	// THE GUARD IS DELIBERATELY NARROWER THAN `o.Validate()`. Running the full
+	// validator here would also convert every OTHER validation failure on an
+	// advisory obligation - an undeclared delivery guarantee, an empty
+	// source_policy, an unregistered type - from "dropped and recorded" into
+	// "the whole decision denies", which is an allow-to-deny change for any
+	// deployment carrying a bundle compiled before the rule that refuses it
+	// (combine.go says exactly that case is reachable). The advisory-drop rule
+	// is a deliberate design decision - a detector's contribution must not be
+	// able to refuse a request - and it is not this change's to reverse.
+	//
+	// What it CANNOT survive is an obligation whose advisory-ness is unknown.
+	// That is not a control the rule can decline to enforce; it is a document
+	// the evaluator cannot classify, and ADR-065 invariant 4 says unknown or
+	// malformed input never becomes a permit.
+	for _, o := range in.Obligations {
+		if refusal, missing := o.absent.firstMissing(SchemaObligation); missing {
+			return ObligationOutcome{
+				Denied: true,
+				// SchemaViolation, not UnsupportedObligation: the document does
+				// not satisfy the shape the contract declares, which is a
+				// different fact from an instruction this build cannot carry
+				// out, and an operator triaging one should not be shown the
+				// other.
+				Reason: ReasonSchemaViolation,
+				Detail: refusal.Error(),
+				Err:    refusal,
+			}
+		}
+	}
+
 	// The required set composes first and alone. If it denies, the decision
 	// denies; nothing an advisory control contributed can rescue it.
 	var required, advisory []Obligation
@@ -541,7 +679,12 @@ func composeSet(in ComposeInput, obligations []Obligation) ObligationOutcome {
 	byFamily := map[ObligationFamily][]Obligation{}
 	for _, o := range obligations {
 		if err := o.Validate(); err != nil {
-			return ObligationOutcome{Denied: true, Reason: ReasonUnsupportedObligation, Detail: err.Error()}
+			// The typed cause is carried here too, not only at the pre-split
+			// guard. The two sites are one refusal reported from two places,
+			// and having one of them lose the cause is how "the pointer is
+			// recoverable" becomes true only on the path someone happened to
+			// test.
+			return ObligationOutcome{Denied: true, Reason: ReasonUnsupportedObligation, Detail: err.Error(), Err: err}
 		}
 		fam, err := FamilyOf(o.Type)
 		if err != nil {
@@ -888,7 +1031,22 @@ func decodeApprovalParams(o Obligation) (ApprovalClause, bool, error) {
 	if err := clause.Validate(); err != nil {
 		return ApprovalClause{}, false, fmt.Errorf("obligation %q from policy %q: %w", o.Type, o.SourcePolicy, err)
 	}
-	return clause, o.Params["separation_of_duties"] == "true", nil
+	// Read with the two-value idiom even though Obligation.Validate has already
+	// refused an undeclared spelling, for the same reason deliveryRank is:
+	// depending on the order of two checks in different functions for a
+	// fail-closed property is how the property stops holding the next time one
+	// of them moves. Absent is legal and means false; carried-and-undeclared is
+	// refused rather than silently read as the permissive answer.
+	raw, carried := o.Params["separation_of_duties"]
+	if !carried {
+		return clause, false, nil
+	}
+	sod, declared := parseObligationBool(raw)
+	if !declared {
+		return ApprovalClause{}, false, fmt.Errorf("obligation %q from policy %q: separation_of_duties is %q, which is not a declared boolean spelling",
+			o.Type, o.SourcePolicy, raw)
+	}
+	return clause, sod, nil
 }
 
 // deliveryRank returns the rank of an obligation's delivery guarantee.

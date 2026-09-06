@@ -1,0 +1,176 @@
+name: Main Guard Freshness
+
+# THE READER for every guard that enforces only on push-to-main (#3730).
+#
+# `partner ECS template drift-guard` is documented "advisory on PR and STRICT
+# on push to enterprise main". Its strict arm fired 23 times between
+# 2026-09-01T05:30Z (31b963cb5) and 2026-09-04T06:39Z (ca9fccefd) and failed
+# every time, while every PR board in that window was legitimately green. The
+# guard was correct, the verdict was recorded, and nothing read it.
+#
+# WHY THE OBVIOUS CHECK DOES NOT WORK. infra-validation.yml's push arm carries
+# a `paths:` filter, so most main commits never re-run it: of the three commits
+# merged after ca9fccefd, NONE matched any of its 34 push paths. So
+# `gh api repos/.../commits/main/check-runs` on main's tip reported 44 contexts,
+# zero failures, and no drift-guard row at all. Main read green while carrying
+# a stale red, because an ABSENT verdict is not a pass. This workflow therefore
+# reads main's HISTORY, per context, and rules on the most recent verdict.
+#
+# WHY IT ALSO FILES AN ISSUE, and this is the point that makes it a fix rather
+# than a restatement of the bug: a scheduled workflow that merely goes red is
+# ITSELF a signal with no reader - nobody browses the Actions tab of a green
+# repository. So a stale red is escalated to the issue tracker, which is a
+# surface humans actually read. One open issue at a time, updated rather than
+# duplicated.
+#
+# NO `pull_request` ARM, AND NO SELF-TEST JOB HERE. Both regression tests that
+# pin this machinery -
+# tests/regression-test-required/main_guard_visibility_test.sh and
+# tests/regression-test-required/main_guard_freshness_test.sh - are already
+# executed on every pull request by
+# tests/regression-test-required/run-all.sh, wired into
+# .github/workflows/regression-test-required.yml's `Run regression-test suite`
+# job, which discovers every `*.sh` in that directory. A `self-test` job here
+# would run the same two scripts a second time on the same PR for no extra
+# enforcement: neither context is required, so duplicating them buys nothing
+# and costs minutes on every PR touching these paths.
+#
+# NOT ON `push: branches: [main]`, deliberately. #3537 retired the
+# push-to-main re-verification tier and
+# tests/regression-test-required/push_main_tier_retired_test.sh pins that
+# retirement. This workflow reads main's recorded history rather than
+# re-verifying its tree, so a schedule is both sufficient and correct: the
+# state it inspects changes when a guard reports, not when a commit lands.
+
+on:
+  schedule:
+    # 07:20 UTC, ~60 minutes after infra-validation.yml's own 06:17 schedule,
+    # so the daily re-run of the guards it watches has landed a fresh verdict
+    # before this reads them.
+    - cron: '20 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report only; never create or update an issue'
+        type: boolean
+        default: false
+
+# A per-commit group, so a burst of dispatches cannot displace a PENDING run
+# (#3537's finding: a shared per-branch group lets a third arrival cancel the
+# queued second, and the middle commit is then scanned by nothing).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: '1'
+
+jobs:
+  read-main:
+    name: stale-red check on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # `checks: read` for the per-commit check-run walk.
+      #
+      # DO NOT ADD `administration: read` HERE. It is not a GITHUB_TOKEN scope,
+      # and requesting it makes GitHub refuse to START this workflow: the run
+      # dies at job creation, before a step executes, with a log that says
+      # almost nothing. That cost 24 consecutive zero-job failures on every
+      # push before #3747 removed it.
+      #
+      # It was added for the branch-ruleset read that reconciles
+      # `required-contexts-enterprise.txt` against the live ruleset, and the
+      # premise was NEVER TRUE: that read works fine under the default token.
+      # Measured on dispatched run 33904845697, which printed
+      #   ok: ...required-contexts-enterprise.txt matches the live ruleset(s)
+      #       on getaxonflow/axonflow-enterprise (8 required context(s))
+      # with no `::warning::`. So the permission bought nothing and cost the
+      # workflow its ability to start.
+      #
+      # If that read ever DOES fail, check-main-guard-freshness.sh degrades
+      # instead of dying: the staleness walk decides the exit code and the
+      # unreconciled list is reported as an explicit `::warning::` naming what
+      # is not being checked. A guard that cannot verify one of its inputs must
+      # say so and keep checking the others, not go permanently red.
+      checks: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Read main's most recent verdict per watched context
+        id: read
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          rc=0
+          bash scripts/ci/check-main-guard-freshness.sh > report.txt 2>&1 || rc=$?
+          cat report.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # Exit 2 means the check could NOT run to a verdict. That is never
+          # conflated with a pass: it fails the job here, so an unreadable
+          # forge or a broken census is loud rather than silently green.
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::the freshness reader did not run to a verdict (exit 2) - nothing was verified"
+            exit 1
+          fi
+          exit 0
+
+      - name: Escalate a stale red to the issue tracker
+        if: steps.read.outputs.rc == '1' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          # A fixed marker in the title is what makes this an UPSERT rather
+          # than a daily duplicate. Searching by marker and not by label means
+          # a hand-removed label cannot turn this into a spam loop.
+          MARKER='[main-guard-freshness]'
+          existing=$(gh issue list --repo "$REPO" --state open --limit 50 \
+                       --search "in:title $MARKER" \
+                       --json number,title \
+                       --jq '[.[] | select(.title | contains("'"$MARKER"'")) | .number] | .[0] // ""')
+          if [ -n "$existing" ]; then
+            echo "issue #$existing is already open for this; not filing a duplicate."
+            echo "https://github.com/$REPO/issues/$existing"
+            exit 0
+          fi
+          {
+            echo "A guard that enforces only on push to \`main\` has a FAILING most-recent"
+            echo "verdict on main. It gates no pull request, and main's tip may carry no"
+            echo "verdict for it at all, so every PR board can be green while this stands."
+            echo ""
+            echo "Filed automatically by \`.github/workflows/main-guard-freshness.yml\`."
+            echo "Run: https://github.com/$REPO/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo ""
+            echo "Close this issue once the most recent verdict on main is a pass. The"
+            echo "workflow will re-file if it regresses."
+          } > body.md
+          gh issue create --repo "$REPO" \
+            --title "$MARKER a push-to-main guard is red on main" \
+            --body-file body.md
+
+      - name: Fail the run on a stale red
+        if: steps.read.outputs.rc == '1'
+        run: |
+          echo "::error::at least one push-to-main guard's most recent verdict on main is a failure - see the report above"
+          exit 1

@@ -58,8 +58,11 @@ import (
 	"axonflow/platform/orchestrator/usinsurance"
 	"axonflow/platform/orchestrator/ussecurities" // US securities module (ADR-064) - Community stub or EE impl
 	"axonflow/platform/orchestrator/webhooks"
-	"axonflow/platform/orchestrator/workflow_control"  // Workflow Control Plane V1 (#834)
-	"axonflow/platform/shared/execution"               // Unified execution tracking (#1075)
+	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
+	"axonflow/platform/shared/deploymode"
+	"axonflow/platform/shared/edition"
+	"axonflow/platform/shared/execution" // Unified execution tracking (#1075)
+	"axonflow/platform/shared/heartbeat"
 	"axonflow/platform/shared/idempotency"             // HTTP Idempotency-Key dedup (#2420)
 	sharedidentity "axonflow/platform/shared/identity" // Canonical identity key + role model (#2922)
 	logutil "axonflow/platform/shared/logger"
@@ -1061,10 +1064,12 @@ func Run() {
 
 	// Anonymous platform startup telemetry (#2004 PR3). Fire-and-forget
 	// in a goroutine — runs concurrently with http.Serve below. The
-	// 5s HTTP timeout inside MaybeSendStartupTelemetry caps blocking;
-	// AXONFLOW_TELEMETRY=off short-circuits, and community_saas mode
-	// (DEPLOYMENT_MODE=community-saas) also short-circuits per the
-	// user-locked design.
+	// 5s HTTP timeout inside MaybeSendStartupTelemetry caps blocking and
+	// AXONFLOW_TELEMETRY=off short-circuits.
+	//
+	// Community-SaaS mode NO LONGER short-circuits (#3660) — see the matching
+	// note in platform/agent/run.go and the platform/shared/heartbeat package
+	// doc for why the suppression moved from the emitter to the receiver.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -2218,6 +2223,18 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 			"rbi_compliance":       rbiModule != nil && rbiModule.IsHealthy(),
 			"euaiact_compliance":   euaiactModule != nil && euaiactModule.IsHealthy(),
 		},
+	}
+
+	// Platform-identity members (#3660), same source as the agent's /health.
+	// RUNBOOK_RELEASE_PREP.md records "agent vs orchestrator /health drift" as
+	// failure mode 1 and that it has happened in a real train, so both planes
+	// take these from one function rather than each building its own — a
+	// client that probes whichever port it can reach must get the same answer.
+	// See heartbeat.HealthIdentityMembers for the omission semantics and for
+	// why a relaying client maps this `deployment_mode` onto the ping's
+	// `platform_deployment_mode`.
+	for k, v := range heartbeat.HealthIdentityMembers(edition.Current) {
+		health[k] = v
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4084,15 +4101,18 @@ func mapMaxTimeoutFromEnv() time.Duration {
 // Evaluation tier elevates resource limits via LicenseChecker, not feature access —
 // evaluation users run the community binary with higher limits, not enterprise features.
 //
-// Sibling: platform/agent/run.go carries the same helper with the same
-// contract, including the deliberate absence of trimming/case-folding; see the
-// rationale there.
+// The DEFINITION lives in platform/shared/deploymode (#3713), which carries
+// the contract above, its #3096 history and the reason the accepting set is
+// exactly one token. platform/agent/run.go names the same shared answer. This
+// is a local name, not a second decision.
 func isCommunityMode() bool {
-	return os.Getenv("DEPLOYMENT_MODE") == "community"
+	return deploymode.CurrentIsCommunityPosture()
 }
 
 // isCommunitySaasMode returns true when running as the shared community SaaS
-// server. Mirrors platform/agent/run.go's helper of the same name. Used by
+// server. It no longer MIRRORS platform/agent/run.go's helper of the same
+// name - since #3713 both name deploymode.IsCommunitySaasPosture, so the two
+// can no longer drift apart. Used by
 // the startup-telemetry path to suppress self-pings on AxonFlow-operated
 // stacks (try.getaxonflow.com) — the canonical wiring sets
 // DEPLOYMENT_MODE=community-saas via docker-compose.community-saas.yml.
@@ -4102,7 +4122,7 @@ func isCommunityMode() bool {
 // limited differently). Treating them as the same gate would re-enable
 // feature surfaces csaas explicitly disables.
 func isCommunitySaasMode() bool {
-	return os.Getenv("DEPLOYMENT_MODE") == "community-saas"
+	return deploymode.CurrentIsCommunitySaasPosture()
 }
 
 // isMediaGovernanceEnabled resolves whether media governance is active for a request.

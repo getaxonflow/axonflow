@@ -822,7 +822,7 @@ func TestEvaluateInputPolicies_NilEvaluator_NilEngine(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")
@@ -855,7 +855,7 @@ func TestEvaluateInputPolicies_DynamicAllowed(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")
@@ -888,7 +888,7 @@ func TestEvaluateInputPolicies_DynamicBlocked(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if !out.DynamicBlocked {
 		t.Error("expected DynamicBlocked=true")
@@ -919,7 +919,7 @@ func TestEvaluateInputPolicies_ConnectorNotEnabled(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.DynamicBlocked {
 		t.Error("expected DynamicBlocked=false when connector not enabled")
@@ -942,7 +942,7 @@ func TestEvaluateInputPolicies_WithStaticEngine(t *testing.T) {
 
 	ctx := context.Background()
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT 1", nil, mcpCfg, true, nil)
 
 	if out.StaticResult == nil {
 		t.Fatal("expected StaticResult to be non-nil when engine is active")
@@ -1228,7 +1228,7 @@ func TestEvaluateInputPolicies_WithParameters(t *testing.T) {
 		"2": "normal-value",
 	}
 	mcpCfg := ResolveMCPDetectionConfig(ctx, "o1")
-	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "query", "SELECT * FROM users WHERE id = $1", params, mcpCfg, true, nil)
+	out := evaluateInputPolicies(ctx, "t1", "o1", "u1", "admin", "postgres", "", "", "query", "SELECT * FROM users WHERE id = $1", params, mcpCfg, true, nil)
 
 	if out.EvalUnavailable {
 		t.Error("expected EvalUnavailable=false")

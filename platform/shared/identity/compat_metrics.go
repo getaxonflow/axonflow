@@ -89,6 +89,15 @@ const (
 	// MetricCompatOrgComparisons is the per-ORGANIZATION comparison volume,
 	// with a hard cardinality cap. See compatOrgComparisons.
 	MetricCompatOrgComparisons = "axonflow_identity_compat_org_comparisons_total"
+
+	// MetricCompatOrgDivergences is the per-organization DIVERGENCE count, the
+	// second half of the per-org gate (#3633). It exists because the enforce
+	// precondition is per organization and the divergence breakdown on
+	// MetricCompatComparisons carries no org label - deliberately, for the
+	// cardinality reason above - so the per-org half of a per-org gate had no
+	// home at all. Same cap, same buckets, same synthetic split as
+	// MetricCompatOrgComparisons, because the two are read together.
+	MetricCompatOrgDivergences = "axonflow_identity_compat_org_divergences_total"
 	// MetricCompatBuildInfo names the versions a comparison was produced
 	// under, so a gate reset boundary is detectable in the data.
 	MetricCompatBuildInfo = "axonflow_identity_compat_build_info"
@@ -206,6 +215,32 @@ var (
 		[]string{"component", "org", "synthetic"},
 	)
 
+	// compatOrgDivergences is the per-organization divergence volume (#3633),
+	// the companion to compatOrgComparisons and read with it.
+	//
+	// WHY A SEPARATE METRIC RATHER THAN A LABEL ON compatOrgComparisons: the
+	// two answer different questions and one is a denominator. Adding a
+	// `divergence` label to the volume counter would make every existing
+	// query for "how much did this org compare" wrong unless it summed across
+	// a new dimension, which is the kind of silent break a dashboard shows a
+	// week later.
+	//
+	// The `divergence` label carries the CLASS, not a boolean, so the gate can
+	// distinguish an explained divergence from an unexplained one without a
+	// second series - and so an operator reading the gate's refusal can see
+	// WHICH class is blocking the organization.
+	compatOrgDivergences = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: MetricCompatOrgDivergences,
+			Help: "ADR-065 identity-plane divergence volume by organization, the per-org half of the gate 18 " +
+				"enforce precondition. Capped and bucketed exactly as " + MetricCompatOrgComparisons + "; read " +
+				"TOGETHER with it, because a CounterVec with no children exports no series and an absent " +
+				"divergence series therefore proves nothing on its own - only a non-zero organic denominator " +
+				"makes an absent divergence count readable as zero.",
+		},
+		[]string{"component", "org", "synthetic", "divergence"},
+	)
+
 	// compatBuildInfo is the standard build-info idiom: a gauge that is always
 	// 1, carrying versions as labels, joinable with
 	// `* on (component) group_left(version, adapter_contract)`.
@@ -294,7 +329,29 @@ func (PrometheusCounterfactualRecorder) RecordCounterfactual(_ context.Context, 
 		synthetic,
 		metricVersion(),
 	).Inc()
-	compatOrgComparisons.WithLabelValues(rec.Component, orgLabel(rec.OrgID), synthetic).Inc()
+	org := orgLabel(rec.OrgID)
+	compatOrgComparisons.WithLabelValues(rec.Component, org, synthetic).Inc()
+
+	// THE DIVERGENT RECORDS ONLY (#3633), and that is what makes an absent
+	// series readable.
+	//
+	// Counting agreements here too - with divergence="none" - would make the
+	// series present for every organization with any traffic, so "no
+	// divergences" would have to be read as "the none child is the only
+	// child", a sum over an open label set. Counting only divergences means
+	// the ABSENCE of a child is the signal, and it is a sound one exactly
+	// when the organization was measured at all: the reader pairs it with
+	// compatOrgComparisons{synthetic="false"} > 0, because a CounterVec with
+	// no children exports no series and absence alone is equally consistent
+	// with "nothing diverged" and "nothing ran".
+	//
+	// DivergenceNotEvaluated is excluded with DivergenceNone: a record the
+	// adapter never evaluated is not evidence of agreement, and counting it
+	// as a divergence would block an organization for traffic the plane
+	// deliberately skipped.
+	if rec.Divergence != DivergenceNone && rec.Divergence != DivergenceNotEvaluated {
+		compatOrgDivergences.WithLabelValues(rec.Component, org, synthetic, string(rec.Divergence)).Inc()
+	}
 }
 
 // boolLabel renders a boolean as a bounded label value.
@@ -381,6 +438,29 @@ func orgLabel(orgID string) string {
 	orgLabelState.seen[orgID] = true
 	return orgID
 }
+
+// BoundedOrgLabel is orgLabel, exported.
+//
+// It exists because a SECOND per-organization metric now needs the same cap -
+// the decision-proof refusal counters (#3614) - and
+// platform/shared/planeshadow/metrics.go already wrote down what to do when
+// that happened: "If a per-organization breakdown is ever judged worth it,
+// REUSE that capped scheme rather than adding a raw label: two implementations
+// of one cap is two things that must not disagree."
+//
+// One admission set, shared across every per-organization metric in the
+// process, is also the only reading of the cap that BOUNDS THE PROCESS rather
+// than each metric separately: N metrics each with their own 100-slot set is a
+// 100N-organization memory lever on the scrape target, which is what the cap
+// exists to prevent.
+func BoundedOrgLabel(orgID string) string { return orgLabel(orgID) }
+
+// MaxOrgLabelValues is maxOrgLabelValues, exported so a consumer's Help text
+// can state the cap it is subject to. Stating the number is not cosmetic: an
+// operator reading a per-organization panel that has silently folded every
+// tenant past the hundredth into one bucket needs to know that from the metric
+// itself, not from a runbook it has not opened.
+const MaxOrgLabelValues = maxOrgLabelValues
 
 // metricPathLabel bounds the path label to the declared vocabulary.
 //

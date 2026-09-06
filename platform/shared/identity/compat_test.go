@@ -1417,3 +1417,56 @@ func TestParseEnforceReasons(t *testing.T) {
 		t.Fatalf("a reason the adapter cannot enforce on was accepted")
 	}
 }
+
+// TestBootstrapCompatRefusesEnforceAtBoot pins the asymmetry #3633 closes.
+//
+// The decision axis has always refused its process-wide enforce at parse
+// (ParseDecisionShadowMode); the identity axis accepted it in ONE
+// unconditioned call, so `AXONFLOW_IDENTITY_COMPAT_MODE=enforce` began
+// refusing requests at boot with no shadow phase behind it, no observed
+// denominator, and nothing recorded about why it was safe - across every
+// organization at once, since the process-wide mode has no per-org dimension.
+//
+// This asserts BOTH directions, because a refusal that also refuses shadow
+// would pass a one-sided test while breaking every deployment in the fleet
+// (prod-US and community-SaaS both sit on shadow).
+func TestBootstrapCompatRefusesEnforceAtBoot(t *testing.T) {
+	_, err := BootstrapCompat(CompatBootstrapConfig{RawMode: "enforce"})
+	if err == nil {
+		t.Fatal("BootstrapCompat accepted enforce at boot. Process-wide enforcement refuses requests before any " +
+			"shadow phase has measured what it would refuse, on every organization at once; enforcement is granted " +
+			"per organization through the settings surface, against an observed denominator.")
+	}
+	// The message must send the operator to the route that DOES exist. A bare
+	// "not available" leaves them believing enforcement is unreachable and
+	// hunting for a build flag.
+	for _, want := range []string{"per organization", EnvEnforceReasons, "shadow"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q, so it does not tell the operator what to do instead.\ngot: %v", want, err)
+		}
+	}
+
+	// EVERY OTHER MODE STILL BOOTS. This is the half that matters for the
+	// fleet: a refusal keyed on anything broader than the single enforcing
+	// value would take down every deployment on shadow.
+	for _, raw := range []string{"", "off", "false", "0", "disabled", "shadow"} {
+		b, err := BootstrapCompat(CompatBootstrapConfig{RawMode: raw})
+		if err != nil {
+			t.Errorf("BootstrapCompat(%q) = %v; only enforce is refused at boot", raw, err)
+			continue
+		}
+		if b.Mode == CompatModeEnforce {
+			t.Errorf("BootstrapCompat(%q) produced enforce, which this path must never yield", raw)
+		}
+	}
+
+	// AND THE PER-ORG PARSER IS UNTOUCHED. The refusal lives on the boot path,
+	// not in ParseCompatMode, precisely so the per-organization route through
+	// the settings surface still has a mode to store. If this ever fails, the
+	// refusal has been pushed down into the shared parser and there is no
+	// route to enforcement at all.
+	if m, err := ParseCompatMode("enforce"); err != nil || m != CompatModeEnforce {
+		t.Errorf("ParseCompatMode(\"enforce\") = %v, %v; the shared parser must stay three-valued so the per-org "+
+			"surface can still store an enforcing mode", m, err)
+	}
+}

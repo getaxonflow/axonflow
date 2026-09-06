@@ -944,6 +944,49 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		return
 	}
 
+	// #3766: the ADR-065 capability handshake on the MCP server plane.
+	//
+	// Resolved once per tools/call, immediately after the session is
+	// authenticated and BEFORE the tool parameters are decoded - the closest
+	// this plane can come to #3704 §4.5's "before the body decode", since the
+	// session credential is carried in headers here and needs nothing from
+	// req.Params.
+	//
+	// Bound to session.clientID, the identity requireMCPAuth resolved from the
+	// credential, never to anything the caller supplies in the tool arguments.
+	//
+	// The resolution is threaded EXPLICITLY into the two governance tools that
+	// can raise an obligation, rather than smuggled through the context. A
+	// value in a context is invisible at the call site, and the one property
+	// that matters here - that check_policy and check_output are asked the
+	// capability question and the other eleven tools are not - should be
+	// readable in the dispatch rather than discoverable by grep.
+	pepCtx, pepHandshake := resolveMCPPEPHandshake(r.Context(), r, session.clientID)
+	r = r.WithContext(pepCtx)
+	if pepHandshake.refused {
+		// Never evaluated → a JSON-RPC error, which is this plane's rendering
+		// of "the request was not a decision", not a policy deny.
+		writeMCPDecisionAudit(r.Context(), usageDB,
+			uuid.New().String(), "",
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			// The tool name is deliberately NOT named here: the refusal is
+			// raised before req.Params is decoded, so no tool name has been
+			// established, and writing one would put a value onto an audit row
+			// that this code path never actually read.
+			"mcp_tools_call", "mcp tools/call: handshake refused before dispatch", "",
+			mcpVerdictBlocked,
+			[]string{pepHandshake.reason},
+			[]string{pepHandshake.reason + ": " + pepHandshake.detail},
+			nil,
+			"",
+			nil,
+			time.Since(startTime).Milliseconds())
+		writeJSONRPCError(w, req.ID, jsonRPCInvalidRequest,
+			pepHandshake.reason+": "+pepHandshake.detail)
+		return
+	}
+
 	var params mcpToolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		writeJSONRPCError(w, req.ID, jsonRPCInvalidParams, "Invalid tool call parameters")
@@ -1013,9 +1056,9 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 
 	switch params.Name {
 	case "check_policy":
-		result, toolErr = mcpToolCheckPolicy(r.Context(), session, params.Arguments)
+		result, toolErr = mcpToolCheckPolicy(r.Context(), session, params.Arguments, pepHandshake)
 	case "check_output":
-		result, toolErr = mcpToolCheckOutput(r.Context(), session, params.Arguments)
+		result, toolErr = mcpToolCheckOutput(r.Context(), session, params.Arguments, pepHandshake)
 	case "audit_tool_call":
 		result, toolErr = mcpToolAuditCall(session, params.Arguments)
 	case "list_policies":
@@ -1600,7 +1643,7 @@ func getSessionByID(id string) *mcpSession {
 // Cursor / Codex plugins all read these fields from the MCP tool response
 // to render a useful block message; without them every plugin block comes
 // back as a terse 'blocked' string.
-func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
+func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}, pepHandshake pepHandshakeResolution) (interface{}, error) {
 	// #3424: this tool evaluates policy inside the Agent (evaluateInputPolicies,
 	// no orchestrator proxy hop), so wall clock from here to each terminal
 	// verdict IS this decision's enforcement duration -- the same quantity
@@ -1744,7 +1787,11 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		session.userID,
 		session.userRole,
 		connectorType,
-		tool, // toolIdentity: advisory plane, caller-sent tool identity (#2801, #2904)
+		// ADVISORY plane: the caller executes the tool and reports its own name,
+		// which is the premise capability scoping rests on, so the same identity
+		// serves both roles (#2801, #2904, #3717).
+		tool, // toolIdentity
+		tool, // capabilityScopeIdentity
 		operation,
 		statement,
 		params,
@@ -1785,6 +1832,39 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	// execute with raw PII (issue #2746).
 	if !blocked {
 		masked, didRedact, evaluated := redactInputStatement(ctx, session.tenantID, session.userID, connectorType, statement)
+		// #3766 / ADR-065 invariant 8: an enforcement point that DECLARED it
+		// cannot discharge field_redact must not be handed the masked statement
+		// and trusted to substitute it for the original.
+		//
+		// This is the route that matters most for the fleet: six of the eight
+		// shipped plugins reach the platform through check_policy and nothing
+		// else, so this is where their capability declaration first has teeth.
+		//
+		// Raised BEFORE redaction_evaluated and redacted_statement are written
+		// onto the response, so the refusal withholds the content rather than
+		// reporting on content it already handed over.
+		if reason, denied := applyMCPRedactionRefusal(pepHandshake, didRedact); denied {
+			log.Printf("[pep-handshake] check_policy denied on plane %s: the advertising enforcement point cannot discharge the inline redaction (decision_id=%s)",
+				PlaneMCP, decisionID)
+			writeMCPDecisionAudit(ctx, usageDB,
+				decisionID, uuid.New().String(),
+				session.tenantID, session.orgID, session.clientID, session.userEmail,
+				session.userID, session.userRole,
+				"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
+				mcpVerdictBlocked,
+				[]string{pepCapabilityUnsupportedCode},
+				[]string{reason},
+				nil,
+				"",
+				nil,
+				time.Since(startTime).Milliseconds(),
+				connectorType, tool)
+			return map[string]interface{}{
+				"allowed":      false,
+				"decision_id":  decisionID,
+				"block_reason": reason,
+			}, nil
+		}
 		resp["redaction_evaluated"] = evaluated
 		if didRedact {
 			resp["requires_redaction"] = true
@@ -1913,7 +1993,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 }
 
 // check_output: uses Agent-internal evaluateOutputPolicies() directly.
-func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
+func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[string]interface{}, pepHandshake pepHandshakeResolution) (interface{}, error) {
 	// #3424: agent-local response evaluation (evaluateOutputPolicies), no proxy
 	// hop -- see mcpToolCheckPolicy above.
 	startTime := time.Now()
@@ -2014,6 +2094,44 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	// mcpToolCheckPolicy — surface it on every decision (allow + deny
 	// + redact) per Plugin Batch 1 / ADR-042 / ADR-043.
 	decisionID := uuid.New().String()
+
+	// #3766 / ADR-065 invariant 8: an enforcement point that DECLARED it cannot
+	// discharge field_redact must not be handed redacted_data / redacted_message
+	// and trusted to forward it in place of the original.
+	//
+	// Scoped to `!blocked`: a blocked response is already refused, the caller
+	// receives no masked content, and there is no obligation to discharge - so
+	// asking the capability question there would convert one deny into a
+	// different deny and lose the real block reason from the audit row.
+	//
+	// Raised BEFORE any redacted member is written into resp, because handing
+	// over the content and then reporting a refusal would leak exactly what the
+	// refusal exists to withhold.
+	if !blocked {
+		if reason, denied := applyMCPRedactionRefusal(pepHandshake, outcome.WasRedacted()); denied {
+			log.Printf("[pep-handshake] check_output denied on plane %s: the advertising enforcement point cannot discharge the inline redaction (decision_id=%s)",
+				PlaneMCP, decisionID)
+			writeMCPDecisionAudit(ctx, usageDB,
+				decisionID, uuid.New().String(),
+				session.tenantID, session.orgID, session.clientID, session.userEmail,
+				session.userID, session.userRole,
+				"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
+				mcpVerdictBlocked,
+				[]string{pepCapabilityUnsupportedCode},
+				[]string{reason},
+				nil,
+				"",
+				nil,
+				time.Since(startTime).Milliseconds(),
+				connectorType, tool)
+			return map[string]interface{}{
+				"allowed":      false,
+				"decision_id":  decisionID,
+				"block_reason": reason,
+			}, nil
+		}
+	}
+
 	resp := map[string]interface{}{
 		"allowed":     !blocked,
 		"decision_id": decisionID,

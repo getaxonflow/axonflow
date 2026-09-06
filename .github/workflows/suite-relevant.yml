@@ -1,0 +1,62 @@
+name: Suite Relevance
+
+# Reusable: decides whether ONE stack-booting suite's declared inputs changed
+# in the merge-queue entry being built.
+#
+# WHY IT EXISTS. A queue build used to run all 75 suites - 742 job-minutes,
+# ~93 wall-minutes on 8 runner slots - past both `suite-gate`'s deadline and
+# the ruleset's 60-minute check_response_timeout. That left no working
+# configuration: advisory meant a red suite merged, required meant every entry
+# timed out. `merge_group` accepts no `paths:` filter, so the scoping has to
+# live inside the workflow. This restores exactly the guard each suite's
+# `pull_request: paths:` filter used to apply, against the queue's own diff.
+#
+# ONE DEFINITION, TWO CONSUMERS. The path lists come from
+# `.github/nightly-suite-paths.yml`, which the nightly dispatcher also reads,
+# so a suite cannot be scoped one way in the queue and another way overnight.
+#
+# FAILS OPEN, deliberately. No manifest entry, an unreadable manifest or a
+# diff that will not compute all return `relevant=true` and the suite runs. A
+# wrong `true` costs minutes; a wrong `false` is an untested merge.
+
+on:
+  workflow_call:
+    inputs:
+      suite:
+        description: 'The suite workflow filename, e.g. audit-date-range-e2e.yml'
+        required: true
+        type: string
+    outputs:
+      relevant:
+        description: 'true if the suite must run for this diff'
+        value: ${{ jobs.decide.outputs.relevant }}
+
+permissions:
+  contents: read
+
+jobs:
+  decide:
+    name: Relevance
+    runs-on: ubuntu-latest
+    # GitHub-hosted and tiny on purpose: 75 of these run per queue entry, they
+    # are a checkout and a git diff, and they must still report when the
+    # self-hosted fleet is stopped by a spot interruption.
+    timeout-minutes: 10
+    outputs:
+      relevant: ${{ steps.decide.outputs.relevant }}
+    steps:
+      - name: Checkout with history for the diff
+        uses: actions/checkout@v6
+        with:
+          # The merge-queue base and the entry's head must both be present, so
+          # a shallow clone will not do.
+          fetch-depth: 0
+
+      - name: Decide
+        id: decide
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/suite-relevant.py \
+            "${{ inputs.suite }}" \
+            "${{ github.event.merge_group.base_sha }}" \
+            "${{ github.sha }}"

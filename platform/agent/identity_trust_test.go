@@ -249,12 +249,12 @@ func TestIdentityTrustGate_EnvVarNameIsTheSharedContract(t *testing.T) {
 	}
 	// Belt-and-suspenders: the adapters read the same var (compile-time import
 	// isn't possible from here; assert the source still references it).
-	src, err := os.ReadFile("../../ee/platform/agent/gateway_adapters/config.go")
+	src, err := os.ReadFile("../../platform/gateway-adapters/config.go")
 	if err != nil {
 		t.Skipf("ee tree not present in this build context: %v", err)
 	}
 	if !bytes.Contains(src, []byte("sharedidentity.FromEnv()")) {
-		t.Error("gateway_adapters/config.go no longer reads the shared identity trust gate — parse semantics may drift (#2896)")
+		t.Error("gateway-adapters/config.go no longer reads the shared identity trust gate — parse semantics may drift (#2896)")
 	}
 }
 

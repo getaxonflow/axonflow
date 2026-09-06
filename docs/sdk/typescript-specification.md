@@ -426,4 +426,4 @@ The SDK exports from `@axonflow/sdk`:
 
 ---
 
-*This specification describes the AxonFlow TypeScript SDK v9.0.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*
+*This specification describes the AxonFlow TypeScript SDK v9.3.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*

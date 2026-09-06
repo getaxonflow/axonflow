@@ -54,7 +54,7 @@ services:
       PORT: "8080"
       ORCHESTRATOR_URL: ""
       OPENAI_API_KEY: "not-needed-for-decision-mode"
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.3.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.4.0}"
       AXONFLOW_DB_USE_APP_ROLE: "false"
       GATEWAY_PII_ACTION: block
       GATEWAY_SQLI_ACTION: block

@@ -715,10 +715,19 @@ type CompatAdapter struct {
 	component string
 	// enforceReasons narrows what enforce refuses. Nil means every reason.
 	enforceReasons map[AdmissionReason]bool
-	registry       *RealmRegistry
-	realms         CompatRealmSource
-	revocations    RevocationOracle
-	recorder       CounterfactualRecorder
+	// paths narrows which legacy credential paths evaluate at all (#3634).
+	//
+	// NIL MEANS EVERY PATH, which is the unset deployment and therefore almost
+	// every deployment. It is read through CompatPathEvaluates rather than
+	// indexed directly, because a bare `a.paths[p]` reads nil as FALSE and
+	// would silently stop evaluating everything on a deployment that
+	// configured nothing - the failure the fatal parse exists to prevent,
+	// arriving by the one route that produces no error at all.
+	paths       map[LegacyPath]bool
+	registry    *RealmRegistry
+	realms      CompatRealmSource
+	revocations RevocationOracle
+	recorder    CounterfactualRecorder
 	// processMode is the deployment-wide mode from AXONFLOW_IDENTITY_COMPAT_MODE.
 	//
 	// IT IS READ IN EXACTLY ONE FUNCTION, effectiveMode, and nowhere else in
@@ -772,6 +781,36 @@ func WithCompatEnforceReasons(reasons []AdmissionReason) CompatAdapterOption {
 			set[r] = true
 		}
 		a.enforceReasons = set
+	}
+}
+
+// WithCompatPaths narrows which legacy credential paths evaluate (#3634).
+//
+// An empty or nil set means EVERY path, which is the default and the only
+// complete window. A narrowed set is a deliberate, temporary posture: the paths
+// it omits take the same early return an off mode takes, so they record nothing
+// and refuse nothing, and gate 18's coverage for them stops accruing while it
+// is in place.
+func WithCompatPaths(paths map[LegacyPath]bool) CompatAdapterOption {
+	return func(a *CompatAdapter) {
+		if len(paths) == 0 {
+			a.paths = nil
+			return
+		}
+		set := make(map[LegacyPath]bool, len(paths))
+		for p, on := range paths {
+			if on {
+				set[p] = true
+			}
+		}
+		// A set whose every entry was false is a narrowing that names nothing,
+		// and storing it would evaluate no path at all. Nil is the honest
+		// reading and matches the parser, which refuses that input outright.
+		if len(set) == 0 {
+			a.paths = nil
+			return
+		}
+		a.paths = set
 	}
 }
 
@@ -889,6 +928,24 @@ func (a *CompatAdapter) Resolve(ctx context.Context, in LegacyAuth) CompatOutcom
 	// per-organization fact, and " acme" must not resolve to a different mode
 	// than "acme".
 	in.AuthenticatedOrgID = strings.TrimSpace(in.AuthenticatedOrgID)
+
+	// THE PER-PATH LEVER (#3634), CHECKED BEFORE THE MODE IS EVEN READ.
+	//
+	// A path taken out of the configured set evaluates as `off` FOR THAT PATH
+	// ONLY, and it takes the identical early return the mode-off branch takes
+	// below: no clock read, no registry touch, no recorder call, no
+	// allocation. That sameness is the point rather than a convenience - "off
+	// for this path" has to mean exactly what "off" means, or the lever would
+	// be a third posture with its own behaviour to reason about, and an
+	// operator reaching for it during an incident would be trying something
+	// new at the worst moment.
+	//
+	// It is deliberately ABOVE effectiveMode: the mode read can touch the
+	// per-organization settings store, and a path an operator has switched off
+	// should not be able to fail on a database lookup it was excluded from.
+	if !CompatPathEvaluates(a.paths, in.Path) {
+		return CompatOutcome{Mode: CompatModeOff, Path: in.Path, Divergence: DivergenceNotEvaluated}
+	}
 
 	// THE ONE MODE READ. `mode` is a local from here down: every branch below
 	// stamps it on its outcome and refusalFor/record read it back off the

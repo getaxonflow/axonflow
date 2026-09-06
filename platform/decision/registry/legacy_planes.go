@@ -175,13 +175,7 @@ func parseCapabilityList(cell string) ([]contract.Capability, error) {
 		}
 		out = append(out, contract.Capability{Type: contract.ObligationType(name), Version: v})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type < out[j].Type
-		}
-		return out[i].Version < out[j].Version
-	})
-	return out, nil
+	return contract.SortCapabilities(out), nil
 }
 
 // LegacyPlanePEPs returns the enforcement point records for one edition.

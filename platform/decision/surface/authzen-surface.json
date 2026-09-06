@@ -2,9 +2,14 @@
   "artifact": "axonflow-authzen-surface",
   "artifact_version": 1,
   "profile": "axonflow-authzen-profile-2026-08-29",
+  "profile_header": "X-Axonflow-AuthZEN-Profile",
+  "route": {
+    "method": "POST",
+    "path": "/api/v1/access/evaluation"
+  },
   "contract_schema_version": "2026-08-29",
   "source_schema_id": "https://schemas.getaxonflow.com/decision/contract-2026-08-29.schema.json",
-  "source_schema_sha256": "sha256:647e16f769766f0ee8cf4913aaf5ac5c4567660fd2903da6766eead5db279efe",
+  "source_schema_sha256": "sha256:04f63f4d97215faa9fbf2b6a5152630f7310edbe47440b975d0f66ad63df811f",
   "enums": [
     {
       "name": "authzen_error_code",
