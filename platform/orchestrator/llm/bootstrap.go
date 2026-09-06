@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"axonflow/platform/shared/deploymode"
 )
 
 // additionalBootstrapProviders allows enterprise builds to add additional providers.
@@ -24,10 +26,10 @@ var additionalBootstrapProviders []struct {
 // Environment variable names for provider configuration.
 const (
 	// Anthropic environment variables
-	EnvAnthropicAPIKey      = "ANTHROPIC_API_KEY"
-	EnvAnthropicModel       = "ANTHROPIC_MODEL"
-	EnvAnthropicEndpoint    = "ANTHROPIC_ENDPOINT"
-	EnvAnthropicTimeout     = "ANTHROPIC_TIMEOUT_SECONDS"
+	EnvAnthropicAPIKey   = "ANTHROPIC_API_KEY"
+	EnvAnthropicModel    = "ANTHROPIC_MODEL"
+	EnvAnthropicEndpoint = "ANTHROPIC_ENDPOINT"
+	EnvAnthropicTimeout  = "ANTHROPIC_TIMEOUT_SECONDS"
 
 	// OpenAI environment variables
 	EnvOpenAIAPIKey   = "OPENAI_API_KEY"
@@ -202,7 +204,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 	// replaced with no-ops that log an informational skip message. This is a defensive
 	// guard — in practice the stack won't have API keys set, but this prevents accidental
 	// activation if an operator misconfigures the environment.
-	if os.Getenv("DEPLOYMENT_MODE") == "community-saas" {
+	if deploymode.CurrentIsCommunitySaasPosture() {
 		log.Println("[community-saas] Ollama-only mode — skipping all paid LLM providers")
 		for i, p := range providers {
 			if p.ptype != ProviderTypeOllama {

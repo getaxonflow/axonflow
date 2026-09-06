@@ -11,6 +11,7 @@ on:
   # Pull requests: Run detect-changes and Security Scan Summary only
   # This ensures the required Security Scan Summary check is present for merge queue entry.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
       - develop
@@ -68,11 +69,21 @@ jobs:
   # =============================================================================
   detect-changes:
     name: Detect Changes
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && github.event.pull_request.draft != true
     permissions:
       contents: read
       pull-requests: read
@@ -87,9 +98,12 @@ jobs:
         id: filter
         with:
           filters: |
+            # Manifests and Dockerfiles only (2026-09-03): the Trivy filesystem
+            # scan resolves vulnerabilities from go.mod/go.sum/pom.xml and the
+            # Dockerfiles, not from Go source, yet `platform/**/*.go` put its
+            # ~8 billable minutes on nearly every push. Secret and config scans
+            # keep their own (cheaper) gates; the nightly schedule scans all.
             security-relevant:
-              - 'platform/**/*.go'
-              - 'ee/platform/**/*.go'
               - '**/go.mod'
               - '**/go.sum'
               # Maven manifests so a Java dependency CVE is caught at PR /
@@ -103,7 +117,7 @@ jobs:
   # Trivy scans provide sufficient security coverage for PRs
   codeql-analysis:
     name: CodeQL Analysis
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 60
     # Only run on nightly schedule - saves ~7 minutes on every PR and merge queue entry
     if: github.event_name == 'schedule'
@@ -137,6 +151,13 @@ jobs:
   # Dependency Review - Block PRs that introduce vulnerable dependencies
   dependency-review:
     name: Dependency Review
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'pull_request'
@@ -154,6 +175,28 @@ jobs:
   # Trivy Filesystem Scan
   trivy-filesystem-scan:
     name: Trivy Filesystem Scan
+    # GITHUB-HOSTED: the trivy action installs ONE binary at a SHARED path.
+    # Measured on the fleet host after drain 10 ejected on this job's sibling:
+    # there is exactly one trivy binary, at
+    #   /home/runner/.local/bin/trivy-bin/trivy   (160 MB, rwxr-xr-x)
+    # and all eight runner slots share /home/runner. Two slots installing it at
+    # once means one execs a partially written file, which is exactly what
+    # `Trivy Scan - Orchestrator Docker Image` did: exit 126, "cannot execute",
+    # on aws-ip-10-1-2-29-7 while the Agent scan passed on -29-3 in the same
+    # minute with the same action pin. Same action, same fleet, different slot.
+    #
+    # NOT FIXABLE PER-SLOT FROM HERE. The action exposes `cache-dir`, so the
+    # cache could be isolated, but the BINARY install path is internal to it
+    # and has no input - and the binary is what raced. Isolating only the cache
+    # would leave the actual failure in place.
+    #
+    # `Security Scan Summary` is a REQUIRED context, so an intermittent exit 126
+    # here blocks every merge - the worst place in the tree for a race. These
+    # scans are short and gain nothing from the fleet's hardware.
+    #
+    # The general fix is per-slot $HOME, which is the root of this whole axis
+    # (~/.m2, ~/.cache, and now ~/.local/bin all share one home across 8 slots).
+    # That is a runner-setup change with its own proof, not a drain unblocker.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [detect-changes]
@@ -337,6 +380,28 @@ jobs:
   # Trivy Configuration Scan
   trivy-config-scan:
     name: Trivy Configuration Scan
+    # GITHUB-HOSTED: the trivy action installs ONE binary at a SHARED path.
+    # Measured on the fleet host after drain 10 ejected on this job's sibling:
+    # there is exactly one trivy binary, at
+    #   /home/runner/.local/bin/trivy-bin/trivy   (160 MB, rwxr-xr-x)
+    # and all eight runner slots share /home/runner. Two slots installing it at
+    # once means one execs a partially written file, which is exactly what
+    # `Trivy Scan - Orchestrator Docker Image` did: exit 126, "cannot execute",
+    # on aws-ip-10-1-2-29-7 while the Agent scan passed on -29-3 in the same
+    # minute with the same action pin. Same action, same fleet, different slot.
+    #
+    # NOT FIXABLE PER-SLOT FROM HERE. The action exposes `cache-dir`, so the
+    # cache could be isolated, but the BINARY install path is internal to it
+    # and has no input - and the binary is what raced. Isolating only the cache
+    # would leave the actual failure in place.
+    #
+    # `Security Scan Summary` is a REQUIRED context, so an intermittent exit 126
+    # here blocks every merge - the worst place in the tree for a race. These
+    # scans are short and gain nothing from the fleet's hardware.
+    #
+    # The general fix is per-slot $HOME, which is the root of this whole axis
+    # (~/.m2, ~/.cache, and now ~/.local/bin all share one home across 8 slots).
+    # That is a runner-setup change with its own proof, not a drain unblocker.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [detect-changes]
@@ -383,6 +448,28 @@ jobs:
   # Trivy Secret Scan
   trivy-secret-scan:
     name: Trivy Secret Scan
+    # GITHUB-HOSTED: the trivy action installs ONE binary at a SHARED path.
+    # Measured on the fleet host after drain 10 ejected on this job's sibling:
+    # there is exactly one trivy binary, at
+    #   /home/runner/.local/bin/trivy-bin/trivy   (160 MB, rwxr-xr-x)
+    # and all eight runner slots share /home/runner. Two slots installing it at
+    # once means one execs a partially written file, which is exactly what
+    # `Trivy Scan - Orchestrator Docker Image` did: exit 126, "cannot execute",
+    # on aws-ip-10-1-2-29-7 while the Agent scan passed on -29-3 in the same
+    # minute with the same action pin. Same action, same fleet, different slot.
+    #
+    # NOT FIXABLE PER-SLOT FROM HERE. The action exposes `cache-dir`, so the
+    # cache could be isolated, but the BINARY install path is internal to it
+    # and has no input - and the binary is what raced. Isolating only the cache
+    # would leave the actual failure in place.
+    #
+    # `Security Scan Summary` is a REQUIRED context, so an intermittent exit 126
+    # here blocks every merge - the worst place in the tree for a race. These
+    # scans are short and gain nothing from the fleet's hardware.
+    #
+    # The general fix is per-slot $HOME, which is the root of this whole axis
+    # (~/.m2, ~/.cache, and now ~/.local/bin all share one home across 8 slots).
+    # That is a runner-setup change with its own proof, not a drain unblocker.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [detect-changes]
@@ -420,6 +507,28 @@ jobs:
   # Docker Image Scans - Skip on PRs for speed
   trivy-docker-agent:
     name: Trivy Scan - Agent Docker Image
+    # GITHUB-HOSTED: the trivy action installs ONE binary at a SHARED path.
+    # Measured on the fleet host after drain 10 ejected on this job's sibling:
+    # there is exactly one trivy binary, at
+    #   /home/runner/.local/bin/trivy-bin/trivy   (160 MB, rwxr-xr-x)
+    # and all eight runner slots share /home/runner. Two slots installing it at
+    # once means one execs a partially written file, which is exactly what
+    # `Trivy Scan - Orchestrator Docker Image` did: exit 126, "cannot execute",
+    # on aws-ip-10-1-2-29-7 while the Agent scan passed on -29-3 in the same
+    # minute with the same action pin. Same action, same fleet, different slot.
+    #
+    # NOT FIXABLE PER-SLOT FROM HERE. The action exposes `cache-dir`, so the
+    # cache could be isolated, but the BINARY install path is internal to it
+    # and has no input - and the binary is what raced. Isolating only the cache
+    # would leave the actual failure in place.
+    #
+    # `Security Scan Summary` is a REQUIRED context, so an intermittent exit 126
+    # here blocks every merge - the worst place in the tree for a race. These
+    # scans are short and gain nothing from the fleet's hardware.
+    #
+    # The general fix is per-slot $HOME, which is the root of this whole axis
+    # (~/.m2, ~/.cache, and now ~/.local/bin all share one home across 8 slots).
+    # That is a runner-setup change with its own proof, not a drain unblocker.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name != 'pull_request' && github.event_name != 'schedule'
@@ -458,6 +567,28 @@ jobs:
 
   trivy-docker-orchestrator:
     name: Trivy Scan - Orchestrator Docker Image
+    # GITHUB-HOSTED: the trivy action installs ONE binary at a SHARED path.
+    # Measured on the fleet host after drain 10 ejected on this job's sibling:
+    # there is exactly one trivy binary, at
+    #   /home/runner/.local/bin/trivy-bin/trivy   (160 MB, rwxr-xr-x)
+    # and all eight runner slots share /home/runner. Two slots installing it at
+    # once means one execs a partially written file, which is exactly what
+    # `Trivy Scan - Orchestrator Docker Image` did: exit 126, "cannot execute",
+    # on aws-ip-10-1-2-29-7 while the Agent scan passed on -29-3 in the same
+    # minute with the same action pin. Same action, same fleet, different slot.
+    #
+    # NOT FIXABLE PER-SLOT FROM HERE. The action exposes `cache-dir`, so the
+    # cache could be isolated, but the BINARY install path is internal to it
+    # and has no input - and the binary is what raced. Isolating only the cache
+    # would leave the actual failure in place.
+    #
+    # `Security Scan Summary` is a REQUIRED context, so an intermittent exit 126
+    # here blocks every merge - the worst place in the tree for a race. These
+    # scans are short and gain nothing from the fleet's hardware.
+    #
+    # The general fix is per-slot $HOME, which is the root of this whole axis
+    # (~/.m2, ~/.cache, and now ~/.local/bin all share one home across 8 slots).
+    # That is a runner-setup change with its own proof, not a drain unblocker.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name != 'pull_request' && github.event_name != 'schedule'
@@ -497,6 +628,13 @@ jobs:
   # Security Summary
   security-summary:
     name: Security Scan Summary
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
@@ -561,6 +699,28 @@ jobs:
           SECRET_RESULT="${{ needs.trivy-secret-scan.result }}"
           if [[ "$SECRET_RESULT" != "success" && "$SECRET_RESULT" != "skipped" ]]; then
             echo "Secret scan failed - CRITICAL"
+            CRITICAL_FAILED=1
+          fi
+
+          # #3730: this job `needs:` trivy-config-scan but never compared its
+          # result, so a failing configuration scan failed NOTHING - the step
+          # above merely echoed it. A `needs:` edge is not a gate; the consumer
+          # has to read the result. Found while censusing the jobs whose
+          # failure on main nobody reads, because that census had credited
+          # every dependency of this required summary as "guarded" and this
+          # was one of three where that was false.
+          #
+          # The two image scans (trivy-docker-agent / trivy-docker-orchestrator)
+          # are deliberately NOT added here: their findings come from Trivy's
+          # vulnerability DB and appear with no commit changing, so gating a
+          # required context on them would block every merge fleet-wide for a
+          # cause outside every diff. They are watched instead, by
+          # scripts/ci/check-main-guard-freshness.sh - see the reason column in
+          # tests/regression-test-required/lib/main-guard-dispositions.tsv.
+          # This scan reads the tree, not a DB, so it can gate.
+          CONFIG_RESULT="${{ needs.trivy-config-scan.result }}"
+          if [[ "$CONFIG_RESULT" != "success" && "$CONFIG_RESULT" != "skipped" ]]; then
+            echo "Configuration scan failed"
             CRITICAL_FAILED=1
           fi
 

@@ -167,6 +167,15 @@ func (s *DBRealmStore) Upsert(ctx context.Context, realm TrustRealm, updatedBy s
 	if realm.OrgID == "" {
 		return 0, fmt.Errorf("identity: a trust realm must name its organization; org_id is the RLS boundary and a realm never spans organizations")
 	}
+	// The same rule the registry applies at Register, applied on the WRITE
+	// path: the realm id is the qualifier of every principal minted under this
+	// realm, the column's CHECK constraints (core/169) enforce only colon-free
+	// and non-empty, and a stored realm LoadRegistry would refuse fails the
+	// whole organization's registry load rather than just itself (#3709 row
+	// 3). One Validate, not a second copy of its rules.
+	if err := realm.Validate(); err != nil {
+		return 0, err
+	}
 	config, err := encodeRealm(realm)
 	if err != nil {
 		return 0, err

@@ -869,15 +869,26 @@ func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 
 		// platform/orchestrator/hitl_wcp_community.go::expireEvalApprovals
 		// is the community-build (no enterprise tag) HITL eval auto-
-		// reject sweep. Runs every 5 minutes across ALL tenants — by
-		// nature cross-org. Under USE_APP_ROLE=true the `db` it
-		// receives is app_role, which means the cross-tenant UPDATE
-		// no-ops under RLS. The runtime fix is to plumb an admin pool
-		// through Init/runEvalApprovalExpiryLoop — that is multi-
-		// package refactor (sister to #2400's heartbeat surface) and
-		// is filed for follow-up. Listed here to keep the regression
-		// guard green; the runtime issue is tracked separately.
-		"platform/orchestrator/hitl_wcp_community.go::expireEvalApprovals": "admin-pool by design (cross-tenant sweep): runtime needs admin-pool plumbing through runEvalApprovalExpiryLoop — sibling of #2400.",
+		// expiry sweep. Runs every 5 minutes across ALL tenants — by
+		// nature cross-org.
+		//
+		// THIS COMMENT USED TO DESCRIBE A DEFERRAL AND IT NO LONGER DOES.
+		// It read: "Under USE_APP_ROLE=true the `db` it receives is
+		// app_role, which means the cross-tenant UPDATE no-ops under RLS.
+		// The runtime fix is to plumb an admin pool through
+		// Init/runEvalApprovalExpiryLoop — that is a multi-package
+		// refactor and is filed for follow-up." That was true, and the
+		// consequence was that the Evaluation-tier auto-expiry did
+		// NOTHING on every app-role deployment while reporting success
+		// (#3048 shape, tracked as #3520 item 2).
+		//
+		// #3520 did the plumbing. hitlExpirySweepPool opens
+		// axonflow_platform_admin, and InitializeWCPHITL DOES NOT START
+		// THE SWEEPER AT ALL when no BYPASSRLS pool is available — a loud
+		// refusal instead of a silent no-op. So this entry is no longer
+		// "listed here to keep the guard green"; the receiver genuinely
+		// cannot be RLS-scoped on any path that reaches the statement.
+		"platform/orchestrator/hitl_wcp_community.go::expireEvalApprovals": "admin-pool BY CONSTRUCTION (cross-tenant sweep): the plumbing this entry used to defer is DONE (#3520) — the sweeper refuses to start without a BYPASSRLS pool rather than silently matching zero rows.",
 
 		// platform/agent/node_enforcement/heartbeat.go::CleanupStaleHeartbeats
 		// + EE mirror — admin-pool cross-tenant sweep that removes

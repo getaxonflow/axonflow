@@ -1,8 +1,8 @@
 # AxonFlow SDK Documentation
 
-**Last Updated:** May 2026
+**Last Updated:** September 2026
 
-**SDK Versions:** v9.0.0 (Go / Python / TypeScript / Java) — v0.8.1 preview (Rust) | **Platform Version:** v9.14.0
+**SDK Versions:** v9.3.0 (Go / Python / TypeScript / Java) — v0.10.0 preview (Rust) | **Platform Version:** v10.4.0
 
 AxonFlow provides official SDKs in five languages for integrating LLM governance into your applications. The four established SDKs (Go / Python / TypeScript / Java) offer identical feature coverage; the Rust SDK is in preview with a Phase-0 baseline (auth + proxy + audit + basic MAP + basic MCP) — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix.
 
@@ -113,7 +113,7 @@ Add to your `pom.xml`:
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>9.0.0</version>
+    <version>9.3.0</version>
 </dependency>
 ```
 
@@ -135,12 +135,12 @@ var response = client.proxyLlmCall(
 System.out.println(response);
 ```
 
-### Rust _(preview, v0.8.1)_
+### Rust _(preview, v0.10.0)_
 
 ```toml
 # Cargo.toml
 [dependencies]
-axonflow-sdk-rust = "0.8.1"
+axonflow-sdk-rust = "0.10.0"
 tokio = { version = "1", features = ["full"] }
 ```
 

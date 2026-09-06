@@ -12,6 +12,7 @@ name: Test Suite (Community)
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
   merge_group:
@@ -33,13 +34,23 @@ jobs:
   # =============================================================================
   detect-changes:
     name: Detect Changes
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.
     timeout-minutes: 10
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
     if: |
-      github.repository == 'getaxonflow/axonflow' &&
-      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+      (github.repository == 'getaxonflow/axonflow' &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')) && github.event.pull_request.draft != true
     permissions:
       contents: read
       pull-requests: read
@@ -56,6 +67,16 @@ jobs:
           filters: |
             go-code:
               - 'platform/**/*.go'
+              # Standalone Go modules outside platform/ (#3728 round 3). Kept
+              # identical to test.yml's filter for the same reason: the
+              # `unit-tests-standalone-modules` lane discovers modules under
+              # `scripts/`, and a change to such a module's Go source or test
+              # previously set go-code=false and skipped the lane - exactly the
+              # case the lane exists for. On the community mirror
+              # `scripts/key-rotation` is not re-included, so this line matches
+              # nothing there; it is here so the enterprise-side simulation of
+              # this workflow and the workflow itself agree.
+              - 'scripts/**/*.go'
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/test-community.yml'
@@ -70,6 +91,17 @@ jobs:
 
   unit-tests:
     name: Unit Tests (All Modules)
+    # GITHUB-HOSTED, NOT THE SELF-HOSTED FLEET, and this is a hard constraint
+    # rather than a preference. This job declares `services:` with a PINNED
+    # host port. GitHub-hosted runners give every job its own machine, so
+    # 5432 is free every time. The self-hosted fleet is 8 runners sharing ONE
+    # Docker daemon and one host network, so two concurrent jobs binding
+    # 0.0.0.0:5432 collide - measured: "Bind for 0.0.0.0:5432 failed: port is
+    # already allocated", which reds the required Test Summary.
+    # Recovering these onto the fleet needs per-runner network isolation
+    # (a Docker-in-Docker runner per slot); see
+    # infrastructure/ci-runners/README.md. Until then they cost ~43K
+    # GitHub minutes a month, which is the difference between ~$249 and ~$372.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [detect-changes]
@@ -250,7 +282,7 @@ jobs:
 
   race-detector:
     name: Race Condition Detection
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 15
     needs: [detect-changes]
     if: |
@@ -264,11 +296,19 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up Go
+        # CACHE OFF ON THE FLEET (#3685 convention, completed 2026-09-06).
+        # setup-go defaults `cache` to true, which tars and uploads GOCACHE +
+        # GOMODCACHE in a `Post Setup Go` step. On this fleet both live PER SLOT
+        # on the host and persist between jobs, so that upload buys nothing -
+        # and it is not cheap. Measured on run 34015282283: `Backend Tests
+        # (invpc mode)` had its tests, coverage and upload all SUCCEED and was
+        # then killed at 15m02s with `Post Setup Go` cancelled, against 1.6 min
+        # of actual tests. unit-tests-standalone-modules and -ee-modules in this
+        # same file already do this; these were the stragglers.
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-          cache: true
-          cache-dependency-path: platform/go.sum
+          cache: false
 
       - name: Install dependencies
         run: |
@@ -284,7 +324,7 @@ jobs:
       - name: Run tests with race detector
         run: |
           cd platform/orchestrator
-          go test -race -timeout 10m
+          go test -race -count=1 -timeout 10m
 
       # THE SHADOW'S CONCURRENCY IS ONLY MEANINGFUL UNDER -race.
       #
@@ -304,6 +344,17 @@ jobs:
 
   integration-tests:
     name: Integration Tests
+    # GITHUB-HOSTED, NOT THE SELF-HOSTED FLEET, and this is a hard constraint
+    # rather than a preference. This job declares `services:` with a PINNED
+    # host port. GitHub-hosted runners give every job its own machine, so
+    # 5432 is free every time. The self-hosted fleet is 8 runners sharing ONE
+    # Docker daemon and one host network, so two concurrent jobs binding
+    # 0.0.0.0:5432 collide - measured: "Bind for 0.0.0.0:5432 failed: port is
+    # already allocated", which reds the required Test Summary.
+    # Recovering these onto the fleet needs per-runner network isolation
+    # (a Docker-in-Docker runner per slot); see
+    # infrastructure/ci-runners/README.md. Until then they cost ~43K
+    # GitHub minutes a month, which is the difference between ~$249 and ~$372.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [detect-changes, unit-tests, race-detector]
@@ -381,7 +432,7 @@ jobs:
           REDIS_URL: redis://localhost:6379
         run: |
           cd platform/orchestrator
-          go test -v -run "TestIntegration|TestEndToEnd" -timeout 10m
+          go test -v -count=1 -run "TestIntegration|TestEndToEnd" -timeout 10m
 
   # =============================================================================
   # Decision Contracts (ADR-065)
@@ -407,7 +458,7 @@ jobs:
   # watching.
   unit-tests-decision:
     name: "Unit Tests: Decision Contracts (Community)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     # Raised alongside test.yml, keeping this lane's existing +5 over its twin.
     timeout-minutes: 37
     needs: [detect-changes]
@@ -421,11 +472,19 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up Go
+        # CACHE OFF ON THE FLEET (#3685 convention, completed 2026-09-06).
+        # setup-go defaults `cache` to true, which tars and uploads GOCACHE +
+        # GOMODCACHE in a `Post Setup Go` step. On this fleet both live PER SLOT
+        # on the host and persist between jobs, so that upload buys nothing -
+        # and it is not cheap. Measured on run 34015282283: `Backend Tests
+        # (invpc mode)` had its tests, coverage and upload all SUCCEED and was
+        # then killed at 15m02s with `Post Setup Go` cancelled, against 1.6 min
+        # of actual tests. unit-tests-standalone-modules and -ee-modules in this
+        # same file already do this; these were the stragglers.
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-          cache: true
-          cache-dependency-path: platform/decision/go.sum
+          cache: false
 
       - name: Install dependencies
         run: |
@@ -464,6 +523,80 @@ jobs:
           go test ./conformance/ -count=1 -timeout 10m \
             -run 'TestConformanceCorpus|TestMutationProofs|TestCorpusIdentifierRangesDoNotCollide|TestEveryDecisionSatisfiesItsSchema'
 
+      # ADR-065 gate 17: the benchmarks' own controls, plus a SMOKE RUN of every
+      # benchmark at one iteration.
+      #
+      # WHAT THIS STEP IS FOR, AND WHAT IT IS NOT. It does NOT publish timings:
+      # a shared runner's p99 is a statement about the runner, and enforcing a
+      # ceiling here would fail for a noisy neighbour and pass for a real
+      # regression on a quiet one. The published figures live in
+      # technical-docs/architecture-decisions/ADR-065-gate17-budgets.md, taken
+      # on a stated machine with stated sample counts.
+      #
+      # What CI must prevent is the benchmarks silently rotting - a fixture that
+      # stops compiling, an API that moves, a document builder that stops
+      # scaling with its size argument - because a benchmark nobody runs is
+      # rediscovered as "gate 17 has no measurements" a second time. So: the
+      # controls run for real, and every benchmark is executed once.
+      #
+      # `-benchtime 1x` and NOT the 500-policy activation row: one activation
+      # there takes over twelve seconds, which is the finding the artifact
+      # publishes and not something to pay on every PR. The smaller rows
+      # exercise the same code path.
+      #
+      # THE ENFORCED HALF (2026-09-05, #3555). gate17_budgets_test.go turns the
+      # published table into verdicts. The MEMORY rows (bytes per operation)
+      # and the SHAPE rows (cost ratios measured in one process) are
+      # machine-independent and FAIL here on every pull request. The LATENCY
+      # rows are milliseconds and belong to the machine, so here they are
+      # measured and logged beside their budget in ADVISORY mode; the same
+      # test enforces them in gate17-latency-budgets.yml, alone on a hosted
+      # runner. The document/code table-parity test runs here too, so a
+      # ceiling cannot move on one side only. Each is run by name with its
+      # PASS line required, for the reason above.
+      - name: "ADR-065 gate 17: benchmark controls, budgets and smoke"
+        # AXONFLOW_GATE17_ALONE: this step runs the test binary by name, alone,
+        # before the package arm; the SHAPE rows are verdicts only here (a
+        # ratio of two wall-clock terms is not neighbour-proof: 47.7 under
+        # `./...` parallelism against 12.1 alone, job 101403668523). Pinned by
+        # tests/regression-test-required/gate17_verdict_steps_run_alone_test.sh.
+        env:
+          AXONFLOW_GATE17_ALONE: "1"
+        run: |
+          set -euo pipefail
+          cd platform/decision
+          for name in TestGate17BenchmarksReachTheirSubject TestGate17BudgetTableMatchesThePublishedDocument TestGate17MemoryBudgetsHold TestGate17ShapeBudgetsHold TestGate17LatencyBudgets; do
+            out=$(go test ./pdp/ -count=1 -timeout 10m -v -run "^${name}$" 2>&1) || { echo "$out"; exit 1; }
+            echo "$out"
+            if ! grep -q -- "--- PASS: ${name}" <<< "$out"; then
+              echo "::error::${name} did not run. A -run pattern that matches nothing exits 0,"
+              echo "::error::so a renamed gate would be a green step proving nothing."
+              exit 1
+            fi
+          done
+          go test ./pdp/ -count=1 -timeout 10m -run XXX \
+            -bench 'BenchmarkGate17Decide|BenchmarkGate17Compile|BenchmarkGate17TimerFloor|BenchmarkGate17Activation/policies=(0|1|10)$' \
+            -benchtime 1x
+
+      # ADR-065 gate 18 is "shadow migration has no unexplained fail-open
+      # difference for the agreed window". This is that sentence, executable:
+      # the legacy substrate is compiled, both engines are evaluated on every
+      # plane, and every difference is classified. UNEXPLAINED == 0 over a
+      # non-vacuous corpus is the operand, and the gate refuses an empty
+      # corpus, a plane with policy and no cases, and any compiled row the
+      # corpus never reached - because zero unexplained out of zero compared
+      # passes forever and passes hardest when the corpus is broken.
+      #
+      # -v so the per-plane counters and the coverage block land in the log.
+      # The number a reader needs is UNEXPLAINED per plane, and a summary
+      # nobody can see is a summary nobody checks.
+      # ADR-065 gate 18 and the compiler's own invariants.
+      #
+      # `go test -run` with a name that matches NOTHING prints "no tests to
+      # run" and exits 0, so a rename turns a named gate into a green step that
+      # verified nothing. Each name is therefore run individually and its
+      # `--- PASS:` line is required, which is the only way this shape of step
+      # can fail for the right reason.
       # ADR-065 gate 18 is "shadow migration has no unexplained fail-open
       # difference for the agreed window". This is that sentence, executable:
       # the legacy substrate is compiled, both engines are evaluated on every
@@ -659,6 +792,51 @@ jobs:
           go test ./conformance/gate15mutation/ -count=1 -timeout 25m -v \
             -run 'TestGate15FloorsCanFail|TestEveryMutantAnchorIsUniqueAndPresent'
 
+      # ADR-065 gate 16 is "replay reproduces sampled decisions from pinned
+      # inputs and bundles". This is that sentence, executable, in both halves:
+      # the identical replay of every committed sample, AND the two negatives
+      # without which the affirmative is satisfiable by a constant - a changed
+      # input that changes the decision, and a mismatched pin that refuses
+      # rather than falling back.
+      #
+      # The PASS census after the run is the point of naming the tests here. A
+      # `-run` pattern that matches nothing exits 0, so a renamed or deleted
+      # gate test would leave this step green having executed none of it; the
+      # loop turns that into a named failure. `grep -q` reads a FILE rather
+      # than a pipe on purpose: on a pipeline it can win the race and kill
+      # `go test` with SIGPIPE, which under pipefail reports 141 for a run that
+      # was fine.
+      - name: "ADR-065 gate 16: offline replay from pinned inputs and bundles"
+        run: |
+          set -uo pipefail
+          cd platform/decision
+          GATE16_TESTS="TestTheCommittedFixtureIsWhatTheGeneratorProduces
+          TestReplayReproducesEveryLiveDecision
+          TestTheSampledPopulationSpansTheDecisionSurface
+          TestAChangedInputChangesTheDecision
+          TestAMismatchedBundlePinRefusesRatherThanFallingBack
+          TestAnEnvironmentChangeAloneChangesTheDecision
+          TestTheDocumentsSurviveTheirRoundTrip
+          TestReplayingTheCommittedSamplesVerifiesEveryOne
+          TestAChangedInputProducesADifferentDecision
+          TestAMismatchedPinRefusesAndExitsTwo
+          TestANonReproducingRecordExitsThree
+          TestARunOverNoRecordsIsNotASuccess"
+          pattern=""
+          for t in $GATE16_TESTS; do pattern="${pattern}${pattern:+|}${t}"; done
+          log="$(mktemp)"
+          go test ./replay/ ./cmd/decision-replay/ -count=1 -timeout 10m -v -run "$pattern" 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          missing=0
+          for t in $GATE16_TESTS; do
+            if ! grep -qE "^--- PASS: ${t}( |\()" "$log"; then
+              echo "FAIL: ${t} reported no PASS line; the gate names a test this run did not execute"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          exit "$status"
+
       - name: Full module test with the race detector
         run: |
           cd platform/decision
@@ -683,7 +861,7 @@ jobs:
   # because the decision job's copy drifted within a day of being made.
   unit-tests-platform-packages:
     name: "Unit Tests: Platform Packages (Community)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, axonflow]
     timeout-minutes: 20
     needs: [detect-changes]
     if: |
@@ -696,11 +874,19 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up Go
+        # CACHE OFF ON THE FLEET (#3685 convention, completed 2026-09-06).
+        # setup-go defaults `cache` to true, which tars and uploads GOCACHE +
+        # GOMODCACHE in a `Post Setup Go` step. On this fleet both live PER SLOT
+        # on the host and persist between jobs, so that upload buys nothing -
+        # and it is not cheap. Measured on run 34015282283: `Backend Tests
+        # (invpc mode)` had its tests, coverage and upload all SUCCEED and was
+        # then killed at 15m02s with `Post Setup Go` cancelled, against 1.6 min
+        # of actual tests. unit-tests-standalone-modules and -ee-modules in this
+        # same file already do this; these were the stragglers.
         uses: actions/setup-go@v6
         with:
           go-version: '1.25'
-          cache: true
-          cache-dependency-path: platform/go.sum
+          cache: false
 
       - name: Install dependencies
         run: |
@@ -750,41 +936,47 @@ jobs:
           printf '%s\n' "$PKGS" | grep -qE '/platform/shared/identity$' || { echo "::error::platform/shared/identity is not in the selection"; exit 1; }
           echo "testing $count of $total packages in the untagged build; $roots service roots and $connectors connector packages have their own steps"
           # shellcheck disable=SC2086
-          go test -count=1 -timeout 15m -v $PKGS 2>&1 | tee /tmp/platform-packages.log
+          go test -count=1 -timeout 15m -v $PKGS 2>&1 | tee "$RUNNER_TEMP/platform-packages.log"
           # Every selected package must have produced a verdict line. A package
           # missing from the output is a package that was not tested, whatever
           # the exit code says.
-          verdicts="$(grep -cE '^(ok|\?)[[:space:]]' /tmp/platform-packages.log || true)"
+          verdicts="$(grep -cE '^(ok|\?)[[:space:]]' "$RUNNER_TEMP/platform-packages.log" || true)"
           [ "$verdicts" -eq "$count" ] || { echo "::error::$count packages selected but $verdicts reported a verdict"; exit 1; }
-          grep -qE '^ok[[:space:]]+[^[:space:]]*/platform/shared/identity[[:space:]]' /tmp/platform-packages.log || { echo "::error::platform/shared/identity did not report ok"; exit 1; }
-          echo "tests passed: $(grep -c '^--- PASS: ' /tmp/platform-packages.log || true)   skipped: $(grep -c '^--- SKIP: ' /tmp/platform-packages.log || true)"
+          grep -qE '^ok[[:space:]]+[^[:space:]]*/platform/shared/identity[[:space:]]' "$RUNNER_TEMP/platform-packages.log" || { echo "::error::platform/shared/identity did not report ok"; exit 1; }
+          echo "tests passed: $(grep -c '^--- PASS: ' "$RUNNER_TEMP/platform-packages.log" || true)   skipped: $(grep -c '^--- SKIP: ' "$RUNNER_TEMP/platform-packages.log" || true)"
           # Skips are listed by name, so a lane that is green on skips is green
           # visibly. No DATABASE_URL is set here on purpose: the tests that need
           # a migrated database run in the Real-PG lane, and un-skipping them
           # against the raw-psql database the service steps use would fail for
           # a reason that is not a regression.
-          grep '^--- SKIP: ' /tmp/platform-packages.log || true
+          grep '^--- SKIP: ' "$RUNNER_TEMP/platform-packages.log" || true
 
   # =============================================================================
   # Standalone modules
   # =============================================================================
-  # WHY THIS EXISTS. platform/cmd/axonctl and platform/test/integration are
-  # SEPARATE Go modules, so `go test ./...` from platform/ does not descend into
-  # them, and until this job existed no workflow ran either one. The gap was
-  # found by tests/regression-test-required/mirrored_module_has_a_community_test_job_test.sh
+  # WHY THIS EXISTS. A separate Go module is invisible to `go test ./...` from
+  # platform/, so until this job existed no workflow ran platform/cmd/axonctl or
+  # platform/test/integration. The gap was found by
+  # tests/regression-test-required/mirrored_module_has_a_community_test_job_test.sh
   # while closing #3574, and it was not theoretical: axonctl's client_test.go had
   # been failing on main, because the client sent the deprecated X-Tenant-ID
   # alias where the test asserts the v9 canonical X-Client-ID, and nothing ran it
   # to say so.
   #
-  # setup-go runs with cache: false deliberately. Between them these modules
-  # declare seven dependencies; a cache entry would cost a cache-seed matrix
-  # entry mirroring this block byte for byte forever, to save a download shorter
-  # than the restore it replaces.
+  # The members are now DISCOVERED rather than named - see the step comment for
+  # why, and for the module (#3710's guard in scripts/key-rotation) that joined
+  # the tree invisible to every job while the lane's list stayed at two.
+  #
+  # setup-go runs with cache: false deliberately. The modules in scope declare a
+  # few dozen dependencies between them, dominated by the AWS SDK that the
+  # key-rotation tool imports; a cache entry would cost a cache-seed matrix entry
+  # mirroring this block byte for byte forever, to save a download of the same
+  # order as the restore it replaces. Revisit that with a measurement, not with
+  # this sentence, if the step's wall time becomes the reason someone is here.
   unit-tests-standalone-modules:
     name: "Unit Tests: Standalone Modules (Community)"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: [self-hosted, linux, x64, axonflow]
+    timeout-minutes: 15
     needs: [detect-changes]
     if: |
       github.repository == 'getaxonflow/axonflow' &&
@@ -801,15 +993,198 @@ jobs:
           go-version: '1.25'
           cache: false
 
-      - name: Test axonctl
+      # WHY THIS IS DISCOVERED AND NOT LISTED (#3728). Until this step the lane
+      # named its two modules, so its membership was a hand-kept list and a
+      # module added under platform/ or scripts/ joined the tree already
+      # invisible to every job. That is not hypothetical: scripts/key-rotation
+      # is a separate module carrying the ONLY guard on #3710's pasted-seed fix,
+      # and `git grep key-rotation -- '*.yml' '*.yaml' Makefile '*.sh' '*.mk'`
+      # matched nothing outside that directory - the guard shipped in a module
+      # no job built, which is the same shape as the defect it guards against.
+      # It is the seventh instance of gate (f) on #3709: a check whose
+      # membership is a hand-kept list. Adding a third name would have been an
+      # eighth, so the members are DISCOVERED and an unregistered module REDS
+      # this step instead of joining it silently.
+      #
+      # One script has to be correct in three trees, because it is byte-identical
+      # in test.yml and test-community.yml (community_workflow_twin_parity_test.sh
+      # requires that) and the mirror simulation replays the community copy on a
+      # staged mirror: this repository, the staged copy, and the public mirror.
+      # Discovery is what makes that possible - scripts/key-rotation does not
+      # reach the mirror (`--exclude='/scripts/*'` in sync-community-repo.yml),
+      # so there it is simply not discovered, while the floors below name only
+      # modules that every tree has. The one enterprise-specific floor is
+      # guarded on `-d ee`, which the mirror strips.
+      - name: Test every standalone Go module under platform/ and scripts/
         run: |
-          cd platform/cmd/axonctl
-          go test ./... -count=1 -timeout 5m
+          set -euo pipefail
+          # Exemptions: `<module> :: <reason>`. Each is checked below to be
+          # load-bearing, so an entry cannot outlive the module it excuses and
+          # then quietly cover its replacement.
+          EXEMPT='platform/decision :: has its own lane ("Unit Tests: Decision Contracts", and the twin in the community workflow) whose fixture, mutation and authoring gates a generic `go test ./...` would not replay'
+          EXEMPT_PATHS="$(printf '%s\n' "$EXEMPT" | sed 's/ :: .*//')"
+          for d in platform scripts; do
+            [ -d "$d" ] || { echo "::error::$d/ does not exist, so module discovery is looking at nothing"; exit 1; }
+          done
+          # awk, not `grep -vx`, to drop the root module: grep exits 1 when it
+          # filters everything out, which under pipefail would abort with no
+          # diagnostic instead of reaching the empty-selection floor below.
+          #
+          # EVERY EXCLUSION BELOW IS DELIBERATE (#3728 round 3):
+          #   node_modules/ - vendored JavaScript; never one of our Go modules.
+          #   testdata/     - the Go toolchain ignores testdata BY CONSTRUCTION
+          #                   and this find did not. platform/ already holds
+          #                   three testdata trees, and a deliberately
+          #                   unbuildable module under testdata/ is the
+          #                   ordinary way to test Go tooling, so discovering
+          #                   one would red this step - and this step gates the
+          #                   required Test Summary, i.e. it would red every
+          #                   pull request in the repository.
+          #   vendor/       - `go mod vendor` output is a copy of somebody
+          #                   else's module; testing it tests upstream.
+          # No other exclusion is intended: a real module anywhere else under
+          # platform/ or scripts/ must be discovered, which is the whole point.
+          #
+          # -print0 / xargs -0 because `xargs -n1 dirname` splits a path that
+          # contains whitespace into two bogus module names and drops the real
+          # one. The sibling guard
+          # tests/regression-test-required/mirrored_module_has_a_community_test_job_test.sh
+          # already does it this way; this is the copy that did not.
+          FOUND="$(find platform scripts -name go.mod \
+            -not -path '*/node_modules/*' \
+            -not -path '*/testdata/*' \
+            -not -path '*/vendor/*' \
+            -print0 | xargs -0 -n1 dirname | awk '$0 != "platform"' | sort)"
+          [ -n "$FOUND" ] || { echo "::error::no separate Go modules discovered under platform/ or scripts/; discovery has stopped working"; exit 1; }
+          # -print0 above fixes only the FIND half of the whitespace problem.
+          # `for m in $FOUND` still word-splits, and SELECTED is a
+          # space-joined list read back by `case " $SELECTED " in *" $req "*`,
+          # so a module path containing a space cannot be carried at all.
+          # Measured before this floor existed: `platform/my mod` was reported
+          # as the module `platform/my` and the step then died in `cd` with a
+          # message naming a directory that does not exist. Refuse it by name
+          # instead - loud beats silently testing the wrong thing. No tracked
+          # path in this repository contains whitespace today (#3728 round 3).
+          if printf '%s\n' "$FOUND" | grep -q '[[:blank:]]'; then
+            echo "::error::discovered module path contains whitespace: $(printf '%s\n' "$FOUND" | grep '[[:blank:]]' | head -1)"
+            echo "::error::this step joins module paths with spaces; rename the directory or teach the whole step an IFS discipline"
+            exit 1
+          fi
+          SELECTED=""
+          for m in $FOUND; do
+            if printf '%s\n' "$EXEMPT_PATHS" | grep -qxF "$m"; then
+              echo "exempt: $m -- $(printf '%s\n' "$EXEMPT" | grep -F "$m :: " | sed 's/.* :: //')"
+              continue
+            fi
+            SELECTED="$SELECTED $m"
+          done
+          # Every exemption must still name a module that exists.
+          for e in $EXEMPT_PATHS; do
+            printf '%s\n' "$FOUND" | grep -qxF "$e" || { echo "::error::exempt module $e no longer exists; delete the exemption rather than leave it covering nothing"; exit 1; }
+          done
+          # Floors. These two mirror, so all three trees can satisfy them.
+          for req in platform/cmd/axonctl platform/test/integration; do
+            case " $SELECTED " in *" $req "*) ;; *) echo "::error::$req is not in the selection; this lane was created to run it"; exit 1 ;; esac
+          done
+          # ee/ is stripped from the mirror, so it is the enterprise tell. In
+          # this repository scripts/key-rotation must be selected: it is the
+          # module whose invisibility this step exists for.
+          if [ -d ee ]; then
+            case " $SELECTED " in *" scripts/key-rotation "*) ;; *) echo "::error::scripts/key-rotation is not in the selection in an enterprise tree (#3728)"; exit 1 ;; esac
+          fi
+          echo "selected:$SELECTED"
+          total_pass=0
+          keyrotation_pass=0
+          for m in $SELECTED; do
+            echo "=== go test ./... in $m ==="
+            mlog="$(mktemp)"
+            (cd "$m" && go test ./... -count=1 -timeout 5m -v) 2>&1 | tee "$mlog"
+            # A module that reported no package verdict is a module that was
+            # not tested, whatever the exit code says.
+            grep -qE '^(ok|\?)[[:space:]]' "$mlog" || { echo "::error::$m reported no package verdict; nothing in it ran"; exit 1; }
+            p="$(grep -c '^--- PASS: ' "$mlog" || true)"
+            echo "    $m: $p test(s) passed, $(grep -c '^--- SKIP: ' "$mlog" || true) skipped"
+            grep '^--- SKIP: ' "$mlog" || true
+            total_pass=$((total_pass + p))
+            if [ "$m" = "scripts/key-rotation" ]; then keyrotation_pass="$p"; fi
+            rm -f "$mlog"
+          done
+          # A step that COMPILED every module and ran no test would satisfy
+          # every check above - `? pkg [no test files]` is a verdict. These two
+          # are the ones that cannot be satisfied by a build.
+          [ "$total_pass" -gt 0 ] || { echo "::error::no test passed in any selected module; this step built them and ran nothing"; exit 1; }
+          if [ -d ee ]; then
+            [ "$keyrotation_pass" -gt 0 ] || { echo "::error::scripts/key-rotation reported 0 passing tests; its seed-paste guard did not run (#3728)"; exit 1; }
+            echo "scripts/key-rotation: $keyrotation_pass test(s) passed"
+          fi
+          echo "total tests passed across the selection: $total_pass"
 
-      - name: Test the standalone integration module
+  # #3649 - A PATH-FILTERED WORKFLOW CAN REPORT SUCCESS HAVING EXECUTED NOTHING.
+  # At the v10.3.0 release head the community twin reported `success` with every
+  # job `skipped`, and on the checks list that is indistinguishable from a green
+  # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
+  # The summary job above cannot carry this - it is a REQUIRED context and must
+  # stay satisfiable on a docs-only change, so it accepts a skip. This job is
+  # NOT required: it counts the jobs that executed, writes the count to the step
+  # summary and goes RED when the count is zero, so "nothing ran" is a
+  # first-class outcome a citer sees on the checks list rather than a detail
+  # inside a green run. Red, not neutral: a skipped or neutral conclusion
+  # satisfies a required check exactly as success does (#3755), and a census
+  # that could be satisfied by not running would be the defect it counts.
+  # `needs` mirrors the summary's so the two report on one set. Pinned by
+  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  tests-executed-census:
+    name: Tests executed census
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [detect-changes, unit-tests, unit-tests-platform-packages, unit-tests-decision, unit-tests-standalone-modules, race-detector, integration-tests]
+    # Same repository guard as this workflow's jobs: in the enterprise repo
+    # every job here is skipped BY DESIGN (test.yml is the lane; the mirror
+    # simulation replays these steps), and a census that counted that as
+    # "nothing was tested" would be red on every enterprise PR for a reason
+    # that is not a finding. On the mirror, where these jobs run, it counts.
+    if: github.repository == 'getaxonflow/axonflow' && always()
+    steps:
+      - name: Count the jobs that executed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CHANGE_DETECTOR: detect-changes
         run: |
-          cd platform/test/integration
-          go test ./... -count=1 -timeout 5m
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          detector = os.environ["CHANGE_DETECTOR"]
+          rows = sorted((job, (info or {}).get("result", "?")) for job, info in needs.items())
+          substantive = [(j, r) for j, r in rows if j != detector]
+          if not substantive:
+              print("::error::the census needs no job besides the change detector; it is counting nothing")
+              sys.exit(1)
+          executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
+          skipped = [j for j, r in substantive if r == "skipped"]
+          verdict = f"{len(executed)} of {len(substantive)} jobs executed"
+          lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
+          lines += [f"| `{j}` | {r} |" for j, r in rows]
+          if not executed:
+              detector_result = dict(rows).get(detector, "absent")
+              if detector_result == "success":
+                  why = "the change detector ran and matched no relevant path"
+              elif detector_result == "skipped":
+                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
+              else:
+                  why = f"the change detector reported {detector_result}"
+              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
+                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
+                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          if not executed:
+              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+              sys.exit(1)
+          PY
 
   test-summary:
     # #3573 - `Test Summary` is a REQUIRED status check in BOTH repositories,
@@ -834,6 +1209,13 @@ jobs:
     #
     # Pinned by tests/regression-test-required/required_check_name_uniqueness_test.sh.
     name: ${{ github.repository == 'getaxonflow/axonflow' && 'Test Summary' || 'Test Summary (Community)' }}
+    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
+    # real work - it reads other jobs' results, or greps the tree - but it
+    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
+    # suites it blocks a merge having tested nothing. Measured: #3795's
+    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
+    # every unit job already green. A few seconds of hosted time is the
+    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     # 10, not the class cap: measured max for this job shape is under 20
     # seconds, so a wedged run should bill minutes, not an hour.

@@ -5674,6 +5674,33 @@ paths:
                   total:
                     type: integer
 
+  /api/v1/euaiact/accuracy/alerts/{alert_id}:
+    get:
+      tags:
+        - EU AI Act
+      summary: Get an accuracy alert by ID
+      description: >-
+        Get one accuracy or bias alert. Scoped to the calling organization: an
+        alert belonging to another organization is reported as 404, not 403, so
+        the response cannot be used to probe for another tenant's alert IDs.
+      operationId: getAccuracyAlertByID
+      parameters:
+        - name: alert_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrgIDHeader'
+      responses:
+        '200':
+          description: The alert
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccuracyAlert'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/euaiact/accuracy/alerts/{alert_id}/acknowledge:
     post:
       tags:
@@ -9477,6 +9504,10 @@ components:
             type: string
           example:
             python: "8.0.0"
+            typescript: "8.0.0"
+            go: "8.0.0"
+            java: "8.0.0"
+            rust: "0.7.0"
         recommended_sdk_version:
           type: object
           description: |
@@ -9485,7 +9516,11 @@ components:
           additionalProperties:
             type: string
           example:
-            python: "9.0.0"
+            python: "9.3.0"
+            typescript: "9.3.0"
+            go: "9.3.0"
+            java: "9.3.0"
+            rust: "0.10.0"
 
     PluginCompatInfo:
       type: object
@@ -9499,10 +9534,24 @@ components:
           type: object
           additionalProperties:
             type: string
+          description: Per-plugin minimum version compatible with this platform.
+          example:
+            openclaw: "2.4.0"
+            claude-code: "1.4.0"
+            cursor: "1.4.0"
+            codex: "1.4.0"
+            claude-desktop: "0.2.0"
         recommended_plugin_version:
           type: object
           additionalProperties:
             type: string
+          description: Per-plugin version this platform was tested against.
+          example:
+            openclaw: "2.9.0"
+            claude-code: "1.12.0"
+            cursor: "1.8.0"
+            codex: "1.8.0"
+            claude-desktop: "0.4.0"
 
     PlanStatusResponse:
       type: object
@@ -9833,6 +9882,15 @@ components:
 
     PolicyEvaluationResult:
       type: object
+      description: |
+        The policy verdict carried on every orchestrator response. Its property
+        SET is held equal to the Go type's JSON members by
+        `TestThePublishedSchemasMatchTheTypesThePlatformMarshals`, which
+        compares the two by reflection, so a field added to one and not the
+        other fails CI rather than reaching a spec-generated client (#3724).
+        The properties are also written in the Go type's declaration order as a
+        courtesy to a reader diffing the two; nothing enforces that, and order
+        is not part of the contract.
       properties:
         allowed:
           type: boolean
@@ -9844,6 +9902,13 @@ components:
           type: number
           minimum: 0
           maximum: 1
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Highest severity among the matched policies.
+        severity_policy_id:
+          type: string
+          description: The policy that contributed `severity`.
         required_actions:
           type: array
           items:
@@ -9852,6 +9917,88 @@ components:
           type: integer
         database_accessed:
           type: boolean
+        evaluation_error:
+          type: boolean
+          description: |
+            Distinguishes **could not govern** from **a policy said block**,
+            and is the only signal that does. True when the engine could NOT
+            complete evaluation because governance-segment resolution failed
+            (a resolver or storage error -- never "the caller belongs to zero
+            segments"). `allowed` is always false when this is set, because the
+            engine fails CLOSED on that error, so a consumer reading only
+            `allowed` still behaves safely; a consumer that audits or alerts
+            MUST read this field to tell an availability failure apart from a
+            genuine policy match. Before it existed the only signal was the
+            magic string `applied_policies: ["segment_resolution_failed"]`.
+        segments_resolved:
+          type: boolean
+          description: |
+            True only when a resolved, non-empty governance-segment set was
+            actually factored into this verdict. False covers every legitimate
+            organisation-only case -- no identity supplied, no resolver wired
+            (community, or no SCIM), or the caller belongs to zero segments --
+            as well as the `evaluation_error` case. None of those are failures:
+            the flag exists so a reader of a policy-simulation preview does not
+            mistake a legitimate org-only allow for a segment-aware one.
+        applied_policies_detail:
+          type: array
+          description: |
+            Structured mirror of `applied_policies` carrying risk and override
+            semantics, so a consumer can decide override eligibility without a
+            second query.
+          items:
+            $ref: '#/components/schemas/AppliedPolicyDetail'
+        override_applied:
+          type: boolean
+          description: True when a session override flipped a deny into an allow.
+        override_id:
+          type: string
+          description: Identifier of the override that was applied.
+        override_reason:
+          type: string
+          description: Reason recorded with the applied override.
+        preferred_provider:
+          type: string
+          description: LLM provider a matched routing policy prefers.
+        allowed_providers:
+          type: array
+          items:
+            type: string
+          description: |
+            Strict provider allow-list for compliance routing. Failover stays
+            within this list.
+        routing_reason:
+          type: string
+          description: Why routing was changed.
+
+    AppliedPolicyDetail:
+      type: object
+      description: |
+        One structured per-policy match inside `PolicyEvaluationResult`.
+      properties:
+        policy_id:
+          type: string
+        policy_name:
+          type: string
+        description:
+          type: string
+        action:
+          type: string
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+        allow_override:
+          type: boolean
+          description: False if and only if the policy forbids a session override.
+        matched_rule:
+          type: string
+        segment_id:
+          type: string
+          description: |
+            The governance segment this policy is scoped to, or absent when it
+            is not segment-scoped. ATTRIBUTION AND AUDIT ONLY -- it is not an
+            override-eligibility signal anywhere: a segment-scoped policy uses
+            the same `allow_override` contract as a tenant policy.
 
     PolicyMatch:
       type: object

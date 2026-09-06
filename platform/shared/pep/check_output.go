@@ -128,7 +128,7 @@ func (c *Client) CheckOutput(ctx context.Context, req CheckOutputRequest, incomi
 		return nil, fmt.Errorf("pep: check-output request too large (%d bytes > %d): cannot be scanned, do not forward", len(body), maxCheckOutputBytes)
 	}
 
-	httpReq, err := c.newPost(ctx, responseRedactionPath, body, incomingTraceparent)
+	httpReq, err := c.newPost(ctx, responseRedactionPath, body, incomingTraceparent, "")
 	if err != nil {
 		return nil, err
 	}

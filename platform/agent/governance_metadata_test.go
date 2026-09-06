@@ -308,7 +308,7 @@ func TestMCPToolCheckPolicy_OverrideJustification_RealPostgres(t *testing.T) {
 			"connector_type": connectorType,
 			"statement":      jqMarshal(t, args),
 			"operation":      "execute",
-		})
+		}, pepHandshakeResolution{})
 		if err != nil {
 			t.Fatalf("mcpToolCheckPolicy: %v", err)
 		}

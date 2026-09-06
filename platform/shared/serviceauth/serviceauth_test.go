@@ -12,8 +12,10 @@
 package serviceauth
 
 import (
+	"context"
 	"os"
 	"regexp"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -377,5 +379,150 @@ func TestIsValidRequest_WrongLegacySecret(t *testing.T) {
 	// Wrong plain secret
 	if IsValidInternalServiceRequest(ClientID, "wrong-secret", val, false) {
 		t.Error("wrong legacy secret should be rejected")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Subject-bound tokens (#3629)
+// ---------------------------------------------------------------------------
+
+// TestASubjectBoundSignatureCoversTheSubject. If the subject were outside the
+// covered material, every subject would share one signature and the binding
+// would be decoration.
+func TestASubjectBoundSignatureCoversTheSubject(t *testing.T) {
+	const secret = "an-internal-service-secret-of-at-least-32-chars"
+	g := NewTokenGenerator(secret, RealClock{})
+	v := NewTokenValidator(secret, RealClock{}, DefaultClockSkew)
+
+	token, err := g.GenerateTokenForSubject("wcp-01")
+	if err != nil {
+		t.Fatalf("GenerateTokenForSubject: %v", err)
+	}
+	if ok, err := v.ValidateTokenForSubject(token, "wcp-01"); !ok {
+		t.Fatalf("a token must validate for its own subject: %v", err)
+	}
+	if ok, _ := v.ValidateTokenForSubject(token, "wcp-02"); ok {
+		t.Fatal("a token minted for one subject validated for another; the subject is not inside the covered material")
+	}
+}
+
+// TestTheSubjectSignatureIsInjectiveOverAdversarialSubjects.
+//
+// The property is that two DIFFERENT subject strings never produce one
+// signature, because two identities that share a signature authenticate as each
+// other. The set below is chosen for the ways an encoding usually loses that:
+// the separator the format uses, leading and trailing whitespace, a prefix
+// relationship, and case.
+//
+// A NOTE ON THE LENGTH PREFIX, so a later reader does not overclaim it. With a
+// fixed domain tag in front and a digits-only timestamp behind, a naive
+// `domain|subject|ts` join is ALREADY injective - there is no pair of subjects
+// this test can build that collides under it. The length prefix is therefore
+// defence for the day the trailing field stops being an integer, not a fix for
+// a live ambiguity, and the mutant this test does kill is the one that matters
+// more here: a subject that is trimmed, lower-cased or otherwise normalised
+// before it is signed, which makes two spellings one identity.
+func TestTheSubjectSignatureIsInjectiveOverAdversarialSubjects(t *testing.T) {
+	const secret = "an-internal-service-secret-of-at-least-32-chars"
+	const ts int64 = 1788458616
+	subjects := []string{
+		"wcp-01", "wcp-02", "wcp", "wcp|01", "wcp-01 ", " wcp-01", "WCP-01", "wcp-01\t", "",
+	}
+	seen := map[string]string{}
+	for _, s := range subjects {
+		if s == "" {
+			continue // refused outright; see TestAnEmptySubjectIsRefusedOnBothSides
+		}
+		sig := computeSubjectSignature(secret, s, ts)
+		if prev, dup := seen[sig]; dup {
+			t.Fatalf("subjects %q and %q produce one signature; they are two identities that authenticate as each other", prev, s)
+		}
+		seen[sig] = s
+	}
+}
+
+// TestASubjectBoundSignatureIsDomainSeparatedFromThePlainOne.
+//
+// ClientID is a legal subject string. Without the domain tag, a plain fleet
+// token would be a valid subject-bound token for the subject
+// "orchestrator-internal" - so every holder of the fleet secret would
+// authenticate as that identity without ever having asked to.
+func TestASubjectBoundSignatureIsDomainSeparatedFromThePlainOne(t *testing.T) {
+	const secret = "an-internal-service-secret-of-at-least-32-chars"
+	const ts int64 = 1788458616
+	if computeSubjectSignature(secret, ClientID, ts) == computeSignature(secret, ClientID, ts) {
+		t.Fatal("a plain token and a subject-bound token for the same string share a signature; the two schemes are not separated")
+	}
+}
+
+// TestAnEmptySubjectIsRefusedOnBothSides. An empty subject would bind a token
+// to nothing while looking bound, and a validator that accepted one would let
+// "no identity" satisfy an identity check.
+func TestAnEmptySubjectIsRefusedOnBothSides(t *testing.T) {
+	const secret = "an-internal-service-secret-of-at-least-32-chars"
+	g := NewTokenGenerator(secret, RealClock{})
+	v := NewTokenValidator(secret, RealClock{}, DefaultClockSkew)
+	// A CURRENT token, so only the empty-subject guard can be what refuses it.
+	// The first draft used a hand-written token with timestamp 1, which the
+	// skew bound rejected on its own - so the assertion passed with the guard
+	// deleted, which is an assertion landing on a cheaper signal rather than on
+	// the behaviour under test.
+	fresh, err := g.GenerateTokenForSubject("wcp-01")
+	if err != nil {
+		t.Fatalf("GenerateTokenForSubject: %v", err)
+	}
+	for _, s := range []string{"", "   "} {
+		if _, err := g.GenerateTokenForSubject(s); err == nil {
+			t.Fatalf("GenerateTokenForSubject(%q) must be refused", s)
+		}
+		if ok, _ := v.ValidateTokenForSubject(fresh, s); ok {
+			t.Fatalf("ValidateTokenForSubject(%q) must be refused", s)
+		}
+		// The case the signature comparison CANNOT refuse: a token whose
+		// signature genuinely covers the empty subject. The generator will not
+		// mint one, but anyone holding the secret can compute it, so the
+		// validator's own guard is what has to refuse it - and without this
+		// case, deleting that guard changes no test result, because every other
+		// empty-subject token fails the signature check for an unrelated
+		// reason.
+		ts := time.Now().Unix()
+		forged := TokenPrefix + strconv.FormatInt(ts, 10) + "-" + computeSubjectSignature(secret, s, ts)
+		if ok, _ := v.ValidateTokenForSubject(forged, s); ok {
+			t.Fatalf("a token correctly signed for the empty subject %q was accepted; an identity of nothing must never authenticate", s)
+		}
+	}
+}
+
+// TestASubjectBoundTokenStillExpires. The subject binding is added to the skew
+// bound rather than in place of it: a replayed token from last week must not
+// become acceptable because it now names a subject.
+func TestASubjectBoundTokenStillExpires(t *testing.T) {
+	const secret = "an-internal-service-secret-of-at-least-32-chars"
+	past := &mockClock{now: time.Now().Add(-time.Hour)}
+	g := NewTokenGenerator(secret, past)
+	token, err := g.GenerateTokenForSubject("wcp-01")
+	if err != nil {
+		t.Fatalf("GenerateTokenForSubject: %v", err)
+	}
+	v := NewTokenValidator(secret, RealClock{}, DefaultClockSkew)
+	if ok, _ := v.ValidateTokenForSubject(token, "wcp-01"); ok {
+		t.Fatal("an hour-old subject-bound token was accepted inside a five-minute skew bound")
+	}
+}
+
+// TestSubjectFromContextDistinguishesAbsentFromEmpty. An endpoint comparing a
+// claimed identity against the authenticated one must be able to tell "nobody
+// authenticated" from "somebody authenticated an empty string", or a body
+// claiming "" would match an unauthenticated caller.
+func TestSubjectFromContextDistinguishesAbsentFromEmpty(t *testing.T) {
+	if _, ok := SubjectFromContext(context.Background()); ok {
+		t.Fatal("a context with no subject reported one")
+	}
+	if _, ok := SubjectFromContext(ContextWithAuthenticatedSubject(context.Background(), "")); ok {
+		t.Fatal("an empty subject reported as authenticated; an empty identity must never satisfy an identity check")
+	}
+	got, ok := SubjectFromContext(ContextWithAuthenticatedSubject(context.Background(), "wcp-01"))
+	if !ok || got != "wcp-01" {
+		t.Fatalf("subject = %q (ok=%v), want wcp-01", got, ok)
 	}
 }

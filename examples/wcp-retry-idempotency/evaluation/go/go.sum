@@ -1,4 +1,4 @@
-github.com/getaxonflow/axonflow-sdk-go/v9 v9.1.1 h1:lMflgM2eryETGsacJXMQqupNhJMjyZy5LFWYpD2lVE0=
-github.com/getaxonflow/axonflow-sdk-go/v9 v9.1.1/go.mod h1:Kp9NHBtRCjEIWmp1SBnM5gRLl+NsYPcp2WMrElSx1Bg=
+github.com/getaxonflow/axonflow-sdk-go/v9 v9.2.0 h1:QGA0lF4Qg7KAw+lA6BMQ61RpZDfSZZ+zo+jt3Wg5KpI=
+github.com/getaxonflow/axonflow-sdk-go/v9 v9.2.0/go.mod h1:Kp9NHBtRCjEIWmp1SBnM5gRLl+NsYPcp2WMrElSx1Bg=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=

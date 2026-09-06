@@ -11,44 +11,3031 @@ community mirror, **Enterprise** changes are EE-only.
 ---
 
 <!--
-  Version decision (Step 0): v10.3.0, MINOR, prepared 2026-09-01 for the
+  Version decision (Step 0): v10.4.0, MINOR, prepared 2026-09-06 for the
   operator to tag (HARD RULE 10: the operator tags; nothing here cuts,
-  publishes, syncs or deploys). The train is the TEN commits on main since the
-  v10.2.0 tag `2b8eba320`, re-derived from `git log v10.2.0..origin/main`:
-  #3601, #3606, #3612, #3607, #3608, #3610, #3611, #3609, #3613, plus #3600,
-  which is the post-tag CI-only fix already recorded in the v10.2.0 release
-  record and changes no shipped artifact.
-  Measured against the 2026-07-30 semver policy from the diff, not the PR
-  bodies: `git diff v10.2.0..origin/main` removes ZERO os.Getenv reads and
-  ZERO AXONFLOW_ variables, adds no required credential, and adds no refusal
-  on an existing path. Four items were examined against the "new refusal =
-  MAJOR" clause and ruled MINOR-safe:
-  (1) AXONFLOW_DECISION_SHADOW_MODE is BOOT FATAL on an unrecognized value,
-  which only a deployment that SETS a variable that did not exist before can
-  reach; unset is outcome-identical.
-  (2) `POST /api/v1/access/evaluation` is a NEW route, so it refuses nothing
-  that previously succeeded. It is the one item in this train that is neither
-  dark nor default-off, and it is stated as such in the scope block rather
-  than folded into the ADR-065 "dark infrastructure" framing.
-  (3) The identity-settings admin API's absent-field semantics change from
-  "clear" to "preserve" on `compat_mode`. That is a widening of what a caller
-  keeps, not a new refusal; clearing is still available and is now explicit.
-  (4) The customer-portal decision-proof routes are new, Enterprise-only, and
-  registered only when five environment variables are set and a live KMS
-  answers; unset registers nothing and logs one line.
-  FIVE MIGRATIONS ship and the edition split is NOT the same as v10.2.0's:
-  `enterprise/147`, `148`, `149` and `150` are Enterprise only, and
-  `core/169` is CORE, so a Community deployment DOES apply a migration this
-  release. Every sentence describing a PR is derived from the merged tree.
-  Three PR bodies in this train carry claims the merged tree contradicts and
-  none of them is repeated here: #3609's body and squash message number its
-  migrations 147 and 148 (they are 148 and 149; 147 is #3608's), #3607's body
-  says 18 rules / 10 unit cases (its own file has 20 rules and 10 cases; the
-  rules directory also holds decision-shadow.rules.yml, a later change and
-  not part of that discrepancy),
-  and #3611's body links its SDK companions as `#TBD`.
-  The heading date is the prep date and moves to the tag date if the tag slips.
+  publishes, syncs or deploys). The train is the 73 commits on main since the
+  v10.3.0 tag, re-derived from `git rev-list --count v10.3.0..origin/main`;
+  every one of them carries its PR number in its subject, so nothing in the
+  range is unattributed.
+
+  MINOR was argued from the diff rather than from the PR bodies, because ONE
+  item in this train introduces a refusal and a new refusal on an existing
+  path is the MAJOR trigger. The PEP capability handshake refuses a caller
+  that declares it cannot discharge a mandatory obligation
+  (`pep_capability_unsupported`). It is MINOR-safe because the refusal is
+  unreachable without a NEW request header: the carrier is
+  `X-Axonflow-PEP-Handshake`, an ABSENT header is byte-for-byte 10.3.0
+  behaviour, every client that presents one does so only when
+  `AXONFLOW_PEP_AUDIENCE` is set, and the deny itself is Enterprise-only
+  (`platform/agent/pep_handshake_enforce_community.go` returns the verdict
+  untouched). A deployment has to opt in twice to reach it, which is a
+  widening of what an operator can ask for rather than a narrowing of what an
+  existing one gets.
+
+  THREE other items were checked against the same clause and are recorded
+  here rather than waved past, because two of them DO refuse things that
+  previously succeeded. The typed-authoring UI (#3774, #3788) is behind a
+  per-organization flag that is off by default, so it refuses nothing.
+  #3749 (the connector-entitlement classifier) and #3759 (the verified
+  licence tier read) each narrow a deployment from Enterprise limits to
+  Community limits with no new header and no new variable. Under a literal
+  reading that is a MAJOR. It is MINOR under the rule's PURPOSE: the clause
+  exists so an upgrade cannot silently take away something a customer was
+  entitled to, and neither of these takes away an entitlement - both remove
+  access obtained through a defect (an unrecognised DEPLOYMENT_MODE read as
+  Enterprise, and a licence payload's tier taken on trust with no signature
+  and no expiry check). Restoring a ceiling to the tier actually held is an
+  entitlement being enforced for the first time. The operator consequence is
+  real and is stated in the Migration section and the release notes.
+
+  FIVE migrations, and the edition split is NOT v10.2.0's: `core/170` is
+  CORE, so a Community deployment DOES apply one this release, while
+  `enterprise/151`, `152`, `153` and `154` are Enterprise only. All five are
+  additive; none rewrites a table, backfills row by row, or takes a lock that
+  matters on a populated relation.
+
+  The heading date is the prep date and moves to the tag date if the tag
+  slips.
 -->
+
+## [10.4.0] - 2026-09-06 (an enforcement point declares what it can discharge and is refused the obligations it cannot; typed policy authoring in the portal behind a per-organization flag; a /health capability list that cannot go stale)
+
+> Scope: operators upgrading from 10.3.0. **Nothing in this release reaches a deployment that changes nothing else.** The one new refusal needs a new request header AND a new environment variable, and is Enterprise-only, so an operator has to opt in twice to reach it. **Two narrowings need no flag and are the two lines to read before upgrading**: a custom-policy connector ceiling that was read from an unverified licence and from a deployment mode anything unrecognised read as Enterprise now fails closed to Community, so a deployment relying on either defect finds its connector list capped at the tier it actually holds - measure per-organization counts against `MaxCustomPolicyConnectorsCommunity` first; and the GCS connector now loads `credentials_file` / `credentials_json` as service-account keys specifically, where the deprecated helpers accepted any credential configuration, with the file read eagerly so a bad path fails at construction rather than on first use. **FIVE additive migrations, and unlike 10.2.0 a Community deployment applies one** (`core/170`; `enterprise/151`-`154` are Enterprise only). Rolling the binaries before applying any of them keeps 10.3.0 behaviour.
+
+### Security
+
+
+- **Two bundle-activation checks had no executing test, and now do** (#3690
+  follow-on). Proving the gate 19 threat model's citations row by row - mutate
+  the control the row names, require the cited test to go red - separated three
+  outcomes, and the third has no citation remedy: a control nothing exercises.
+  Deleting `TrustStore.Verify`'s advertised-digest comparison, or any of its
+  three provenance comparisons, left `TestSignatureBindsTheBytesTheCompilerReads`
+  and the whole conformance corpus - `AXC-009` included - green. Neither is
+  reachable by the signature, for two different reasons: **`Bundle.Digest` is
+  not inside `view()`**, so a wrong digest over genuine content carries a
+  perfectly valid signature; and provenance, though signed, is compared against
+  *this evaluator's* helper module, compiler and schema, which are genuine on
+  both sides, so no signature can make that comparison. A bundle is "activated
+  by digest and rolled back by digest", and ADR-065 binds `PolicyBundleDigest`
+  into the decision proof, so the one recomputation in `Verify` was carrying the
+  whole property unguarded. `bundle_activation_integrity_test.go` covers both,
+  one sub-case per provenance field because the three are independent checks and
+  a test changing all three at once passes with two of them deleted. The design
+  half - that the field the system keys on is outside the signed bytes - is
+  **#3700**, not changed here.
+
+- **The certified signing window is bounded where a verifier can see it**
+  (#3626). `MaxEphemeralSigningLifetime` was enforced in exactly one place:
+  `RotationPolicy.Validate`, a check on the honest PDP's own configuration, run
+  by the process about to rotate. Nothing in the certificate and nothing in any
+  verifier bounded the span, so anything holding `kms:Sign` on the certification
+  root - a compromised PDP, a misconfigured deployment, an operator with the IAM
+  grant, a second signer added later - could mint a certificate for a multi-year
+  signing key that every verifier in the fleet accepted: valid chain, correct
+  scope, ordered window. A bound checked only by the generator is an assertion,
+  not a control. `KeyCertificate.validateStructure` now bounds it, and that
+  function is shared by the signing path, the publication path and every verify
+  path, so an over-long certificate is unproducible as well as unacceptable. The
+  **verification tail** is bounded too, at 24 hours: no verification path reads
+  `signing_not_after`, so a private half recovered after the signing window
+  closed mints proofs the fleet accepts right up to `not_after` - a one-hour
+  signing cap in front of a five-year tail is a one-hour cap on the honest
+  signer and a five-year one on everybody else.
+
+- **The root-generation rotation control now exists** (#3627). `IssuerEpoch` was
+  written into the signed bytes, populated from the request and validated for
+  positivity - and compared against nothing. `TrustAnchor` carried no epoch,
+  `CertificateVerifyOptions` carried no epoch, and no comparison existed in the
+  package, so a certificate signed by root generation 1 and one signed by
+  generation 2 were indistinguishable to every verifier for exactly as long as
+  generation 1's public half stayed trusted, which is the whole overlap window a
+  manual multi-year rotation is built around. Anchors now pin a generation and
+  verification requires the certificate's to equal it, with a distinct failure
+  reason so a half-applied rotation is not reported as an unknown root. The
+  epoch is REQUIRED on a certification anchor and REFUSED on a distribution one:
+  a certificate binds an issuer epoch and a key-set document does not, so an
+  epoch on a distribution anchor would be a value no check could read - the same
+  defect, on the other root. Deployments configure
+  `AXONFLOW_DECISION_PROOF_CERTIFICATION_ROOT_EPOCH`; it is required rather than
+  defaulted, because a default of 1 would be a number nobody chose deciding
+  whether a superseded generation still verifies.
+
+- **The KMS root "never an alias" guard now implements its own stated property**
+  (#3628). The test was `strings.HasPrefix(cfg.KeyID, "arn:")`, which the
+  fully-qualified alias ARN satisfies. It caught `alias/name` and accepted
+  `arn:aws:kms:...:alias/...` - a legitimate ARN that `kms:GetPublicKey` and
+  `kms:Sign` both resolve, and precisely the value the guard existed to refuse,
+  with the guard's own error message naming the harm it was failing to prevent.
+  The id is copied into every certificate as the issuer, so an alias made the
+  deployment's certification root repointable by anyone holding
+  `kms:UpdateAlias` - an action granted far more widely than `kms:Sign`, because
+  on its face it is a naming operation. Two layers now, because a guard is only
+  as wide as the syntax it matches: the ARN's STRUCTURE is parsed (service
+  `kms`, resource `key/<id>`, non-empty region and account), and the id
+  `kms:GetPublicKey` RESOLVED to is compared against what was configured -
+  which closes the class rather than the spelling, including indirect forms AWS
+  has not shipped. The three pre-existing checks could never have recovered
+  this: an alias resolves to a real key with a real usage, a real spec and a
+  parseable public half.
+
+- **A decision-proof key-id report can no longer be filed under another PEP's
+  identity** (#3629). The endpoint took `pep_id` from the request body and
+  stored it verbatim, while the credential authenticating the call carried no
+  identity at all - the internal-service token's covered material is a
+  compile-time constant plus a timestamp. That secret is fleet-wide by
+  construction, so every PEP held a credential that let it write a report under
+  any other PEP's identity: green-lighting a rotation past a peer that had never
+  fetched the new key, or pinning a complete rotation open by claiming a peer
+  holds only the old one. `platform/shared/serviceauth` gained a subject-bound
+  token - same wire format, signature covering a declared subject, domain
+  separated so a plain fleet token cannot authenticate as any subject - the
+  internal-service middleware validates against that subject and records it in
+  the request context under an unexported key, and the reports endpoint requires
+  an authenticated subject before it reads the body and requires `pep_id` to
+  equal it. **Stated plainly rather than implied:** the secret is still
+  fleet-wide, so a holder can mint a subject-bound token for any subject. What
+  changes is that the identity is a property of the CREDENTIAL rather than of
+  the payload, so the residual is a credential-distribution problem rather than
+  a code one; per-PEP credentials are deployment work, and the residual is
+  recorded with what an attacker gains in
+  `technical-docs/ADR-065-GATE-19-THREAT-MODEL.md`.
+
+- **ADR-065 gate 19's threat model is written** (#3690).
+  `technical-docs/ADR-065-GATE-19-THREAT-MODEL.md` covers all eight named
+  threats with, per control, the attacker capability, a `file:line`, the test
+  that proves the control executes, and the CI job that runs it. Six
+  cross-cutting gaps are labelled gaps rather than softened - among them that a
+  key-set document binds no distribution-root generation, that `TrustStore.Verify`
+  has no bundle-rollback refusal, and that `audit_logs` carries no RLS policy. It
+  also carries the bound decision-proof field census: three signed objects
+  (`Binding` 33 fields, `KeyCertificate` 14, `KeySetDocument` 7), each covered by
+  a reflective test that enumerates fields from the struct so a field added later
+  cannot be silently uncovered.
+
+- **A signed field that no verifier reads is now caught by a test** (#3690).
+  Binding coverage answers "can this be changed without breaking a signature?";
+  it cannot answer "does anything READ it?" - and #3626 and #3627 were both
+  instances of the second question. `TestEverySignedCertificateFieldIsReadOnVerification`
+  re-signs each mutation with the genuine root before presenting it, which takes
+  the signature out of the question. Eleven of `KeyCertificate`'s fields are read
+  on verification; the two that are not (`SubjectKeyID`, `SubjectPublic`) are
+  allow-listed with the site that consumes them, and a second test proves each is
+  consumed there with the reason code it produces. Completeness is reflective, so
+  a new field must be read or explicitly exempted rather than assumed fine.
+  `TestTheKeySetEncodingCoversEveryDocumentField` closes the matching census gap
+  on the key-set document, which had no reflective field coverage at all.
+
+
+- **A third scanner-feed CVE, same signature**: `github.com/apache/thrift`
+  v0.23.0 -> v0.24.0 for CVE-2026-43871 (HIGH, denial of service via infinite
+  loop). Indirect in `ee` only, reached through the Snowflake connector
+  (`gosnowflake` -> `arrow-go/v18` -> `thrift`); both direct dependencies
+  require only v0.22.0, so the explicit pin is what carries the fix and no
+  direct dependency moves. No source change; `ee` builds and vets clean with
+  and without the `enterprise` tag.
+
+### Community
+
+- **The realm store's realms/epoch agreement test no longer depends on how fast
+  the runner is** (#3648). Its one CI failure (run 33623146131 attempt 1) was
+  not the invariant: twelve `Upsert`s finished before the third `Load` returned
+  and the case failed on its own anti-vacuity floor, "only 2 load(s) ran against
+  the concurrent writer", while every load had agreed. The writer is now paced
+  by the reader's progress - each write waits for a `Load` that completed after
+  it started - so every write is sampled on any machine, the two still overlap,
+  and the floor is structural (`reads >= writes`) rather than a bet on speed.
+  The pacer and a deterministic regression test that reproduces the free-running
+  under-sampling and shows the paced arrangement cannot are in
+  `platform/shared/identity/realm_store_pacing_test.go`; the `worst:` sample now
+  prints the direction of a disagreement, which discriminates a doubled epoch
+  bump from a stale epoch read.
+- **`POST /api/v1/access/evaluation` declares its `500` and says why its `401`
+  is not an `AuthZENError`** (#3637 item 3). The handler's meet-refusal writes a
+  typed `AuthZENError` with `500`, which the spec did not declare, and the `401`
+  is the one refusal written by the auth middleware in the platform envelope;
+  the spec now says both instead of leaving a generated client to find out.
+- **The three `DEPLOYMENT_MODE` normalisation rules are documented in one place**
+  (#3637 item 7): exact, trim-only and trim-plus-lower-case, each with the site
+  that uses it and the incident or gate that justified it, in
+  `platform/shared/deploymode`, so the next reader picks a rule on purpose.
+- **`TestBackgroundRefresh` stops the policy-refresh loop it starts, and proves
+  it stopped** (#3798). The fixture built its engine without a stop channel, so
+  the loop's 100 ms ticker outlived the test's closed sqlmock handle for the
+  rest of the package run - 3,812 "sql: database is closed" lines and ~520 s of
+  the race lane's 600 s budget on one merge-queue entry. The fixture now stops
+  the loop in its cleanup and waits, from the runtime's own stacks, until no
+  `backgroundRefresh` goroutine remains, so the same leak fails this test in
+  the unit lane instead of a lane ten minutes later. The refresher's own bound
+  on a closed handle follows in a separate change.
+- **ADR-065 gate 17's published budgets are now enforced, not stated**
+  (#3555). `platform/decision/pdp/gate17_budgets_test.go` turns the budget table
+  in `ADR-065-gate17-budgets.md` into verdicts: the MEMORY rows (bytes per
+  operation for evaluation, activation and compilation) and the SHAPE rows (the
+  500-vs-100-policy evaluation ratio and the 100-vs-10 activation ratio, both
+  measured in one process) fail on every pull request in `Unit Tests: Decision
+  Contracts` and its community twin. Shape ratios are verdicts only in the named
+  gate 17 step, where the binary has the runner to itself
+  (`AXONFLOW_GATE17_ALONE=1`, pinned by a regression guard): under `go test
+  ./...` package parallelism a ratio read 47.7 where the same binary alone read
+  12.1, so in a package run the shape test skips and says so. Shape ceilings are
+  2x the hosted alone-run median, tabled in the ADR. The LATENCY rows are
+  measured and logged beside their budget in those lanes, with the mode printed,
+  and are verdicts only in the dedicated `gate17-latency-budgets.yml` job. The Go
+  table and the document's table are asserted equal row for row, so a ceiling
+  cannot move on one side alone. The benchmark loops were split from their engine
+  builds so the budget test builds the 500-policy engine once instead of once per
+  `testing.Benchmark` attempt.
+- **The GCS connector loads credentials by type through `cloud.google.com/go/auth`;
+  the two deprecated `option.WithCredentials*` calls and their `//nolint` lines
+  are gone** (#3645). `google.golang.org/api` v0.264.0 deprecated both helpers
+  "because of a potential security risk": they accepted ANY credential
+  configuration without the caller stating what it expected. `credentials_file`
+  and `credentials_json` are documented as service-account keys and are now
+  loaded as exactly that (`credentials.NewCredentialsFromJSON` with
+  `credentials.ServiceAccount`, the file read eagerly so a bad path fails at
+  Connect rather than on the first request); a configuration of another type is
+  refused at Connect naming the type it found and how to use Application
+  Default Credentials instead. Precedence is unchanged (file over JSON, now with
+  a warning when both are set) and a deployment that sets neither still uses
+  ADC. Unit tests cover every branch without a network; the client the
+  credentials feed is proven by a new round-trip against `fake-gcs-server`
+  (create bucket, put, get, list, delete, health), which `Unit Tests: Connectors`
+  starts and requires to PASS rather than skip.
+- **The AuthZEN route and profile header are declared once, in the contract, and
+  published in the surface artifact** (#3603 follow-up). `POST
+  /api/v1/access/evaluation` and `X-Axonflow-AuthZEN-Profile` were hand-written
+  in the agent handler and in all five SDKs with nothing generating or checking
+  them, so a rename would have been caught only by whichever SDK happened to
+  have a live e2e run. `contract.AuthZENRouteMethod`, `AuthZENRoutePath` and
+  `AuthZENProfileHeader` are now the one source; the handler derives from them;
+  `cmd/authzen-codegen` publishes them as `route` and `profile_header` in
+  `platform/decision/surface/authzen-surface.json` so each SDK generates the
+  path and header it calls; and a new contract test asserts the OpenAPI document
+  declares the same path, method and header (verified by mutant: a renamed path
+  and a renamed header each red it). The artifact format version is unchanged
+  (additive members); SDK emitters that reject unknown members refuse the new
+  artifact until their own change lands, which is the currency gate doing its
+  job - the five SDK changes follow in their repositories.
+- **The gateway pre-check plane reads, validates, binds and counts a capability handshake** (#3778). As on the decide and MCP planes, the wire contract is `enterprise_protocol` and ships in both editions, because a client is correct against ONE contract rather than one per edition: a Community deployment refuses a malformed declaration, binds the identity to the authenticated credential, and counts the outcome on `axonflow_pep_handshake_total{plane="gateway"}`.
+  - **A Community deployment behaves exactly as it does today.** Nothing is denied that was not denied before: the caller is told `requires_redaction: true` and is expected to act, exactly as now. No operator needs to change anything or hold off an upgrade.
+  - **What a Community operator gains is the ability to SEE the gap** - a client that has declared it cannot apply a redaction is now visible on the `plane="gateway"` counters, on a build that does not act on the declaration itself.
+  - **Nothing changes for a caller that presents no handshake.** Absent is not empty: a request with no header takes byte-for-byte the path it took before, and is counted under `outcome="absent"` because that is the denominator the per-plane cutover reads its adoption ratio off.
+- **The MCP plane reads, validates, binds and counts a capability handshake**
+  (#3766). The wire contract is `enterprise_protocol` under ADR-066 Decision 2
+  and ships in both editions, because a client is correct against ONE contract
+  rather than one per edition: a Community deployment refuses a malformed
+  declaration, binds the identity to the authenticated credential and counts the
+  outcome on `axonflow_pep_handshake_total{plane="mcp"}` exactly as an Enterprise
+  one does. Only the code that DECIDES on the strength of a declaration is
+  Enterprise, and it is physically absent from this build by build tag.
+  - **Nothing changes for a caller that presents no handshake.** Absent is not
+    empty: a request with no header takes byte-for-byte the path it took before,
+    and is counted under `outcome="absent"` because that count is the denominator
+    the per-plane cutover (#3564) is read off. This is what keeps every shipped
+    plugin working unchanged until it ships a declaration of its own.
+  - **A Community deployment behaves exactly as it does today.** Nothing is
+    denied that was not denied before and nothing is allowed that was not
+    allowed before: the masked statement is emitted as it always has been, and
+    an enforcement point that cannot substitute it fails closed at its own seam
+    rather than forwarding the original. No operator on a Community build needs
+    to change anything or hold off an upgrade.
+  - **What a Community operator GAINS is the ability to SEE the gap.** A client
+    that declares it cannot substitute a masked statement is now counted on
+    `axonflow_pep_handshake_total{plane="mcp"}`, and where a capability gap
+    exists on `axonflow_pep_capability_refusals_total{plane="mcp"}` - so an
+    operator can find a client that cannot honour a redaction and get it fixed,
+    on a build that does not act on the declaration itself. That visibility,
+    not a change in behaviour, is what this delivers to Community.
+- **The custom-policy connector ceiling reads the licence tier through the
+  verified read; the trust-on-read parser is gone** (#3709 row 1, follow-on to
+  #3713 / #3749). `platform/shared/policy` decided the ceiling from a base64
+  decode of `AXONFLOW_LICENSE_KEY` that took the payload's `tier` on trust: no
+  signature check, no expiry, and under the `community` and `community-saas`
+  postures `run.go` skips `license.ValidateWithRetry`, so nothing else ever
+  verified the key either. Measured: a key signed with the literal bytes
+  `NOTASIG!` naming tier Enterprise resolved to unlimited connectors, and an
+  expired key kept its grant indefinitely. Now the agent registers
+  `license.GetCurrentTier` into `platform/shared/policy` at init
+  (`platform/agent/license_tier_source.go`, `policy.SetLicenseTierSource`),
+  `extractTierFromLicenseKey` is deleted rather than wrapped, and the read
+  itself is one implementation for both build tags (`license.ReadCurrentTier`
+  in `platform/agent/license/tier_read.go`) that counts every refusal on
+  `axonflow_license_tier_read_rejected_total{reason}` and logs it once per
+  reason. A forged, expired, malformed or unknown-tier key resolves to the
+  Community ceiling; a malformed key no longer falls back to the Evaluation
+  ceiling of five. With no source registered the package resolves to Community
+  and says so, on `axonflow_license_tier_source_unregistered_total` and a log
+  line. The live community-SaaS fleet's key was re-validated through the
+  repo's own validator (Enterprise, expires 2027-05-21) and lands on unlimited
+  through the verified read, and `MCP_DYNAMIC_POLICIES_CONNECTORS` is empty on
+  every running task, so no running deployment loses a connector.
+  - `GetCurrentTier` in both `license.go` and `tier_support.go` delegates to
+    `ReadCurrentTier`; its answer is unchanged (any past `ExpiresAt` is
+    Community, grace window included). Only the refusal became observable.
+  - `license.SignPayloadForTest` and `ForgeSignatureForTest` join
+    `OverridePublicKeysForTest` as the licence test seam.
+  - The ee twin, `ee/platform/agent/license`, carries the same read: the
+    shipped enterprise image overlays that directory onto the platform copy
+    (`platform/agent/Dockerfile`, `EDITION=enterprise`), so a change made to
+    the platform copy alone would not ship. `tier_read.go`, `testing.go` and
+    `tier_read_test.go` are held identical apart from the ee copy's
+    `//go:build enterprise` line by a second claim class in
+    `license_pair_byte_identity_test.sh`; `tier_read_enterprise_test.go` is
+    held byte-identical.
+- **Realm ids follow the decision contract's qualifier grammar, and
+  `identity.CanonicalFormVersion` is `identity/2`** (#3709 row 3, filed from
+  #3751). `identity.ValidateRealmID` admitted any printable, colon-free,
+  whitespace-free rune while `contract`'s qualifier regex admits only
+  `[A-Za-z0-9][A-Za-z0-9_.-]*`, so an operator who named a realm `acme+prod`,
+  `eu/central`, `realm@okta`, `-leading` or `réalm` minted principals every
+  decision proof bound and the PDP could not parse, reachable through
+  `realm_verify.go` on every credential it admits. Fixed on the permissive
+  side: `contract.ValidateQualifier` is exported, with `contract.QualifierGrammar`
+  as the rule in words, and `ValidateRealmID` delegates to it, so there is one
+  grammar and the refusal names the rule. The `realm-charset` divergence class
+  in the lockstep sweep is retired, `User::acme+prod:00u1` joins the corpus
+  both parsers must refuse, and a realm-only corpus pins the agreement in both
+  directions. The one remaining realm divergence is identity's 512-byte bound,
+  in the safe direction. Every built-in realm id and every realm literal in
+  this tree is inside the grammar. `DBRealmStore.Upsert` now refuses a realm,
+  or a delegate realm, outside it before any row is written (the column's
+  CHECKs enforce only colon-free and non-empty), so a non-conforming realm can
+  no longer be stored, and `RealmRegistry.Register` refuses one at
+  registration. No plane loads realms from the store yet, so nothing is
+  "refused at load"; the DB CHECK that would enforce the grammar without a Go
+  caller is filed on #3709 as its own migration.
+- **`pep.Config` gains `ClientID` and `ClientVersion`, and every engine
+  round-trip carries an `X-Axonflow-Client` header** (#3668; entry added by
+  #3709 row A). `platform/shared/pep/pep.go` ships in the community build and
+  the two fields are set by any PEP built on it: when both are non-empty the
+  client sends `X-Axonflow-Client: <ClientID>/<ClientVersion>` on every call to
+  the engine, and an empty `ClientID` sends no header. Until now the only
+  description of this lived in an `### Enterprise` sub-bullet about the
+  agentgateway PEP adapters, which withheld a capability the community edition
+  has. A community-build agent accepts the header and discards it
+  (`recordClientVersionTelemetry` is a no-op there); recording per-client
+  version telemetry from it is the Enterprise half.
+- **The connector-entitlement classifier granted Enterprise limits to any
+  deployment mode that was not spelled `community`** (#3713, child of #3709).
+  `resolveConnectorLimitTier` in `platform/shared/policy/dynamic_evaluator.go`
+  tested `mode != "community" && mode != ""` and returned the Enterprise tier -
+  unlimited custom-policy connectors - for everything else. That is a question
+  about the spelling of a string, not about entitlement, and it answered
+  Enterprise for three populations that have bought nothing: `community-saas`,
+  the free shared fleet; `evaluation`, which reaches the Evaluation ceiling only
+  through the licence-key path it never took, so **the one mode named for the
+  Evaluation limit was the one mode that could not receive it**; and every
+  UNRECOGNISED value, so a typo in `DEPLOYMENT_MODE` was worth a purchased
+  Enterprise licence.
+  `platform/shared/deploymode` now carries the ENTITLEMENT axis -
+  `IsEnterpriseEntitled` / `CurrentIsEnterpriseEntitled` - alongside the schema
+  axis it already owned, and the classifier asks it. Everything not entitled by
+  its deployment mode falls through to `AXONFLOW_LICENSE_KEY`, which is how the
+  free Evaluation tier is actually granted. Note precisely what that does and
+  does not do for `evaluation`: it makes the ceiling REACHABLE, it does not
+  grant it by name - that mode with no licence key resolves to `community` (2),
+  because a self-asserted mode name must not raise a limit on its own.
+  **It fails CLOSED on an unrecognised mode, which is the OPPOSITE of the
+  neighbouring `AppliesCategory`,** whose own comment records that it answers
+  YES for an unrecognised value on purpose: for a schema READ the recoverable
+  wrong is to try the table and fail, and entitlement has no such symmetry.
+  Substituting `AppliesEnterpriseSchema()` for the new predicate was measured
+  rather than argued about - it reds exactly five assertions, all of them
+  unrecognised-mode rows, because the two axes agree on every recognised mode
+  and differ only there.
+  **#3738 landed first and named this classifier as the fifth reading it
+  deliberately left byte-identical**, exempting it by name in its posture
+  census. That exemption is now REMOVED rather than reworded, and it was not a
+  human who noticed: #3738's own stale-exemption check failed with "either the
+  site was fixed and this entry should go, or the census stopped seeing it" the
+  moment the reading disappeared. The entitlement column also joins
+  TestDeploymentModePartitions rather than forming a second hand-written table
+  over the same mode list - the argument that test makes for itself.
+  **The axis is DECLARED, not derived from the migration categories**, though
+  the derivation is available, free and total by construction. Deriving it would
+  mean that the day a mode gains one Enterprise-only TABLE it silently gains
+  unlimited Enterprise LIMITS, decided by whoever edited the migration selector;
+  `AppliesEnterpriseSchema`'s own doc already records that the schema and
+  edition answers disagree on the community-saas fleet, so borrowing one axis to
+  answer another is a measured defect shape here rather than a hypothetical. The
+  cost is a second table, and it is paid for by two tests: one requires it to be
+  TOTAL over `canonicalModes` (a mode added to one and not the other fails), and
+  one pins that the two axes AGREE on every recognised mode today, so the day
+  they must not, that is where it gets said.
+  **Three tier-to-limit mappings became one, and two of them disagreed.**
+  `ValidateCustomPolicyConnectorLimit` and `EnforceCustomPolicyConnectorLimit`
+  each carried a switch recognising only `enterprise`, so `professional` and
+  `plus` - the lower-cased forms of `license.TierProfessional` and
+  `license.TierEnterprisePlus` - fell into the COMMUNITY default of 2, while the
+  unreferenced `CustomPolicyConnectorLimitForTier` read both as unlimited and
+  `license.GetTierLimits`, the authority in both build tags, maps
+  `TierProfessional, TierEnterprise, TierEnterprisePlus` alike onto
+  `EnterpriseLimits` (`CustomPolicyConnectors: -1`). This was latent while only
+  `community` and unset reached the licence-key path; routing community-saas,
+  evaluation and unrecognised modes onto it ARMED it, and a paying Professional
+  deployment whose `DEPLOYMENT_MODE` carried a capital letter would have gone
+  from unlimited to 2 connectors, truncated SILENTLY. All three now resolve
+  through one `customPolicyConnectorLimitForTier`; the exported method is a
+  wrapper over it, so the copies cannot disagree again. Found by R3, not by the
+  author: a change that NARROWS an entitlement has to enumerate who it narrows.
+  **The live fleet was measured before the code was changed**, per running task
+  definition rather than per organisation - `EnabledConnectors` has exactly one
+  writer, `NewDynamicPolicyEvaluatorFromEnv` reading
+  `MCP_DYNAMIC_POLICIES_CONNECTORS`, so it is process-scoped and there is no
+  per-organisation unit to count. On 2026-09-04 that variable is EMPTY on every
+  running task in the account, and is not delivered through `secrets` or
+  `environmentFiles` either, so `len(EnabledConnectors) > limit` is `0 > 2` and
+  no tier can truncate anything. Independently, the community-SaaS agent carries
+  a licence key whose payload names tier `Enterprise`, so the one deployment
+  this change moves off the mode-based answer lands back on `enterprise` through
+  the licence key. **The change therefore revokes nothing that is running.** The
+  two `evaluation`-mode surfaces outside the fleet were measured too, after R3
+  raised them - `scripts/setup-e2e-testing.sh` and
+  `.github/workflows/tier-gate-contract.yml` - and neither sets
+  `MCP_DYNAMIC_POLICIES_CONNECTORS` at all; the only non-empty setter anywhere
+  in the tree configures ONE connector under an Enterprise-entitled mode.
+  **Do not read "falls through to the licence key" as "is now verified".** It is
+  not, and R3 measured it: `extractTierFromLicenseKey` takes the payload's
+  `tier` on trust with no signature and no expiry check, and
+  `platform/agent/run.go` skips `license.ValidateWithRetry` entirely under both
+  the community and community-saas postures, so a key signed with the literal
+  bytes `NOTASIG!` naming tier Enterprise resolves to `enterprise` there. This
+  is a narrower and more inspectable grant than a mode string; it is not a
+  cryptographically checked one, and an earlier draft of this entry claimed it
+  was. The verified surface exists - `license.GetCurrentTier` validates the
+  signature AND compares `ExpiresAt` - and `platform/shared` cannot reach it
+  without importing `platform/agent`. Reported on #3709.
+  **The guard against reintroduction is the tests, not the lint**, and that was
+  measured in five plants rather than assumed. `scripts/lint-deployment-mode.sh`
+  greps for the literal `os.Getenv("DEPLOYMENT_MODE")`: it reds a raw-env-read
+  reintroduction, and is BLIND to the same defect routed through
+  `deploymode.Current()`, to the schema-axis substitution, and to an inverted
+  unrecognised case - all of which the tests catch. The classifier no longer
+  reads the variable at all, so `dynamic_evaluator.go` comes OFF the lint's
+  allow-list, narrowing it from 7 files to 6 (#3738 landed first and took it
+  11 -> 7); the plant that reds both
+  instruments only does so because that entry is gone. The fifth plant is the
+  one that mattered: R3 found the PR's own HEADLINE unpinned - denying
+  `evaluation` the licence path one frame later than the original defect left
+  every test and the lint GREEN, because the only `evaluation` row carried no
+  licence key, where `community` is the right answer for both the fixed and the
+  broken build. It landed on a cheaper signal. Two assertions now pin it, one on
+  the tier and one on the CEILING, since a test asserting only the tier string
+  would still pass if the Evaluation arm of the limit mapping were deleted.
+  **Runtime proof:** `runtime-e2e/3713_connector_entitlement/`, three arms on a
+  real booted stack with real Ed25519 licences, observed through the MCP tool
+  surface a user reaches - `axonflow_create_tenant_policy`'s response names the
+  governed connectors, read from the live evaluator's post-truncation list.
+  15/15 assertions, floor met; the mutation gate is verified rather than
+  asserted, the pre-#3713 classifier making arm A exit 1 with 5 of 8 failing.
+  **Five paths in this change do NOT reach the community mirror**, and are named
+  here rather than left to be inferred: `runtime-e2e/3713_connector_entitlement/`
+  (three files - `runtime-e2e/` is stripped wholesale),
+  `.github/workflows/connector-entitlement-e2e.yml` and
+  `scripts/e2e/runtime_e2e_suites.tsv` (repo tooling; `/scripts/*` is stripped
+  while `scripts/lint-deployment-mode.sh` is re-included by name). All five are
+  TEST SURFACE for behaviour that ships: the entitlement axis, the classifier,
+  the one tier mapping, the licence-authority pin and the lint all reach the
+  mirror, which is why this is filed under Community.
+  No wire change and no migration; the Community and Evaluation ceilings (2 and
+  5) are untouched.
+- **The canonical principal wire form had two independent definitions; they are
+  now held in lockstep** (#3711, umbrella #3709). `Type::qualifier:local` is
+  emitted and parsed by `identity.PrincipalID` and, separately, by
+  `contract.ID` in the decision module, with the same algorithm and a different
+  vocabulary: `identity.SubjectType` is a CLOSED set of six and `contract.ID`'s
+  type segment is an OPEN regex, so `Robot::okta-prod:00u1` is a valid
+  principal to one and a hard error to the other. Only the identity one is
+  versioned, and that version is bound into every decision proof as
+  `proof.Binding.IdentityCanonicalFormVersion` - a guarantee that a change to
+  the canonical form invalidates outstanding proofs loudly, written against a
+  form whose other definition it does not version.
+  - The repair is NOT an import, and the reason is structural:
+    `axonflow/platform/decision` is a separate module with a deliberately
+    minimal dependency set and `axonflow/platform` depends on it, so the
+    vocabulary cannot be shared as code without inverting that. Instead
+    `contract.ID.Type` now states in its own source that it is deliberately
+    open, names `identity.SubjectType` as the closed vocabulary and
+    `identity.CanonicalFormVersion` as the versioned one, and names the guard.
+  - That guard compares the two implementations over one corpus in BOTH
+    directions - byte-identical rendering, and each parser reading the other's
+    output back to the same three components - across a subject set that
+    includes SPIFFE ids and LDAP DNs, which contain the separator character and
+    are what a naive parser gets wrong. The vocabulary is derived from
+    `SubjectTypes()`, so a seventh subject type is covered on the day it lands.
+  - Every divergence is DECLARED with a reason and a disposition, every declared
+    one must be exercised by the corpus, and an UNDECLARED one is an error. The
+    first version of this guard asserted the type vocabulary was the only
+    divergence and passed, because its corpus was drawn from inside the
+    intersection of the two grammars; a hostile sweep found three more, one in
+    the dangerous direction - `ValidateRealmID` is deliberately permissive about
+    printable characters while `contract`'s qualifier regex is not, so an
+    operator naming a realm `acme+prod` mints principals every decision proof
+    binds and the PDP cannot parse. All three are filed on #3709.
+  - The type vocabulary is still pinned in both directions, so a change that
+    gives `contract` its own principal-type vocabulary fails and its author must
+    reconcile the two definitions. Closing the set stays dispositioned to
+    v11.0.0: no Go CONSTRUCTOR emits a type outside the six, but the decode
+    paths (replay records, policy bundles, authoring documents) accept anything
+    the open regex admits and the published JSON schema blesses it, so closing
+    it rejects artifacts those paths accept today.
+
+- **The two published OpenAPI documents are now compared against the Go types
+  the platform actually marshals** (#3724, umbrella #3709). Nothing held them
+  together, and a pre-cut audit found the consequences: `platform/shared/pep`'s
+  `Target` had no `server` member while `DecisionTarget` in
+  `docs/api/agent-api.yaml` declared one and `decision_handler.go` fed it to
+  capability-scoped evaluation and to `tool_server` on every audit row, so the
+  BLESSED PEP client was the one client that could not populate it -- #3717
+  root-caused the same absence from the MCP seam independently and its PR
+  (#3736) landed the field first; and
+  `docs/api/orchestrator-api.yaml` declared 6 properties on
+  `PolicyEvaluationResult` against a Go type carrying 17. Among the eleven
+  missing was `evaluation_error`, the only discriminator between *could not
+  govern* and *a policy said block* - a client could not tell a platform
+  failure from a policy decision.
+  - `TestThePublishedSchemasMatchTheTypesThePlatformMarshals` walks both
+    documents from six declared ROOTS and derives everything below them
+    STRUCTURALLY: the Go side by reflection, nested pairs by following a member
+    on both sides at once, so `pep.Target` is compared against `DecisionTarget`
+    - two names sharing no substring - with no naming convention doing the
+    work. A member is compared when both sides call it a leaf and descended
+    into when both call it an object; there is no third arm, so a shape the
+    walker has not met is reported rather than skipped.
+  - BOTH MIRRORS of each Decision API DTO are anchored on the same schema, so
+    `platform/agent` and `platform/shared/pep` agree with each other by
+    construction. That is what found the third gap the audit missed: a
+    `DecideResponse.Error` member on the PEP mirror that no server has ever
+    populated, unreachable because `Decide` decodes only 200 bodies into that
+    type and the 200 body has no such field. It is removed: a PEP author
+    writing `if resp.Error != ""` got a branch that could never be true while
+    every real failure came back through the `error` return.
+  - The `server` member itself landed on the #3717 lane (#3736), which
+    root-caused the same absence from the MCP seam and merged first; this PR
+    carries the guard that makes such an absence REPORTABLE rather than
+    something a person has to notice twice, in either direction.
+  - The walker also checks CARDINALITY (list versus single value) and reports
+    every shape it cannot read - a `$ref` that does not resolve, a `oneOf` at
+    either level, the tuple form of `items`, a node declaring both `items` and
+    `properties`, and a cyclic `allOf` or `items` chain - each naming the cause
+    it OBSERVED. Two hostile rounds are why: the first version passed silently
+    on a document declaring `applied_policies` as a bare string against a Go
+    `[]string`, and printed "the document describes this as a leaf" for causes
+    it had never looked at. A cyclic document first crashed the whole test
+    binary with a stack overflow and then, under a depth counter, hung instead;
+    a visited set is the instrument that actually bounds it. A published
+    document is an input, and an input must not be able to crash or wedge its
+    reader.
+  - The registry of finding kinds is enforced STATICALLY as well as
+    dynamically. A dynamic panic alone only fires if an emission site runs, so
+    a new kind on a condition no document hits shipped untested - measured. A
+    source scan now requires every declared kind to be registered, and the
+    control requires every registered kind to have a planted instance.
+  - The same rounds found TWO more in-tree mirrors of the Decision API DTOs, in
+    `examples/integrations/decision-mode-adapter` and
+    `.../decision-mode-mcp-adapter`. The first carried the same phantom `error`
+    member and it is removed there too; the second already diverges, carrying
+    `expires_at` as a string where the other three carry a timestamp. Both are
+    their own Go modules and neither can be reached by the guard, which is
+    recorded on #3709.
+  - The walk's population is its anchored graph, not the whole document. A
+    census across both documents found 88 name-matched schema/struct pairs
+    carrying roughly 145 divergences; that is reported on #3709 as its own lane
+    rather than absorbed here.
+
+- **One source of truth for the SDK version floors both `/health` planes
+  advertise** (#3712). `getSDKCompatibility()` was a hand-maintained map literal
+  in `platform/agent/capabilities.go` AND in `platform/orchestrator/capabilities.go`,
+  and both are served: a client asking the agent on 8080 which SDK version it
+  needs got an answer with no structural reason to match the orchestrator's on
+  8081. Four lines below each literal sat `getPluginCompatibility()`, which had
+  already been consolidated onto `platform/shared/plugincompat` for exactly this
+  reason after it drifted one-sided in a real train - the SDK maps were left
+  behind by that fix. Both planes now return `platform/shared/sdkcompat`, so
+  they cannot disagree; the release-train narrative moved with the values, and
+  the comment-attribution guards on both planes now read the one file rather
+  than each reading its own copy. The two guards that stood over the literals
+  are retired, because both were the instrument `plugincompat`'s own package doc
+  records as insufficient: an orchestrator-side test pinning the values beside
+  the values, and an agent-side test parsing both plane files and comparing the
+  two literals. Neither can see the shape where both copies agree and both are
+  stale, which is the shape that actually shipped for the plugin maps. In their
+  place a walk over every Go file in both modules - `go/ast`, so it reads the
+  enterprise build-tag arm too - reports any map literal carrying two or more
+  entries whose key is an SDK id and whose value looks like a version, outside
+  `sdkcompat`. It scores the conforming SUBSET rather than requiring every entry
+  to conform, because the first version did the latter and review broke it three
+  ways in minutes: `"go": "v8.0.0"` among four bare versions hid all five, a
+  complete five-SDK copy plus one `"note"` key hid itself, and a `const`
+  identifier was not resolved. All three are how a person would actually write
+  it - every SDK release tag is `vX.Y.Z` - and all three are now fixtures. The
+  detector is proved able to fire against seven synthetic third copies and to
+  stay silent on four decoys that share one half of the signature, including the
+  live `checkpoint-service` map with the same five keys and GitHub repositories
+  for values. **What it does not cover is stated rather than left to be found**:
+  a map built by assignment, a struct or slice table, or a value from another
+  package are outside a literal scan, and a list of forms to refuse cannot
+  terminate.
+  The same values are restated in THREE more places outside Go, and two of the
+  three had drifted. `docs/api/agent-api.yaml` advertised a minimum of python
+  6.0.0 / typescript 5.0.0 / go 5.0.0 / java 5.0.0 against a real floor of 8.0.0
+  everywhere, and omitted `rust` from its schema description although rust has
+  been in the map since the 9.7.0 train; `docs/api/orchestrator-api.yaml` gave a
+  one-key example with a recommended 9.0.0 against a real 9.2.0. Those are the
+  copies a CUSTOMER reads - the spec is published, the Go literal is not - so
+  correcting them was the smaller half: both `example:` blocks in both specs are
+  now compared against `sdkcompat` by a test, and a stale example fails CI. The
+  third is `docs/COMPATIBILITY_MATRIX.md`, which restates the same ten values in
+  prose; it is accurate today and is NOT guarded by anything, and it is named
+  here rather than left out, because an under-count published as a complete list
+  is the same defect this entry is about.
+  No wire change: `/health` serves the same bytes.
+
+- **An external enforcement point can finally say what it is and what it can
+  discharge** (#3704, ADR-065). `platform/decision/registry` has been the
+  ADR-065 PEP catalog since it was written - `PEPRecord`,
+  `SupportsObligation`, and a `CapabilityStatus` that deliberately keeps "never
+  told us anything" and "told us it can do nothing" apart. What did not exist
+  was a way for an SDK client, a plugin or a gateway adapter to enter it: they
+  identify themselves only through `X-Axonflow-Client`, which carries a library
+  name and no capabilities, so every external enforcement point was `NoRecord`
+  for ever and the only reason nothing refused was that nothing asked.
+  The gateway adapters can present one, opt-in behind `AXONFLOW_PEP_AUDIENCE`
+  (`platform/gateway-adapters/config.go`, which reaches the mirror, so the knob
+  exists in both editions). **On a Community deployment setting it changes
+  nothing**: the declaration is read, bound and counted, and acted on by
+  nothing, because the capability deny is physically absent from that build. The
+  Enterprise entry above is where that knob has an effect, and where to read
+  before setting it.
+  A PEP now presents `X-Axonflow-PEP-Handshake` - base64url of a small JSON
+  document naming its profile version, its name inside the caller's credential,
+  the audience it expects proofs for, and its exact obligation types and
+  versions. The wire contract, its decoder and validator, the identity binding
+  and the observability ship in **both** editions, because a Community PEP must
+  be able to say what it is.
+  **Nothing changes for a caller that presents nothing.** A request with no
+  header takes byte-for-byte the path it took before, pinned by a fixture
+  captured from the pre-change tree rather than regenerated from the new code. A
+  handshake that cannot be READ is refused rather than degraded to "legacy
+  caller" - degrading it would go on handing an enforcement point obligations it
+  had just said it cannot discharge.
+  **A PEP may declare what it can DO, never what the platform already knows
+  about it.** There is no edition, realm, tier or licence member on the wire,
+  and an unknown member is refused at every depth. The identity is a name inside
+  a namespace the server owns - the platform composes
+  `client:<authenticated credential>:<pep_id>` - so naming another credential's
+  enforcement point is impossible by construction rather than refused by a
+  comparison, and two enforcement points behind one credential stay
+  distinguishable.
+- **`fulfillment_capabilities` can now be SENT as an empty list, and its
+  meaning is deliberately unchanged** (#3704, on top of #2958). The member was
+  `[]string` with `omitempty`, which cannot represent *present but empty*: Go's
+  encoder omits a nil slice and an empty one alike, so a Go client could not
+  send `[]` at all. It is now a pointer on both the client and the server DTO,
+  so the state is representable and readable.
+  **What did NOT change is what the server makes of it, and that is the
+  correction worth reading.** An earlier version of this change gave `[]` a new
+  meaning - "a capability-aware caller whose seam discharges nothing" - and
+  justified it as strictly additive because the state had been unsendable. That
+  was true of the Go **encoder** and false of the **wire**: the server's decoder
+  has always accepted `"fulfillment_capabilities":[]`, and any non-Go PEP could
+  send it (`caps or []` in Python, `JSON.stringify([])`, a hand-built curl, a
+  generated client that never omits an array member). Those bytes have always
+  read as a legacy caller. Giving them a new meaning would have moved an
+  UNCHANGED caller from "obligation emitted, the PEP fails closed" to
+  "obligation suppressed, organization fallback posture" - whose documented
+  default is `log`, i.e. **allowed without the redaction**. That is a widening
+  of a security control, so it was reverted. `[]` still reads as a legacy
+  caller, as does a list of blank strings, and giving either a distinct meaning
+  is a wire-semantic change that belongs with the field's retirement rather than
+  with a minor.
+  **No caller's behaviour changes in this release.**
+- **A declared-empty capability set no longer serialises as an absent one**
+  (#3704). Found while converging three copies of the capability comparator onto
+  one: the shared helper returned `nil` for an empty input, so a registered
+  enforcement point that declares it discharges nothing rendered
+  `"capabilities": null` from `PEPRecord.Profile()` - an ABSENT member on the
+  wire. That is the same collapse as above, one layer down, and precisely what
+  `PEPRecord.clone`'s own comment forbids.
+- `docs/api/agent-api.yaml` documents the handshake header and its document, and
+  documents `fulfillment_capabilities` for the first time - the field has been on
+  the wire since 9.11.0 and was in no published schema.
+
+- **No human approval decision has ever appeared in the decisions feed, and now
+  every one does** (#3718, pre-cut audit #3709). `WriteHITLAuditEvent` wrote an
+  `audit_logs` row with fifteen columns and none of them was `decision_id`,
+  `plane` or `correlation_id`; the feed selects on exactly that
+  (`decision_id IS NOT NULL OR policy_details->>'decision_id' IS NOT NULL`). So
+  the most consequential decision the platform records - a person confirming or
+  overriding a policy outcome - was the one class a reviewer could not find
+  there, and every plane-scoped export dropped it. v9.16.1 (#3243) fixed the
+  POLICY-ATTRIBUTION half of this class after an OJK export shipped a blank
+  Policy column; the IDENTITY half was never fixed. **Additive, no migration:**
+  all three columns exist (`core/119`, `core/121`) and are written by other
+  planes.
+  - **The row carries its OWN decision id**, `hitl_<action>_<request_id>`, not
+    the originating one. `core/119` documents `decision_id` as the "stable
+    satellite join key" every writer mints fresh, so two rows sharing one would
+    render a decision twice in the feed and give a satellite join two parents.
+    The originating decision travels as `correlation_id` - which `core/121`
+    defines as precisely "a value shared by every decision row of one logical
+    request" - plus an explicit `policy_details.originating_decision_id`.
+    Deriving the id from the approval also makes it structurally impossible to be
+    empty, so an approval with NO originating decision still reaches the feed
+    rather than being the one shape a fallback would have written NULL for. That
+    absence is stated affirmatively rather than left as a missing key.
+  - `correlation_id` is now recorded on the queue entry at enqueue time (all
+    three planes already held the trace id), so the human decision joins the
+    same chain as the machine decision that asked for it. Written only when
+    non-empty: `''` would enter the exporters' `correlation_id IS NOT NULL`
+    partial index and group every untraced approval into one bogus chain.
+  - `audit_logs.plane` is `hitl` on these rows - its own plane, because `plane`
+    answers "which surface decided" and a person deciding through the Article 14
+    oversight API is not the agent gateway PEP. Verified against a real
+    PostgreSQL that this does NOT reach the operator's Avg Latency tile: the
+    writer binds a NULL `response_time_ms`, and the same assertion proves the
+    predicate still admits an ordinary enforcement row, so the zero is an
+    exclusion rather than a predicate matching nothing.
+  - **Proven as an outcome, not as column presence.** Three real-Postgres tests
+    seed through the production statement and then ask `queryDecisionList` - the
+    function `GET /api/v1/decisions` calls - whether the row came back, for an
+    approval, a rejection and an approval with no originating decision. The
+    negative control seeds the pre-fix fifteen-column row verbatim and asserts it
+    is ABSENT while a control row is present, so the positive test cannot be
+    green because the feed returns everything.
+
+- **An EU AI Act accuracy alert could not be acknowledged or resolved through
+  any API, and acknowledging one would have been a cross-org IDOR** (#3721, the
+  EU AI Act slice of #2884). The spec, `euaiact/doc.go`,
+  `ee/docs/api/eu-ai-act-api.md` and the handler itself all describe
+  `POST .../alerts/{id}/acknowledge` and `/resolve`; the gorilla-mux
+  registration production serves declared neither, so both 404'd, while the one
+  route it did declare - `GET, PUT /alerts/{id}` - answered 405 to both of its
+  own methods because the handler admitted only POST. Four surfaces agreed and
+  the one that decides did not, and nothing compared them. An operator under
+  Article 15 obligations could see accuracy alerts and could not record that one
+  was acknowledged.
+  - Both action routes registered; `GET /alerts/{id}` implemented (it had been
+    registered and documented since the module shipped); the `PUT` registration
+    removed - nothing ever implemented it, and gorilla answers 405 for an
+    undeclared method either way, so no caller observes a change.
+  - **Every by-id alert operation is now org-scoped.** `AcknowledgeAlert` and
+    `ResolveAlert` took `(alertID, userID)` and never saw an org, and
+    `GetAlertByID` is `WHERE id = $1`. That was unexploitable only because the
+    routes were unreachable - so registering them without this would have shipped
+    the IDOR the 404 was accidentally covering. Another org's alert is reported
+    as 404, never 403, so the response is not an existence oracle.
+  - The three "known wiring issue" notes in `ee/docs/api/eu-ai-act-api.md` are
+    replaced by what the routes now do. #2884's other items (RBAC unmounted, the
+    RBI PATCH/PUT mismatch, the portal policy-override detail routes) are
+    untouched and still open.
+
+
+- **One tolerant base64 decoder for operator-pasted secrets, in
+  `platform/shared/secretenv`** (#3710). Reading a base64 secret out of the
+  environment had three independent implementations that disagreed about what
+  they accepted. Two lived in `platform/`: the audit non-repudiation signing
+  key in `platform/agent/decision_chain_signing.go`, whose own comment
+  described itself as mirroring the other, the licence signing seed in
+  `platform/agent/license/keygen.go`. The third, in `ee/`, accepted only
+  padded standard base64 and did not trim whitespace at all. They also
+  disagreed about the error: one returned the standard-encoding decode error
+  with its byte offset, another a generic sentence naming the four dialects.
+  `secretenv.GetBase64Seed` is now the one entry point THOSE THREE use - trim,
+  then standard, raw-standard, URL-safe or raw-URL-safe, first success wins -
+  with `secretenv.DecodeBase64Tolerant` for callers that already hold the
+  string, such as one element of a comma-separated verify-key list. It is not
+  the only base64-secret decoder in the tree and the entry does not claim to
+  be: a census of every base64 decode of a secret-shaped input - run against
+  the BEHAVIOUR, because the original census grepped for `RawStdEncoding` and
+  so could only find decoders that were already tolerant - leaves
+  `getPluginClaimPublicKey` in both licence copies (#3727) and
+  `NewCredentialEncryptorFromKey` in `platform/connectors/config` still strict.
+  That census was BASE64-SCOPED, which is stated so it is not read as an
+  enumeration of the class: the class is "a secret an operator pastes is
+  consumed byte-exact", and it has members with no base64 in them. The
+  shipped counter-example is the HITL webhook HMAC signing key, read bare
+  with `os.Getenv` in both copies of `platform/agent/hitl/webhook.go` and
+  handed straight to `hmac.New`, where a trailing newline changes the key
+  bytes and the receiver 401s with no diagnostic. Filed as #3733 with a
+  published instrument, not fixed here.
+  The trim is inside the shared function rather than left to each caller,
+  because a helper whose callers must each remember to trim is the divergence
+  this replaced. `ErrNotSet` keeps "the operator has not set this variable"
+  distinct from "the value does not decode": the empty string is itself valid
+  base64, so without that check an unset key reports `expected 32 bytes,
+  got 0`.
+  **What a strict decoder actually rejected, measured rather than assumed:**
+  an UNPADDED value (`illegal base64 data at input byte 40` for a 32-byte
+  seed), the URL-safe alphabet (byte 0), and a leading or trailing SPACE or
+  TAB (byte 44 on a padded seed). A trailing NEWLINE was never one of them -
+  Go's base64 decoder ignores `\r` and `\n` at every position, leading,
+  interior and trailing - and #3710's premise that it was is corrected here,
+  in the `secretenv` doc comment and in the runtime-e2e rationale, all three
+  of which had copied it.
+  For community deployments the behaviour change is confined to the audit
+  signing key, which now also accepts the two extra dialects and the
+  whitespace shapes listed above, and whose unset-means-unsigned mode is
+  unchanged and pinned by its own test.
+  **The lane that runs the new guard now also STARTS when the guard changes**
+  (round 3). `unit-tests-standalone-modules` discovers every `go.mod` under
+  `platform/` and `scripts/`, but `detect-changes`' `go-code` filter listed only
+  `platform/**/*.go` and `ee/platform/**/*.go`. The lane still fired on this
+  change, via `**/go.mod` and `.github/workflows/test.yml`; what did NOT fire it
+  was an edit to the module's Go source or to its own test - the entire case the
+  lane exists for. `scripts/**/*.go` is added to that filter in `test.yml` and
+  `test-community.yml`, verified against real `picomatch` (the matcher
+  `dorny/paths-filter` uses) in both directions. A census of every
+  `dorny/paths-filter` filter in all ten workflows that carry one found no third
+  instance: `lint.yml` already matched via `**.go`, and `security.yml`'s
+  manifest-only scope is deliberate.
+  Discovery also now excludes `testdata/` and `vendor/` and refuses a module
+  path containing whitespace: the Go toolchain ignores `testdata` by
+  construction and this `find` did not, so a fixture module under one of
+  `platform/`'s three existing `testdata` trees would have reddened a step that
+  gates the required `Test Summary` on every pull request.
+  **And the license package now runs in an ordinary lane.** All eighteen files
+  in `ee/platform/agent/license` are `//go:build enterprise`, so
+  `unit-tests-enterprise`'s untagged `go test ./...` matched no package there
+  and exited 0 - a lane that compiled nothing, reading as a pass. The only
+  tagged runs were in the `ci:full`-gated Real-PG lane. A tagged step over both
+  module copies is added, which is the same fix #3699 took for
+  `ee/platform/proofcustody`. A new
+  `tests/regression-test-required/license_pair_byte_identity_test.sh` enforces
+  the byte-identity the two `keygen_seed_paste_test.go` copies assert about
+  themselves and nothing checked; it matters because the shipped image overlays
+  the ee copy onto the platform one, so a divergence ships.
+- **`decision-replay`: reproduce a recorded decision offline, from normalized
+  input against pinned bundles, with nothing running** (#3689). ADR-065 gate 16
+  had determinism tests and no artifact. New `platform/decision/replay` package
+  and `platform/decision/cmd/decision-replay` command, plus a committed fixture
+  generated from the conformance corpus. What is pinned is deliberately more
+  than the bundles: the action registry decides admission before any policy
+  runs, and an enforcement point advertising no capabilities turns a mandatory
+  obligation into a DENY, so an artifact pinning only bundle digests can
+  reproduce a decision that happens to be right. Every mismatch REFUSES and
+  returns no decision - a nearly-matching artifact answering a different
+  question is worse in an incident than no answer - with four mismatch shapes
+  detected including the one that would otherwise pass silently, an environment
+  root the record never pinned. Exit codes separate "you are holding the wrong
+  artifact" (2) from "the artifacts agree and the answer moved" (3). The tool
+  imports nothing outside the decision module, so an offline incident tool does
+  not link the cloud SDKs and database drivers of `axonflow/platform`.
+- **One capability registry, and a `/health` list that cannot go stale**
+  (#3590, #3618). `getCapabilities()` on both planes was a hand-maintained Go
+  literal, and a hand-maintained list is a census bounded by whoever last
+  remembered to edit it: **four release trains, v10.0 through v10.3, shipped
+  without a single entry**, including `POST /api/v1/access/evaluation`, which
+  all five SDKs call. Both planes now PROJECT the list from
+  `platform/shared/capability`, the one canonical capability registry (ADR-066
+  decision 1), so there is nothing left in either file to forget to edit.
+  **The served wire is unchanged, byte for byte.** The 29 agent entries and 17
+  orchestrator entries were captured by running the two functions before the
+  change and are checked in as `testdata/health_wire_freeze_*.json`; a test
+  compares the projection against them name, `since` and description at a time,
+  and a second, independent test holds the invariant the two literals used to
+  keep by convention - that the orchestrator list is an ordered subset of the
+  agent's with matching `since` values. The one place the two planes genuinely
+  differ, `platform_identity_discovery`'s description, is reproduced rather
+  than flattened.
+  **What makes it stay current is not the projection.** The registry derives its
+  candidate set from the tree: `go/ast` parses every non-test Go file under the
+  declared scan roots and resolves the path argument of every `HandleFunc` /
+  `Handle` / `PathPrefix` / `Path` call, following package-local and
+  cross-package string constants and `PathPrefix(...).Subrouter()` chains. A
+  route belonging to no capability fails CI. Parsing rather than grepping is
+  load-bearing and the measurement says so: **19 registration sites name a
+  constant instead of a string literal, two of them `POST /api/v1/decide` and
+  `POST /api/v1/access/evaluation`**, so a regex census would report a clean
+  sweep of a route set missing the platform's two most-called governance
+  surfaces. Eight sites remain unattributed - a table-driven suffix, and seven
+  registrations on a router assigned inside a function body, which the scanner
+  refuses to price rather than assume is the root - and each carries a declared
+  exemption naming the literal path and the capability that claims it. An
+  exemption that stops matching anything fails; so does one citing a capability
+  that does not exist, or one whose named capabilities do not claim the path it
+  is exempting.
+  A capability's absence from `/health` is now a RECORDED decision: every entry
+  carries either a `health` block or a `health_absent_reason`, and neither-nor
+  is a validation failure. The validator also refuses duplicate ids, a missing
+  or non-test owner, an unknown edition or classification, a classification
+  that contradicts the build tag or the mirror disposition, a non-monotonic
+  score, and any encoding of "not decided yet" - `""`, `"unknown"` and `"tbd"`
+  are all rejected rather than passing as a blank.
+  A runtime suite proves the projection where the package tests cannot -
+  `runtime-e2e/3618_health_capability_projection/` boots the stack and compares
+  the LIVE 8080 and 8081 responses against the frozen wire, field by field and
+  in order, then calls the route `authzen_evaluation` names and requires the
+  server to answer it. An advertisement nothing serves is the same defect
+  mirrored, and this census found five capabilities a Community build
+  advertises and does not serve.
+  No entitlement behaviour changes: the registry describes the boundary, and
+  the runtime licence checks and build-tag separation that enforce it are
+  untouched.
+- **A process-wide `enforce` is refused at boot on the identity axis** (#3633).
+  The decision axis has always refused its process-wide enforce by name at
+  parse; the identity axis accepted it in ONE unconditioned call, so
+  `AXONFLOW_IDENTITY_COMPAT_MODE=enforce` began refusing requests at boot with
+  no shadow phase behind it, no observed denominator and nothing recorded about
+  why it was safe - across **every organization at once**, since the
+  process-wide mode has no per-org dimension, and on divergences that are
+  per-`(organization, path)` constants rather than tail events. That path had no
+  test at all, which is how it survived two releases. The refusal lives in the
+  BOOT path rather than in the shared parser, deliberately: the parser also
+  serves the per-organization stored value, and refusing there would have left
+  no route to enforcement at all. `enforce` is withdrawn from every deployment
+  surface that offered it - both CloudFormation templates and the stack-update
+  dispatch input - because a value the process refuses must not stay advertised:
+  CloudFormation would accept it at change-set time and the container would then
+  fail to become healthy mid-rollout.
+- **Per-organization identity-plane divergences are now countable** (#3633).
+  `axonflow_identity_compat_org_divergences_total{component,org,synthetic,divergence}`
+  mirrors the existing per-organization comparison counter - same cap, same
+  overflow and unattributed buckets - and carries the divergence CLASS rather
+  than a boolean. It counts divergent records only: counting agreements too
+  would make "no divergences" mean "the `none` child is the only child", a sum
+  over an open label set that a new class silently breaks. Read WITH the
+  comparison counter and never alone, because a CounterVec with no children
+  exports no series, so an absent divergence series is equally consistent with
+  "nothing diverged" and "nothing ran".
+- **The identity axis gains a per-path rollback lever** (#3634).
+  `AXONFLOW_IDENTITY_COMPAT_PATHS` narrows which legacy credential paths
+  evaluate, mirroring `AXONFLOW_DECISION_SHADOW_PLANES` on the decision axis.
+  The failure this exists for is one path going wrong for everyone - a fleet
+  asserting only an email on `trusted_header`, an IdP whose JWKS endpoint starts
+  timing out on `oidc` - where the only previous remedies were lowering an
+  organization, which loses its other three paths, or lowering the deployment,
+  which loses the window entirely. Neither is proportionate to "one credential
+  path is noisy", and both discard measurements that were fine. **A path omitted
+  from the list takes the identical early return an `off` mode takes** - no
+  clock read, no registry touch, no recorder call - because "off for this path"
+  must mean exactly what "off" means, or the lever is a third posture with its
+  own behaviour to reason about, and an operator reaching for it during an
+  incident would be trying something new at the worst moment. It is checked
+  ABOVE the mode read, so a path an operator has switched off cannot fail on the
+  per-organization settings lookup it was excluded from. **An unrecognised path
+  is fatal at boot**: case and surrounding whitespace are normalised, but a name
+  matching nothing refuses to start rather than being dropped, because a list
+  that silently omitted an entry would measure fewer paths than its author
+  reads. That is deliberately stricter than `AXONFLOW_IDENTITY_COMPAT_MODE`,
+  which accepts `false`, `0` and `disabled` as spellings of `off` - a mode is a
+  posture written by hand, where synonyms are kind, and a path list is a set of
+  identifiers, where they are how a typo becomes a silent narrowing. **Unset and
+  whitespace-only mean every path**, which is the only complete window and the
+  state of every existing deployment; a value that is separators alone (an
+  unexpanded or empty-expanded variable) is refused, because that would evaluate
+  nothing while reading as configured. A trailing comma on a real list is fine -
+  `hs256,` keeps that path.
+  It is reachable everywhere the mode is: both services in `docker-compose.yml`,
+  `docker-compose.enterprise.yml` and `docker-compose.scaled.yml`, and as the
+  `IdentityCompatPaths` CloudFormation parameter on both the community-SaaS and
+  marketplace templates, wired through `update-stack.yml` including the
+  UsePreviousValue list - a parameter absent from that list is reset on every
+  update, which is how a lever set during an incident would quietly revert. Its
+  `AllowedPattern` enumerates the four declared path names verbatim from
+  `identity.legacyPaths`, so CFN rejects a typo at change-set time rather than
+  ECS discovering it as a container that never becomes healthy. A lever wired
+  only into compose would have been the same dead configuration this change is
+  itself about.
+- **One reader of the compat environment, in one place** (#3634).
+  `identity.EnvCompatConfig` is now the single `os.Getenv` site for
+  `AXONFLOW_IDENTITY_COMPAT_MODE`, `_ENFORCE_REASONS` and `_PATHS` anywhere
+  under `platform/`, and a census test fails on a second one wherever a future
+  author puts it. The defect it closes was not that the orchestrator forgot a
+  line: it was that two call sites each maintained their own copy of the
+  variable list, so adding a variable required remembering both - and the
+  remembering failed silently, with the lever declared in compose for both
+  services, documented for both, and read by one. Nothing failed; the
+  orchestrator simply kept evaluating every path. The agent's enforce-precondition
+  handler, which had grown its own read of the enforce-reason set, now goes
+  through the same reader.
+
+- **The OpenAPI lockstep check now fails when it cannot find its input, instead
+  of reporting a pass** (#3639). `TestTemplatesMatchAgentAPISpec` holds the
+  registered path templates against `docs/api/agent-api.yaml` in both
+  directions, and both the locate and the read were `t.Skip`s: a moved, renamed
+  or unreadable document made the check report PASS having compared nothing,
+  and on a green board a skipped test and a passing one are indistinguishable.
+  The same function already treated an empty PARSE as fatal one step later, so
+  the vacuity question had been asked and answered differently for two adjacent
+  failure modes. The skip's stated reason - that the package might be vendored
+  into a Lambda without the document - was checked rather than argued with: no
+  `go.mod` in this repository references `path_template`, and its only importer
+  is `platform/agent` in the same module. The failure now names every path
+  searched, so it is actionable rather than a puzzle. No behaviour change: the
+  document this guards is a published contract, and the guard was the only
+  thing that had stopped working.
+- **The AuthZEN contract's Go struct field TYPES are now compared against the
+  published contract; before, nothing compared them** (#3641). The drift guard
+  held Go and the JSON Schema together on field NAMES and REQUIRED-NESS only, so
+  a Go field could declare a type the contract contradicts and no test noticed.
+  That is not hypothetical: during the review of #3632, changing
+  `authzen_error.request_id` from `string` to `integer` in the schema and
+  regenerating the artifact left `RequestID string` in Go, and all nine
+  `platform/decision` packages stayed green - the server and the artifact every
+  SDK generates from described different wires. #3632 pinned the artifact's
+  types to the profile constant, which protects the SDKs; this pins the Go
+  structs, which is what the server actually serialises. It covers the
+  request-side shapes as well as the response-side ones, so the same hole is not
+  left open on the other half of the surface. The comparison reads the type off
+  the generated surface artifact rather than re-deriving it from JSON Schema -
+  a second reducer in the test suite would be free to disagree with the real
+  one - and the artifact's currency is asserted against the embedded schema's
+  digest, so the comparison cannot quietly run against a document that has
+  stopped describing the contract. Test-only; no shipped behaviour changes.
+- **Saying "these approvals must be separated" and being read as the opposite
+  is no longer possible** (#3630). `ApprovalRequirement.SeparationOfDuties` is
+  set from exactly one place - a string-typed obligation parameter, read as
+  `o.Params["separation_of_duties"] == "true"` - so every spelling that was not
+  exactly that (`TRUE`, `1`, `yes`, a trailing space, a typo) read as `false`:
+  "no separation required", the permissive answer for a control whose whole
+  purpose is to be restrictive. A carried value must now be one of the two
+  declared boolean spellings, refused at the same boundary the `delivery`
+  guarantee already is, and read back through a two-value parse rather than a
+  bare comparison. The parameter is also refused on an obligation family that
+  declares no separation of duties, where nothing would read it - a second,
+  smaller widening, named here rather than left to be discovered. An ABSENT
+  parameter is unchanged and still means `false`: that is the authored default,
+  and refusing it would refuse every approval policy written to date.
+- **The authoring boundary now validates the document an author SENT, not the
+  one this build re-renders from it** (#3630). `authoring.Parse` checked the
+  published JSON Schema against a re-rendered document: the bytes went through
+  the decoder into a Go value and back out, so a member the author OMITTED came
+  back at its Go zero value and satisfied `required` on the way past. The
+  measured consequence, on the member that matters: a policy document whose
+  obligation omitted `mandatory` was ACCEPTED and stored as advisory, with the
+  author's own document saying nothing of the kind - the authoring-plane form of
+  the decision-contract defect above, on the same member. (Most other required
+  members were already refused, by nested `minLength`, `enum` and `minimum`
+  constraints the re-render cannot satisfy; `mandatory` is a boolean whose zero
+  value serialises, which is exactly why it slipped through.) The raw bytes are
+  now validated too, and both checks are kept, because they answer different
+  questions: the raw one says the author supplied what the schema requires, the
+  rendered one says this build can round-trip the document without loss.
+- **The decision contract's Go decoder now refuses a document that omits a
+  required boolean, instead of reading it as the permissive value** (#3630).
+  `obligation.mandatory` and `approval_requirement.separation_of_duties` have
+  been declared `required` by `contract-2026-08-29.schema.json` since it was
+  written, and the Go decoder could not see either: `encoding/json` cannot tell
+  an omitted member from `false`, and `DisallowUnknownFields` only catches
+  members that are EXTRA. Absence read as ADVISORY for the first - every
+  combining site treats advisory as "record it and proceed" - and as "no
+  separation required" for the second. Presence is now resolved once at the
+  decode boundary and refused by the shape's own `Validate` with a typed error
+  naming the member's JSON Pointer (`/obligations/1/mandatory`), so the
+  combining sites keep a plain `bool` and gain no nil checks. A member present
+  as `null` is refused too, and the refusal says so rather than claiming the
+  document omitted a member it carries. A DUPLICATED member is refused as well:
+  `encoding/json` silently keeps the last occurrence, so
+  `{"mandatory":true,"mandatory":false}` read as advisory - a document stating
+  the obligation is mandatory, read as the opposite, and a different request
+  again to any layer that read the first occurrence.
+  **Scope, stated plainly for all three items here: nothing that succeeds today
+  begins to fail.** These are latent guards on a contract boundary, not changes
+  to a live request path, and this is a v11-readiness minor precisely so they
+  land before that boundary is load-bearing. Measured, not assumed: no binary
+  this release ships decodes those shapes - `authoring.Parse` is the only
+  decoder in the tree that reads a document carrying obligations, and it is in
+  neither the agent's nor the orchestrator's dependency closure - and no
+  obligation producer in the tree emits a `separation_of_duties` parameter,
+  because each writes a fixed key set that does not include it. An exhaustive
+  sweep of every committed policy pack, fixture, corpus, migration, ADR example
+  and SDK-facing document found four occurrences of that parameter, all spelled
+  `"true"` and all on an approval obligation, so no committed artifact changes
+  behaviour. What changes is that the boundary the ADR-065 policy decision point
+  will decode through, and the parameter an authored ADR-065 obligation will
+  carry, are correct before anything arrives on them.
+- **A malformed obligation can no longer have its own refusal dropped as an
+  advisory contribution** (#3630). `ComposeObligations` split the set on
+  `Mandatory` BEFORE validating, so an obligation missing that member sorted
+  itself into the advisory bucket and the refusal of it was then reclassified
+  as "the advisory contribution does not compose" and discarded, with the
+  request allowed to proceed. An obligation whose advisory-ness is unknown is
+  now refused before the split, with reason `schema_violation`. The guard is
+  deliberately narrow: an advisory obligation that is invalid for any OTHER
+  reason is still dropped and recorded, because the advisory-drop rule is a
+  deliberate design decision - a detector's contribution must not be able to
+  refuse a request - and widening it would have turned permits into denials on
+  any deployment carrying a bundle compiled before the rule that refuses one.
+  **No schema change and no artifact regeneration** in any of the above: these
+  close divergences in which the server was more permissive than its own
+  published contract, so the response-surface ratchet, the generated surface
+  artifact and the five SDKs' vendored copies are untouched, and nothing this
+  platform emits is affected. The class is now swept from the schema rather
+  than by hand: all **11** required boolean/integer members the contract
+  declares carry a recorded ruling that a committed test asserts - 2 newly
+  refused, 3 already refused because their zero value is invalid
+  (`obligation.schema_version`, `approval_clause.quorum`,
+  `tool_call.registry_version`), and 6 admitted with written reasons
+  (`snapshot`'s four epochs and `attribute.source_version`, whose absence
+  mis-states replay metadata rather than widening access, routed to #3661; and
+  `authzen_response.decision`, which this package produces and never decodes,
+  whose absence reads as `false` - deny, the fail-closed direction - and which
+  the response schema's own conditional already pins against the operational
+  state in both directions).
+- **The AuthZEN response context is produced by ONE function, and the approval
+  challenge it advertised but never sent is settled** (#3631). Two
+  hand-maintained renderings built this payload: `Decision.ToAuthZEN`, which the
+  conformance cases exercised and no serving path called, and a struct literal
+  inside the route handler, which every served response came from and no test
+  compared to the other. They had already drifted on exactly one member - the
+  handler never set `approval` - so **every response
+  `POST /api/v1/access/evaluation` has returned since v10.3.0 omitted the
+  approval challenge that both the `authzen_evaluation` capability entry and
+  `docs/api/agent-api.yaml` promised**. A PEP that read the capability list,
+  negotiated the profile specifically to receive the challenge and got a context
+  with no `approval` member had no error and no signal: an absent `approval` is
+  indistinguishable from "this decision requires no approval".
+  **The ruling: the challenge is NOT carried on this surface, and both
+  advertisements now say so.** The route is an adapter over
+  `POST /api/v1/decide`, whose response names no eligible approver set, no
+  quorum and no challenge expiry - so there is no requirement to render, and
+  synthesising one would hand an enforcement point a fabricated approval policy
+  to enforce, which is worse than the omission. A decision awaiting approval
+  still arrives as `state: CHALLENGE` with `decision: false`; act on it by
+  holding, and obtain the challenge from the human-approval surfaces. Surfacing
+  a real requirement would need the evaluator to carry it on `/api/v1/decide`,
+  a wire change to the route this surface exists in order not to change. The
+  `approval` member stays DECLARED in `docs/api/agent-api.yaml` with its
+  `$ref` unchanged, and the RESERVED note sits on the parent schema's
+  description - a `description` beside a `$ref` is ignored under OpenAPI 3.0.3,
+  and wrapping the `$ref` in an `allOf` to carry one is a generator-visible
+  shape change rather than a comment. So a generated client does not change
+  shape the day the member starts being sent, and a decoder written against the
+  profile stays complete.
+- **A CHALLENGE now carries its obligations onto the AuthZEN wire**, where the
+  serving path previously dropped them (#3631). The gate deciding whether a
+  decision carries instructions lived at one of the two renderings and was
+  stated there as `state == ALLOW` - narrower than the contract's own rule,
+  which is that a permit carries them and a challenge IS a permit with an
+  approval outstanding. It is reachable through a plural envelope, where
+  obligations accumulate across entries while the meet takes the worst state.
+  The gate now lives in the shared producer, derived from the authorization
+  mapping rather than restated, so it cannot come apart from it. A denied or
+  errored decision still carries none. No PEP behaviour changes on a challenge -
+  `decision` is `false` either way - but the caller is now told what it will
+  have to discharge once approval is granted. `docs/api/agent-api.yaml`
+  described the OPPOSITE ("carried only on an executable decision") and is
+  corrected in the same change; the contract's own validator has always
+  permitted it, since a challenge is a permit with an approval outstanding.
+  **Reachable on Enterprise builds only**: the two producers of a
+  `needs_approval` verdict are both gated on non-community mode, so a Community
+  deployment cannot reach the state at all and sees no change.
+
+- **The platform heartbeat can finally say which build, configured which way,
+  produced it** (#3660, v10.4.0 lane 2). Two additive dimensions on the
+  anonymous startup ping: `edition` (`community` | `enterprise`, read from the
+  binary's own build tag, which is the one signal `DEPLOYMENT_MODE`, the licence
+  tier and the applied schema cannot supply - the Community-SaaS fleet runs the
+  *enterprise* build against the *community-saas* schema) and
+  `platform_deployment_mode` (the deployment's own `DEPLOYMENT_MODE`, canonical
+  spelling, aliases folded so `enterprise` and `in-vpc-enterprise` are one
+  population rather than two rows). The pre-existing `deployment_mode` field is
+  UNCHANGED: it stays the coarse topology (`self_hosted` | `community_saas`),
+  so no dashboard or classifier rule moves.
+  - **`/health` gains the same two members** on the agent AND the orchestrator,
+    beside `tier` and `version`, from one implementation so the two planes
+    cannot drift. This is what lets an SDK relay them with **no new request** -
+    the heartbeat already fetches `/health`. Discoverable as the
+    `platform_identity_discovery` capability. A member the platform cannot
+    determine is **omitted**, never emitted empty: an unset `DEPLOYMENT_MODE`
+    drops the key rather than reporting the `community` schema default, because
+    the runtime posture for an unset value is not community (#3128) and
+    publishing that default would be a claim the deployment itself disagrees
+    with.
+  - **The orchestrator now sends `org_id`, at parity with the agent.** It never
+    did, so the receiver's primary internal-vs-external classification rules
+    could not fire on an orchestrator row and AxonFlow-operated orchestrators
+    were held internal only by a legacy heuristic already documented as
+    retiring. On the day it retires our own fleet would have reclassified as
+    customer adoption.
+  - **A Community-SaaS stack now emits instead of skipping emission entirely.**
+    The emitter-side skip made the platform table's deployment-mode column
+    single-valued by construction - the one value it could hold was the one
+    value it was never asked to report. Those stacks are classified internal at
+    the RECEIVER, from their `axonflow-` org_id. Suppressing at the emitter
+    destroyed the datum; classifying at the receiver keeps it and labels it.
+  - **One emitter, not three.** `platform/shared/heartbeat` is now the single
+    implementation the agent, the orchestrator and (next) the gateway adapters
+    share; the agent and orchestrator copies had already drifted, which is how
+    the missing `org_id` survived. The CI auto-suppress, the 7-day per-binary
+    rate limit, the stamp-on-delivery contract, the `AXONFLOW_TELEMETRY=off`
+    opt-out and the payload-disclosure line are unchanged and now have one home.
+  - **No new data about a customer.** The two fields are a build tag and an
+    operator-chosen mode string from a closed set. No hostnames, URLs, tenant
+    names, user identities, or hashes of any of those. Both are adoption
+    analytics only and must never gate entitlement: the value an SDK relays is
+    controlled entirely by whoever operates the endpoint it was pointed at.
+  - `docs/TELEMETRY.md` and `docs/TELEMETRY_CONTRACT.md` are brought current.
+    They were materially stale: "All 4 SDKs" (there are five), a
+    `deployment_mode` example the v1 schema had removed, a configuration opt-out
+    deleted in SDK v8.0, and a **90-day retention claim when the checkpoint
+    table's TTL has been 180 days since v6.2.0**. The vocabulary tables are now
+    pinned to the Go source by a test, so this class of drift fails the build.
+  - Operator action: **none.** Nothing new is required, no variable changes
+    meaning, and **no existing field changes value** - including the
+    orchestrator's `license_tier`, which stays OMITTED. That binding cannot
+    determine a tier at all, which is "not reported"; an interim revision of
+    the shared emitter folded an empty tier into `unknown` ("reports the
+    dimension, had not resolved it"), which would have changed a shipped
+    emitter's field while this line claimed nothing did.
+  - **`heartbeat.Config` gains an `OrgID` field**, and the environment fallback
+    is unchanged: a caller that leaves it empty still reads `ORG_ID`, so every
+    existing binding behaves exactly as before. It exists because a fallback
+    cannot guess the variable a caller happens to use - a binary whose
+    configuration surface is prefixed reads its own spelling, sends no `org_id`
+    at all, and is then counted as an external deployment rather than an
+    internal one. **If you embed this emitter and read your org from anywhere
+    other than `ORG_ID`, set `Config.OrgID`**; absence is still reported as
+    absent and is never defaulted.
+
+- **`core/170` makes the application grants on every FORCE-RLS table it can name
+  explicit** (#3636). **Stated as what it is: defence in depth, not a closed
+  gap.** Rendered from a fresh `in-vpc-enterprise` chain by reading
+  `has_table_privilege` rather than reading the migration sources: 125 tables,
+  26 under `FORCE ROW LEVEL SECURITY`, and **zero** lacking
+  `axonflow_app_role`'s SELECT or INSERT - `core/098` grants `ON ALL TABLES` for
+  everything present when it runs and `ALTER DEFAULT PRIVILEGES` for everything
+  the same owner creates afterwards, so on the single-owner path every table is
+  already reachable. What it guards against is a deployment whose migration
+  credential changed between releases, leaving later tables owned by a role
+  those default privileges do not follow; that is an operations fact about a
+  live fleet, not a repository one, and it can be neither confirmed nor ruled
+  out from here. It is cheap insurance: the privilege set is exactly what
+  `core/098` declares as the default, so it restores the intended baseline where
+  it is missing and is a no-op everywhere else. **The table list is rendered,
+  not grepped**, which matters because the grep-derived list an earlier draft
+  used was wrong in both directions - it included `role_assignments`, which the
+  live chain does not force, and omitted `compliance_report_jobs` and
+  `sso_sessions`, which it does. **The core/Enterprise split is by what FORCES a
+  table, not by what creates it**, which is the correction a mirror simulation
+  forced: `agent_heartbeats`, `node_violations` and `customers` are created by
+  Enterprise migrations but forced by `core/107` and `core/108`, files the
+  community mirror carries - and the census that reads those files runs in that
+  tree too, where `migrations/enterprise` does not exist, so a grant written in
+  the Enterprise sibling could never satisfy it. `to_regclass` makes each
+  statement inert where the table is absent. A new migration rather than edits,
+  because the runner skips an applied migration before it reads the file, so an
+  edit would reach fresh installs only. **Its rollback is a deliberate no-op.**
+  A `GRANT` is not reference-counted - `core/098`'s `ON ALL TABLES` and the
+  backfill's per-table grant are the same privilege - so a `REVOKE` on rollback
+  would remove the access `core/098` created rather than the access the
+  migration added, leaving the application role unable to read `organizations`,
+  `tenants`, `connectors` and the rest on every healthy stack. Rolling back an
+  idempotent re-statement of an existing privilege correctly means doing
+  nothing, and the migration says so rather than being silently empty.
+- **The published AuthZEN contract now declares the bulk entry bound the
+  server has enforced since v10.3.0**: `maxItems: 64` on the bulk envelope's
+  `evaluations` array, in the canonical JSON Schema (artifact regenerated)
+  and in `docs/api/agent-api.yaml`. Server behaviour is unchanged - v10.3.0
+  already refuses above 64 with a typed 413 - this closes the gap where the
+  contract omitted a bound the wire enforces. A cross-pin test now holds the
+  schema's `maxItems` and the server constant equal in both directions, and
+  the runtime-e2e suite asserts the declared bound beside the observed 413.
+  The SDKs' vendored surface copies pick this up on their next sync train;
+  their generators do not yet emit client-side `max_items` validation, so
+  client-side pre-flight of the bound lands with that train.
+
+- **The agentgateway/Envoy PEP adapters are now source-available under BSL 1.1
+  and carried by the community mirror** (#3657 item 10, operator decision
+  2026-09-03). They move from `ee/platform/agent/gateway_adapters` to
+  `platform/gateway-adapters`, and from the `axonflow/ee` Go module into the
+  root module — so the import path is `axonflow/platform/gateway-adapters` and
+  no `ee` replace directive is involved. A community build compiles and tests
+  them; the Decide surface they call (`POST /api/v1/decide`) was already in the
+  community tree.
+  - **Tier entitlement is unchanged and stays platform-side at runtime.** The
+    adapters authenticate to the PDP with a licence key; they do not validate
+    one and enforce no tier of their own.
+  - **`gatewayadapters.Edition` is now `edition.Current` rather than a pinned
+    `enterprise`.** It was pinned on the argument that the component shipped in
+    one edition only, which this move ended: a pinned constant would have made
+    every community deployment report `edition=enterprise` on its telemetry
+    ping - silently, with no error and nothing in a log, inflating the paid
+    share of the adoption split. runtime-e2e/2886 now asserts the reported
+    edition off the WIRE, from a captured ping, rather than from the constant.
+  - **One new dependency reaches the community module**,
+    `envoyproxy/go-control-plane/envoy`. grpc, protobuf and prometheus were
+    already there at identical versions in both modules, so the move bumps
+    nothing for existing consumers.
+  - `platform/gateway-adapters` rather than `platform/agent/gateway_adapters`
+    deliberately: `platform/agent/**` appears in eleven workflow path filters,
+    eight of them stack-booting suites, so nesting the adapters there would
+    have fired eight unrelated stack boots on every adapter change. Measured
+    before and after - an adapters change selected ten workflows and now
+    selects four, with both of the adapters' own suites still among them.
+  - **Runtime proof does not travel.** `runtime-e2e/` is excluded from the
+    mirror wholesale, so the community repository gets the component without
+    its suites. Stated in both READMEs; the community build is compiled and
+    unit-tested by the mirror simulation, which now carries a positive control
+    asserting these files actually reached the mirror and a negative control
+    asserting the enterprise edition half did not. A community-side executor is
+    a recorded post-train item, not a silent absence.
+
+- **The HITL approval-queue chokepoint guarded creation and left every state
+  transition unguarded** (#3714, pre-cut audit #3709). #3408 made the count of
+  authored `INSERT INTO hitl_approval_queue` exactly one, because two duplicated
+  CREATE writers had diverged unnoticed for seven months. It left the
+  TRANSITIONS alone, and they are the dangerous half: a creation that diverges
+  produces a malformed row you can see, while a transition that diverges
+  approves, rejects or expires on one path and not the other - the compliance
+  record and the enforcement decision disagree and nothing looks wrong.
+  - The census in the code was short. `writer.go` said SIX authored
+    `UPDATE hitl_approval_queue` and named five; there were **EIGHT** - Override,
+    `ExpireStaleReturning` and `ConsumeGrant` duplicated across the
+    `platform/` ↔ `ee/` twin pair, plus `UpdateStatusSQL` and the orchestrator's
+    `expireEvalApprovals`. The comment was written before `ConsumeGrant` arrived
+    (#3509) and nothing updated it, which is the argument for a guard derived
+    from the table rather than from a list, made by the guard's own file.
+  - **The twin pair is collapsed, not kept in sync.** All three statements moved
+    into `platform/agent/hitl/queue`, which carries no build tag and is not
+    overlaid by the Dockerfile, so each exists ONCE for both copies. The six
+    bodies were verified byte-identical before the move.
+  - **The lint is now derived from the table name**, matching `INSERT INTO`,
+    `MERGE INTO`, `COPY`, `UPDATE`, `DELETE FROM` and `TRUNCATE` against
+    `hitl_approval_queue`. Its self-test grows to 44 assertions including a
+    planted UPDATE in a new file, a planted DELETE and TRUNCATE, and negative
+    pins that a plain SELECT, an `UPDATE hitl_approval_history`,
+    `hitl_approval_queue_archive` and `UPDATE other_table FROM
+    hitl_approval_queue` are NOT flagged. Measured: the previous INSERT-only
+    lint printed "choke point intact" and exited 0 against a tree containing all
+    eight UPDATE statements.
+  - The widening surfaced two writers nobody had recorded, allow-listed by name
+    and count with a justification rather than by a directory exclusion: the body
+    of `expire_hitl_requests()` in `migrations/core/025` (the schema's own expiry
+    function - it cannot live in a Go package and bypasses no gate), and one
+    inert decoy fixture that exists to be analysed by another guard.
+  - The ConsumeGrant twin census is replaced by a clause census in the shared
+    package that reads the COMPILED CONSTANT rather than file text, carries no
+    build tag - so it now runs on the community mirror too - and gains six
+    one-sided fail-closed mutants.
+
+- **The Evaluation-tier approval auto-expiry has done nothing on every app-role
+  deployment since v9** (#3520 item 2, fixed with #3714). `expireEvalApprovals`
+  ran a cross-tenant `UPDATE` on whatever pool it was handed; under
+  `AXONFLOW_DB_USE_APP_ROLE=true` that is `axonflow_app_role`, and with FORCE
+  RLS and no org GUC a cross-tenant UPDATE **matches zero rows and reports
+  success** - the #3048 shape. Measured against a real PostgreSQL: as
+  `axonflow_app_role` the old statement updated 0 of 6 expired approvals and
+  returned NO ERROR; on the cross-tenant pool the new one expires all 6.
+  - **OPERATOR NOTE, first run.** Turning this on finds every approval that has
+    sat falsely `pending` since the deployment moved to app_role, and each one
+    aborts its workflow. A tick is bounded at 200 rows (`ORDER BY expires_at
+    ASC`, `FOR UPDATE SKIP LOCKED`), so a backlog drains over successive
+    five-minute ticks rather than in one transaction, and the log line says
+    `BATCH FULL` when a tick hits the bound so it reads as a backlog draining and
+    not as a steady-state rate.
+  - **The sweeper does not start without a cross-tenant pool** and says so
+    loudly, rather than falling back to the app-role pool: a fallback there is a
+    sweeper that runs every five minutes, does nothing, and looks healthy, which
+    is the state being fixed. With app-role OFF the main pool is the owner and is
+    cross-tenant, so owner-pool deployments see no change.
+  - **#3520 stays open.** Item 1 (`hitl.Service` fails OPEN on a nil tier
+    provider while `queue.Enqueuer` fails CLOSED) and item 3 (`/hitl/stats` and
+    `hitl_pending_summary` counting `wcp_step_gate` mirrors, which needs a
+    migration) are untouched.
+
+- **A `trap` on INT or TERM whose handler does not exit returns to the script
+  body** (#3715, pre-cut audit #3709), so on Ctrl-C the script carries on against
+  the state it just tore down and cleanup runs twice. Four sites fixed, the worst
+  being `scripts/operators/provision-app-role.sh` - an operator script that
+  provisions a database role. Measured with a reduced case:
+  `trap cleanup EXIT INT TERM` exits 0 with the body CONTINUING after SIGINT;
+  `trap cleanup EXIT` plus `trap 'cleanup; exit 130' INT` and
+  `trap 'cleanup; exit 143' TERM` exits 130 and never reaches the body.
+  - New `scripts/lint-trap-handlers-exit.sh` flags the shape, distinguishing a
+    handler that exits from one that does not rather than matching `trap` at all;
+    it resolves a bare handler name to that function's own body, so a sibling
+    function's `exit` cannot cover for it. The three already-correct sites in the
+    tree are its positive control on day one. Runs as its own job held to
+    `success` by `Lint Summary`. 21 self-test assertions, both directions,
+    including a pin on the one evasion left open.
+  - **The lint is re-included in the community mirror sync in the same change.**
+    `/scripts/*` is excluded from the mirror wholesale with per-file exceptions,
+    and `lint.yml` itself syncs - so a lint job whose script is not re-included
+    calls a 404 on the public repo and reddens `Lint Summary`, which is a
+    REQUIRED check there. `tests/regression-test-required/lint_scripts_sync_to_mirror_test.sh`
+    enforces exactly that and was verified to exit 1 without the re-include.
+    Of the eight files this PR touches under `scripts/`, `runtime-e2e/` and
+    `.gitattributes`, exactly FOUR reach the mirror (`provision-app-role.sh` via
+    its own per-file include, the two mirrored lint guards, and `.gitattributes`)
+    and four do not (`legacy-policy-capture.sh`, `probe-boot-log_test.sh`,
+    `lint-runtime-e2e-executors.sh`, and the 3660 suite — `runtime-e2e/` is
+    excluded wholesale). Named here rather than left for the heading to imply.
+
+- **Two append-only files serialised every parallel lane, and the failure mode
+  was silent** (#3722, pre-cut audit #3709). Every pair of concurrent branches
+  conflicts on `scripts/e2e/runtime_e2e_suites.tsv` by construction, and a
+  conflicted PR is `DIRTY` - it runs NO CI at all, so its check list is EMPTY
+  rather than red and is indistinguishable from a clean board under any
+  readiness check that scores "nothing failing and nothing pending".
+  `.gitattributes` now declares that file `merge=union`, which removes the class
+  permanently for the one file whose correct resolution is always "keep both
+  rows". Deliberately NOT applied to `CHANGELOG.md`, where union glues a
+  section's closing line onto the following bullet.
+  - Union trades a loud conflict for a silent malformed row unless something
+    counts fields, so the ledger loader now asserts exactly four
+    tab-separated fields per row. Measured: appending a fifth field to a real row
+    left the previous loader at rc=0 with the note silently truncated, because
+    `cut -f4` returns the fourth of however many there are. The loader's existing
+    duplicate-suite check already covers the other union shape (two copies of one
+    row) and reds on it. `.gitattributes` reaches the community mirror; the
+    ledger and its linter do not (`/scripts/*` and `runtime-e2e/` are both
+    excluded), so the union attribute is the only half of this that a community
+    checkout sees - which is correct, since it is the only half that is about
+    merging rather than about this repository's suite bookkeeping.
+- **Four readings of "is this deployment community", none in the package that
+  exists to own it** (#3713, child of #3709). #3713's own title says "three of
+  them byte-identical copies"; it is TWO, and the correction matters because
+  the third is what makes this a test rather than a lint (see below).
+  `platform/shared/deploymode` held the SCHEMA half of what `DEPLOYMENT_MODE`
+  means and said in its own doc that it did not decide the RUNTIME posture. So
+  the posture half had no home. **Two** sites wrote
+  `os.Getenv("DEPLOYMENT_MODE") == "community"` byte-identically
+  (`platform/agent/run.go`, `platform/orchestrator/run.go`); a **third**,
+  `platform/shared/corspolicy`, spelled it through local constants
+  (`os.Getenv(deploymentModeEnv) == communityMode`), which is precisely why
+  `scripts/lint-deployment-mode.sh` - which greps for the literal - never saw
+  it and never allow-listed it; a **fourth**, `dev_token_handler.go`,
+  normalises on purpose. The same comparison against `"community-saas"`
+  appeared a further three times, once inside
+  `platform/orchestrator/llm/bootstrap.go` rather than in either helper.
+  `deploymode` now exports `IsCommunityPosture` / `IsCommunitySaasPosture` and
+  their `Current*` forms, carrying the contract those copies stated in prose:
+  the accepting set is EXACTLY the canonical token, not trimmed, not
+  case-folded, not resolved through an alias, because every widening of it
+  disables authentication (#3096). Behaviour is unchanged at all six sites.
+  **The two axes now live in one package precisely BECAUSE they disagree.**
+  Three inputs have the community SCHEMA without the Community POSTURE - unset,
+  `evaluation` and `community-saas` - and only two of those are among the ten
+  recognised spellings, because unset is resolved rather than declared as a
+  mode. Until now no single file held both answers, so the only way to see it
+  was to have read both halves of the tree. `deploymode_test.go` computes
+  BOTH columns for every recognised spelling and requires the partition, and a
+  separate test fails if an alias is ever declared onto a posture-selecting
+  mode - the one way the two could come to disagree silently. Issue #3128, the
+  open divergence over what unset means, is unchanged and now stated where both
+  answers are.
+  **A FIFTH reading exists that the issue did not name, and it is the only one
+  whose ANSWER differs**: `platform/shared/policy/dynamic_evaluator.go`'s
+  `resolveConnectorLimitTier` reads `mode != "community" && mode != ""`, putting
+  UNSET on the community side - the opposite of #3096 - and `evaluation` and
+  `community-saas` on the enterprise side, where connectors are unlimited. It is
+  left EXACTLY as it is: folding it in would change entitlement behaviour on the
+  community-SaaS fleet, which is not a rider to attach to a de-duplication
+  change. Reported on #3709 with its evidence.
+  **The guard against a sixth is a test, not the lint.**
+  `scripts/lint-deployment-mode.sh` greps for the literal
+  `os.Getenv("DEPLOYMENT_MODE")`, and three live escapes from it are on record:
+  `corspolicy` spelled the read through a local constant and was never on the
+  allow-list at all; a value from `deploymode.Current()` is not an env read;
+  and the customer-portal reads the variable and compares it a frame away,
+  across a module whose import path is not its directory.
+  `TestTheCommunityPostureIsDecidedInExactlyOnePlace` instead walks the tree for
+  the shape that is actually wrong - a `DEPLOYMENT_MODE` value meeting a mode
+  name - through assignments, through `strings.ToLower`/`TrimSpace`, and across
+  function boundaries, with the set of mode names derived from
+  `RecognisedModes()` rather than listed. Measured: planting a fresh reading
+  spelled `deploymode.Current() == "community"` leaves the lint reporting
+  success and exiting 0, while the new test fails and names the file, the
+  function and the line.
+  The eight sites that legitimately still derive an answer from the taxonomy are
+  an EXEMPTION INVENTORY, each with the reason it is there, and an exemption
+  that stops matching is itself a failure - which is what keeps the census from
+  going blind and reporting a clean tree. The lint's allow-list is narrowed
+  from 11 files to 7 - **four** entries removed. Three no longer read the
+  variable; the fourth, `platform/shared/execution/event_hub.go`, was STALE -
+  it did read `DEPLOYMENT_MODE` once, added by #1172 and removed by #1177
+  TWELVE HOURS later on the same day. The allow-list entry then outlived the
+  read by roughly SEVEN MONTHS, permitting one nobody was making while looking
+  like a decision somebody had made.
+  **Two paths in this change do not reach the community mirror**, and are named
+  here rather than left to be inferred: `scripts/lint-deployment-mode_test.sh`
+  (the lint's own harness, repo tooling - `/scripts/*` is stripped, while
+  `scripts/lint-deployment-mode.sh` itself is re-included by name) and
+  `runtime-e2e/3660_platform_ping_edition_mode/test.sh` (`runtime-e2e/` is
+  stripped wholesale). Both are test surface for behaviour that ships: the
+  predicate, its call sites and the lint all reach the mirror.
+  `corspolicy` is not one of the four: it was never on the list at all, which
+  is the point.
+  **R3 round 1 broke the first version of this guard, and how is worth
+  recording.** The exemptions were keyed by FILE, and five of those files are
+  also on the lint's allow-list - so a brand-new, compiling
+  `os.Getenv("DEPLOYMENT_MODE") == "community"` appended to any of them passed
+  BOTH instruments, leaving the headline property unenforced across five files.
+  Every exemption reason is about a FUNCTION, so the key is now
+  `path#function`, exactly as wide as the reason. R3 also found five ordinary
+  spellings the census could not see: four are now followed (a package-level
+  var, a map keyed by mode names, a range over a literal list of them, and a
+  call inside a tagless `switch` case), a prefix over the mode namespace
+  (`HasPrefix(mode, "in-vpc-")`) is now treated as the taxonomy derivation it
+  is, and the three that remain - a struct field, a method receiver, a channel -
+  are PLANTED and pinned as known blind spots, so widening the analysis has to
+  come past a failing test rather than arriving silently. Separately, the
+  community-SaaS guard in `platform/orchestrator/llm/bootstrap.go` turned out
+  to have no test at all - a one-word mutant swapping it for the Community
+  predicate left the package green - and now fails in both directions.
+
+
+
+- **Every MCP-seam audit row lost its tool attribution to a string mismatch**
+  (#3717, audit umbrella #3709). The ext_mcp gateway adapter built every decide
+  request with `Target.Type = "mcp_tool"`; the platform's tool-attribution gate
+  compares against `"tool"`. The comparison never matched, so on every request
+  through the MCP seam the branch that copies the tool identity onto the
+  decision never ran: `audit_logs.policy_details.tool_server` and `.tool_name`
+  were written empty, and a HITL queue entry showed a human approver the literal
+  string `mcp_tool` where the tool belonged. Nothing failed. The decision was
+  enforced; the compliance record simply did not say what it was about - on the
+  one seam whose entire job is tool governance. `"mcp_tool"` appeared exactly
+  once in the tree, at the construction site, and nothing read it, so the
+  adapter was the outlier and the gate the contract: the adapter now sends
+  `pep.TargetTypeTool`. The gate was deliberately NOT widened to accept both
+  spellings - that fixes the row and forks the vocabulary permanently - and a
+  test pins the direction not taken by asserting the retired spelling attributes
+  nothing.
+  **Restoring the audit row is not a record-only change, and the first version
+  of this fix shipped that claim before review disproved it.** The same gate
+  also supplied the capability-scoping key (#2801), where a tool name that
+  positively classifies as a text-document tool makes the engine SKIP
+  execution-class detectors. Measured end to end through the real seam, same
+  payload, only the client-chosen tool name varying: `run_sql_query` blocked,
+  `editJiraIssue` allowed. So attribution and scoping are now separated where
+  they are read. Two request shapes supply no scoping key: one whose target ALSO
+  NAMES A HOSTING SERVER, and one whose request DECLARES ITSELF an MCP-gateway
+  call. Capability scoping's stated premise is that the party naming the tool is
+  the party enforcing and could equally not have called the PEP at all, and that
+  is false for an in-path gateway whose tool name is a field of somebody else's
+  request body. **It takes both conditions**: the seam leaves the server empty
+  whenever the gateway reports no backend or several, so the first condition
+  alone let a fully client-chosen name back into the scoping path on three of
+  four request shapes - a control whose ABSENCE granted the relaxation. Both are
+  fail-safe: each can only withhold a relaxation, never grant one, which is why
+  neither has to be trusted. The AuthZEN plane is covered by the first, its tool
+  resource ids being `server/tool` by construction, so those requests now get
+  FULL evaluation. Attribution is untouched throughout - the audit row, the HITL
+  descriptor and the FinCrime scorer's agent context all still carry the tool
+  name, which took separating the two into distinct required parameters, since
+  collapsing them removed a feature from an ML input vector. The one telemetry
+  value that does follow the scoping key is the ADR-065 shadow comparison's tool
+  label, which is empty for these requests; that is recorded-only, and it is
+  stated rather than absorbed.
+  **The seam also could not have sent a tool server whatever type it used:**
+  `pep.Target`, the blessed PEP client's request type, had no `Server` field at
+  all, while its platform-side mirror `DecisionTarget` has had one since #2904.
+  The field is added, and the two declarations - kept independent on purpose,
+  since aliasing them would make the wire-contract tests tautological - are now
+  compared field for field by reflection. The seam fills it from `service_names`
+  only for a single-target method; a fanout call leaves it empty rather than
+  naming one of several backends, since an auditor can see an absence but cannot
+  see that a present name is the wrong one of three. The accepted values are
+  declared once in `pep.TargetTypes` and constructed from rather than spelled at
+  each site; a repo-wide guard fails on any `Target.Type` string literal outside
+  that set, and a second guard pins the three parallel declarations of those
+  same strings (`pep.TargetType*`, `DecisionStage*`, `gatewayadapters.Stage*`)
+  against each other - without it a fork through the stage constants reproduces
+  this defect at a production site, green across everything else.
+  `docs/api/agent-api.yaml` states what `tool` costs to get wrong, since its
+  `type` description previously enumerated a vocabulary two shipped seams
+  already did not use.
+
+### Enterprise
+
+- **The publish dialog gets a test-case builder instead of a JSON textarea**
+  (#3785 item 2). Last of the review follow-ups, and the one the design promised
+  and did not ship.
+
+  What the textarea asked for was not a simplified shape. A test case is
+  `authoring.Fixture`: a `contract.Attribute` per path - `state`, `value`,
+  `source`, `source_version`, `observed_at`, plus `reason` when the state is
+  unknown - and a `pdp.Verdict` per policy. An operator was hand-writing a
+  timestamp and a provenance class into a form that already knew both, and
+  getting either wrong bought a refusal from the publication gauntlet rather
+  than a hint from the form.
+
+  Three fields are now supplied rather than asked for, because their answers are
+  not the author's: `source` is fixed per namespace by `contract.AttributeSet`
+  validation, so offering it as a choice offers a refusal - it is shown, not
+  edited - and `source_version` and `observed_at` are a fixture's own synthetic
+  provenance. The two that ARE the author's, what the value is and what each
+  policy should do about it, are what the form is made of. A value that is not
+  of its declared type is named before the round trip rather than sent, because
+  a fixture whose amount is the string "500" tests a comparison against a
+  string.
+
+  **Every verdict still starts unasserted**, which is the property `seedFixture`
+  was written to protect: with seeded values most policies genuinely do not
+  match, so a pre-filled NO_MATCH would pass the gauntlet and produce a SIGNED
+  report proving nothing.
+
+  The JSON view stays, one click away, and edits the SAME state through
+  `fixtureToWire` / `fixtureFromWire` - a second view, not a second source of
+  truth. Text that will not parse keeps the operator in the JSON view rather
+  than dropping them into the builder and discarding what they were writing.
+  Nothing about the wire changed: the builder is a way of typing
+  `authoring.Fixture`, not a shape the server would have to translate.
+  Community is unchanged.
+
+- **The typed policy editor gets its own route, and the Policies page keeps a
+  pointer to it** (#3785 items 1, 6, 8). Second of the review follow-ups.
+
+  The editor shipped appended BELOW the legacy list, where the hand review found
+  it at the bottom of a 4,200px page behind twenty rows and a paginator: an
+  operator told the flag was on could not find what the flag turned on. Hoisting
+  it above the legacy list would have fixed that and broken something else,
+  because the legacy dynamic-policy path is what ENFORCES until v11 retires it,
+  and putting a preview above the enforced surface misstates which one is real.
+  So it moved to `/policy-authoring`, with a nav entry under Governance and a
+  pointer card on Policies. Nothing on the Policies page moved. The route
+  re-reads the flag rather than trusting the nav, because a URL is typeable.
+
+  Groups are now PICKED rather than recalled. The realm half of
+  `Group::realm:name` is not guessable, and a realm the registry does not
+  declare is refused by REALM_NOT_DECLARED - so a free-text box whose only guide
+  was its placeholder had a refusal as its likeliest output. The realms are
+  already on the client, which is how that refusal names them, so they are a
+  list. The name half stays typed, because it is a directory value the portal
+  does not hold.
+
+  Published versions render the author as a name with the canonical identifier
+  on hover, keeping the full digest; and Promote and Roll back are disabled with
+  the reason stated for the person who published the version, rather than
+  offered and answered with a 409. The server remains the authority: the check
+  is an approximation of its canonicalisation, and when the two disagree the
+  button stays ENABLED and the 409 answers. Never disable an action the server
+  would have allowed.
+
+  Actions read as their local part with the qualified identifier beside them.
+  **No display name was invented for them**: `registry.ActionRecord` has no
+  human-written field, and a second name for an action decided in a portal
+  component is the second vocabulary this feature exists to avoid. A real
+  display name is a registry change, filed as #3789.
+
+  The route also carries a disabled **Import existing policies** entry naming
+  #3786: nothing converts an organization's existing policies into typed
+  documents yet, and the authoring route is where an operator will look for it.
+  Community is unchanged.
+
+- **The typed policy editor stops telling an author that a brand-new grant
+  never applies** (#3785). Follow-ups from the hand review of #3774, which is
+  where these were found: the merge gate could not have caught any of them,
+  because every one is a question about what a sentence means to the person
+  reading it.
+
+  The empty-condition checkbox was hardcoded to "always" in a control rendered
+  in FOUR places. In an `Allow when` slot that is correct. In an `Except when`
+  slot the tick makes the editor omit `unless`, so it means "no exception" -
+  and that was the DEFAULT state, since a new condition starts empty. A new
+  grant therefore opened with a box labelled "always" above the sentence "while
+  this holds, the grant does not apply at all", which reads as a grant that
+  never applies. An author who believed the label would untick it and build a
+  real exception to repair a grant that was never broken. The label and the
+  ticked-state sentence now come from the caller, like the slot label beside
+  them, and the shared control has no default for either.
+
+  The other three are copy in the same spirit. The Requirements and Inspections
+  paragraphs explained ADR-065's naming decision to an operator who has never
+  read ADR-065, and never said what a requirement does; they now say what each
+  one does and how it differs from the other. The preview banner's third
+  sentence of version identifiers moved into its own disclosure, leaving the
+  banner the two facts an operator has to act on - the storage is not durable,
+  and the legacy list is still what enforces. And a policy row's badge and
+  identifier were adjacent nodes, so the row's accessible text read
+  "Grantgrant.refund"; a real space now separates them, because a margin is not
+  a text node.
+
+  No behaviour changes and no wire, storage or validator change: the documents
+  this editor produces are byte-identical to the ones it produced before.
+  Community is unchanged - the typed editor is enterprise-gated and community
+  gets nothing new here.
+
+- **The six AuthZEN enums are bound in the contract guards, and two of them are
+  the vocabularies the adapter refuses outside of** (#3637 item 4). The AuthZEN
+  surface had field bindings since #3603 and no enum bindings, so the refusal
+  code a client switches on agreed across spec, Go and SDKs by habit.
+  `scripts/contract-guards/bindings.yaml` gains an `^AuthZEN` scope over
+  `agent-api.yaml` (a new AuthZEN enum is now a decision, not an omission),
+  eight bindings - error code, state, category, reason, obligation type,
+  identifier kind, action name and resource type - and one excused row (the
+  single-valued profile constant, pinned elsewhere). `enum_differ.py` learned
+  what it needed to read them: a `[]T{...}` literal returned over several
+  lines, and a `map_keys:` source for an enumerator that ranges over a map
+  (`AllObligationTypes`) or a vocabulary that IS a map
+  (`authzenActionStage`). Both directions verified by mutant: dropping
+  `incomplete_evaluation` from the spec and renaming `agent.invoke` in the
+  adapter each red the guard.
+- **The customer portal's unknown-`DEPLOYMENT_MODE` log distinguishes a
+  recognised in-vpc vertical from a value nobody recognises** (#3637 item 8).
+  `in-vpc-healthcare`/`-banking`/`-travel` are served the SaaS-shaped portal
+  config BY DECISION (#2808: tenant isolation on until each vertical is
+  validated on its own stack) and were logged as "Unknown DEPLOYMENT_MODE";
+  the arm now asks `platform/shared/deploymode` - the one definition of
+  recognised - and logs a NOTICE naming the decision for a vertical and the
+  WARNING only for a value the platform does not know. Behaviour unchanged.
+- **Two comment corrections from the v10.3.0 review** (#3637 items 1 and 6):
+  `migrations/enterprise/149_proof_execution_record_down.sql` no longer calls
+  itself 148, and `ee/platform/telemetry-filter/classify.go` names which
+  surface uses the bare `go`/`python` SDK spelling (the telemetry payload) and
+  which uses `sdk-go` (the `X-Axonflow-Client` header) instead of borrowing one
+  for the other.
+- **ADR-065 gate 17 gains its graph axis** (#3555). Gate 17 reads "policy AND
+  graph scale" and the artifact said the graph was "not measured at all".
+  `platform/shared/identity/gate17_graph_bench_test.go` measures
+  `LoadDirectoryGraph` at 1,000 / 10,000 / 50,000 groups (~0.9 µs and ~1 KB per
+  entity, linear) and `DirectoryGraph.Closure` at closure sizes 10 / 100 / 1,000
+  (~1.7 ms and 2.4 MB at the default 1,024-group bound, linear), with a control
+  proving the same 1,000-group closure costs the same inside a 10,000-group
+  directory. `gate17_graph_budgets_test.go` enforces the memory and shape rows
+  in the Real-PG lane and the latency rows in `gate17-latency-budgets.yml`;
+  section 12 of `ADR-065-gate17-budgets.md` publishes the figures against a
+  committed raw log, and the sign-off record moves gate 17 from `ENFORCEMENT
+  STILL OWED` to enforced. The decision on the superlinear activation curve
+  itself stays with #3693; a shape budget refuses it getting worse unnoticed.
+- **The gateway pre-check plane now refuses a caller that declared it cannot apply the redaction it is being told to apply** (#3778, ADR-065 invariant 8; sibling to #3766). `POST /api/policy/pre-check` does not redact inline: it answers `requires_redaction: true` and the calling SDK is expected to obtain the engine-masked content and forward that instead of the original, which ADR-056 makes the only sanctioned discharge because a client may not redact for itself. A caller that cannot perform that substitution and is answered `approved: true, requires_redaction: true` proceeds with the original while the record says a redaction applied. That is now a deny carrying `pep_capability_unsupported`.
+  - **The denial withholds the instruction as well.** `requires_redaction` is cleared on a refused response, because telling a caller that cannot discharge the obligation to go and discharge it anyway is the confusion the refusal exists to remove; `approved_data` was already withheld on any block.
+  - **Asked only where a redaction is actually required.** A caller declaring no redaction capability keeps using this plane for the traffic that needs none, which is nearly all of it. Both directions are pinned, so the scoping cannot swallow the enforcement.
+  - **One question, three planes.** It asks about `field_redact@1` - the same type and schema version the decide plane's projection stamps and the MCP plane asks about - so one client declaration satisfies all three and there is no per-plane dialect. The equality is pinned by a test driving the real projection, and the enforcement loop is the decide plane's own `firstUnsupportedMandatory`.
+  - **Why this plane, now.** `axonflow-litellm` makes no HTTP call of its own and delegates entirely to the Python SDK, whose single governed call is `pre_check` against this route. Until this landed that client had no route the platform read a declaration on, so presenting one would have been a header nothing evaluates.
+- **The portal can author ADR-065 typed policy documents, behind a
+  per-organization flag that is off by default** (#3762). The typed policy
+  control plane shipped its API in #3568 and no portal surface used it: the
+  Policies page still wrote legacy rows. This adds the transport over
+  `platform/decision/authoring` and the editor on top of it, and re-implements
+  none of it - every endpoint is one call into `authoring.API`, and the wire
+  types are that package's own, so there is no second policy vocabulary for a
+  server switch and a UI control to drift apart across.
+
+  Grants (permission policies) and ceilings (constraint policies) are two
+  first-class shapes rather than one form with a dropdown, which ADR-065 line
+  357 makes a launch requirement. On the organization root the two carry the
+  same fields and their effects are opposite, so the distinction is carried by
+  two components, two list sections, two creation entry points and
+  opposite-effect copy on every shared control. Requirements and inspections
+  keep their canonical names: the ADR licenses a friendly name for two
+  authorities, not four.
+
+  The flag is `identity_org_settings.typed_authoring_enabled`, added by
+  **enterprise migration 154**, NOT NULL DEFAULT false. It is written by the
+  operator through the existing
+  `PUT /api/v1/admin/organizations/{org}/identity-settings` and read on a
+  tenant-session route that takes no organization parameter at all, so there is
+  no request shape that asks about another organization's flag. Every
+  `/api/v1/typed-policies` endpoint answers 403 `typed_authoring_disabled`
+  while it is off, evaluated per request rather than memoized, so turning it
+  off closes the surface on the next call rather than at the next portal
+  restart. With the flag off the Policies page is what it was.
+
+  The editor's vocabulary is chosen by `AXONFLOW_TYPED_AUTHORING_CATALOG`. The
+  one recognised value today is `conformance`; UNSET registers the routes and
+  answers 503 naming the variable, rather than validating against an empty
+  catalog and refusing every policy an author writes for naming an
+  unregistered action; an UNRECOGNISED value registers nothing and says so at
+  boot. Documents and published artifacts are held in the portal process and do
+  not survive a restart, which the editor states on screen: persistence needs a
+  schema number allocated for a document table, and 154 is allocated for the
+  flag.
+
+  Community is unchanged in behaviour. The one path in this change that reaches
+  the community mirror is `platform/shared/capability/registry.json`, which
+  gains a `portal` field on the `decision.pdp` entry naming the new control -
+  a census record, not a surface: `ee/platform/customer-portal` is not one of
+  the capability census scan roots, so these routes carry no entry of their
+  own.
+- **An enforcement point that declared it cannot substitute a masked statement is
+  now DENIED on the MCP plane, instead of being handed one and trusted** (#3766,
+  ADR-065 invariant 8). #3704 shipped the capability handshake on
+  `/api/v1/decide` and `/api/v1/access/evaluation`. The route census cut for the
+  client lane (#3763) then established that exactly ONE of the eight shipped
+  plugins reaches `/api/v1/decide` and SIX reach the platform ONLY on the MCP
+  plane, so for most of the fleet the declaration was a header nothing evaluated.
+  The plane's obligation is real but is not shaped like the decide plane's: the
+  MCP plane IS the fulfillment endpoint, so rather than emitting a mandatory
+  `redact_pii` obligation it runs the redactor inline and hands the caller
+  `redacted_statement` / `redacted_data`, which ADR-056 obliges the caller to
+  forward in place of the original. A caller that ignores it forwards raw PII
+  while the audit row records a redaction that never reached the wire. That is
+  now a deny carrying `pep_capability_unsupported`, with an audit row naming the
+  obligation, on `/api/v1/mcp/check-input`, `/api/v1/mcp/check-output` and the
+  `/api/v1/mcp-server` governance tools (`check_policy`, `check_output`).
+  - **The refusal is raised BEFORE the masked content is written onto the
+    response.** Handing it over and then reporting a refusal would leak exactly
+    what the refusal exists to withhold, and every other assertion in the suite
+    would still have been green; the runtime e2e asserts the withholding as its
+    own leg for that reason.
+  - **The gate is asked only where a redaction actually happened.** A caller
+    declaring no redaction capability keeps using this plane freely for the
+    traffic that needs none, which is nearly all of it. A gate that fired on
+    every request would have denied six plugins' entire traffic for a capability
+    those requests never needed. Both directions are pinned, so the scoping
+    cannot swallow the enforcement.
+  - **No second vocabulary, no second table, no second choke point.** The
+    question is asked about `field_redact@1` - the same type and schema version
+    `mapObligations` stamps on the decide plane's projection - and that equality
+    is pinned by a test that drives the real projection rather than a copied
+    literal. A client that handshakes correctly against `/decide` is correct here
+    for free. The enforcement loop is the decide plane's own
+    `firstUnsupportedMandatory`, reused.
+- **The customer portal's Docker health window now covers the migration set on a
+  slow host** (#3761). The portal cannot report healthy until the agent has applied
+  every migration - its owner bootstrap calls `ensure_org_owner_assignment()`, added
+  by `core/149-150` - and the agent serves `/health` BEFORE its migrations finish, so
+  `depends_on: axonflow-agent: service_healthy` is not a signal that they are done.
+  `start_period` was 30s in `docker-compose.enterprise.yml` and 20s in
+  `docker-compose.test.yml`, both calibrated on a machine the stack owns; on a host
+  running several stacks at once the 201-migration set was measured at 100-145s and
+  the portal was declared unhealthy at ~60s, failing the whole stack with
+  `dependency axonflow-customer-portal failed to start`. Both are now 180s. Operators
+  running compose on a loaded or small host stop seeing that failure; nothing else
+  changes, because `start_period` only suppresses failures while starting and never
+  delays a container that is already healthy.
+  - The guard is filed here rather than under Community even though
+    `tests/regression-test-required/portal_health_window_covers_migrations_test.sh`
+    DOES reach the community mirror: it asserts a floor on a window declared only
+    in `docker-compose.enterprise.yml` and `docker-compose.test.yml`, both of which
+    the sync strips, so in the mirror it has nothing to police and passes
+    vacuously. The behaviour being claimed is Enterprise; only the test travels.
+- **The decision-proof wire mirror: the portal copy now has the
+  fixture-independent field guard its sibling had** (#3723, split out of #3707).
+  `wireCertificate` in the customer portal and `wireCert` in `dpcustodyctl` are
+  MIRRORS that nothing forces to agree, and the class already bit this lane
+  once: #3614 added `KeyCertificate.TrustClass` to the certificate's signed
+  bytes and to the portal's copy and missed the other one, every unit test
+  passed because they all exercise the portal's copy, and the failure appeared
+  only with both processes on a network - HTTP 400 `certificate_malformed` for
+  a certificate a real KMS had just signed. The portal side was protected only
+  by an anonymous anti-vacuity loop inside another test, and nothing pinned
+  that loop.
+  - `TestTheWireFormCarriesEveryCertificateField` now exists on both sides,
+    walking `proof.KeyCertificate` by reflection, so a field added to the
+    certificate is covered on the day it lands.
+  - `TestEveryCertificateFieldIsPopulated` gives the portal's fixture a named
+    test of its own with a derived floor, so a field REMOVED from
+    `KeyCertificate` - which silently shrinks every sweep in that file, and a
+    shrinking sweep looks exactly like a passing one - fails rather than
+    quietly reducing coverage.
+  - The mapping pins the PAIRING - which wire field carries which JSON member -
+    stated ONCE in
+    `ee/platform/proofcustody/testdata/certificate_wire_contract.json` and read
+    by both mirrors, because a hostile review proved matching by Go FIELD NAME
+    is not the contract: renaming `subject_public_key_b64` to
+    `subject_pubkey_b64` on one mirror left the whole suite green while
+    reproducing #3614 byte for byte on the wire. The rename exception list both
+    guards used to carry is gone with it - it had two further holes, an entry
+    whose rename was later undone silently exempting a real field forever, and
+    an entry able to map a missing field onto an existing wire field and pass.
+    A field added to or removed from `KeyCertificate` now fails both mirrors,
+    including a remove-plus-add swap that leaves the field COUNT unchanged.
+  - Pairing rather than presence, because a second review round proved presence
+    is blind to a SWAP: permuting `json:"not_before"` and `json:"not_after"` on
+    one mirror leaves the tag set, the certificate field set and every count
+    identical, so a tag-presence check passed while each value travelled in the
+    other's member - #3614 one step sideways. The round trip cannot see it
+    either, since it encodes and decodes through the same type and a symmetric
+    permutation is invisible by construction.
+
+- **The amended proof-binding contract: a decision proof now binds its
+  evaluation contract, not only its decision** (#3614, gate 19 / #3555, lane
+  #3703). `proof.Binding` gains four MANDATORY, SIGNED fields - the proof
+  **profile** (`<name>@v<major>`), the issuer **trust class**, an evaluation
+  **completeness** tri-state, and the composed **requirement-set digest** -
+  taking it from 36 to 40 bound fields. Each has a named reader in
+  `Verifier.Verify` and its own failure reason, because a signed field no
+  verifier compares is the defect this program keeps finding (#3627 was an
+  issuer epoch carried end to end and read by nothing).
+  **The threat is a correctly signed Community proof accepted where an
+  Enterprise one is required.** Empty Enterprise fields do not stop it - the
+  attacker gains exactly by the fields being absent-but-tolerated - so the
+  fields are mandatory and the trust class is read from the CERTIFICATE the
+  certification root signed (`KeyCertificate.TrustClass`, encoding version
+  `v2` -> `v3`), never from the proof's own claim. A proof asserting its own
+  edition is a self-asserted claim, which is the defect class #3629 closed on
+  the readiness report. `Verify` refuses an untrusted certified class before
+  the signature (it reads nothing the proof said) and a claim that disagrees
+  with the certified class after it; `KeyManager.SignProof` stamps the class
+  from the certificate over whatever the caller set.
+  **Issuance now refuses to sign a decision whose facts failed to resolve**, at
+  `Signer.Sign` and at `KeyManager.SignProof`, with a typed `IssuanceError`, a
+  reason code and a counter - and the VERIFIER refuses one independently,
+  because a foreign or buggy signer runs neither of our issuance paths. The
+  distinction between "resolved to empty" and "failed to resolve" is not
+  invented here: it is derived from the PDP's existing `contract.AttrState`
+  tri-state through an ENUMERATED table, so a reason added upstream is
+  classified deliberately rather than arriving as a silent refusal nobody
+  reviewed.
+  **The control plane refuses to publish a certificate certified for an edition
+  it does not register**, which replaces the security review's structural
+  argument ("no Community issuer can exist today") with a check that keeps
+  working after ADR-066 Decision 7 ships one. `AXONFLOW_DECISION_PROOF_ISSUER_TRUST_CLASSES`
+  is optional and defaults to `enterprise-certified` - the only class this
+  chain can produce, since every certificate reaching the endpoint has already
+  been verified against an Enterprise certification root. The check is applied
+  again when a key set is ASSEMBLED, so narrowing the registered set changes
+  what the fleet is served and not only what may be submitted. An unrecognised
+  value fails closed; an unset one does not.
+  Also: `PermittedAlgorithms`, `PermittedRootAlgorithms` and
+  `PermittedKeyPurposes` are no longer exported `var` maps - an exported map is
+  a set any importer can widen at init time, so "closed set" was a comment
+  rather than a property; read them through `AlgorithmPermitted`,
+  `RootAlgorithmPermitted` and `KeyPurposePermitted`. New counters
+  `axonflow_decision_proof_{verification,issuance}_refusals_total{component,reason}`
+  and `axonflow_decision_proof_org_refusals_total`, pre-created at zero so a
+  healthy PEP is distinguishable from an unregistered metric, and reusing the
+  identity plane's shared organization-label cap rather than a second one.
+  40 mutants applied via `go test -overlay`, 40 killed - four SURVIVED at some
+  point and every one was a real gap, two of them found by R3; two were INVALID
+  EXPERIMENTS in opposite directions (a build error reading as a kill, and an
+  unreachable `default` arm reading as a survivor) and both are recorded.
+  `runtime-e2e/3614_proof_binding_contract/` proves all of it on a booted stack
+  against a live KMS. Upgrade path for the `v2` -> `v3` certificate encoding,
+  including why there is deliberately NO compatibility window, is in
+  `technical-docs/runbooks/RUNBOOK_DECISION_PROOF_KEY_ROTATION.md` §5.2.
+- **`ee/platform/proofcustody` now runs in CI** (partial #3699). The enterprise
+  test arm selects packages by NAME and nobody had added it, so the tests
+  pinning #3628's resolved-key-id comparison had never executed. This wires that
+  one package; the eight others the same census found, and the by-name selection
+  that caused it, remain #3699.
+- **A mandatory obligation the advertising enforcement point cannot discharge
+  DENIES** (#3704, ADR-065 invariant 8, epic #3552, parent #3564). The
+  enforcement half of the PEP capability handshake, and the only half that is
+  Enterprise: an enforcement point that presented a declaration not covering an
+  obligation the decision carries is answered `verdict: deny` with a reason a
+  PEP can branch on, reached BEFORE the content is held. Three capability gaps
+  are kept apart rather than pooled, because they are different operator
+  problems: the enforcement point declared it discharges nothing (not
+  configured), it discharges other types (out of date), or it discharges this
+  type at other versions only (a rolling deploy half-way through). A Community
+  deployment records the declaration and emits the obligation exactly as it does
+  today, so the enforcement point still fails closed at its own seam - what the
+  Enterprise build adds is a deny the platform can see, audit and count.
+  The gateway adapters can present a handshake, opt-in behind
+  `AXONFLOW_PEP_AUDIENCE`. **Read `Config.PEPAudience` before setting it: on an
+  Enterprise deployment the transition it gates is ALLOW -> DENY**, because the
+  headers-only seam's honest declaration is an empty capability set and today
+  that seam's redaction obligation is suppressed under the organization's `log`
+  default rather than blocked. An organization already on `block` sees no
+  change, and on a Community deployment nothing changes at all - the deny is
+  absent from that build.
+- **The licence signing SEED is now decoded the same way by every binary that
+  reads it** (#3710). There were two copies of the loader in separate Go
+  modules, and they had drifted: `platform/agent/license/keygen.go` trimmed
+  surrounding whitespace and accepted all four common base64 dialects, while
+  `ee/platform/agent/license/keygen.go` read the variable bare and used
+  `base64.StdEncoding.DecodeString` alone. The same seed, pasted the same way,
+  was accepted by one shipped binary and rejected by the other with `illegal
+  base64 data at input byte 40` - the exact error the tolerant path was written
+  to prevent, whose comment records that operators kept hitting it.
+  **The strict copy is the one the agent image gets.** Both files are
+  `//go:build enterprise`, so the platform copy is excluded from every
+  community build; and `platform/agent/Dockerfile` overlays
+  `ee/platform/agent/license/*` onto `platform/agent/license/` for
+  `EDITION=enterprise`, so in the enterprise agent image the `ee` file
+  *replaces* it. The strict loader was therefore the one behind the
+  license-server Lambda, the in-agent Stripe billing issuer and the agent's
+  own licence bootstrap. **The tolerant copy did ship, in exactly one place:**
+  `ee/platform/customer-portal` imports `axonflow/platform/agent/license`,
+  its Dockerfile builds `-tags enterprise` and carries NO licence overlay, so
+  the portal's admin issuance linked the tolerant loader while the agent's
+  linked the strict one - two admin issuance surfaces, two answers to the same
+  pasted seed. (An earlier draft of this entry said the fix "shipped nowhere";
+  that was wrong, and the portal is the counter-example it named in its own
+  next sentence.)
+  Both now call one `secretenv.GetBase64Seed`. The `ee` copy could not simply
+  import the platform package: that overlay would make the import a
+  self-import and fail the enterprise image build, which is why the shared
+  decoder lives in a third package instead. `ee/platform/license-server`
+  gains a `replace axonflow/platform => ../../../platform` and one indirect
+  requirement; its Lambda binary grows 2,469 bytes (13,313,827 → 13,316,296).
+  `scripts/key-rotation` - the operator tool that reads the outgoing seed from
+  `AXONFLOW_ENT_OLD_SEED`, `--use-seed` and `--use-dev-seed`, all three
+  shell-interpolated by the rotation runbook - is routed through the same
+  helper. It was the third strict reader and no CI job builds its module, so
+  it now carries the same 28-spelling table; 24 of the 28 spellings were
+  rejected before the change. Importing `platform` raises that module's `go`
+  directive 1.22 → 1.25.0 and, by minimal version selection over
+  `platform/go.mod`, eleven AWS SDK requirements to the versions the platform
+  already pins. Nothing else in the repository builds that module.
+  **The seed is the scope, and the entry title says so on purpose.** The
+  sibling reader in the same file, `getPluginClaimPublicKey`
+  (`AXONFLOW_PLUGIN_CLAIMED_PUBLIC_KEY`), is still `os.Getenv` +
+  `base64.StdEncoding` in both copies - identical on both sides, so not a
+  divergence, and filed as #3727 rather than ridden in here because it changes
+  what a verifier accepts. `NewCredentialEncryptorFromKey`
+  (`CONNECTOR_ENCRYPTION_KEY`) is strict too and refuses to boot rather than
+  falling back, tracked separately.
+  No wire change, no migration, no new environment variable.
+  The guard is a 28-spelling table - four dialects crossed with seven
+  whitespace shapes - run through the *exported* generators in **both**
+  modules, because the divergence survived precisely by having a
+  dialect-tolerance test in only one of them. Its fixture is chosen so the
+  standard encoding contains `+` and `/`; the pre-existing test seeded itself
+  from `ed25519.GenerateKey`, and for about a quarter of random seeds the
+  standard and URL-safe encodings are the same string, so two of its four legs
+  asserted nothing on those runs.
+
+
+- **The operator digest gains five dimensions** (#3660): `ByEdition`,
+  `ByPlatformDeploymentMode`, `ByEnvironmentClass`, `ByComponent` and
+  `ByAdapter`, rendered identically into Slack and email from ONE function so
+  the two channels cannot tell an operator different things.
+  - **`(not reported)` is a separate bucket from `unknown`, and pooling them
+    would destroy the signal.** Absence means the emitter does not send the
+    field - a pre-10.4.0 build, or a client whose `/health` probe failed;
+    `unknown` means a value ARRIVED and the server did not recognise it, which
+    is a lagging or misconfigured emitter and something to go and look at. One
+    shrinks on its own as the fleet upgrades, the other does not, and during
+    the relay rollout the absence bucket IS the rollout's own adoption curve.
+  - **`ByEnvironmentClass` and `ByComponent` count PLATFORM rows only.**
+    `component` is rejected at ingest on any other class and no client emits
+    `environment_class`, so an absent value on a client row is a category error
+    rather than a missing datum - bucketing those rows would put a meaningless
+    majority at the top of both tables and make them read as broken.
+  - **`ByAdapter` shows only the pings that declared one**, with the
+    denominator beside it. A `(none)` bucket would be the overwhelming
+    majority and would say nothing; the signal is how many DID declare, out of
+    how many could have. A ping declaring two adapters counts ONCE in the
+    denominator and once in each named row.
+  - **The gateway adapters get their own row.** They emitted nothing at all
+    before this train, so `component=gateway-adapters` is the first time that
+    integration surface is visible rather than invisible or pooled into the
+    agent.
+  - The censoring caveat rides with the two identity tables and says precisely
+    what it censors: the PLATFORM contribution inherits legacy rule 8's
+    filtering, so a platform-emitted `edition=community` means "a PAID
+    deployment running a community build", never a count of community
+    deployments - this corpus structurally cannot see those. Client-relayed
+    rows are uncensored, and the wording says so rather than leaving a reader
+    to conclude the whole table is paid-only.
+  - **`Instances` remains non-additive** in every new table, for the reason
+    already documented on the tier tables: an instance is counted once per
+    bucket it reported in the window.
+  - **No classifier change.** `grep -n "Edition\|PlatformDeploymentMode"` over
+    `telemetry-filter/classify.go` and `classify.py` returns nothing: neither
+    dimension is consulted by any rule, so internal-vs-external classification
+    is unchanged and the Go/Python parity pair did not move.
+
+- **The checkpoint wire contract accepts and normalises the two new platform
+  dimensions** (#3660). `edition` and `platform_deployment_mode` join
+  `PingRequest` and the stored row, both `omitempty`, so a ping from a
+  pre-10.4.0 emitter serialises byte-identically to before. Three emitter
+  classes may carry them - `platform` (about itself) and `sdk` / `plugin`
+  (relayed from the platform's `/health`); `synthetic` may not, because the
+  bridge aggregates activity out of server-side records and never observes a
+  build, so a synthetic row claiming an edition is a writer bug rather than a
+  datum.
+  - **An unrecognised VALUE buckets as `unknown` and is never rejected.** A
+    coarse adoption enum must not be able to fail a customer's otherwise-valid
+    ping (the #2033 rule). The class rules above are a different thing and do
+    still return 400.
+  - **The vocabularies live once and are pinned in both directions.** The
+    platform-deployment-mode allowlist is held equal to
+    `platform/shared/deploymode` - the set the system actually enforces, since
+    the agent refuses to boot on a value it does not recognise - through a chain
+    of two enforced tests, because the checkpoint Lambda is a separate Go module
+    and cannot import the platform tree. The published tables in
+    `docs/TELEMETRY_CONTRACT.md` are pinned to the same source.
+  - `gateway-adapters` is added to the component allowlist, so the standalone
+    adapter binary's ping will be accepted rather than answered with a 400 the
+    emitter is contractually required to swallow - the failure mode of which is
+    a binary that silently never appears in any analytics.
+  - **`features` is now bounded at ingest**: at most 32 entries of at most 128
+    bytes each. Documenting verbatim storage as a property is what made the
+    absent bound this contract's problem - before 10.4.0 the only limit was the
+    64 KiB request body, which permits thousands of short entries on one row.
+    The excess is DROPPED, not refused: an oversized array is far more likely
+    to be a buggy client than a hostile one, and refusing it would discard an
+    otherwise-good adoption datum over a field nothing gates on.
+  - An unrecognised value is logged once, byte-capped and with control
+    characters neutralised. A newline in a log field does not merely look
+    untidy: it terminates the record and lets the value forge the next line.
+- **The identity-compat canary mints its community-SaaS tenant ONCE and reuses
+  it** (#3655). It registered a throwaway tenant on every run, inheriting the
+  base canary's fresh-tenant design - which is right for THAT canary, whose
+  purpose includes exercising the registration path, and wrong for this one,
+  whose purpose is comparison volume for the ADR-065 identity window.
+  **The probe defeated itself, and the platform was working correctly.**
+  `POST /api/v1/register` caps registrations at 5 per hour per IP
+  (`registrationIPLimit`), the hourly base canary shares the NAT address, and
+  the identity probe's default schedule is twelve runs an hour. Observed live on
+  2026-09-02, the first day of the v10.3.0 canary: from the sixth registration
+  each hour every run failed at `step=register` with a 429 and mailed a
+  `[CANARY FAILURE]` - about seven an hour, indefinitely - while producing **no
+  comparisons at all** for the window it exists to feed. It also meant the
+  schedule could not be tightened past the limiter whatever the window needed,
+  because frequency and registration were the same number.
+  The minted pair is now stored in a Secrets Manager secret the template creates
+  and the probe writes, and a registration happens only when there is nothing
+  stored or the stored credential has **expired**, read from the `expires_at`
+  the register response returns. Every registration is a reported event carrying
+  WHY, because a probe that re-registers silently is the old design with extra
+  steps - it would drift back to one registration per run with nothing in the
+  report saying so.
+  **A 401 IS NEVER READ AS AN EXPIRY**, and the first version of this change got
+  that wrong: it re-minted on a refusal, justified by "the throwaway tenant
+  self-expires". Measured in `platform/`, that premise is false three ways - the
+  registration TTL is **one year** (`community_saas_register.go:93`); the
+  three-month inactivity sweep cannot reach a tenant this probe authenticates
+  every run (`enqueueActivityUpdate`, `auth.go:387`) and is off unless
+  `COMMUNITY_SAAS_SWEEP_ENABLED=true` (`community_saas_sweep.go:138`), which
+  nothing under `infrastructure/` sets; and **every** validation error including
+  "database query failed" is mapped to 401 by `auth.go:369-385`. So within the
+  ADR-065 window a 401 on a credential that worked before is a database outage or
+  an `app_role` misconfiguration - and registering answers it by spending the
+  very limiter this change protects, then reporting the wrong cause. The probe
+  now fails that case naming the platform.
+  A Secrets Manager error is **not** answered by minting a fresh tenant, which
+  would be the old behaviour reappearing the moment the API had a bad afternoon
+  while looking exactly like the design working. A storage failure does not fail
+  the run - the run has a working credential - but is reported, because it means
+  the next run registers again. And an UNHANDLED exception now publishes to the
+  alert topic before re-raising: it used to escape with no alert in either
+  template, so the observable symptom of a Secrets Manager fault was the
+  comparison window quietly stopping - which is the failure this canary exists to
+  make visible, happening to the canary.
+  The canary's embedded Python now has tests: they extract the source from the
+  shipped template and exec it with stubbed AWS and HTTP, so they exercise what
+  deploys rather than a copy. Nothing had ever run that program except
+  production, which is why an operator's inbox found this.
+- **The synthetic-monitoring stack is split in two, because the template had
+  589 bytes of headroom left** (#3655 prerequisite, lasting fix tracked as
+  #3694). `aws cloudformation` caps `--template-body` at 51,200 bytes and the
+  deploy workflow uses that form at both `validate-template` and
+  `create-change-set`; `synthetic-monitoring.yaml` had reached **50,611 bytes,
+  98.8% full**, of which the ADR-065 identity-compat canary was 33 KB. Any
+  correct change to that probe broke the deploy, whatever the change was - the
+  credential-reuse fix needed ~6.5 KB of code with every comment stripped. The
+  two canaries are independent in everything but the alert channel: different
+  schedules, different IAM, different purposes, different failure meanings.
+  **No behaviour changes.** Twelve of the fourteen resources move byte-identical;
+  the two that differ do so only where an in-stack `!Ref AlertTopic` and
+  `!GetAtt AlertTopicKMSKey.Arn` become parameters, which is what a second stack
+  requires. The base stack now exports `AlertTopicKMSKeyArn` alongside the topic,
+  because publishing to a KMS-encrypted topic needs `kms:GenerateDataKey` on the
+  key - a role granted `sns:Publish` alone would fail at the one moment its
+  alert path is exercised. The identity-compat stack deploys after the base one
+  and reads both ARNs from its outputs rather than from an input, so they cannot
+  be mistyped or drift from the stack that owns them. Templates are now 23 KB
+  and 33 KB, with 28 KB and 18 KB of headroom.
+  A new regression test keeps the pair honest: both templates under the limit,
+  every template parameter either passed by the deploy workflow or carrying a
+  Default (a parameter added to one and not the other is invisible at review -
+  the template is right, the workflow is right, only the pair is wrong), and no
+  logical id defined in both templates.
+- **ADR-065 gate 17 has its first measurement, and it found a superlinear boot
+  cost** (#3555). The gate - latency and memory budgets for the decision plane -
+  had been a recorded GAP since the 2026-08-31 sign-off run: zero benchmarks, no
+  published budgets. `platform/decision/pdp/gate17_bench_test.go` now measures
+  the three paths separately, because folding them into one figure lets a
+  boot-time regression hide inside a request budget: **evaluation**
+  (`Engine.Decide`, paid per request), **activation** (`NewRuntime`, paid once
+  per bundle root at boot) and **compilation** (`Compile`, paid per policy
+  save).
+  **Activation is superlinear**: 10 policies 5.3 ms, 100 policies 238 ms, 500
+  policies **12.3 seconds allocating 894 MB** - five times the policies for
+  fifty times the time, per bundle root, on every restart. Evaluation is
+  comparatively cheap and roughly linear (500 policies: p50 12.4 ms, p99
+  34.5 ms), and compilation is 2 ms of that 12.3 s, so the cost is OPA's strict
+  preparation rather than anything AxonFlow generates.
+  `technical-docs/architecture-decisions/ADR-065-gate17-budgets.md` publishes the
+  figures with the machine, the concurrency, the input shape, the sample count
+  and the variance beside each one, and marks every ceiling as **measured** or
+  **chosen** with its multiple and the reason - a ceiling calibrated from
+  today's measurement cannot fail and cannot be argued with later. It
+  deliberately sets **no ceiling** above the 500-policy activation figure rather
+  than ratifying it.
+  Two controls run in the ordinary test tier, because a benchmark can be wrong
+  by measuring the instrument and wrong by not reaching its subject, and the
+  second reports a beautifully stable number: a timer-floor benchmark (~45 ns,
+  three orders below every published figure) and a test requiring 200 policies
+  to cost measurably more than 25.
+
+- **ADR-065 gate 7 now has executable deletion and invalidation coverage**
+  (#3689). Every existing directory-graph case closed over ONE snapshot, so the
+  two behaviours that only appear on the second ingest had no test, and both
+  fail in the direction that grants access: a group deleted from the directory
+  still resolving into a closure, and `GraphClosureResolver.SetGraph` not
+  actually replacing the snapshot it supersedes. Deactivation was covered
+  (AXC-253) and is a different thing - a deactivated entity is still in the
+  export. Three cases (AXC-257/258/259) cover a full re-export without the
+  group, a PARTIAL re-export that deletes the entity and leaves its membership
+  row behind (the shape a provider deleting entities and memberships in two API
+  calls produces), a revoked membership asserted in BOTH failure directions -
+  the ancestor reachable only through that edge must go, the one another edge
+  still reaches must stay - and the resolver's replace / outage-refusal /
+  recover-on-the-current-snapshot sequence with `SourceVersion` asserted at
+  every step, including the half no test reached: a successful re-ingest ends an
+  outage on its own, per realm, without `ClearUnavailable` - and without that
+  leg, dropping the marker-clearing line from `SetGraph` left a realm reporting
+  UNREACHABLE for ever, with re-ingest, the operator's remedy, the exact action
+  that did not work. AXC-257 carries the deleted group all the way into a real
+  `pdp.Engine` holding a group-scoped permission and asserts on the DECISION,
+  because "the closure no longer contains the group" and "no decision is
+  reachable through it" are only the same claim if the conversion between them
+  is right.
+
+- **ADR-065 gate 10's concurrency assertions now run under the race detector,
+  in a named CI job** (#3689). `platform/shared/requirements` holds every
+  stateful requirement in the ADR - approval authority, quota reservation,
+  decision-proof single use - and its tests race up to 96 goroutines against a
+  shared store; until now none of them ran under `-race` anywhere, because the
+  three race lanes covered `platform/orchestrator`, `shared/planeshadow` +
+  `shared/policy` and the decision module. New `Race Detection: Requirements
+  Concurrency` job derives its package list with `go list -tags enterprise
+  ./shared/requirements/...` rather than naming seven paths, and floors what the
+  run COVERED - the per-package verdict lines - at seven, so a package that
+  moves out of the tree fails the job instead of shortening it. The
+  `-tags enterprise` is load-bearing: untagged, `go list` returns five of the
+  seven. Also a new oversubscription case at a capacity SEVERAL holders share,
+  `TestConcurrentHoldersNeverOversubscribe`, whose contention is constructed
+  rather than hoped for - a rate source called from inside `Reserve` parks every
+  racer until all 96 have arrived, and the case asserts that observation before
+  anything it makes meaningful. Against a check-then-charge mutant the existing
+  capacity-of-one case is INTERMITTENT and the new one NEAR-DETERMINISTIC, over
+  three independent measurements under `-race`: the old case detected it 7 times
+  in 100 runs, 5 in 37 and 4 in 30; the new one 20 in 20, 10 in 10 and 29 in 30.
+  Roughly 97% against roughly 13%. Which is the point - a race that a test
+  detects sometimes is a race CI reports as flaky and someone reruns.
+- **Per-organization `enforce` is granted only against a measured shadow
+  window** (#3633). The transition is refused unless the organization is
+  already in `shadow` - checked inside the write's own transaction under a row
+  lock, because a read-then-write is defeated by two admins racing, one lowering
+  to `off` while the other reads `shadow` and is granted enforce - with a
+  non-zero **organic** comparison denominator, zero unexplained divergences, and
+  an enforce-reason allow-list set. Synthetic traffic is excluded from the
+  denominator: a canary exists to give the window a denominator, so letting it
+  satisfy the gate would unlock enforcement for traffic nobody has served. Each
+  refusal carries a distinct audited reason, because "never measured",
+  "still diverging" and "we could not ask" need three different remedies. The
+  observed preconditions are answered by the agent over the existing
+  internal-service channel rather than evaluated in the customer-portal: the
+  portal is a separate process whose registry does not hold those counters, so a
+  local read would compile, return zero for every organization and refuse
+  enforcement for ever.
+
+- **The decision axis gains its third rollback width: one plane, for one
+  organization** (#3552 gap 3, enterprise migration `153`).
+  `decision_shadow_planes` on `identity_org_settings` narrows which enforcement
+  planes an organization dual-evaluates, written through the same admin API and
+  read from the same row as its decision-shadow mode - one query, one instant,
+  two facts. ADR-065 promised three widths on this axis; v10.3.0 shipped the
+  process flag and the deployment-wide plane list, and until now an
+  organization whose ONE noisy plane needed silencing had only two remedies:
+  drop that organization out of shadow entirely, losing the other eleven
+  planes' coverage for it, or narrow `AXONFLOW_DECISION_SHADOW_PLANES`
+  deployment-wide, losing that plane for every other organization. Gate 18 is
+  stated PER PLANE, so both discard exactly the measurements v11 is waiting
+  for. **The record can only ever NARROW**, which is the one place this axis's
+  composition rule differs from the mode's: the resolved set is the
+  intersection of the deployment's list and the organization's, because a
+  deployment withdraws a plane for reasons that belong to the deployment - a
+  worker pool that cannot afford its compilations, comparisons known-bad on
+  this build - and a per-tenant row that re-enabled it would let one tenant's
+  settings spend the deployment's money. It costs nothing in the common case,
+  where the deployment list is unset and the intersection is the
+  organization's list exactly. **The writer validates with the reader's own
+  parser** (`planeshadow.ParsePlanes`), so a value the API accepts is one the
+  agent and the orchestrator can act on; the value is stored canonically
+  (sorted, lower-cased) so two spellings of one posture cannot sit in the
+  column as two values; a stored value this build cannot parse falls back to
+  the deployment's list and is counted
+  (`axonflow_decision_shadow_org_planes_failures_total`) rather than closing
+  the organization's window, because a closed window is invisible in the
+  evidence while an operator reads the empty series as agreement. A separate
+  counter from the mode's, deliberately: the two failures move a window in
+  opposite directions. On a database without migration `153` the API answers
+  409 and names the migration rather than 200 without storing the narrowing.
+- **The portal's schema probes read `pg_catalog`, not `information_schema`**
+  (#3463's rule, applied where it had been missed). `information_schema` is
+  privilege-filtered - it shows a column only if the role holds some privilege
+  on the relation - so a probe there answers "absent" for a column the role
+  merely cannot see. On this handler that turned into a 409 naming a migration
+  that IS applied, sending an operator to re-apply a migration in order to fix
+  a grant.
+- **The identity-settings upsert is built from the columns the database has,
+  rather than written out per schema version.** The portal does not
+  self-migrate, so it runs against databases at three different migrations;
+  each optional column doubled the number of near-identical hand-written
+  statements, and the failure mode of that shape is one of them quietly missing
+  a clause on the path that runs least often. The placeholders are numbered as
+  the arguments are appended, which removes the hand-ordered `$7`/`$8` the
+  previous statements carried.
+- **The ADR-065 requirements cleanup now runs**: both durable stores shipped in
+  v10.3.0 with a correct, tested `Reap` and **no caller at all** (#3625).
+  Enumerating every `.Reap(` in the tree returned tests and the conformance
+  harness and nothing else - no ticker, no cron, no boot-time goroutine, no
+  operator command. The consequences were different and both silent: lapsed
+  reservation holds never transitioned to `expired`, so their capacity was
+  never refunded to `reservation_counters` and an organization's budget stayed
+  pinned at its high-water mark **for ever**, denying every subsequent
+  admission for capacity nobody was using; and consumed proof nonces were never
+  deleted from a table whose insert is on the execution path. One owner now
+  runs both every five minutes on the admin pool, behind a session-scoped
+  advisory lock on a pinned connection so several replicas do not contend on
+  the `FOR UPDATE` the reservation reaper takes. **It gates on
+  `DEPLOYMENT_MODE`, not on the build tag**: the two tables are created by
+  `enterprise/148` and `/149`, which `community-saas` does not apply, and the
+  live community-SaaS stack runs the enterprise image in exactly that mode - so
+  a loop gated on the database pools alone would have started there and failed
+  against absent tables every five minutes for ever. It declines deliberately,
+  naming the mode. Both reap statements are bounded per call for the same reason
+  the retention sweep is: `FOR UPDATE` over an unbounded lapsed set takes the
+  largest lock at the worst moment, and an unbounded `DELETE` on a table whose
+  insert is on the execution path can time out having deleted nothing. Each
+  stage runs even when an earlier one failed - they clean independent tables, and letting one failure
+  skip the other would make the second invisible. What it did is both logged
+  and counted: `axonflow_requirements_reaped_total{kind}`,
+  `axonflow_requirements_reap_failures_total{stage}`, and a
+  `..._last_run_timestamp_seconds` gauge, because a counter alone cannot tell a
+  loop that ran and found nothing from one that stopped running - which is
+  exactly the state this fixes.
+- **`reservations` has a retention horizon**: settled rows older than 90 days
+  are removed (#3625). It takes a row per admission attempt on the decision
+  path, and `reapSQL` transitions lapsed holds to `expired` without deleting
+  anything, so `committed`, `released` and `expired` rows were never touched by
+  anything and the table only grew. The sweep is a **separate statement**, not a
+  widened `reapSQL`: that one is idempotent precisely because it matches only
+  `reserved`, and its own comment explains that widening it is how "running the
+  reaper twice creates capacity" becomes reachable. It refuses to touch an
+  outstanding hold for the same reason - that capacity is still charged - and
+  it is bounded per call, because an unbounded delete over a year of rows holds
+  locks on a table the request path writes to and can time out having deleted
+  nothing. `enterprise/152` records the horizon and the outstanding-hold
+  exemption beside the table itself, and adds the partial index the sweep's
+  predicate needs (`ON reservations (settled_at) WHERE settled_at IS NOT NULL`)
+  - without it the sweep sequentially scans the highest-cardinality table in
+  this schema every five minutes; built non-concurrently, which is safe because
+  the table ships dark, so it is empty or near it wherever this migration lands, so a reader inspecting the schema does not
+  have to know the answer lives in Go - and a test holds the comment and the
+  constant together, because a horizon recorded beside the table is only worth
+  having while it agrees with the code that deletes.
+- **A reaper pool that cannot see the rows is now refused at construction**
+  (#3624). Both reapers run one unqualified statement with no org predicate and
+  no GUC set, and all three tables carry `FORCE ROW LEVEL SECURITY` - so on a
+  pool that does not bypass row security the isolation predicate is `NULL` for
+  every row, the statement matches **nothing**, and `Reap` returns `(0, nil)`.
+  No error, no log, no metric: a misrouted DSN produced a permanently wedged
+  budget that looked healthy, and the requirement lived only in a prose comment.
+  Both constructors now assert the connected role's **privilege** rather than
+  its name - `rolbypassrls` OR `rolsuper`, because `ALTER ROLE x SUPERUSER`
+  bypasses every policy while leaving `rolbypassrls` false - so a misrouted pool
+  is a boot failure with a named cause instead of a runtime no-op.
+- **`enterprise/151` completes the FORCE-RLS grant backfill for the tables
+  `migrations/core` may not name** (#3636): the six whose `FORCE ROW LEVEL
+  SECURITY` is itself written by an Enterprise migration. Same evidence, same
+  reasoning and the same deliberate no-op rollback as its Community half
+  (`core/170`, above); the two are one change split along the mirror boundary,
+  by what FORCES each table rather than by what creates it. Naming a table whose
+  FORCE is Enterprise-only in a mirrored file would leak the Enterprise schema
+  into the community tree for no corresponding benefit, and a grant for a table
+  the community mirror DOES force has to live in `core/170` or it cannot be seen
+  where it is needed.
+- **`enterprise/146`'s rollback no longer reports that it is discarding nothing**
+  (#3635). The down migration counted the organizations it was about to drop
+  while the table was under FORCE ROW LEVEL SECURITY with no org GUC set, so the
+  isolation predicate was NULL for every row and both counts returned **zero
+  regardless of the truth** - telling an operator "0 org(s) had a recorded
+  compat mode" while dropping a table holding many, in the same transaction, so
+  nothing was left to re-count. `enterprise/150`'s down block had diagnosed this
+  precisely, named 146 by number as the cause, and fixed it only for itself.
+  Three further down migrations in the same class are fixed with it
+  (`enterprise/142`, `144`, `145`), where the defect is worse: the count gates a
+  `RAISE EXCEPTION` that refuses to narrow a CHECK constraint while violating
+  rows exist, so a zero silently disarmed the refusal. Where row security cannot
+  be disabled, the counts are now reported as UNAVAILABLE rather than invented,
+  and the constraint-narrowing rollbacks REFUSE rather than proceed.
+
+- **The per-client version counter now says what kind of deployment it is
+  measuring** (#3619, v10.4.0 lane 2). `axonflow_client_version_requests_total`
+  gains `deployment_mode` and `licensed`, so an operator reading "which client
+  versions is this fleet on" can also see which mode the fleet runs as and
+  whether it is licensed. Both are PROCESS properties resolved server-side,
+  never read from a request: a label a caller could move would let one client
+  rewrite the population every other series is read against.
+  - `deployment_mode` resolves through `platform/shared/deploymode`, the single
+    reader of the variable in the tree, so this counter cannot disagree with the
+    migration selector about what a mode is called. Aliases fold
+    (`enterprise` reports as `in-vpc-enterprise`), an unrecognised value reports
+    `unknown` rather than reaching a label verbatim, and an UNSET variable
+    reports `unset` - deliberately not `community`, because the schema default
+    for unset is not a statement about what the operator configured.
+  - `licensed` is read PER REQUEST, not latched. #3619 proposed resolving both
+    labels once at registration on the grounds that both are constant per
+    process. The reason that is unsafe for the licence is precise, and worth
+    stating precisely: the counter is registered at package-var init, LONG
+    before the licence is validated, so a latched value would have pinned
+    `licensed="false"` onto every licensed deployment for the life of the
+    process. It is NOT because a licence lapses at runtime - this platform
+    validates at startup only and expiry is restart-triggered, so there is no
+    re-validation path that would move the label mid-process. The cost of
+    reading it per request is one atomic load on a path that already does a
+    policy evaluation.
+  - **Read the population before reading the numbers.** This counter exists only
+    on Enterprise builds - the community twin registers no series at all - so
+    `deployment_mode` here can never observe a Community BUILD, and the metric
+    structurally cannot answer "how many Community installs exist". It answers
+    "which modes do our Enterprise-build deployments run as", which is genuinely
+    multi-valued because the Community-SaaS fleet runs the enterprise binary.
+    The capability entry says this outright rather than leaving a reader to
+    infer a denominator the series does not have.
+  - **The cardinality cap is re-derived, not scaled by eye.** #3619 estimated
+    the new labels would multiply the space by up to 6x. Measured against what
+    the labels can take in ONE process, the multiplier is 2x: `deployment_mode`
+    contributes exactly one value (a process cannot change its own environment;
+    6 is what the FLEET can take, and this cap is per-process), and `licensed`
+    is the only genuine multiplier because it can flip mid-life. The cap moves
+    512 -> 1024 and the derivation is written where the constant is. The
+    series-cap key now spans every label - keying on a subset would let the cap
+    admit a triple once and then silently mint a second real series for it when
+    `licensed` flipped.
+  - `axonflow_client_version_dropped_total` stays `{reason}`-only. It counts
+    values that never became a series; labelling it by the same population would
+    invite dividing one by the other as if they shared a denominator.
+  - **Orchestrator parity: there is nothing to keep in parity.** The counter
+    lives only in `platform/agent` and is recorded on the decide and MCP
+    check-output planes, both of which are agent routes; the orchestrator has no
+    copy and gains none here.
+- **The agentgateway PEP adapters stop being invisible** (#3660, #2886). Before
+  this, `grep -lE 'prometheus|client_version|X-Axonflow-Client'` over
+  `ee/platform/agent/gateway_adapters/` returned NOTHING: the whole
+  integration surface - three gRPC seams fronting a customer's LLM and MCP
+  traffic - emitted no ping, no metric and no client header, so a fleet running
+  it looked identical to one that had never deployed it. Three signals, each
+  answering a different question:
+  - **A platform-class startup heartbeat** with `component=gateway-adapters`,
+    through the ONE shared emitter the agent and orchestrator use rather than a
+    third copy of the stamp file, the rate limit and the opt-out gate. It
+    reports `edition=enterprise` as a property of the ARTIFACT, not from the
+    build tag: this image is built without `-tags enterprise` (there is no
+    community variant of it), so the build-tag constant reads `community`
+    inside it - true of the compilation and false of the artifact.
+  - **`X-Axonflow-Client: gateway-adapters/<version>`** on every engine
+    round-trip, set in the one function that builds every request the PEP
+    client makes, so the decide call and both fulfillment calls carry it. An
+    unbaked build sends the bare id, which the agent counts in its explicit
+    `unversioned` bucket - the deployment shape most likely to be
+    misconfigured is now the one that still reports, instead of the one that
+    reports nothing.
+  - **`axonflow_gateway_adapter_decisions_total{surface, outcome}`** - which
+    seam did the work and what it decided. **`deny` and `error` are separate
+    on purpose**: `deny` is a policy refusal, `error` means no verdict was
+    obtained at all, so a fail-closed block during a PDP outage is never
+    counted as a policy tightening on the graph an operator pages from.
+  - The counting CLASSIFIES each seam's answer, rather than incrementing at
+    each `return`. There are more than a dozen return paths across the three
+    seams; a counter per branch is a guard at the callers, the shape that
+    silently stops covering whichever branch somebody adds next. ext_proc
+    classifies ONCE PER MESSAGE at a single site in its stream loop: four
+    groups of arms in that loop build a response inline and reach no phase
+    handler, so every block they produce - an unsupported body mode, an
+    undelivered request body, a protocol revision the adapter cannot govern -
+    used to increment nothing, and an operator watching this metric saw a flat
+    healthy graph while the adapter refused every request on a misconfigured
+    leg. A pass-through continue on trailers stays uncounted; it is not a
+    decision, and counting it would inflate `allow` with protocol bookkeeping.
+  - **A body too large to scan counts as `error` on ALL THREE seams.**
+    ext_authz previously counted it as `deny`, disagreeing with ext_proc and
+    with ext_mcp (which says so in its own vocabulary, `RESOURCE_EXHAUSTED`)
+    about the identical condition. It carries no verdict from the engine - the
+    adapter refused to look - and raising `AXONFLOW_MAX_BODY_BYTES`, not
+    editing a policy, is what resolves it. **If you alert on this metric, a
+    413 that used to appear on your `deny` line now appears on `error`.** The
+    three seams read one shared classifier so they cannot drift apart again.
+  - **No request content in any label.** Both label values are compile-time
+    constants, so there is no code path by which a path, method, host, model,
+    tool name, tenant or decision id could reach Prometheus - and the metric's
+    declared label set is pinned by a test, so adding such a label fails.
+  - New opt-in `GATEWAY_ADAPTERS_METRICS_LISTEN` serves `/metrics` on a
+    SEPARATE address. Unset (the default) starts no listener, keeping the
+    single-listener shape the binary has always had; the gRPC port carries
+    governed traffic and must not also answer unauthenticated HTTP.
+  - **The ping carries `org_id`, and without it the adoption numbers were
+    wrong in the flattering direction.** The shared emitter falls back to the
+    `ORG_ID` environment variable; this binary's whole configuration surface is
+    `AXONFLOW_`-prefixed and reads `AXONFLOW_ORG_ID`, so the two never met and
+    the adapter's ping went out with no org at all. The receiver reads a
+    missing org as "not one of ours", so every AxonFlow-operated deployment of
+    this component classified as EXTERNAL customer adoption - silently, with no
+    error and nothing in a log. The org is now passed explicitly.
+  - **Fixed while wiring it:** the adapter's Dockerfile declared
+    `AXONFLOW_VERSION` only for the image LABEL and never baked it into the
+    binary, so `version.Resolve()` answered `""` inside it. The receiver
+    REJECTS a platform-class ping with no `platform_version`, and the emitter
+    contract is to swallow a non-2xx - the adapter's ping would have been
+    dropped with HTTP 400, silently, forever. The `-X` ldflag now matches the
+    agent and orchestrator Dockerfiles, fed by the build-arg `build.yml`
+    already passes to this image.
+
+
+- **A metering service built without a database crashed the process instead of
+  reporting it** (found while diagnosing an unrelated CI red; row on #3709).
+  `MeteringService.Start` spawns a DETACHED goroutine and returns nil, and that
+  goroutine's first act is to meter usage - which queried through `s.db`
+  unchecked. A service constructed with a nil handle therefore did not fail: it
+  SIGSEGV'd inside `database/sql`, from a stack naming none of the code that
+  asked for it, taking the whole process with it. In a test binary that means an
+  unrelated package dies; in production it means the agent exits because
+  metering could not reach its database, which is not a fatal condition.
+  **It presented as a flake, and only half of it was intermittent.** The nil
+  handle was deterministic - `TestMeteringServiceStartupWithoutDatabase` passes
+  one on purpose - while whether the leaked goroutine reached the dereference
+  before the test binary exited depended on how long the AWS SDK spent failing
+  its IMDS credential lookup first. Observed as one pass and one failure of the
+  same workflow at the SAME commit. All five paths that touch the store now go
+  through one checked accessor returning `ErrNoDatabase`, so the already-handled
+  error path runs instead of the crash, and the test that triggered it cancels
+  its goroutine rather than leaving it to race the rest of the package. One
+  accessor rather than five nil checks on purpose: a guard repeated per call
+  site stops covering whichever site is added next, and this package grew from
+  three store paths to five without the first three being revisited.
+
+### CI / Testing (this repository only)
+
+- **A path-filtered workflow that executes nothing can no longer report only
+  green** (#3649). At the v10.3.0 release head the community twin reported
+  `success` with every job `skipped`, indistinguishable on the checks list from
+  a run of the suite. Every workflow whose rollup accepts skipped needs
+  (`test.yml`, `test-community.yml`, `lint.yml`, `java-examples-compile.yml`,
+  `sdk-smoke-tests.yml`) gains a non-required `Tests executed census` job that
+  counts the jobs beside the change detector that executed, writes the table to
+  the step summary, and goes RED with "nothing failed and nothing was tested"
+  when the count is zero - red rather than neutral because a skipped or neutral
+  conclusion satisfies a required check exactly as success does. The required
+  summaries are untouched, so a docs-only change stays mergeable; the red is the
+  first-class "this run is not evidence" outcome a citer sees. Pinned by
+  `tests/regression-test-required/zero_executed_jobs_are_visible_test.sh`, which
+  self-tests in both directions and requires the census to need at least what
+  its rollup needs. The census is exempt from mirror replay (it reads the
+  `needs` context of its own run) with the reason recorded in the twin-parity
+  guard.
+- **`gate17-latency-budgets.yml`: the one lane where an exceeded ADR-065 gate 17
+  latency budget is red** (#3555). Absolute milliseconds are a property of the
+  machine, and a shared runner's p99 admits a noisy neighbour as a regression, so
+  the latency rows fail only here - alone on a hosted runner, on dispatch, weekly,
+  and on a PR that touches the instrument or the budgets - via
+  `AXONFLOW_GATE17_ENFORCE_LATENCY=1`. Not a required context by design; a red is
+  a finding for #3555's gate ledger. `test.yml`'s Real-PG lane gains a named
+  `ADR-065 gate 17: graph-axis budgets` step that runs each graph gate by name
+  and requires its PASS line, and the decision lane's gate 17 step now runs the
+  budget tests the same way. The new workflow is excluded from the community
+  sync because its identity half runs enterprise-tagged tests the mirror strips.
+- **`Unit Tests: Connectors` starts `fsouza/fake-gcs-server` (1.52.2, `-scheme
+  http`) and requires the GCS connector's emulator round-trip to PASS** (#3645).
+  A `services:` container cannot take the flag and the emulator defaults to a
+  self-signed HTTPS listener, so it is started in a step with a readiness probe;
+  the test skips with its reason when the endpoint is unset, and the lane fails
+  if it skipped, because the lane exists to execute it.
+- **`runtime-e2e/3603_authzen_evaluation` gains leg 16: the served route and
+  header are the ones the contract declares** (#3603 follow-up). The leg reads
+  `route.path`, `route.method` and `profile_header` from the surface artifact
+  the contract publishes and puts them on the wire against the running agent
+  (positive: the negotiated profile context comes back), then alters the header
+  name by one character and requires the bare boolean (negative: the NAME is
+  what the handler reads). Floor 18 -> 20; the suite ledger and the
+  production-posture registry rows say so. Executed by the production-posture
+  runner (`ci:e2e`); 20/20 on a posture stack booted from this tree.
+- **The two CI installs that wrote a binary to a path all eight runner slots
+  share are now per job, and a guard keeps them that way** (follow-on to the
+  Trivy pin in #3741). The self-hosted fleet runs eight runner slots on one
+  host, so they share `/home/runner` and `/usr`; an installer aimed at a fixed
+  absolute path there writes ONE file for all eight, and two jobs installing at
+  once leave the loser exec'ing a partially written binary. It surfaces as
+  `exit 126`, "cannot execute", on one slot only, while the same step passes on
+  another slot in the same minute with the same pin, so nothing in the log
+  points at the cause.
+  - `lint.yml` installed golangci-lint with `-b $(go env GOPATH)/bin`. The
+    slots' `.env` sets `GOCACHE` and `GOMODCACHE` per slot but not `GOPATH`, so
+    that resolved to `/home/runner/go/bin`: measured on the host as a single
+    41 MB binary, rewritten by whichever slot linted last. Now
+    `-b "$RUNNER_TEMP/bin"` with the directory added to `$GITHUB_PATH`, plus a
+    `--version` check so a bad install fails at the install step rather than
+    inside five parallel lint subshells.
+  - `regression-test-required.yml` installed swagger-cli with
+    `npm install -g`, and `npm config get prefix` on that host is `/usr`, so it
+    wrote the host-global `/usr/lib/node_modules`. Now
+    `npm install --prefix "$RUNNER_TEMP/swagger-cli"`, which is how the spectral
+    install six lines below it already worked.
+  - Both fixes use `$RUNNER_TEMP` because the runner guarantees it is private
+    per job on hosted and self-hosted runners alike, so it needs no second
+    isolation scheme kept in sync with the slot count.
+  - `no_shared_install_path_from_fleet_jobs_test.sh` pins the class for fleet
+    jobs only, since these commands are correct on `ubuntu-latest` where the
+    machine is discarded. It also covers `go install pkg@ver` and
+    `pip install --user`, which were absent today but write the same two
+    directories. The guard runs its fixtures BEFORE the tree, because the
+    fleet migration is still an open PR and this branch has zero self-hosted
+    jobs: an "at least N fleet jobs" floor would fail on a tree with nothing
+    to check, so the fixtures carry the anti-vacuity argument instead and
+    contain the two real lines this change removes. Verified against the real
+    pre-fix fleet tree: 130 fleet jobs censused, exactly those two flagged,
+    none after the fix, with the denominator unchanged so a silent census
+    failure cannot read as a pass.
+  - Not fixed here, and stated so it is not mistaken for covered: the Trivy
+    scans hit the identical race at
+    `/home/runner/.local/bin/trivy-bin/trivy`, but the action exposes
+    `cache-dir` and no input for its binary path, so isolating the cache would
+    leave the thing that actually raced in place. Those five jobs are pinned to
+    `ubuntu-latest` in #3741 instead.
+- **Every runtime-e2e script port is now decided rather than excluded, and the
+  containment guard learned the three forms that were invisible to it** (#3765,
+  follow-on to #3764). #3764 gave every suite a static host-port block and
+  deleted `pick_port`; it could only enforce that on declarations it could trace
+  to a bind, so 112 declarations across 29 suites were printed as undecidable
+  and left alone. That bucket was not ambiguity, it was blindness, and two live
+  collisions were sitting in it.
+  - What the guard could not see, each now a check with a positive and a
+    negative control: a bind through a compose document the script GENERATES at
+    run time (2330 writes `ports: !override ["127.0.0.1:${PG_PORT}:5432"]` into
+    a heredoc, so there is no committed file to read); a `docker run --publish`
+    whose HOST side is a variable rather than a literal IP, which is 2552's real
+    bind and which the old pattern read straight past; and a NATIVE process,
+    where the suite runs a built binary on the runner and dials it back on
+    loopback, occupying a fleet port while `docker ps` shows nothing.
+  - The two collisions that hid there, both native-process binds:
+    `migration_version_collision` and `v9_phase8_b1_rls` both bound 18290, and
+    `3550_trust_realm_persistence` and `3604_durable_stores` both bound 18296.
+    Containment is per-suite against a registry, so two suites sharing a port
+    outside BOTH their blocks broke no rule anyone was checking. That is merge-
+    queue drain 9's class, alive on the tree that fixed drain 9.
+  - The native-process rule is deliberately TWO-SIDED - the suite must both
+    declare the port and dial that same port on loopback. A loopback dial alone
+    would report `ORCHESTRATOR_URL=http://localhost:18291`, where nothing
+    listens and no port is held; the negative control pins that.
+  - A fifth check starts from the NUMBER instead of a declaration: anything in
+    the registry's managed range, in any file under a suite, must lie in that
+    suite's block. The declaration forms are not a closed set - `v9_identity_wire`
+    binds its sink from a Go literal inside a shell heredoc, which no port-shaped
+    pattern will ever match - and this also keeps a suite's README and probes
+    honest after a renumbering, the class that left six workflow files naming
+    ports that no longer existed.
+  - Where static reading genuinely cannot settle it, a `# host-port:` /
+    `# container-port:` annotation records the answer and the guard ENFORCES it:
+    a wrong `host-port` claim fails the moment the number leaves the block, and
+    an unannotated declaration keeps printing as undecidable, so the bucket can
+    only empty through proof or through a claim someone signed. 2886 needs this
+    because its ports reach their listeners through `sed` substitution into an
+    agentgateway config template.
+  - Ports moved into their blocks: 2886 (14, the whole suite, replacing a
+    comment that claimed its numbers were "high enough to dodge a parallel
+    session"), 2552, 2711, 3003, 3458, 3619 and `v9_identity_wire`. One of these
+    was a latent flake independent of any collision: 3619 sat on 58000/58099,
+    inside the kernel's ephemeral range 32768-60999, so an ordinary outbound
+    connection could already hold either.
+  - 2508's `AGENT_PORT`/`ORCH_PORT` were deleted rather than renumbered: they
+    were assigned and read by nothing, the URLs having been hardcoded to 8080
+    and 8081 the whole time, and its README documented a `POSTGRES_PORT` that
+    never existed in the test.
+- **runtime-e2e host ports are now statically allocated from a registry, and
+  `pick_port` is deleted** (#3764). Eight runner slots share one Docker daemon on
+  the self-hosted CI fleet, so a host port is a global resource; suites chose
+  their own numbers and 170 pairs of them could bind the same port. A
+  merge-queue build was ejected by `Bind for 0.0.0.0:15432 failed: port is
+  already allocated` after one suite's probe took the port and another, which
+  bound it statically, lost it 60 seconds later.
+  - Every suite owns a 16-port block in `runtime-e2e/lib/host-ports.tsv`, which
+    carries the rule, the role offsets, and why the range sits BELOW the
+    kernel's ephemeral range (32768-60999 on the fleet host) - a clean window at
+    37000 was rejected for that reason.
+  - `pick_port` is gone: 15 copy-pasted definitions, 81 call sites. It probed
+    without binding, so compose bound the port minutes later against a stale
+    answer, and it walked 100 ports, making a suite a range rather than a claim.
+    That was 150 of the 170 colliding pairs by itself.
+  - A regression guard asserts containment against the registry across six
+    declaration forms. Three were invisible to earlier versions of the guard
+    while it reported green - an IP prefix before a `${VAR:-n}` default, a
+    `docker run -p` publish, and two suites that declare ports only that way.
+  - 66 free-standing script numbers are deliberately not covered: reading them
+    cannot prove they are host rather than container or DSN ports. The guard
+    prints all 66 on every run; they are tracked on #3765.
+- **`runtime-e2e/3713_connector_entitlement` gains arms D and E: a forged and
+  an expired licence on a booted community-posture stack** (#3709 row 1). Arm D
+  boots the shipped agent with a real keygen-minted Enterprise licence whose
+  signature is replaced by `NOTASIG!`; arm E with a real Evaluation licence
+  re-signed by the real Evaluation seed with `expires_at` in 2020, after
+  `keygen -validate` is asserted to refuse each for the right reason (the
+  signature; `LICENSE_EXPIRED`). Both govern two of six connectors through the
+  MCP tool surface, log the refusal naming its reason, and count it on
+  `/prometheus`. `connector-entitlement-e2e.yml` lists the seam's files in its
+  `paths:` filter.
+- **Two runtime-e2e failures that reached `main` as bare exit codes now fail
+  by name, and the class behind one of them is swept from the tree** (#3756).
+  `runtime-e2e/3065_fail_open_org_binding` died with `exit=5` in fixture
+  setup: `curl … | jq` on a planner body that was not JSON (plan generation
+  landing on a ~30 s deadline behind a proxy), promoted by `set -euo pipefail`
+  before the named guard on the next line could run, so the posture lane read
+  "12 passed / 1 failed" for an entry that had exercised none of its eight RLS
+  sites. Every read in that suite now goes through capture -> assert it
+  parses -> extract, and fails with the HTTP status and the first 200 bytes of
+  the body. `cross-system-hitl/probes/tier-gate` asserted a Prometheus series
+  with `printf '%s' "$EVAL_METRICS" | grep -q`, which under pipefail reports
+  FAILURE for a present series whenever the match sits early in more text
+  than a pipe buffer holds - the diagnostic on the next line printed the very
+  series the assertion had called absent. The same shape stood at 351
+  pipelines on 335 lines in 118 files under `runtime-e2e/` and `scripts/e2e/`
+  (the production-posture runner's own boot-log scan among them); every one
+  now reads from a herestring, `set -o pipefail` is untouched everywhere, and
+  `tests/regression-test-required/no_grep_q_under_pipefail_test.sh` pins the
+  class tree-wide, anchored on a byte-identical pre-fix copy of the probe it
+  must flag. `runtime_e2e_3756_diagnosability_test.sh` runs both suites,
+  unmodified, against a stub that gets one response wrong per case. The ~30 s
+  planner-vs-caller deadline race that produced the non-JSON body is the
+  platform half and stays open on #3756.
+- **`Smoke Test Summary` (sdk-smoke-tests.yml) accepts a skipped need only for
+  the cause its exemption was written for, and the posture-registry admission
+  audit no longer reads `tmp.sh` out of a directory name** (#3755, #3758).
+  - What now reds on a pull request: the rollup goes red when
+    `E2E Production-Posture` or `SDK Smoke Tests` was skipped by a cost gate
+    (the `ci:e2e` label gate, the draft cheap tier, or any gate added later),
+    and its log says a need was skipped and nothing was tested, rather than
+    "tests failed". On `main` before this, `result != 'skipped'` accepted every
+    skip, so an unlabelled or draft PR reported green over two needs that never
+    ran (#3755 comment 5546914097).
+  - What is still accepted, keyed on the CAUSE of the skip rather than the
+    result: the posture lane skipped on a community-mirror checkout
+    (`github.repository != 'getaxonflow/axonflow-enterprise'`, the predicate the
+    job's own gate uses because `hashFiles()` is not allowed in a job-level
+    `if:`) or for Dependabot (no repo secrets, so no minted licence); the SDK
+    smoke lane skipped because `detect-changes` found no SDK-relevant paths. A
+    `labeled` event for any label other than `ci:e2e` skips the summary JOB with
+    the gated jobs instead of reporting red over a head another run tested.
+    Red, not `skipped`, for a cost-gate decline because a skipped check
+    satisfies a required status check exactly as success does.
+  - Shelf life: the unlabelled-PR and draft halves expire when #3741 removes
+    this workflow's `pull_request` trigger; the structural keying survives and
+    is the only accepted skip in `merge_group`, nightly dispatch, tags and
+    manual dispatch. `Smoke Test Summary` remains not required (it cannot be,
+    either side of #3741).
+  - The flake behind it: `scripts/e2e/run-production-posture-suite.sh`
+    extracted script names with one pattern, `[A-Za-z0-9_./-]+\.sh`, whose
+    leftmost-longest match on a token that CONTAINS `.sh` without ending in it
+    is the prefix through that `.sh`. `mktemp -d` names its directory
+    `tmp.XXXXXXXXXX`, one draw in 3,844 begins with `sh`, and the audit then
+    refused an honest ambient registry as naming a script `/tmp/tmp.sh` that
+    does not exist: 3 red assertions in
+    `posture_registry_admission_audit_test.sh` on #3752's merge-queue entry.
+    Measured 6 refusals in 20,000 fresh draws before, 0 in 20,000 after. One
+    `script_paths_in` helper (whole path tokens, keep those ending in `.sh`)
+    now serves both extractor sites; Scenario 2 pins the `tmp.sh` directory
+    shape deterministically (22 -> 23 assertions).
+  - `regression-test-required.yml` gains `workflow_dispatch:` so the suite runs
+    on the real runner image against a ref; the presence job skips as a job on
+    a dispatch rather than concluding `success` over steps that all skipped.
+- **The live orchestrator response is checked against the published document,
+  not only the Go type** (#3724). `runtime-e2e/3321_computed_risk_score` now
+  asserts that every member the RUNNING orchestrator puts on the wire in
+  `policy_info`, and in each `applied_policies_detail` entry, is declared in
+  `docs/api/orchestrator-api.yaml`. The reflective guard added alongside it
+  speaks for the Go TYPE; a member added to the JSON by anything else - a
+  middleware, a hand-built map, a wrapper that merges in extra keys - would
+  reach a spec-generated client undeclared and be invisible to it.
+  - It reads Leg 1's SQLi response rather than Leg 4's isolation control,
+    because the control is the request built to match NOTHING and its
+    `applied_policies_detail` is empty. The first version read the control and
+    the suite was RED; that was found by running the stack, not by reading the
+    diff.
+  - The floor is derived from the three members this suite's own earlier
+    assertions already proved are on the wire, rather than from a chosen count,
+    and the property extractor is floored on both sides so a parse that read
+    nothing fails instead of holding vacuously.
+  - `scripts/e2e/runtime_e2e_suites.tsv` records the new claim: the ledger row
+    is what a reader consults to learn what a suite proves, so a claim the suite
+    makes and the row omits is a claim nobody can find.
+
+
+- **`/health`'s SDK compatibility block is now asserted on a live stack, on both
+  ports** (#3712). `runtime-e2e/3618_health_capability_projection` already boots
+  both planes and compares both `/health` ports for the capability list; it now
+  also asserts, two assertions per arm, that the agent's `sdk_compatibility` is
+  present with both of its maps non-empty and that the two ports serve it
+  identically. The well-formedness check runs first and that ordering is the
+  point: two empty objects compare equal, so an absent block on both ports would
+  satisfy the equality assertion while proving nothing. The VALUES are pinned in
+  `platform/shared/sdkcompat`'s own test and against both published OpenAPI
+  specs; what only a live stack can say is that the two SHIPPED BINARIES agree,
+  which is a fact about two processes built from two Dockerfiles. Arm floor 8 ->
+  10, derived from the arm's structure. `platform/shared/sdkcompat/**` joins the
+  workflow's `paths:` filter, which its own comment says names every file whose
+  change could alter the verdict.
+- **No reusable shape held a Prometheus label to a declared value domain; the
+  test whose NAME claims that property is blind by construction** (#3720, child
+  of #3709). A
+  label whose value comes from caller-supplied data mints one time series per
+  distinct value and eventually takes down the scrape. Every metric in the
+  caller-exposed families already CLAIMED to be bounded, in prose, at its
+  declaration - "a CLOSED, low-cardinality enum by construction", "all labels
+  are bounded", "BOUNDED to a low-cardinality set by boundedBlockPolicy" - and
+  nothing held them to it. `platform/gateway-adapters`'s
+  `TestNoLabelCarriesRequestContent` - the test whose NAME claims the property -
+  compares a sorted list of expected label NAMES against the actual ones: it
+  reads `GetName()` and never `GetValue()`, and its own doc states the premise
+  it cannot verify ("there is no path by which a request can introduce a
+  tenth"). That test is blind to the class by construction.
+  **It would be false to say nothing checked it, and R3 measured that.**
+  Substituting a request header for the constant at that metric's call site IS
+  killed - by sibling tests in the same file, which collect the vec and key on
+  the emitted `(surface, outcome)` TUPLE. The handshake family in
+  `platform/agent` is checked differently and the difference is the point: three
+  tests there drive the real resolver and assert its answer is a declared member,
+  one of them BIDIRECTIONALLY - but NONE of the three collects the vec, so
+  writing the raw capability type into the `family` label passes all three. What
+  did not exist is a SHAPE: one that forces every label of every guarded metric
+  to have a declared, auditable domain so a new label is a decision rather than
+  a diff; reads the value AS EMITTED rather than re-deriving it in the test; and
+  can express the four different ways this tree bounds a label, so it does not
+  report correct code as defective.
+  New `platform/shared/metricdomain` states what a label may take and checks it,
+  in the four idioms this tree actually uses: a closed enum, a validity-collapse
+  onto a named constant, an admission set with an overflow bucket, and a shape
+  allowlist plus a per-process series cap. It collects the metric's own children
+  rather than gathering the global registry (a `CounterVec` keeps every child
+  for the process lifetime, so a registry sweep reads what earlier tests left
+  behind), and every judgement is set membership keyed by label NAME - a
+  Prometheus exposition sorts label pairs alphabetically, so a positional or
+  joined-string assertion would pass on the machine it was written on.
+  Applied to the decision, AuthZEN, handshake and client-version families in
+  two halves that fail for different reasons. The CENSUS derives every metric
+  and every label from the SOURCE of four guarded files, so a new metric or a
+  new label position fails until somebody states what bounds it - the case a
+  test comparing two hand-written lists stays green for, because adding the
+  label to both lists is exactly the step that needed a decision. The
+  BEHAVIOURAL half drives the REAL write sites - `handleDecide` over httptest
+  with an injected client header, a newline, a 4 KiB header and an out-of-domain
+  stage; `resolvePEPHandshake` with hand-rolled handshake headers; and
+  `recordClientVersionTelemetry` with eleven hostile values - and requires every
+  emitted value to land in its declared domain. Label vocabularies are read from
+  the packages that own them (`contract.AllOperationalStates`,
+  `AllAuthZENErrorCodes`, `AllObligationTypes`, `allPEPHandshakeOutcomes`,
+  `allCapabilityRefusalStatuses`, `allOverAdvertisedFamilies`), never copied.
+  **The plant is performed on the real metric object**, not a lookalike: writing
+  the raw `X-Axonflow-Client` header into `decideRequests`'s `origin` position -
+  which is what deleting `classifyDecisionOrigin` from the call site would do -
+  fails the new check and names each escaping value, while the label NAMES stay
+  `origin,stage,verdict`, so the list-vs-list shape is shown to miss it on the
+  same series.
+  Two anti-vacuity floors earned their place during the work. `Check` refuses a
+  zero-series collector, and it caught a first version of the handshake driver
+  that reached no write site at all - `SplitOverAdvertised` drops a capability
+  only when the edition is Community AND the family is enterprise-only, and a
+  type whose family cannot be resolved is KEPT, so undeclared types alone
+  produce nothing. An ARM floor was then added on top, because one series
+  satisfies a series floor while the arms the test exists for go unreached. Also
+  recorded: `contract.PEPHandshake.Encode` REFUSES an undeclared obligation
+  type, so the hostile inputs are assembled as raw base64 the way a caller would
+  - a probe rejected by our own encoder never reaches the code under test.
+  The client-version pair is declared in an `//go:build enterprise` file along
+  with its bounding constants, and one further metric is declared untagged while
+  one of its label constants is enterprise-tagged; the untagged domains mirror
+  those values and an enterprise-tagged test fails if either side moves.
+  **R3 found the plant did not cover its own headline mutation.**
+  `classifyDecisionOrigin` is called TWICE - once up front, once after
+  `caller_identity.gateway_id` is parsed - and every driver sent a well-formed
+  body, so only the second was covered; replacing the FIRST with the raw header
+  was green across the whole package. Both pre-refresh arms (a refused PEP
+  handshake; a body that does not decode) are now driven and the mutant dies on
+  both. Round 2 then found the driven/census-only split was itself a
+  list-vs-list check - moving a metric to the wrong set passed - so membership
+  is now MEASURED by running every driver and requiring a driven metric to hold
+  series and a census-only one to hold none. Two census fail-opens are closed: a
+  vec built by a helper in an unguarded file (the census now derives the WRITE
+  SITES, so every vec written in a guarded file must be one it declared), and
+  `ConstLabels` the extraction could not read, which now report instead of
+  returning an empty list.
+- **The CHANGELOG edition heading is now derived from the community sync rather
+  than assigned by hand** (#3716). `[Unreleased]` entries are grouped under
+  `### Community` and `### Enterprise`, and this file's own header says what
+  that claims: Community changes also ship in the community mirror, Enterprise
+  changes are EE-only. That has a mechanical answer - does the path survive
+  `.github/workflows/sync-community-repo.yml`? - and nobody can apply it from
+  memory, because the rule is an ordered rsync include/exclude chain plus a
+  build-constraint strip. Three misfilings landed in one night, two of them by
+  people who had just read the sync workflow. `scripts/ci/lint-changelog-edition.sh`
+  builds a probe tree of the paths a PR changed and replays the sync's OWN rule
+  chain over it through `scripts/ci/simulate-community-mirror.sh`, which reads
+  the chain out of the workflow; the guard holds no copy of the exclusion list,
+  so the `scripts/` re-includes can change under it. A range touching only
+  mirrored paths needs `### Community`, only stripped paths needs
+  `### Enterprise`, and both needs both headings OR one heading whose entry
+  text names a changed path from the other side verbatim - the exception in the
+  artifact rather than in the author's head. Duplicate `###` headings inside a
+  `##` section fail too. The issue named three in `[Unreleased]`; the guard found
+  a fourth in `## [7.0.0]` that nobody had noticed, and while this branch waited
+  for review main grew a fifth - a second `### Community` in `[Unreleased]` -
+  which is the point: a duplicate arrives whenever two lanes file into the same
+  block, so a one-off tidy-up would have been undone within the week. All five
+  are merged here as pure moves: of the 237 deleted lines, 232 are lines whose
+  exact text is also on the added side and 5 are the merged heading lines - no
+  dash rewrites and nothing else gone. That whole-file accounting is not
+  sufficient on its own and the merge proved it: an earlier revision of this
+  branch satisfied every line of it while silently re-filing 74 lines of
+  another lane's `ee/`-only entries from `### Enterprise` to `### Community`,
+  because a line that changes which heading it sits under is lost by nobody and
+  gained by nobody. The property is per-heading and is now checked that way -
+  and the guard catches it too, since a line whose heading changed is a new
+  edition claim rather than a move. Runs as a fourth guard in
+  `contract-guards.yml`, which is excluded from the mirror for the same reason
+  the guard is: it reads a file the mirror does not have.
+
+- **`ee/platform/proofcustody` ran in no CI job at all** (found while closing
+  #3628). The enterprise arm of `test.yml` selects packages BY NAME
+  (`./platform/orchestrator/... ./platform/agent/...`), so a package added to
+  the `ee` module after those names were written is invisible to it for ever -
+  and the KMS-root suite, including the tests that pin "the certification root's
+  id must BE a key, never a re-pointable alias", was a set of files that never
+  executed. Now wired in. Eight further root-module packages
+  (`ee/platform/code-governance` and the seven `ee/platform/connectors/*`) are
+  still run by no job; that is filed as **#3699** — which names the selection
+  mechanism, a hand-written package list, rather than the eight packages —
+  rather than swept in here, because their suites resolve live DNS during unit
+  tests and could not be verified before this PR was opened.
+
+
+- **`runtime-e2e/2886_agentgateway_pep_adapters` now runs, and can no longer
+  pass while proving less than it claims** (#2886, #3071, follow-up to #3668).
+  The suite has existed since #2886 with a ledger row reading `unwired`:
+  nothing executed it, so the `Runtime E2E required` gate counted a change to
+  it as ZERO touched suites. It is the #3071 shape exactly - a suite asserting
+  a contract while no run checks the assertion - and it is why a fix to this
+  suite could not travel with #3668 at all. Suite, executor and ledger row
+  land together here so the thing is gated as one.
+  - **A dedicated self-booting workflow**, not a registry entry. This suite
+    needs a stack it can RESTART (the fail-closed leg stops and starts the
+    agent), a per-org policy posture it sets itself (the C3-block leg), and an
+    ENTERPRISE build for the client-header leg - none of which a shared,
+    already-booted stack can offer.
+  - **The LLM key is a hard requirement of the job, not an optional skip.**
+    Section B is four assertions and the only ones that drive a real
+    completion through ext_proc; without a key the suite passed having proven
+    less, so the job now fails at the fetch step instead. `SKIP_FAILCLOSED` is
+    likewise NOT set: that leg is the only proof a PDP outage blocks rather
+    than bypasses, and a runner this job owns is the one place it can run
+    unattended.
+  - **An assertion floor, built up as each leg is ENTERED.** The suite counted
+    only pass/fail and exited on `fail`, so a run where a whole leg silently
+    did not execute exited 0 - and three legs can do that without failing
+    anything (A4/A5 behind a session-id guard, B behind the LLM key, D behind
+    `SKIP_FAILCLOSED`). A single fixed total would be wrong in every
+    configuration but one, because the LLM and fail-closed legs are
+    legitimately optional; raising the floor where the leg is entered is the
+    only version that holds both ways. 25 under the workflow's configuration.
+  - **The client-header leg stops inferring the build from the ABSENCE of
+    samples.** It was wrong that way twice, the second time in the fix for the
+    first: a `CounterVec` with no children exports no samples AND no
+    `HELP`/`TYPE` lines, so "no lines" is byte-identical for "enterprise, and
+    it has never seen one" and "never measured" - switching which metric is
+    consulted moved the inference without making it observable. It now reads
+    `/health .edition`, a POSITIVE statement the agent makes about itself, and
+    treats an absent `edition` member as a failure rather than as licence to
+    skip. It also drives one governed round-trip immediately before scraping,
+    so a missing series can only mean the header did not arrive.
+  - **Label-gated on the PR tier** (`ci:e2e`, #3679), like every other
+    stack-booting suite: this one boots a stack AND spends real LLM tokens, so
+    running it on every push of every matching PR is exactly the cost the label
+    gate exists to stop. The nightly dispatcher picks it up automatically - it
+    selects by the gate marker rather than from a list, so nothing needed
+    registering.
+  - The linter's `unwired` ratchet drops 136 -> 135 so the count cannot drift
+    back up.
+
+
+
+- **`runtime-e2e/2860_client_version_telemetry` had no executor and nothing ran
+  it** (found while wiring #3619). Its ledger row read `unwired` since #2860, so
+  the `Runtime E2E required for user-facing changes` gate - which since #3071
+  resolves touched suites against `scripts/e2e/runtime_e2e_suites.tsv` rather
+  than grepping filenames - counted a change to it as ZERO touched suites. That
+  is the #3071 failure mode exactly: a suite asserting a contract while no run
+  checks the assertion. New `Client Version Telemetry E2E` workflow boots a
+  licensed enterprise stack from the branch's own source and runs it; the suite
+  gains the repo's anti-vacuity assertion floor, so a leg that stops running
+  fails the run instead of passing quietly. The `unwired` ratchet ceiling drops
+  137 -> 136.
+
+- **Seven nested Go modules under `ee/platform/` had no CI runner at all**
+  (found while wiring #3660). `go test ./...` from `ee/` does not descend into a
+  module with its own `go.mod`, so ~45 test files in `checkpoint-service`,
+  `telemetry-filter` (its Go half), `community-saas-bridge`,
+  `weekly-rollup-aggregator`, `ipapi-client`, `scarf-client` and `load-testing`
+  had never run on a pull request. This is the same gap
+  `unit-tests-standalone-modules` closed on the platform side in #3574; nothing
+  had closed it here. It was not theoretical: `checkpoint-service` holds a drift
+  test whose entire job is to fail when the classifier's copy of a constant
+  drifts from the wire schema - a guard against silently misclassifying every
+  platform ping - and no workflow ran it. New job `Unit Tests: ee Nested
+  Modules`, wired into the required Test Summary. Service-free, so it runs on
+  fork and Dependabot PRs too.
+
+### Migration
+
+**Five migrations, all additive, and the edition split is not v10.2.0's: a Community deployment applies one of them.**
+
+| Migration | Lane | What it does | Lock / scan |
+|---|---|---|---|
+| `core/170` | **core - every deployment, Community included** | Makes the application grants on every FORCE-RLS table it can name explicit, as defence in depth. | `GRANT` only; no table scan, no data mutation |
+| `enterprise/151` | enterprise | The same grant backfill for the tables that exist only in an Enterprise deployment. | as above |
+| `enterprise/152` | enterprise | Gives `reservations` a retention horizon so settled rows older than 90 days are collectable and the table has a bound. | no rewrite |
+| `enterprise/153` | enterprise | Adds the per-plane column behind narrowing the decision shadow to some planes for one organization. | `ADD COLUMN`, nullable, no backfill |
+| `enterprise/154` | enterprise | Adds the per-organization typed-authoring flag. | `ADD COLUMN`, nullable, no backfill |
+
+None rewrites a table, none backfills row by row, and none takes a lock long enough to matter on a relation carrying rows. **Rolling the binaries before applying any of them keeps 10.3.0 behaviour**, so the two halves of an upgrade can be separated.
 
 ## [10.3.0] - 2026-09-01 (every enforcement plane dual-evaluates the new policy decision point, recorded only; an AuthZEN-native evaluation route on the agent; the ADR-065 shadow window gets a denominator; trust realms, reservations, proof execution and decision-proof key custody get durable stores)
 
@@ -8763,6 +11750,14 @@ consumption of the new override, explain, and audit-search endpoints.
 
 - **Checkpoint telemetry retention bumped from 90 → 180 days.** Evaluation-to-production conversion windows run 2-4 months in observed data, so 90 days was cutting off the tail. 180 days still fits comfortably in DynamoDB free tier at current volume.
 
+
+- **IDOR on `GET /api/v1/workflows/{id}` closed.** Before v6.2.0, any authenticated client could fetch any workflow by ID regardless of which tenant or org it belonged to. Combined with the `X-Org-ID` deployment-env-var override, this meant a compromised tenant could enumerate workflow IDs and read every other tenant's execution state. Both the header source fix and the service-layer ownership check are required to close the hole end-to-end.
+- **No-auth fallback on MCP handlers closed.** Before v6.2.0, in enterprise mode, any request with a `client_id` field in the JSON body (but no Basic auth credentials) was silently authenticated as that client and attributed to the deployment's own org. Removed entirely.
+- **Permissive cross-tenant fallback on unified execution endpoints closed.** Before v6.2.0, executions without a `tenant_id` were accessible to any caller, and requests without `X-Tenant-ID` were accepted. Both now rejected.
+
+---
+
+
 #### Fixed - Multi-tenant SaaS correctness and security
 
 - **`X-Org-ID` now derived from the validated client license, not the deployment env var.** The agent's Single Entry Point proxy middleware (`platform/agent/proxy.go`) was forcibly overwriting the authenticated client's `org_id` with the deployment's `ORG_ID` environment variable on every request, preventing a single deployment from serving multiple organizations. Every tenant on a shared stack was being stamped with the same `org_id`, making true multi-tenant workflow scoping impossible. The middleware now forwards `X-Org-ID` from the cryptographically validated client license payload (`client.OrgID`) - matching the behavior of `apiAuthMiddleware` in `auth.go`, which was already correct. The Ed25519 signature on the client license guarantees the `org_id` claim cannot be forged, so trusting it is both safe and required for multi-tenant operation. Deployments with a single org per stack are unaffected; deployments serving multiple orgs now correctly scope workflows, policies, and audit data per-tenant.
@@ -8807,14 +11802,6 @@ consumption of the new override, explain, and audit-search endpoints.
 #### Fixed - Deployment tooling
 
 - **`deploy-cloudformation.sh` missing required `OrganizationID` parameter.** The script built the `aws cloudformation deploy --parameter-overrides` list without passing `OrganizationID`, so creating a new stack from a clean state failed with `Parameter 'OrganizationID' must have a value`. Existing stack updates worked because CloudFormation falls back to `UsePreviousValue` for parameters not passed explicitly. The script now reads `deployment.organization_id` from the environment yaml config, falling back to the environment name if not set, and passes it on every deploy. This unblocks creating fresh environments from `deploy-platform.yml`.
-
-### Security
-
-- **IDOR on `GET /api/v1/workflows/{id}` closed.** Before v6.2.0, any authenticated client could fetch any workflow by ID regardless of which tenant or org it belonged to. Combined with the `X-Org-ID` deployment-env-var override, this meant a compromised tenant could enumerate workflow IDs and read every other tenant's execution state. Both the header source fix and the service-layer ownership check are required to close the hole end-to-end.
-- **No-auth fallback on MCP handlers closed.** Before v6.2.0, in enterprise mode, any request with a `client_id` field in the JSON body (but no Basic auth credentials) was silently authenticated as that client and attributed to the deployment's own org. Removed entirely.
-- **Permissive cross-tenant fallback on unified execution endpoints closed.** Before v6.2.0, executions without a `tenant_id` were accessible to any caller, and requests without `X-Tenant-ID` were accepted. Both now rejected.
-
----
 
 ## [6.1.0] - 2026-04-06
 

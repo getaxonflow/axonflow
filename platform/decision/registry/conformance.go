@@ -230,6 +230,80 @@ var registryConformanceCases = []ConformanceCase{
 			"plane has an Enterprise row, and no plane the harness records as unimplemented is registered as an enforcement point.",
 		TestName: "TestLegacyPlaneFixtureAgreesWithTheShadowCensus", TestFile: "legacy_plane_census_test.go",
 	},
+	// AXC-328 .. AXC-335: the external enforcement point (#3704). Every case
+	// below is about an EXTERNAL PEP - one that arrives on the wire rather than
+	// being seeded from the legacy plane fixture - which is the whole surface
+	// the capability handshake adds.
+	{
+		ID: "AXC-328", Title: "An external enforcement point's identifier is built from the channel, never from the document",
+		SourceCases: []string{"EX-46"},
+		Asserts: "ExternalPEPID composes the AUTHENTICATED credential with a caller-supplied name, so two credentials naming the same " +
+			"enforcement point produce different identifiers and no document can reach another credential's namespace; two call paths " +
+			"behind one credential stay distinguishable, and the identifier never collides with the in-process plane prefix.",
+		TestName: "TestExternalPEPIdentifierIsBuiltFromTheChannelNotTheDocument", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-329", Title: "An external enforcement point in an undeclared realm cannot be admitted",
+		SourceCases: []string{"EX-46"},
+		Asserts: "AdmitExternalPEP refuses against a catalog that has not declared the external realm, and admits the identical record " +
+			"against one that has - so a deployment cannot acquire external enforcement points without declaring the realm they authenticate as.",
+		TestName: "TestAdmitExternalPEPRequiresADeclaredRealm", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-330", Title: "Admission is not registration, so a repeat declaration is not a collision",
+		Asserts: "AdmitExternalPEP accepts the same record repeatedly and stores nothing, so the create-only rule that protects the " +
+			"governed-tag change path cannot refuse the second request from one enforcement point, and no stored declaration can answer " +
+			"for a request from a different instance of it.",
+		TestName: "TestAdmissionIsNotRegistrationAndRepeatsAreFine", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-331", Title: "An unadmitted enforcement point value refuses and is recognisable as a defect",
+		Asserts: "The zero ExternalPEP projects a nil profile and answers with a status that is not a declared member, never " +
+			"CapabilityDeclaredNone - a construction defect must fail closed AND stay distinguishable from an enforcement point that " +
+			"declared it discharges nothing.",
+		TestName: "TestUnadmittedExternalPEPRefusesAndIsRecognisableAsADefect", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-332", Title: "Every capability status an external declaration can produce, and the two that must not collapse",
+		Asserts: "SupportsObligation answers DeclaredNone, TypeUnsupported, VersionUnsupported and Supported for the four declarations " +
+			"that produce them, through the same checkCapability the registered path uses; and the empty-declaration and unsupported-type " +
+			"answers differ in BOTH status and prose, which a build collapsing them would still pass if only 'it was refused' were asserted.",
+		TestName: "TestExternalCapabilityStatusPerWireState", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-333", Title: "Over-advertising is split for an external point and refused for a registered one",
+		Asserts: "SplitOverAdvertised drops an Enterprise-only family from a community declaration and keeps it for an Enterprise one, " +
+			"leaves an undeclared obligation type in the kept set for validateCapabilities to own, and PEPRecord.Validate still refuses " +
+			"a REGISTERED community record advertising the same family - one predicate, two remedies.",
+		TestName: "TestOverAdvertisementIsSplitNotIgnored", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-334", Title: "An external record derives identity and edition rather than reading them from the wire",
+		Asserts: "ExternalPEPRecordFrom builds the identifier from the credential and takes the edition from its caller, the same " +
+			"handshake under two derived editions produces two different records, and the encoded handshake carries no edition, realm, " +
+			"tier or license member for a caller to set.",
+		TestName: "TestExternalRecordDerivesIdentityAndEditionRatherThanTakingThem", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-335", Title: "A declared-empty capability set renders as an empty list, never as an absent member",
+		Asserts: "PEPRecord.Profile and the registered-path round trip render a declared-empty capability set as \"capabilities\":[] " +
+			"rather than null, so the one enforcement point that says it discharges nothing is not serialised as one that said nothing " +
+			"at all - the collapse clone's own comment forbids and the #2958 defect this package corrects.",
+		TestName: "TestDeclaredEmptyProfileRendersAsAnEmptyListNotNull", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-336", Title: "Admission refuses its degenerate inputs rather than panicking or admitting",
+		Asserts: "AdmitExternalPEP on a nil catalog and on a record declaring no realm both REFUSE and produce no admitted value, " +
+			"and declaring the external realm is idempotent - these arms are reached by construction rather than by a wire value, " +
+			"so nothing on the request path would exercise them.",
+		TestName: "TestAdmissionRefusesTheDegenerateInputsRatherThanPanicking", TestFile: "external_pep_test.go",
+	},
+	{
+		ID: "AXC-337", Title: "An admitted enforcement point hands out copies, not its own state",
+		Asserts: "ExternalPEP.Record returns a deep copy, so a holder cannot reorder or extend what the enforcement point declared " +
+			"after admission validated it, and Profile projects the admitted capabilities onto a PEPProfile that supports them.",
+		TestName: "TestAdmittedAccessorsHandOutCopiesAndAProfile", TestFile: "external_pep_test.go",
+	},
 }
 
 // RegistryConformanceCases returns a copy of the corpus.

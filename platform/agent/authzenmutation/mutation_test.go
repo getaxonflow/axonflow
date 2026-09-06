@@ -117,6 +117,17 @@ func sourceMutations() []sourceMutation {
 			Property: "a profile version this build cannot emit is refused rather than answered as if negotiated",
 		},
 		{
+			Name:    "the served context drops the obligations it was handed",
+			File:    "../authzen_handler.go",
+			Package: "..",
+			Old:     `			Obligations:   obligations,`,
+			New:     `			Obligations:   nil,`,
+			Test:    "TestServedAuthZENContextEqualsToAuthZEN",
+			Property: "the served bytes carry what ToAuthZEN renders for the same decision, member for member. " +
+				"This is the comparison that did not exist while the two renderings drifted for a whole release; " +
+				"the three PII postures are what stop a mutant that is wrong on one shape passing on another",
+		},
+		{
 			Name:     "a stated end-user subject is accepted",
 			File:     "../authzen_adapter.go",
 			Package:  "..",

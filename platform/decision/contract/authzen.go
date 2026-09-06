@@ -21,6 +21,24 @@ type AuthZENProfile string
 // AuthZENProfileV1 is the only profile version this contract emits.
 const AuthZENProfileV1 AuthZENProfile = "axonflow-authzen-profile-2026-08-29"
 
+// AuthZENRouteMethod and AuthZENRoutePath are THE route the AuthZEN-native
+// surface is served on, and AuthZENProfileHeader is the request header a PEP
+// negotiates the profile with. They are declared here - in the contract, beside
+// the profile string - because they are part of the wire contract the five
+// SDKs implement, and until #3603's follow-up they were hand-written in the
+// agent handler and in all five SDKs with nothing generating or checking them:
+// a rename would have been caught only by whichever SDK happened to have a
+// live e2e run. cmd/authzen-codegen publishes all three into the surface
+// artifact (`route`, `profile_header`), each SDK's emitter generates its
+// constants from that, and the OpenAPI document is asserted against these in
+// authzen_route_test.go. One source; a rename is a single-source change the
+// currency gates catch.
+const (
+	AuthZENRouteMethod   = "POST"
+	AuthZENRoutePath     = "/api/v1/access/evaluation"
+	AuthZENProfileHeader = "X-Axonflow-AuthZEN-Profile"
+)
+
 // AuthZENSubject is the AuthZEN subject object.
 type AuthZENSubject struct {
 	Type       string         `json:"type"`
@@ -333,6 +351,96 @@ type AuthZENResponse struct {
 	Context  *AuthZENResponseContext `json:"context,omitempty"`
 }
 
+// AuthZENContextInput is everything the profile payload varies on.
+//
+// It exists so there is exactly ONE producer of AuthZENResponseContext in the
+// product. There used to be two hand-maintained renderings of this mapping -
+// Decision.ToAuthZEN here, which only tests called, and a struct literal inside
+// platform/agent's route handler, which every served response came from - and
+// they had already drifted on exactly one member: the handler never set
+// Approval, so every response the surface ever returned omitted the approval
+// challenge while the capability list and the OpenAPI document both advertised
+// it. The drift was invisible because the conformance cases exercised the
+// rendering nothing served and no test compared the two.
+//
+// The input is a struct rather than a *Decision because the serving adapter has
+// no Decision to hand over: it holds a met state, a per-entry decision id list
+// and an obligation set accumulated across entries, and the legacy evaluator it
+// adapts produces no policy-bundle digest, so building a Decision there would
+// mean SYNTHESISING a snapshot. A decision that names a snapshot it was not
+// computed against cannot be replayed, and an unreplayable decision cannot be
+// audited - the same argument platform/agent's meet already makes for not
+// calling MeetDecisions. Converging on a shared producer gets the one-mapping
+// property without inventing provenance to get it.
+//
+// TestEveryAuthZENResponseContextMemberIsSuppliedByItsInput holds this type and
+// AuthZENResponseContext together: every member of the context must either be
+// DERIVED here (profile, category) or appear on this input under the same name
+// and type. So the next member added to the wire cannot be wired up at one call
+// site and forgotten at another - there is only one call site, and it will not
+// compile without the input member.
+type AuthZENContextInput struct {
+	State         OperationalState
+	Reason        ReasonCode
+	Obligations   []Obligation
+	Approval      *ApprovalRequirement
+	DecisionID    string
+	SchemaVersion string
+}
+
+// CarriesObligations reports whether a decision in this operational state may
+// carry obligations and an approval requirement onto the wire.
+//
+// It is DERIVED from StateFor rather than restated as an equality, because
+// StateFor is the single place that decides which states a PERMIT produces and
+// a second hand-written list would be free to disagree with it. Decision.
+// Validate enforces the same rule on the other side ("obligations are only
+// carried on a permit"), so a decision that fails this predicate is one that
+// could not have been constructed anyway.
+//
+// The distinction matters for CHALLENGE. A challenge IS a permit with an
+// approval outstanding: it may legitimately carry obligations, and the serving
+// adapter used to drop them because it tested `state == StateAllow` - narrower
+// than the contract's own rule, and reachable through a plural envelope, where
+// obligations accumulate across entries while the meet takes the worst state.
+// A PEP that must not execute either way was being told less than the contract
+// says it is entitled to about what it will have to discharge once approval is
+// granted.
+func (s OperationalState) CarriesObligations() bool {
+	for _, approvalOutstanding := range []bool{false, true} {
+		if st, err := StateFor(AuthzPermit, approvalOutstanding); err == nil && st == s {
+			return true
+		}
+	}
+	return false
+}
+
+// NewAuthZENResponseContext is the ONLY producer of the profile payload.
+//
+// Profile and Category are DERIVED rather than accepted: the profile is the one
+// version this build emits, and the category is a projection of the reason
+// code, so admitting either as an input would let a caller emit a context whose
+// two halves disagree.
+func NewAuthZENResponseContext(in AuthZENContextInput) *AuthZENResponseContext {
+	out := &AuthZENResponseContext{
+		Profile:       AuthZENProfileV1,
+		State:         in.State,
+		Category:      CategoryFor(in.Reason),
+		Reason:        in.Reason,
+		DecisionID:    in.DecisionID,
+		SchemaVersion: in.SchemaVersion,
+	}
+	// A denied or errored operation has nothing for a PEP to discharge, and
+	// attaching instructions to a denial invites a PEP to perform them and
+	// proceed. The gate is here, once, rather than at each caller: it was at one
+	// of the two and stated more narrowly than the contract's rule.
+	if in.State.CarriesObligations() {
+		out.Obligations = in.Obligations
+		out.Approval = in.Approval
+	}
+	return out
+}
+
 // AuthZENErrorCode names why a request was refused rather than evaluated.
 //
 // The set is closed for the same reason the unknown reasons are: a code
@@ -551,16 +659,14 @@ func (d *Decision) ToAuthZEN(negotiated AuthZENProfile) (*AuthZENResponse, error
 		}
 		return resp, nil
 	}
-	resp.Context = &AuthZENResponseContext{
-		Profile:       AuthZENProfileV1,
+	resp.Context = NewAuthZENResponseContext(AuthZENContextInput{
 		State:         d.State,
-		Category:      CategoryFor(d.Reason),
 		Reason:        d.Reason,
 		Obligations:   d.Obligations,
 		Approval:      d.Approval,
 		DecisionID:    d.DecisionID,
 		SchemaVersion: d.Snapshot.SchemaVersion,
-	}
+	})
 	return resp, nil
 }
 

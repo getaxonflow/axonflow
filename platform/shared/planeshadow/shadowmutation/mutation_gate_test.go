@@ -598,6 +598,70 @@ var LeakedVerdictDenies atomic.Bool
 			"excluded ones as watched would make each of them raise a vacuity alert that is a " +
 			"statement about the plane list rather than about the window",
 	},
+	// --- #3552 gap 3: the per-organization, per-plane narrowing ---
+	{
+		name: "an organization's record can WIDEN past the deployment's plane list",
+		edits: []edit{{
+			file: "shared/planeshadow/org_planes.go",
+			from: `	if !o.cfg.Observes(p) {`,
+			to:   `	if false && !o.cfg.Observes(p) {`,
+		}},
+		pkg:  shadowPkg,
+		test: "^TestPerOrganizationPlanesCanOnlyNarrowNeverWiden$",
+		why:  "a deployment withdraws a plane for reasons that belong to the deployment - a worker pool that cannot afford its compilations, comparisons known-bad on this build - and a per-tenant row that re-enabled it would let one tenant's settings spend the deployment's money and reopen a plane the operator switched off",
+	},
+	{
+		name: "an unusable per-org plane record closes the organization's window instead of falling back",
+		edits: []edit{{
+			file: "shared/planeshadow/org_planes.go",
+			// RE-ANCHORED when the log-once suppression (R3 M4) gave
+			// noteOrgPlanesFailure a dedupe key. The anchor guard reported it,
+			// which is the whole reason that guard exists.
+			from: `		o.noteOrgPlanesFailure(orgID, raw, describeParseFailure(orgID, raw, why))
+		return o.cfg.Observes(p)`,
+			to: `		o.noteOrgPlanesFailure(orgID, raw, describeParseFailure(orgID, raw, why))
+		return false`,
+		}},
+		pkg: shadowPkg,
+		// BOTH tests, GROUPED. `^A|B$` parses as (^A)|(B$) and would also match
+		// any test ENDING with the second name; the group is what makes the
+		// anchors bind to the alternation rather than to one arm each.
+		test: "^(TestAnUnreadablePlaneRecordFallsBackToTheDeploymentList|TestAFallBackReAdmitsTheVERYPlaneTheRecordExcluded)$",
+		why:  "closing the window looks like the safe direction and is not: the value is refused at the write path and by the column's CHECK, so reaching that branch means a restore or a hand-written row, and a silently closed window is invisible in the evidence while an operator reads the empty series as agreement",
+	},
+	{
+		name: "an ABSENT per-org plane record is read as 'no planes' rather than 'the deployment decides'",
+		edits: []edit{{
+			file: "shared/planeshadow/org_planes.go",
+			from: `	if !found {
+		// The ordinary answer: no narrowing recorded, so the deployment's list
+		// decides. Not a failure and not counted as one.
+		return o.cfg.Observes(p)
+	}`,
+			to: `	if !found {
+		return false
+	}`,
+		}},
+		pkg:  shadowPkg,
+		test: "^TestAnAbsentPlaneRecordLeavesTheDeploymentListInCharge$",
+		why:  "no record is the state of every organization on every deployment, so reading it as 'no planes' empties the whole window at once - the same shape as reading a nil path set as no paths on the identity axis, and it produces no error anywhere",
+	},
+	{
+		name: "the per-org plane fall-back is silent",
+		edits: []edit{{
+			file: "shared/planeshadow/org_planes.go",
+			// Still ONE match after M4: the two increments stayed together at the
+			// top of the function and the suppression was added below them,
+			// which is also the order the counter's contract needs - it counts
+			// before anything can return early.
+			from: `	o.orgPlanesFailures.Add(1)
+	shadowOrgPlanesFailures.Inc()`,
+			to: `	_ = 0`,
+		}},
+		pkg:  shadowPkg,
+		test: "^TestAnUnreadablePlaneRecordFallsBackToTheDeploymentList$",
+		why:  "a fall-back nobody counts is a deployment measuring more planes for an organization than its record asks for, with nothing anywhere saying so - and it inflates a denominator rather than emptying one, which is the opposite direction from the mode's failure and the reason the two have separate counters",
+	},
 }
 
 // TestEveryShadowGuardCanFail runs each mutant and requires its named test to

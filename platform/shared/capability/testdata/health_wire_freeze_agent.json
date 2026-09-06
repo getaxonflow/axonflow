@@ -1,0 +1,152 @@
+[
+  {
+    "name": "health_check",
+    "since": "1.0.0",
+    "description": "Basic health endpoint"
+  },
+  {
+    "name": "proxy_llm_call",
+    "since": "1.0.0",
+    "description": "Proxy mode LLM calls with policy enforcement"
+  },
+  {
+    "name": "audit_llm_call",
+    "since": "1.0.0",
+    "description": "Audit logging for LLM calls"
+  },
+  {
+    "name": "static_policies",
+    "since": "2.0.0",
+    "description": "System policy CRUD"
+  },
+  {
+    "name": "gateway_mode",
+    "since": "3.0.0",
+    "description": "Gateway mode integration"
+  },
+  {
+    "name": "dynamic_policies",
+    "since": "3.2.0",
+    "description": "Runtime dynamic policy engine"
+  },
+  {
+    "name": "multi_agent_planning",
+    "since": "4.3.0",
+    "description": "MAP plan and execute lifecycle"
+  },
+  {
+    "name": "workflow_control",
+    "since": "4.3.0",
+    "description": "WCP workflow lifecycle management"
+  },
+  {
+    "name": "execution_replay",
+    "since": "4.3.0",
+    "description": "Execution recording and replay"
+  },
+  {
+    "name": "cost_controls",
+    "since": "4.4.0",
+    "description": "Budget and cost management"
+  },
+  {
+    "name": "media_governance",
+    "since": "4.4.0",
+    "description": "Multimodal image governance"
+  },
+  {
+    "name": "wcp_step_metrics",
+    "since": "4.5.0",
+    "description": "WCP step-complete post-execution metrics"
+  },
+  {
+    "name": "mcp_check_endpoints",
+    "since": "4.7.0",
+    "description": "Standalone MCP policy check-input/check-output"
+  },
+  {
+    "name": "circuit_breaker",
+    "since": "4.7.0",
+    "description": "Circuit breaker pipeline enforcement"
+  },
+  {
+    "name": "version_discovery",
+    "since": "4.8.0",
+    "description": "Version and capability discovery"
+  },
+  {
+    "name": "hitl_response_parity",
+    "since": "7.4.0",
+    "description": "WCP + MAP approve/reject responses share retry_context, approver metadata, policies_matched (ADR-046)"
+  },
+  {
+    "name": "plugin_compatibility",
+    "since": "7.5.0",
+    "description": "Health response advertises min_plugin_version + recommended_plugin_version per plugin id (mirrors sdk_compatibility)"
+  },
+  {
+    "name": "community_saas_recovery",
+    "since": "7.7.0",
+    "description": "POST /api/v1/recover[/verify] free-tier credential recovery via emailed magic link (Community SaaS only)"
+  },
+  {
+    "name": "plugin_claim_license",
+    "since": "7.7.0",
+    "description": "Stripe-driven Pro v1 plugin license issuance (POST /api/v1/billing/stripe-webhook) + per-request X-License-Token validation (Community SaaS only)"
+  },
+  {
+    "name": "v1_pro_upgrade_envelope",
+    "since": "7.8.0",
+    "description": "Structured V1 upgrade envelope on every Free-tier limit hit (429 daily_quota + 403 active_policies / hitl_approvals_window / feature_pro_only) with locked compare_url + buy_url + Retry-After header (Community SaaS only)"
+  },
+  {
+    "name": "v1_pro_mcp_tools",
+    "since": "7.8.0",
+    "description": "Five new MCP tools on /api/v1/mcp-server (axonflow_get_tenant_id, axonflow_request_approval, axonflow_create_tenant_policy, axonflow_get_cost_estimate, axonflow_list_pro_features) with tier-aware tools/list filtering and graduated FreeUsageLimit gates"
+  },
+  {
+    "name": "v1_pro_graduated_freemium",
+    "since": "7.8.0",
+    "description": "Free tier exposes a taste of Pro capabilities — 2 active custom tenant policies + 1 HITL approval per rolling 7d — with structured 403 envelope on cap-hit; Pro tier removes both caps (Community SaaS only)"
+  },
+  {
+    "name": "decision_obligations",
+    "since": "8.6.0",
+    "description": "Decision Mode /api/v1/decide emits self-describing, engine-fulfillable redact_pii obligations carrying a fulfillment block (endpoint, method, phase, content_types) so a PEP discharges them via the engine instead of hand-rolling redaction (ADR-056/057)"
+  },
+  {
+    "name": "two_touch_redaction",
+    "since": "8.6.0",
+    "description": "Request-phase (POST /api/v1/mcp/check-input → redacted_statement + redaction_evaluated) and response-phase (POST /api/v1/mcp/check-output → redacted_data) PII redaction both return engine-masked content, so PEPs never hand-roll redaction on either leg"
+  },
+  {
+    "name": "client_version_telemetry",
+    "since": "9.7.0",
+    "description": "Per-client version-distribution telemetry: validated X-Axonflow-Client client id + version pairs are recorded into the axonflow_client_version_requests_total counter on the decide and MCP check-output planes (Enterprise builds; Community builds no-op and register no series). Since 10.4.0 the counter also carries `deployment_mode` and `licensed`, which say what kind of deployment the fleet reading the counter is. BOTH ARE PROCESS PROPERTIES RESOLVED SERVER-SIDE, never read from a request — a label a caller could influence would let one client rewrite the population every other series is read against. `deployment_mode` is this binary's own DEPLOYMENT_MODE resolved through the canonical map (aliases folded; an unset variable reports `unset`, which is deliberately NOT `community`, and an unrecognised value reports `unknown`); `licensed` is `true` only once the licence validator has resolved a non-Community tier, so the boot window and an unlicensed enterprise build both report `false`. READ THE POPULATION BEFORE READING THE NUMBERS: the counter exists only on Enterprise builds, so `deployment_mode` here can never observe a Community BUILD and this metric structurally cannot answer \"how many Community installs exist\" — it answers \"which modes do our Enterprise-build deployments run as\". Telemetry-only — never consulted for auth or a verdict"
+  },
+  {
+    "name": "seam_capability_decisioning",
+    "since": "9.11.0",
+    "description": "Seam-capability-aware obligations: a PEP advertises what its seam can discharge via DecideRequest.fulfillment_capabilities (vocabulary: request_body_redaction, request_header_mutation) and POST /api/v1/decide emits only obligations that caller can fulfill. A request-body redaction suppressed on a non-capable seam (e.g. Envoy ext_authz, which is headers-only) applies the org's obligation-fallback posture — log (default: allow, no obligation, canonical audit row records the suppressed redaction + detected categories) or block (deny) — configurable per org on the obligation_fallback detection-posture category. The posture is resolved server-side from the org, never from the request; absent/empty capabilities means a legacy caller and reproduces pre-9.11.0 behavior exactly (all SDKs unaffected). Replaces the adapter-local allow→403 conversion so every outcome is an engine round-trip (ADR-056)"
+  },
+  {
+    "name": "identity_header_attribution",
+    "since": "9.9.0",
+    "description": "Trust-gated per-user audit attribution: X-User-Email / X-Session-Id (and X-User-ID on the MCP-server plane) attribute audit_logs rows on all four governance planes (decide, MCP check-input, MCP check-output, MCP-server tools/call) when the deployment opts in via AXONFLOW_TRUST_IDENTITY_HEADERS=true (default off — untrusted headers are ignored and a detection warning is logged). Attribution-only — a forged header can never influence a verdict, authz decision, or tenant/org resolution; per-user features (ADR-044 session overrides, user-scoped dynamic policies) key on the trusted identity only under the gate"
+  },
+  {
+    "name": "authzen_evaluation",
+    "since": "10.3.0",
+    "description": "AuthZEN-native authorization on POST /api/v1/access/evaluation. A PEP sends the AuthZEN envelope in either shape (a singular `evaluation` or a plural `evaluations`, exactly one member, enforced by the decoder, the JSON Schema and every generated client alike) and gets back ONE decision: the entries of a plural envelope are preconditions of a single operation, so they meet, and one denied entry denies the operation. Profile negotiation is the X-Axonflow-AuthZEN-Profile request header. No header (or an empty one) means the caller asked for AuthZEN 1.0 and gets exactly that, the bare boolean - with ONE exception, which a PEP feature-detecting this surface must handle: an otherwise-ALLOWED decision carrying a MANDATORY obligation answers such a caller with the boolean false, because the obligation rides in the context it did not negotiate and it must not be handed a permission whose precondition it will never see (ADR-065 invariant 8; the denial is counted under outcome=obligation_withheld and audited as blocked with policy_details.authzen_obligation_withheld). An allow carrying no mandatory obligation is still true for a bare caller, and the denied, challenged and errored paths are unchanged. `axonflow-authzen-profile-2026-08-29` additionally returns the AxonFlow rendering in the response context: four-valued operational state, obligations, safe reason. What it does NOT carry is an approval challenge, and that is stated rather than left to be discovered: this route is an ADAPTER over POST /api/v1/decide, whose response names no eligible approver set, no quorum and no challenge expiry, so there is no requirement to render and inventing one would hand an enforcement point a fabricated approval policy. A decision awaiting approval is reported as state CHALLENGE with decision:false, which a PEP acts on by holding rather than executing; the challenge itself is obtained from the HITL surfaces. Earlier text here promised the challenge on this surface and no response ever carried one (#3631). Any other non-empty profile is REFUSED, naming the profile this build emits, so a PEP negotiating a later profile against an older server can never read a bare allow as a successful negotiation and proceed past an obligation it never saw. Refusals raised before evaluation are typed and carry a JSON pointer to the offending member: malformed_envelope, incomplete_evaluation, unsupported_subject, unsupported_action, unsupported_resource, unevaluable_attribute, missing_evaluable_content, evaluation_unavailable. This route is an ADAPTER over the evaluation POST /api/v1/decide already serves, NOT the ADR-065 Policy Decision Point: the envelope is mapped to a DecideRequest and run through that same handler, so the two surfaces cannot drift, /api/v1/decide is unchanged and wire-stable, and at v11 the engine behind this route changes with no wire change. Registered unconditionally in every edition at every tier, with no flag and no kill switch; audit rows from this surface record plane `access_evaluation` so adoption is measurable separately from /api/v1/decide (ADR-065, #3611)"
+  },
+  {
+    "name": "platform_identity_discovery",
+    "since": "10.4.0",
+    "description": "Two additive /health members beside `tier` and `version` that say WHICH BUILD of AxonFlow, configured WHICH WAY, is answering: `edition` (`community` | `enterprise`, from the binary's own build tag, so it is a fact about the compilation and not about the licence) and `deployment_mode` (this deployment's own DEPLOYMENT_MODE setting, resolved to its canonical spelling with aliases folded — `enterprise` reports as `in-vpc-enterprise`). Served identically on the agent (8080) and orchestrator (8081) planes from one implementation, so a client that probes whichever port it can reach gets the same answer. ABSENT IS NOT EMPTY: a member the platform cannot determine is OMITTED, never present with an empty value — `deployment_mode` is absent when DEPLOYMENT_MODE is unset, and that absence is a real observation (`the operator configured nothing`) which must not be read as the `community` default the SCHEMA selector applies, because the RUNTIME posture for an unset value is not community. A RELAYING CLIENT MUST MAP THIS `deployment_mode` ONTO THE TELEMETRY FIELD `platform_deployment_mode`, NOT ONTO THE FIELD OF THE SAME NAME ON A PING, which is the coarse topology (self_hosted | community_saas) the SDK derives from its own endpoint URL — the two are different dimensions and conflating them corrupts every existing deployment-mode dashboard. NEITHER MEMBER IS AN ENTITLEMENT FACT: whoever operates the endpoint controls both values completely, so they are adoption analytics only and must never gate a feature, an authorization decision or a billing decision (#3660, #3619 trust boundary)"
+  },
+  {
+    "name": "pep_capability_handshake",
+    "since": "10.4.0",
+    "description": "Declare, on every governed call, the obligation types and schema versions this enforcement point can DISCHARGE, as a base64url-encoded compact JSON document in the X-Axonflow-PEP-Handshake request header. The header is OPTIONAL and ABSENT IS NOT EMPTY: no header is the legacy caller and is byte-for-byte today's behaviour, while a header present with an empty value is malformed and refuses. Read on three planes and one vocabulary serves all three, so one declaration satisfies them all: POST /api/v1/decide (and the AuthZEN adapter over it), the MCP plane (/api/v1/mcp/check-input, /api/v1/mcp/check-output and the MCP server's check tools), and the gateway pre-check plane (POST /api/policy/pre-check). WHAT A DECLARATION MEANS: discharging field_redact@1 is substituting the platform's engine-masked content for the original, which ADR-056 makes the only sanctioned discharge because a client may not redact for itself - so a client that performs no substitution declares the EMPTY SET and is denied rather than allowed on the strength of a discharge nobody performs. A mandatory obligation outside the declared set is refused with reason pep_capability_unsupported, and the refusal withholds the instruction as well as the content. The three planes reach that refusal differently and a PEP integrating against one must not assume the others: decide EMITS an obligation naming a fulfillment endpoint, the MCP plane IS that endpoint and returns masked text inline, and pre-check issues an INSTRUCTION (requires_redaction) which is cleared on a refusal. Structural refusals are their own reasons and are not capability refusals: pep_handshake_malformed (unreadable document), pep_handshake_identity_unbindable (the authenticated channel carries no client identity, so the declaration cannot be bound to a name the server owns), pep_handshake_edition_unresolvable. A capability claimed beyond what this deployment's edition can hold is DROPPED rather than refused and the request proceeds on the narrowed set. Every outcome is counted, absence included, because a window with no malformed handshakes is equally well explained by a correct fleet and by a fleet presenting nothing. EDITION SPLIT: presenting, validating, binding, narrowing and counting a declaration happen in every edition; turning an uncoverable mandatory obligation into a deny the platform can see, audit and count is Enterprise, and a Community build hands the obligation over exactly as it does today, where the enforcement point fails closed at its own seam (ADR-065 invariant 8, ADR-066 decision 5)"
+  }
+]

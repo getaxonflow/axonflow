@@ -378,7 +378,18 @@ type DecideRequest struct {
 	//     ONE site (applySeamCapabilityObligations). That is pinned by
 	//     TestFulfillmentCapabilityReadCensus (decision_obligation_capability_test.go),
 	//     so a second read site fails CI.
-	FulfillmentCapabilities []string `json:"fulfillment_capabilities,omitempty"`
+	//
+	// A POINTER since #3704, so this decoder can SEE the difference between an
+	// omitted member and `[]` - `[]string` cannot. It decodes to three values:
+	// omitted -> nil, `[]` -> non-nil empty, `["x"]` -> non-nil.
+	//
+	// IT READS TWO OF THEM THE SAME WAY, DELIBERATELY. `[]` is still a legacy
+	// caller; see canonicalizeFulfillmentCapabilities for why changing that
+	// would widen a security control for a non-Go caller that sent those bytes
+	// before this release and changed nothing. An earlier version of THIS
+	// comment said `[]` was "NEW: an advertised empty seam" - the reverted
+	// meaning, left sitting directly above the field it is about.
+	FulfillmentCapabilities *[]string `json:"fulfillment_capabilities,omitempty"`
 }
 
 // DecisionCallerIdentity is the gateway-asserted identity for the request.
@@ -392,8 +403,28 @@ type DecisionCallerIdentity struct {
 }
 
 // DecisionTarget describes what the gateway is about to call.
+//
+// The Type vocabulary is pep.TargetTypes, and this decoder compares against
+// those constants (#3717). This comment used to enumerate it as
+// `"llm" | "tool" | "agent"`, which was already untrue of the tree it
+// documented — the ext_proc and ext_authz seams send "http" — and an
+// enumeration kept in a comment beside the struct is exactly the copy that
+// cannot fail when it goes stale.
+//
+// It is NOT the only declaration of those strings, and saying so would repeat
+// the mistake one level up: DecisionStage* here and gatewayadapters.Stage*
+// declare the same three values for the STAGE axis, and mapTarget assigns a
+// stage constant straight into this field. Nothing links the three sets except
+// TestTargetTypeAndStageConstantsAgree, which compares them value by value —
+// without it a fork through the stage constants reproduces #3717 exactly, at a
+// production site, green across every other guard in this change.
+//
+// MIRRORS pep.Target field-for-field, guarded by
+// TestDecisionTargetMirrorsPEPTarget. They are kept as two independent
+// declarations on purpose: aliasing them would make the wire-contract tests
+// tautological. Server existed here and NOT on pep.Target until #3717.
 type DecisionTarget struct {
-	Type     string `json:"type,omitempty"`     // "llm" | "tool" | "agent"
+	Type     string `json:"type,omitempty"`     // one of pep.TargetTypes
 	Model    string `json:"model,omitempty"`    // when type=llm
 	Provider string `json:"provider,omitempty"` // when type=llm
 	Server   string `json:"server,omitempty"`   // when type=tool (#2904)
@@ -723,6 +754,42 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		decideRequests.WithLabelValues("error", stg, origin).Inc()
 	}
 
+	// #3704: the ADR-065 capability handshake, resolved UNCONDITIONALLY and
+	// BEFORE the body is decoded.
+	//
+	// Unconditional, not inside the community-mode branch below: the
+	// caller_identity impersonation checks sit in an `else` that community mode
+	// skips, and community mode is the one deployment class where the
+	// over-advertising rule can fire at all - so placing this "beside" them
+	// would make the rule unreachable exactly where it applies.
+	//
+	// Before the body decode, because the declaration is a HEADER and because
+	// the `absent` count is the denominator the per-plane cutover (#3564) reads
+	// its adoption ratio off: counting it after the body decode would drop
+	// every malformed-body request out of the denominator and undercount the
+	// fleet that is presenting handshakes.
+	//
+	// A caller that presents NO handshake resolves to `absent`, refuses
+	// nothing, and takes byte-for-byte the path it took before this existed.
+	ctx, pepHandshake := resolveAndRecordPEPHandshakeOnce(ctx, r, authClientID, plane)
+	r = r.WithContext(ctx)
+	// Record WHICH enforcement point declared WHAT on this decision's audit row.
+	// Set before the refusal branch so a refused request carries it too.
+	if declared, ok := pepHandshake.auditFields(); ok {
+		decisionAudit.pepIdentity = declared.identity
+		decisionAudit.pepAudience = declared.audience
+		decisionAudit.pepCapabilities = declared.capabilities
+	}
+	if pepHandshake.refused {
+		// The request was never evaluated, so the audit verdict is `error`
+		// rather than `blocked` - a client-side defect must not enter the
+		// compliance record as a policy outcome. Same shape, and the same
+		// closure, as the malformed-body refusal below.
+		auditEarlyDeny(AuditVerdictError, "unknown", nil, []string{pepHandshake.reason})
+		sendDecideError(w, pepHandshake.reason+": "+pepHandshake.detail, pepHandshake.status, decisionID, traceID)
+		return
+	}
+
 	var req DecideRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// Malformed body — never evaluated → canonical 'error' (NOT 'blocked').
@@ -742,14 +809,71 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// so EARLY-DENY paths — impersonation, tenant mismatch, circuit-breaker,
 	// kill-switch, PII — also carry tool_server/tool_name in their audit_logs
 	// row, not only the terminal allow/block decision.
+	//
+	// #3717: the comparison value is pep.TargetTypeTool, the SAME declared
+	// constant the seams construct from, not a free "tool" literal facing a
+	// free literal at the producer. That pairing is what let ext_mcp send
+	// "mcp_tool" for three releases against a gate reading "tool": both sides
+	// were green, both sides were honest, and the two fields below were empty
+	// on every row that seam produced. There is deliberately no second accepted
+	// spelling — see pep.TargetTypes.
 	toolServer := ""
 	toolIdentity := ""
-	if strings.EqualFold(req.Target.Type, "tool") {
+	if strings.EqualFold(req.Target.Type, pep.TargetTypeTool) {
 		toolServer = req.Target.Server
 		toolIdentity = req.Target.Tool
 	}
 	decisionAudit.toolServer = toolServer
 	decisionAudit.toolName = toolIdentity
+
+	// #3717: ATTRIBUTION AND CAPABILITY SCOPING ARE TWO DIFFERENT QUESTIONS AND
+	// THIS IS WHERE THEY SEPARATE.
+	//
+	// Above is attribution — who this decision was about — and it wants the tool
+	// identity from every caller that sends one. Below is the capability SCOPING
+	// key (#2801), an ENFORCEMENT input: a positively classified text-document
+	// tool makes the engine SKIP execution-class detectors, so a name that
+	// reaches it can only ever turn a deny into an allow.
+	//
+	// They were one variable, and #3717 nearly shipped a security change on the
+	// back of an audit fix because of it: giving the ext_mcp gateway seam the
+	// canonical target type restored its audit row AND, through this same value,
+	// enabled detector skipping on that plane for the first time. Measured end
+	// to end through the real seam, same payload, only the client-chosen tool
+	// name varying: `run_sql_query` blocked, `editJiraIssue` allowed.
+	//
+	// THE RULE IS THE TRUST PREMISE, WRITTEN OUT. capability.go states it:
+	// scoping is safe where "the enforcing client itself executes the tool and
+	// reports its name ... a client that lies about the tool name could equally
+	// not call the PEP at all." Two request shapes fail that premise and neither
+	// is offered the relaxation:
+	//
+	//  1. THE TARGET NAMES A HOSTING SERVER. The caller is describing a call it
+	//     ROUTES to a backend it does not execute. (AuthZEN tool resource ids are
+	//     "server/tool" by construction, so this covers that plane too.)
+	//  2. THE REQUEST DECLARES ITSELF AN MCP-GATEWAY CALL, by carrying the
+	//     seam's method marker. On an in-path gateway the tool name is a field
+	//     of the MCP client's own JSON-RPC body, and declining to call the PEP
+	//     is not available to the party that chose it.
+	//
+	// CONDITION 2 IS NOT REDUNDANT, AND LEAVING IT OUT IS HOW THE FIRST VERSION
+	// OF THIS FIX FAILED OPEN. Condition 1 reads a field the seam can only fill
+	// when agentgateway sends exactly one service_names entry; for zero or many
+	// it is empty, and R3 drove the seam with each of those and got the
+	// relaxation back on a fully client-chosen name. A discriminator whose
+	// ABSENCE grants the relaxation is a fail-open control, and the value it
+	// reads is populated by an external binary whose behaviour no test in this
+	// repo has ever observed.
+	//
+	// BOTH CONDITIONS ARE FAIL-SAFE, which is why neither needs to be trusted:
+	// each can only WITHHOLD a relaxation, never grant one. A caller who sets
+	// the marker spuriously pays false positives; there is no direction in which
+	// setting it buys anything. That is the property that lets an unauthenticated
+	// context member carry it.
+	scopingIdentity := toolIdentity
+	if toolServer != "" || declaresMCPGatewayCall(req.Context) {
+		scopingIdentity = ""
+	}
 
 	// Refresh the origin bucket now that gateway_id is known (the authoritative
 	// Claude Desktop signal). Updates both the closure-captured `origin` used by
@@ -1085,9 +1209,10 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	//
 	// #2801: when the PEP declares a tool target, its tool name feeds
 	// capability-scoped evaluation (text-document tools skip execution-class
-	// detectors; unknown tools get full evaluation). toolServer/toolIdentity
-	// were already computed + stamped onto decisionAudit right after decode
-	// (#2904) so early-deny paths carry them too; reused here unchanged.
+	// detectors; unknown tools get full evaluation) — through scopingIdentity,
+	// NOT toolIdentity, since #3717: see where the two separate above.
+	// toolServer/toolIdentity were already computed + stamped onto decisionAudit
+	// right after decode (#2904) so early-deny paths carry them too.
 	// ADR-061 / #3329: install the fincrime decision metadata (frozen scorer
 	// contract plane vocabulary "decide") and lift the documented
 	// fincrime_transaction / fincrime_cohort context objects into the
@@ -1148,7 +1273,24 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 
 	outcome := evaluateInputPolicies(ctx,
 		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		"decision", toolIdentity, "decide", req.Query, fincrimeParams,
+		// TWO identities, deliberately different on this plane and only this
+		// one. toolIdentity is attribution + telemetry and still reaches the
+		// FinCrime scorer's agent context unchanged — withholding it there is
+		// not "safer", it removes a feature from a model's input vector and
+		// moves a risk score in an unknown direction. scopingIdentity is the
+		// enforcement input.
+		//
+		// ONE TELEMETRY CONSUMER DOES FOLLOW THE SCOPING KEY, and an earlier
+		// version of this comment claimed otherwise: the ADR-065 shadow
+		// observation's action label reads EvalOptions.ToolIdentity, which is
+		// the scoping value, so it is EMPTY for a server-named target. That is
+		// a real, disclosed loss of operator visibility on this plane and not a
+		// thing to describe as unchanged. It is a label on a recorded-only
+		// comparison — no enforcement, no Prometheus cardinality — and moving
+		// it back would mean a second EvalOptions field and converting every
+		// producer, which is a wider change than #3717 should make. Tracked on
+		// the audit umbrella #3709.
+		"decision", toolIdentity, scopingIdentity, "decide", req.Query, fincrimeParams,
 		gwDetectionCfg, false, /* runDynamicPolicy: M2, #2426 */
 		segmentIDs, /* #3456: resolved once above, fail-closed; nil here means "resolved to none", never "resolution failed" */
 		legacycompile.PlaneDecide)
@@ -1292,9 +1434,12 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 				Reason:     "human approval required by policy",
 				Severity:   policyResult.Severity,
 				DecisionID: decisionID,
-				Stage:      stage,
-				Query:      req.Query,
-				Target:     decideTargetDescriptor(toolServer, toolIdentity, req.Target.Type),
+				// The same trace-id decisionAudit records, so the approval and
+				// the decision it belongs to land in one chain (#3718).
+				CorrelationID: decisionAudit.correlationID,
+				Stage:         stage,
+				Query:         req.Query,
+				Target:        decideTargetDescriptor(toolServer, toolIdentity, req.Target.Type),
 			})
 			if res.RequestID != "" {
 				reasons = append(reasons, policyStepUpReason(res.RequestID))
@@ -1345,8 +1490,29 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// breaker and deny traffic that policy never blocked. It still counts as a
 	// deny everywhere a deny is counted (decideRequests / decideBlocks / the
 	// canonical audit row).
-	verdict, reasons, obligations, seamFallback := applySeamCapabilityObligations(
-		ctx, orgID, req.FulfillmentCapabilities, verdict, reasons, obligations)
+	// #3704 + #2958: the two obligation gates, in ONE call.
+	//
+	// One call rather than two statements because the ORDER between them is a
+	// security property - the capability refusal (ADR-065 invariant 8) must run
+	// before the seam suppression, or a deny becomes an allow-minus-obligation
+	// under the org's fallback posture. A property that lives in the sequence of
+	// two statements is one a refactor removes silently; applyObligationGates
+	// makes it structural. See its doc comment.
+	//
+	// A caller that presented no handshake is untouched: the capability half is
+	// a no-op when nothing was admitted, and it is physically absent from the
+	// community build.
+	verdict, reasons, obligations, seamFallback, pepRefused := applyObligationGates(
+		ctx, orgID, plane, pepHandshake, req.FulfillmentCapabilities, verdict, reasons, obligations)
+
+	if pepRefused {
+		// One line, because a denial the platform produced on the strength of
+		// the CLIENT's own declaration is the one an operator will not think to
+		// look for in a policy. The reason string is already persisted on the
+		// audit row via reasons; this names the plane and the decision.
+		log.Printf("[pep-handshake] denied on plane %s: the advertising enforcement point cannot discharge a mandatory obligation (decision_id=%s)",
+			plane, decisionID)
+	}
 
 	// Hoist the blocking policy to evaluated_policies[0] so the OpenAPI
 	// contract claim ("On deny, the first entry is the blocking policy")
@@ -1483,7 +1649,7 @@ type obligationFallback struct {
 func applySeamCapabilityObligations(
 	ctx context.Context,
 	orgID string,
-	rawCapabilities []string,
+	rawCapabilities *[]string,
 	verdict string,
 	reasons []string,
 	obligations []DecisionObligation,
@@ -1567,12 +1733,39 @@ func requiresRequestBodyRedaction(o DecisionObligation) bool {
 // never raise an error, block the request, or be mistaken for a capability —
 // that is what lets an older PDP meet a newer PEP's vocabulary and degrade
 // instead of failing.
-func canonicalizeFulfillmentCapabilities(raw []string) (set map[string]bool, advertised bool) {
-	if len(raw) == 0 {
+// THE READING OF `[]` IS DELIBERATELY UNCHANGED, and #3704 got this wrong once
+// before correcting it. The first version of the pointer change made a
+// present-and-empty list an ADVERTISEMENT, on the reasoning that the state had
+// been unsendable and the change was therefore additive.
+//
+// That reasoning was about the Go ENCODER and not about the wire. The SERVER's
+// decoder has always accepted the bytes `"fulfillment_capabilities":[]` - any
+// non-Go PEP could send them trivially (`caps or []` in Python,
+// `JSON.stringify([])`, a hand-built curl, a generated client that never omits
+// an array member), and they decoded to a non-nil empty `[]string`, which
+// `len(raw) == 0` read as a LEGACY caller. Measured, not argued: feeding those
+// literal bytes through this decoder is what the regression test beside
+// TestApplySeamCapabilityObligations_LegacyCallerUnchanged now does.
+//
+// So flipping the reading would have moved an input that was ALWAYS sendable
+// from "obligation emitted, the PEP fails closed" to "obligation suppressed,
+// org fallback posture" - whose documented default is `log`, i.e. ALLOW without
+// the redaction. That is a widening of a security control, in the direction
+// this whole change exists to close, for a caller that changed nothing.
+//
+// `advertised` therefore still requires a non-blank entry, exactly as before,
+// and `[""]` still reads as legacy for the same reason. What the pointer buys
+// is that the state is now REPRESENTABLE and READABLE - a caller can send it,
+// this function can see it, and the handshake (which is a different field with
+// a different vocabulary) gets the absent/empty distinction it needs. Giving
+// `[]` a distinct MEANING on this axis is a wire-semantic change that belongs
+// with the field's retirement on the v11 train, not with a minor.
+func canonicalizeFulfillmentCapabilities(raw *[]string) (set map[string]bool, advertised bool) {
+	if raw == nil || len(*raw) == 0 {
 		return nil, false
 	}
-	out := make(map[string]bool, min(len(raw), maxFulfillmentCapabilities))
-	for i, c := range raw {
+	out := make(map[string]bool, min(len(*raw), maxFulfillmentCapabilities))
+	for i, c := range *raw {
 		if i >= maxFulfillmentCapabilities {
 			break
 		}
@@ -2015,6 +2208,24 @@ type decisionAuditInput struct {
 	// onto the decision span's decision.gateway_id attribute. Empty for callers
 	// that don't assert one.
 	gatewayID string
+	// pepIdentity, pepAudience and pepCapabilities record WHICH enforcement
+	// point declared WHAT, for a decision that turned on that declaration
+	// (#3704). They are set only when a handshake was admitted.
+	//
+	// A COUNTER ANSWERS HOW MANY; AN AUDIT ROW ANSWERS WHICH. A
+	// pep_capability_unsupported deny is a decision about a request, and it is
+	// the one kind of deny whose cause lives entirely in something the CALLER
+	// said - so a compliance reader asking "why was this refused, and on whose
+	// word" has nowhere else to look. The legacy gateway_id that this handshake
+	// supersedes is already written to the row; recording strictly less about
+	// its successor would be a regression nobody declared.
+	//
+	// pepIdentity is the RESOLVED identifier, `client:<credential>:<name>` -
+	// never the caller's raw pep_id, so the row cannot record a name the
+	// platform did not compose.
+	pepIdentity     string
+	pepAudience     string
+	pepCapabilities []string
 	// origin is the low-cardinality caller-integration bucket (WS-5, #2761):
 	// one of the OriginXxx constants (claude-code / claude-desktop / sdk /
 	// plugin / gateway / unknown), derived by classifyDecisionOrigin from the
@@ -2359,6 +2570,27 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 	// identity. The row's tenant_id/org_id COLUMNS carry the ACTUAL (authenticated)
 	// identity; these record the security event + what the caller TRIED to claim,
 	// so a single JSONB predicate surfaces every impersonation/mismatch attempt.
+	// #3704: the enforcement point's own declaration, on the row for a decision
+	// that turned on it. Written whenever a handshake was admitted, not only on
+	// the deny, so an allow through a capable enforcement point records the
+	// claim that made it capable - an audit trail that only keeps the refusals
+	// cannot answer "was this ever true".
+	if audit.pepIdentity != "" {
+		details["pep_id"] = audit.pepIdentity
+	}
+	if audit.pepAudience != "" {
+		details["pep_audience"] = audit.pepAudience
+	}
+	if len(audit.pepCapabilities) > 0 {
+		details["pep_capabilities"] = audit.pepCapabilities
+	} else if audit.pepIdentity != "" {
+		// An admitted enforcement point that declared NOTHING records an empty
+		// list rather than omitting the member. Omitting it would make "declared
+		// none" indistinguishable from "declared nothing at all" in the durable
+		// record - the same collapse this whole lane exists to correct, one
+		// storage layer down.
+		details["pep_capabilities"] = []string{}
+	}
 	if audit.securityEvent != "" {
 		details["security_event"] = audit.securityEvent
 	}
@@ -2559,4 +2791,21 @@ func writeDecisionAuditRow(ctx context.Context, db *sql.DB, detailsJSON []byte, 
 func RegisterDecisionHandlers(r *mux.Router) {
 	r.Handle(decisionHandlerPath, apiAuthMiddleware(http.HandlerFunc(handleDecide))).Methods("POST", "OPTIONS")
 	log.Printf("✅ Decision Mode endpoint registered: POST %s", decisionHandlerPath)
+}
+
+// declaresMCPGatewayCall reports whether a decide request declares itself an
+// in-path MCP gateway call, by carrying the seam's method marker.
+//
+// It is deliberately a PRESENCE check on an untrusted context member, and that
+// is sound because of the direction it moves the outcome: the only thing this
+// answer can do is WITHHOLD a capability-scoping relaxation (see handleDecide).
+// A caller cannot gain anything by lying in either direction — asserting it
+// costs false positives, omitting it leaves the caller exactly where the other
+// condition puts them.
+func declaresMCPGatewayCall(reqContext map[string]interface{}) bool {
+	if reqContext == nil {
+		return false
+	}
+	_, ok := reqContext[pep.ContextKeyMCPMethod]
+	return ok
 }

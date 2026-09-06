@@ -611,14 +611,7 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		// has resolved from the user's session. Authenticate() looks for the
 		// signed credentials in `hints` only, so we have to lift them off the
 		// request headers ourselves before calling it.
-		var hints *AuthHints
-		if svcID := r.Header.Get("X-Internal-Service-ID"); svcID != "" {
-			hints = &AuthHints{
-				ClientID:  svcID,
-				UserToken: r.Header.Get("X-Internal-Service-Token"),
-				TenantID:  r.Header.Get("X-Tenant-ID"),
-			}
-		}
+		hints := internalServiceHints(r)
 
 		// Use unified Authenticate() for all deployment modes
 		auth, authErr := Authenticate(r, hints)
@@ -701,4 +694,29 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// internalServiceHints lifts the customer-portal's signed internal-service
+// credentials off the request headers.
+//
+// EXTRACTED SO THERE IS ONE DEFINITION, not two. Authenticate() looks for
+// signed credentials in `hints` only, so every caller that wants to accept an
+// internal-service request has to lift the same three headers - and a second
+// hand-rolled copy is how one of them ends up reading a different header name
+// or forgetting the tenant scope, which fails OPEN in the direction that
+// matters: a request that should have been attributed to the portal's resolved
+// tenant instead arrives unattributed.
+//
+// Returns nil when no internal-service id is present, which is exactly what
+// Authenticate() expects for an ordinary caller.
+func internalServiceHints(r *http.Request) *AuthHints {
+	svcID := r.Header.Get("X-Internal-Service-ID")
+	if svcID == "" {
+		return nil
+	}
+	return &AuthHints{
+		ClientID:  svcID,
+		UserToken: r.Header.Get("X-Internal-Service-Token"),
+		TenantID:  r.Header.Get("X-Tenant-ID"),
+	}
 }

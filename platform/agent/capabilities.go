@@ -3,7 +3,11 @@
 
 package agent
 
-import "axonflow/platform/shared/plugincompat"
+import (
+	"axonflow/platform/shared/capability"
+	"axonflow/platform/shared/plugincompat"
+	"axonflow/platform/shared/sdkcompat"
+)
 
 // PlatformCapability describes a feature supported by the platform.
 type PlatformCapability struct {
@@ -47,102 +51,71 @@ type PluginCompatInfo struct {
 	RecommendedPluginVersion map[string]string `json:"recommended_plugin_version"`
 }
 
-// getCapabilities is the hand-maintained feature list served on /health. It is
-// not documentation: SDKs, plugins and customers branch on it to discover what
-// this platform supports, so an omission reads to a client as "not supported".
+// getCapabilities is the feature list served on /health. It is not
+// documentation: SDKs, plugins and customers branch on it to discover what this
+// platform supports, so an omission reads to a client as "not supported".
 //
-// RUNBOOK_RELEASE_PREP.md Step 0b is the control that keeps it current. The test
-// it applies to every item in a release train is: does this add or change a
-// surface a CLIENT can observe, meaning a route, a header contract, an
-// obligation type or a discovery field? Machinery with no client-visible
+// IT IS NO LONGER A HAND-MAINTAINED LITERAL. Until #3618 it was one, and a
+// hand-maintained list is a census bounded by whoever last remembered to edit
+// it: four release trains — v10.0 through v10.3 — shipped without a single
+// entry, including a route all five SDKs call. The list is now PROJECTED from
+// platform/shared/capability, the one canonical capability registry (ADR-066
+// decision 1), so this file cannot drift from the registry at all: there is
+// nothing here to forget to edit.
+//
+// What still needs a judgement, and where it is now made: whether a new
+// capability gets a /health entry at all. The test is unchanged — does this add
+// or change a surface a CLIENT can observe, meaning a route, a header contract,
+// an obligation type or a discovery field? Machinery with no client-visible
 // surface (a store with no writer, a recorded-only comparison, an exported
 // metric series, an internal control-plane route on another binary) does NOT
-// get an entry. Nothing enforces the rule yet; #3618 tracks deriving this list
-// or guarding it against the registered routes.
+// get an entry. That judgement is now RECORDED rather than remembered: a
+// registry entry either carries a health block or carries a
+// health_absent_reason, and one of the two is mandatory. And the reminder to
+// make the judgement arrives on its own, because the registry's route
+// derivation fails CI when a registered route has no entry.
 //
-// Known debt, deliberately not paid here: the list carries nothing from v10.0,
-// v10.1 or v10.2, because Step 0b did not exist for those trains. Back-filling
-// them needs a per-feature judgement against the same test and is item 2 of
-// #3618.
+// RUNBOOK_RELEASE_PREP.md Step 0b (in axonflow-internal-docs) is the
+// release-train control that walks the manifest and applies that test. It still
+// describes editing a literal here, and says "nothing enforces this yet" —
+// both of which this change makes untrue. Updating it is a companion PR in that
+// repository; this comment says what is true of THIS file rather than what a
+// document in another repository will say once it is merged.
 func getCapabilities() []PlatformCapability {
-	return []PlatformCapability{
-		{Name: "health_check", Since: "1.0.0", Description: "Basic health endpoint"},
-		{Name: "proxy_llm_call", Since: "1.0.0", Description: "Proxy mode LLM calls with policy enforcement"},
-		{Name: "audit_llm_call", Since: "1.0.0", Description: "Audit logging for LLM calls"},
-		{Name: "static_policies", Since: "2.0.0", Description: "System policy CRUD"},
-		{Name: "gateway_mode", Since: "3.0.0", Description: "Gateway mode integration"},
-		{Name: "dynamic_policies", Since: "3.2.0", Description: "Runtime dynamic policy engine"},
-		{Name: "multi_agent_planning", Since: "4.3.0", Description: "MAP plan and execute lifecycle"},
-		{Name: "workflow_control", Since: "4.3.0", Description: "WCP workflow lifecycle management"},
-		{Name: "execution_replay", Since: "4.3.0", Description: "Execution recording and replay"},
-		{Name: "cost_controls", Since: "4.4.0", Description: "Budget and cost management"},
-		{Name: "media_governance", Since: "4.4.0", Description: "Multimodal image governance"},
-		{Name: "wcp_step_metrics", Since: "4.5.0", Description: "WCP step-complete post-execution metrics"},
-		{Name: "mcp_check_endpoints", Since: "4.7.0", Description: "Standalone MCP policy check-input/check-output"},
-		{Name: "circuit_breaker", Since: "4.7.0", Description: "Circuit breaker pipeline enforcement"},
-		{Name: "version_discovery", Since: "4.8.0", Description: "Version and capability discovery"},
-		{Name: "hitl_response_parity", Since: "7.4.0", Description: "WCP + MAP approve/reject responses share retry_context, approver metadata, policies_matched (ADR-046)"},
-		{Name: "plugin_compatibility", Since: "7.5.0", Description: "Health response advertises min_plugin_version + recommended_plugin_version per plugin id (mirrors sdk_compatibility)"},
-		{Name: "community_saas_recovery", Since: "7.7.0", Description: "POST /api/v1/recover[/verify] free-tier credential recovery via emailed magic link (Community SaaS only)"},
-		{Name: "plugin_claim_license", Since: "7.7.0", Description: "Stripe-driven Pro v1 plugin license issuance (POST /api/v1/billing/stripe-webhook) + per-request X-License-Token validation (Community SaaS only)"},
-		{Name: "v1_pro_upgrade_envelope", Since: "7.8.0", Description: "Structured V1 upgrade envelope on every Free-tier limit hit (429 daily_quota + 403 active_policies / hitl_approvals_window / feature_pro_only) with locked compare_url + buy_url + Retry-After header (Community SaaS only)"},
-		{Name: "v1_pro_mcp_tools", Since: "7.8.0", Description: "Five new MCP tools on /api/v1/mcp-server (axonflow_get_tenant_id, axonflow_request_approval, axonflow_create_tenant_policy, axonflow_get_cost_estimate, axonflow_list_pro_features) with tier-aware tools/list filtering and graduated FreeUsageLimit gates"},
-		{Name: "v1_pro_graduated_freemium", Since: "7.8.0", Description: "Free tier exposes a taste of Pro capabilities — 2 active custom tenant policies + 1 HITL approval per rolling 7d — with structured 403 envelope on cap-hit; Pro tier removes both caps (Community SaaS only)"},
-		{Name: "decision_obligations", Since: "8.6.0", Description: "Decision Mode /api/v1/decide emits self-describing, engine-fulfillable redact_pii obligations carrying a fulfillment block (endpoint, method, phase, content_types) so a PEP discharges them via the engine instead of hand-rolling redaction (ADR-056/057)"},
-		{Name: "two_touch_redaction", Since: "8.6.0", Description: "Request-phase (POST /api/v1/mcp/check-input → redacted_statement + redaction_evaluated) and response-phase (POST /api/v1/mcp/check-output → redacted_data) PII redaction both return engine-masked content, so PEPs never hand-roll redaction on either leg"},
-		{Name: "client_version_telemetry", Since: "9.7.0", Description: "Per-client version-distribution telemetry: validated X-Axonflow-Client client id + version pairs are recorded into the axonflow_client_version_requests_total counter on the decide and MCP check-output planes (Enterprise builds; Community builds no-op and register no series). Telemetry-only — never consulted for auth or a verdict"},
-		{Name: "seam_capability_decisioning", Since: "9.11.0", Description: "Seam-capability-aware obligations: a PEP advertises what its seam can discharge via DecideRequest.fulfillment_capabilities (vocabulary: request_body_redaction, request_header_mutation) and POST /api/v1/decide emits only obligations that caller can fulfill. A request-body redaction suppressed on a non-capable seam (e.g. Envoy ext_authz, which is headers-only) applies the org's obligation-fallback posture — log (default: allow, no obligation, canonical audit row records the suppressed redaction + detected categories) or block (deny) — configurable per org on the obligation_fallback detection-posture category. The posture is resolved server-side from the org, never from the request; absent/empty capabilities means a legacy caller and reproduces pre-9.11.0 behavior exactly (all SDKs unaffected). Replaces the adapter-local allow→403 conversion so every outcome is an engine round-trip (ADR-056)"},
-		{Name: "identity_header_attribution", Since: "9.9.0", Description: "Trust-gated per-user audit attribution: X-User-Email / X-Session-Id (and X-User-ID on the MCP-server plane) attribute audit_logs rows on all four governance planes (decide, MCP check-input, MCP check-output, MCP-server tools/call) when the deployment opts in via AXONFLOW_TRUST_IDENTITY_HEADERS=true (default off — untrusted headers are ignored and a detection warning is logged). Attribution-only — a forged header can never influence a verdict, authz decision, or tenant/org resolution; per-user features (ADR-044 session overrides, user-scoped dynamic policies) key on the trusted identity only under the gate"},
-		{Name: "authzen_evaluation", Since: "10.3.0", Description: "AuthZEN-native authorization on POST /api/v1/access/evaluation. A PEP sends the AuthZEN envelope in either shape (a singular `evaluation` or a plural `evaluations`, exactly one member, enforced by the decoder, the JSON Schema and every generated client alike) and gets back ONE decision: the entries of a plural envelope are preconditions of a single operation, so they meet, and one denied entry denies the operation. Profile negotiation is the X-Axonflow-AuthZEN-Profile request header. No header (or an empty one) means the caller asked for AuthZEN 1.0 and gets exactly that, the bare boolean - with ONE exception, which a PEP feature-detecting this surface must handle: an otherwise-ALLOWED decision carrying a MANDATORY obligation answers such a caller with the boolean false, because the obligation rides in the context it did not negotiate and it must not be handed a permission whose precondition it will never see (ADR-065 invariant 8; the denial is counted under outcome=obligation_withheld and audited as blocked with policy_details.authzen_obligation_withheld). An allow carrying no mandatory obligation is still true for a bare caller, and the denied, challenged and errored paths are unchanged. `axonflow-authzen-profile-2026-08-29` additionally returns the AxonFlow rendering in the response context: four-valued operational state, obligations, approval challenge, safe reason. Any other non-empty profile is REFUSED, naming the profile this build emits, so a PEP negotiating a later profile against an older server can never read a bare allow as a successful negotiation and proceed past an obligation it never saw. Refusals raised before evaluation are typed and carry a JSON pointer to the offending member: malformed_envelope, incomplete_evaluation, unsupported_subject, unsupported_action, unsupported_resource, unevaluable_attribute, missing_evaluable_content, evaluation_unavailable. This route is an ADAPTER over the evaluation POST /api/v1/decide already serves, NOT the ADR-065 Policy Decision Point: the envelope is mapped to a DecideRequest and run through that same handler, so the two surfaces cannot drift, /api/v1/decide is unchanged and wire-stable, and at v11 the engine behind this route changes with no wire change. Registered unconditionally in every edition at every tier, with no flag and no kill switch; audit rows from this surface record plane `access_evaluation` so adoption is measurable separately from /api/v1/decide (ADR-065, #3611)"},
+	adv := capability.Advertise(capability.PlaneAgent)
+	out := make([]PlatformCapability, 0, len(adv))
+	for _, a := range adv {
+		out = append(out, PlatformCapability{Name: a.Name, Since: a.Since, Description: a.Description})
 	}
+	return out
 }
 
+// -- the pre-#3618 literal, deleted -------------------------------------------
+//
+// The 29 entries that used to be here were captured by RUNNING this function
+// before the change and are checked in at
+// platform/shared/capability/testdata/health_wire_freeze_agent.json, where
+// TestProjectionReproducesTheFrozenWire compares the projection against them
+// byte for byte. They are not kept here as a second copy: the whole point of
+// #3618 is that the /health list and the registry stop being two
+// hand-maintained vocabularies, and a frozen Go literal beside the projection
+// is exactly the second vocabulary, one edit away from being "kept current".
+
 func getSDKCompatibility() SDKCompatInfo {
+	// Both values come from platform/shared/sdkcompat, the single source of
+	// truth for the two planes. These literals used to live here AND in the
+	// sibling plane, and /health serves both -- the same duplication the plugin
+	// maps below carried, and were consolidated to end (#3229). The SDK maps
+	// were left behind by that fix; #3712 is the omission. The guard that stood
+	// over them meanwhile was a source-parsing parity test comparing the two
+	// copies, which is the instrument plugincompat's own package doc records as
+	// insufficient: two files that agree at a stale value agree.
+	//
+	// The release-train narrative that used to sit inline moved to the sdkcompat
+	// package doc, next to the values it explains.
 	return SDKCompatInfo{
-		// Floor of the current major line. The SDK major bumped from
-		// v7 to v8 during the v7.9.0 release-train (#2016 pre-emptive
-		// floor bump 2026-05-08, folded into the v7.9.0 community sync
-		// at #2102 on 2026-05-09). The current v8.0.0 platform bump
-		// (#2308) did NOT change the SDK floor — it stayed at v8.0.0.
-		// Callers below 8.0.0 lack the typed 429 RateLimitError
-		// upgrade-envelope handling and the list_decisions method
-		// (Session γ / #1982). Advertising the floor signals to them
-		// that they should upgrade to keep envelope-aware error
-		// handling and the new list endpoint. Note: Go's major bump
-		// also changes the import path (axonflow-sdk-go/v7 → /v8) per
-		// Go modules v2+ rules.
-		// rust joined the compat maps in the 9.7.0 release-train. Its 0.x
-		// preview line is versioned independently of the 8.x SDKs; the
-		// floor is 0.7.0 — the first rust release that speaks the current
-		// Decision Mode PEP contract (decide → fulfill → forward, engine-
-		// only fulfill, fail-closed on missing verdict; epic #2563). The
-		// 0.5/0.6 previews predate that contract.
-		MinSDKVersion: map[string]string{
-			"python":     "8.0.0",
-			"typescript": "8.0.0",
-			"go":         "8.0.0",
-			"java":       "8.0.0",
-			"rust":       "0.7.0",
-		},
-		// Latest tag this platform was tested against. Kept in lockstep
-		// with each SDK's release-train tag. java bumped 8.5.0 -> 8.5.1 in
-		// the 9.1.1 security patch (2026-06-16): 8.5.1 adds a production
-		// guard around the opt-in insecure-TLS dev hatch plus dependency
-		// CVE clears. python/typescript/go bumped 8.5.0 -> 8.5.1 in the
-		// 9.7.0 release-train (epic #2861 SDK hostile sweep): go 8.5.1
-		// fails closed on 4xx auth errors instead of silently allowing,
-		// python 8.5.1 bridges sync interceptors onto a persistent event
-		// loop + detects AsyncOpenAI clients, typescript 8.5.1 sends auth
-		// on getPlanStatus. java stays 8.5.1 (no new java tag this train).
-		// rust enters at 0.8.1 (execute_plan status fix + the 9.7.0 train
-		// examples baseline).
-		RecommendedSDKVersion: map[string]string{
-			"python":     "9.2.0",
-			"typescript": "9.2.0",
-			"go":         "9.2.0",
-			"java":       "9.2.0",
-			"rust":       "0.9.0",
-		},
+		MinSDKVersion:         sdkcompat.MinVersions(),
+		RecommendedSDKVersion: sdkcompat.RecommendedVersions(),
 	}
 }
 

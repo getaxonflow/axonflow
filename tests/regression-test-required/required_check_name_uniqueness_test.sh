@@ -67,9 +67,27 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 if [ -d ee ]; then
   REPO="getaxonflow/axonflow-enterprise"
-  REQUIRED=$'Build Summary\nTest Summary\nLint Summary\nSecurity Scan Summary\nLint \xe2\x80\x94 no mocks in runtime-e2e/\nRuntime E2E required for user-facing changes\nMigrations apply cleanly\nLint - no HTTP-code-only stack readiness waits'
+  # SINGLE DEFINITION (#3730). main_guard_visibility_test.sh needs the same
+  # eight contexts, and a second inline copy of them would drift silently, so
+  # the list lives in one file that both read. The floor below is what makes a
+  # damaged or truncated read loud instead of turning this guard into one that
+  # compares against nothing and passes.
+  REQUIRED_FILE="tests/regression-test-required/lib/required-contexts-enterprise.txt"
+  if [ ! -f "$REQUIRED_FILE" ]; then
+    echo "FAIL: $REQUIRED_FILE is missing - the required-context list has no definition"
+    exit 1
+  fi
+  REQUIRED=$(grep -v '^#' "$REQUIRED_FILE" | sed '/^[[:space:]]*$/d')
+  n_required=$(printf '%s\n' "$REQUIRED" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$n_required" -ne 8 ]; then
+    echo "FAIL: read $n_required required contexts from $REQUIRED_FILE, expected 8."
+    echo "      If branch protection genuinely changed, update the file AND this floor"
+    echo "      in the same diff - re-derive with the gh api command in the file header."
+    exit 1
+  fi
 else
   REPO="getaxonflow/axonflow"
+  # The mirror protects four contexts and never reads the enterprise file above.
   REQUIRED=$'Build Summary\nTest Summary\nLint Summary\nSecurity Scan Summary'
 fi
 echo "tree identity: $REPO"
@@ -377,4 +395,114 @@ if [ "$failures" -gt 0 ]; then
   echo "FAIL: $failures required status-check context(s) do not have exactly one producer"
   exit 1
 fi
-echo "PASS: every required status-check context has exactly one producing workflow"
+# ---------------------------------------------------------------------------
+# REPORTABILITY. Ownership is not enough, and this test passing while the
+# repository was one merge away from unmergeable is the proof.
+#
+# On 2026-09-04 a cost change removed the `pull_request` trigger from
+# test.yml, the sole producer of the required context `Test Summary`. A
+# required context that never reports on a pull request leaves every PR at
+# mergeState=BLOCKED - measured on this repository 2026-08-28 - and
+# bypass_actors is now [], so there is no admin merge to recover with: undoing
+# it would need a manual ruleset edit. This test held the eight contexts AND
+# already knew test.yml owned that one, and still passed, because it only ever
+# asked "who produces this name", never "can that producer still report".
+#
+# So: every required context's producing workflow must trigger on
+# pull_request. A workflow may make individual JOBS post-merge (test.yml's
+# four heavy lanes carry `github.event_name != 'pull_request'`), but the
+# workflow itself has to be able to report.
+# ---------------------------------------------------------------------------
+report_out=$(python3 - <<'PY'
+import glob, io, json, subprocess, sys, yaml
+
+ruleset = json.loads(subprocess.run(
+    ["gh", "api", "repos/getaxonflow/axonflow-enterprise/rulesets/9199766"],
+    capture_output=True, text=True).stdout or "{}")
+contexts = [c["context"] for r in (ruleset.get("rules") or [])
+            if r.get("type") == "required_status_checks"
+            for c in r["parameters"]["required_status_checks"]]
+PINNED = ["Build Summary", "Test Summary", "Lint Summary",
+          "Security Scan Summary", "Lint \u2014 no mocks in runtime-e2e/",
+          "Runtime E2E required for user-facing changes",
+          "Migrations apply cleanly",
+          "Lint - no HTTP-code-only stack readiness waits"]
+degraded = not contexts
+if degraded:
+    # A guard that cannot read its input must not report a pass on the
+    # strength of a hardcoded copy. CI printed "NOTE: ruleset unreadable"
+    # and then "ok:" and passed - the exact fail-open shape this PR removes
+    # from suite-relevant.py. The pinned list is still used, because
+    # checking eight known names beats checking none, but the pinned list is
+    # a SNAPSHOT: it cannot see a context added to the ruleset since, and a
+    # context added and then made unreportable is precisely this test's
+    # subject. So the degraded run is loud and the caller decides.
+    contexts = PINNED
+    print("DEGRADED: ruleset unreadable; falling back to the pinned snapshot",
+          file=sys.stderr)
+elif sorted(contexts) != sorted(PINNED):
+    # Not a failure - the ruleset is the authority - but the snapshot this
+    # test falls back to is now stale, and a stale snapshot is what makes a
+    # degraded run misleading.
+    print(f"DRIFT: ruleset contexts differ from the pinned snapshot. "
+          f"only-in-ruleset={sorted(set(contexts)-set(PINNED))} "
+          f"only-in-snapshot={sorted(set(PINNED)-set(contexts))}", file=sys.stderr)
+
+producers = {}
+for f in sorted(glob.glob(".github/workflows/*.yml")):
+    d = yaml.safe_load(io.open(f, encoding="utf-8"))
+    if not isinstance(d, dict):
+        continue
+    on = d.get("on") or d.get(True) or {}
+    for jn, j in (d.get("jobs") or {}).items():
+        name = (j or {}).get("name") or jn
+        producers.setdefault(str(name), []).append((f.split("/")[-1], isinstance(on, dict) and "pull_request" in on))
+
+problems = []
+for ctx in contexts:
+    owners = producers.get(ctx)
+    if not owners:
+        problems.append(f"{ctx!r}: NO workflow produces this required context - nothing will ever report it")
+        continue
+    for base, has_pr in owners:
+        if not has_pr:
+            problems.append(f"{ctx!r}: produced by {base}, which has NO pull_request trigger - every PR would sit at mergeState=BLOCKED")
+if len(contexts) < 5:
+    problems.append(f"census saw only {len(contexts)} required contexts (expected >= 5)")
+print("DEGRADED" if degraded else "LIVE")
+print(len(contexts))
+print("\n".join(problems))
+PY
+)
+report_mode=$(printf '%s\n' "$report_out" | sed -n 1p)
+n_ctx=$(printf '%s\n' "$report_out" | sed -n 2p)
+report_problems=$(printf '%s\n' "$report_out" | tail -n +3 | sed '/^$/d')
+if [ -n "$report_problems" ]; then
+  echo "FAIL: a required status check cannot report on a pull request:"
+  printf '%s\n' "$report_problems" | sed 's/^/  /'
+  echo ""
+  echo "A required context must report on pull_request or no PR can ever merge,"
+  echo "and bypass_actors is [] so there is no admin merge to recover with."
+  echo "Keep the workflow's pull_request trigger and make individual JOBS"
+  echo "post-merge instead, with a top-level"
+  echo "  github.event_name != 'pull_request'"
+  echo "conjunct on the job's if: (see test.yml's four heavy lanes)."
+  exit 1
+fi
+if [ "$report_mode" = "DEGRADED" ]; then
+  # Loud, and not a silent pass. In CI the ruleset is readable with the default
+  # token, so DEGRADED means something changed about the token or the API - and
+  # a checks-configuration guard running blind is not evidence about the
+  # checks configuration.
+  echo "FAIL: could not read ruleset 9199766, so this guard checked a hardcoded"
+  echo "      snapshot rather than the live required-context list. A guard that"
+  echo "      cannot read its input must not report a pass - that is the"
+  echo "      fail-open shape this PR removes from suite-relevant.py."
+  echo "      Re-run with a token that can read the ruleset, or set"
+  echo "      ALLOW_PINNED_SNAPSHOT=1 to accept the snapshot deliberately."
+  [ "${ALLOW_PINNED_SNAPSHOT:-0}" = "1" ] || exit 1
+  echo "      (ALLOW_PINNED_SNAPSHOT=1 set; continuing against the snapshot)"
+fi
+echo "ok: all ${n_ctx} required contexts have a producer that reports on pull_request (${report_mode})"
+
+echo "PASS: every required status-check context has exactly one producing workflow that can report"

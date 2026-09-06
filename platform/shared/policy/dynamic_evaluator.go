@@ -6,7 +6,6 @@ package policy
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 )
@@ -363,49 +363,64 @@ func (e *DynamicPolicyEvaluator) GetConfig() DynamicPolicyConfig {
 	return e.config
 }
 
-// resolveConnectorLimitTier determines the license tier for connector limit enforcement.
-// DEPLOYMENT_MODE controls feature gating (community vs enterprise deployment).
-// AXONFLOW_LICENSE_KEY determines resource limits within community mode.
-// Enterprise deployment modes (saas, in-vpc-enterprise, etc.) get unlimited connectors.
+// resolveConnectorLimitTier determines the license tier for connector limit
+// enforcement. Two inputs, in this order: the deployment mode can entitle a
+// deployment on its own, and otherwise AXONFLOW_LICENSE_KEY decides.
+//
+// # #3713: THIS USED TO ASK WHETHER THE MODE STRING WAS ANYTHING BUT `community`
+//
+// The test was `mode != "community" && mode != ""` → Enterprise, i.e. unlimited
+// custom-policy connectors. That is not a question about entitlement; it is a
+// question about the spelling of a string, and it answered Enterprise for three
+// populations that have not bought anything:
+//
+//   - `community-saas`, the free shared fleet at try.getaxonflow.com;
+//   - `evaluation`, whose own name is the tier it was never given - the
+//     Evaluation ceiling is reachable ONLY through the licence-key path, which
+//     that mode never took, so the one mode named for the Evaluation limit was
+//     the one mode that could not receive it. Note precisely what the fix does
+//     here: it makes that ceiling REACHABLE, it does not grant it by name.
+//     `DEPLOYMENT_MODE=evaluation` with NO licence key resolves to `community`
+//     (2), not to `evaluation` (5); the free Evaluation tier is granted by an
+//     Evaluation LICENCE KEY, which is what the product's own upgrade hint
+//     below tells the operator to go and get. A mode name is self-asserted and
+//     must not raise a ceiling on its own;
+//   - every UNRECOGNISED value, so a typo in DEPLOYMENT_MODE was
+//     indistinguishable from a purchased Enterprise licence.
+//
+// deploymode.CurrentIsEnterpriseEntitled is the entitlement axis and fails
+// CLOSED on an unrecognised value. It is deliberately not
+// AppliesEnterpriseSchema: that answers which TABLES can exist, its own doc
+// records that the schema and edition answers already disagree on the
+// community-saas fleet, and it answers YES for an unrecognised mode on purpose.
+// See platform/shared/deploymode for the axis and why it is declared rather
+// than derived from the migration categories.
+//
+// Everything not entitled by mode - community, community-saas, evaluation,
+// unset and unrecognised alike - falls through to the licence key, which is how
+// the free Evaluation tier is granted.
+//
+// # THE LICENCE KEY IS READ THROUGH THE VERIFIED SOURCE (#3709 row 1)
+//
+// Everything that is not entitled by mode asks the registered
+// LicenseTierSource (license_tier_source.go) which tier the key VERIFIABLY
+// grants: signature checked, expiry compared, refusal counted. This package
+// no longer parses a licence key at all. The reader it used to carry -
+// extractTierFromLicenseKey, payload decoded and `tier` taken on trust - is
+// gone rather than wrapped, so there is no path left on which a forged or
+// expired key can name its own tier. With no source registered the answer is
+// "community", logged and counted.
+//
+// The unparseable-key fallback to "evaluation" went with it. A key the
+// verifier refuses grants nothing; the free Evaluation tier is granted by a
+// signed Evaluation licence, not by a malformed one.
 func resolveConnectorLimitTier() (tier string) {
-	mode := os.Getenv("DEPLOYMENT_MODE")
-	// Enterprise deployment modes → unlimited
-	if mode != "community" && mode != "" {
+	// Enterprise-entitled deployment modes → unlimited
+	if deploymode.CurrentIsEnterpriseEntitled() {
 		return "enterprise"
 	}
-	// Community deployment mode: extract tier from license key payload
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		return "community"
-	}
-	if t := extractTierFromLicenseKey(licenseKey); t != "" {
-		return strings.ToLower(t)
-	}
-	return "evaluation" // fallback for unparseable keys
-}
-
-// extractTierFromLicenseKey reads the tier field from the license payload
-// without full validation (signature is verified elsewhere at startup).
-func extractTierFromLicenseKey(key string) string {
-	if !strings.HasPrefix(key, "AXON-") {
-		return ""
-	}
-	rest := key[5:]
-	dotIdx := strings.LastIndex(rest, ".")
-	if dotIdx < 1 {
-		return ""
-	}
-	payloadJSON, err := base64.RawURLEncoding.DecodeString(rest[:dotIdx])
-	if err != nil {
-		return ""
-	}
-	var p struct {
-		Tier string `json:"tier"`
-	}
-	if json.Unmarshal(payloadJSON, &p) != nil {
-		return ""
-	}
-	return p.Tier
+	// Everything else: the tier the licence key verifiably grants.
+	return verifiedLicenseTier(context.Background())
 }
 
 // ValidateCustomPolicyConnectorLimit checks if the enabled connectors exceed the tier's
@@ -414,15 +429,9 @@ func extractTierFromLicenseKey(key string) string {
 // Returns an error if the limit is exceeded for the current tier.
 func ValidateCustomPolicyConnectorLimit(config DynamicPolicyConfig) error {
 	tier := resolveConnectorLimitTier()
-	var limit int
-
-	switch tier {
-	case "enterprise":
+	limit := configuredConnectorLimit(config, tier)
+	if limit == UnlimitedCustomPolicyConnectors {
 		return nil // Unlimited
-	case "evaluation":
-		limit = config.MaxCustomPolicyConnectorsEvaluation
-	default: // community
-		limit = config.MaxCustomPolicyConnectorsCommunity
 	}
 
 	if limit > 0 && len(config.EnabledConnectors) > limit {
@@ -441,15 +450,9 @@ func ValidateCustomPolicyConnectorLimit(config DynamicPolicyConfig) error {
 // Returns the (possibly truncated) list of enabled connectors.
 func EnforceCustomPolicyConnectorLimit(config DynamicPolicyConfig) []string {
 	tier := resolveConnectorLimitTier()
-	var limit int
-
-	switch tier {
-	case "enterprise":
+	limit := configuredConnectorLimit(config, tier)
+	if limit == UnlimitedCustomPolicyConnectors {
 		return config.EnabledConnectors // Unlimited
-	case "evaluation":
-		limit = config.MaxCustomPolicyConnectorsEvaluation
-	default: // community
-		limit = config.MaxCustomPolicyConnectorsCommunity
 	}
 
 	if limit > 0 && len(config.EnabledConnectors) > limit {
