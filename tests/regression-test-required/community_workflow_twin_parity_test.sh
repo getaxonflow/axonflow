@@ -231,6 +231,7 @@ if sim is None:
 replayed = []
 staged_args = []      # the directory the simulation script is told to stage into
 replay_dirs = []      # the directory each replay is pointed at
+other_workflows = []  # (workflow, jobs) replayed via COMMUNITY_WORKFLOW=... overrides
 for step in sim.get("steps") or []:
     script = str(step.get("run") or "")
     joined = re.sub(r"\\\n\s*", " ", script)
@@ -245,8 +246,20 @@ for step in sim.get("steps") or []:
             tokens = line.split("run-community-job-in-mirror.sh", 1)[1].split()
             if tokens:
                 replay_dirs.append(tokens[0])
+            # The simulation also replays OTHER mirrored workflows' jobs
+            # (lint.yml's, via COMMUNITY_WORKFLOW=...). Those are held to the
+            # staged-directory rule above like every replay, but they are not
+            # test-community.yml jobs and rule 2 is about test-community.yml,
+            # so they are not counted here. An override that names
+            # test-community.yml itself still counts.
+            m = re.search(r"COMMUNITY_WORKFLOW=(\S+)", line)
+            if m and not m.group(1).endswith("test-community.yml"):
+                other_workflows.append((m.group(1), tokens[1:]))
+                continue
             replayed.extend(tokens[1:])
 replayed = sorted(set(replayed))
+for wf, jobs in other_workflows:
+    ok("replays %s job(s) %s on the staged copy (not part of rule 2)" % (wf, ", ".join(jobs)))
 
 # The replay must be pointed at the STAGED copy. Pointing it at the checkout
 # replays the community jobs on the unstripped enterprise tree, which passes
