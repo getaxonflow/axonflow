@@ -128,6 +128,20 @@ jobs:
           # than the day quiet. Sufficiency itself is a derived set comparison
           # (every such workflow must produce a completed run; a scoped-out
           # suite still reports completed/skipped, which counts).
+          #
+          # THIS IS THE ENTERPRISE CALIBRATION AND IT APPLIES ONLY HERE. This
+          # workflow and its script both SYNC to the community mirror, whose
+          # tree the sync strips of runtime-e2e/ and every enterprise-only
+          # workflow - 2 stack-booting merge_group workflows there against 76
+          # here. 20 is unreachable on that tree by construction, and it failed
+          # there exactly that way on the v10.4.0 sync PR's queue build
+          # (getaxonflow/axonflow run 34066582583). suite-gate.py therefore
+          # reads the EDITION OFF THE CHECKED-OUT TREE - the same marker
+          # scripts/lint-trap-handlers-exit.sh and
+          # scripts/lint-hitl-queue-choke-point.sh use, never "the count looks
+          # small" - and on the mirror derives the floor from the mirror's own
+          # census instead of from this number. Leaving this value alone is
+          # what keeps the enterprise floor at 20.
           MIN_SUITE_RUNS: '20'
         run: |
           set -euo pipefail
