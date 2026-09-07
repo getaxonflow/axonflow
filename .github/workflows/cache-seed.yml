@@ -96,7 +96,7 @@ jobs:
             modules: platform platform/decision
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go (key mirrors one consumer exactly)
         uses: actions/setup-go@v6
@@ -142,7 +142,7 @@ jobs:
             modules: ee/platform/customer-portal
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go (key mirrors one consumer exactly)
         uses: actions/setup-go@v6
@@ -170,7 +170,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -197,7 +197,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
