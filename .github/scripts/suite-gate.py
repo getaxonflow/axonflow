@@ -23,6 +23,32 @@ OUTCOMES, all three of them stated so none is a fallthrough:
   * every observed suite succeeded or skipped          -> pass
 A `skipped` suite is a pass: a queue build legitimately skips a suite whose
 own job-level conditions exclude it.
+
+THE SANITY FLOOR IS A PROPERTY OF THE TREE, NOT A CONSTANT THAT FITS ONE OF
+THEM. This file SYNCS to the community mirror, and the mirror's tree is not
+this one: the sync strips runtime-e2e/ and every enterprise-only workflow, so
+the mirror carries 2 stack-booting merge_group workflows against this tree's
+76. The enterprise floor of 20 is therefore unreachable on the mirror BY
+CONSTRUCTION, and it failed there exactly that way - "only 2 stack-booting
+workflows declare merge_group (sanity floor 20)" on the v10.4.0 sync PR's
+queue build (getaxonflow/axonflow run 34066582583).
+
+So the floor is chosen from what the CHECKED-OUT TREE CONTAINS, the same
+marker scripts/lint-trap-handlers-exit.sh and
+scripts/lint-hitl-queue-choke-point.sh use, and never from "the count looks
+small" - a gate that decides it must be on the mirror because it found few
+suites is a gate that excuses a broken selector on the tree that has many.
+  * enterprise tree -> MIN_SUITE_RUNS, unchanged at 20.
+  * community tree  -> the count of stack-booting workflows the mirror's own
+    tree carries, and never below 1. That is STRICTER than a constant: every
+    stack-booting workflow that reached the mirror must also declare
+    merge_group, so a selector that matches nothing fails on the floor of 1,
+    a broken `on:` parse fails at 0 < 2, and a mirrored suite that boots a
+    stack outside the queue is named rather than tolerated.
+
+`--check-floor [ROOT]` runs that decision alone, with no API call, and is what
+tests/regression-test-required/suite_gate_floor_is_edition_aware_test.sh
+drives over fixture trees in both directions.
 """
 import glob
 import json
@@ -80,6 +106,58 @@ def suite_workflow_names(workflows_dir=".github/workflows", require_merge_group=
     return names
 
 
+def is_community_tree(root="."):
+    """True for the tree the community sync produces.
+
+    The SAME marker scripts/lint-hitl-queue-choke-point.sh and
+    scripts/lint-trap-handlers-exit.sh use, so the three guards agree on what
+    edition they are standing in: the mirror carries the mirrored lint.yml and
+    NOT sync-community-repo.yml, because the sync excludes its own workflow.
+    Read from what the tree CONTAINS. Never inferred from how many suites were
+    found - that inference is the one a broken selector satisfies.
+    """
+    wf = os.path.join(root, ".github", "workflows")
+    return (os.path.isfile(os.path.join(wf, "lint.yml"))
+            and not os.path.isfile(os.path.join(wf, "sync-community-repo.yml")))
+
+
+def sanity_floor(root="."):
+    """(floor, reason, booting) for this tree. `booting` is None off the mirror.
+
+    See the module header. On the enterprise tree this returns MIN_SUITE_RUNS
+    unchanged, so nothing about the enterprise gate moves.
+    """
+    wf = os.path.join(root, ".github", "workflows")
+    if not is_community_tree(root):
+        return MIN_RUNS, f"the enterprise calibration MIN_SUITE_RUNS={MIN_RUNS}", None
+    booting = suite_workflow_names(wf, require_merge_group=False)
+    return (max(1, len(booting)),
+            f"derived from this community tree, which carries {len(booting)} "
+            f"stack-booting workflow(s) - every one of them must declare merge_group",
+            booting)
+
+
+def floor_holds(root="."):
+    """Apply the sanity floor to ROOT. Prints its own verdict; returns a bool.
+
+    main() calls exactly this, so the regression suite drives the production
+    decision rather than a second copy of it.
+    """
+    wf = os.path.join(root, ".github", "workflows")
+    suites = suite_workflow_names(wf, require_merge_group=True)
+    floor, reason, booting = sanity_floor(root)
+    if len(suites) < floor:
+        print(f"::error::only {len(suites)} stack-booting workflows declare merge_group "
+              f"(sanity floor {floor}, {reason}). "
+              "The selector is broken, not the day quiet.")
+        for n in sorted(set(booting or {}) - set(suites)):
+            print(f"::error::  boots a stack but declares no merge_group: {n}")
+        return False
+    print(f"sanity floor {floor} met by {len(suites)} merge_group suite(s) "
+          f"({reason})")
+    return True
+
+
 def runs_at_sha():
     """EVERY run at this SHA, paginated.
 
@@ -110,9 +188,7 @@ def main():
     # EXPECTED is derived, not guessed: every stack-booting workflow that
     # declares merge_group must produce a completed run for this queue build.
     suites = suite_workflow_names(require_merge_group=True)
-    if len(suites) < MIN_RUNS:
-        print(f"::error::only {len(suites)} stack-booting workflows declare merge_group "
-              f"(sanity floor {MIN_RUNS}). The selector is broken, not the day quiet.")
+    if not floor_holds("."):
         return 1
     print(f"expecting a completed run from each of {len(suites)} merge_group suites "
           f"at {SHA[:9]}")
@@ -161,4 +237,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # `--check-floor [ROOT]`: the sanity-floor decision alone, no API call, so
+    # it can be driven over a fixture tree. Anything else is the real gate.
+    if len(sys.argv) > 1 and sys.argv[1] == "--check-floor":
+        sys.exit(0 if floor_holds(sys.argv[2] if len(sys.argv) > 2 else ".") else 1)
     sys.exit(main())

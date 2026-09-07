@@ -48,8 +48,18 @@ COPY platform/go.mod platform/go.sum platform/
 # before any source is copied. Without it the build fails with
 # "reading decision/go.mod: no such file or directory".
 COPY platform/decision/go.mod platform/decision/go.sum platform/decision/
-RUN cd platform && go mod download
 
+# WORKDIR, not `RUN cd platform && ...` (Trivy DS-0013). `cd` in a RUN is scoped
+# to that one shell, so the directory has to be re-entered by every later step
+# that needs it and is invisible to anything reading the image's metadata;
+# WORKDIR sets it for real. The build semantics are unchanged - every command
+# below runs in exactly the directory it ran in before, which is why the
+# working directory is walked back to /go/src/axonflow around the COPY (whose
+# destination is WORKDIR-relative) and around the grpc-health-probe install.
+WORKDIR /go/src/axonflow/platform
+RUN go mod download
+
+WORKDIR /go/src/axonflow
 COPY platform/ platform/
 
 # Static build: CGO disabled, trimmed paths, stripped symbols. The adapter has
@@ -61,10 +71,13 @@ COPY platform/ platform/
 # enterprise-distributed artifact report `community`, so if this image is ever
 # shipped AS Enterprise, add the tag here rather than pinning the constant in
 # telemetry.go. See the comment on gatewayadapters.Edition.
-RUN cd platform && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+WORKDIR /go/src/axonflow/platform
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w -X axonflow/platform/shared/version.Version=${AXONFLOW_VERSION}" \
     -o /out/axonflow-gateway-adapters \
     ./gateway-adapters/cmd/axonflow-gateway-adapters
+
+WORKDIR /go/src/axonflow
 
 # grpc_health_probe for exec-based health checks (docker HEALTHCHECK below and
 # ECS container healthCheck): the adapter serves standard gRPC health
