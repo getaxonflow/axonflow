@@ -33,7 +33,7 @@ async def main():
     passed = 0
     failed = 0
 
-    # Note: As of SDK v1.0.0 (ADR-026), all routes go through a single endpoint.
+    # Note: As of SDK v1.0.0 (ADR-024), all routes go through a single endpoint.
     # The Agent proxies orchestrator routes internally.
     async with AxonFlow(
         endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),

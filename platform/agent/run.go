@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -319,7 +311,7 @@ func promoteDeploymentOrgTier(db *sql.DB, orgID, tier string, maxNodes int, expi
 	log.Printf("✅ Synced licensed tier into organizations.tier: org=%s tier=%s max_nodes=%d (#2535)", orgID, tier, maxNodes)
 }
 
-// Internal service URLs - auto-discovered based on environment (ADR-026: Single Entry Point)
+// Internal service URLs - auto-discovered based on environment (ADR-024: Single Entry Point)
 // Docker Compose services communicate via service names on the axonflow-network.
 // No configuration required - the Agent detects Docker and uses appropriate URLs.
 const (
@@ -732,6 +724,30 @@ var (
 // phase (database connections, migrations, Redis, etc.). Other routes are added
 // after initialization completes. The server NEVER shuts down - eliminating any
 // transition gaps that could cause health check failures.
+// buildAgentHandler assembles the handler the agent actually serves, from the
+// CORS-wrapped router inward.
+//
+// # WHY THIS IS A NAMED FUNCTION AND NOT ONE INLINE LINE
+//
+// Same argument as the orchestrator's buildOrchestratorHandler, and the same
+// history: a wrap that exists only inside a goroutine inside
+// initServerImmediately is a wrap no test can observe, so deleting it leaves
+// every unit test green. The orchestrator learned that when reverting the whole
+// of #3068 broke nothing that was watching.
+//
+// # WHAT IT WRAPS, AND WHY OUTERMOST (#3817)
+//
+// sharedidentity.SyntheticProbeMiddleware stamps the request context with the
+// synthetic-probe fact. It sits OUTSIDE CORS and outside every auth middleware
+// because the fact is needed by the decision-shadow observation sites deep
+// inside the policy engines - which receive a context and no request - and
+// because a stamp applied per handler is a stamp eleven Authenticate callers
+// can forget. It decides nothing: the value is read at exactly one place, to
+// set one metric label, and planeshadow.Observe returns void.
+func buildAgentHandler(corsWrapped http.Handler) http.Handler {
+	return sharedidentity.SyntheticProbeMiddleware(corsWrapped)
+}
+
 func initServerImmediately(port string) {
 	globalRouter = mux.NewRouter()
 
@@ -758,7 +774,7 @@ func initServerImmediately(port string) {
 
 	// Start server immediately in goroutine - health checks will pass right away
 	go func() {
-		handler := globalCORS.Handler(globalRouter)
+		handler := buildAgentHandler(globalCORS.Handler(globalRouter))
 		log.Printf("🚀 AxonFlow Agent starting on port %s (status: starting)", port)
 		if err := http.ListenAndServe(":"+port, handler); err != nil {
 			log.Fatalf("Server error: %v", err)
@@ -809,6 +825,13 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 		"capabilities":         getCapabilities(),
 		"sdk_compatibility":    getSDKCompatibility(),
 		"plugin_compatibility": getPluginCompatibility(),
+		// #3593: the tier-admission ledger's health, so an operator reading a
+		// dependency_unreachable refusal can see the cause here. On THIS
+		// handler because this is the one /health is registered to (line ~781);
+		// healthHandler below carries the same member and is registered
+		// nowhere, which the first version of this change got the wrong way
+		// round - the runtime suite read `null` off a live agent.
+		"tier_admission": tierAdmissionHealth(),
 	}
 	// Platform-identity members (#3660): `edition` and `deployment_mode`,
 	// ADDITIVE beside `tier`. They are here because /health is the response the
@@ -1026,7 +1049,7 @@ func Run() {
 			migrationsPath = "/app/migrations/"
 		}
 
-		// Multi-path migration collection (ADR-012)
+		// Multi-path migration collection (ADR-011)
 		// Collects migrations from core/, enterprise/, industry/* based on DEPLOYMENT_MODE
 		//
 		// A collection failure is FATAL, not a warning. It used to
@@ -1170,8 +1193,16 @@ func Run() {
 	}
 
 	// Initialize database, audit manager, and policy engine.
-	// DB mode: full enforcement with DB-loaded policies + DB audit.
-	// No-DB mode: engine with nil DB (community fallback) + JSONL audit.
+	//
+	// There is no no-DB mode here. The else arm is fatal: without PostgreSQL
+	// the agent cannot enforce policy, write audit rows or hold the tier-limit
+	// ledger, so it refuses to start rather than serving traffic with those
+	// switched off. The comment that used to sit here still described a
+	// removed "engine with nil DB (community fallback) + JSONL audit" fallback,
+	// which reads as though unsetting DATABASE_URL degrades the agent instead
+	// of stopping it - and therefore as though it were a way to serve traffic
+	// with the #3593 scale limits unenforced. It is not, and
+	// TestNoDatabaseMeansNoServingRatherThanNoLimit keeps it that way.
 	if dbURL != "" {
 		var err error
 		bootCtx := context.Background()
@@ -1206,6 +1237,19 @@ func Run() {
 		// idempotent no-ops. Community builds register nothing (constructors
 		// return ErrEnterpriseOnly) — a harmless no-op there.
 		ensureFleetValidatorsRegistered()
+
+		// #3593: tier scale limits. The ledger, the node lease store and the
+		// refusal audit sink all ride the application pool; the seen-set is
+		// warmed for the deployment organization in the background; and this
+		// agent admits ITSELF as a node before it serves - fatal only on a
+		// positive "another node holds the only lease" answer, never on an
+		// unreachable store (see admitNodeAtBoot).
+		initTierAdmission(usageDB, getDeploymentOrgID())
+		// Drain the admission's background write queue on the way out. A
+		// queued telemetry record is a principal this process knows and the
+		// ledger does not; see shutdownTierAdmission for what losing one costs.
+		defer shutdownTierAdmission()
+		admitNodeAtBoot(bootCtx, getDeploymentOrgID())
 
 		// Audit manager with DB — writes to Postgres
 		initAuditManager(usageDB)
@@ -1443,7 +1487,7 @@ func Run() {
 		defer meteringService.Stop()
 	}
 
-	// Initialize MCP connector registry (ADR-007: three-tier configuration)
+	// Initialize MCP connector registry (ADR-006: three-tier configuration)
 	// Configuration priority: Database > Config File (AXONFLOW_CONFIG_FILE) > Environment Variables
 	if configFile := os.Getenv("AXONFLOW_CONFIG_FILE"); configFile != "" {
 		log.Printf("[MCP] Using config file from AXONFLOW_CONFIG_FILE: %s", configFile)
@@ -1463,7 +1507,7 @@ func Run() {
 		}()
 	}
 
-	// Initialize TenantConnectorRegistry for per-tenant connector management (ADR-007)
+	// Initialize TenantConnectorRegistry for per-tenant connector management (ADR-006)
 	// This provides dynamic connector loading with three-tier configuration:
 	// Database > Config File > Environment Variables
 	tenantConnectorEnabled := os.Getenv("TENANT_CONNECTOR_REGISTRY_ENABLED") != "false"
@@ -1476,7 +1520,7 @@ func Run() {
 			connectorFactory := DefaultConnectorFactory()
 			tenantRegistry := InitTenantConnectorRegistry(runtimeConfigSvc, connectorFactory)
 			if tenantRegistry != nil {
-				log.Println("AxonFlow Agent initialized with per-tenant connector registry (ADR-007)")
+				log.Println("AxonFlow Agent initialized with per-tenant connector registry (ADR-006)")
 				// Start periodic cleanup of expired connectors (StartPeriodicCleanup spawns its own goroutine)
 				tenantRegistry.StartPeriodicCleanup(context.Background(), 5*time.Minute)
 				// Ensure tenant connectors are properly disconnected on shutdown
@@ -1558,7 +1602,7 @@ func Run() {
 	RegisterCAEPReceiver(globalRouter, usageDB)
 	RegisterEnforcePrecondition(globalRouter)
 
-	// Register connector refresh API endpoints (ADR-007)
+	// Register connector refresh API endpoints (ADR-006)
 	// These endpoints allow manual cache invalidation for connector configurations.
 	// #3067 (S-6): RegisterConnectorRefreshHandlers now wraps every route in
 	// apiAuthMiddleware and binds the tenancy to the authenticated credential,
@@ -1613,7 +1657,7 @@ func Run() {
 	// the shared policy engine, forwards to upstream, records audit.
 	RegisterOpenAICompatHandlers(globalRouter)
 
-	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
+	// Register Static Policy API endpoints (ADR-019: Unified Policy Management)
 	// This enables the Customer Portal to list static policies from the Agent
 	RegisterStaticPolicyHandlers(globalRouter, usageDB)
 
@@ -1897,7 +1941,7 @@ func Run() {
 		}
 	}
 
-	// Register Reverse Proxy routes (ADR-026: Single Entry Point Architecture)
+	// Register Reverse Proxy routes (ADR-024: Single Entry Point Architecture)
 	// Proxies requests to Orchestrator and Portal based on path
 	proxyConfig := GetProxyConfig()
 	proxyHandler, err := NewReverseProxyHandler(proxyConfig)
@@ -1906,7 +1950,7 @@ func Run() {
 		log.Println("   SDK clients will need to connect directly to backend services")
 	} else {
 		proxyHandler.RegisterProxyRoutes(globalRouter)
-		log.Println("✅ Reverse proxy initialized (ADR-026: Single Entry Point)")
+		log.Println("✅ Reverse proxy initialized (ADR-024: Single Entry Point)")
 	}
 
 	// Community SaaS: self-registration endpoint (no auth — bootstrap credential)
@@ -2083,6 +2127,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		"capabilities":         getCapabilities(),
 		"sdk_compatibility":    getSDKCompatibility(),
 		"plugin_compatibility": getPluginCompatibility(),
+		// #3593: the tier-admission ledger's health, so an operator reading a
+		// dependency_unreachable refusal can see the cause here.
+		"tier_admission": tierAdmissionHealth(),
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}

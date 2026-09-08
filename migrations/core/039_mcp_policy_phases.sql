@@ -1,7 +1,7 @@
 -- Migration 039: MCP Policy Phases for Tiered Enforcement
 -- Date: 2026-01-08
 -- Purpose: Add phase-aware policy evaluation for MCP requests
--- Related: ADR-022, Issue #963 (EPIC), Issue #975 (Engine)
+-- Related: ADR-026, Issue #963 (EPIC), Issue #975 (Engine)
 --
 -- This migration enables:
 -- 1. Request-phase policy evaluation (block queries containing PII/SQLi)

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package shadow
 
 import (
@@ -161,9 +164,17 @@ func NewWorld(ctx context.Context, rep *legacycompile.Report, plane legacycompil
 	if err != nil {
 		return nil, fmt.Errorf("shadow: building the engine for plane %q: %w", plane, err)
 	}
+	// RECOMPUTED, not advertised (#3700). This digest reaches the per-plane
+	// decision-shadow comparison and is the value a decision is attributed to;
+	// NewEngine has verified the bundles by now, so this cannot fail here, and
+	// that is exactly why it must not be an ordering the next editor can move.
+	bundleDigest, err := bundles[0].VerifiedDigest()
+	if err != nil {
+		return nil, fmt.Errorf("shadow: bundle digest for plane %q: %w", plane, err)
+	}
 	return &World{
 		Plane: plane, Phase: cfg.phase, OrgScope: orgScope, System: system, Organization: org,
-		Engine: engine, Bundles: bundles, BundleDigest: bundles[0].Digest,
+		Engine: engine, Bundles: bundles, BundleDigest: bundleDigest,
 	}, nil
 }
 

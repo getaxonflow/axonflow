@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -367,7 +359,7 @@ func TestApplyLLMConfigToEnv(t *testing.T) {
 // (LLMRouterInterface) which is managed by the production code in run.go.
 
 // =============================================================================
-// Config File Loader Tests (ADR-007 Phase 9)
+// Config File Loader Tests (ADR-006 Phase 9)
 // =============================================================================
 
 func TestSetConfigFileLoaderFromEnv_NoEnvVar(t *testing.T) {

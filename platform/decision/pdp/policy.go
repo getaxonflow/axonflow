@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package pdp is the deterministic policy decision point: a typed authoring
 // document, a lossless compiler into Rego v1, an in-process OPA runtime with
 // restricted capabilities, and the ADR-065 combining semantics implemented in

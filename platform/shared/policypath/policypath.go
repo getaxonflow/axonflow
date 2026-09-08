@@ -21,7 +21,7 @@
 //   - the ORCHESTRATOR serves /api/v1/dynamic-policies itself (8 routes, behind
 //     requireInternalProxyAuth);
 //   - the AGENT also REVERSE-PROXIES /api/v1/dynamic-policies to the
-//     orchestrator, because ADR-026 makes the agent the single entry point - so
+//     orchestrator, because ADR-024 makes the agent the single entry point - so
 //     the tenant-policy family has a registration on a plane that does not
 //     implement it;
 //   - the PORTAL serves /api/v1/static-policies from its own session-authed
@@ -49,7 +49,7 @@ import (
 	"strings"
 )
 
-// The four path families. Legacy* are the paths shipped since ADR-018/ADR-026;
+// The four path families. Legacy* are the paths shipped since ADR-017/ADR-024;
 // the unprefixed names are the successors #1431 introduces.
 const (
 	// LegacySystemPolicies is the pattern-based, platform-authored policy

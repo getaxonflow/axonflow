@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES per-mode Gateway policy configuration.
 //
 // AxonFlow's static policies can be configured per-mode using environment variables.

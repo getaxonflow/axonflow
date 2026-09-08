@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -11,10 +14,36 @@ import (
 // changes, never when a value changes.
 const SchemaVersion = "2026-08-29"
 
-// Snapshot pins every version a decision is computed against. It is what makes
-// a decision replayable offline: the same normalized input plus the same
-// snapshot must reproduce the same decision and the same safe reason codes,
-// with no network access.
+// Snapshot pins every VERSIONED INPUT a decision is computed against - the
+// registry epochs, the policy bundle, the schema. It is most of what makes a
+// decision replayable offline: the same normalized input plus the same
+// snapshot, evaluated by the same enforcement profile, reproduces the same
+// decision and the same safe reason codes with no network access.
+//
+// THE PROFILE IS NOT IN HERE, AND SINCE #3706 THAT IS OBSERVABLE. An
+// enforcement point's advertised capabilities are a property of the CALLER,
+// supplied per request (pdp.DecideOptions), not of the request. A mandatory
+// obligation the caller cannot discharge is a deny and one it can is a permit,
+// so two evaluations sharing this Snapshot can differ. Replay stays sound
+// because replay.Environment carries the profile and Record.EnvironmentDigest
+// hashes it, so a record cannot be replayed against a different one without
+// CheckPins refusing - the guarantee lives there rather than here.
+//
+// SOUND, AND NARROWER THAN IT SOUNDS. What the environment pins is the
+// ENGINE-WIDE profile; replay reproduces through Decide, which uses it. A
+// record captured from a DecideWith call - a per-request profile that differs
+// from the engine's - therefore replays cleanly and can produce a different
+// verdict, because nothing in the record says which profile the sample was
+// actually taken under. Closing it means adding the effective profile to the record schema, which is
+// a schema version and belongs with whatever begins writing records.
+//
+// REVISIT WHEN anything outside a _test.go file constructs a replay.Record.
+// Nothing does today - `git grep 'replay.Record{'` outside tests returns
+// nothing - so no record in existence was taken under a per-request profile,
+// and the gap is a TRIGGER rather than a defect. The observable is that grep,
+// not a component: an earlier version of this sentence named "the sampler",
+// and there is no sampler, so it named nothing anybody could watch and its
+// trailing clause read as "nothing to do here".
 type Snapshot struct {
 	// IdentityEpoch is the REALM REGISTRY epoch: it moves when a trust realm
 	// is registered, re-registered or removed.

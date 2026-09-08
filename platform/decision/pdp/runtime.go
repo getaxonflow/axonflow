@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -24,8 +27,11 @@ import (
 // built-in, which is a decision point rather than a silent capability grant.
 //
 // Nothing here performs I/O, reads the clock, consumes randomness, or reads
-// mutable process state, which is what makes evaluation replayable: the same
-// normalized input and the same bundle reproduce the same decision offline.
+// mutable process state, which is what makes EVALUATION deterministic: the
+// same normalized input and the same bundle produce the same policy outcomes
+// offline. The DECISION built from those outcomes also depends on the
+// enforcement profile, which is a property of the caller rather than of the
+// bundle - see contract.Snapshot and pdp.DecideOptions (#3706).
 // http.send, net.*, time.*, rand.*, opa.runtime, trace and print are absent by
 // construction rather than by exclusion.
 var allowedBuiltins = []string{

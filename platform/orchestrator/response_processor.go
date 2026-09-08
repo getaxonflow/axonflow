@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -146,7 +138,7 @@ func NewResponseProcessorWithConfig(useEnhanced bool, piiConfig PIIDetectorConfi
 }
 
 // SetSharedPolicyEngine sets the shared policy engine for unified PII detection.
-// This enables phase-aware policy enforcement per ADR-022.
+// This enables phase-aware policy enforcement per ADR-026.
 func (p *ResponseProcessor) SetSharedPolicyEngine(engine *sharedpolicy.UnifiedPolicyEngine) {
 	p.sharedPolicyEngine = engine
 	p.useSharedEngine = engine != nil

@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow MAP (Multi-Agent Planning) Example - Go SDK
 //
 // This example demonstrates and VALIDATES all MAP SDK methods:

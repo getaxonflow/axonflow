@@ -18,14 +18,12 @@ import (
 // matrixPath is the living feature matrix this census reconciles against.
 const matrixPath = "technical-docs/COMMUNITY_ENTERPRISE_FEATURE_MATRIX.md"
 
-// tierLimitsPath is the COMMUNITY half of the ADR-029 build-tag pair that
-// carries the tier limit tables.
-//
-// The community half is used on purpose: it is the one that survives on the
-// mirror, so this reconciliation runs in both trees. The enterprise half
-// (tier_support.go) carries the same three tables, and keeping the two in
-// lockstep is that package's own problem, pinned by its tier boundary tests.
-const tierLimitsPath = "platform/agent/license/tier.go"
+// tierLimitsPath is the ONE declaration of the self-hosted tier limit tables
+// (#3593). It carries no build constraint, so it survives on the mirror and
+// this reconciliation runs in both trees; the enterprise image overlays a
+// byte-identical copy from ee/, held identical by
+// tests/regression-test-required/license_pair_byte_identity_test.sh.
+const tierLimitsPath = "platform/agent/license/tier_limits.go"
 
 // readMatrix returns the matrix source, or skips when this is the mirror.
 //
@@ -414,4 +412,61 @@ func tierLimitsStructFields(t *testing.T) []string {
 		t.Fatalf("no TierLimits struct found in %s", tierLimitsPath)
 	}
 	return out
+}
+
+// TestTheMatrixScaleBoundariesAgreeWithTheExecutableLimits reconciles the
+// "Scale boundaries" table (#3593) the same way the licensing table is
+// reconciled above: each row's three cells against the field it names in the
+// one limits table. Both sides are read mechanically.
+func TestTheMatrixScaleBoundariesAgreeWithTheExecutableLimits(t *testing.T) {
+	src := readMatrix(t)
+	limits := tierLimits(t)
+	rows := map[string]string{
+		"Human principals":           "MaxHumanPrincipals",
+		"Service principals":         "MaxServicePrincipals",
+		"Nodes":                      "MaxNodes",
+		"Organization-root policies": "OrgPolicies",
+	}
+	tiers := []struct {
+		col  int
+		name string
+		v    string
+	}{{1, "Community", "CommunityLimits"}, {2, "Evaluation", "EvaluationLimits"}, {3, "Enterprise", "EnterpriseLimits"}}
+	compared := 0
+	for row, field := range rows {
+		var cells []string
+		for _, line := range strings.Split(src, "\n") {
+			if strings.HasPrefix(line, "| "+row+" |") {
+				cells = strings.Split(strings.Trim(line, "|"), "|")
+				for i := range cells {
+					cells[i] = strings.TrimSpace(cells[i])
+				}
+				break
+			}
+		}
+		if len(cells) < 4 {
+			t.Errorf("the matrix's Scale boundaries table has no row %q (or fewer than four cells); the table has moved and this reconciliation reads nothing", row)
+			continue
+		}
+		for _, tier := range tiers {
+			want, ok := limits[tier.v][field]
+			if !ok {
+				t.Errorf("%s: %s declares no %s", tier.name, tierLimitsPath, field)
+				continue
+			}
+			got, ok := normaliseLimit(cells[tier.col])
+			if !ok {
+				t.Errorf("%s %s: cannot read matrix cell %q", tier.name, row, cells[tier.col])
+				continue
+			}
+			compared++
+			if got != want {
+				t.Errorf("MATRIX/CODE DISAGREEMENT — %s %s: the matrix says %q, %s says %d", tier.name, row, cells[tier.col], tierLimitsPath, want)
+			}
+		}
+	}
+	if compared != 12 {
+		t.Fatalf("reconciled %d scale cells, want 12 (4 rows x 3 tiers)", compared)
+	}
+	t.Logf("reconciled %d scale-boundary cells against %s", compared, tierLimitsPath)
 }

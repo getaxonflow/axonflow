@@ -340,7 +340,7 @@ sequenceDiagram
         Agent->>Orch: POST /api/v1/process (X-Org-ID, X-Tenant-ID, internal proxy auth)
         Note over Orch: bind principal + tenancy, dynamic (tenant) policy engine
         alt request_type = mcp-query
-            Orch->>Agent: /mcp/resources/query (connector; SQLi response scan)
+            Orch->>Agent: /mcp/resources/query (connector, SQLi response scan)
         else LLM request
             Orch->>Ext: routed call (platform/orchestrator/llm/router.go)
             Ext-->>Orch: response

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -64,13 +56,13 @@ func isValidLLMProvider(name string) bool {
 var runtimeConfigMu sync.RWMutex
 
 // runtimeConfigService is the global RuntimeConfigService instance for the orchestrator.
-// It implements ADR-007 three-tier configuration priority: Database > Config File > Env Vars
+// It implements ADR-006 three-tier configuration priority: Database > Config File > Env Vars
 // Access to this variable must be protected by runtimeConfigMu.
 var runtimeConfigService *config.RuntimeConfigService
 
 // Note: Legacy llmRouterMu and GetLLMRouter/SetLLMRouter removed in v2.3.0.
 // All LLM routing now uses LLMRouterInterface via llmRouterWrapper.
-// See ADR-022 for migration details.
+// See ADR-021 for migration details.
 
 // InitRuntimeConfigService initializes the RuntimeConfigService for the orchestrator.
 // This should be called during orchestrator startup, after database connection is established.
@@ -221,7 +213,7 @@ func ApplyLLMConfigToEnv(cfg LLMRouterConfig) {
 }
 
 // LoadLLMConfigFromService loads LLM configuration from the RuntimeConfigService.
-// This implements ADR-007 three-tier priority: Database > Config File > Env Vars
+// This implements ADR-006 three-tier priority: Database > Config File > Env Vars
 // Falls back to LoadLLMConfig() (env vars only) if RuntimeConfigService is not available.
 // Thread-safe: uses mutex to protect access to runtimeConfigService.
 func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterConfig {
@@ -384,7 +376,7 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 		log.Printf("[LLM Config] Enabled providers: %v (source: %s)", providers, source)
 	}
 
-	// Load routing configuration from environment variables (ADR-021)
+	// Load routing configuration from environment variables (ADR-020)
 	// Routing config is always loaded from env vars, even when providers come from RuntimeConfigService
 	routingConfig := LoadRoutingConfig()
 	routerConfig.RoutingStrategy = routingConfig.Strategy
@@ -422,7 +414,7 @@ func RefreshLLMConfig(ctx context.Context, tenantID string) error {
 }
 
 // SetConfigFileLoaderFromEnv initializes a config file loader from environment variables.
-// This completes the ADR-007 three-tier configuration: Database > Config File > Env Vars
+// This completes the ADR-006 three-tier configuration: Database > Config File > Env Vars
 //
 // Environment variables checked (in order of precedence):
 //   - AXONFLOW_CONFIG_FILE: Path to YAML/JSON config file (unified config)

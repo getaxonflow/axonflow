@@ -12,7 +12,7 @@ info:
 
     ## Authentication
     The Agent (port 8080) is the single entry point for all client traffic
-    (ADR-026). Clients authenticate at the Agent with HTTP Basic auth
+    (ADR-024). Clients authenticate at the Agent with HTTP Basic auth
     (`clientId:clientSecret`); the Agent proxies policy requests to the
     Orchestrator and stamps the `X-Tenant-ID` header from the authenticated
     client's tenant. When calling the Orchestrator directly (internal
@@ -50,7 +50,13 @@ info:
     No removal date is published for the deprecated spelling and no `Sunset`
     header is emitted, so clients should not infer one. Migrate when
     convenient and watch the release notes.
-  version: 2.1.0
+  # Tracks the platform VERSION file. These four documents describe ONE
+  # platform, so a per-spec version answered a question nobody asks and
+  # answered it wrong: agent-api sat at 2.1.0 and orchestrator-api at
+  # 1.1.0 through 139 commits between them. Kept true by
+  # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
+  # scripts/docs/stamp-docs-versions.py.
+  version: 10.4.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -60,7 +66,7 @@ info:
 
 servers:
   - url: https://agent.getaxonflow.com
-    description: Production (Agent single entry point, ADR-026)
+    description: Production (Agent single entry point, ADR-024)
   - url: http://localhost:8080
     description: Local development (Agent single entry point)
   - url: http://localhost:8081
@@ -69,7 +75,7 @@ servers:
 tags:
   - name: Tenant Policies
     description: |
-      Tenant policy CRUD via the ADR-026 `/api/v1/tenant-policies` surface
+      Tenant policy CRUD via the ADR-024 `/api/v1/tenant-policies` surface
       (Orchestrator, proxied by the Agent). Accepts only policies whose
       category starts with `dynamic-` or `media-`.
 
@@ -104,7 +110,7 @@ tags:
 
 paths:
   # =============================================================================
-  # Dynamic Policies API (ADR-026: Single Entry Point)
+  # Dynamic Policies API (ADR-024: Single Entry Point)
   # =============================================================================
   # Preferred surface for dynamic policy management. Served by the Orchestrator
   # and proxied by the Agent at port 8080. Accepts only policies whose category

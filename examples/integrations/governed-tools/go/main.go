@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // GovernedTool -- Framework-Agnostic Tool Governance Example (Go)
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.

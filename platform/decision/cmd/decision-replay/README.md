@@ -4,6 +4,8 @@ Reproduce a recorded policy decision offline, from normalized input against pinn
 
 This is ADR-065 acceptance gate 16's artifact: *"replay reproduces sampled decisions from pinned inputs and bundles."* It is also the incident tool. When someone disputes a decision - "why was that refund held for approval?", "why did that export deny?" - you reproduce it on a laptop from two files and see the same operational state, the same safe reason code and the same decision identifier, months after the fact and with no database, no orchestrator and no network.
 
+Since #3706 the enforcement point's PEP profile is a per-request input, and the environment file pins the ENGINE-WIDE one. A record sampled from a `DecideWith` call whose profile differed from the engine's therefore replays cleanly and can produce a different verdict, because nothing in the record says which profile the sample was taken under. Closing that means adding the effective profile to the record schema, which is a schema version. **Revisit when anything outside a `_test.go` file constructs a `replay.Record`** - nothing does today, so no record in existence was taken under a per-request profile. That grep is the observable; an earlier version of this sentence named a sampler, and there is no sampler.
+
 ## Build and run
 
 ```

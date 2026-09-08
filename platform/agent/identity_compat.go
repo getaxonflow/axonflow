@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"axonflow/platform/agent/license/admission"
 	"context"
 	"errors"
 	"fmt"
@@ -345,6 +346,16 @@ func adaptedValidateUserToken(authenticatedOrgID, tokenString, expectedTenantID 
 		// attack must not share a wording; an identity-plane refusal and a
 		// tampered signature must not share one either.
 		return nil, fmt.Errorf("%s: refused by the identity plane (%s)", sharedidentity.CompatRefusalCode, ref.Reason)
+	}
+	// Tier scale limit (#3593): a VALIDATED per-user token is a HUMAN
+	// PRINCIPAL of the authenticated organization, admitted here because this
+	// is the HS256 path's single production entry point (see the header). The
+	// key is the canonical email the audit path stamps, lower-cased and
+	// trimmed, so two spellings of one address are one principal.
+	if err == nil && user != nil {
+		if refusal := admitPrincipal(context.Background(), admission.HumanPrincipal, authenticatedOrgID, canonicalPrincipalEmail(user.Email)); refusal != nil {
+			return nil, refusal
+		}
 	}
 	return user, err
 }

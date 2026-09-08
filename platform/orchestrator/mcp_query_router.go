@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -90,6 +82,45 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 		tenantID = req.Client.TenantID
 	}
 
+	// THE ORGANIZATION, ON THE SAME TWO RUNGS AS THE TENANT (#3828).
+	//
+	// This hop rebuilds the agent request from scratch, and it used to carry
+	// tenancy but not the organization. The agent's internal-service branch
+	// reads the org from X-Org-ID, and this function is the one internal-service
+	// caller that never set it.
+	//
+	// An earlier revision of this comment quoted authenticator.go's "trusted
+	// because internal service auth already proved the caller is the
+	// orchestrator via HMAC" as the warrant. That sentence is TRUE on an
+	// enterprise deployment and FALSE on community / community-SaaS, where
+	// allowFallback admits the PUBLIC fallback constants when no
+	// AXONFLOW_INTERNAL_SERVICE_SECRET is configured - so it was deleted from
+	// authenticator.go in this change, and quoting it here kept it alive.
+	//
+	// The bound that holds on every edition: X-Org-ID selects a per-organization
+	// POSTURE and POLICY SCOPE. It is not an authorization decision on its own,
+	// and it cannot widen tenancy - the tenant comes from hints.TenantID and
+	// GetConnectorForTenant keys on that, not on this header.
+	//
+	// The consequence was not a broken request. It was a SILENTLY EMPTY
+	// WINDOW: with no org, the MCP call sites evaluate with orgID="",
+	// OrgScopePtr("") returns nil, orgScopeOf falls back to the tenant id, and
+	// the decision shadow's Observe refuses every observation on the `mcp`
+	// plane as "an org scope but no org id". Ten of ten on the v10.4.0 gate (b)
+	// run. And it is invisible exactly where it is compensated: the refusal
+	// branch only runs where a per-organization mode store is wired, which is
+	// enterprise-only, so identical traffic COMPARED on community-SaaS and
+	// recorded nothing on production-US.
+	//
+	// The same two rungs as the tenant above, and in the same order, because
+	// the two facts travel together: a request whose user context carries one
+	// carries the other, and a fall-back to a DIFFERENT source for each would
+	// pair a user's tenant with a client's org.
+	orgID := req.User.OrgID
+	if orgID == "" {
+		orgID = req.Client.OrgID
+	}
+
 	// Build agent MCP request
 	// Format matches platform/agent/mcp_handler.go:228-242 (MCPQueryRequest)
 	// Use internal service credentials for orchestrator-to-agent authentication.
@@ -120,6 +151,30 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// #3828: the organization, on the channel the agent already trusts for it.
+	//
+	// A HEADER RATHER THAN A BODY FIELD, deliberately. agentReq above is a
+	// plain JSON body, and a body-borne org_id would be a second spelling of a
+	// tenancy selector on a handler that also serves external callers - the
+	// shape X-Tenant-ID was deprecated for. X-Org-ID is read ONLY inside the
+	// agent's internal-service branch.
+	//
+	// THAT BRANCH IS HMAC-GATED ON AN ENTERPRISE DEPLOYMENT AND NOT ON A
+	// COMMUNITY ONE (R3 rounds 1-3, F11/G14/H2): `allowFallback` accepts the
+	// public fallback constants where no shared secret is configured.
+	//
+	// DO NOT SUMMARISE THE BOUND HERE. Three revisions of a one-line summary
+	// were wrong in three different ways, the last claiming the org "grants
+	// nothing" when a per-org posture row can flip an action to block. The
+	// agent-side comment on ResolveUser carries the traced version, and one
+	// place stating it is the point. The header is still the right channel.
+	//
+	// Set only when non-empty: an empty header and an absent one both read as
+	// "no organization" at the agent, and sending the empty one would put a
+	// meaningless header on every community-mode hop.
+	if orgID != "" {
+		httpReq.Header.Set("X-Org-ID", orgID)
+	}
 
 	// Execute request
 	resp, err := r.httpClient.Do(httpReq)

@@ -38,7 +38,8 @@ platform/shared/policy/legacy_call_site_census_test.go
 platform/decision/registry/legacy_planes_test.go
 platform/agent/hitl_twin_census_test.go
 platform/shared/identity/conformance_registry_test.go
-platform/shared/capability/derive.go'
+platform/shared/capability/derive.go
+platform/shared/edition/twin_census_support_test.go'
 
 # Go files the sweep below finds that are NOT classifiers of arbitrary source
 # and so need not carry the sync's expression. `file :: reason`; each entry is

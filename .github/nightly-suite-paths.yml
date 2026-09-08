@@ -257,6 +257,23 @@ suites:
     - 'platform/agent/license/**'
     - 'ee/platform/agent/license/**'
     - 'platform/agent/Dockerfile'
+  tier-scale-limits-e2e.yml:
+    - 'runtime-e2e/3593_tier_scale_limits/**'
+    - 'runtime-e2e/lib/**'
+    - 'platform/agent/license/admission/**'
+    - 'platform/agent/license/tier_limits.go'
+    - 'platform/agent/license/tier_read.go'
+    - 'platform/agent/admission_wiring.go'
+    - 'platform/agent/authenticator.go'
+    - 'platform/agent/identity_compat.go'
+    - 'platform/agent/decision_handler.go'
+    - 'platform/agent/dev_token_handler.go'
+    - 'platform/agent/run.go'
+    - 'migrations/core/171_principal_admissions.sql'
+    - 'ee/platform/agent/license/cmd/keygen/**'
+    - 'docker-compose.yml'
+    - 'docker-compose.enterprise.yml'
+    - '.github/workflows/tier-scale-limits-e2e.yml'
   decision-proof-key-custody-e2e.yml:
   - runtime-e2e/3605_decision_proof_key_custody/**
   - ee/platform/proofcustody/**
@@ -953,7 +970,6 @@ suites:
   - .github/workflows/proof-binding-contract-e2e.yml
   rbi-app-role-rls-e2e.yml:
   - platform/orchestrator/rbi/**
-  - ee/platform/agent/rbi/**
   - platform/agent/rbi/**
   - platform/agent/rls/**
   - migrations/industry/banking/**

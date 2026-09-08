@@ -2496,7 +2496,8 @@
       ],
       "docs": "docs/api/policy-api.yaml",
       "matrix": [
-        "Three-Tier Licensing Model"
+        "Three-Tier Licensing Model",
+        "Scale boundaries"
       ],
       "health": {
         "name": "dynamic_policies",
@@ -2999,35 +3000,35 @@
   ],
   "route_exemptions": [
     {
-      "pattern": "platform/agent/static_policy_api_handlers.go:166 HandleFunc(<subrouter with an unresolved prefix>rt.suffix)",
+      "pattern": "platform/agent/static_policy_api_handlers.go:158 HandleFunc(<subrouter with an unresolved prefix>rt.suffix)",
       "reason": "Two unknowns in one call, and round 8 made the second one visible. The suffixes live in a struct slice, so the argument is a field read the scanner does not follow; and the receiver is the RANGE VARIABLE of `for _, sub := range []*mux.Router{legacy, successor}`, which is not a proven shape either, so the prefix is reported rather than guessed. Both subrouters it ranges over ARE priced where they are declared (/api/v1/system-policies and its /api/v1/static-policies legacy alias) and policy.system claims both, so the URL space is covered even though this one call site is not."
     },
     {
-      "pattern": "platform/agent/run.go:757 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
+      "pattern": "platform/agent/run.go:773 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /health, the readiness-aware handler registered before initialisation finishes so ECS health checks pass during boot, and platform.health claims exactly that route — the URL space is covered by that entry."
     },
     {
-      "pattern": "platform/agent/run.go:1530 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
+      "pattern": "platform/agent/run.go:1574 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /metrics, the JSON performance endpoint; platform.metrics claims it alongside /prometheus and /api/v1/metrics, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1533 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
+      "pattern": "platform/agent/run.go:1577 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /prometheus, the Prometheus exposition endpoint, which platform.metrics claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1536 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
+      "pattern": "platform/agent/run.go:1580 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/request, which every governed client call flows through; governance.proxy_request claims it, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1539 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:1583 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on GET, the client listing, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1540 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:1584 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on POST, client creation on the same path, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1543 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
+      "pattern": "platform/agent/run.go:1587 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/policies/test, the policy dry-run endpoint, one of the four routes policy.system claims, so the URL space is covered."
     }
   ]

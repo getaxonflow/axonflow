@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -219,6 +222,15 @@ func Publish(ctx context.Context, d *Document, cat *Catalog, opts PublishOptions
 	if err := report.Passed(); err != nil {
 		return nil, findings, err
 	}
+	// RECOMPUTED, not advertised (#3700). This value is signed INTO the
+	// artifact's provenance, so recording the advertised one would sign "what
+	// the bundle claimed" under a field a reader takes for "the digest of the
+	// content". Recomputing makes the artifact's own claim true by
+	// construction rather than by the order Publish happens to run in.
+	bundleDigest, err := bundle.VerifiedDigest()
+	if err != nil {
+		return nil, findings, err
+	}
 	if err := bundle.Sign(opts.KeyID, opts.PrivateKey); err != nil {
 		return nil, findings, err
 	}
@@ -243,7 +255,7 @@ func Publish(ctx context.Context, d *Document, cat *Catalog, opts PublishOptions
 			HelperDigest:       pdp.HelperDigest(),
 			SourceDigest:       sourceDigest,
 			PolicySourceDigest: bundle.Provenance.SourceDigest,
-			BundleDigest:       bundle.Digest,
+			BundleDigest:       bundleDigest,
 			Supersedes:         d.Metadata.Supersedes,
 			PublishedAt:        now.UTC(),
 		},

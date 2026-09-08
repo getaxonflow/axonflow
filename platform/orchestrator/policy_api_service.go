@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -587,28 +579,18 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID, orgID stri
 			}
 		}
 
-		// Organization tier requires Evaluation or higher license
-		if newOrgCount > 0 && !license.IsEvaluationOrHigher(licenseTier) {
-			return nil, NewTierValidationError(
-				"Organization-tier policies require Evaluation or Enterprise license. "+
-					"Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
-				ErrCodeOrgTierEvaluationOrHigher,
-			)
-		}
-
-		// For Evaluation tier, enforce org policy limit
-		if newOrgCount > 0 && licenseTier == license.TierEvaluation {
-			existingOrgCount, err := s.repo.CountOrgPolicies(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("failed to count organization policies: %w", err)
-			}
-			limit := s.licenseChecker.OrgPolicyLimit()
-			if existingOrgCount+newOrgCount > limit {
-				return nil, NewTierValidationError(
-					fmt.Sprintf("Import would exceed organization policy limit of %d for Evaluation tier (current: %d, importing: %d). "+
-						"Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise", limit, existingOrgCount, newOrgCount),
-					ErrCodeOrgPolicyLimitExceeded,
-				)
+		// Organization-root policies: the same ONE admission the single
+		// create path uses (#3593), once per imported org-tier policy, so a
+		// bulk import cannot bypass the scale limit and a replayed import
+		// admits each name once.
+		if newOrgCount > 0 {
+			for i, p := range req.Policies {
+				if p.Tier != TierOrganization {
+					continue
+				}
+				if err := admitOrgRootPolicy(ctx, orgID, p.Name); err != nil {
+					return nil, fmt.Errorf("policy %d: %w", i, err)
+				}
 			}
 		}
 
@@ -1019,30 +1001,16 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID, org
 		return NewTierValidationError("System policies cannot be created via API", ErrCodeSystemTierImmutable)
 	}
 
-	// Organization tier requires Evaluation or Enterprise license
+	// Organization-root policies are a tier SCALE dimension (#3593, ruled
+	// 2026-09-07): 0 on Community AND on Evaluation (authoring is
+	// Enterprise-only), unlimited on Enterprise. The ONE reader is
+	// admission.Admit through admitOrgRootPolicy; the two branches this
+	// replaced (an IsEvaluationOrHigher gate and a count against
+	// OrgPolicyLimit) were a second limits path with no metric and no audit
+	// row, and the Evaluation one read a 5 nothing had ever backed.
 	if tier == TierOrganization {
-		if !license.IsEvaluationOrHigher(licenseTier) {
-			return NewTierValidationError(
-				"Organization-tier policies require Evaluation or Enterprise license. "+
-					"Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
-				ErrCodeOrgTierEvaluationOrHigher,
-			)
-		}
-
-		// For Evaluation tier, enforce org policy limit
-		if licenseTier == license.TierEvaluation {
-			count, err := s.repo.CountOrgPolicies(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to count organization policies: %w", err)
-			}
-			limit := s.licenseChecker.OrgPolicyLimit()
-			if count >= limit {
-				return NewTierValidationError(
-					fmt.Sprintf("Organization policy limit of %d reached for Evaluation tier. "+
-						"Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise", limit),
-					ErrCodeOrgPolicyLimitExceeded,
-				)
-			}
+		if err := admitOrgRootPolicy(ctx, orgID, req.Name); err != nil {
+			return err
 		}
 	}
 

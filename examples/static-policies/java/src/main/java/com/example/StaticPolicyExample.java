@@ -52,7 +52,7 @@ public class StaticPolicyExample {
         System.out.println();
 
         // Create AxonFlow client
-        // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+        // Note: As of SDK v2.0.0 (ADR-024), all routes go through a single endpoint.
         // The Agent proxies orchestrator routes internally.
         AxonFlowConfig config = AxonFlowConfig.builder()
                 .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))

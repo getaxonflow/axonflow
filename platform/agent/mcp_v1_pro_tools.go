@@ -825,8 +825,9 @@ func mapTenantPolicyAction(userAction string) (engineAction string, ok bool) {
 // isOrchestratorPaidTierReject reports whether the orchestrator's
 // error is a tier-validation rejection that the user should see
 // re-worded with deployment-license context. Matches:
-//   - The Organization-tier evaluation-or-higher gate
-//     (policy_api_service.validateTierForCreate, ErrCodeOrgTierEvaluationOrHigher)
+//   - The Organization-root policy scale limit (#3593:
+//     policy_api_service.validateTierForCreate -> admitOrgRootPolicy,
+//     code ERR_TIER_LIMIT_ORG_ROOT_POLICY, 0 on Community and Evaluation)
 //   - The Tenant-tier policy-count cap for non-paid tiers
 //     (policy_api_service.validateTierForCreate, ErrCodePolicyLimitExceeded)
 //
@@ -841,7 +842,8 @@ func isOrchestratorPaidTierReject(err error) bool {
 	if !strings.Contains(msg, "orchestrator returned 403") {
 		return false
 	}
-	return strings.Contains(msg, "enterprise license") ||
+	return strings.Contains(msg, "err_tier_limit_") ||
+		strings.Contains(msg, "enterprise license") ||
 		strings.Contains(msg, "evaluation or enterprise") ||
 		strings.Contains(msg, "evaluation license") ||
 		strings.Contains(msg, "tier_validation") ||

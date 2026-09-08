@@ -51,7 +51,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v9
 
 ```bash
 mkdir my-first-agent && cd my-first-agent
-pip3 install axonflow==9.0.0
+pip3 install axonflow==9.3.0
 ```
 
 ### TypeScript

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -985,6 +977,18 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			// PRESENTED-but-invalid token) so the two causes never collapse.
 			decisionAudit.securityEvent = "user_token_required"
 			auditEarlyDeny(VerdictDeny, stage, []string{"user_token_required"}, []string{userErr.Message})
+			sendDecideError(w, userErr.Message, userErr.HTTPStatus, decisionID, traceID)
+			return
+		} else if isTierLimitAuthError(userErr) {
+			// #3593: the token VERIFIED and the principal was refused by the
+			// licence tier's ceiling. Its own marker, its own status (402):
+			// filing it under user_token_rejected would make a commercial
+			// refusal read as an access attempt with a bad credential.
+			decisionAudit.securityEvent = "tier_limit_refused"
+			auditEarlyDeny(VerdictDeny, stage, []string{"tier_limit_refused"}, []string{userErr.Message})
+			if userErr.RetryAfter != "" {
+				w.Header().Set("Retry-After", userErr.RetryAfter)
+			}
 			sendDecideError(w, userErr.Message, userErr.HTTPStatus, decisionID, traceID)
 			return
 		} else {

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package legacycompile compiles the LEGACY policy substrate - the
 // static_policies and dynamic_policies tables - into ADR-065 typed policy
 // documents, and records what happened to every single row.

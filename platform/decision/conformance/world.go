@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package conformance is the executable specification for ADR-065 Phase 0.
 //
 // It carries three things that have to stay in step with each other: the

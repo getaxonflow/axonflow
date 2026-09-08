@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"axonflow/platform/agent/license/admission"
 	"context"
 	"fmt"
 	"log"
@@ -174,6 +175,18 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 			return nil, compatAuthError(ref)
 		}
 	}
+	// Tier scale limit (#3593): the authenticated client is a SERVICE
+	// PRINCIPAL of its organization, admitted here - on the one function every
+	// client-credential path traverses, for the same reason the adapter above
+	// is here - against the signed licence's ceiling. An internal-service call
+	// is the orchestrator calling back, not a principal. A refusal is a 402
+	// with its own code (admission.HTTPStatus / ERR_TIER_LIMIT_SERVICE_PRINCIPAL),
+	// never a 401: the credential was VALID.
+	if auth != nil && authErr == nil && auth.Kind != AuthKindInternalService {
+		if refusal := admitPrincipal(r.Context(), admission.ServicePrincipal, auth.OrgID, auth.ClientID); refusal != nil {
+			return nil, refusal.AuthError()
+		}
+	}
 	return auth, authErr
 }
 
@@ -199,9 +212,21 @@ func authenticateLegacy(r *http.Request, hints *AuthHints) (*AuthResult, *AuthEr
 				tenantID = hints.ClientID
 			}
 
-			// Internal service org: read from X-Org-ID header set by the proxy
-			// middleware when forwarding requests. This is trusted because internal
-			// service auth already proved the caller is the orchestrator via HMAC.
+			// Internal service org: read from the X-Org-ID header an internal
+			// caller sets when forwarding.
+			//
+			// AN EARLIER VERSION OF THIS COMMENT SAID "trusted because internal
+			// service auth already proved the caller is the orchestrator via
+			// HMAC". That is true on an ENTERPRISE deployment and false on
+			// community / community-SaaS, where `allowFallback` above is true and
+			// the branch accepts the PUBLIC fallback constants when no
+			// AXONFLOW_INTERNAL_SERVICE_SECRET is configured. Corrected here
+			// because this is the line that actually reads the header, and it was
+			// being cited as the authority for the claim (R3 round 3, H4).
+			//
+			// What the value can and cannot do is traced once, on ResolveUser's
+			// internal-service arm below. Do not restate it here: three revisions
+			// of a short summary were wrong in three different ways.
 			orgID := r.Header.Get("X-Org-ID")
 
 			return &AuthResult{
@@ -379,9 +404,102 @@ func ResolveUser(auth *AuthResult, userToken string) (*User, *AuthError) {
 
 	case AuthKindInternalService:
 		return &User{
-			ID:          0,
-			Email:       "orchestrator@axonflow.internal",
-			Name:        "Orchestrator Internal",
+			ID:    0,
+			Email: "orchestrator@axonflow.internal",
+			Name:  "Orchestrator Internal",
+			// THE ORGANIZATION IS CARRIED, AND IT USED NOT TO BE (#3828).
+			//
+			// auth.OrgID on this branch is the X-Org-ID the orchestrator sent.
+			// Dropping it here meant the value
+			// arrived, was authenticated, and then went nowhere: the MCP call
+			// sites read user.OrgID, so they evaluated with an empty
+			// organization, OrgScopePtr("") returned nil, orgScopeOf fell back
+			// to the tenant id, and the decision shadow refused every `mcp`
+			// observation as "an org scope but no org id".
+			//
+			// Setting it makes two per-organization levers reach this path for
+			// the first time - the detection posture (ResolveMCPDetectionConfig)
+			// and the per-org policy scope - which is a behaviour change and is
+			// stated as one on the PR. It is the correct direction: an
+			// orchestrator-routed MCP query is served for a real organization,
+			// and resolving it as though it had none is what made a per-org
+			// override silently not apply.
+			//
+			// The three sibling arms are deliberately unchanged. Community and
+			// community-SaaS synthesize a user for a deployment that has one
+			// organization, and the enterprise arm resolves its own from a
+			// verified token; neither is on the traced path, and widening this
+			// to them would move per-org resolution on every plane at once.
+			//
+			// # HOW FAR THE "IT IS AUTHENTICATED" ARGUMENT ACTUALLY GOES
+			//
+			// R3 round 1 (finding F11) is right that an earlier revision of this
+			// comment overstated it. It said X-Org-ID is "trusted because
+			// IsValidInternalServiceRequest already proved the caller holds the
+			// shared secret", and that is true ON AN ENTERPRISE DEPLOYMENT and
+			// NOT on community or community-SaaS: there `allowFallback` is true,
+			// so the branch accepts the PUBLIC fallback constants when no
+			// AXONFLOW_INTERNAL_SERVICE_SECRET is configured. On such a
+			// deployment anything that can reach the agent can take this branch
+			// and name its own org.
+			//
+			// What that buys is bounded. Two earlier revisions of this comment
+			// got the bound wrong in opposite directions, so the correct version
+			// is stated with its trace rather than asserted.
+			//
+			// R3 round 2 (G14) removed two claims that were FALSE in the very
+			// mode they excused - "a community deployment has ONE organization"
+			// (community-SaaS mints a cs_<uuid> org per registration) and a
+			// rebuttal naming the decision-shadow store instead of this lever.
+			//
+			// R3 round 3 (H2, H3) then found the replacement had two more:
+			//
+			//   - "no admission decision reads it" is FALSE, and the mechanism is
+			//     conceded 15 lines above. The chain is real and short:
+			//     user.OrgID -> ResolveMCPDetectionConfig ->
+			//     applyOrgDetectionOverrides (detection_override.go:315) ->
+			//     ModeDetectionConfig -> BuildActionOverrides() ->
+			//     EvalOptions.ActionOverrides (mcp_handler.go:962) ->
+			//     out.StaticResult.Blocked. A per-org posture row CAN flip an
+			//     action to block. Selecting an org therefore selects a verdict.
+			//   - the "what is not established" paragraph greped
+			//     `org_detection_overrides`, which does not exist: one hit
+			//     repo-wide, in that comment. The real table is
+			//     `detection_action_overrides`, and under its real name the
+			//     guards surface at once.
+			//
+			// SO, THE ACTUAL BOUND:
+			//
+			//   - WRITING a posture row is well guarded, and by two independent
+			//     mechanisms. ee/platform/customer-portal/posture/posture.go
+			//     mounts it on the session-authenticated router behind
+			//     `sso:configure`, taking the org from the session and NEVER from
+			//     a header, body or path; and migration 120 puts
+			//     detection_action_overrides under FORCE ROW LEVEL SECURITY with
+			//     a WITH CHECK on `app.current_org_id`, so a write for the wrong
+			//     org is refused at the database even if a bug got it that far.
+			//   - READING one is what this branch can influence, and only by
+			//     naming an org. On a secretless community deployment a caller
+			//     taking this branch can select which org's posture applies to
+			//     ITS OWN request - which can make its own request stricter or
+			//     laxer than the deployment default.
+			//   - the same caller already controls `tenant_id` here, through
+			//     hints.TenantID, and has since this branch existed - and
+			//     TenantID is the selector the policy LOAD keys on. So the
+			//     organization is a second selector beside one that was always
+			//     there, not a new class of control.
+			//
+			// That last point is why this is a MEDIUM and not a stop: the branch
+			// was already trusting this caller for tenancy. It is NOT why it is
+			// harmless, and the honest summary is that a secretless community
+			// deployment lets a caller choose the posture applied to its own
+			// traffic. Whether the fallback should exist at all on a deployment
+			// with a database is a question for the auth lane, not this change.
+			//
+			// This change does not create any of that: it stops DISCARDING a
+			// value the branch already authenticated. The comment is corrected
+			// rather than the code.
+			OrgID:       auth.OrgID,
 			TenantID:    auth.TenantID,
 			Role:        "service",
 			Permissions: []string{"query", "execute", "mcp"},
@@ -395,6 +513,12 @@ func ResolveUser(auth *AuthResult, userToken string) (*User, *AuthError) {
 		// a guard. See adaptedValidateUserToken.
 		user, err := adaptedValidateUserToken(auth.OrgID, userToken, auth.TenantID, auth.Synthetic)
 		if err != nil {
+			// A tier-limit refusal (#3593) is not an invalid token: the token
+			// VERIFIED and the principal was refused by the licence's ceiling.
+			// It carries its own code and a 402, never this branch's 401.
+			if ref, ok := asTierLimitRefusal(err); ok {
+				return nil, ref.AuthError()
+			}
 			// An identity-plane refusal carries its own code so it is
 			// distinguishable from a tampered or expired token, which share
 			// this branch. See CompatRefusalCode.

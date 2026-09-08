@@ -1,5 +1,8 @@
 //go:build ignore
 
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // LangGraph Per-Tool Governance Example - Go
 //
 // Requires: axonflow-sdk-go/v9 v9.0.0+

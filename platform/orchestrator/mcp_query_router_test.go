@@ -1,18 +1,11 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -249,5 +242,128 @@ func TestMCPQueryRouter_IsHealthy_UnreachableEndpoint(t *testing.T) {
 
 	if healthy {
 		t.Error("Expected router to be unhealthy for unreachable endpoint")
+	}
+}
+
+// TestRouteToAgentCarriesTheOrganization is #3828's regression.
+//
+// # WHAT WAS BROKEN, AND WHY NOTHING RED WENT OFF
+//
+// RouteToAgent rebuilds the agent request from scratch. It carried the tenant
+// and not the organization, and the agent's internal-service branch reads the
+// org from X-Org-ID. This was the one internal-service caller that never set it.
+//
+// The HMAC sentence that used to be quoted here is gone deliberately: it holds
+// on enterprise and not on community / community-SaaS, where allowFallback
+// admits the public fallback constants. What holds everywhere is that this
+// header selects a per-organization posture and policy scope and cannot widen
+// tenancy.
+//
+// The request still succeeded. What failed was the EVIDENCE: with no org, the
+// MCP call sites evaluate with orgID="", OrgScopePtr("") returns nil,
+// orgScopeOf falls back to the tenant id, and planeshadow.Observe refuses every
+// observation on the `mcp` plane as "an org scope but no org id". Ten of ten on
+// the v10.4.0 gate (b) run, with the plane's gate-18 numerator reading the
+// pre-created zero - byte-identical to watched-and-clean.
+//
+// It asserts on the OUTBOUND REQUEST rather than on a downstream comparison,
+// because that is where this function's contract ends and because a test that
+// booted an agent to check a header would be an integration test wearing a unit
+// test's name. The other half - that the agent turns a present X-Org-ID into a
+// user.OrgID - is pinned in package agent by
+// TestAnInternalServiceUserCarriesTheAuthenticatedOrganization.
+func TestRouteToAgentCarriesTheOrganization(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  OrchestratorRequest
+		want string
+		why  string
+	}{
+		{
+			name: "the user context carries it",
+			req: OrchestratorRequest{
+				Query:   "search_flights",
+				User:    UserContext{TenantID: "t1", OrgID: "org-from-user"},
+				Client:  ClientContext{TenantID: "t2", OrgID: "org-from-client"},
+				Context: map[string]interface{}{"connector": "amadeus"},
+			},
+			want: "org-from-user",
+			why:  "the user context is the first rung, exactly as it is for the tenant",
+		},
+		{
+			name: "the user context has none, so the client's is used",
+			req: OrchestratorRequest{
+				Query:   "search_flights",
+				User:    UserContext{TenantID: "t1"},
+				Client:  ClientContext{TenantID: "t2", OrgID: "org-from-client"},
+				Context: map[string]interface{}{"connector": "amadeus"},
+			},
+			want: "org-from-client",
+			why:  "the second rung, and the same order as the tenant's fall-back above it",
+		},
+		{
+			name: "neither carries one - the header is ABSENT, not empty",
+			req: OrchestratorRequest{
+				Query:   "search_flights",
+				User:    UserContext{TenantID: "t1"},
+				Client:  ClientContext{TenantID: "t2"},
+				Context: map[string]interface{}{"connector": "amadeus"},
+			},
+			want: "",
+			why: "an empty header and an absent one both read as 'no organization' at the agent, " +
+				"and sending the empty one would put a meaningless header on every community hop",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotOrg string
+			var sawHeader bool
+			var gotBody map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotOrg = r.Header.Get("X-Org-ID")
+				_, sawHeader = r.Header[http.CanonicalHeaderKey("X-Org-ID")]
+				_ = json.NewDecoder(r.Body).Decode(&gotBody)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":true,"data":{}}`))
+			}))
+			defer server.Close()
+
+			if _, err := NewMCPQueryRouter(server.URL).RouteToAgent(context.Background(), tc.req); err != nil {
+				t.Fatalf("RouteToAgent: %v", err)
+			}
+
+			if gotOrg != tc.want {
+				t.Errorf("X-Org-ID = %q, want %q. %s.\n\nWithout it the agent's MCP call sites "+
+					"evaluate with an empty organization and the decision shadow refuses every "+
+					"`mcp` observation, so the plane's gate-18 window is structurally empty on "+
+					"every enterprise stack (#3828).", gotOrg, tc.want, tc.why)
+			}
+			if tc.want == "" && sawHeader {
+				t.Errorf("X-Org-ID was SENT as an empty header; %s", tc.why)
+			}
+
+			// THE BODY MUST NOT HAVE GROWN AN org_id. A body-borne tenancy
+			// selector on a handler that also serves external callers is the
+			// shape X-Tenant-ID was deprecated for.
+			//
+			// The reason is NOT "the header is trusted only after the HMAC has
+			// been checked" - that was asserted here and is false on community /
+			// community-SaaS, where allowFallback admits the public fallback
+			// constants. The reason that survives on every edition is narrower:
+			// the header is read ONLY inside the internal-service branch, so it
+			// is scoped to one authentication kind, whereas a body field is read
+			// on every path including the external ones. Same header, strictly
+			// smaller blast radius.
+			if _, present := gotBody["org_id"]; present {
+				t.Error("the agent request body carries an org_id. The organization must travel " +
+					"on X-Org-ID, which is read only inside the agent's internal-service branch; " +
+					"a body field is read on every path, including the external ones, and is an " +
+					"unauthenticated second spelling of a tenancy selector.")
+			}
+			// ANTI-VACUITY: the request really was built and sent.
+			if gotBody["tenant_id"] == nil {
+				t.Fatal("the agent request carried no tenant_id, so this test did not exercise " +
+					"the request-building path at all")
+			}
+		})
 	}
 }

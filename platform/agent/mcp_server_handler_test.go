@@ -1,4 +1,5 @@
 // Copyright 2025-2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
 package agent
 
 import (

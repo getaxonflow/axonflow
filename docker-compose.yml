@@ -324,6 +324,16 @@ services:
     volumes:
       # MCP connector configuration (enables postgres connector for demos)
       - ./config/axonflow.yaml:/app/config/axonflow.yaml:ro
+      # THE AGENT'S DATA DIRECTORY, AND IT HAS TO SURVIVE A RECREATE (#3593).
+      # The node identity the tier limit counts is AXONFLOW_NODE_ID if set,
+      # else an id generated once and written to /var/lib/axonflow/node-id.
+      # Without a volume that file dies with the container, so `docker compose
+      # up` after a `down` presents a NEW node - and on Community, which is
+      # single-node, the new container would then have to wait for the old
+      # lease to expire before it could start. With the volume a recreate is
+      # the same node renewing its own lease, which is what it actually is.
+      # The audit fallback path (/var/lib/axonflow/audit) lives here too.
+      - axonflow-agent-data:/var/lib/axonflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -510,7 +520,7 @@ services:
       LOG_LEVEL: debug
     ports:
       # #3068: MUST stay loopback. The orchestrator is an INTERNAL service
-      # (ADR-026): the agent reaches it over the compose network, never via
+      # (ADR-024): the agent reaches it over the compose network, never via
       # the host port. Publishing it host-wide put the governance control
       # plane — unauthenticated, tenant-selectable read AND write — on every
       # interface of the host. Mirrors axonflow-install/docker-compose.yml.
@@ -624,6 +634,8 @@ services:
       retries: 5
 
 volumes:
+  axonflow-agent-data:
+    driver: local
   postgres-data:
     driver: local
   prometheus-data:

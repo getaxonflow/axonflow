@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Cost Estimation Example - Go
 //
 // Validates the new cost estimation endpoints added in v4.3.0:

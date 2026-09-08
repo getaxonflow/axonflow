@@ -3,7 +3,7 @@
 **Version:** 1.0
 **Last Updated:** February 2026
 **Status:** Reference Document
-**Related:** See [SDK Getting Started](/docs/sdk/python-getting-started/) for MAP and WCP usage examples.
+**Related:** See [SDK Getting Started](https://docs.getaxonflow.com/docs/sdk/python-getting-started/) for MAP and WCP usage examples.
 
 ---
 

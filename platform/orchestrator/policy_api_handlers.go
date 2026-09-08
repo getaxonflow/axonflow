@@ -1,18 +1,11 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -138,9 +131,10 @@ func (h *PolicyAPIHandler) createPolicy(w http.ResponseWriter, r *http.Request, 
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[PolicyAPI] CreatePolicy tier error for tenant %s: %v", tenantID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
 			return
 		}
 		// Log detailed error but return generic message
@@ -233,9 +227,10 @@ func (h *PolicyAPIHandler) updatePolicy(w http.ResponseWriter, r *http.Request, 
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[PolicyAPI] UpdatePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
 			return
 		}
 		log.Printf("[PolicyAPI] UpdatePolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -268,9 +263,10 @@ func (h *PolicyAPIHandler) deletePolicy(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := h.service.DeletePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, userID); err != nil {
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[PolicyAPI] DeletePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
 			return
 		}
 		log.Printf("[PolicyAPI] DeletePolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -384,6 +380,16 @@ func (h *PolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Request) 
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
+		// A TIER REFUSAL IS NOT A SERVER ERROR. ImportPolicies wraps its
+		// refusal with %w, so a concrete type assertion misses it and the
+		// caller was told 500 INTERNAL_ERROR for hitting a documented ceiling
+		// (independent R3, MAJOR-3). errors.As sees through the wrap.
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
+			log.Printf("[PolicyAPI] ImportPolicies tier refusal for tenant %s: %v", tenantID, err)
+			h.writeTierError(w, tierErr)
+			return
+		}
 		log.Printf("[PolicyAPI] ImportPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to import policies")
 		return
@@ -490,6 +496,16 @@ func (h *PolicyAPIHandler) writeJSON(w http.ResponseWriter, status int, data int
 }
 
 // writeError writes an error response
+// writeTierError renders a tier refusal: its own status, its code, and
+// Retry-After when the refusal is the retryable (outage) one. See the twin on
+// DynamicPolicyAPIHandler.
+func (h *PolicyAPIHandler) writeTierError(w http.ResponseWriter, e *TierValidationError) {
+	if e.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
+	}
+	h.writeError(w, e.HTTPStatus(), e.Code, e.Message)
+}
+
 func (h *PolicyAPIHandler) writeError(w http.ResponseWriter, status int, code, message string) {
 	h.writeJSON(w, status, PolicyAPIError{
 		Error: PolicyAPIErrorDetail{

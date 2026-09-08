@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package axonflow provides an HTTP client for the AxonFlow API.
 package axonflow
 

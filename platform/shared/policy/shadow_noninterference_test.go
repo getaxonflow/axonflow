@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -7,6 +10,8 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/shared/identity"
@@ -474,4 +479,145 @@ func (r *oneComparisonRecorder) RecordComparison(_ context.Context, c planeshado
 	r.seen = true
 	r.got = c
 	close(r.done)
+}
+
+// TestAnEmptyOrgWithATenantIsTheRefusedShape drives the REAL engine and the REAL
+// observation site through both halves of #3828's condition.
+//
+// # WHY THE SHAPE IS THE SUBJECT, AND NOT ONE HANDLER
+//
+// Neither end of the mcp-query hop was wrong in isolation, which is why nothing
+// failed and why the plane's window was empty for a release: the orchestrator
+// built a request without an organization, the agent authenticated it correctly,
+// ResolveUser dropped the org, and the MCP call site then produced an option
+// pair the observer refuses -
+//
+//	OrgScope != ""   (because OrgScopePtr("") is nil and orgScopeOf falls back
+//	                  to the TENANT id, which is set)
+//	OrgID    == ""
+//
+// - which is exactly the state Observer.Observe refuses, and only where a
+// per-organization mode source is wired. That is enterprise-only, so identical
+// traffic COMPARED on community-SaaS and recorded nothing on production-US: ten
+// observations, ten refusals, and a gate-18 numerator sitting at the pre-created
+// zero, byte-identical to watched-and-clean.
+//
+// So the assertion is on the SHAPE, driven through EvaluateRequest, because the
+// shape is what the three MCP call sites share and what the fix changes. The two
+// halves of the fix itself are pinned where they live:
+// TestRouteToAgentCarriesTheOrganization (orchestrator) and
+// TestAnInternalServiceUserCarriesTheAuthenticatedOrganization (agent).
+func TestAnEmptyOrgWithATenantIsTheRefusedShape(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		orgID       string
+		wantRefused bool
+		why         string
+	}{
+		{
+			name:        "BEFORE #3828 - the org was dropped one hop earlier",
+			orgID:       "",
+			wantRefused: true,
+			why: "the shipped state the v10.4.0 gate (b) run measured: every `mcp` observation " +
+				"refused, on an enterprise stack, with nothing red anywhere",
+		},
+		{
+			name:        "AFTER #3828 - the org reaches the call site",
+			orgID:       "org-a",
+			wantRefused: false,
+			why:         "the plane can accumulate a window on an enterprise stack for the first time",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			rec := &countingRecorder{done: make(chan struct{})}
+
+			prior := planeshadow.ProcessObserver()
+			t.Cleanup(func() { planeshadow.SetProcessObserver(prior) })
+
+			// A PER-ORGANIZATION MODE SOURCE IS WIRED, AND IT HAS TO BE: the
+			// refusal branch is guarded on HasPerOrgSource(), so an observer
+			// without one never runs it and this test would report both cases
+			// as compared. That guard is also the whole reason the defect is
+			// edition-asymmetric, so an observer without it is not the
+			// configuration under test.
+			o, err := planeshadow.NewObserver(
+				planeshadow.Config{Mode: shadowOnMode(), SampleRate: 1, QueueDepth: 256, Workers: 2},
+				shadowTestRows{}, rec,
+				planeshadow.WithComponent("mcp-org-shape"),
+				planeshadow.WithOrgModes(alwaysShadowOrgModes{}),
+			)
+			if err != nil {
+				t.Fatalf("building the observer: %v", err)
+			}
+			t.Cleanup(func() {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				_ = o.Shutdown(shutdownCtx)
+			})
+			planeshadow.SetProcessObserver(o)
+
+			// synthetic=false: #3829 gave this counter a `synthetic` label, and
+			// this test drives EvaluateRequest with a context that never met
+			// the synthetic-probe middleware, so SyntheticProbeFromContext
+			// answers false and the observation is ORGANIC. Reading the true
+			// child here would read a series this test never writes and the
+			// comparison below would be 0 > 0 - forever false, and the refusal
+			// case would fail while the acceptance case passed vacuously.
+			before := testutil.ToFloat64(planeshadow.RefusedCounter(legacycompile.PlaneMCP, false))
+
+			// The option shape an MCP call site builds from a user, spelled the
+			// way evaluateInputPolicies spells it: OrgScope from
+			// OrgScopePtr(orgID), OrgID from the same value, TenantID always set.
+			e := createTestEngine(shadowNoninterferencePolicies())
+			// The cache createTestEngine seeds is keyed on ("test-tenant", nil).
+			// The AFTER case names an org scope, which is a DIFFERENT cache key,
+			// so it is seeded too - otherwise the policy load misses, no rows
+			// reach the observation, and the case would report "not refused and
+			// not compared", which is a statement about the fixture rather than
+			// about the fix.
+			if tc.orgID != "" {
+				e.cache.Set("test-tenant", OrgScopePtr(tc.orgID), shadowNoninterferencePolicies())
+			}
+			e.EvaluateRequest(ctx, "DROP TABLE customers", EvalOptions{
+				Plane:    legacycompile.PlaneMCP,
+				TenantID: "test-tenant",
+				OrgScope: OrgScopePtr(tc.orgID),
+				OrgID:    tc.orgID,
+				UserID:   "orchestrator@axonflow.internal",
+			})
+
+			// The refusal is SYNCHRONOUS - Observe refuses before it enqueues -
+			// so the counter is readable without waiting. The acceptance is not,
+			// which is why the accepted case waits on the recorder instead.
+			refused := testutil.ToFloat64(planeshadow.RefusedCounter(legacycompile.PlaneMCP, false)) > before
+			if refused != tc.wantRefused {
+				t.Fatalf("refused=%v, want %v. %s.\n\nThe refusal condition is "+
+					"HasPerOrgSource && OrgScope != \"\" && OrgID == \"\" (#3828).",
+					refused, tc.wantRefused, tc.why)
+			}
+			if tc.wantRefused {
+				return
+			}
+			select {
+			case <-rec.done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the observation was not refused and no comparison was recorded either. " +
+					"That is the worst of both readings: the plane's window is still empty and " +
+					"nothing counts the hole (#3828).")
+			}
+		})
+	}
+}
+
+// alwaysShadowOrgModes reports every organization as shadowing.
+//
+// It exists to make HasPerOrgSource() true, which is the only configuration in
+// which the refusal branch under test runs at all - and, one level up, the
+// reason the defect it guards is invisible on a community build, where the store
+// is nil and the same traffic is compared.
+type alwaysShadowOrgModes struct{}
+
+func (alwaysShadowOrgModes) OrgDecisionShadowMode(context.Context, string) (identity.CompatMode, bool, error) {
+	return identity.CompatModeShadow, true, nil
 }

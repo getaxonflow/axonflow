@@ -579,6 +579,6 @@ See the complete examples in `examples/workflow-control/`:
 
 ## Related
 
-- [Architecture Decision Record (ADR-028)](../../technical-docs/architecture-decisions/ADR-028-workflow-control-plane.md)
+- [Workflow Control Plane overview](https://docs.getaxonflow.com/docs/orchestration/wcp/overview/)
 - [API Specification](../api/orchestrator-api.yaml)
-- [Policy Configuration](./policies.md)
+- [Policy Templates](../reference/policy-templates.md)

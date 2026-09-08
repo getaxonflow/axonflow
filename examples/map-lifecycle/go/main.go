@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow MAP Lifecycle Example - Go SDK
 //
 // This example validates the FULL MAP v1.0 lifecycle:

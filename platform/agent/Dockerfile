@@ -50,19 +50,24 @@ RUN go mod download
 COPY platform/ .
 
 # For enterprise builds from enterprise repo, copy ee/ code to overlay Community stubs
-# ADR-013: Enterprise repo always has ee/, Community repo doesn't have ee/
+# ADR-012: Enterprise repo always has ee/, Community repo doesn't have ee/
 # IMPORTANT: Only copy EE code for EDITION=enterprise to avoid dependency issues
 # The EE code has dependencies (AWS SDK) not in platform/go.mod
+#
+# NOT OVERLAID, DELIBERATELY: agent/rbi, agent/circuitbreaker and
+# agent/connectors. #3725 deleted those ee copies because they were the platform
+# files with the `//go:build enterprise` constraint removed, and this build sets
+# that tag - so the platform copies compile into the image unchanged and the
+# binary is byte-identical. Their `if [ -d ... ]` branches were removed with
+# them rather than left to read as live. platform/shared/edition/twin_census.tsv
+# records every pair and its disposition; re-adding one of those ee directories
+# fails TestTwinCensusMatchesTree, which is the intended way to notice.
 RUN --mount=type=bind,source=.,target=/src \
     if [ "$EDITION" = "enterprise" ] && [ -d "/src/ee/platform/agent/license" ]; then \
       echo "=== Enterprise build: copying EE agent code ===" && \
       cp -r /src/ee/platform/agent/license/* ./agent/license/ && \
       cp -r /src/ee/platform/agent/marketplace/* ./agent/marketplace/ && \
       cp -r /src/ee/platform/agent/node_enforcement/* ./agent/node_enforcement/ && \
-      if [ -d "/src/ee/platform/agent/rbi" ]; then \
-        cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
-        echo "  Copied enterprise RBI module"; \
-      fi && \
       if [ -d "/src/ee/platform/agent/indonesia" ]; then \
         mkdir -p ./agent/indonesia && \
         cp -r /src/ee/platform/agent/indonesia/* ./agent/indonesia/ && \
@@ -72,11 +77,6 @@ RUN --mount=type=bind,source=.,target=/src \
         mkdir -p ./agent/hitl && \
         cp -r /src/ee/platform/agent/hitl/* ./agent/hitl/ && \
         echo "  Copied enterprise HITL module (EU AI Act Article 14)"; \
-      fi && \
-      if [ -d "/src/ee/platform/agent/circuitbreaker" ]; then \
-        mkdir -p ./agent/circuitbreaker && \
-        cp -r /src/ee/platform/agent/circuitbreaker/* ./agent/circuitbreaker/ && \
-        echo "  Copied enterprise Circuit Breaker module (EU AI Act Article 14)"; \
       fi && \
       if [ -d "/src/ee/platform/agent/sqli" ]; then \
         mkdir -p /go/src/axonflow/ee/platform/agent/sqli && \
@@ -91,11 +91,6 @@ RUN --mount=type=bind,source=.,target=/src \
         go mod edit -require axonflow/ee/platform@v0.0.0 && \
         go mod edit -replace axonflow/ee/platform=/go/src/axonflow/ee/platform && \
         echo "  Copied enterprise SQLi scanner (ML-based) and configured modules"; \
-      fi && \
-      if [ -d "/src/ee/platform/agent/connectors" ]; then \
-        mkdir -p /go/src/axonflow/ee/platform/agent/connectors && \
-        cp -r /src/ee/platform/agent/connectors/* /go/src/axonflow/ee/platform/agent/connectors/ && \
-        echo "  Copied enterprise connector factory registration"; \
       fi && \
       echo "Enterprise agent code copied successfully" && \
       echo "=== Enterprise build: copying EE connectors ===" && \
@@ -124,7 +119,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
     -o /app/agent ./cmd/agent
 
-# Migration preparation stage (ADR-012: Multi-Edition Migration Architecture)
+# Migration preparation stage (ADR-011: Multi-Edition Migration Architecture)
 # Directory structure: migrations/core/, migrations/enterprise/, migrations/industry/
 #
 # Build simplicity: Each repo only contains its own migrations

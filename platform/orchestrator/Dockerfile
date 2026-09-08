@@ -97,27 +97,25 @@ COPY platform/ .
 # For enterprise builds from enterprise repo, copy ee/ agent code
 # The orchestrator imports agent package which needs enterprise code for:
 # - license, marketplace, node_enforcement (always)
-# - rbi, hitl, circuitbreaker (EU AI Act Article 14, Issue #891)
-# ADR-013: Enterprise repo always has ee/, Community repo doesn't have ee/
+# - hitl (EU AI Act Article 14, Issue #891)
+# ADR-012: Enterprise repo always has ee/, Community repo doesn't have ee/
+#
+# NOT OVERLAID, DELIBERATELY: agent/rbi and agent/circuitbreaker. #3725 deleted
+# those ee copies because they were the platform files with the
+# `//go:build enterprise` constraint removed, and this build sets that tag - so
+# the platform copies compile in unchanged. Their `if [ -d ... ]` branches were
+# removed with them rather than left to read as live. Re-adding either ee
+# directory fails TestTwinCensusMatchesTree.
 RUN --mount=type=bind,source=.,target=/src \
     if [ "$EDITION" = "enterprise" ] && [ -d "/src/ee/platform/agent/node_enforcement" ]; then \
       echo "=== Enterprise build: copying EE agent code for orchestrator ===" && \
       cp -r /src/ee/platform/agent/license/* ./agent/license/ && \
       cp -r /src/ee/platform/agent/marketplace/* ./agent/marketplace/ && \
       cp -r /src/ee/platform/agent/node_enforcement/* ./agent/node_enforcement/ && \
-      if [ -d "/src/ee/platform/agent/rbi" ]; then \
-        cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
-        echo "  Copied enterprise RBI agent module"; \
-      fi && \
       if [ -d "/src/ee/platform/agent/hitl" ]; then \
         mkdir -p ./agent/hitl && \
         cp -r /src/ee/platform/agent/hitl/* ./agent/hitl/ && \
         echo "  Copied enterprise HITL module (EU AI Act Article 14)"; \
-      fi && \
-      if [ -d "/src/ee/platform/agent/circuitbreaker" ]; then \
-        mkdir -p ./agent/circuitbreaker && \
-        cp -r /src/ee/platform/agent/circuitbreaker/* ./agent/circuitbreaker/ && \
-        echo "  Copied enterprise Circuit Breaker module (EU AI Act Article 14)"; \
       fi && \
       echo "Enterprise agent code copied successfully" && \
       echo "=== EE orchestrator modules: none. All seven are built from platform/ (#3252) ===" && \
@@ -146,7 +144,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
     -o /app/orchestrator ./cmd/orchestrator
 
-# Migration preparation stage (ADR-012: Multi-Edition Migration Architecture)
+# Migration preparation stage (ADR-011: Multi-Edition Migration Architecture)
 # Directory structure: migrations/core/, migrations/enterprise/, migrations/industry/
 #
 # Build simplicity: Each repo only contains its own migrations

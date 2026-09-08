@@ -1157,14 +1157,21 @@ jobs:
   # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
   # The summary job above cannot carry this - it is a REQUIRED context and must
   # stay satisfiable on a docs-only change, so it accepts a skip. This job is
-  # NOT required: it counts the jobs that executed, writes the count to the step
-  # summary and goes RED when the count is zero, so "nothing ran" is a
-  # first-class outcome a citer sees on the checks list rather than a detail
-  # inside a green run. Red, not neutral: a skipped or neutral conclusion
-  # satisfies a required check exactly as success does (#3755), and a census
-  # that could be satisfied by not running would be the defect it counts.
-  # `needs` mirrors the summary's so the two report on one set. Pinned by
-  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  # NOT required: it counts the jobs that executed and writes the count to the
+  # step summary. Zero executed is reported either way, but the CONCLUSION now
+  # depends on why (#3649): RED when jobs were SELECTED and did not run, or when
+  # the detector broke or declared no outputs; a NOTICE when the detector
+  # selected nothing or was itself skipped. It used to go red on all four, which
+  # made every PR that touched no gated path carry a permanent red - and the red
+  # was then explained away with a sentence about drafts that the tool had never
+  # observed. Red where it means something, so it is not the noise a citer
+  # learns to skip past. Red rather than neutral in those cases: a skipped or
+  # neutral conclusion satisfies a required check exactly as success does
+  # (#3755), and a census that could be satisfied by not running would be the
+  # defect it counts. `needs` mirrors the summary's so the two report on one
+  # set. Pinned by tests/regression-test-required/
+  # census_red_only_when_jobs_were_expected_test.sh (which branch fires for
+  # which state) and zero_executed_jobs_are_visible_test.sh (the block's shape).
   tests-executed-census:
     name: Tests executed census
     runs-on: ubuntu-latest
@@ -1193,29 +1200,64 @@ jobs:
               print("::error::the census needs no job besides the change detector; it is counting nothing")
               sys.exit(1)
           executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
-          skipped = [j for j, r in substantive if r == "skipped"]
           verdict = f"{len(executed)} of {len(substantive)} jobs executed"
           lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
           lines += [f"| `{j}` | {r} |" for j, r in rows]
-          if not executed:
-              detector_result = dict(rows).get(detector, "absent")
-              if detector_result == "success":
-                  why = "the change detector ran and matched no relevant path"
-              elif detector_result == "skipped":
-                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
-              else:
-                  why = f"the change detector reported {detector_result}"
-              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
-                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
-                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as fh:
-                  fh.write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-          if not executed:
-              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+          def emit():
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as fh:
+                      fh.write("\n".join(lines) + "\n")
+              print("\n".join(lines))
+          if executed:
+              emit()
+              sys.exit(0)
+          # Nothing executed. Whether that is a finding depends on whether anything
+          # was EXPECTED to run, which only the change detector can say (#3649):
+          #   detector success + an output flag true  -> jobs were selected and did
+          #       not run: RED, the rollup beside this is green on a skip.
+          #   detector success + no flag true        -> nothing was SELECTED. What is
+          #       observed is that no output was the string `true` - NOT that the
+          #       globs matched nothing, and NOT that any skip was by design. Say
+          #       only that. Not evidence, not a failure: NOTICE.
+          #   detector success + NO outputs at all   -> a detector that declares no
+          #       outputs cannot select anything: that is wiring broken, not a path
+          #       miss, and it is indistinguishable from the line above unless it is
+          #       separated here. RED.
+          #   detector skipped                       -> draft tier or an event this
+          #       workflow does not act on: nothing was asked to run: NOTICE.
+          #   detector failure/cancelled             -> the selector itself broke: RED.
+          detector_info = needs.get(detector) or {}
+          detector_result = detector_info.get("result", "absent")
+          outputs = detector_info.get("outputs") or {}
+          selected = sorted(k for k, v in outputs.items() if str(v).strip().lower() == "true")
+          sentence = ("**Nothing failed and nothing was tested.** Every job this workflow could run was skipped, "
+                      "so this run is NOT evidence about the code; a green summary beside it is a statement about "
+                      "mergeability only (#3649).")
+          if detector_result == "success" and not outputs:
+              lines += ["", sentence, "The change detector reported success but declared NO outputs at all. Every detector in this repository declares at least one, so this is the detector's own wiring - a renamed step id, a misspelled output key - and not a path that failed to match. A run in this state would acquit itself on every PR forever."]
+              emit()
+              print(f"::error::{verdict}: the change detector succeeded but declared no outputs; it cannot have selected anything, so this is a detector wiring defect rather than a path miss (#3649).")
               sys.exit(1)
+          if detector_result == "success" and not selected:
+              lines += ["", sentence, f"The change detector reported no selection flag true (outputs: {json.dumps(outputs)}). That is what was OBSERVED; whether its globs matched nothing, or matched something this workflow does not gate on, is not visible from here."]
+              emit()
+              print(f"::notice::{verdict}: the change detector reported no selection flag true; nothing was expected to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "skipped":
+              lines += ["", sentence, "The change detector itself was skipped (a draft-tier run, or an event this workflow does not act on), so nothing was asked to run."]
+              emit()
+              print(f"::notice::{verdict}: the change detector was skipped; nothing was asked to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "success":
+              lines += ["", sentence, f"The change detector SELECTED {', '.join('`'+s+'`' for s in selected)} and the jobs that carry them did not run - a skip-accepting rollup would call that green."]
+              emit()
+              print(f"::error::{verdict}: nothing failed and nothing was tested, but the change detector selected {', '.join(selected)} and no job ran. Jobs were expected and did not execute; this run proves nothing about the code (#3649).")
+              sys.exit(1)
+          lines += ["", sentence, f"The change detector reported `{detector_result}`, so nothing downstream could be selected."]
+          emit()
+          print(f"::error::{verdict}: nothing failed and nothing was tested, and the change detector reported {detector_result}; the selector itself did not run to a verdict (#3649).")
+          sys.exit(1)
           PY
 
   test-summary:

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package conformance
 
 import (
@@ -248,6 +251,18 @@ func TestPropertyAnOrganizationPermissionCannotEscapeASystemConstraint(t *testin
 // TestPropertyReplayIsDeterministic proves that identical input and bundle
 // reproduce an identical decision, which is what makes a decision auditable at
 // all.
+//
+// THIRD TERM, since #3706: and the same PEP PROFILE. This population decides
+// through Decide, so every case here shares the engine-wide profile and the
+// property as tested is exactly true. It is the SENTENCE that is now narrower
+// than it reads: a mandatory obligation the caller cannot discharge is a deny
+// and one it can is a permit, so two DecideWith calls over identical input and
+// bundle can differ.
+//
+// REVISIT WHEN the conformance population starts exercising DecideWith. At that
+// point this test must either hold the profile fixed across the pair explicitly
+// or vary it and assert the difference; leaving it as-is would make it an
+// assertion that cannot fail for the case it would then be about.
 func TestPropertyReplayIsDeterministic(t *testing.T) {
 	w := defaultWorld(t)
 	checks := 0

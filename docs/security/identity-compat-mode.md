@@ -1,6 +1,6 @@
 # Identity Compatibility Mode (ADR-065 Identity Plane in Shadow)
 
-**Platform Version:** v10.2.0 (feature introduced in v10.2.0; ships **dark**, mode `off` by default)
+**Platform Version:** v10.4.0 (feature introduced in v10.2.0; ships **dark**, mode `off` by default)
 
 **Status:** Active
 

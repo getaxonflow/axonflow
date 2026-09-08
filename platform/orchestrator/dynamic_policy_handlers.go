@@ -1,18 +1,11 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -32,7 +25,7 @@ func isValidDynamicPolicyCategory(category string) bool {
 }
 
 // DynamicPolicyAPIHandler handles HTTP requests for dynamic policy management.
-// This provides the /api/v1/dynamic-policies endpoints for ADR-026 Single Entry Point.
+// This provides the /api/v1/dynamic-policies endpoints for ADR-024 Single Entry Point.
 // It delegates to the existing PolicyAPIHandler service but filters for dynamic policies.
 type DynamicPolicyAPIHandler struct {
 	service PolicyServicer
@@ -45,7 +38,7 @@ func NewDynamicPolicyAPIHandler(service PolicyServicer) *DynamicPolicyAPIHandler
 
 // RegisterRoutes registers the tenant policy API routes under BOTH the legacy
 // /api/v1/dynamic-policies prefix and the #1431 successor
-// /api/v1/tenant-policies (ADR-026: Single Entry Point).
+// /api/v1/tenant-policies (ADR-024: Single Entry Point).
 //
 // EDITION (HARD RULE 11): a rename, not a capability. Both prefixes are
 // registered by this one function at this one call site, so the successor
@@ -219,9 +212,10 @@ func (h *DynamicPolicyAPIHandler) createDynamicPolicy(w http.ResponseWriter, r *
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[DynamicPolicyAPI] CreateDynamicPolicy tier error for tenant %s: %v", tenantID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] CreateDynamicPolicy error for tenant %s: %v", tenantID, err)
@@ -335,9 +329,10 @@ func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[DynamicPolicyAPI] UpdateDynamicPolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] UpdateDynamicPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -373,9 +368,10 @@ func (h *DynamicPolicyAPIHandler) deleteDynamicPolicy(w http.ResponseWriter, r *
 
 	userID := h.getUserID(r)
 	if err := h.service.DeletePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, userID); err != nil {
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[DynamicPolicyAPI] DeleteDynamicPolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
 			return
 		}
 		log.Printf("[DynamicPolicyAPI] DeleteDynamicPolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -544,6 +540,16 @@ func (h *DynamicPolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Re
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
+		// A TIER REFUSAL IS NOT A SERVER ERROR. ImportPolicies wraps its
+		// refusal with %w, so a concrete type assertion misses it and the
+		// caller was told 500 INTERNAL_ERROR for hitting a documented ceiling
+		// (independent R3, MAJOR-3). errors.As sees through the wrap.
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
+			log.Printf("[DynamicPolicyAPI] ImportPolicies tier refusal for tenant %s: %v", tenantID, err)
+			h.writeTierError(w, tierErr)
+			return
+		}
 		log.Printf("[DynamicPolicyAPI] ImportPolicies error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to import dynamic policies")
 		return
@@ -653,6 +659,17 @@ func (h *DynamicPolicyAPIHandler) writeJSON(w http.ResponseWriter, status int, d
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		log.Printf("[DynamicPolicyAPI] Error encoding JSON response: %v", err)
 	}
+}
+
+// writeTierError renders a tier refusal: its own status, its code, and
+// Retry-After when the refusal is the retryable (outage) one. Every tier
+// branch in this file goes through it so no site can render the status without
+// the header - the pair is the contract, not the status alone.
+func (h *DynamicPolicyAPIHandler) writeTierError(w http.ResponseWriter, e *TierValidationError) {
+	if e.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
+	}
+	h.writeError(w, e.HTTPStatus(), e.Code, e.Message)
 }
 
 func (h *DynamicPolicyAPIHandler) writeError(w http.ResponseWriter, status int, code, message string) {

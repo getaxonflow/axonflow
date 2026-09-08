@@ -4,6 +4,7 @@
 package replay
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 
@@ -85,11 +86,30 @@ func (r *Record) Validate() error {
 
 // PinMismatch is one way a record and an environment disagree.
 type PinMismatch struct {
-	// Kind is "environment", "bundle", "unpinned_root" or "missing_root".
+	// Kind is "environment", "bundle", "unpinned_root", "missing_root" or
+	// "unverifiable_bundle".
 	Kind string
+	// Root names the authority root the mismatch is about. It is EMPTY only
+	// for "environment", which is about the whole environment.
 	Root pdp.Root
+	// Want is the digest the record pins, or - for "unverifiable_bundle" - the
+	// digest the bundle ADVERTISES, which is the value that turned out not to
+	// describe its content.
 	Want string
-	Got  string
+	// Got is the observed value: for "unverifiable_bundle", the digest the
+	// bundle's content actually hashes to.
+	Got string
+	// Note carries an observation the mismatch itself cannot establish.
+	//
+	// It exists because the unverifiable_bundle message used to assert
+	// unconditionally that the artifact "may well be the one the record was
+	// taken against". That is the COMMON case and it is not always true: a
+	// bundle whose content also differs from what the record pins is a
+	// different artifact wearing a wrong label, and telling that operator they
+	// probably have the right one sends them the wrong way. The comparison
+	// costs one string equality, so the reassurance is now earned rather than
+	// assumed.
+	Note string
 }
 
 func (m PinMismatch) String() string {
@@ -102,6 +122,18 @@ func (m PinMismatch) String() string {
 		return fmt.Sprintf("root %q: the record pins bundle %s and this environment holds no bundle for that root", m.Root, m.Want)
 	case "unpinned_root":
 		return fmt.Sprintf("root %q: this environment holds bundle %s, which the record does not pin", m.Root, m.Got)
+	case "unverifiable_bundle":
+		// The canonical wording ("advertised digest X does not match content
+		// digest Y") is kept verbatim, because it is the same sentence
+		// TrustStore.Verify and VerifiedDigest produce and an operator should
+		// meet one phrasing of this fact rather than three. What is added is
+		// the part a pin refusal needs and the raw error could not carry: the
+		// root, and the statement that the environment HOLDS this bundle.
+		out := fmt.Sprintf("root %q: this environment HOLDS a bundle for that root, but its advertised digest %s does not match content digest %s, so it cannot be pinned", m.Root, m.Want, m.Got)
+		if m.Note != "" {
+			out += " - " + m.Note
+		}
+		return out
 	default:
 		return fmt.Sprintf("%s: root %q want %s got %s", m.Kind, m.Root, m.Want, m.Got)
 	}
@@ -144,8 +176,59 @@ func CheckPins(env *Environment, rec *Record) error {
 		out = append(out, PinMismatch{Kind: "environment", Want: rec.EnvironmentDigest, Got: digest})
 	}
 
+	// A bundle whose content does not hash to its advertised digest is a PIN
+	// problem, not a usage error (#3700), so it is RECORDED as a mismatch and
+	// the comparison CONTINUES. Two things go wrong if it returns here
+	// instead. Every other mismatch is dropped - the environment row already
+	// accumulated above, and any missing or unpinned root among the bundles
+	// that ARE pinnable - in a function whose doc says it checks both
+	// directions. And cmd/decision-replay is downgraded from exitPin to
+	// exitUsage, because that CLI chooses its exit code with errors.As on
+	// *PinError, so the refusal this whole path exists to produce would have
+	// exited "you called me wrong".
+	pins, err := env.BundleDigests()
+	// UNPINNABLE IS NOT MISSING, and telling an operator otherwise is worse
+	// than telling them nothing. The returned slice is short by exactly the
+	// unpinnable roots, so a root whose label is corrupted falls out of `have`
+	// and, left alone, takes the !ok branch below and is reported as a root
+	// this environment does not hold - about the one root it demonstrably
+	// does. Worse, the record's pin for that root is usually the CONTENT
+	// digest, so the two values agree perfectly and only the label is wrong;
+	// the true sentence is "these are your artifacts, with a corrupted label".
+	// Each affected root is therefore reported ONCE, as unverifiable, and the
+	// missing/unpinned branches are skipped for it.
+	unpinnable := map[pdp.Root]bool{}
+	var unpin *UnpinnableBundlesError
+	switch {
+	case errors.As(err, &unpin):
+		for _, u := range unpin.Roots {
+			unpinnable[u.Root] = true
+			m := PinMismatch{Kind: "unverifiable_bundle", Root: u.Root, Want: u.Advertised, Got: u.Content}
+			// EARNED, not assumed. Only say the artifact is probably the right
+			// one when the content is what the record actually pins.
+			for _, p := range rec.BundlePins {
+				if p.Root == u.Root {
+					if p.Digest == u.Content {
+						m.Note = "the content IS the digest your record pins, so this is very likely the right artifact wearing a corrupted label"
+					} else {
+						m.Note = fmt.Sprintf("and the content does not match what your record pins for this root (%s) either, so this is a DIFFERENT artifact and not merely a mislabelled one", p.Digest)
+					}
+					// FIRST match wins, and there can only be one: Record.Validate
+					// refuses a record that pins a root twice, and Replay
+					// validates before it checks pins. The break is here so the
+					// loop does not depend on that being true somewhere else -
+					// without it a duplicate would silently be last-wins, which
+					// is a rule nobody chose.
+					break
+				}
+			}
+			out = append(out, m)
+		}
+	case err != nil:
+		out = append(out, PinMismatch{Kind: "unverifiable_bundle", Got: err.Error()})
+	}
 	have := map[pdp.Root]string{}
-	for _, p := range env.BundleDigests() {
+	for _, p := range pins {
 		have[p.Root] = p.Digest
 	}
 	pinned := map[pdp.Root]bool{}
@@ -153,6 +236,9 @@ func CheckPins(env *Environment, rec *Record) error {
 		pinned[p.Root] = true
 		got, ok := have[p.Root]
 		switch {
+		case unpinnable[p.Root]:
+			// Already reported above, with both digests. It is neither
+			// missing nor mismatched: it is unverifiable.
 		case !ok:
 			out = append(out, PinMismatch{Kind: "missing_root", Root: p.Root, Want: p.Digest})
 		case got != p.Digest:

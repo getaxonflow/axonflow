@@ -180,6 +180,10 @@ func generateRecords(t *testing.T, env *replay.Environment) []*replay.Record {
 	if err != nil {
 		t.Fatalf("digesting the environment: %v", err)
 	}
+	pins, err := env.BundleDigests()
+	if err != nil {
+		t.Fatalf("recomputing the bundle digests: %v", err)
+	}
 
 	var out []*replay.Record
 	for _, s := range fixtureSamples() {
@@ -196,7 +200,7 @@ func generateRecords(t *testing.T, env *replay.Environment) []*replay.Record {
 			CaseID:            s.caseID,
 			Description:       s.description,
 			EnvironmentDigest: envDigest,
-			BundlePins:        env.BundleDigests(),
+			BundlePins:        pins,
 			Request:           req,
 			Expected:          decision,
 		})

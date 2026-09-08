@@ -77,7 +77,7 @@ services:
       - REDIS_URL=redis://redis:6379
     ports:
       # #3097 (deferred from #3068/#3073): loopback-bound. The orchestrator is
-      # an INTERNAL service (ADR-026) and this is a developer stack; a developer
+      # an INTERNAL service (ADR-024) and this is a developer stack; a developer
       # reaching it does so from the same host. The container healthcheck below
       # runs on the container's own loopback and is unaffected.
       - "127.0.0.1:8081:8081"

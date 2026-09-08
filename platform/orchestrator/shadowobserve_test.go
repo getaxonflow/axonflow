@@ -114,7 +114,7 @@ func TestEmitRefusesToCompareAMovedField(t *testing.T) {
 	shadowTestObserverWithWorkers(t, 0)
 
 	plane := legacycompile.PlaneWCP
-	before := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane))
+	before := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false))
 
 	tr := &dynamicShadowTrace{
 		rows:   []planeshadow.RowFact{{Table: "dynamic_policies", PolicyID: "p", UpdatedAt: "x", Ran: true}},
@@ -131,7 +131,7 @@ func TestEmitRefusesToCompareAMovedField(t *testing.T) {
 	// writer of this series, so the precise count is assertable - and a call
 	// site that counted twice would be a double-counted denominator, which the
 	// looser reading admitted.
-	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane)); got != before+1 {
+	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false)); got != before+1 {
 		t.Fatalf("emit did not count the observation as not-comparable exactly once (%v -> %v). A field read "+
 			"at two values in one evaluation cannot be asked of a request that carries one "+
 			"value per attribute; comparing it puts a difference the harness manufactured into "+
@@ -146,9 +146,9 @@ func TestEmitRefusesToCompareAMovedField(t *testing.T) {
 		fields: map[string]any{},
 	}
 	clean.noteField("risk_score", 0.0)
-	mid := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane))
+	mid := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false))
 	clean.emit(context.Background(), req, "org", nil, &PolicyEvaluationResult{Allowed: true})
-	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane)); got != mid {
+	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false)); got != mid {
 		t.Fatalf("an observation with no moved field was ALSO counted not-comparable (%v -> %v); "+
 			"the branch fires on everything and proves nothing", mid, got)
 	}
@@ -411,10 +411,10 @@ func TestANonParticipatingOrgDoesNotMoveTheDenominator(t *testing.T) {
 	}
 	req := OrchestratorRequest{ShadowPlane: plane}
 
-	before := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane))
+	before := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false))
 	moved().emit(context.Background(), req, "org-not-in-the-window", nil,
 		&PolicyEvaluationResult{Allowed: true})
-	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane)); got != before {
+	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false)); got != before {
 		t.Fatalf("an organization that is NOT in the window moved the not_comparable counter "+
 			"(%v -> %v). Every modify_risk evaluation for every non-participating tenant "+
 			"would accumulate there forever, in the series an operator reads as the "+
@@ -424,10 +424,10 @@ func TestANonParticipatingOrgDoesNotMoveTheDenominator(t *testing.T) {
 	// ANTI-VACUITY: the SAME input for a PARTICIPATING organization must still
 	// be counted, or this test would pass for a change that stopped counting
 	// anything at all - which is the opposite defect and just as blinding.
-	mid := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane))
+	mid := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false))
 	moved().emit(context.Background(), req, "org-shadowing", nil,
 		&PolicyEvaluationResult{Allowed: true})
-	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane)); got <= mid {
+	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter(plane, false)); got <= mid {
 		t.Fatalf("a PARTICIPATING organization's not-comparable observation was not counted "+
 			"(%v -> %v); the gate above is refusing everything rather than refusing "+
 			"non-participants", mid, got)
@@ -447,8 +447,8 @@ func TestAMalformedPlaneIsRefusedEvenWhenAFieldAlsoMoved(t *testing.T) {
 	// Reads two counters, so no workers - see shadowTestObserverWithWorkers.
 	shadowTestObserverWithWorkers(t, 0)
 
-	beforeRefused := promtestutil.ToFloat64(planeshadow.RefusedCounter(""))
-	beforeNC := promtestutil.ToFloat64(planeshadow.NotComparableCounter(""))
+	beforeRefused := promtestutil.ToFloat64(planeshadow.RefusedCounter("", false))
+	beforeNC := promtestutil.ToFloat64(planeshadow.NotComparableCounter("", false))
 
 	tr := &dynamicShadowTrace{
 		rows:   []planeshadow.RowFact{{Table: "dynamic_policies", PolicyID: "p", UpdatedAt: "x", Ran: true}},
@@ -462,11 +462,11 @@ func TestAMalformedPlaneIsRefusedEvenWhenAFieldAlsoMoved(t *testing.T) {
 	tr.emit(context.Background(), OrchestratorRequest{}, "org", nil,
 		&PolicyEvaluationResult{Allowed: true})
 
-	if got := promtestutil.ToFloat64(planeshadow.RefusedCounter("")); got <= beforeRefused {
+	if got := promtestutil.ToFloat64(planeshadow.RefusedCounter("", false)); got <= beforeRefused {
 		t.Fatalf("a call site that named NO plane was not counted as refused (%v -> %v); "+
 			"a malformed site must be reported as a defect on every request", beforeRefused, got)
 	}
-	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter("")); got != beforeNC {
+	if got := promtestutil.ToFloat64(planeshadow.NotComparableCounter("", false)); got != beforeNC {
 		t.Fatalf("the malformed call site was ALSO counted not-comparable (%v -> %v), which "+
 			"is the ordinary-operation disposition; a reader would see a plane quietly "+
 			"contributing nothing rather than a site to fix", beforeNC, got)

@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** 9.0.0 | **Platform Version:** 9.14.0
+**SDK Version:** 9.3.0 | **Platform Version:** 10.4.0
 
 **Status:** Production Ready
 
@@ -417,7 +417,7 @@ try {
 The SDK exports from `@axonflow/sdk`:
 
 - **`AxonFlow`** -- The client class (also available as `default` export).
-- **`VERSION`** -- SDK version string (`'9.0.0'`).
+- **`VERSION`** -- SDK version string (`'9.3.0'`).
 - **`wasRedacted()`** -- Utility to check if a connector response was redacted.
 - **`WorkflowHelpers`** -- Helper utilities for workflow operations.
 - **`ExecutionHelpers`** -- Helper utilities for unified execution operations.

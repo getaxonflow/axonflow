@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Travel Booking with Fallbacks Workflow Example
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.

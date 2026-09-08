@@ -51,3 +51,13 @@ jobs:
         run: bash .github/scripts/check-workflow-telemetry-marker.sh
       - name: Self-test fixture
         run: bash .github/scripts/check-workflow-telemetry-marker_test.sh
+      # Expression-length guard (#3909). Hosted here rather than in its own
+      # workflow because this job already runs on every PR with no path filter,
+      # which is exactly the trigger shape the guard needs: the block that
+      # breaks the file is usually grown by a PR that is not about workflows.
+      # An oversized run: block makes the WHOLE workflow unparseable, so
+      # update-stack.yml stops dispatching for every environment at once.
+      - name: Workflow expression-length guard
+        run: python3 scripts/ci/check-workflow-expression-length.py
+      - name: Self-test the expression-length guard
+        run: python3 scripts/ci/check-workflow-expression-length.py --self-test

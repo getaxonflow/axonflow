@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -367,7 +359,7 @@ func TestRegisterProxyRoutes(t *testing.T) {
 		// Orchestrator routes
 		{"GET", "/api/v1/dynamic-policies", true},
 		{"POST", "/api/v1/dynamic-policies", true},
-		// #1431 successor. ADR-026 makes the agent the single entry point, so
+		// #1431 successor. ADR-024 makes the agent the single entry point, so
 		// the orchestrator serving /api/v1/tenant-policies is not enough on its
 		// own: without a PathPrefix here the successor 404s at the front door
 		// while working on 8081, which is the asymmetry an alias removes.

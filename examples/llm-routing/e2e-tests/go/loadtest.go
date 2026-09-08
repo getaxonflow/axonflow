@@ -1,5 +1,8 @@
 //go:build loadtest
 
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Concurrent Requests Load Test using Go
 // Tests parallel request handling and routing distribution under load
 //

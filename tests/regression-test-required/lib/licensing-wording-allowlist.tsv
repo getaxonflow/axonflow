@@ -1,0 +1,29 @@
+# Every place "open source" / "OSS" may legitimately appear in the documentation
+# tree. AxonFlow Community is BSL 1.1 SOURCE-AVAILABLE and must never be called
+# open source (CLAUDE.md hard rule; technical-docs/README.md rule 4).
+#
+# An occurrence not listed here fails licensing_wording_test.sh. An entry here
+# whose file no longer contains that text ALSO fails, so the list cannot rot
+# into a blanket exemption for a file.
+#
+# Columns: path <TAB> reason <TAB> the exact substring that must be present
+#
+# Every entry falls into one of three classes, and no other class is acceptable:
+#   third-party   the phrase describes somebody else's product
+#   bsl-sunset    the BSL 1.1 change-date conversion, which is a real future fact
+#   our-own-rule  a document stating or applying this rule, including a [sic]
+#                 quotation of wording that was wrong when it was written
+#
+technical-docs/README.md	our-own-rule: the rule itself	do not use the "OSS" label
+technical-docs/DEPLOYMENT_MODE_MIGRATION_SELECTOR_DECISION.md	our-own-rule: quotes a migration header's wrong wording, marked [sic]	[sic - the migration header's own wording
+docs/test-visibility-policy.md	our-own-rule: names the historical OSS->community rename that retired the term	during the OSS→community rename
+technical-docs/architecture-decisions/ADR-014-community-licensing-strategy.md	bsl-sunset: each release converts to Apache 2.0 after four years	eventually converts to an open-source license (Apache 2.0)
+technical-docs/archive/POLICY_MANAGEMENT_ARCHITECTURE_ANALYSIS.md	third-party: NVIDIA NeMo Guardrails	- Open-source with enterprise support
+technical-docs/architecture-decisions/POSITIONING_AND_COMPETITIVE_ANALYSIS.md	third-party: Lyzr's own positioning, quoted	Lyzr markets itself as "fully open source"
+technical-docs/architecture-decisions/POSITIONING_AND_COMPETITIVE_ANALYSIS.md	third-party: a competitor's MIT licence	Open source (MIT) = Free to use
+technical-docs/architecture-decisions/POSITIONING_AND_COMPETITIVE_ANALYSIS.md	our-own-rule: states AxonFlow's licence correctly, next to competitors'	Source-available (BSL 1.1, Community)
+technical-docs/architecture-decisions/ADR-009-observability-stack.md	third-party: Prometheus and Grafana	- Open source, no vendor lock-in
+ee/docs/BEDROCK_SETUP.md	third-party: Meta Llama 3	Meta Llama 3 70B (open-source alternative)
+ee/docs/BEDROCK_SETUP.md	third-party: Meta Llama 3 in the model table	Open-source, coding
+ee/docs/OLLAMA_SETUP.md	third-party: the Ollama model ecosystem	Open-source model ecosystem
+ee/docs/MARKETPLACE_METERING_FAQ.md	our-own-rule: states the licence correctly after the 2026-09-07 fix	**BSL 1.1 source-available**, not open source

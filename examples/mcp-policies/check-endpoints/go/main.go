@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates MCP standalone policy-check endpoints using the Go SDK.
 //
 // These endpoints validate MCP requests and responses against policies WITHOUT

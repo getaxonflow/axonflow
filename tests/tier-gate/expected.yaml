@@ -310,7 +310,7 @@ endpoints:
     port: 8081
     path: /api/v1/dynamic-policies
     expected:
-      community:  {status: 200, reason: "dynamic_policy_handlers.go:48 ADR-026 single entry, ungated"}
+      community:  {status: 200, reason: "dynamic_policy_handlers.go:48 ADR-024 single entry, ungated"}
       evaluation: {status: 200, reason: "same"}
       enterprise: {status: 200, reason: "same"}
 

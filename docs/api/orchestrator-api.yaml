@@ -27,7 +27,13 @@ info:
     These endpoints are typically called by the Agent service, not directly by clients.
     For client-facing APIs, see the Agent API specification.
 
-  version: 1.1.0
+  # Tracks the platform VERSION file. These four documents describe ONE
+  # platform, so a per-spec version answered a question nobody asks and
+  # answered it wrong: agent-api sat at 2.1.0 and orchestrator-api at
+  # 1.1.0 through 139 commits between them. Kept true by
+  # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
+  # scripts/docs/stamp-docs-versions.py.
+  version: 10.4.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -10446,6 +10452,11 @@ components:
           type: string
         organization_id:
           type: string
+          description: |
+            The organisation that owns this policy. This is the current wire
+            field name and it is not deprecated: it is unrelated to a database
+            column of the same name that was retired in an earlier release. The
+            two share a name and nothing else.
         created_by:
           type: string
         created_at:
