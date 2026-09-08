@@ -148,6 +148,48 @@ func (r *capturingRecorder) wait(t *testing.T) []Comparison {
 	return append([]Comparison(nil), r.got...)
 }
 
+// barrierAfter makes a capturingRecorder a genuine BARRIER for the recorders
+// beside it, by recording through them FIRST and only then signalling (#3858).
+//
+// WHY THIS EXISTS, and it is not a style preference. `MultiRecorder{rec,
+// MetricsRecorder{}}` calls its members in order, so `rec` closed its `done`
+// channel on the last comparison BEFORE `MetricsRecorder` had recorded that
+// same comparison. `wait` therefore returned with the metric write still
+// outstanding, and a test that read a counter next saw the value it had before
+// - `65 -> 65` on CI, `0 -> 0` in the reproduction, always the LAST comparison
+// and always the counter written by the member that ran after the barrier.
+//
+// The failure looked like a labelling defect (the delta was zero on the organic
+// series, which is what "the recorder is filing everything as synthetic" would
+// also produce) and it was a synchronisation defect. Waiting on ONE recorder is
+// not a happens-before for its siblings.
+//
+// Ordering the slice the other way round would fix the same window and leave
+// the next author one `MultiRecorder{...}` away from reopening it. This makes
+// the ordering unstateable: there is no order to get wrong.
+// NO EMBEDDING. `*capturingRecorder` was embedded here, and an embedded type's
+// methods are PROMOTED: the day `Recorder` grows a second method that
+// capturingRecorder also implements, the barrier answers it alone and the
+// siblings are bypassed - which is this file's own defect, reintroduced
+// structurally by the fix for it. A named field plus an explicit forward makes
+// that unstateable, which is the same argument as fixing the ordering by
+// construction rather than by getting the order right.
+type barrierAfter struct {
+	inner   Recorder
+	barrier *capturingRecorder
+}
+
+// withMetricsBarrier is the shape every test that reads a counter after
+// `wait` should use: metrics recorded, THEN the signal.
+func withMetricsBarrier(rec *capturingRecorder, inner ...Recorder) Recorder {
+	return barrierAfter{inner: MultiRecorder(inner), barrier: rec}
+}
+
+func (b barrierAfter) RecordComparison(ctx context.Context, c Comparison) {
+	b.inner.RecordComparison(ctx, c)
+	b.barrier.RecordComparison(ctx, c)
+}
+
 // fixtureOrgModes answers a recorded mode per organization. An org absent from
 // the map has NO record, which is the ordinary state.
 type fixtureOrgModes struct {
@@ -218,4 +260,27 @@ func newFixtureObserver(t *testing.T, cfg Config, rec Recorder, opts ...Option) 
 		_ = o.Shutdown(ctx)
 	})
 	return o, src
+}
+
+// TestTheBarrierDoesNotPromoteItsBarriersMethods pins F6: `barrierAfter` must
+// hold `*capturingRecorder` in a NAMED field, never embed it.
+//
+// An embedded type's methods are promoted, so the day `Recorder` grows a second
+// method that capturingRecorder also implements, the barrier would answer it
+// alone and the siblings would be bypassed - the very defect this file exists
+// to fix, reintroduced by its fix. Nothing about today's behaviour differs, so
+// no behavioural test can see it; the property is about the METHOD SET, and
+// that is what this asserts. `wait` is unexported, so this interface can only
+// be satisfied inside this package - which is where the embed would be written.
+func TestTheBarrierDoesNotPromoteItsBarriersMethods(t *testing.T) {
+	var r interface{} = barrierAfter{}
+	if _, promoted := r.(interface {
+		wait(*testing.T) []Comparison
+	}); promoted {
+		t.Fatal("barrierAfter has a promoted `wait` method, so *capturingRecorder is EMBEDDED " +
+			"rather than held in a named field. A second Recorder method implemented by " +
+			"capturingRecorder would then be answered by the barrier alone, bypassing every " +
+			"sibling recorder - which is exactly the defect withMetricsBarrier exists to " +
+			"prevent, reintroduced structurally by the fix for it.")
+	}
 }

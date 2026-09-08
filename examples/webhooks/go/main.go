@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow Webhook Management Example - Go SDK
 //
 // This example demonstrates webhook subscription CRUD operations:

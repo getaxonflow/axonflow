@@ -57,13 +57,33 @@ func TestBothGateOperandsAreExportedBeforeAnyTraffic(t *testing.T) {
 	}{
 		{
 			metric: MetricShadowObservations,
-			want:   map[string]string{"disposition": dispositionCompared},
-			why:    "gate 18's DENOMINATOR: with no series, 'zero unexplained differences out of N' has no N and the gate evaluates over nothing",
+			want:   map[string]string{"disposition": dispositionCompared, LabelSynthetic: SyntheticFalse},
+			why:    "gate 18's ORGANIC DENOMINATOR: with no series, 'zero unexplained differences out of N' has no N, and on a stack whose only traffic is the canary NOTHING writes this child (#3817)",
+		},
+		{
+			metric: MetricShadowObservations,
+			want:   map[string]string{"disposition": dispositionCompared, LabelSynthetic: SyntheticTrue},
+			why:    "the coverage denominator: a path only the canary exercises is still exercised, and its absence would make a canary-only plane unreadable in the other direction",
+		},
+		{
+			metric: MetricShadowComparisons,
+			want:   map[string]string{"classification": gateOperandClass, LabelSynthetic: SyntheticFalse},
+			why:    "axonflow:decision_shadow_organic_comparisons:increase1h sums this counter under synthetic=\"false\"; with no child at all the rule returns an EMPTY VECTOR rather than 0",
+		},
+		{
+			metric: MetricShadowComparisons,
+			want:   map[string]string{"classification": gateOperandClass, LabelSynthetic: SyntheticTrue},
+			why:    "its twin, so the canary-only reading is a zero rather than an absence too",
 		},
 		{
 			metric: MetricShadowFailOpen,
-			want:   map[string]string{"direction": gateOperandDirection, "classification": gateOperandClass},
-			why:    "gate 18's NUMERATOR: an alert on an absent series does not fire, so the gate's promise reads as satisfied because nothing measures it",
+			want:   map[string]string{"direction": gateOperandDirection, "classification": gateOperandClass, LabelSynthetic: SyntheticFalse},
+			why:    "gate 18's NUMERATOR on ORGANIC traffic: an alert on an absent series does not fire, so the gate's promise reads as satisfied because nothing measures it",
+		},
+		{
+			metric: MetricShadowFailOpen,
+			want:   map[string]string{"direction": gateOperandDirection, "classification": gateOperandClass, LabelSynthetic: SyntheticTrue},
+			why:    "the same numerator for canary traffic: a fail-open the canary provokes is a real finding about the translation and must not be invisible",
 		},
 	} {
 		family := byName[tc.metric]
@@ -117,14 +137,17 @@ func TestPreCreationIsTargetedAtTheGateOperandsOnly(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	observations := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: MetricShadowObservations, Help: "h",
-	}, []string{"plane", "disposition"})
+	}, []string{"plane", "disposition", LabelSynthetic})
+	comparisons := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: MetricShadowComparisons, Help: "h",
+	}, []string{"plane", "classification", LabelSynthetic})
 	failOpen := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: MetricShadowFailOpen, Help: "h",
-	}, []string{"plane", "direction", "classification"})
-	reg.MustRegister(observations, failOpen)
+	}, []string{"plane", "direction", "classification", LabelSynthetic})
+	reg.MustRegister(observations, comparisons, failOpen)
 
 	planes := ImplementedPlanes()
-	preCreateGateSeries(observations, failOpen, planes)
+	preCreateGateSeries(observations, comparisons, failOpen, planes)
 
 	// GATHERED, never read back through WithLabelValues: ToFloat64 CREATES the
 	// child it is handed, so probing for a disposition that should be absent
@@ -147,9 +170,17 @@ func TestPreCreationIsTargetedAtTheGateOperandsOnly(t *testing.T) {
 
 	want := map[string]float64{}
 	for _, p := range planes {
-		// Label order is the GATHERER's, which is alphabetical by label name.
-		want[MetricShadowObservations+"|disposition="+dispositionCompared+"|plane="+string(p)] = 0
-		want[MetricShadowFailOpen+"|classification="+gateOperandClass+"|direction="+gateOperandDirection+"|plane="+string(p)] = 0
+		// BOTH synthetic values, per plane, on all three counters (#3817). The
+		// ORGANIC child is the one the volume floor is read from and the one
+		// nothing writes on a stack whose only traffic is the canary, so it is
+		// the child whose absence would reproduce this test's whole subject one
+		// label lower.
+		for _, synthetic := range bothSyntheticValues() {
+			// Label order is the GATHERER's, which is alphabetical by label name.
+			want[MetricShadowObservations+"|disposition="+dispositionCompared+"|plane="+string(p)+"|synthetic="+synthetic] = 0
+			want[MetricShadowComparisons+"|classification="+gateOperandClass+"|plane="+string(p)+"|synthetic="+synthetic] = 0
+			want[MetricShadowFailOpen+"|classification="+gateOperandClass+"|direction="+gateOperandDirection+"|plane="+string(p)+"|synthetic="+synthetic] = 0
+		}
 	}
 	for key, wantValue := range want {
 		gotValue, ok := got[key]

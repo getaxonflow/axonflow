@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES policy configuration using the pre-check API.
 //
 // AxonFlow's static policies can be configured using environment variables.

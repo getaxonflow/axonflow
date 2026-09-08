@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow Static Policy Management - Go SDK (Comprehensive)
 //
 // This example demonstrates and VALIDATES static policy SDK methods:
@@ -68,7 +71,7 @@ func main() {
 	fmt.Println()
 
 	// Create AxonFlow client
-	// Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+	// Note: As of SDK v2.0.0 (ADR-024), all routes go through a single endpoint.
 	// The Agent proxies orchestrator routes internally.
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),

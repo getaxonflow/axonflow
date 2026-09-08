@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Azure OpenAI Integration Example - Go
 // Demonstrates Gateway Mode and Proxy Mode with AxonFlow
 //

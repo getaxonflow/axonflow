@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates how to test regex patterns
 // before creating policies using the AxonFlow Go SDK.
 //
@@ -230,8 +233,7 @@ Best Practices:
   2. Include edge cases in your test inputs
   3. Test with real-world examples from your domain
   4. Consider case sensitivity (use (?i) for case-insensitive)
-  5. Use word boundaries (\b) to avoid partial matches
-`)
+  5. Use word boundaries (\b) to avoid partial matches`)
 
 	if len(failures) > 0 {
 		fmt.Printf("FAILED: %d assertions failed\n", len(failures))

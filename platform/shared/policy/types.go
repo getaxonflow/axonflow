@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -264,7 +267,7 @@ type CompiledPolicy struct {
 }
 
 // GetActionForPhase returns the appropriate action for the given phase.
-// Follows the tiered detection philosophy (Issue #891, ADR-026):
+// Follows the tiered detection philosophy (Issue #891, ADR-025):
 // - Security patterns (SQLi, dangerous queries): block
 // - PII patterns: redact (non-blocking, preserves UX)
 // - Admin access: warn

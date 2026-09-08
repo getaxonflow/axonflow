@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -511,9 +514,24 @@ type Capability struct {
 
 // PEPProfile is what an enforcement point advertises about itself.
 //
-// A nil profile is not "no obligations needed"; it is an enforcement point that
+// A nil profile is not "no obligations needed": it is an enforcement point that
 // has not advertised the decision profile at all, and ADR-065 invariant 12 says
-// such a plane refuses the request rather than interpreting it partially.
+// such a plane must not interpret the decision partially.
+//
+// WHAT THE ENGINE ACTUALLY DOES WITH ONE, because the sentence above used to
+// say "refuses the request" and that is measurably not it. The capability check
+// runs over MANDATORY obligations only, so a nil or empty profile against a
+// decision carrying none returns PERMIT - there was nothing to discharge and
+// nothing to refuse. The profile is a FLOOR, not an equivalent: it decides
+// whether obligations the decision does carry can be honoured, and says nothing
+// where there are none. An empty profile and a capable one differ only on
+// decisions that carry a mandatory obligation.
+//
+// The refusal invariant belongs to the ADMISSION path, where an enforcement
+// point that advertised nothing is not admitted in the first place, and not to
+// this type. Stating it here read as a guarantee this struct does not provide,
+// on the doc comment of the type a per-request profile is threaded through -
+// the first thing the next author reads.
 type PEPProfile struct {
 	ID           string       `json:"id"`
 	Capabilities []Capability `json:"capabilities"`

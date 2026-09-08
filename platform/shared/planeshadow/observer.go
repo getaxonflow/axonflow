@@ -313,6 +313,16 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 	}
 	start := time.Now()
 
+	// THE SYNTHETIC STAMP, READ ONCE (#3817). Every counter below is labelled
+	// from this local rather than from a second ctx read, so one observation
+	// cannot be half organic: a context value cannot change under us, but two
+	// reads are two things a future edit can make disagree, and the
+	// disagreement would be silent in the series the volume floor is read from.
+	// See Observation.synthetic for why this is stamped here and not supplied
+	// by the call site.
+	obs.synthetic = identity.SyntheticProbeFromContext(ctx)
+	synthetic := syntheticLabel(obs.synthetic)
+
 	// THE ONE MODE READ, resolved for THIS organization.
 	//
 	// IT IS THE ONE PART OF Observe THAT IS NOT FREE, AND SAYING SO MATTERS.
@@ -355,7 +365,7 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 	// loophole a genuine second mode read would hide behind. Measured - the
 	// census caught the inline version.
 	if o.HasPerOrgSource() && obs.OrgScope != "" && obs.OrgID == "" {
-		NoteRefused(obs.Plane, "the call site named an org scope but no org id, so the per-organization "+
+		noteRefused(obs.Plane, obs.synthetic, "the call site named an org scope but no org id, so the per-organization "+
 			"decision-shadow mode cannot be resolved for it and the process mode would silently decide; "+
 			"set EvalOptions.OrgID at this site (#3564)")
 		return
@@ -384,7 +394,7 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 		// OUR defect, not the caller's request being unusual. Recorded loudly
 		// rather than dropped: an observation that silently disappears is a
 		// hole in a denominator an operator is reading as complete.
-		shadowObservations.WithLabelValues(planeLabel(plane), dispositionRefused).Inc()
+		shadowObservations.WithLabelValues(planeLabel(plane), dispositionRefused, synthetic).Inc()
 		log.Printf("[DECISION-SHADOW] component=%s refusing an observation: %s",
 			logutil.Sanitize(o.component), logutil.Sanitize(defect))
 		return
@@ -395,7 +405,7 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 	// withdrawn for the deployment are the same absence, and splitting the
 	// label would silently break every dashboard and rule that reads it.
 	if !o.observesForOrg(ctx, obs.OrgID, obs.Plane) {
-		shadowObservations.WithLabelValues(plane, dispositionPlaneDisabled).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionPlaneDisabled, synthetic).Inc()
 		return
 	}
 	if obs.Legacy.EvaluationError {
@@ -404,11 +414,11 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 		// a policy verdict, and comparing it against a PDP decision would
 		// report a difference the migration did not cause. Counted, never
 		// compared.
-		shadowObservations.WithLabelValues(plane, dispositionEvaluationErr).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionEvaluationErr, synthetic).Inc()
 		return
 	}
 	if o.cfg.SampleRate < 1 && rand.Float64() >= o.cfg.SampleRate {
-		shadowObservations.WithLabelValues(plane, dispositionSampledOut).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionSampledOut, synthetic).Inc()
 		return
 	}
 
@@ -420,7 +430,7 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 		// NEVER BLOCKS A REQUEST. A full queue means the pool cannot keep up,
 		// which costs evidence and must never cost latency.
 		o.dropped.Add(1)
-		shadowObservations.WithLabelValues(plane, dispositionDropped).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionDropped, synthetic).Inc()
 	}
 	shadowEnqueueLatency.WithLabelValues(plane, "true").Observe(time.Since(start).Seconds())
 }
@@ -438,8 +448,20 @@ func (o *Observer) Observe(ctx context.Context, obs Observation) {
 // It is the same disposition Validate produces, deliberately: from an
 // operator's view "the call site could not name its plane" and "the
 // observation named a plane that cannot be" are one problem with one fix.
-func NoteRefused(plane legacycompile.Plane, reason string) {
-	shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionRefused).Inc()
+//
+// IT TAKES A CONTEXT ONLY TO LABEL THE COUNTER (#3817). A refusal on a canary
+// request that landed in the ORGANIC bucket would be a hole attributed to
+// tenant traffic - small, but in the one series an operator reads to decide
+// whether a plane's window is thin because of us or because of them. The
+// context is never used for anything else here.
+func NoteRefused(ctx context.Context, plane legacycompile.Plane, reason string) {
+	noteRefused(plane, identity.SyntheticProbeFromContext(ctx), reason)
+}
+
+// noteRefused is the form that takes the synthetic fact directly, for the one
+// caller that has already resolved it (Observe) and must not read it twice.
+func noteRefused(plane legacycompile.Plane, synthetic bool, reason string) {
+	shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionRefused, syntheticLabel(synthetic)).Inc()
 	log.Printf("[DECISION-SHADOW] refusing an observation on plane %q: %s",
 		logutil.Sanitize(string(plane)), logutil.Sanitize(reason))
 }
@@ -462,7 +484,7 @@ func NoteRefusedFor(ctx context.Context, orgID string, plane legacycompile.Plane
 	if !ProcessObserver().participates(ctx, orgID) {
 		return
 	}
-	NoteRefused(plane, reason)
+	NoteRefused(ctx, plane, reason)
 }
 
 // NotComparableCounter returns the not-comparable counter for one plane.
@@ -471,11 +493,17 @@ func NoteRefusedFor(ctx context.Context, orgID string, plane legacycompile.Plane
 // line, so a test asserting that a call site TOOK that branch has nothing else
 // to read - and a branch nothing can observe is a branch a mutant survives.
 //
+// The `synthetic` argument is REQUIRED rather than defaulted, because the
+// counter now has two children per plane and a test that read only one of them
+// would be green against a call site that incremented the other - which is the
+// same "a test that can pass the WRONG one" argument the two separate accessors
+// already make for themselves below.
+//
 // It hands back the COLLECTOR rather than a float so that
 // prometheus/client_golang/prometheus/testutil stays out of the production
 // binary: a caller that wants the value uses testutil in its own test file.
-func NotComparableCounter(plane legacycompile.Plane) prometheus.Counter {
-	return shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionNotComparable)
+func NotComparableCounter(plane legacycompile.Plane, synthetic bool) prometheus.Counter {
+	return shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionNotComparable, syntheticLabel(synthetic))
 }
 
 // RefusedCounter is NotComparableCounter for the `refused` disposition, and
@@ -487,8 +515,8 @@ func NotComparableCounter(plane legacycompile.Plane) prometheus.Counter {
 // and still be green against a call site that counted the other - which is the
 // exact confusion between "a defect in a call site" and "an ordinary
 // incomparable pair" that emit's guard ORDER exists to keep apart.
-func RefusedCounter(plane legacycompile.Plane) prometheus.Counter {
-	return shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionRefused)
+func RefusedCounter(plane legacycompile.Plane, synthetic bool) prometheus.Counter {
+	return shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionRefused, syntheticLabel(synthetic))
 }
 
 // NoteNotComparable counts an observation a call site knows cannot be compared,
@@ -504,8 +532,9 @@ func RefusedCounter(plane legacycompile.Plane) prometheus.Counter {
 // It shares the disposition the worker uses for a stale policy set, which is
 // the right grouping: both are "the two sides could not be asked the same
 // question", and both are ordinary rather than defects.
-func NoteNotComparable(plane legacycompile.Plane, reason string) {
-	shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionNotComparable).Inc()
+func NoteNotComparable(ctx context.Context, plane legacycompile.Plane, reason string) {
+	shadowObservations.WithLabelValues(planeLabel(string(plane)), dispositionNotComparable,
+		syntheticLabel(identity.SyntheticProbeFromContext(ctx))).Inc()
 	log.Printf("[DECISION-SHADOW] plane=%s observation not comparable: %s",
 		logutil.Sanitize(string(plane)), logutil.Sanitize(reason))
 }
@@ -516,7 +545,7 @@ func NoteNotComparableFor(ctx context.Context, orgID string, plane legacycompile
 	if !ProcessObserver().participates(ctx, orgID) {
 		return
 	}
-	NoteNotComparable(plane, reason)
+	NoteNotComparable(ctx, plane, reason)
 }
 
 // participates reports whether this organization is in the window, using the
@@ -582,10 +611,15 @@ func (o *Observer) work() {
 // failure.
 func (o *Observer) evaluate(obs Observation) {
 	plane := string(obs.Plane)
+	// The label travels ON THE OBSERVATION rather than being re-read from a
+	// context here, and it has to: this runs on a worker goroutine under a
+	// context.Background() of its own, so a second read would answer false for
+	// every comparison and silently file the entire canary as organic.
+	synthetic := syntheticLabel(obs.synthetic)
 	started := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			shadowObservations.WithLabelValues(planeLabel(plane), dispositionPanicked).Inc()
+			shadowObservations.WithLabelValues(planeLabel(plane), dispositionPanicked, synthetic).Inc()
 			log.Printf("[DECISION-SHADOW] component=%s plane=%s PANIC recovered on the shadow worker; the request path is unaffected and this observation is lost: %v\n%s",
 				logutil.Sanitize(o.component), logutil.Sanitize(plane), r, debug.Stack())
 		}
@@ -598,11 +632,11 @@ func (o *Observer) evaluate(obs Observation) {
 	if err != nil {
 		var nc *ErrNotComparable
 		if errors.As(err, &nc) {
-			shadowObservations.WithLabelValues(plane, dispositionNotComparable).Inc()
+			shadowObservations.WithLabelValues(plane, dispositionNotComparable, synthetic).Inc()
 			shadowBundleBuilds.WithLabelValues(plane, "not_comparable").Inc()
 			return
 		}
-		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed, synthetic).Inc()
 		shadowBundleBuilds.WithLabelValues(plane, "error").Inc()
 		log.Printf("[DECISION-SHADOW] component=%s plane=%s could not build an evaluation environment: %s",
 			logutil.Sanitize(o.component), logutil.Sanitize(plane), logutil.Sanitize(err.Error()))
@@ -613,21 +647,21 @@ func (o *Observer) evaluate(obs Observation) {
 	c := caseFor(obs, caseID(obs.Plane, obs.Phase, obs.seq), comp.opts)
 	req, err := c.Request(comp.report, world.BundleDigest)
 	if err != nil {
-		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed, synthetic).Inc()
 		log.Printf("[DECISION-SHADOW] component=%s plane=%s could not build a canonical request: %s",
 			logutil.Sanitize(o.component), logutil.Sanitize(plane), logutil.Sanitize(err.Error()))
 		return
 	}
 	dec, err := world.Engine.Decide(ctx, req)
 	if err != nil {
-		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed, synthetic).Inc()
 		log.Printf("[DECISION-SHADOW] component=%s plane=%s PDP evaluation failed: %s",
 			logutil.Sanitize(o.component), logutil.Sanitize(plane), logutil.Sanitize(err.Error()))
 		return
 	}
 	nv, err := shadow.FromDecision(dec)
 	if err != nil {
-		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed).Inc()
+		shadowObservations.WithLabelValues(plane, dispositionEvaluateFailed, synthetic).Inc()
 		return
 	}
 	lv := legacyVerdictFor(obs, comp.opts.ContentTarget)
@@ -635,7 +669,7 @@ func (o *Observer) evaluate(obs Observation) {
 	rec := shadow.Classify(shadow.ClassifyInput{
 		Case: c, Legacy: lv, New: nv, Decision: dec, Report: comp.report,
 	})
-	shadowObservations.WithLabelValues(plane, dispositionCompared).Inc()
+	shadowObservations.WithLabelValues(plane, dispositionCompared, synthetic).Inc()
 	shadowLatency.WithLabelValues(plane).Observe(time.Since(started).Seconds())
 
 	o.recorder.RecordComparison(ctx, Comparison{
@@ -650,6 +684,7 @@ func (o *Observer) evaluate(obs Observation) {
 		Record:         rec,
 		BundleDigest:   world.BundleDigest,
 		PolicySnapshot: obs.Snapshot(),
+		Synthetic:      obs.synthetic,
 		// THE THREE RESET STAMPS (#3564 round 2). Read from package-level
 		// values computed at init, never passed in: a caller that could choose
 		// its own evaluator version could report a window as unbroken across

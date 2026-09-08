@@ -4,11 +4,13 @@
 package orchestrator
 
 import (
+	"axonflow/platform/agent/license/admission"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -404,6 +406,8 @@ func TestPolicyService_CreatePolicy_OrganizationTierRequiresEvaluationOrHigher(t
 		Enabled:  true,
 	}
 
+	restore := wireTestTierAdmitter(t, license.TierCommunity)
+	defer restore()
 	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
 	if err == nil {
 		t.Fatal("Expected error for organization tier in Community mode")
@@ -413,9 +417,12 @@ func TestPolicyService_CreatePolicy_OrganizationTierRequiresEvaluationOrHigher(t
 		t.Errorf("Expected TierValidationError, got %T: %v", err, err)
 	}
 
+	// #3593: organization-root policies are the org_root_policy SCALE
+	// dimension, 0 on Community, refused through the one admission with its
+	// own code rather than the retired evaluation-or-higher gate.
 	tierErr := err.(*TierValidationError)
-	if tierErr.Code != ErrCodeOrgTierEvaluationOrHigher {
-		t.Errorf("Expected code %s, got %s", ErrCodeOrgTierEvaluationOrHigher, tierErr.Code)
+	if tierErr.Code != admission.OrgRootPolicy.Code() {
+		t.Errorf("Expected code %s, got %s", admission.OrgRootPolicy.Code(), tierErr.Code)
 	}
 
 	// Ensure no database operations were attempted
@@ -533,13 +540,16 @@ func TestPolicyService_CreatePolicy_EvaluationTierOrgPolicyLimit(t *testing.T) {
 	repo := NewPolicyRepository(db)
 	evalService := NewPolicyServiceWithLicense(repo, nil, newMockLicenseChecker(license.TierEvaluation))
 
-	// Mock count returning at Evaluation tier limit (5 org policies)
-	mock.ExpectQuery("SELECT COUNT").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(license.EvaluationLimits.OrgPolicies))
+	// #3593: Evaluation's organization-root limit is 0 (ruled 2026-09-07),
+	// so the FIRST org-tier policy is refused, with no count query at all:
+	// the admission decides from the limits table and its own ledger, and
+	// sqlmock's "no expectations" is what proves the old COUNT is gone.
+	restore := wireTestTierAdmitter(t, license.TierEvaluation)
+	defer restore()
 
 	req := &CreatePolicyRequest{
-		Name:        "Org Policy 6",
-		Description: "One too many org policies",
+		Name:        "Org Policy 1",
+		Description: "The first org policy on Evaluation, which admits none",
 		Type:        "content",
 		Tier:        TierOrganization,
 		Conditions: []PolicyCondition{
@@ -562,8 +572,11 @@ func TestPolicyService_CreatePolicy_EvaluationTierOrgPolicyLimit(t *testing.T) {
 	}
 
 	tierErr := err.(*TierValidationError)
-	if tierErr.Code != ErrCodeOrgPolicyLimitExceeded {
-		t.Errorf("Expected code %s, got %s", ErrCodeOrgPolicyLimitExceeded, tierErr.Code)
+	if tierErr.Code != admission.OrgRootPolicy.Code() {
+		t.Errorf("Expected code %s, got %s", admission.OrgRootPolicy.Code(), tierErr.Code)
+	}
+	if !strings.Contains(tierErr.Message, "evaluation edition admits at most 0") {
+		t.Errorf("refusal must name the edition and the limit: %s", tierErr.Message)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -908,5 +921,26 @@ func TestPolicyService_DeletePolicy_RejectSystemTier(t *testing.T) {
 	tierErr := err.(*TierValidationError)
 	if tierErr.Code != ErrCodeSystemTierImmutable {
 		t.Errorf("Expected code %s, got %s", ErrCodeSystemTierImmutable, tierErr.Code)
+	}
+}
+
+// wireTestTierAdmitter installs an Admitter over an in-memory ledger that
+// reads the given tier, so the org_root_policy admission (#3593) decides
+// without a database, and returns the restore function. An unwired admitter
+// admits by default (counted), which is the boot-window posture and would let
+// these refusal tests pass vacuously.
+func wireTestTierAdmitter(t *testing.T, tier license.Tier) func() {
+	t.Helper()
+	prev := tierAdmitter.Load()
+	tierAdmitter.Store(admission.New(admission.NewMemoryLedger(),
+		admission.WithTierReader(func(context.Context) license.TierRead {
+			return license.TierRead{Tier: tier, KeyPresent: tier != license.TierCommunity}
+		})))
+	return func() {
+		if prev == nil {
+			tierAdmitter.Store(nil)
+		} else {
+			tierAdmitter.Store(prev)
+		}
 	}
 }

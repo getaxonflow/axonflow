@@ -490,17 +490,25 @@ func lintFlags(f *ast.File) bool {
 
 // eeTwins are the EGRESS-BEARING files the enterprise Docker overlay copies
 // OVER their platform counterparts. The overlay is directory-wide —
-// platform/agent/Dockerfile:50-59 does `cp -r /src/ee/platform/agent/hitl/*`
-// and `.../circuitbreaker/*`, so it also overlays handler.go, repository.go,
-// service.go and others. Those are NOT guarded here and may legitimately
-// differ; this list is scoped to the two files that carry an egress
-// classifier. Do not read it as covering the overlay.
+// platform/agent/Dockerfile does `cp -r /src/ee/platform/agent/hitl/*`, so it
+// also overlays handler.go, repository.go, service.go and others. Those are
+// NOT guarded here and may legitimately differ; this list is scoped to the
+// files that carry an egress classifier. Do not read it as covering the
+// overlay.
 //
 // The ee/ copy is what runs in the Enterprise image, so an egress fix applied
 // to one side only means Community and Enterprise enforce different rules.
+//
+// circuitbreaker/notification.go WAS listed here and is not any more (#3725).
+// Not because the risk was reconsidered — because the pair no longer exists:
+// the ee copy was the platform file with its `//go:build enterprise`
+// constraint removed, nothing in ee/ imported it, and the image is built with
+// that tag, so it was deleted and the platform copy is now the only copy. A
+// single file cannot drift from itself, which is a stronger guarantee than
+// this test provided. platform/shared/edition/twin_census.tsv records that
+// decision and TestTwinCensusMatchesTree fails if the ee copy comes back.
 var eeTwins = [][2]string{
 	{"platform/agent/hitl/webhook.go", "ee/platform/agent/hitl/webhook.go"},
-	{"platform/agent/circuitbreaker/notification.go", "ee/platform/agent/circuitbreaker/notification.go"},
 }
 
 // TestEETwinsAreInLockstep asserts each twin pair is identical from the
@@ -511,6 +519,16 @@ func TestEETwinsAreInLockstep(t *testing.T) {
 	root := repoRoot(t)
 	if _, err := os.Stat(filepath.Join(root, "ee")); os.IsNotExist(err) {
 		t.Skip("ee/ not present in this checkout (community sync strips it); no twins to compare")
+	}
+	// ANTI-VACUITY FLOOR. This list went from two entries to one in #3725, when
+	// circuitbreaker/notification.go stopped being a pair. That was correct, and
+	// it is also exactly how a list like this reaches zero one justified deletion
+	// at a time — after which the test still passes, having compared nothing.
+	// The floor makes emptying it a decision someone has to take deliberately.
+	if len(eeTwins) < 1 {
+		t.Fatalf("eeTwins is empty: this test would pass having compared nothing. If the last "+
+			"egress-bearing pair really was collapsed, delete this test and say so in "+
+			"platform/shared/edition/twin_census.tsv rather than leaving a green no-op. got %d", len(eeTwins))
 	}
 	for _, pair := range eeTwins {
 		t.Run(pair[1], func(t *testing.T) {

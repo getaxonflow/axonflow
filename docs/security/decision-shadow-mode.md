@@ -1,6 +1,6 @@
 # Decision Shadow Mode (ADR-065 PDP dual-evaluation, recorded only)
 
-**Platform Version:** v10.3.0 (feature introduced in v10.3.0; ships **dark**, mode `off` by default)
+**Platform Version:** v10.4.0 (feature introduced in v10.3.0; ships **dark**, mode `off` by default)
 
 **Status:** Active
 
@@ -180,9 +180,9 @@ The site stamp is the one an operator would otherwise never see. A plane's obser
 
 | Metric | Labels | Read it for |
 |---|---|---|
-| `axonflow_decision_shadow_observations_total` | `plane`, `disposition` | the denominator, and every hole in it |
-| `axonflow_decision_shadow_comparisons_total` | `plane`, `classification` | match / expected_change / UNEXPLAINED |
-| `axonflow_decision_shadow_fail_open_total` | `plane`, `direction`, `classification` | **gate 18's actual operand** |
+| `axonflow_decision_shadow_observations_total` | `plane`, `disposition`, `synthetic` | the denominator, and every hole in it |
+| `axonflow_decision_shadow_comparisons_total` | `plane`, `classification`, `synthetic` | match / expected_change / UNEXPLAINED |
+| `axonflow_decision_shadow_fail_open_total` | `plane`, `direction`, `classification`, `synthetic` | **gate 18's actual operand** |
 | `axonflow_decision_shadow_bundle_builds_total` | `plane`, `outcome` | compilation health |
 | `axonflow_decision_shadow_evaluation_seconds` | `plane` | worker cost (off the request path) |
 | `axonflow_decision_shadow_enqueue_seconds` | `plane`, `recorded` | **the only cost a caller waits for.** `recorded="true"` is an observation that entered the window; `recorded="false"` is one whose organization resolved to `off` - it still paid the mode read, and on the documented rollout (process mode off, one organization shadowing) that is the overwhelming majority of requests |
@@ -202,6 +202,33 @@ The dispositions, and what each one tells you to do:
 | `plane_disabled` | the plane is not in `PLANES` | expected if you narrowed the list |
 | `evaluate_failed` | the shadow itself failed | the log line names it |
 | `panicked` | the shadow worker panicked and recovered | **always a defect in the shadow.** The request path is unaffected - the worker recovers and keeps draining - but a non-zero value here is a bug report, not a posture |
+
+## Organic vs synthetic: the `synthetic` label
+
+The three counters above carry `synthetic`, and reading the wrong one is how a window gets signed off over evidence about ourselves.
+
+**Where the value comes from.** A request carrying `X-Axonflow-Synthetic-Probe: 1` (or `true`) is marked synthetic. Nothing else marks it: not a tenant name, not a source IP, not an organization id. The header is read once, at the outermost middleware of each binary, and stamped onto the request context; `planeshadow.Observe` reads it from that context and stamps it onto the observation, which carries it to the worker and into every counter. It is the same header, the same parser and the same context helper the identity axis uses — one contract, not two.
+
+**Why a caller may assert it.** The forgery direction is safe and one-way. A tenant that tagged its own traffic synthetic would move that traffic OUT of the volume floor, making the coverage gate harder to satisfy, never easier. It cannot manufacture coverage, because a synthetic comparison is still a comparison in the same divergence class. The value decides nothing: `Observe` returns void, and no admission or policy decision reads it.
+
+**An unmarked request is ORGANIC.** A context nobody stamped answers `false`. That direction is deliberate: it over-reports tenant volume, so an instrumentation gap makes an operator wait longer than necessary. The opposite default would let a forgotten stamp quietly move real tenant traffic out of the volume being measured, which makes a floor easier to clear and nobody notices.
+
+**Which reading to use for which claim:**
+
+| Claim | Read | Never read |
+|---|---|---|
+| "this plane has been exercised at all" (**coverage**) | `axonflow:decision_shadow_comparisons:increase1h` — canary comparisons count; a path only the canary exercises is still exercised | — |
+| "this plane has seen N comparisons" (**volume floor**) | `axonflow:decision_shadow_organic_comparisons:increase1h` | the total. On a stack whose only decision traffic is our own canary it reads healthy and means nothing about tenants |
+| "the canary is still running" | `axonflow:decision_shadow_synthetic_comparisons:increase1h` | the total, in which a stopped canary is masked by tenant traffic |
+
+**Both values of the label are created at zero, per plane, at process start**, for the same reason gate 18's operand is (below). On a canary-only stack nothing ever writes the `synthetic="false"` child, and an absent series makes the organic recording rule return an empty vector — which a dashboard renders as "no data" and a reader takes for a query problem, when the true answer is a zero.
+
+**The two rules that watch this**, both in `platform/monitoring/rules/decision-shadow.rules.yml`:
+
+- `AxonFlowDecisionShadowWindowCanaryOnly` (info) — the plane is comparing and every comparison in the last hour was ours. Expected on a quiet stack; it exists so a gate-18 read cannot mistake canary traffic for tenant traffic.
+- `AxonFlowDecisionShadowWindowVacuous` (warning) — the plane compared nothing at all. The two are mutually exclusive by construction: "no comparisons" and "comparisons, all of them ours" are different findings with different fixes.
+
+**A plane whose observations are all `refused` is a third case, and it is not thin — it is impossible.** `AxonFlowDecisionShadowPlaneCannotCompare` (warning) names it. It was measured once: on an enterprise stack the `mcp` plane refused ten of ten observations because the org id was lost one hop before the call site, and its gate-18 numerator read the pre-created zero — byte-identical to a plane that was watched and clean. Do not read gate 18 for a plane this alert is firing on.
 
 **Gate 18's operand exists before anything fails open.** `axonflow_decision_shadow_fail_open_total{direction="new_permitted_legacy_denied",classification="UNEXPLAINED"}` is created at zero, at process start, for every implemented plane. A Prometheus vector renders only the label combinations something has written to, so without that the one series the gate is read from would not exist on a healthy deployment - and an alert on an absent series does not fire, which reads as the gate being satisfied by a system that was never measuring it. A zero here is a positive statement; silence is not. The other directions and classifications appear when something is actually observed.
 

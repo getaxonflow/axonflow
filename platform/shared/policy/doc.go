@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package policy provides a unified policy evaluation engine for AxonFlow.
 //
 // This package implements phase-aware policy enforcement for MCP (Model Context Protocol)
@@ -5,7 +8,7 @@
 //
 // # Architecture
 //
-// The package follows ADR-022 (MCP Policy Enforcement Architecture) and provides:
+// The package follows ADR-026 (MCP Policy Enforcement Architecture) and provides:
 //
 //   - Request-phase evaluation: Fast block/allow decisions before connector execution (<5ms p99)
 //   - Response-phase evaluation: PII detection and redaction after connector execution

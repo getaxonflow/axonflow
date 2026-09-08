@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES AxonFlow Gateway Mode in Go.
 //
 // Gateway Mode provides the lowest latency AI governance by separating

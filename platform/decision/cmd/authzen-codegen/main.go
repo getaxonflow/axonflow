@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Command authzen-codegen reduces the canonical decision-contract schema to the
 // language-neutral AuthZEN surface artifact that every AxonFlow SDK generates
 // its wire types from.

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates SDK-platform version discovery using the Go SDK.
 //
 // The health endpoint returns platform version, capabilities, and SDK

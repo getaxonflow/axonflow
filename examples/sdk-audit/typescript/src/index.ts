@@ -17,7 +17,7 @@
 import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
 
-// Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+// Note: As of SDK v2.0.0 (ADR-024), all routes go through a single endpoint.
 // The Agent proxies orchestrator routes internally.
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8080",

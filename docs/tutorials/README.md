@@ -33,7 +33,7 @@ SDK versions: Python / TypeScript / Go / Java v9.3.0 + Rust v0.10.0 (preview).
 go get github.com/getaxonflow/axonflow-sdk-go/v9
 
 # Python
-pip3 install axonflow==9.0.0
+pip3 install axonflow==9.3.0
 
 # Java (Maven)
 # Add to pom.xml:

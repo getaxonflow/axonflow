@@ -2,14 +2,6 @@
 
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package license
 
@@ -250,8 +242,10 @@ func TestTierLimits(t *testing.T) {
 	if EvaluationLimits.TenantPolicies != 50 {
 		t.Errorf("EvaluationLimits.TenantPolicies = %d, want 50", EvaluationLimits.TenantPolicies)
 	}
-	if EvaluationLimits.OrgPolicies != 5 {
-		t.Errorf("EvaluationLimits.OrgPolicies = %d, want 5", EvaluationLimits.OrgPolicies)
+	// 0, not 5: organization-root authoring is Enterprise-only (ruled
+	// 2026-09-07, #3593 D4).
+	if EvaluationLimits.OrgPolicies != 0 {
+		t.Errorf("EvaluationLimits.OrgPolicies = %d, want 0", EvaluationLimits.OrgPolicies)
 	}
 	if EvaluationLimits.CustomPolicyConnectors != 5 {
 		t.Errorf("EvaluationLimits.CustomPolicyConnectors = %d, want 5", EvaluationLimits.CustomPolicyConnectors)

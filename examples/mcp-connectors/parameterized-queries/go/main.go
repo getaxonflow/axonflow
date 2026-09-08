@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Parameterized Query Example - Tests Deterministic Parameter Ordering
 //
 // This example verifies that parameterized queries with multiple parameters

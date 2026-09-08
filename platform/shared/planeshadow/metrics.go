@@ -60,14 +60,14 @@ const (
 var (
 	shadowObservations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: MetricShadowObservations,
-		Help: "Plane observations offered to the ADR-065 decision shadow, by plane and disposition. " +
-			"The disposition=\"compared\" child is gate 18's denominator and is pre-created at zero for every implemented plane.",
-	}, []string{"plane", "disposition"})
+		Help: "Plane observations offered to the ADR-065 decision shadow, by plane, disposition and synthetic origin. " +
+			"The disposition=\"compared\",synthetic=\"false\" child is gate 18's ORGANIC denominator and is pre-created at zero for every implemented plane.",
+	}, []string{"plane", "disposition", LabelSynthetic})
 
 	shadowComparisons = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: MetricShadowComparisons,
-		Help: "Completed ADR-065 shadow comparisons, by plane and classification (match, expected_change, UNEXPLAINED).",
-	}, []string{"plane", "classification"})
+		Help: "Completed ADR-065 shadow comparisons, by plane, classification (match, expected_change, UNEXPLAINED) and synthetic origin.",
+	}, []string{"plane", "classification", LabelSynthetic})
 
 	// shadowMode is 1 for the mode this process booted in, per plane, and 0
 	// for every other mode on the axis.
@@ -109,8 +109,8 @@ var (
 	// DiffRecord.FailOpen makes for being a field.
 	shadowFailOpen = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: MetricShadowFailOpen,
-		Help: "ADR-065 shadow comparisons by fail-open direction and classification; UNEXPLAINED with direction new_permitted_legacy_denied is what gate 18 requires to be zero.",
-	}, []string{"plane", "direction", "classification"})
+		Help: "ADR-065 shadow comparisons by fail-open direction, classification and synthetic origin; UNEXPLAINED with direction new_permitted_legacy_denied is what gate 18 requires to be zero.",
+	}, []string{"plane", "direction", "classification", LabelSynthetic})
 
 	shadowBundleBuilds = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "axonflow_decision_shadow_bundle_builds_total",
@@ -201,6 +201,74 @@ const (
 	gateOperandClass     = "UNEXPLAINED"
 )
 
+// LabelSynthetic is the label name, and SyntheticTrue/SyntheticFalse are its
+// only two values.
+//
+// # WHY THE DECISION AXIS NEEDS IT AT ALL (#3817)
+//
+// decision-shadow.rules.yml's own header, gap 2, wrote this change's
+// specification before there was anything to label: "THERE IS NO
+// DECISION-SHADOW CANARY, AND WHOEVER ADDS ONE OWES AN ORGANIC TWIN ...
+// Deploying one WITHOUT adding a `synthetic` label to
+// axonflow_decision_shadow_observations_total and an organic twin of the rule
+// below would re-open the exact vacuity this file closes, one level up."
+//
+// A canary exists to give the window a denominator, so its comparisons MUST
+// count toward COVERAGE - a path only the canary exercises is still an
+// exercised path. They must be excludable from any VOLUME floor, or "this
+// deployment saw 3,000 comparisons" is a statement about our own probe. Both
+// readings are needed at once, so the fact is a LABEL and never a filter. The
+// identity axis reached the same conclusion first, in
+// identity.LegacyAuth.Synthetic, and this is the same fact carried on the same
+// channel rather than a second mechanism.
+//
+// # THE VALUES ARE THE STRINGS boolLabel PRODUCES, AND THEY ARE NOT strconv
+//
+// "true"/"false" spelled as constants, matched to identity's compat_metrics.go
+// boolLabel, so a query written against one axis reads the other. A `%v` or a
+// strconv.FormatBool would produce the same two strings today and is one
+// refactor away from producing "1"/"0" on one axis only - and a rule filtering
+// synthetic="false" against a series spelling it "0" matches nothing and
+// reports a vacuous window as healthy, which is this whole file's failure mode.
+// EXPORTED FOR THE SAME REASON THE METRIC NAMES ARE. A rule file, a runbook and
+// the runtime-e2e suite all spell these out, and none of them is a Go reference
+// - so a rename compiles, every Go test using the constant stays green, and the
+// recording rules silently match nothing.
+//
+// They are also read by a test that lives OUTSIDE this package, in
+// platform/monitoring, and has to: the rules files are not mirrored to the
+// community repo while this package is, so a rules-file test in here FATALs on
+// the mirror tree (#3807's class, found by R3 on #3829). Exporting the two
+// strings is what lets that test live beside the files it reads.
+const (
+	LabelSynthetic = "synthetic"
+	SyntheticTrue  = "true"
+	SyntheticFalse = "false"
+)
+
+// syntheticLabel renders the label value.
+//
+// FALSE IS THE UNSTAMPED ANSWER, and the direction is the point:
+// identity.SyntheticProbeFromContext answers false for a context nobody
+// stamped, so an observation whose request never reached the stamping
+// middleware lands in the ORGANIC bucket. That makes an instrumentation gap
+// INFLATE the organic volume, which reads as more tenant evidence than there
+// is - conservative in the direction that matters, because the opposite
+// default would let a forgotten stamp quietly move real tenant traffic out of
+// the volume the gate is read against. There is no third value: a Go bool
+// cannot be unknown, which is why this is a bool threaded from one read site
+// rather than a string a call site supplies.
+func syntheticLabel(synthetic bool) string {
+	if synthetic {
+		return SyntheticTrue
+	}
+	return SyntheticFalse
+}
+
+// bothSyntheticValues is the pre-creation vocabulary. It is a function rather
+// than a slice literal so no caller can append to it.
+func bothSyntheticValues() []string { return []string{SyntheticFalse, SyntheticTrue} }
+
 // A COUNTER VEC WITH NO CHILDREN EXPORTS NOTHING AT ALL, NOT EVEN ITS # TYPE.
 //
 // promauto registers the vector, but promhttp renders a vector by walking its
@@ -242,7 +310,33 @@ const (
 // operands of any gate, and pre-creating them would put eight permanently-zero
 // rows per plane on a dashboard - the cross-product cost the paragraph above
 // refuses for the same reason.
-func init() { preCreateGateSeries(shadowObservations, shadowFailOpen, ImplementedPlanes()) }
+// # AND THE SAME ARGUMENT AGAIN, ONE LABEL LOWER (#3817)
+//
+// Adding `synthetic` re-opens the hole it closes unless BOTH values are
+// pre-created. The ORGANIC operand -
+// observations_total{disposition="compared",synthetic="false"} - is the one the
+// volume floor is stated in, and on a stack where the canary is the only
+// traffic that child is written by nothing. Absent, the recording rule
+// `axonflow:decision_shadow_organic_comparisons:increase1h` returns an EMPTY
+// VECTOR rather than 0, a dashboard renders "no data" rather than a zero, and
+// an operator comparing it against a floor of 3,000 has nothing to compare. The
+// identity axis demonstrated exactly this: its canary-only unit case asserts
+// organic:increase1h yields `exp_samples: []`.
+//
+// So the pre-creation is the CROSS PRODUCT of the gate coordinate and both
+// synthetic values, and it now covers comparisons_total as well - the third
+// counter carrying the label. Its coordinate is the gate CLASS, matching
+// fail_open's policy of pre-creating the gate operand only: pre-creating every
+// classification would put permanently-zero rows on a dashboard for a reading
+// nobody takes, and the organic rule sums over classifications anyway, so one
+// pre-created class is enough to make the sum a zero instead of an absence.
+//
+// 12 planes x 2 values = 24 rows per counter, 72 in all, on a process that has
+// served nothing. That is the price of the difference between a zero and a
+// silence, and this package exists to argue it is worth paying.
+func init() {
+	preCreateGateSeries(shadowObservations, shadowComparisons, shadowFailOpen, ImplementedPlanes())
+}
 
 // preCreateGateSeries materialises gate 18's two operands at zero.
 //
@@ -252,10 +346,13 @@ func init() { preCreateGateSeries(shadowObservations, shadowFailOpen, Implemente
 // function is correct says nothing about whether init actually calls it - the
 // call site needs its own assertion, and TestBothGateOperandsAreExportedBefore
 // AnyTraffic on the default gatherer is it.
-func preCreateGateSeries(observations, failOpen *prometheus.CounterVec, planes []legacycompile.Plane) {
+func preCreateGateSeries(observations, comparisons, failOpen *prometheus.CounterVec, planes []legacycompile.Plane) {
 	for _, p := range planes {
-		failOpen.WithLabelValues(string(p), gateOperandDirection, gateOperandClass)
-		observations.WithLabelValues(string(p), dispositionCompared)
+		for _, synthetic := range bothSyntheticValues() {
+			failOpen.WithLabelValues(string(p), gateOperandDirection, gateOperandClass, synthetic)
+			observations.WithLabelValues(string(p), dispositionCompared, synthetic)
+			comparisons.WithLabelValues(string(p), gateOperandClass, synthetic)
+		}
 	}
 }
 

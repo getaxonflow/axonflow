@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Mistral LLM Provider - Hello World (Go SDK)
 //
 // Demonstrates Gateway Mode and Proxy Mode with Mistral through AxonFlow.

@@ -1,19 +1,15 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
+	"time"
 
 	"axonflow/platform/agent/license"
 )
@@ -388,16 +384,45 @@ func (e *EnvLicenseChecker) MaxEvidenceExportsPerDay() int {
 type TierValidationError struct {
 	Message string
 	Code    string
+	// RetryAfter is non-zero only when the refusal is the OUTAGE one
+	// (admission.ReasonDependencyUnreachable), which is the one refusal a
+	// client should retry. It renders as the Retry-After header.
+	//
+	// Without it a database blip on this plane renders as a bare 402 "Payment
+	// Required", which is the wrong word for it and gives the client nothing
+	// to act on. The agent planes already pair the same status with the same
+	// header for the same condition, so this keeps ONE rendering of "tier
+	// admission refused" across both binaries rather than introducing a 503
+	// here that the agent does not send. (R3 round 2, NIT-R2-3.)
+	RetryAfter time.Duration
 }
 
 // Error implements the error interface.
+// HTTPStatus is the status this refusal renders as.
+//
+// 402 for a SCALE limit (#3593: ERR_TIER_LIMIT_*), 403 for everything else.
+// The distinction is the one the agent planes already make: a scale ceiling is
+// a commercial fact about the deployment's entitlement, and 402 is what the
+// rest of this codebase uses for that (budget exhaustion in the gateway
+// pre-check and clientRequestHandler); a tier GATE - "this tier may not do
+// that at all" - stays 403. Without this the org-root refusal rendered 403
+// while doc.go, the CHANGELOG and the PR body all promised 402 "on every wire
+// that carries a status", which the independent R3 caught as MAJOR-3.
+func (e *TierValidationError) HTTPStatus() int {
+	if strings.HasPrefix(e.Code, "ERR_TIER_LIMIT_") {
+		return http.StatusPaymentRequired
+	}
+	return http.StatusForbidden
+}
+
 func (e *TierValidationError) Error() string {
 	return fmt.Sprintf("%s (%s)", e.Message, e.Code)
 }
 
 // IsTierValidationError checks if an error is a TierValidationError.
 func IsTierValidationError(err error) bool {
-	_, ok := err.(*TierValidationError)
+	var t *TierValidationError
+	ok := errors.As(err, &t)
 	return ok
 }
 

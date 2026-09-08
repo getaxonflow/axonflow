@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package shadow dual-evaluates the legacy policy substrate and the ADR-065
 // PDP over the same replay case, and classifies every semantic difference.
 //

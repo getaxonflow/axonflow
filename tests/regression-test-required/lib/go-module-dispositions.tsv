@@ -1,0 +1,27 @@
+# Every separate Go module (a go.mod) under ee/ and examples/ is run by a lane
+# in .github/workflows/test.yml that DISCOVERS it (`find <root> -name go.mod`),
+# unless a row here says otherwise. Read by the two discovering lanes (they
+# skip the modules listed) and by
+# tests/regression-test-required/nested_module_discovery_test.sh, which fails
+# on a module that is in neither a discovering lane nor this file, on a row
+# with no reason, and on a row whose module no longer exists.
+#
+# Three tab-separated columns: module, disposition, reason.
+#
+#   covered-by:<job-id>   the module is run by that job in test.yml by name (a
+#                         `cd <module>` step followed by go test/vet); the guard
+#                         verifies the step and reports whether the job's `if:`
+#                         excludes pull_request
+#   excluded              no job runs the module, for the reason given, which
+#                         must name the issue where the debt is tracked (#NNNN)
+#
+# Boundary (master, 2026-09-08): the ROOT ee module (ee/go.mod) is W1-D's
+# (#3699); its packages are selected by test.yml's enterprise arms and are not
+# nested modules. It is listed here so the census is the whole set of go.mod
+# files under ee/ and examples/, and so a second root module cannot appear
+# unnoticed.
+ee	covered-by:unit-tests-enterprise	the root ee module; its packages are selected by the enterprise arms (unit-tests-enterprise on the PR tier, unit-tests-enterprise-realpg in the merge queue), which is #3699's subject and W1-D's PR, not a nested module
+ee/platform/customer-portal	covered-by:unit-tests-enterprise-realpg	nested module with its own go.mod, run by `cd ee/platform/customer-portal && go test -tags enterprise ./...` in the real-Postgres arm, which runs in the merge queue and on dispatch only (`github.event_name != 'pull_request'`; the `ci:full` label gates nothing in test.yml); its tests need the database that arm provides, so the discovering lane would only re-run the subset that skips without one
+ee/platform/aws-marketplace/license-validator	excluded	TestGracePeriod fails on a clean checkout with day-boundary arithmetic against the wall clock (expected 6 got 7, expected 0 got 1); it has never run in CI; a lane that includes it would be red on every PR until the test is fixed; row on #3699
+ee/platform/aws-marketplace/marketplace-subscription-handler	excluded	go.mod requires github.com/aws/aws-sdk-go-v2/service/sesv2 v1.32.7, a revision that does not exist ("unknown revision"), so the module cannot be built anywhere; a dependency pin is not a one-line fix; row on #3699
+ee/platform/orchestrator/llm	excluded	imports axonflow/platform/shared/llmdefaults with no require or replace for the platform module in its go.mod, so it cannot be built as a standalone module; test.yml's own comment records it was "never in that job's ./... anyway"; row on #3699

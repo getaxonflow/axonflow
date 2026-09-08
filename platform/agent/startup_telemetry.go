@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package agent — the agent's platform-level startup telemetry ping (#2004 PR2).
 //
 // THE EMITTER LIVES IN platform/shared/heartbeat. This file is the agent's

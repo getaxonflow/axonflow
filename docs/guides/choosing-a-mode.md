@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 9.14.0 | **SDKs:** 9.0.0
+**Platform Version:** 10.4.0 | **SDKs:** 9.3.0
 
 AxonFlow offers three integration modes to fit different requirements. This guide helps you choose the right one for your application.
 
@@ -411,5 +411,5 @@ MCP_DYNAMIC_POLICIES_GRACEFUL=true  # Continue if Orchestrator unavailable
 
 - [Proxy Mode Guide](./proxy-mode.md) - Deep dive into Proxy Mode
 - [Gateway Mode Migration Guide](./gateway-mode.md) - Deep dive into Gateway Mode
-- [MCP Connector Architecture](../../technical-docs/MCP_CONNECTOR_ARCHITECTURE.md) - Full MCP architecture
+- [MCP overview](https://docs.getaxonflow.com/docs/mcp/overview/) - Full MCP architecture
 - [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) - Full method coverage matrix across all SDKs

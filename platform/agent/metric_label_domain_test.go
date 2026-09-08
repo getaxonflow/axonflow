@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"axonflow/platform/agent/license/admission"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -77,6 +78,10 @@ var guardedMetricFiles = []string{
 	// folded onto five constants, which is exactly the shape this census is
 	// for.
 	"license/tier_read.go",
+	// #3593: the tier scale limits. The refusal and admission counters live
+	// in the package; the two wiring counters (unwired, skipped) live here.
+	"license/admission/metrics.go",
+	"admission_wiring.go",
 }
 
 // enterpriseOnlyGuardedMetricFiles names the guarded files that sit under a
@@ -546,6 +551,39 @@ func guardedMetricDomains() map[string]map[string]metricdomain.Domain {
 		DecisionStageLLM, DecisionStageTool, DecisionStageAgent, "unknown")
 
 	return map[string]map[string]metricdomain.Domain{
+		// #3593: every label comes from a closed set declared in the admission
+		// package; nothing from a request reaches one. Checked live in
+		// license/admission/metrics_domain_test.go as well.
+		"axonflow_tier_limit_refusals_total": {
+			"dimension": tierDimensionDomain(),
+			"edition":   tierEditionDomain(),
+			"reason": metricdomain.Closed(
+				"Admitter.refuse is called with one of two package constants, over_limit or dependency_unreachable, and nothing else",
+				admission.Reasons()...),
+		},
+		"axonflow_tier_admissions_total": {
+			"dimension": tierDimensionDomain(),
+			"edition":   tierEditionDomain(),
+			"source": metricdomain.Closed(
+				"admission.Source is a closed type assigned only from the four allowed-branch constants (refused never writes this counter)",
+				string(admission.SourceUnlimitedTier), string(admission.SourceSeenSet), string(admission.SourceLedgerExisting), string(admission.SourceLedgerAdmitted)),
+		},
+		"axonflow_tier_admission_unwired_total": {
+			"dimension": tierDimensionDomain(),
+		},
+		"axonflow_tier_admission_background_drops_total": {
+			"dimension": tierDimensionDomain(),
+			"reason": metricdomain.Closed(
+				"the three literals the two background-write sites pass, and nothing else: at_capacity and "+
+					"write_failed from recordUnlimited, audit_at_capacity from refuse",
+				admission.BackgroundDropReasons()...),
+		},
+		"axonflow_tier_admission_skipped_total": {
+			"dimension": tierDimensionDomain(),
+			"missing": metricdomain.Closed(
+				"admitPrincipal writes the literal \"org\" or \"principal\" for whichever blank input it skipped on",
+				"org", "principal"),
+		},
 		"axonflow_license_tier_read_rejected_total": {
 			"reason": metricdomain.Closed(
 				"classifyTierRejection folds the validator's refusal message onto five constants by "+
@@ -1125,6 +1163,15 @@ func behaviourallyDrivenMetrics() []string {
 		// forged, an expired and a malformed key through the REAL validator via
 		// the agent's registered source (#3709 row 1).
 		"axonflow_license_tier_read_rejected_total",
+		// #3593: driven by admission_wiring_test.go through admitPrincipal -
+		// the 26th Community human (over_limit), an unknown principal with the
+		// ledger down (dependency_unreachable), an unwired admitter, a blank
+		// org and a blank principal - over the package's in-memory ledger.
+		"axonflow_tier_limit_refusals_total",
+		"axonflow_tier_admissions_total",
+		"axonflow_tier_admission_unwired_total",
+		"axonflow_tier_admission_skipped_total",
+		"axonflow_tier_admission_background_drops_total",
 	}
 }
 
@@ -1152,18 +1199,23 @@ func censusOnlyMetrics() map[string]string {
 // MEASUREMENT below. A metric with no entry cannot be measured and is reported.
 func guardedCollectors() map[string]prometheus.Collector {
 	out := map[string]prometheus.Collector{
-		"axonflow_decision_requests_total":              decideRequests,
-		"axonflow_decision_duration_milliseconds":       decideDuration,
-		"axonflow_decision_audit_write_failures_total":  decideAuditWriteFailures,
-		"axonflow_decision_obligations_total":           decideObligations,
-		"axonflow_decision_obligation_fallbacks_total":  decideObligationFallbacks,
-		"axonflow_decision_blocks_total":                decideBlocks,
-		"axonflow_authzen_requests_total":               authzenRequests,
-		"axonflow_authzen_refusals_total":               authzenRefusals,
-		"axonflow_pep_handshake_total":                  pepHandshakeOutcomes,
-		"axonflow_pep_capability_over_advertised_total": pepCapabilityOverAdvertised,
-		"axonflow_pep_capability_refusals_total":        pepCapabilityRefusals,
-		"axonflow_license_tier_read_rejected_total":     license.TierReadRejectedCollectorForTest(),
+		"axonflow_decision_requests_total":               decideRequests,
+		"axonflow_decision_duration_milliseconds":        decideDuration,
+		"axonflow_decision_audit_write_failures_total":   decideAuditWriteFailures,
+		"axonflow_decision_obligations_total":            decideObligations,
+		"axonflow_decision_obligation_fallbacks_total":   decideObligationFallbacks,
+		"axonflow_decision_blocks_total":                 decideBlocks,
+		"axonflow_authzen_requests_total":                authzenRequests,
+		"axonflow_authzen_refusals_total":                authzenRefusals,
+		"axonflow_pep_handshake_total":                   pepHandshakeOutcomes,
+		"axonflow_pep_capability_over_advertised_total":  pepCapabilityOverAdvertised,
+		"axonflow_pep_capability_refusals_total":         pepCapabilityRefusals,
+		"axonflow_license_tier_read_rejected_total":      license.TierReadRejectedCollectorForTest(),
+		"axonflow_tier_limit_refusals_total":             admission.RefusalsCollectorForTest(),
+		"axonflow_tier_admissions_total":                 admission.AdmissionsCollectorForTest(),
+		"axonflow_tier_admission_unwired_total":          admissionUnwiredTotal,
+		"axonflow_tier_admission_skipped_total":          admissionSkippedTotal,
+		"axonflow_tier_admission_background_drops_total": admission.BackgroundDropsCollectorForTest(),
 	}
 	// The client-version pair is declared in an //go:build enterprise file, so
 	// its vecs do not EXIST in a community build. go/parser derives the metrics
@@ -1315,6 +1367,7 @@ func runEveryDriver(t *testing.T) {
 	t.Helper()
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	driveLicenceTierRefusals(t)
+	driveTierAdmissions(t)
 	for _, h := range hostileDecideInputs() {
 		driveDecideForLabels(t, h.clientHeader, h.gatewayID, h.stage)
 	}
@@ -1374,4 +1427,23 @@ func TestAuthZENMetricLabelsSurviveHostileInput(t *testing.T) {
 				"caller-supplied.", p)
 		}
 	}
+}
+
+// tierDimensionDomain and tierEditionDomain are the two label domains the
+// #3593 counters share.
+func tierDimensionDomain() metricdomain.Domain {
+	dims := make([]string, 0, 4)
+	for _, d := range admission.Dimensions() {
+		dims = append(dims, string(d))
+	}
+	return metricdomain.Closed(
+		"admission.Dimension is a closed type; Admit refuses an unknown one with ErrInvalidRequest before any label is written, "+
+			"and admitPrincipal only ever passes the four package constants",
+		dims...)
+}
+
+func tierEditionDomain() metricdomain.Domain {
+	return metricdomain.Closed(
+		"admission.editionLabel folds the licence tier onto five names with \"other\" as the fall-through",
+		admission.Editions()...)
 }

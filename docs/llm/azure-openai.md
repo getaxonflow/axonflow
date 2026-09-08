@@ -2,7 +2,7 @@
 
 **Last Updated:** July 2026
 
-**Platform:** 9.14.0 · **SDKs:** 9.0.0
+**Platform Version:** 10.4.0 | **SDK Version:** 9.3.0
 
 AxonFlow supports Azure OpenAI Service as a Community LLM provider, available without an enterprise license.
 
@@ -262,10 +262,13 @@ Complete code examples are available:
 - [Proxy Mode (Go)](../../examples/llm-providers/azure-openai/proxy-mode/go/)
 
 ### Enterprise Examples
-- [HITL Approval (Go)](../../ee/examples/llm-providers/azure-openai/hitl-approval/go/)
-- [Cost Attribution (Go)](../../ee/examples/llm-providers/azure-openai/cost-attribution/go/)
-- [Multi-Tenant (Python)](../../ee/examples/llm-providers/azure-openai/multi-tenant/python/)
-- [Compliance Audit (TypeScript)](../../ee/examples/llm-providers/azure-openai/compliance-audit/typescript/)
+These four live under `ee/examples/llm-providers/azure-openai/` in the enterprise
+repository, which is not part of the community distribution:
+
+- HITL Approval (Go) - `hitl-approval/go/`
+- Cost Attribution (Go) - `cost-attribution/go/`
+- Multi-Tenant (Python) - `multi-tenant/python/`
+- Compliance Audit (TypeScript) - `compliance-audit/typescript/`
 
 ## See Also
 

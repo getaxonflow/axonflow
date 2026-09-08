@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: September 2026** | **Platform: v10.4.0** | **SDKs: Python / Go / TypeScript / Java v9.3.0 + Rust v0.10.0 (preview)**
+**Last Updated: September 2026** | **Platform Version:** v10.4.0 | **SDK Version:** v9.3.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.10.0 (preview)
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -838,8 +838,8 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 1. **[Configurable Agents Guide](./reference/configurable-agents.md)** - Configure agent behavior and routing
 2. **[API Reference](./api/)** - API specifications and error codes
 3. **[Example Applications](../examples/)** - Healthcare, E-commerce, Trip Planning
-4. **[Production Deployment](../technical-docs/DEPLOYMENT_GUIDE.md)** - Deploy to AWS
-5. **[MCP Connectors](../technical-docs/MCP_CONNECTORS.md)** - Connect to your data sources
+4. **[Production Deployment](https://docs.getaxonflow.com/docs/deployment/overview/)** - Deploy to AWS
+5. **[MCP Connectors](https://docs.getaxonflow.com/docs/mcp/overview/)** - Connect to your data sources
 
 **Questions?** Join our Slack community: https://getaxonflow.com/slack
 

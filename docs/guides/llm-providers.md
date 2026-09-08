@@ -30,7 +30,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 9.14.0 | **SDK Version:** 9.0.0
+**Platform Version:** 10.4.0 | **SDK Version:** 9.3.0
 
 ## Overview
 

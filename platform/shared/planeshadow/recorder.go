@@ -83,6 +83,17 @@ type Comparison struct {
 	// on either side say so without anyone reconstructing it from git.
 	EvaluatorVersion string
 	AdapterVersion   string
+	// Synthetic reports that this comparison came from AxonFlow's own
+	// observation-window canary rather than from a tenant (#3817). It is the
+	// `synthetic` label on the comparison and fail-open counters, and the axis
+	// the ADR-065 per-plane VOLUME floor is stated on: coverage counts canary
+	// comparisons, volume must not.
+	//
+	// It is copied from the observation Observe stamped, never resolved here -
+	// see MetricsRecorder.RecordComparison for why a recorder cannot read it
+	// from its own context.
+	Synthetic bool
+
 	// SiteVersion is EMPTY for a call site that does not stamp one, and that
 	// is not an error here: an unstamped site is a site whose changes are
 	// invisible to the reset rule, which is a coverage gap rather than a
@@ -155,8 +166,13 @@ type MetricsRecorder struct{}
 
 func (MetricsRecorder) RecordComparison(_ context.Context, c Comparison) {
 	plane := string(c.Plane)
-	shadowComparisons.WithLabelValues(plane, string(c.Record.Class)).Inc()
-	shadowFailOpen.WithLabelValues(plane, string(c.Record.FailOpen), string(c.Record.Class)).Inc()
+	// The label comes from the COMPARISON, which carries the fact Observe
+	// stamped onto the observation. The context this method receives is the
+	// worker's own context.Background() and knows nothing about the request, so
+	// reading it here would file every canary comparison as organic (#3817).
+	synthetic := syntheticLabel(c.Synthetic)
+	shadowComparisons.WithLabelValues(plane, string(c.Record.Class), synthetic).Inc()
+	shadowFailOpen.WithLabelValues(plane, string(c.Record.FailOpen), string(c.Record.Class), synthetic).Inc()
 }
 
 // LogRecorder writes one line per comparison.

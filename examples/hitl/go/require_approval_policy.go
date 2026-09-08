@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates creating HITL policies with require_approval action
 // and VALIDATES that enforcement actually works via ProxyLLMCall.
 //

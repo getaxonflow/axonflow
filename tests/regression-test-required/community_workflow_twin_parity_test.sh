@@ -22,6 +22,37 @@
 #      pair it names must actually differ, or the entry is dead weight hiding
 #      the day the pair starts to differ for real.
 #
+#   1b. Every PARITY exemption must rest on something STRUCTURAL, and the guard
+#      resolves it rather than reading it. A parity exemption claims "the mirror
+#      cannot run this step", which is a claim about what the mirror CONTAINS,
+#      so the path the reason names must be one `sync-community-repo.yml`
+#      actually strips AND one that exists - resolved against the sync's own
+#      rule chain, in order, includes and excludes both, never against a list
+#      re-typed here. Stated exactly, because the sentence above reads wider
+#      than the code: this holds for exemptions that CITE a path. `test-summary`
+#      rests on no path by design and is held to its own checked ground instead
+#      (rule 3's hatch), so "every parity exemption rests on a stripped path" is
+#      false as a description of the set - the accurate one is "on a checked
+#      ground". `foo :: enterprise only` and
+#      `foo :: we decided not to` used to pass; a reason naming `platform/`
+#      fails, because a step reading `platform/` CAN run on the mirror and the
+#      divergence needs a different justification. This also gives an exemption
+#      a way to EXPIRE: stop stripping a path and every exemption resting on it
+#      fails, which is the behaviour you want (#3863).
+#
+#      The escape hatch is one job wide and is itself checked, not asserted -
+#      see rule 3. REPLAY exemptions are deliberately NOT held to this, and the
+#      reason needs narrowing from the one first written here. `race-detector`
+#      is a judgement about COST and has no structural form. `tests-executed-
+#      census` is NOT - the job really does read `toJSON(needs)` and the mirror
+#      runner rewrites every non-workspace expression to a literal, so its
+#      ground IS checkable, and "replay grounds have no structural form" is
+#      false for half the population. Excluding both from the PATH rule is still
+#      right: a path test over either would only teach the next author to name a
+#      path that happens to be stripped, which is worse than free text because
+#      it would look checked. A structural check for the census one would be a
+#      different rule, and is not this one.
+#
 #   2. test.yml's community-mirror-simulation job replays community jobs on a
 #      staged copy of the mirror. The set it replays must EQUAL the set of
 #      community jobs that can be replayed - every job with no `services:`,
@@ -61,15 +92,24 @@ fi
 # load-bearing below.
 # ---------------------------------------------------------------------------
 PARITY_EXEMPT=$'integration-tests :: the database set-up step differs by design - the enterprise lane applies migrations/core, migrations/enterprise and migrations/industry/travel, the community lane applies migrations/core only, because the sync excludes migrations/enterprise/ and migrations/industry/ from the mirror
-test-summary :: the two summaries aggregate different job sets (test.yml has the enterprise, real-PG, audit and simulation jobs) and resolve different required-context names'
+test-summary :: the two summaries aggregate different job sets (test.yml has the enterprise, real-PG, audit and simulation jobs) and resolve different required-context names
+unit-tests-decision :: test.yml carries one extra step, the enterprise-tagged corpus/template drift guard, which asserts that testdata/canary_payload_corpus.json still matches the plane map embedded in infrastructure/cloudformation/synthetic-monitoring-decision-shadow.yaml - the sync strips infrastructure/ from the mirror, so the file the step compares against does not exist there and the step cannot be replayed; the community tree is verified instead by the untagged corpus tests, which read the checked-in fixture and run in both lanes'
 
 # Replay exemptions: community jobs that COULD be replayed on the staged copy
 # and deliberately are not.
 REPLAY_EXEMPT=$'race-detector :: runs `go test -race` over platform/orchestrator and the two decision-shadow packages - all three have untagged builds that test.yml\'s unit-test jobs execute on every pull request and whose community-build compile the simulation vets; replaying a multi-minute race run over already-proven packages is cost without evidence
 tests-executed-census :: reads the `needs` context of the run it is in (#3649); a replay has no needs context to count, and the job is byte-identical to test.yml\'s census, which executes on every enterprise pull request - the twin parity rule above is what proves the mirror copy is the executed one'
 
-python3 - "$ENTERPRISE_WORKFLOW" "$COMMUNITY_WORKFLOW" "$PARITY_EXEMPT" "$REPLAY_EXEMPT" <<'PY'
-import re, sys
+SYNC_WORKFLOW="$REPO_ROOT/.github/workflows/sync-community-repo.yml"
+# The sync workflow is EXCLUDED from the mirror, so on a mirror checkout it is
+# absent. That branch is unreachable here - this script has already exited SKIP
+# above when test.yml is missing, and test.yml is stripped by the same sync - so
+# an absent sync file in a tree that HAS test.yml is an unrecognised tree and
+# must fail rather than skip a rule.
+[ -f "$SYNC_WORKFLOW" ] || { echo "FAIL: $SYNC_WORKFLOW not found in a tree that has test.yml; rule 3 cannot resolve an exemption's cited path against a list it cannot read"; exit 1; }
+
+python3 - "$ENTERPRISE_WORKFLOW" "$COMMUNITY_WORKFLOW" "$PARITY_EXEMPT" "$REPLAY_EXEMPT" "$SYNC_WORKFLOW" <<'PY'
+import fnmatch, os, re, subprocess, sys
 
 try:
     import yaml
@@ -77,7 +117,7 @@ except ImportError:
     print("FAIL: PyYAML is unavailable; the parity assertions cannot run, and a guard that cannot run must not pass")
     sys.exit(1)
 
-ent_path, com_path, parity_exempt_raw, replay_exempt_raw = sys.argv[1:5]
+ent_path, com_path, parity_exempt_raw, replay_exempt_raw, sync_path = sys.argv[1:6]
 
 def load(path):
     with open(path) as fh:
@@ -306,9 +346,250 @@ elif "needs.community-mirror-simulation.result" not in fail_expr:
 else:
     ok("community-mirror-simulation gates test.yml's Test Summary (needs and failure expression)")
 
+# ---------------------------------------------------------------------------
+# Rule 3: a parity exemption's REASON is resolved, not read (#3863).
+#
+# `parse_exempt` checks that a reason is non-empty and the rules above check
+# that the exemption is load-bearing. Neither reads the WORDS, so `foo ::
+# enterprise only` passed and so did `foo :: we decided not to`.
+#
+# The check that carries weight is not "the reason mentions a path" - any path
+# satisfies that, including one the sync happily syncs, which is the
+# presence-check-satisfied-by-your-own-comment failure this repository has hit
+# before. It is: THE PATH THE REASON NAMES MUST BE ONE THE SYNC ACTUALLY
+# STRIPS, resolved against sync-community-repo.yml's own declaration.
+# ---------------------------------------------------------------------------
+print("=== rule 3: every parity exemption cites a path the sync actually strips ===")
+
+with open(sync_path) as fh:
+    sync_src = fh.read()
+
+# RULES IN ORDER, INCLUDES AND EXCLUDES BOTH - because rsync is FIRST MATCH
+# WINS and the sync declares 31 `--include=` rules among its 146 `--exclude=`
+# ones. An exclude-only reading is not a conservative approximation of that
+# chain; it is a different chain. Measured against the live mirror's own file
+# list: an exclude-only resolver calls 29 files "stripped" that are committed
+# on the public mirror right now - `config/axonflow.yaml` (re-included at
+# :677 before `/config/*` excludes it at :682), `build-community.yml`,
+# `.gitignore` and the rest.
+#
+# The direction of that error is the dangerous one: it lets an exemption rest
+# on a path the mirror HAS, which is precisely the free text this rule exists
+# to replace. No current exemption was affected - it was a latent fail-open -
+# and it passed a planted reason citing `config/axonflow.yaml`.
+ALL_PATHS = subprocess.run(["git", "ls-files"], capture_output=True, text=True).stdout.split()
+
+SYNC_RULES = [(kind, pat) for kind, pat
+              in re.findall(r"--(exclude|include)='([^']*)'", sync_src)]
+EXCLUDE_RULES = [pat for kind, pat in SYNC_RULES if kind == "exclude"]
+if len(EXCLUDE_RULES) < 50:
+    print("  FAIL: parsed only %d exclude rules from %s; the sync declares far more, so the "
+          "extraction is broken and every resolution below would be meaningless"
+          % (len(EXCLUDE_RULES), sync_path))
+    sys.exit(1)
+if len([1 for kind, _ in SYNC_RULES if kind == "include"]) < 10:
+    print("  FAIL: parsed fewer than 10 include rules from %s; rsync is first-match-wins, so "
+          "an include-blind reading resolves a DIFFERENT chain and would call mirrored files "
+          "stripped" % sync_path)
+    sys.exit(1)
+
+# A path-shaped token: at least one '/', so a bare filename like `test.yml`
+# (which the sync's rules never name on its own) is not mistaken for one.
+PATH_TOKEN = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.*-]+)+/?")
+
+# WHAT THIS RULE DOES AND DOES NOT ESTABLISH, said here rather than left to be
+# discovered. A reason usually names several paths - the enterprise one AND the
+# community one it is being contrasted with - so the rule is that AT LEAST ONE
+# cited path is stripped, not that all of them are. `migrations/core` and
+# `testdata/canary_payload_corpus.json` are cited by real exemptions and both
+# reach the mirror, correctly: they are the contrast, not the ground.
+#
+# So this establishes "the mirror is missing an input this step needs", which is
+# what makes the divergence structural. It does NOT establish that the stripped
+# path is the one the author had in mind. That would need the reason to say
+# which of its paths is load-bearing, which is a heavier contract than the
+# problem justifies - and the weaker claim is still the whole of what free text
+# gave you before, which was nothing.
+
+
+def _rule_matches(pattern, p):
+    """Does one rsync rule match this repo-relative path?
+
+    Only the three shapes the sync's list actually uses are modelled - a
+    directory prefix, an exact path, and a glob - and anything unrecognised
+    simply does not match, so it cannot bless anything.
+    """
+    r = pattern.lstrip("/").rstrip("/")
+    if not r:
+        return False
+    if p == r or p.startswith(r + "/"):
+        return True
+    return fnmatch.fnmatch(p, r) or fnmatch.fnmatch(p, r + "/*")
+
+
+def _exists(cited):
+    """Is this cited path a real thing in the tree?
+
+    Exact repo-relative first, then a UNIQUE suffix match - a reason may name a
+    path relative to its own module (`testdata/canary_payload_corpus.json` lives
+    at `platform/decision/legacycompile/testdata/...`) and that is a legitimate
+    way to write it. A non-unique or absent suffix is not accepted, so a
+    plausible string under a stripped prefix cannot pass.
+
+    Tokens that are prose rather than paths (`corpus/template`, from "the
+    corpus/template drift guard") simply fail this and are then ignored: only a
+    path that is BOTH stripped and real is load-bearing, and the rest of a
+    reason's tokens are context.
+    """
+    c = cited.rstrip("/")
+    if os.path.exists(c):
+        return True
+    hits = [p for p in ALL_PATHS if p == c or p.endswith("/" + c)]
+    return len(hits) == 1
+
+
+def stripped_by(path):
+    """The exclude rule that keeps `path` off the mirror, or None.
+
+    FIRST MATCH WINS, over includes AND excludes in declaration order, because
+    that is what rsync does. An INCLUDE that matches first means the file
+    REACHES the mirror however many excludes follow it - `config/axonflow.yaml`
+    is re-included at :677 and `/config/*` at :682 never sees it.
+
+    Anything unmatched resolves to None, i.e. NOT stripped. That direction is
+    deliberate: an unmodelled rule makes an exemption RED and sends a human to
+    look, where the opposite would silently bless a reason resting on a path the
+    mirror actually has.
+    """
+    p = path.strip("/")
+    for kind, pattern in SYNC_RULES:
+        if _rule_matches(pattern, p):
+            return pattern if kind == "exclude" else None
+    return None
+
+
+# ANTI-VACUITY, and it is a control rather than a count: the resolver must say
+# YES to a path the sync demonstrably strips and NO to one it demonstrably
+# ships. A resolver that answered yes to everything would pass every exemption
+# below, and a resolver that answered no to everything would fail them all -
+# both are visible here and in neither case would the rule mean anything.
+_probe_stripped = stripped_by("infrastructure/cloudformation/x.yaml")
+_probe_synced = stripped_by("platform/agent/proxy.go")
+# THE INCLUDE-RESCUE PROBE. `config/axonflow.yaml` is re-included by the sync
+# BEFORE `/config/*` excludes it, and it is committed on the public mirror right
+# now. An exclude-only resolver answers `/config/*` here, which is the
+# fail-open this control exists to refuse.
+_probe_rescued = stripped_by("config/axonflow.yaml")
+if _probe_stripped is None:
+    print("  FAIL: the resolver says infrastructure/ is NOT stripped, which the sync's own list "
+          "contradicts; every exemption below would red for a reason that is not theirs")
+    sys.exit(1)
+if _probe_synced is not None:
+    print("  FAIL: the resolver says platform/agent/proxy.go IS stripped (matched %r); it reaches "
+          "the mirror, so the resolver would bless a reason resting on a path that syncs"
+          % _probe_synced)
+    sys.exit(1)
+if _probe_rescued is not None:
+    print("  FAIL: the resolver says config/axonflow.yaml is stripped (matched %r), but the sync "
+          "RE-INCLUDES it before that rule and the file is committed on the public mirror. "
+          "rsync is first-match-wins; an exclude-only reading resolves a different chain and "
+          "would bless an exemption resting on a path the mirror has." % _probe_rescued)
+    sys.exit(1)
+ok("the resolver distinguishes stripped, synced, and INCLUDE-RESCUED paths (control, three ways)")
+
+# THE ESCAPE HATCH, one job wide, and its ground is CHECKED rather than
+# asserted. `test-summary` is the one parity exemption with no structural path:
+# the two summaries aggregate different job sets, which is a fact about the
+# workflows and not about the mirror. So it is held to that fact instead - if
+# the two `needs` lists ever become equal, the exemption dies here rather than
+# living on as a sentence nobody re-read.
+def needs_of(job):
+    n = (job or {}).get("needs") or []
+    return {n} if isinstance(n, str) else set(n)
+
+
+def _test_summary_ground(job_id):
+    """`test-summary`'s ground, CHECKED: the two summaries aggregate different job sets."""
+    e_needs, c_needs = needs_of(ent.get(job_id)), needs_of(com.get(job_id))
+    if e_needs == c_needs:
+        return False, ("the two workflows' `needs` are now IDENTICAL (%s). The ground is gone: "
+                       "either the divergence has a different reason now, or the exemption "
+                       "should go." % sorted(e_needs))
+    return True, ("the two `needs` sets differ (%d vs %d jobs)" % (len(e_needs), len(c_needs)))
+
+
+# EACH HATCH ENTRY MAPS TO ITS OWN CHECK, never to a sentence. The first version
+# mapped job -> a ground STRING and had exactly one hard-coded branch beside it,
+# so a second entry took the hatch and printed "on a ground that is checked"
+# with nothing checking it - fail-open, in the escape hatch, which is exactly
+# where a future author arrives. A callable cannot be added without supplying
+# the check, because there is nothing else to add.
+NO_PATH_GROUND = {"test-summary": _test_summary_ground}
+
+for _job, _ground in NO_PATH_GROUND.items():
+    if not callable(_ground):
+        print("  FAIL: the no-path exemption %r maps to %r, not to a check. A hatch entry whose "
+              "ground is a SENTENCE is unverified free text - the exact thing rule 3 exists to "
+              "replace - sitting in the one place a future author is most likely to reach for."
+              % (_job, _ground))
+        sys.exit(1)
+
+
+resolved_by_path = 0
+for job_id, reason in sorted(parity_exempt.items()):
+    if job_id in NO_PATH_GROUND:
+        held, why = NO_PATH_GROUND[job_id](job_id)
+        if held:
+            ok("%s: exempted with no cited path, on a ground that is CHECKED - %s" % (job_id, why))
+        else:
+            bad("%s is exempted with no cited path and its ground no longer holds: %s"
+                % (job_id, why))
+        continue
+
+    cited = [t for t in PATH_TOKEN.findall(reason)]
+    if not cited:
+        bad("%s: the exemption reason names no path, and %s is the only exemption allowed to have "
+            "no structural path. A parity exemption claims the mirror CANNOT run the step; that "
+            "claim has to rest on something the sync strips. Reason given: %r"
+            % (job_id, sorted(NO_PATH_GROUND), reason))
+        continue
+    hits = [(c, stripped_by(c)) for c in cited]
+    stripped = [(c, r) for c, r in hits if r and _exists(c)]
+    unreal = [(c, r) for c, r in hits if r and not _exists(c)]
+    if stripped:
+        resolved_by_path += 1
+        c, r = stripped[0]
+        ok("%s: cites %s, which exists and which the sync strips (--exclude='%s')"
+           % (job_id, c, r))
+    elif unreal:
+        bad("%s: the exemption's only stripped path(s) %s do not EXIST in this tree. A rule that "
+            "resolves a path against the sync's list without checking the path is real is "
+            "satisfied by any plausible-looking string under a stripped prefix - "
+            "`infrastructure/there-is-no-such-file-anywhere.yaml` resolves perfectly. "
+            "Reason given: %r" % (job_id, ", ".join(c for c, _ in unreal), reason))
+    else:
+        bad("%s: the exemption cites %s, and the sync strips NONE of them. A step that reads a "
+            "path the mirror HAS can run there, so this divergence needs a different "
+            "justification - or the sync needs to strip what the reason claims it does. "
+            "Reason given: %r" % (job_id, ", ".join(c for c in cited), reason))
+
+if resolved_by_path < 1:
+    bad("no parity exemption was resolved through a stripped path; every one took the escape "
+        "hatch, so rule 3 checked nothing about the sync's exclude list")
+else:
+    ok("%d parity exemption(s) resolved against the sync's own exclude list (anti-vacuity)"
+       % resolved_by_path)
+
+for job_id in NO_PATH_GROUND:
+    if job_id not in parity_exempt:
+        bad("%r is listed as having no structural path, but it is not a parity exemption at all; "
+            "the entry is dead" % job_id)
+
 print("")
 if failures:
     print("FAIL: %d violation(s)" % failures)
     sys.exit(1)
-print("PASS: community twins are byte-identical and every replayable community job is replayed")
+print("PASS: community twins are byte-identical, every replayable community job is replayed, "
+      "and every parity exemption rests on a checked ground - a real path the sync strips, "
+      "or test-summary's diverging `needs`")
 PY

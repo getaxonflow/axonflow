@@ -242,5 +242,5 @@ If scanning adds unacceptable latency:
 ## Related Documentation
 
 - [Row-Level Security](row-level-security.md)
-- [MCP Connector Configuration](../guides/connector-configuration.md)
-- [Compliance Guide](../compliance/overview.md)
+- [MCP Connector Development](../guides/connector-development.md)
+- [Compliance Guide](https://docs.getaxonflow.com/docs/compliance/overview/)

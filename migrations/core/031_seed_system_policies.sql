@@ -6,7 +6,7 @@
 --          116 (Indonesia KTP + prompt-injection guards, +5). The authoritative LIVE total is
 --          79 system policies (69 static + 10 dynamic), pinned by
 --          platform/agent/system_policy_count_realpg_test.go (the single source of truth — #2696).
--- Related: ADR-020 - Unified Policy Architecture, Issue #724, #2696
+-- Related: ADR-019 - Unified Policy Architecture, Issue #724, #2696
 
 -- =============================================================================
 -- PHASE 1: Static System Policies (53 total)

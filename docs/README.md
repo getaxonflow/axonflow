@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: September 2026** | **Platform: v10.4.0** | **SDKs: Python / Go / TypeScript / Java v9.3.0 + Rust v0.10.0 (preview)**
+**Last Updated: September 2026** | **Platform Version:** v10.4.0 | **SDK Version:** v9.3.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.10.0 (preview)
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -76,7 +76,7 @@ Technical specifications and architecture documentation.
 | [Configurable Agents](./reference/configurable-agents.md) | Configure agents via YAML |
 | [LLM Architecture](./reference/llm-architecture.md) | LLM provider system architecture |
 | [Policy Templates](./reference/policy-templates.md) | Policy templates API |
-| [Secrets & Logging](./reference/secrets-logging-checklist.md) | Security checklist |
+| Secrets & Logging | Security checklist. `reference/secrets-logging-checklist.md` is excluded from the community sync (`sync-community-repo.yml`), so this row is a name, not a link - it would 404 for a community reader. |
 | [License Migration](./reference/license-migration.md) | License key migration guide |
 | [Architecture](./ARCHITECTURE.md) | Platform architecture and the five runtime modes |
 | [Compatibility Matrix](./COMPATIBILITY_MATRIX.md) | Platform ↔ SDK version compatibility |

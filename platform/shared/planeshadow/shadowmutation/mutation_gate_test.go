@@ -110,8 +110,8 @@ var mutants = []mutant{
 				// depends on which verdict, and "a comparison happened" is the
 				// one fact that cannot go quiet because a classification
 				// improved.
-				from: `	shadowObservations.WithLabelValues(plane, dispositionCompared).Inc()`,
-				to: `	shadowObservations.WithLabelValues(plane, dispositionCompared).Inc()
+				from: `	shadowObservations.WithLabelValues(plane, dispositionCompared, synthetic).Inc()`,
+				to: `	shadowObservations.WithLabelValues(plane, dispositionCompared, synthetic).Inc()
 	LeakedVerdictDenies.Store(true)`,
 			},
 			{
@@ -546,7 +546,7 @@ var LeakedVerdictDenies atomic.Bool
 		name: "the window's denominator is absent until the first comparison",
 		edits: []edit{{
 			file: "shared/planeshadow/metrics.go",
-			from: "\t\tobservations.WithLabelValues(string(p), dispositionCompared)\n",
+			from: "\t\t\tobservations.WithLabelValues(string(p), dispositionCompared, synthetic)\n",
 			to:   "",
 		}},
 		pkg:  shadowPkg,
@@ -556,6 +556,82 @@ var LeakedVerdictDenies atomic.Bool
 			"gate 18's ratio had no divisor. An expression over an absent series is not a low " +
 			"reading, it is no reading, and a v11 cutover read off it would be authorised by silence",
 	},
+	// --- #3817: THE SYNTHETIC AXIS. A canary satisfies the vacuity signal it
+	// was built to feed, so the ORGANIC half is the one the gate reads and the
+	// one every mutant below attacks.
+	{
+		name: "the canary's comparisons are filed as ORGANIC tenant traffic",
+		edits: []edit{{
+			// The recorder reads the fact off the COMPARISON, which carries what
+			// Observe stamped. Hard-coding it is what a reviewer would do to
+			// "simplify" a field that looks redundant beside a context.
+			file: "shared/planeshadow/recorder.go",
+			from: "\tsynthetic := syntheticLabel(c.Synthetic)\n",
+			to:   "\tsynthetic := syntheticLabel(false)\n",
+		}},
+		pkg: shadowPkg,
+		// ONE test, not two. An earlier revision also named
+		// TestTheDrivenSetReachesTheSyntheticLabelBothWays, which could not kill
+		// either of these mutants: it read a PRE-CREATED disposition, so it was
+		// satisfied by init() whatever the driver did (R3 round 1, F2). The
+		// runner kills on any failure in the alternation, so the mutants died
+		// anyway - by the first test alone - and the second name overstated the
+		// guard set, which is what sends the next author to the wrong test when
+		// one of them is deleted.
+		test: "^TestASyntheticObservationLandsInTheSyntheticSeriesEndToEnd$",
+		why: "every canary comparison would land in the ORGANIC volume the ADR-065 per-plane " +
+			"floor is stated in, so a stack whose only decision traffic is our own probe would " +
+			"report 3,000 organic comparisons and read as ready for v11 activation. The number " +
+			"is wrong rather than absent, which is the failure nobody notices",
+	},
+	{
+		name: "Observe stops reading the synthetic stamp, so the whole axis reads organic",
+		edits: []edit{{
+			file: "shared/planeshadow/observer.go",
+			from: "\tobs.synthetic = identity.SyntheticProbeFromContext(ctx)\n",
+			to:   "\tobs.synthetic = false\n",
+		}},
+		pkg:  shadowPkg,
+		test: "^TestASyntheticObservationLandsInTheSyntheticSeriesEndToEnd$",
+		why: "the same wrong number one layer earlier, and the layer a refactor is likelier to " +
+			"touch: this is the single read site the whole design rests on, so its removal is " +
+			"silent everywhere else",
+	},
+	{
+		name: "the ORGANIC denominator is absent until the first tenant comparison",
+		edits: []edit{{
+			// Pre-create only the canary's half. The organic child is then
+			// absent on exactly the stacks that need it - the quiet ones - and
+			// the recording rule returns an empty vector rather than a zero.
+			file: "shared/planeshadow/metrics.go",
+			from: "\t\tfor _, synthetic := range bothSyntheticValues() {\n",
+			to:   "\t\tfor _, synthetic := range []string{SyntheticTrue} {\n",
+		}},
+		pkg:  shadowPkg,
+		test: "^TestBothGateOperandsAreExportedBeforeAnyTraffic$|^TestPreCreationIsTargetedAtTheGateOperandsOnly$",
+		why: "the shipped vacuity defect reproduced one label lower: the child the volume floor " +
+			"is read from would be absent-until-first-write, so on a canary-only stack the " +
+			"organic rule yields an empty vector, a dashboard renders 'no data' rather than 0, " +
+			"and there is nothing to compare a floor of 3,000 against",
+	},
+	// NOT A MUTANT, AND THE REASON IS THE HARNESS RATHER THAN THE GUARD.
+	//
+	// The obvious fourth mutant on this axis is "delete
+	// axonflow:decision_shadow_organic_comparisons:increase1h from
+	// monitoring/rules/decision-shadow.rules.yml", caught by
+	// TestTheTwoRuleFilesAgreeOnTheOrganicAxis. It cannot run here: this harness
+	// mutates through a GO BUILD OVERLAY, which redirects compiled Go files
+	// only, and it writes each mutated file under a generated `.go` name. A YAML
+	// rule file routed through it is not seen by the guard that reads it off
+	// disk, so the mutant would report SURVIVOR for a guard that is fine - which
+	// is worse than no mutant, because it would be read as a real gap. Measured:
+	// the entry was written, ran, and survived for exactly this reason.
+	//
+	// The guard was proven by hand instead, and the evidence is on #3817: with
+	// the record renamed in the rules file,
+	// TestTheTwoRuleFilesAgreeOnTheOrganicAxis fails naming the missing rule.
+	// A rules-file mutation lane would need a second harness that edits the
+	// working tree; that is its own change, not a line here.
 	{
 		name: "a wired process publishes no mode, so the vacuity rule has no left-hand side",
 		edits: []edit{{

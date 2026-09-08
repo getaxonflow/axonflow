@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates comprehensive PII redaction in MCP responses.
 //
 // This example validates that PII types are properly redacted in MCP connector responses:

@@ -1,5 +1,8 @@
 //go:build !loadtest
 
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Community LLM Provider E2E Tests using Go SDK
 // Tests governed LLM access through AxonFlow Agent
 //

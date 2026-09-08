@@ -61,7 +61,7 @@ public class SdkAudit {
         String approvedContextId = null;
 
         // Initialize AxonFlow client
-        // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+        // Note: As of SDK v2.0.0 (ADR-024), all routes go through a single endpoint.
         // The Agent proxies orchestrator routes internally.
         String clientId = getEnv("AXONFLOW_CLIENT_ID", "demo-client");
         String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret");

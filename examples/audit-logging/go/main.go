@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates AxonFlow's audit logging capabilities.
 //
 // This example shows the complete Gateway Mode workflow:

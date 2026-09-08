@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -124,10 +116,10 @@ var (
 	heartbeatService        *node_enforcement.HeartbeatService // Node enforcement
 	nodeMonitor             *node_enforcement.NodeMonitor      // Node enforcement
 	policyAPIHandler        *PolicyAPIHandler                  // Policy CRUD API handler
-	dynamicPolicyAPIHandler *DynamicPolicyAPIHandler           // Dynamic Policy API handler (ADR-026)
+	dynamicPolicyAPIHandler *DynamicPolicyAPIHandler           // Dynamic Policy API handler (ADR-024)
 	templateAPIHandler      *TemplateAPIHandler                // Policy Templates API handler
-	llmProviderRouter       *llm.UnifiedRouter                 // Unified LLM provider router (ADR-007, ADR-022)
-	llmRouterWrapper        LLMRouterInterface                 // Interface for router compatibility (ADR-022 Phase 6)
+	llmProviderRouter       *llm.UnifiedRouter                 // Unified LLM provider router (ADR-006, ADR-021)
+	llmRouterWrapper        LLMRouterInterface                 // Interface for router compatibility (ADR-021 Phase 6)
 	llmProviderAPIHandler   *LLMProviderAPIHandler             // LLM Provider REST API handler
 
 	// Enterprise Compliance Modules
@@ -803,7 +795,7 @@ func Run() {
 	r.HandleFunc("/api/v1/templates/{id}", templateAPIGetHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/templates/{id}/apply", templateAPIApplyHandler).Methods("POST", "OPTIONS")
 
-	// Tenant Policy API (ADR-026: Single Entry Point Architecture).
+	// Tenant Policy API (ADR-024: Single Entry Point Architecture).
 	// Registered under BOTH /api/v1/tenant-policies (#1431, current) and
 	// /api/v1/dynamic-policies (deprecated, still served).
 	//
@@ -824,7 +816,7 @@ func Run() {
 		log.Println("MCP Dynamic Policy API routes registered (/api/v1/mcp/evaluate-policies)")
 	}
 
-	// LLM Provider Management API (ADR-007 - Pluggable LLM Providers)
+	// LLM Provider Management API (ADR-006 - Pluggable LLM Providers)
 	// Register routes only if bootstrap was successful
 	if llmProviderAPIHandler != nil {
 		llmProviderAPIHandler.RegisterRoutesWithMux(r)
@@ -1345,11 +1337,11 @@ func initializeComponents() {
 		}
 	}
 
-	// Initialize RuntimeConfigService for ADR-007 three-tier config
+	// Initialize RuntimeConfigService for ADR-006 three-tier config
 	// Priority: Database > Config File > Env Vars
 	selfHosted := os.Getenv("AXONFLOW_SELF_HOSTED") == "true"
 	InitRuntimeConfigService(usageDB, selfHosted)
-	log.Println("RuntimeConfigService initialized (ADR-007 compliant)")
+	log.Println("RuntimeConfigService initialized (ADR-006 compliant)")
 
 	// Wire config file loader for Priority 2 (Community config file support)
 	// Checks AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE env vars
@@ -1404,7 +1396,7 @@ func initializeComponents() {
 	// was true at.
 	initDecisionShadow(usageDB)
 
-	// Initialize LLM Router context (ADR-007)
+	// Initialize LLM Router context (ADR-006)
 	ctx := context.Background()
 	tenantID := os.Getenv("ORG_ID") // Use org ID as tenant ID
 	if tenantID == "" {
@@ -1420,9 +1412,9 @@ func initializeComponents() {
 	tierChecker = NewEnvLicenseChecker()
 	log.Printf("License tier: %s", tierChecker.Tier())
 
-	// Initialize pluggable LLM provider system (ADR-007 Phase 2, ADR-022)
+	// Initialize pluggable LLM provider system (ADR-006 Phase 2, ADR-021)
 	// This uses the factory pattern from llm/factories.go and bootstrap from llm/bootstrap.go
-	log.Println("Initializing pluggable LLM provider system (ADR-007 Phase 2)...")
+	log.Println("Initializing pluggable LLM provider system (ADR-006 Phase 2)...")
 	// Create registry with tier-aware provider count limit
 	llmRegistry := llm.NewRegistry(llm.WithMaxProviders(tierChecker.MaxLLMProviders()))
 	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
@@ -1446,7 +1438,7 @@ func initializeComponents() {
 		// Note: We use the registry from bootstrapResult directly instead of calling
 		// QuickBootstrap() which would bootstrap providers again.
 		//
-		// Use routing config from environment variables (ADR-021: LLM Provider Routing Control)
+		// Use routing config from environment variables (ADR-020: LLM Provider Routing Control)
 		routingConfig := LoadRoutingConfig()
 		weights := make(map[string]float64)
 		if len(routingConfig.ProviderWeights) > 0 {
@@ -1465,7 +1457,7 @@ func initializeComponents() {
 			}
 		}
 
-		// Create unified router that bridges legacy and new APIs (ADR-022: Router Consolidation)
+		// Create unified router that bridges legacy and new APIs (ADR-021: Router Consolidation)
 		// Convert orchestrator.RoutingStrategy to llm.RoutingStrategy
 		llmProviderRouter = llm.NewUnifiedRouter(llm.UnifiedRouterConfig{
 			Registry: bootstrapResult.Registry,
@@ -1477,14 +1469,14 @@ func initializeComponents() {
 		})
 		log.Printf("[LLM Router] Unified router initialized with strategy: %s", routingConfig.Strategy)
 
-		// Create wrapper for LLMRouterInterface compatibility (ADR-022 Phase 6)
+		// Create wrapper for LLMRouterInterface compatibility (ADR-021 Phase 6)
 		llmRouterWrapper = NewUnifiedRouterWrapper(llmProviderRouter)
 		log.Println("[LLM Router] Interface wrapper created for legacy compatibility")
 
 		// Create API handler using the underlying Router
 		llmProviderAPIHandler = NewLLMProviderAPIHandlerWithRouter(llmProviderRouter.Router(), log.Default())
 		if llmProviderAPIHandler != nil {
-			log.Println("✅ LLM Provider API handler initialized (ADR-007 Phase 2)")
+			log.Println("✅ LLM Provider API handler initialized (ADR-006 Phase 2)")
 		} else {
 			log.Println("⚠️  Failed to create LLM Provider API handler (router registry issue)")
 		}
@@ -1740,6 +1732,9 @@ func initializeComponents() {
 		if rls3039AdminDB != nil {
 			policyRepo.SetCrossOrgDB(rls3039AdminDB)
 		}
+		// #3593: organization-root policy admissions ride the same pool the
+		// repository writes through.
+		initTierAdmission(usageDB)
 		// Issue #1082: Pass the policy engine as a PolicyEngineRefresher so the
 		// PolicyService can trigger immediate cache refresh after policy
 		// changes. #3319: dbEngine is the one engine constructed above (no
@@ -1750,9 +1745,9 @@ func initializeComponents() {
 		policyAPIHandler = NewPolicyAPIHandler(policyService)
 		log.Println("Policy CRUD API initialized ✅")
 
-		// Initialize Dynamic Policy API (ADR-026: Single Entry Point)
+		// Initialize Dynamic Policy API (ADR-024: Single Entry Point)
 		dynamicPolicyAPIHandler = NewDynamicPolicyAPIHandler(policyService)
-		log.Println("Dynamic Policy API initialized ✅ (ADR-026)")
+		log.Println("Dynamic Policy API initialized ✅ (ADR-024)")
 
 		// Initialize Policy Simulation + Conflict Detection (Evaluation tier+)
 		conflictService := NewPolicyConflictService(policyService)

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"axonflow/platform/decision/contract"
@@ -133,16 +134,94 @@ func (e *Environment) Validate() error {
 }
 
 // BundleDigests returns the loaded bundle digests by root, in root order.
-func (e *Environment) BundleDigests() []Pin {
+//
+// The digest is RECOMPUTED from each bundle's content, not read from its
+// advertised Digest field (#3700). This is the site where that mattered most:
+// CheckPins decides whether a replay environment is the one that produced a
+// record by comparing these digests against the record's pins, and nothing
+// upstream of here verifies the bundles - Environment.Validate checks the
+// declared keys, and Engine() verifies, but a caller may call this without
+// ever building an engine (cmd/decision-replay does exactly that). An
+// advertised digest is not covered by the bundle signature, so this method
+// was reporting a LABEL as though it were a fact about content.
+//
+// It did NOT make CheckPins compare equal to a record it did not produce -
+// an earlier version of this comment claimed that and was wrong.
+// Record.EnvironmentDigest hashes the whole Environment, bundles included, so
+// any drift in content or in label already moved it and CheckPins already
+// refused; see record.go, which calls the bundle pins "redundant with
+// EnvironmentDigest only when nothing is wrong". What was unguarded is this
+// EXPORTED method and every consumer of its output that does not also check
+// the environment digest.
+// THE SLICE IS PARTIAL WHEN THE ERROR IS NON-NIL, and that is a change of
+// contract worth stating rather than discovering. Before #3700's round-4 fix
+// this method returned nil on error, which is obviously empty; it now returns
+// the pins it COULD compute so that CheckPins can still report the other
+// direction, and a caller writing `pins, _ := env.BundleDigests()` gets a
+// short list that looks complete. Read the error. It is an
+// *UnpinnableBundlesError naming exactly which roots are missing from the
+// slice and why, so a caller never has to infer that from a length.
+func (e *Environment) BundleDigests() ([]Pin, error) {
 	out := make([]Pin, 0, len(e.Roots))
+	var refused []UnpinnableRoot
 	for _, r := range e.Roots {
 		if r.Bundle == nil {
 			continue
 		}
-		out = append(out, Pin{Root: r.Root, Digest: r.Bundle.Digest})
+		digest, err := r.Bundle.VerifiedDigest()
+		if err != nil {
+			// EVERY unpinnable bundle is reported, not the first. Returning
+			// on the first one hid the rest and, through CheckPins, hid the
+			// OTHER pin mismatches too - in a function whose contract is to
+			// report both directions.
+			//
+			// BOTH DIGESTS ARE CARRIED, not a sentence. A caller that only
+			// gets prose cannot tell which roots are affected, so CheckPins
+			// used to fall through and report a root the environment HOLDS as
+			// a root it does not hold. The content digest is what the record
+			// pinned in the common case, so naming both is what turns the
+			// refusal from "your bundle is missing" into "your bundle is
+			// here, with a corrupted label".
+			u := UnpinnableRoot{Root: r.Root, Advertised: r.Bundle.Digest, Err: err}
+			if content, cerr := r.Bundle.ContentDigest(); cerr == nil {
+				u.Content = content
+			}
+			refused = append(refused, u)
+			continue
+		}
+		out = append(out, Pin{Root: r.Root, Digest: digest})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Root < out[j].Root })
-	return out
+	if len(refused) > 0 {
+		sort.Slice(refused, func(i, j int) bool { return refused[i].Root < refused[j].Root })
+		return out, &UnpinnableBundlesError{Roots: refused}
+	}
+	return out, nil
+}
+
+// UnpinnableRoot names one root whose bundle could not be pinned, carrying
+// both digests so a caller can say which of the two is the lie.
+type UnpinnableRoot struct {
+	Root       pdp.Root
+	Advertised string
+	Content    string
+	Err        error
+}
+
+// UnpinnableBundlesError is what BundleDigests returns when it could not pin
+// every bundle. It exists so callers can act on the ROOTS rather than parse a
+// sentence: CheckPins uses it to report each affected root once, correctly,
+// instead of reporting it as absent.
+type UnpinnableBundlesError struct {
+	Roots []UnpinnableRoot
+}
+
+func (e *UnpinnableBundlesError) Error() string {
+	parts := make([]string, 0, len(e.Roots))
+	for _, r := range e.Roots {
+		parts = append(parts, fmt.Sprintf("root %q: %v", r.Root, r.Err))
+	}
+	return "replay: " + strings.Join(parts, "; ")
 }
 
 // Engine builds the shipped engine from the pinned artifacts.

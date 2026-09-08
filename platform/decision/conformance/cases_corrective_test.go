@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package conformance
 
 import (
@@ -632,7 +635,7 @@ func correctiveCases() []Case {
 			},
 		},
 		{
-			ID: "AXC-019", Title: "Identical input and bundle reproduce an identical decision",
+			ID: "AXC-019", Title: "Identical input, bundle and PEP profile reproduce an identical decision",
 			Family: "V Replay", Kind: KindDecision,
 			Run: func(t *testing.T, rec *Recorder) {
 				w := defaultWorld(t)

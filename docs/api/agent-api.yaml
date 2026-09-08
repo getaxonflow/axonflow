@@ -13,7 +13,7 @@ info:
 
     ## Single Entry Point
 
-    The Agent is the single entry point for all client traffic (ADR-026):
+    The Agent is the single entry point for all client traffic (ADR-024):
     clients never call the Orchestrator directly — it is an internal service
     and must not be exposed. **Every `/api/v1/*` endpoint is reachable
     through the Agent.** This spec documents the endpoints the Agent serves
@@ -42,7 +42,13 @@ info:
     - **Enterprise**: Customer-deployed (`DEPLOYMENT_MODE=enterprise`)
     - **Community**: Local development (`DEPLOYMENT_MODE=community`) - bypasses license validation
 
-  version: 2.1.0
+  # Tracks the platform VERSION file. These four documents describe ONE
+  # platform, so a per-spec version answered a question nobody asks and
+  # answered it wrong: agent-api sat at 2.1.0 and orchestrator-api at
+  # 1.1.0 through 139 commits between them. Kept true by
+  # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
+  # scripts/docs/stamp-docs-versions.py.
+  version: 10.4.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -54,7 +60,7 @@ servers:
   - url: https://agent.getaxonflow.com
     description: Production (SaaS)
   - url: https://axonflow.example.com
-    description: Self-hosted deployment (agent single entry point, ADR-026)
+    description: Self-hosted deployment (agent single entry point, ADR-024)
   - url: http://localhost:8080
     description: Local Development
 
@@ -99,7 +105,7 @@ tags:
       response. Customers change only `baseURL` in their OpenAI SDK setup.
   - name: System Policies
     description: |
-      System policy management (ADR-018), served at `/api/v1/system-policies`.
+      System policy management (ADR-019), served at `/api/v1/system-policies`.
       Pattern-based enforcement rules for SQL injection detection, PII
       detection and similar checks, resolved across the system, organization
       and tenant tiers.
@@ -144,6 +150,60 @@ tags:
       license, never from OTLP resource attributes.
 
 paths:
+  # --- OAuth discovery (RFC 8414 / RFC 9728) ------------------------------
+  #
+  # The MCP server authenticates with HTTP Basic, NOT OAuth. These two
+  # endpoints exist because some MCP clients answer a 401 by probing OAuth
+  # discovery regardless of the WWW-Authenticate scheme; without them the probe
+  # reaches the router default and gets Go's plaintext "404 page not found",
+  # which the client then tries to parse as OAuth error JSON and reports as
+  # "HTTP 404: Invalid OAuth error response". Both therefore return a PARSEABLE
+  # RFC 6749 section 5.2 error body, and advertise no authorization server, so a
+  # client stops rather than starting a flow this server cannot complete.
+  #
+  # Both are registered with PathPrefix, so any sub-path answers identically -
+  # RFC 9728 clients request the bare path AND the resource-suffixed
+  # `/.well-known/oauth-protected-resource/api/v1/mcp-server`.
+  /.well-known/oauth-protected-resource:
+    get:
+      tags:
+        - MCP Server
+      summary: OAuth protected-resource metadata (always 404, by design)
+      description: |
+        Always answers `404` with an OAuth-shaped JSON error stating that this
+        server uses HTTP Basic authentication. No authorization server is
+        advertised. Any path under this prefix answers identically.
+      operationId: getOAuthProtectedResourceMetadata
+      security: []
+      responses:
+        '404':
+          description: |
+            No OAuth metadata exists for this resource. This is the only
+            response; it is not an error condition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthDiscoveryNotSupported'
+  /.well-known/oauth-authorization-server:
+    get:
+      tags:
+        - MCP Server
+      summary: OAuth authorization-server metadata (always 404, by design)
+      description: |
+        Always answers `404` with an OAuth-shaped JSON error stating that this
+        server uses HTTP Basic authentication. Any path under this prefix
+        answers identically.
+      operationId: getOAuthAuthorizationServerMetadata
+      security: []
+      responses:
+        '404':
+          description: |
+            This deployment is not an OAuth authorization server. This is the
+            only response; it is not an error condition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthDiscoveryNotSupported'
   /health:
     get:
       tags:
@@ -2140,7 +2200,7 @@ paths:
                 $ref: '#/components/schemas/JSONError'
 
   # ==========================================================================
-  # Connector Cache Management (ADR-007)
+  # Connector Cache Management (ADR-006)
   # ==========================================================================
 
   /api/v1/connectors/refresh:
@@ -3769,7 +3829,7 @@ paths:
           description: Notification config not found
 
   # =============================================================================
-  # Static Policies API (ADR-018)
+  # Static Policies API (ADR-019)
   # =============================================================================
 
   /api/v1/static-policies:
@@ -3795,7 +3855,7 @@ paths:
 
         Legacy category names are still accepted and automatically mapped.
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
       operationId: listStaticPolicies
       parameters:
         - name: Authorization
@@ -3870,7 +3930,7 @@ paths:
         - `organization` tier: Requires Enterprise license
         - `tenant` tier: Default, limited to 30 policies in Community mode
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
       operationId: createStaticPolicy
       parameters:
         - name: Authorization
@@ -4508,7 +4568,7 @@ paths:
 
         Legacy category names are still accepted and automatically mapped.
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
       operationId: listSystemPolicies
       parameters:
         - name: Authorization
@@ -4582,7 +4642,7 @@ paths:
         - `organization` tier: Requires Enterprise license
         - `tenant` tier: Default, limited to 30 policies in Community mode
 
-        Part of ADR-018: Unified Policy Management System.
+        Part of ADR-019: Unified Policy Management System.
       operationId: createSystemPolicy
       parameters:
         - name: Authorization
@@ -5604,6 +5664,31 @@ components:
         type: string
 
   schemas:
+    OAuthDiscoveryNotSupported:
+      type: object
+      description: |
+        The body both `/.well-known/oauth-*` endpoints return. Shaped to RFC
+        6749 section 5.2 so a client that parses discovery failures as OAuth
+        errors renders it instead of choking on a plaintext 404.
+      properties:
+        error:
+          type: string
+          enum: [oauth_not_supported]
+          description: Always this value.
+        error_description:
+          type: string
+          description: |
+            Names the mechanism this server does use - HTTP Basic with
+            `base64(org_id:license_key)` - and links the setup documentation.
+      required:
+        - error
+        - error_description
+      example:
+        error: oauth_not_supported
+        error_description: >-
+          AxonFlow's MCP server uses HTTP Basic authentication
+          (base64(org_id:license_key)), not OAuth. Set AXONFLOW_ENDPOINT and
+          AXONFLOW_AUTH in the environment that launches your MCP client.
     HealthResponse:
       type: object
       properties:
@@ -5732,7 +5817,7 @@ components:
             claude-desktop: "0.4.0"
 
     # =========================================================================
-    # Static Policies Schemas (ADR-018)
+    # Static Policies Schemas (ADR-019)
     # =========================================================================
 
     StaticPolicy:
@@ -6116,6 +6201,14 @@ components:
           type: string
         organization_id:
           type: string
+          description: |
+            The organisation these effective policies were computed for,
+            alongside `tenant_id` and `computed_at`. It is metadata about the
+            resolution, not an owner of any one policy in the list.
+
+            This is the current wire field name and it is not deprecated: it is
+            unrelated to a database column of the same name that was retired in
+            an earlier release. The two share a name and nothing else.
         computed_at:
           type: string
           format: date-time

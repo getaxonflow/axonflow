@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -321,7 +313,7 @@ var backendCORSHeaders = []string{
 // executions, the compliance modules) was broken - silently, because a
 // server-side client never runs a CORS check and neither does curl.
 //
-// Stripping rather than de-duplicating is the right rule: ADR-026 makes the
+// Stripping rather than de-duplicating is the right rule: ADR-024 makes the
 // agent the single entry point, so the edge owns the CORS contract. An
 // internal service's opinion about which origins may call it is not the
 // answer the browser should be given. It also means the orchestrator's five
@@ -657,9 +649,14 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				// #3602: ContextWithSyntheticProbe before ResolveToken (see
 				// mcp_server_handler.go's copy for why the tag travels on the
 				// context here).
-				if vid, resolveErr := sharedidentity.ResolveToken(
-					sharedidentity.ContextWithSyntheticProbe(r.Context(), auth.Synthetic),
-					auth.OrgID, perUserToken); resolveErr != nil {
+				if vid, resolveErr := resolveTokenAdmitted(r.Context(), auth.OrgID, perUserToken, auth.Synthetic); resolveErr != nil {
+					// A tier-limit refusal (#3593) is a 402 with its own
+					// code, not the 401 an invalid token gets: the token
+					// verified and the principal was refused by the ceiling.
+					if ref, ok := asTierLimitRefusal(resolveErr); ok {
+						writeTierLimitRefusal(w, ref)
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
 					errBody, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("invalid user token: %v", resolveErr)})
@@ -724,7 +721,7 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // RegisterProxyRoutes registers all proxy routes on the provided router
-// This enables Single Entry Point Architecture (ADR-026)
+// This enables Single Entry Point Architecture (ADR-024)
 func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Auth-wrapped proxy handlers
 	orchAuth := proxyAuthMiddleware(h.ProxyToOrchestrator)
@@ -853,7 +850,7 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Git Providers
 	r.PathPrefix("/api/v1/git-providers").HandlerFunc(portalAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
-	log.Println("[Proxy] Registered proxy routes for Single Entry Point Architecture (ADR-026)")
+	log.Println("[Proxy] Registered proxy routes for Single Entry Point Architecture (ADR-024)")
 }
 
 // GetProxyConfig returns proxy configuration for internal service communication.

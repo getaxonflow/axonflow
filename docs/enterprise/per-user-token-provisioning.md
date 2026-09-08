@@ -188,8 +188,8 @@ developer authenticates successfully and then reads nothing.
 2. Point JumpCloud's SCIM/directory-sync at `$PORTAL_URL/scim/v2` using that
    token, and assign your developer group(s) so users and groups sync.
 
-Full walkthrough: [SCIM setup](../../ee/docs/scim/setup.md) ·
-[group→role mapping](../../ee/docs/scim/group-role-mapping.md).
+Full walkthrough: [SCIM setup](https://docs.getaxonflow.com/docs/identity/scim/getting-started/) ·
+[group→role mapping](https://docs.getaxonflow.com/docs/identity/scim/group-role-mapping/).
 
 ### 2. Create the OIDC application in JumpCloud
 

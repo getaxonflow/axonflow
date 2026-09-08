@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES AxonFlow's PII detection capabilities.
 //
 // AxonFlow detects PII and flags it for redaction:

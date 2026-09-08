@@ -1,17 +1,9 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package agent provides the AxonFlow Agent service.
 //
-// This file implements the Static Policies REST API for ADR-018: Unified Policy Management.
+// This file implements the Static Policies REST API for ADR-019: Unified Policy Management.
 // Static policies are pattern-based enforcement rules (PII detection, SQL injection blocking)
 // that are stored in the static_policies table and evaluated by the Agent.
 //
@@ -52,7 +44,7 @@ import (
 )
 
 // Note: StaticPolicy, CreateStaticPolicyRequest, UpdateStaticPolicyRequest, and related types
-// are defined in policy_types.go with enhanced fields for tier hierarchy support (ADR-020).
+// are defined in policy_types.go with enhanced fields for tier hierarchy support (ADR-019).
 
 // StaticPolicyAPIHandler handles static policy API requests.
 // It uses StaticPolicyRepository and PolicyOverrideRepository for database operations.

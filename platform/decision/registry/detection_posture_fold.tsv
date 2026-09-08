@@ -1,0 +1,24 @@
+# The Detection Posture fold (#3786 item 3).
+#
+# One row per lever in platform/decision/legacycompile/legacy_posture_levers.tsv,
+# naming where that lever lands once the static/dynamic split is retired. A
+# lever with no destination is a deployment setting that silently stops working
+# at v11, so the census test refuses one.
+#
+# THIS FILE IS THE FOLD TABLE, NOT technical-docs/designs/DETECTOR_REGISTRY_DESIGN.md.
+# The design doc renders the same rows as prose and cites this file. The table
+# lives here because the doc does NOT reach the community mirror (verified with
+# scripts/ci/simulate-community-mirror.sh) while this package and the census
+# test both do - a test parsing the doc's markdown would go red on the mirror
+# for a file that is correctly absent there, and would be parsing prose to
+# assert a fact besides.
+#
+# census_rows is DERIVED, not declared: it is the number of rows in
+# detectors_census.tsv whose posture_lever column equals this lever, and the
+# test recomputes it. A lever whose population moves without this file moving
+# is red.
+lever	destination	census_rows	note
+DANGEROUS_COMMAND_ACTION	the called tool's declared posture (PROPOSED vocabulary - NOT registry.Posture, which is Unmatched/OnError failure semantics and cannot carry a block-on-match; the ADR-065 home is an action tag plus a constraint policy), plus emit on the security-dangerous detector documents	23	Dangerous-command posture is a property of the TOOL being invoked, not of the content inspected. Ten of these rows evaluate on seven planes rather than nine (phase_not_evaluated_on_this_plane), so a content-side home would leave two planes unreachable.
+PII_ACTION	ScoringPolicy (PROPOSED vocabulary - no such entity exists in ADR-065 or the tree today) threshold on the pii-* detector documents, plus each document's emit	18	Two census rows already carry posture_lever_displaces_stored_action, i.e. the lever overrides the stored action today. The fold makes that explicit per document instead of implicit per deployment.
+SENSITIVE_DATA_ACTION	ScoringPolicy (PROPOSED, see PII_ACTION) threshold on the sensitive-data detector documents	6	Straight threshold fold; no tool posture involved.
+SQLI_ACTION	emit on the security-sqli detector documents, and the called tool's declared posture (PROPOSED, see DANGEROUS_COMMAND_ACTION) for query-bearing tools	38	The largest category. Migration 067 already performs the same operation once at migration time (UPDATE ... WHERE category IN ('security-sqli','sqli')); the fold removes one of the two places an SQLi action is decided.

@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // MCP Connector Example - Tests Agent Routing
 //
 // This example tests the FULL MCP connector flow:

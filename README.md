@@ -369,12 +369,17 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 | Feature | Community | Evaluation (Free) | Enterprise |
 |---------|-----------|-------------------|------------|
 | Tenant policies | 20 | 50 | Unlimited |
-| Org-wide policies | 0 | 5 | Unlimited |
+| Org-wide policies | 0 | 0 | Unlimited |
 | Audit retention | 3 days | 14 days | 3650 days |
 | Concurrent executions | 5 | 25 | Unlimited |
+| Human principals | 25 | 75 | Unlimited |
+| Service principals | 5 | 25 | Unlimited |
+| Nodes | 1 | Unlimited | Unlimited |
 | HITL Approval Gates | - | Resolve-only | Unlimited, 24h default expiry (Professional and above) |
 | Policy Simulation | - | 300/day | Unlimited |
 | Evidence Export | - | 14-day window, 3/day | Unlimited |
+
+Org-wide policy authoring is an Enterprise capability, so the ceiling is 0 on Community and on Evaluation. Human principals, service principals and nodes are per-organization scale limits read from the licence key: a request that would admit a principal past the ceiling is refused with HTTP 402 and its own error code, and principals already admitted keep working. See [Licensing and Tier Limits](https://docs.getaxonflow.com/docs/deployment/licensing/?utm_source=readme_eval).
 
 [Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Run a paid production program](https://getaxonflow.com/design-partner?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
 

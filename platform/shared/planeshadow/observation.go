@@ -116,7 +116,44 @@ type Observation struct {
 	// process-off deployment cannot be told apart from the deployment default.
 	mode Mode
 	seq  uint64
+
+	// synthetic records that this observation came from AxonFlow's own
+	// observation-window canary rather than from a tenant (#3817). It is the
+	// `synthetic` label on all three counters and the axis the ADR-065 volume
+	// floor is read on.
+	//
+	// # IT IS STAMPED BY Observe FROM THE CONTEXT, NOT SUPPLIED BY THE SITE
+	//
+	// Unexported, for mode's and seq's reason and one more of its own. The
+	// three observation sites are reached from nineteen call sites; an
+	// exported field is nineteen places to forget, and a site that forgot
+	// would file probe traffic as ORGANIC - a wrong number that no test,
+	// dashboard or alert distinguishes from real tenant traffic. Observe is
+	// the ONE function every observation passes through and it already
+	// receives the context, so it reads
+	// identity.SyntheticProbeFromContext(ctx) itself and there is no second
+	// site to keep in step.
+	//
+	// # WHY THERE IS NO "UNKNOWN"
+	//
+	// A bool has two values, and that is the design rather than a limitation.
+	// SyntheticProbeFromContext answers FALSE for an unstamped context, so an
+	// observation from a request that never met the stamping middleware is
+	// ORGANIC - the direction that over-reports tenant volume rather than
+	// under-reporting it, which is the conservative one for a floor. A third
+	// "unknown" value would need a rule to decide which side of the floor it
+	// falls on, and every honest answer to that question is one of the two
+	// that already exist. See syntheticLabel.
+	synthetic bool
 }
+
+// Synthetic reports whether Observe stamped this observation as canary traffic.
+//
+// An accessor rather than an exported field, so the value on a comparison is
+// always the one Observe read from the context: an Observation literal
+// constructed anywhere else answers false, which is the organic bucket, and no
+// caller can assert its way into the synthetic one.
+func (o Observation) Synthetic() bool { return o.synthetic }
 
 // Snapshot identifies the policy set this plane evaluated against.
 //

@@ -1,6 +1,6 @@
 -- Migration 021: Runtime Connector and LLM Provider Configuration
 -- Date: 2025-11-28
--- ADR Reference: ADR-007-RUNTIME_CONNECTOR_CONFIGURATION.md
+-- ADR Reference: ADR-006-runtime-connector-configuration.md
 -- Purpose: Enable runtime configuration of MCP connectors and LLM providers
 --          without requiring infrastructure redeployment. Enterprise customers
 --          manage configuration through Customer Portal; OSS users via config files.

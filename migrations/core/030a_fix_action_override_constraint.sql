@@ -1,7 +1,7 @@
 -- Migration 030a: Fix action_override CHECK constraint
 -- Date: 2025-12-24
 -- Purpose: Add 'redact' to valid action_override values in policy_overrides
--- Related: ADR-020 - Unified Policy Architecture, Issue #724
+-- Related: ADR-019 - Unified Policy Architecture, Issue #724
 
 -- =============================================================================
 -- Fix the action_override CHECK constraint to include 'redact'

@@ -1353,10 +1353,15 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 		// shared resolver reads the tag off the context because it has no
 		// request; TestEveryResolveTokenCallerStampsTheSyntheticProbe pins
 		// that every caller here does this.
-		vid, resolveErr := sharedidentity.ResolveToken(
-			sharedidentity.ContextWithSyntheticProbe(r.Context(), auth.Synthetic),
-			auth.OrgID, perUserToken)
+		vid, resolveErr := resolveTokenAdmitted(r.Context(), auth.OrgID, perUserToken, auth.Synthetic)
 		if resolveErr != nil {
+			// A tier-limit refusal (#3593) is returned AS IS: its message
+			// begins with its own code (ERR_TIER_LIMIT_HUMAN_PRINCIPAL), and
+			// wrapping it as "invalid user token" would file a refused
+			// principal under an authentication failure.
+			if _, ok := asTierLimitRefusal(resolveErr); ok {
+				return "", "", "", "", "", "", "", nil, idInputs, resolveErr
+			}
 			// A per-user token WAS presented but no registered validator
 			// accepted it (tampered / expired / revoked / wrong org /
 			// unrecognized). Fail closed: reject rather than silently

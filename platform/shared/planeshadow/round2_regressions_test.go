@@ -15,14 +15,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// dispositionCount reads one disposition counter for one plane.
+// dispositionCount reads one disposition counter for one plane, on the ORGANIC
+// half of the synthetic axis.
 //
 // Read from the REGISTRY rather than from a field, because the counter is what
 // an operator sees and a field is not: a test asserting on an internal tally
 // would pass for a change that stopped exporting the series.
+//
+// It pins synthetic="false" rather than summing the two children (#3817). Every
+// caller below drives an unstamped context, so the organic child is the one that
+// moves - and a helper that summed would keep passing if the whole thread broke
+// and filed everything under the other value, which is the defect the label was
+// added to make visible.
 func dispositionCount(t *testing.T, plane, disposition string) float64 {
 	t.Helper()
-	return testutil.ToFloat64(shadowObservations.WithLabelValues(plane, disposition))
+	return testutil.ToFloat64(shadowObservations.WithLabelValues(plane, disposition, SyntheticFalse))
 }
 
 // TestTheContentTargetIsNormalizedOnBothSidesOfTheDiff is the R3 round-2

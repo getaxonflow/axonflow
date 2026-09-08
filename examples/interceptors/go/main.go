@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow LLM Interceptor Example - Go
 //
 // Demonstrates how to wrap LLM provider clients with AxonFlow governance
