@@ -595,7 +595,7 @@ services:
   # MinIO (S3-compatible object storage for local development)
   # Bucket creation is handled via the entrypoint script below.
   minio:
-    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    image: quay.io/minio/minio:RELEASE.2025-02-18T16-25-55Z
     entrypoint: >
       /bin/sh -c "
       minio server /data --console-address ':9001' &
