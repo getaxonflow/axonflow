@@ -46,7 +46,7 @@ jobs:
       relevant: ${{ steps.decide.outputs.relevant }}
     steps:
       - name: Checkout with history for the diff
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The merge-queue base and the entry's head must both be present, so
           # a shallow clone will not do.

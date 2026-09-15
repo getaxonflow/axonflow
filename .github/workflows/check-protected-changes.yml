@@ -35,7 +35,7 @@ jobs:
     runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
