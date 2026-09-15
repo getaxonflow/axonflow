@@ -84,6 +84,16 @@ jobs:
           # #2881. With all four covered, swagger-cli fails the gate on
           # any new broken $ref, duplicate schema, or unparseable YAML.
           for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml ee/docs/api/portal-api.yaml; do
+            if [ ! -f "$spec" ]; then
+              # Only an ee/ spec may be absent, and only on the community
+              # mirror, which carries no ee/ tree. Anything else missing is a
+              # broken list, not a tree shape: fail, do not skip.
+              case "$spec" in
+                ee/*) [ "$GITHUB_REPOSITORY" = "getaxonflow/axonflow" ] || { echo "::error::$spec is missing"; exit 1; }
+                      echo "  → $spec (absent on the community tree, skipped)"; continue ;;
+                *)    echo "::error::$spec is missing"; exit 1 ;;
+              esac
+            fi
             echo "  → $spec"
             swagger-cli validate "$spec"
           done
@@ -95,6 +105,16 @@ jobs:
           echo "Linting OpenAPI specification..."
           # Fail on errors, allow warnings.
           for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml ee/docs/api/portal-api.yaml; do
+            if [ ! -f "$spec" ]; then
+              # Only an ee/ spec may be absent, and only on the community
+              # mirror, which carries no ee/ tree. Anything else missing is a
+              # broken list, not a tree shape: fail, do not skip.
+              case "$spec" in
+                ee/*) [ "$GITHUB_REPOSITORY" = "getaxonflow/axonflow" ] || { echo "::error::$spec is missing"; exit 1; }
+                      echo "  → $spec (absent on the community tree, skipped)"; continue ;;
+                *)    echo "::error::$spec is missing"; exit 1 ;;
+              esac
+            fi
             echo "  → $spec"
             spectral lint "$spec" --ruleset .spectral.yaml --fail-severity error
           done
