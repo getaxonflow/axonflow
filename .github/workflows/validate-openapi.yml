@@ -101,6 +101,10 @@ jobs:
           echo "Linting OpenAPI specification..."
           # Fail on errors, allow warnings.
           for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml docs/api/masfeat-api.yaml ee/docs/api/portal-api.yaml; do
+            if [ ! -f "$spec" ]; then
+              echo "  → $spec (absent on this tree, skipped)"
+              continue
+            fi
             echo "  → $spec"
             spectral lint "$spec" --ruleset .spectral.yaml --fail-severity error
           done
