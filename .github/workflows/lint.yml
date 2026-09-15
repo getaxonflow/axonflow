@@ -60,7 +60,7 @@ jobs:
       go-code: ${{ steps.filter.outputs.go-code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Detect Go code changes
         uses: dorny/paths-filter@v4
@@ -96,7 +96,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -266,7 +266,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # #3334 - every reintroduction vector rejected; every legitimate survivor
       # (customers.organization_id, policy_evaluations.organization_id, a retype,
@@ -350,7 +350,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The census reads its pin and the merge-base from history.
           fetch-depth: 0
