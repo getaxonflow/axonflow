@@ -31,6 +31,7 @@ import (
 	"testing"
 
 	sharedidentity "axonflow/platform/shared/identity"
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 // sharedIdentitySessionFromRequest resolves a session the way production does
@@ -201,25 +202,13 @@ func TestCreateOverride_SharedIdentity_UnsanitizableValue_NamesSanitization(t *t
 	}
 }
 
-// REVOKE MUST NOT BE SHORT-CIRCUITED HERE. R3 finding, and this test is the
-// tripwire for re-adding the guard.
-//
-// The obvious symmetry — "create refuses for a shared identity, so revoke
-// should too" — is wrong, and wrong in the direction that breaks working
-// deployments. resolveCallerReadScope (orchestrator read_scope.go) returns
-// {TenantWide, AdminAuthority} as its FIRST statement in community mode, and
-// {TenantWide} for community-saas over a validated proxy token, which
-// mcpProxyToOrchestrator always presents alongside a non-blank X-Tenant-ID.
-// With TenantWide set, revokeOverrideHandler SKIPS the ownership check and the
-// revoke succeeds. A local guard would therefore delete a working capability —
-// and since create is already refused in those modes, revoke is the only half
-// of the lifecycle that works there at all.
-//
-// So the refusal must NOT fire locally: the tool has to reach the proxy and let
-// the orchestrator decide under its own scope rules. Here that means a
-// transport error (no orchestrator in a unit test), which is exactly the point —
-// it got past the identity check.
-func TestDeleteOverride_SharedIdentity_IsNotRefusedLocally(t *testing.T) {
+// TestDeleteOverride_SharedIdentity_AnswersTheFreeze: delete never carried the
+// create path's shared-identity guard (#3077: community and community-saas grant
+// a tenant-wide revoke scope, so a local identity refusal would have broken the
+// one half of the lifecycle that worked there). From v11 (#4252) no revoke is
+// left to protect: the tool answers the freeze for every caller, and a shared
+// identity is still not told it is the wrong identity.
+func TestDeleteOverride_SharedIdentity_AnswersTheFreeze(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 	t.Setenv(sharedidentity.EnvVar, "true")
@@ -227,32 +216,29 @@ func TestDeleteOverride_SharedIdentity_IsNotRefusedLocally(t *testing.T) {
 
 	session := sharedIdentitySessionFromRequest(t, nil)
 	_, err := mcpToolDeleteOverride(session, map[string]interface{}{"override_id": "ovr-1"})
-
-	// It may fail downstream; what it must NOT do is refuse on identity grounds.
-	if err != nil && strings.Contains(err.Error(), "scoped to an individual user") {
-		t.Errorf("revoke must not short-circuit on a shared identity — community and community-saas grant tenant-wide scope and the orchestrator would have allowed it: %v", err)
+	if err == nil || !strings.HasPrefix(err.Error(), legacyfreeze.ErrCode+": ") || strings.Contains(err.Error(), "scoped to an individual user") {
+		t.Errorf("delete_override on a shared identity: err = %v, want the freeze and not the identity refusal", err)
 	}
 }
 
-// The create/revoke asymmetry is deliberate and must stay legible: create
-// refuses locally, revoke does not. If a future edit makes them symmetric in
-// either direction, one of these two halves turns red.
-func TestOverrideLifecycle_SharedIdentity_CreateRefusesRevokeProxies(t *testing.T) {
+// The create/revoke asymmetry stays legible after the freeze: create refuses a
+// shared identity for its identity first (the #3077 diagnostic), and revoke
+// answers the freeze without an identity refusal. If a future edit makes them
+// symmetric in either direction, one of these two halves turns red.
+func TestOverrideLifecycle_SharedIdentity_CreateRefusesRevokeAnswersTheFreeze(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
 	t.Setenv(sharedidentity.EnvVar, "false")
 	resetIdentityWarnLatches(t)
 
 	session := sharedIdentitySessionFromRequest(t, nil)
-
 	_, createErr := mcpToolCreateOverride(session, validCreateArgs())
-	if createErr == nil || !strings.Contains(createErr.Error(), "scoped to an individual user") {
-		t.Errorf("create must refuse locally for a shared identity: %v", createErr)
+	if createErr == nil || !strings.Contains(createErr.Error(), "scoped to an individual user") || strings.Contains(createErr.Error(), legacyfreeze.ErrCode) {
+		t.Errorf("create must refuse a shared identity for its identity, before the freeze: %v", createErr)
 	}
-
 	_, revokeErr := mcpToolDeleteOverride(session, map[string]interface{}{"override_id": "ovr-1"})
-	if revokeErr != nil && strings.Contains(revokeErr.Error(), "scoped to an individual user") {
-		t.Errorf("revoke must NOT refuse locally: %v", revokeErr)
+	if revokeErr == nil || !strings.HasPrefix(revokeErr.Error(), legacyfreeze.ErrCode+": ") || strings.Contains(revokeErr.Error(), "scoped to an individual user") {
+		t.Errorf("revoke must answer the freeze and not the identity refusal: %v", revokeErr)
 	}
 }
 

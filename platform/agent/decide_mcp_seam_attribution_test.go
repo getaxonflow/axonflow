@@ -49,7 +49,6 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 
-	"axonflow/platform/decision/legacycompile"
 	gatewayadapters "axonflow/platform/gateway-adapters"
 	agwapi "axonflow/platform/gateway-adapters/agentgateway/api"
 	"axonflow/platform/shared/pep"
@@ -160,7 +159,7 @@ func mcpCall(t *testing.T, method string, serviceNames []string, params string) 
 		Method:       method,
 		McpRequest:   []byte(params),
 		Headers: []*agwapi.McpHeader{
-			{Key: "authorization", Value: []byte("Bearer " + mintUserTokenWithTenant(t, mcpSeamTenant))},
+			{Key: "authorization", Value: []byte("Bearer " + mintUserTokenWithTenant(t, mcpSeamTenant, mcpSeamTenant))},
 			{Key: "traceparent", Value: []byte("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")},
 		},
 	}
@@ -274,7 +273,6 @@ func TestMCPSeamGetsFullEvaluationRegardlessOfToolName(t *testing.T) {
 			for _, tool := range []string{"run_sql_query", "editJiraIssue"} {
 				t.Run(shape+"/"+tool, func(t *testing.T) {
 					t.Setenv("ENVIRONMENT", "development")
-					t.Setenv("SQLI_ACTION", "block")
 					installSharedEngineWithPolicyRows(t)
 					installCircuitBreakerWithMockDB(t)
 					_, seam := mcpSeamHarness(t)
@@ -306,7 +304,6 @@ func TestMCPSeamGetsFullEvaluationRegardlessOfToolName(t *testing.T) {
 	t.Run("advisory target with no server: the relaxation still applies", func(t *testing.T) {
 		t.Setenv("DEPLOYMENT_MODE", "community")
 		t.Setenv("ENVIRONMENT", "development")
-		t.Setenv("SQLI_ACTION", "block")
 		installSharedEngineWithPolicyRows(t)
 		installCircuitBreakerWithMockDB(t)
 
@@ -367,7 +364,6 @@ func TestAdvisoryPlaneStillScopesWhenBothIdentitiesAgree(t *testing.T) {
 	const docProse = "We will revoke the temporary access immediately after the single edit call."
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
-	t.Setenv("SQLI_ACTION", "block")
 	installSharedEngineWithPolicyRows(t)
 
 	blocked := func(o InputPolicyOutcome) bool {
@@ -380,12 +376,9 @@ func TestAdvisoryPlaneStillScopesWhenBothIdentitiesAgree(t *testing.T) {
 	cfg := ResolveGatewayDetectionConfig(context.Background(), "o-1")
 	call := func(tool string) InputPolicyOutcome {
 		return evaluateInputPolicies(context.Background(),
-			"t-1", "o-1", "1", "developer", "conn",
-			tool /* toolIdentity */, tool, /* capabilityScopeIdentity: the advisory-plane pairing */
-			// PlaneMCP: the four advisory call sites this models all name that
-			// plane, and a test naming a different one would be modelling a
-			// caller that does not exist.
-			"check_input", docProse, nil, cfg, false, nil, legacycompile.PlaneMCP)
+			"t-1", "o-1", "1", "conn",
+			tool, /* capabilityScopeIdentity: the advisory-plane pairing */
+			docProse, nil, cfg)
 	}
 
 	// Anti-vacuity FIRST: an unclassified tool must BLOCK this payload, or the

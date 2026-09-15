@@ -2,6 +2,14 @@
 # AxonFlow SQL Injection Detection - HTTP/curl
 #
 # Demonstrates AxonFlow's SQLi detection using raw HTTP requests.
+#
+# Expected outcome (v11): the stored policy action decides. Every shipped
+# sys_sqli_* policy stores action "warn", so a detected SQLi pattern is
+# APPROVED with the matched sys_sqli_* id in `policies`; it is not blocked.
+# To block SQL injection, record an org override of category "sqli" with
+# action "block" (PUT /api/v1/detection-posture/sqli on the customer portal
+# API, Enterprise) or change the policy's action. SQLI_ACTION no longer sets
+# an action.
 
 set -e
 
@@ -20,6 +28,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+SQLI_FAILURES=0   # failure accumulator (#3964 follow-up)
+
 echo "AxonFlow SQL Injection Detection - HTTP/curl"
 echo "========================================"
 echo ""
@@ -29,7 +39,7 @@ echo ""
 test_sqli() {
     local name="$1"
     local query="$2"
-    local should_block="$3"
+    local expect_detected="$3"
 
     echo -e "${YELLOW}Test: $name${NC}"
     echo "  Query: ${query:0:60}..."
@@ -43,7 +53,11 @@ test_sqli() {
             \"client_id\": \"$CLIENT_ID\"
         }")
 
-    approved=$(echo "$response" | jq -r '.approved // false')
+    # has(), NOT `// false` (#3964), and the direction matters here: a
+    # response carrying no `approved` key rendered as `false`, which this
+    # script reads as BLOCKED - so a should_block case PASSED on a response
+    # that never said anything about approval.
+    approved=$(echo "$response" | jq -r 'if has("approved") then .approved else "absent" end')
     block_reason=$(echo "$response" | jq -r '.block_reason // ""')
     policies=$(echo "$response" | jq -r '.policies // [] | join(", ")')
 
@@ -51,23 +65,34 @@ test_sqli() {
         echo -e "  Result: ${GREEN}APPROVED${NC}"
         context_id=$(echo "$response" | jq -r '.context_id // "none"')
         echo "  Context ID: $context_id"
-    else
+    elif [ "$approved" = "false" ]; then
         echo -e "  Result: ${RED}BLOCKED${NC}"
         echo "  Reason: $block_reason"
+    else
+        # Three states, not two (#3964 follow-up): printing BLOCKED for a
+        # response that carried no `approved` key reports a verdict the server
+        # never gave, in the reassuring direction.
+        echo -e "  Result: ${RED}NO VERDICT${NC} (response carried no 'approved' field)"
+        echo "  Raw: $response"
     fi
 
     if [ -n "$policies" ]; then
         echo "  Policies: $policies"
     fi
 
-    if [ "$should_block" = "true" ] && [ "$approved" = "false" ]; then
-        echo -e "  Test: ${GREEN}PASS${NC}"
-    elif [ "$should_block" = "false" ] && [ "$approved" = "true" ]; then
-        echo -e "  Test: ${GREEN}PASS${NC}"
+    # Count sys_sqli_* ids - the detection signal of a warned request.
+    sqli_ids=$(echo "$response" | jq -r '[.policies // [] | .[] | select(startswith("sys_sqli_"))] | length')
+
+    if [ "$approved" != "true" ]; then
+        echo -e "  Test: ${RED}FAIL${NC} (expected approved; the shipped sys_sqli_* action is warn - a block means an org sqli=block override or an edited policy action)"
+        SQLI_FAILURES=$((SQLI_FAILURES + 1))
+    elif [ "$expect_detected" = "true" ] && [ "${sqli_ids:-0}" -gt 0 ]; then
+        echo -e "  Test: ${GREEN}PASS${NC} (approved, SQLi WARNED)"
+    elif [ "$expect_detected" = "true" ]; then
+        echo -e "  Test: ${RED}FAIL${NC} (expected a sys_sqli_* policy in policies)"
+        SQLI_FAILURES=$((SQLI_FAILURES + 1))
     else
-        expected="blocked"
-        [ "$should_block" = "false" ] && expected="approved"
-        echo -e "  Test: ${RED}FAIL${NC} (expected $expected)"
+        echo -e "  Test: ${GREEN}PASS${NC}"
     fi
 
     echo ""
@@ -106,3 +131,11 @@ test_sqli "Truncate Statement" \
 
 echo "========================================"
 echo "SQLi Detection Tests Complete"
+
+# A script that prints FAIL and exits 0 is not a test (#3964 follow-up): every
+# caller, CI or human, reads the exit code, and this one always said success.
+if [ "${SQLI_FAILURES:-0}" -gt 0 ]; then
+    echo -e "${RED}${SQLI_FAILURES} test(s) FAILED${NC}"
+    exit 1
+fi
+echo -e "${GREEN}All SQLi detection tests passed${NC}"

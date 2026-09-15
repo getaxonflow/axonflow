@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -24,8 +27,11 @@ import (
 // built-in, which is a decision point rather than a silent capability grant.
 //
 // Nothing here performs I/O, reads the clock, consumes randomness, or reads
-// mutable process state, which is what makes evaluation replayable: the same
-// normalized input and the same bundle reproduce the same decision offline.
+// mutable process state, which is what makes EVALUATION deterministic: the
+// same normalized input and the same bundle produce the same policy outcomes
+// offline. The DECISION built from those outcomes also depends on the
+// enforcement profile, which is a property of the caller rather than of the
+// bundle - see contract.Snapshot and pdp.DecideOptions (#3706).
 // http.send, net.*, time.*, rand.*, opa.runtime, trace and print are absent by
 // construction rather than by exclusion.
 var allowedBuiltins = []string{
@@ -166,8 +172,27 @@ func ManifestOf(d *Document) []PolicyDeclaration {
 	return out
 }
 
-// NewRuntime compiles a bundle and prepares it for evaluation.
+// NewRuntime compiles a bundle and prepares it for evaluation, reusing a
+// compiled query this process has already produced for the same bundle CONTENT
+// (#3693). See runtime_cache.go.
 func NewRuntime(ctx context.Context, b *Bundle, limits Limits) (*Runtime, error) {
+	return newRuntime(ctx, b, limits, globalPreparedQueries)
+}
+
+// newRuntimeUncached compiles unconditionally, bypassing the cache.
+//
+// It exists for the gate 17 activation INSTRUMENT and for nothing else. The
+// benchmark and the budget test measure what a deployment pays at boot, which
+// is a cold compile; run through the cache they would measure a map lookup
+// after the first iteration and report a beautifully stable figure that is a
+// statement about the cache rather than about activation - the exact failure
+// mode gate 17's own "reaches its subject" control exists to catch, and one
+// that would have made the activation shape budget unfalsifiable.
+func newRuntimeUncached(ctx context.Context, b *Bundle, limits Limits) (*Runtime, error) {
+	return newRuntime(ctx, b, limits, nil)
+}
+
+func newRuntime(ctx context.Context, b *Bundle, limits Limits, cache *preparedQueryCache) (*Runtime, error) {
 	if b == nil {
 		return nil, fmt.Errorf("pdp: bundle is nil")
 	}
@@ -193,8 +218,28 @@ func NewRuntime(ctx context.Context, b *Bundle, limits Limits) (*Runtime, error)
 	for name, src := range modules {
 		opts = append(opts, rego.Module(name, src))
 	}
-	r := rego.New(opts...)
-	pq, err := r.PrepareForEval(ctx)
+	// The COMPILE is cached on the bundle's content digest (#3693). It is the
+	// superlinear half of activation - measured on an M4 Pro, 500 policies
+	// costs 12 ms of lint and 11.93 s of PrepareForEval - so an activation of a
+	// digest this process has already compiled is a map hit instead of a
+	// second twelve-second compile. See runtime_cache.go for why the key is
+	// the RECOMPUTED digest and never the advertised one, and for why the lint
+	// above still runs on every activation.
+	compile := func() (rego.PreparedEvalQuery, error) {
+		return rego.New(opts...).PrepareForEval(ctx)
+	}
+	var pq rego.PreparedEvalQuery
+	var err error
+	if cache == nil {
+		pq, err = compile()
+	} else {
+		var key preparedKey
+		key, err = keyFor(b)
+		if err != nil {
+			return nil, err
+		}
+		pq, err = cache.get(key, compile)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("pdp: bundle %s failed strict compilation: %w", b.Digest, err)
 	}

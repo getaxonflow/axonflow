@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -50,14 +42,12 @@ import (
 	"unicode/utf8"
 
 	"axonflow/platform/agent/circuitbreaker"
-	"axonflow/platform/agent/fincrime"
-	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/telemetry"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
 	"axonflow/platform/shared/pep"
+	sharedpolicy "axonflow/platform/shared/policy"
 
-	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -312,9 +302,13 @@ const (
 	requestRedactionEndpoint = "/api/v1/mcp/check-input"
 
 	// (The response-phase fulfillment endpoint — /api/v1/mcp/check-output — is
-	// not referenced here: /decide runs pre-call and only emits request-phase
-	// obligations. Response-phase fulfillment lives in the PEP client, which
-	// fans out to check-output after the backend call. See platform/shared/pep.)
+	// responseRedactionEndpoint in decision_enforcing_seam.go. The legacy engine
+	// emits request-phase obligations only. The anchored engine, which decides
+	// for an organization at enforce (#3895 PR-A2), renders a field_redact on
+	// the content decide evaluated as this request-phase obligation too (#4046);
+	// only a redaction an organization document aims at a response.* field
+	// tells the PEP to fan out to check-output after the backend call. See
+	// platform/shared/pep.)
 
 	// contentTypeText is the only redaction content-type wired today. Media
 	// (image/*, application/pdf) routes to the existing orchestrator media-
@@ -444,6 +438,36 @@ type DecideResponse struct {
 	EvaluatedPolicies []string             `json:"evaluated_policies"`
 	Stage             string               `json:"stage,omitempty"`
 	ExpiresAt         time.Time            `json:"expires_at"`
+	// Engine says WHICH ENGINE AUTHORED this verdict - `anchored`, the ADR-065
+	// decision plane, on every decision this route returns (PRD v11 §1.1).
+	// SubjectType is the type of the principal it was evaluated for: `User` for
+	// a verified user token, `Client` for a request that carries no user
+	// identity and is evaluated for its client credential (PRD v11 §1.6).
+	// SubjectType is omitted when the request was refused before a subject was
+	// admitted. PolicyBundle is the digest of the policy set that decided it:
+	// the shipped corpus plus the organization's active document, or plus the
+	// implicit baseline of an organization that has published nothing (PRD v11
+	// §1.4).
+	Engine       string `json:"engine,omitempty"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	PolicyBundle string `json:"policy_bundle,omitempty"`
+	// PolicyPacks names the add-on policy packs whose controls composed into
+	// PolicyBundle on this route, each as <pack id>@<pack document digest>
+	// (PRD v11 §1.9); omitted when none binds.
+	PolicyPacks []string `json:"policy_packs,omitempty"`
+	// PolicyIdentities names each of EvaluatedPolicies, in its order (PRD v11
+	// §1.14): the policy's own display name where it has one, whose it is, and
+	// for an organization's own policy or an installed pack's the version it was
+	// published at. It is additive: EvaluatedPolicies stays a list of ids.
+	// Omitted when EvaluatedPolicies is empty.
+	PolicyIdentities []PolicyIdentity `json:"policy_identities,omitempty"`
+	// DocumentVersion is the published version of the organization's active
+	// typed document; omitted under the implicit baseline, which PolicyBundle
+	// names by digest.
+	DocumentVersion int `json:"document_version,omitempty"`
+	// LegacyValidators names a checksum validator that acted before the
+	// anchored engine decided (#4122); omitted when none did.
+	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
 }
 
 // DecisionObligation is a PEP-side requirement attached to an allow verdict
@@ -987,6 +1011,18 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			auditEarlyDeny(VerdictDeny, stage, []string{"user_token_required"}, []string{userErr.Message})
 			sendDecideError(w, userErr.Message, userErr.HTTPStatus, decisionID, traceID)
 			return
+		} else if isTierLimitAuthError(userErr) {
+			// #3593: the token VERIFIED and the principal was refused by the
+			// licence tier's ceiling. Its own marker, its own status (402):
+			// filing it under user_token_rejected would make a commercial
+			// refusal read as an access attempt with a bad credential.
+			decisionAudit.securityEvent = "tier_limit_refused"
+			auditEarlyDeny(VerdictDeny, stage, []string{"tier_limit_refused"}, []string{userErr.Message})
+			if userErr.RetryAfter != "" {
+				w.Header().Set("Retry-After", userErr.RetryAfter)
+			}
+			sendDecideError(w, userErr.Message, userErr.HTTPStatus, decisionID, traceID)
+			return
 		} else {
 			// SECURITY (#2643): a supplied user_token that fails to resolve is a
 			// rejected access attempt — audit it as a blocked decision before
@@ -1105,7 +1141,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// #2581: resolve per-org posture (org with no override → deployment-global).
+	// #2581: resolve per-org posture (org with no override → the stored policy actions decide).
 	gwDetectionCfg := ResolveGatewayDetectionConfig(ctx, orgID)
 
 	// blockingPolicyID captures the SINGLE policy that produces a deny
@@ -1125,7 +1161,6 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// Indonesia PII pre-check runs FIRST so Indonesia-specific bank account
 	// patterns (BCA/Mandiri/BRI/BNI) are attributed to indonesia_pii_protection
 	// instead of being shadowed by the generic RBI bank-account detector.
-	rbiPIIRequiresRedaction := false
 	indonesiaPIIRequiresRedaction := false
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock
 
@@ -1133,6 +1168,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	indonesiaPIIResult := checkIndonesiaPII(req.Query, blockOnCriticalPII)
 	if indonesiaPIIResult.BlockRecommended {
 		log.Printf("🛑 [Decide] Request blocked by Indonesia PII detection: %s", indonesiaPIIResult.Reason)
+		decisionAudit.decisionLegacyValidators = []LegacyValidatorAction{{Validator: legacyValidatorIndonesia, Action: legacyActionBlocked}}
 		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"indonesia_pii_protection"}, time.Since(startTime).Milliseconds(), []string{indonesiaPIIResult.Reason}, traceID, reqContext, contextTruncated, decisionAudit)
 		// #3242: persist the UU PDP / OJK detection events (MASKED values only)
 		// keyed to this decision, so the OJK pii_redactions export evidences the
@@ -1149,15 +1185,17 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			Obligations:       []DecisionObligation{},
 			EvaluatedPolicies: []string{"indonesia_pii_protection"},
 			ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
+			LegacyValidators:  decisionAudit.decisionLegacyValidators,
 		})
 		recordDecideMetrics(VerdictDeny, stage, origin, startTime)
 		recordDecideBlock("indonesia_pii_protection", origin)
 		return
 	}
-	// Under PII_ACTION=redact, critical Indonesia PII (NIK / NPWP) is detected
-	// but not blocked. Flag it for redaction the same way RBI India PII is
-	// flagged below — previously it was detected but never flagged, so NIK
-	// slipped through unredacted on the allow path while SSN/Aadhaar redacted.
+	// Under an organization's recorded pii=redact override (#3961: no environment
+	// variable sets one), critical Indonesia PII (NIK / NPWP) is detected but not
+	// blocked. The flag says how the detection event below is recorded; what
+	// the request is redacted for is the anchored decision's, which carries the
+	// same override (#4045).
 	if indonesiaPIIResult.HasPII && gwDetectionCfg.Enabled && indonesiaPIIResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
 		indonesiaPIIRequiresRedaction = true
 	}
@@ -1175,6 +1213,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	piiResult := checkRBIPII(req.Query, blockOnCriticalPII)
 	if piiResult.BlockRecommended {
 		log.Printf("🛑 [Decide] Request blocked by RBI PII detection: %s", piiResult.Reason)
+		decisionAudit.decisionLegacyValidators = []LegacyValidatorAction{{Validator: legacyValidatorIndia, Action: legacyActionBlocked}}
 		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"rbi_pii_protection"}, time.Since(startTime).Milliseconds(), []string{piiResult.Reason}, traceID, reqContext, contextTruncated, decisionAudit)
 		writeDecideResponse(w, http.StatusOK, DecideResponse{
 			Verdict:           VerdictDeny,
@@ -1185,283 +1224,94 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			Obligations:       []DecisionObligation{},
 			EvaluatedPolicies: []string{"rbi_pii_protection"},
 			ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
+			LegacyValidators:  decisionAudit.decisionLegacyValidators,
 		})
 		recordDecideMetrics(VerdictDeny, stage, origin, startTime)
 		recordDecideBlock("rbi_pii_protection", origin)
 		return
 	}
-	if piiResult.HasPII && gwDetectionCfg.Enabled && piiResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
-		rbiPIIRequiresRedaction = true
-	}
-
-	// Static-policy evaluation via evaluateInputPolicies (#2801), the same
-	// helper mcpQueryHandler / mcpExecuteHandler / mcpCheckInputHandler use —
-	// same engine, same category set, so a single policy author gets
-	// consistent enforcement across every caller. runDynamicPolicy is false:
-	// dynamic policy (rate limits, budgets, time/role access) is M2 scope per
-	// epic #2426 (see file doc comment above) — /decide's inline RPC budget
-	// only covers static checks today. connectorName is the synthetic
-	// "decision" placeholder for metrics/audit; ResolveGatewayDetectionConfig
-	// has no connector-scoping mechanism (unlike the MCP surface), so this is
-	// never gated by it — /decide has no managed connector to scope against
-	// (ADR-056 addendum, Decision 3: "the connector axis is meaningless" for
-	// gateway/PDP mode).
+	// A critical India identifier under a pii=redact override: the seam carries
+	// the redaction onto the anchored verdict (attachValidatorRedactions).
+	rbiPIIRequiresRedaction := piiResult.HasPII && gwDetectionCfg.Enabled && piiResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact
+	// The request-phase detector pass via evaluateInputPolicies (#2801), the
+	// same helper the MCP request pass uses: same engine, same category set, so
+	// the detector facts the anchored engine decides from are produced one way
+	// on every plane. connectorName is the synthetic "decision" placeholder for
+	// metrics/audit; ResolveGatewayDetectionConfig has no connector-scoping
+	// mechanism (unlike the MCP surface), so this is never gated by it -
+	// /decide has no managed connector to scope against (ADR-056 addendum,
+	// Decision 3: "the connector axis is meaningless" for gateway/PDP mode).
 	//
 	// #2801: when the PEP declares a tool target, its tool name feeds
 	// capability-scoped evaluation (text-document tools skip execution-class
-	// detectors; unknown tools get full evaluation) — through scopingIdentity,
+	// detectors; unknown tools get full evaluation) - through scopingIdentity,
 	// NOT toolIdentity, since #3717: see where the two separate above.
 	// toolServer/toolIdentity were already computed + stamped onto decisionAudit
 	// right after decode (#2904) so early-deny paths carry them too.
-	// ADR-061 / #3329: install the fincrime decision metadata (frozen scorer
-	// contract plane vocabulary "decide") and lift the documented
-	// fincrime_transaction / fincrime_cohort context objects into the
-	// parameters map, so the FinCrime Policy Pack rows and the fincrime seam
-	// see the same shapes here as on the MCP planes. For every request
-	// without those keys fincrimeParams is nil, which is bit-identical to
-	// the historical nil-parameters call.
-	ctx = fincrime.WithDecisionMeta(ctx, "decide", decisionID)
-	fincrimeParams := finCrimeParametersFromContext(req.Context)
-	// #3456 R3: resolved HERE, immediately before its only consumer, and
-	// deliberately NOT right after the identity is settled. The circuit
-	// breaker and the RBI kill switch above are GLOBAL, org-scoped controls
-	// that do not depend on this caller's identity; resolving earlier let a
-	// per-caller resolution failure preempt them, so an open breaker or a
-	// tripped kill switch would surface as a segment deny and report the
-	// wrong cause to the operator. Resolving at the point of use also skips
-	// the lookup entirely for requests those controls already refused.
-	// #3456 (ADR-060 Slice 3): resolve this caller's governance-segment set
-	// ONCE, here, where the identity is settled and BEFORE any policy
-	// evaluation can run. /decide used to pass a hardcoded nil into
-	// evaluateInputPolicies, so a segment-scoped static_policies row could
-	// never enforce on this URL: the same content a segment-scoped policy
-	// blocks on a segment-aware plane was ALLOWED here, for the same caller,
-	// on the credential they already hold — a one-URL edit, no second
-	// credential, no privilege change.
+	// ADR-061 / #3329: lift the documented fincrime_transaction /
+	// fincrime_cohort context objects into the parameters map, so the detector
+	// layer sees the same shapes here as on the MCP planes. For every request
+	// without those keys fincrimeParams is nil, which is bit-identical to the
+	// historical nil-parameters call.
 	//
-	// The key is user.OrgID + the VALIDATED token's email claim (user.Email),
-	// never attributedEmail. attributedEmail wins the audit ATTRIBUTION slot
-	// just above (#2896) but is caller-supplied and trusted deployment-wide;
-	// keying policy scoping on it would let a human shed their segments by
-	// naming a non-member colleague — the reported bypass recreated one level
-	// down. user.OrgID is populated on BOTH branches above (the validated
-	// token's org_id claim, falling back to its tenant per validateUserToken;
-	// client.OrgID on the synthesized service identity), which is also the key
-	// every other human-actor plane uses (run.go, gateway_handlers.go, the four
-	// MCP REST routes), so one human cannot resolve to different sets on
-	// different routes. See human_actor_segment_gate.go for the full contract.
-	segmentIDs, segOK := resolveHumanActorSegmentsForPolicy(ctx, user.OrgID, authResult.OrgID, user.Email,
-		callerIsVerifiedHuman(authResult, userErr, req.UserToken))
-	if !segOK {
-		// A resolver error for a caller who HAS a principal denies, on its OWN
-		// channel: guard id segment_resolution_failed + 403, in the same
-		// early-deny shape as the user_token_rejected / tenant_mismatch /
-		// user_token_required denies above. Deliberately NOT folded into
-		// InputPolicyOutcome.EvalUnavailable (the 503 "policy evaluation
-		// temporarily unavailable" channel guarded below): a deliberate
-		// policy-side deny must stay distinguishable from an evaluator outage
-		// in both the audit row and the operator dashboard. And it must happen
-		// HERE, before evaluateInputPolicies — that call's trailing `segments`
-		// parameter is a plain slice whose nil means "resolved to none / no
-		// identity", never "resolution failed".
-		decisionAudit.securityEvent = segmentResolutionFailedPolicyID
-		auditEarlyDeny(VerdictDeny, stage, []string{segmentResolutionFailedPolicyID},
-			[]string{segmentResolutionFailedReason})
-		sendDecideError(w, segmentResolutionFailedReason, http.StatusForbidden, decisionID, traceID)
-		return
-	}
+	// No segment gate stands here any more. It resolved the caller's governance
+	// segments and refused the request when that failed, on behalf of an
+	// organization's segment-scoped static rows, and those rows no longer
+	// decide: the anchored engine authors this verdict and reads no segments
+	// (PRD v11 §1.1, §1.2).
+	fincrimeParams := finCrimeParametersFromContext(req.Context)
 
 	outcome := evaluateInputPolicies(ctx,
-		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
-		// TWO identities, deliberately different on this plane and only this
-		// one. toolIdentity is attribution + telemetry and still reaches the
-		// FinCrime scorer's agent context unchanged — withholding it there is
-		// not "safer", it removes a feature from a model's input vector and
-		// moves a risk score in an unknown direction. scopingIdentity is the
-		// enforcement input.
-		//
-		// ONE TELEMETRY CONSUMER DOES FOLLOW THE SCOPING KEY, and an earlier
-		// version of this comment claimed otherwise: the ADR-065 shadow
-		// observation's action label reads EvalOptions.ToolIdentity, which is
-		// the scoping value, so it is EMPTY for a server-named target. That is
-		// a real, disclosed loss of operator visibility on this plane and not a
-		// thing to describe as unchanged. It is a label on a recorded-only
-		// comparison — no enforcement, no Prometheus cardinality — and moving
-		// it back would mean a second EvalOptions field and converting every
-		// producer, which is a wider change than #3717 should make. Tracked on
-		// the audit umbrella #3709.
-		"decision", toolIdentity, scopingIdentity, "decide", req.Query, fincrimeParams,
-		gwDetectionCfg, false, /* runDynamicPolicy: M2, #2426 */
-		segmentIDs, /* #3456: resolved once above, fail-closed; nil here means "resolved to none", never "resolution failed" */
-		legacycompile.PlaneDecide)
-	// Defensive fail-closed: evaluateInputPolicies sets EvalUnavailable only when
-	// dynamic policy evaluation (runDynamicPolicy) hits a transient store error.
-	// /decide passes runDynamicPolicy=false, so this is never set today — but
-	// guard it so a future flip to dynamic eval fails closed with a 503 (like the
-	// MCP handlers) instead of silently allowing on an unavailable evaluator.
-	if outcome.EvalUnavailable {
-		log.Printf("⚠️ [Decide] policy evaluation unavailable — failing closed (503)")
-		sendDecideError(w, "policy evaluation temporarily unavailable", http.StatusServiceUnavailable, decisionID, traceID)
+		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID),
+		"decision", scopingIdentity, req.Query, fincrimeParams,
+		gwDetectionCfg)
+	// #3895 PR-A2: THE ANCHORED ENGINE AUTHORS THIS VERDICT (PRD v11 §1.1). The
+	// shared engine's evaluation above is its detector input and nothing else:
+	// no legacy verdict is computed, so no legacy approval grant is spent, no
+	// HITL entry raised and no FinCrime approval taken on a request the legacy
+	// engine does not decide.
+	observation := observationOf(outcome.StaticResult)
+	if observation != nil {
+		decisionAudit.decisionCapabilityScoped = observation.CapabilityScoped
+	}
+	enforced := enforceRequestPass(ctx, decideSeamScope, requestPassInput{
+		orgID:               client.OrgID,
+		decisionID:          decisionID,
+		stage:               stage,
+		query:               req.Query,
+		auth:                authResult,
+		user:                user,
+		userIdentity:        callerUserIdentity(authKind, userErr, req.UserToken),
+		observation:         observation,
+		pep:                 pepHandshake.pep.Profile(),
+		validatorRedactions: requiredValidatorRedactions(indonesiaPIIRequiresRedaction, rbiPIIRequiresRedaction),
+	})
+	decisionAudit.decisionEngine = enforced.engine
+	decisionAudit.decisionSubjectType = enforced.subjectType
+	if len(enforced.legacyValidators) > 0 {
+		decisionAudit.decisionLegacyValidators = enforced.legacyValidators
+	}
+	if enforced.unavailable != "" {
+		// FAIL CLOSED, NEVER BACK TO LEGACY. Answering with the legacy engine's
+		// verdict because a dependency failed would make enforcement a
+		// best-effort setting that silently turns itself off during exactly the
+		// incidents it exists for. The 503 carries the cause and the audit row
+		// records it.
+		recordAnchoredEnforcement(decideSeamScope, enforced.engine, "unavailable", enforced.unavailable)
+		auditEarlyDeny(AuditVerdictError, stage, []string{"decision_enforcement_unavailable"}, []string{enforced.unavailable})
+		sendDecideError(w, enforceCauseMessages[enforced.unavailable], http.StatusServiceUnavailable, decisionID, traceID)
 		return
 	}
-	policyResult := convertSharedResultToStatic(outcome.StaticResult)
-	// #3365: thread the evaluation-time display names onto the audit input so
-	// the terminal write stamps policy_names for the same ids it records.
-	// FinCrime-appended ids get their names from the seam's MergeAuditDetails.
-	decisionAudit.policyNames = policyResult.PolicyNames
-	// Capture the blocking policy ID directly from the result so
-	// circuit-breaker violation recording targets the right rule regardless
-	// of which order the shared engine appended matches in (a request that
-	// triggers a non-blocking redact policy AND a blocking SQLi policy must
-	// record the SQLi rule).
-	if outcome.StaticResult != nil && outcome.StaticResult.BlockedBy != nil {
-		blockingPolicyID = outcome.StaticResult.BlockedBy.PolicyID
-		blockingPolicyTier = outcome.StaticResult.BlockedBy.Tier
-	}
-
-	// #3509 defect 2: spend an outstanding single-use approval BEFORE the
-	// verdict is mapped, never after.
-	//
-	// Flipping needs_approval to allow downstream would produce an allow that
-	// skipped mapPolicyResultToVerdict's obligation attachment entirely, so a
-	// policy that requires BOTH approval and redaction would be admitted with
-	// no redact_pii obligation and the PEP would forward raw content. Clearing
-	// the flag here instead lets the admitted request take the ORDINARY allow
-	// path, obligations and advisory reasons included.
-	//
-	// Scoped to a policy-authored step-up. A FinCrime step-up is a function of
-	// the risk score computed for THIS request, so an approval of one scored
-	// transaction must never admit the next one; decideApprovalIsPolicyAuthored
-	// also guarantees the seam cannot re-escalate this verdict after we have
-	// spent a grant on it, which would burn the grant and hold the caller
-	// anyway.
-	//
-	// `!policyResult.Blocked` is load-bearing and not defensive padding. Blocked
-	// and RequiresApproval can BOTH be true - one matched policy denies while
-	// another requires approval - and mapPolicyResultToVerdict short-circuits on
-	// Blocked, so the verdict is deny either way. Spending the caller's one
-	// approval on a request that is about to be denied anyway destroys it for
-	// nothing: single use means they do not get it back.
-	approvalGrantID := ""
-	if policyResult.RequiresApproval && !policyResult.Blocked && !isCommunityMode() &&
-		decideApprovalIsPolicyAuthored(outcome.FinCrime, outcome.StaticResult) {
-		// The FULL principal, not just the user. A token-less enterprise PEP is
-		// given a synthetic identity whose ID is 0, so `user_id` alone is the
-		// string "0" for every such caller in the org and a grant keyed on it
-		// would cross credentials.
-		if grantID, admitted := consumeApprovalGrant(ctx, hitlPlaneDecide, hitl.GrantSubject{
-			OrgID:    client.OrgID,
-			TenantID: client.TenantID,
-			ClientID: client.ClientID,
-			UserID:   fmt.Sprintf("%d", user.ID),
-		}, approvalPolicyKey(policyResult.ApprovalPolicyID), req.Query); admitted {
-			approvalGrantID = grantID
-			policyResult.RequiresApproval = false
-		}
-	}
-
-	// Map StaticPolicyResult onto the Decision API verdict/reasons/obligations
-	// shape. Pulled out so the mapping is unit-testable without standing up
-	// the full shared engine + DB-seeded patterns.
-	verdict, reasons, obligations := mapPolicyResultToVerdict(policyResult, isCommunityMode())
-
-	// Merge a redaction obligation when a validator-backed detector flagged
-	// critical India *or* Indonesia PII and PII_ACTION=redact. Suppressed on
-	// deny (the request won't be forwarded anyway) and on needs_approval (the
-	// approver makes the redact call at queue exit). The shared engine's
-	// regex-based category may or may not have set the same obligation; we
-	// dedup to avoid two redact_pii entries. Indonesia (NIK / NPWP) is included
-	// here for the same reason RBI India PII is — previously it was detected but
-	// never produced a redact obligation, so NIK slipped through unredacted.
-	if (rbiPIIRequiresRedaction || indonesiaPIIRequiresRedaction) && verdict == VerdictAllow {
-		alreadyHasRedact := false
-		for _, o := range obligations {
-			if o.Type == ObligationRedactPII {
-				alreadyHasRedact = true
-				break
-			}
-		}
-		if !alreadyHasRedact {
-			redactReason := piiResult.Reason
-			if redactReason == "" && indonesiaPIIRequiresRedaction {
-				redactReason = fmt.Sprintf("Indonesia PII detected: %v", indonesiaPIIResult.DetectedTypes)
-			}
-			obligations = append(obligations, newRedactPIIObligation(redactReason))
-		}
-	}
-
-	// ADR-061 / #3329: fold the FinCrime seam result. Advisory-only mapping:
-	// it can escalate an allow to needs_approval (scorer above threshold or
-	// protocol-integrity validation), never deny, and it appends the
-	// fincrime policy attribution to the evaluated set. A scored or flagged
-	// decision then routes into the HITL approval queue via the bridge so
-	// the verdict is a reviewable queue entry, not just a wire response.
-	verdict, reasons, obligations, policyResult.TriggeredPolicies = applyFinCrimeToDecideVerdict(
-		outcome.FinCrime, verdict, reasons, obligations, policyResult.TriggeredPolicies, isCommunityMode())
-	if verdict == VerdictNeedsApproval {
-		if approvalID := createFinCrimeApprovalForDecision(ctx, client.OrgID, client.TenantID, client.ID,
-			fmt.Sprintf("%d", user.ID), req.Query, outcome.FinCrime, outcome.StaticResult); approvalID != "" {
-			reasons = append(reasons, finCrimeApprovalReason(approvalID))
-		} else if policyResult.RequiresApproval {
-			// #3509: a policy-authored require_approval - the EU AI Act
-			// human-oversight case the seam comment above names and explicitly
-			// declines to handle. It reached here as a verdict with no queue
-			// entry and no way for a reviewer to act, which is a strictly worse
-			// outcome than a block: refused, with no override flow and no
-			// reviewer surface.
-			//
-			// The `else` is load-bearing. createFinCrimeApprovalForDecision
-			// already wrote an entry when it returned an id, and a fincrime
-			// step-up on a request that ALSO trips a plain require_approval
-			// policy must not raise two entries for one decision. The seam owns
-			// the attribution in that case (its precedence rules pick the ML
-			// score or the protocol-integrity check over a pack row);
-			// policyResult.RequiresApproval is what distinguishes "the seam
-			// declined" from "the seam is not involved at all".
-			res := enqueuePolicyStepUp(ctx, policyStepUpInput{
-				Plane:    hitlPlaneDecide,
-				OrgID:    client.OrgID,
-				TenantID: client.TenantID,
-				// client.ClientID, not client.ID: ADR-052 makes ClientID the
-				// credential identity and it is what audit_logs.client_id
-				// records, so the queue row joins to its audit row - and it is
-				// what the grant consume above matches on.
-				ClientID:   client.ClientID,
-				UserID:     fmt.Sprintf("%d", user.ID),
-				UserEmail:  user.Email,
-				PolicyID:   policyResult.ApprovalPolicyID,
-				PolicyName: policyResult.ApprovalPolicyName,
-				Reason:     "human approval required by policy",
-				Severity:   policyResult.Severity,
-				DecisionID: decisionID,
-				// The same trace-id decisionAudit records, so the approval and
-				// the decision it belongs to land in one chain (#3718).
-				CorrelationID: decisionAudit.correlationID,
-				Stage:         stage,
-				Query:         req.Query,
-				Target:        decideTargetDescriptor(toolServer, toolIdentity, req.Target.Type),
-			})
-			if res.RequestID != "" {
-				reasons = append(reasons, policyStepUpReason(res.RequestID))
-			} else {
-				// The hold stands, but it is no longer a SILENT dead end: the
-				// PEP is told a review was owed and not raised, and the same
-				// text lands on the canonical audit row below.
-				reasons = append(reasons, res.Detail)
-			}
-			decisionAudit.approvalEnqueue = res.Outcome
-			decisionAudit.approvalRequestID = res.RequestID
-		}
-	}
-	// #3509 defect 2: a spent grant is recorded as a REASON on the allow, so an
-	// admission authorised by a human is never a silent bare allow. The
-	// consumption itself happened before the verdict was mapped (see
-	// approvalGrantID above) precisely so this request takes the ordinary allow
-	// path, obligations included.
-	if approvalGrantID != "" {
-		reasons = append(reasons, approvalGrantReason(approvalGrantID))
-		decisionAudit.approvalGrantID = approvalGrantID
-	}
+	decisionAudit.decisionPolicyBundle = enforced.policyBundle
+	decisionAudit.decisionPolicyPacks = enforced.policyPacks
+	decisionAudit.carryAnchoredIdentity(enforced)
+	decisionAudit.decisionReasonCode = enforced.reasonCode
+	verdict, reasons, obligations, triggeredPolicies := enforced.verdict, enforced.reasons, enforced.obligations, enforced.evaluatedPolicies
+	blockingPolicyID, blockingPolicyTier = enforced.blockingPolicyID, enforced.blockingPolicyTier
+	// An anchored invariant-8 refusal names the admitted enforcement point's
+	// capability gap and counts it, as #3704's refusal does on the allow it
+	// still guards below (applyAnchoredCapabilityRefusal).
+	reasons = applyAnchoredCapabilityRefusal(plane, pepHandshake, enforced.undischarged, reasons)
 
 	// On deny verdict, record ONE policy violation against the circuit
 	// breaker so repeated denies auto-trip it (#1176). We record the
@@ -1469,10 +1319,10 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// above when the shared engine fired, or falls back to the first
 	// triggered policy for the engine-bypass paths (no-engine /
 	// disabled-detection / empty triggered list).
-	if verdict == VerdictDeny && circuitBreakerInstance != nil {
+	if verdict == VerdictDeny && circuitBreakerInstance != nil && violationFeedsCircuitBreaker(enforced.reasonCode) {
 		policyToRecord := blockingPolicyID
-		if policyToRecord == "" && len(policyResult.TriggeredPolicies) > 0 {
-			policyToRecord = policyResult.TriggeredPolicies[0]
+		if policyToRecord == "" && len(triggeredPolicies) > 0 {
+			policyToRecord = triggeredPolicies[0]
 		}
 		if policyToRecord != "" {
 			if err := circuitBreakerInstance.RecordPolicyViolation(ctx, client.OrgID, client.TenantID, client.ID, policyToRecord); err != nil {
@@ -1519,10 +1369,10 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// holds. Non-blocking matches (PII redact rules that fired but didn't
 	// block) follow.
 	if verdict == VerdictDeny && blockingPolicyID != "" {
-		policyResult.TriggeredPolicies = hoistBlockingPolicy(policyResult.TriggeredPolicies, blockingPolicyID)
+		triggeredPolicies = hoistBlockingPolicy(triggeredPolicies, blockingPolicyID)
 	}
 
-	evaluatedPolicies := policyResult.TriggeredPolicies
+	evaluatedPolicies := triggeredPolicies
 	if evaluatedPolicies == nil {
 		evaluatedPolicies = []string{}
 	}
@@ -1554,49 +1404,18 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		Obligations:       obligations,
 		EvaluatedPolicies: evaluatedPolicies,
 		ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
+		Engine:            enforced.engine,
+		SubjectType:       enforced.subjectType,
+		PolicyBundle:      enforced.policyBundle,
+		PolicyPacks:       enforced.policyPacks,
+		PolicyIdentities:  alignPolicyIdentities(evaluatedPolicies, enforced.policyIdentities),
+		DocumentVersion:   enforced.documentVersion,
+		LegacyValidators:  decisionAudit.decisionLegacyValidators,
 	})
 	recordDecideMetrics(verdict, stage, origin, startTime)
 	recordDecideOutcomeMetrics(verdict, stage, origin, obligations, blockingPolicyID, blockingPolicyTier, evaluatedPolicies, seamFallback)
-}
-
-// mapPolicyResultToVerdict translates a shared-policy StaticPolicyResult into
-// the (verdict, reasons, obligations) triple the Decision API surfaces. Pulled
-// out as a pure function so all four verdict transitions can be unit-tested
-// without standing up the full shared engine + DB-seeded patterns.
-//
-// Rules:
-//   - Blocked            -> verdict=deny,            reason=block reason
-//   - RequiresApproval   -> verdict=needs_approval   (enterprise only;
-//     community mode auto-allows because HITL is enterprise-gated)
-//   - RequiresRedaction  -> verdict=allow + obligations=[redact_pii]
-//   - else               -> verdict=allow
-//
-// Always returns non-nil slices so the caller can serialize without a nil-check.
-func mapPolicyResultToVerdict(result *StaticPolicyResult, communityMode bool) (string, []string, []DecisionObligation) {
-	reasons := []string{}
-	obligations := []DecisionObligation{}
-	if result == nil {
-		return VerdictAllow, reasons, obligations
-	}
-	if result.Blocked {
-		if result.Reason != "" {
-			reasons = append(reasons, result.Reason)
-		}
-		return VerdictDeny, reasons, obligations
-	}
-	if result.RequiresApproval && !communityMode {
-		reasons = append(reasons, "require_approval")
-		return VerdictNeedsApproval, reasons, obligations
-	}
-	if result.RequiresRedaction {
-		obligations = append(obligations, newRedactPIIObligation(result.Reason))
-	}
-	// #2965: a PII policy that MATCHED but resolved to warn/log emits no
-	// obligation, yet must still produce a governance signal so a matched
-	// policy is never a silent bare allow. These reasons ride the allow verdict
-	// (and are persisted on the canonical decision audit row via reasons).
-	reasons = append(reasons, result.AdvisoryReasons...)
-	return VerdictAllow, reasons, obligations
+	// The FINAL verdict, after the obligation gates, is what is counted.
+	recordAnchoredEnforcement(decideSeamScope, enforced.engine, verdict, enforced.reasonCode)
 }
 
 // --- Seam-capability-aware obligations (#2958) ---
@@ -1624,9 +1443,9 @@ type obligationFallback struct {
 
 // applySeamCapabilityObligations is the SINGLE choke point where an obligation
 // may be withheld from a caller (#2958). It runs over the FINAL obligation
-// slice, AFTER every attachment site (mapPolicyResultToVerdict and the
-// validator-backed India/Indonesia merge), so a future third attachment site is
-// gated automatically rather than needing to remember this rule — the #2625
+// slice, AFTER every attachment site (the anchored engine's request-side
+// redaction, which the seam renders through redactObligationFor), so a future
+// attachment site is gated automatically rather than needing to remember this rule - the #2625
 // audit-hole class came from per-site copies of a shared rule. The
 // newRedactPIIObligation call-site census in
 // decision_obligation_capability_test.go pins that property.
@@ -1973,11 +1792,18 @@ func recordDecideOutcomeMetrics(verdict, stage, origin string, obligations []Dec
 			decideObligations.WithLabelValues(o.Type, stage, origin).Inc()
 		}
 	case VerdictDeny:
-		policy := blockingPolicyID
+		policy, tier := blockingPolicyID, blockingPolicyTier
 		if policy == "" && len(evaluatedPolicies) > 0 {
 			policy = evaluatedPolicies[0]
+			// A deny with no blocking policy - the seam's own, or an allow the
+			// obligation gates turned into one (#2958) - is keyed on the first
+			// policy it names, at the binding path's bounded tier when the seam
+			// gave none, so an organization's id never becomes a label (#4227).
+			if tier == "" {
+				tier = anchoredPolicyTier(policy)
+			}
 		}
-		recordDecideBlock(boundedBlockPolicy(policy, blockingPolicyTier), origin)
+		recordDecideBlock(boundedBlockPolicy(policy, tier), origin)
 	}
 }
 
@@ -1990,9 +1816,9 @@ func recordDecideOutcomeMetrics(verdict, stage, origin string, obligations []Dec
 // "tenant_custom" bucket to prevent a cardinality blow-up. An empty id (no
 // attribution available) is "unknown" so a deny is never silently uncounted.
 //
-// An empty tier is treated as system-safe: it only arises on the engine-bypass
-// fallback (no-engine / disabled detection), whose ids are always system checks
-// — a real shared-engine deny always carries BlockedBy.Tier.
+// An empty tier is treated as system-safe. Decide's fallback policy is given the
+// anchored tier before it reaches here (recordDecideOutcomeMetrics), so an
+// organization's id never arrives with an empty tier.
 func boundedBlockPolicy(policyID, tier string) string {
 	if policyID == "" {
 		return "unknown"
@@ -2255,6 +2081,12 @@ type decisionAuditInput struct {
 	// JSONB so obligations are queryable structure, not flattened into the
 	// free-text policy_details->>'reason'. Empty/nil → NULL column.
 	obligations []DecisionObligation
+	// decisionCapabilityScoped is the capability scoping (#2801) the evaluation
+	// applied: the detectors decided not to apply to this request's tool, which
+	// the anchored engine read as false. Written as
+	// policy_details.capability_scoped, so a false on an execution-class control
+	// reads as a reclassification rather than a miss.
+	decisionCapabilityScoped *sharedpolicy.CapabilityScoping
 	// suppressedObligations / obligationFallback record an obligation the PDP
 	// WITHHELD because the caller's seam advertised it cannot fulfill it, plus
 	// the org posture applied (#2958). They land at
@@ -2274,11 +2106,9 @@ type decisionAuditInput struct {
 	// "tenant_mismatch" (the resolved user's tenant ≠ the client tenant),
 	// "user_token_rejected" (a supplied user_token that failed to resolve),
 	// "user_token_required" (#3476: none supplied where the org's posture
-	// demands one), or "segment_resolution_failed" (#3456: the caller HAS a
-	// principal and governance-segment resolution errored, so this plane fails
-	// closed at the resolution site rather than evaluating against an
-	// undetermined set). Lands
-	// at policy_details->>'security_event' so the audit feed can filter every
+	// demands one). "segment_resolution_failed" (#3456) is no longer set: no
+	// segment gate stands on decide any more (handleDecide). Lands at
+	// policy_details->>'security_event' so the audit feed can filter every
 	// impersonation attempt with one JSONB predicate. Empty for normal rows.
 	securityEvent string
 	// attemptedTenantID / attemptedOrgID capture the identity the caller ASSERTED
@@ -2312,28 +2142,6 @@ type decisionAuditInput struct {
 	// when Target.Type == "tool"; empty otherwise (e.g. llm/agent decisions).
 	toolServer string
 	toolName   string
-	// approvalEnqueue / approvalRequestID / approvalGrantID record what happened
-	// to the human-oversight surface for this decision (#3509).
-	//
-	//   approvalEnqueue   - one of the hitlEnqueue* outcomes when this decision
-	//                       held the caller and a reviewable entry was owed.
-	//                       `cap_reached` / `tier_disabled` / `error` are the
-	//                       values that matter: they mean the request is held
-	//                       and NO reviewer will see it, which is the invisible
-	//                       dead end #3509 exists to remove, and the audit row
-	//                       is the only durable record that it happened.
-	//   approvalRequestID - the created entry's UUID, so an auditor can join
-	//                       this decision to the queue row and its history.
-	//   approvalGrantID   - the approval that ADMITTED this request, when a
-	//                       single-use grant was spent. An allow that a human
-	//                       authorised must never be indistinguishable from an
-	//                       allow no policy ever questioned.
-	//
-	// All three land under policy_details; empty on every decision that never
-	// touched the approval path.
-	approvalEnqueue   string
-	approvalRequestID string
-	approvalGrantID   string
 	// policyNames carries the EVALUATION-TIME id -> display-name map for the
 	// row's policy_ids (#3365), threaded from the engine's matched policies
 	// (StaticPolicyResult.PolicyNames / policyNamesFromMatches) so
@@ -2348,6 +2156,31 @@ type decisionAuditInput struct {
 	// flagged on #3365). Nil on paths with no engine result in scope (early
 	// denies stamp only builtin-resolvable ids).
 	policyNames map[string]string
+	// decisionEngine and decisionSubjectType record WHICH ENGINE AUTHORED this
+	// decision and the type of the principal it was evaluated for (#3895 PR-A2,
+	// PRD v11 §1.6), at policy_details->>'engine' and ->>'subject_type'. Set on
+	// every decision that reached policy evaluation; empty - and omitted - on
+	// the early refusals that precede it.
+	decisionEngine      string
+	decisionSubjectType string
+	// decisionPolicyBundle and decisionReasonCode are the anchored engine's
+	// policy-bundle digest (the system restriction plus the organization root -
+	// its active document, or the implicit baseline) and its machine reason
+	// code, at policy_details->>'policy_bundle' and ->>'decision_reason'.
+	decisionPolicyBundle string
+	decisionReasonCode   string
+	// decisionPolicyPacks are the installed policy packs that bound, at
+	// policy_details->'policy_packs' (PRD v11 §1.9).
+	decisionPolicyPacks []string
+	// policyIdentities, documentVersion and actionName are what an anchored
+	// decision named (PRD v11 §1.14), set by carryAnchoredIdentity and written
+	// by stampAnchoredIdentity.
+	policyIdentities []PolicyIdentity
+	documentVersion  int
+	actionName       string
+	// decisionLegacyValidators names a checksum validator that acted before the
+	// anchored engine decided (#4122), at policy_details->'legacy_validators'.
+	decisionLegacyValidators []LegacyValidatorAction
 }
 
 // maxGatewayIDLen bounds a recorded gateway_id. Gateway ids are short origin
@@ -2506,13 +2339,11 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 	}
 
 	details := buildDecisionAuditDetails(decisionID, stage, policyIDs, reasons, reqContext, contextTruncated, audit)
-	// ADR-061 / #3329: merge the fincrime attribution recorded on ctx
-	// (risk_score, ml_inference_layer_status, fincrime policy
-	// ids/names/versions). No-op for every non-fincrime decision.
-	details = fincrime.MergeAuditDetails(ctx, details)
-	// #3365: id-keyed policy_versions for the row's ids, best-effort, AFTER the
-	// fincrime merge so the seam's model/pack version strings win (missing-only
-	// add, mirroring MergeAuditDetails' existing-entry-wins rule). Acted rows
+	// #3564: an MCP response pass writes through this writer too; which engine
+	// authored its verdict rides the context. A field set above wins.
+	details = mergeEnforcementPosture(ctx, details)
+	// #3365: id-keyed policy_versions for the row's ids, best-effort,
+	// missing-only add (an entry the row already carries wins). Acted rows
 	// only: an allow write must not pay the RLS-scoped batch read per request.
 	if actedAuditVerdict(verdict) {
 		stampMissingPolicyVersions(ctx, db, details)
@@ -2622,20 +2453,30 @@ func buildDecisionAuditDetails(decisionID, stage string, policyIDs, reasons []st
 		details["suppressed_obligations"] = suppressed
 		details["obligation_fallback"] = audit.obligationFallback
 	}
-	// #3509: the human-oversight surface for this decision. approval_enqueue is
-	// the one an operator alerts on - anything other than "created" means the
-	// caller was held and no reviewer will ever see the request, and this row is
-	// the only durable record of it. approval_grant_id names the human whose
-	// approval admitted an allow, so an authorised admission is never
-	// indistinguishable from an unquestioned one.
-	if audit.approvalEnqueue != "" {
-		details["approval_enqueue"] = audit.approvalEnqueue
+	// #3895 PR-A2: which engine authored this verdict, for which type of
+	// principal, against which policy bundle and for which machine reason.
+	// Omitted rather than written empty.
+	if audit.decisionEngine != "" {
+		details["engine"] = audit.decisionEngine
 	}
-	if audit.approvalRequestID != "" {
-		details["approval_request_id"] = audit.approvalRequestID
+	if audit.decisionSubjectType != "" {
+		details["subject_type"] = audit.decisionSubjectType
 	}
-	if audit.approvalGrantID != "" {
-		details["approval_grant_id"] = audit.approvalGrantID
+	if audit.decisionPolicyBundle != "" {
+		details["policy_bundle"] = audit.decisionPolicyBundle
+	}
+	if len(audit.decisionPolicyPacks) > 0 {
+		details["policy_packs"] = audit.decisionPolicyPacks
+	}
+	stampAnchoredIdentity(details, audit.policyIdentities, audit.documentVersion, audit.actionName)
+	if audit.decisionReasonCode != "" {
+		details["decision_reason"] = audit.decisionReasonCode
+	}
+	if detail := capabilityScopedDetail(audit.decisionCapabilityScoped); detail != nil {
+		details["capability_scoped"] = detail
+	}
+	if len(audit.decisionLegacyValidators) > 0 {
+		details["legacy_validators"] = audit.decisionLegacyValidators
 	}
 	return details
 }

@@ -10,357 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	sharedpolicy "axonflow/platform/shared/policy"
 )
-
-// TestDefaultDetectionConfig tests the default configuration values.
-// v6.2.0+: defaults are derived from ProfileDefault — see ADR-036.
-func TestDefaultDetectionConfig(t *testing.T) {
-	cfg := DefaultDetectionConfig()
-
-	// v6.2.0 philosophy: warn on PII / SQLi / sensitive data; block only
-	// unambiguously dangerous patterns. Restore strict via AXONFLOW_PROFILE=strict.
-	tests := []struct {
-		name     string
-		got      DetectionAction
-		expected DetectionAction
-	}{
-		{"SQLIAction defaults to warn", cfg.SQLIAction, DetectionActionWarn},
-		{"PIIAction defaults to warn", cfg.PIIAction, DetectionActionWarn},
-		{"SensitiveDataAction defaults to warn", cfg.SensitiveDataAction, DetectionActionWarn},
-		{"HighRiskAction defaults to warn", cfg.HighRiskAction, DetectionActionWarn},
-		{"DangerousQueryAction defaults to block", cfg.DangerousQueryAction, DetectionActionBlock},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.got != tt.expected {
-				t.Errorf("got %s, expected %s", tt.got, tt.expected)
-			}
-		})
-	}
-}
-
-// TestDetectionConfigFromEnv_Defaults tests that defaults are used when no env vars are set.
-func TestDetectionConfigFromEnv_Defaults(t *testing.T) {
-	// Clear all relevant env vars
-	envVars := []string{
-		EnvSQLIAction, EnvPIIAction, EnvSensitiveDataAction,
-		EnvHighRiskAction, EnvDangerousQueryAction,
-		EnvSQLIBlockModeDeprecated, EnvPIIBlockCriticalDeprecated,
-	}
-	for _, env := range envVars {
-		os.Unsetenv(env)
-	}
-	defer func() {
-		for _, env := range envVars {
-			os.Unsetenv(env)
-		}
-	}()
-
-	// Also clear the profile/enforce env vars to test true defaults.
-	os.Unsetenv(EnvProfile)
-	os.Unsetenv(EnvEnforce)
-
-	cfg := DetectionConfigFromEnv()
-
-	// v6.2.0+: default profile relaxes PII/SQLi to warn.
-	if cfg.SQLIAction != DetectionActionWarn {
-		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0)", cfg.SQLIAction)
-	}
-	if cfg.PIIAction != DetectionActionWarn {
-		t.Errorf("PIIAction: got %s, expected warn (v6.2.0)", cfg.PIIAction)
-	}
-	if cfg.SensitiveDataAction != DetectionActionWarn {
-		t.Errorf("SensitiveDataAction: got %s, expected %s", cfg.SensitiveDataAction, DetectionActionWarn)
-	}
-	if cfg.HighRiskAction != DetectionActionWarn {
-		t.Errorf("HighRiskAction: got %s, expected %s", cfg.HighRiskAction, DetectionActionWarn)
-	}
-	if cfg.DangerousQueryAction != DetectionActionBlock {
-		t.Errorf("DangerousQueryAction: got %s, expected %s", cfg.DangerousQueryAction, DetectionActionBlock)
-	}
-}
-
-// TestDetectionConfigFromEnv_NewEnvVars tests that new env vars override defaults.
-func TestDetectionConfigFromEnv_NewEnvVars(t *testing.T) {
-	// Clear deprecated env vars first
-	os.Unsetenv(EnvSQLIBlockModeDeprecated)
-	os.Unsetenv(EnvPIIBlockCriticalDeprecated)
-
-	tests := []struct {
-		name     string
-		envVar   string
-		value    string
-		field    string
-		expected DetectionAction
-	}{
-		{"SQLI_ACTION=block", EnvSQLIAction, "block", "SQLIAction", DetectionActionBlock},
-		{"SQLI_ACTION=warn", EnvSQLIAction, "warn", "SQLIAction", DetectionActionWarn},
-		{"SQLI_ACTION=log", EnvSQLIAction, "log", "SQLIAction", DetectionActionLog},
-		{"SQLI_ACTION uppercase", EnvSQLIAction, "BLOCK", "SQLIAction", DetectionActionBlock},
-		{"SQLI_ACTION with spaces", EnvSQLIAction, "  warn  ", "SQLIAction", DetectionActionWarn},
-		{"PII_ACTION=block", EnvPIIAction, "block", "PIIAction", DetectionActionBlock},
-		{"PII_ACTION=redact", EnvPIIAction, "redact", "PIIAction", DetectionActionRedact},
-		{"PII_ACTION=warn", EnvPIIAction, "warn", "PIIAction", DetectionActionWarn},
-		{"PII_ACTION=log", EnvPIIAction, "log", "PIIAction", DetectionActionLog},
-		{"SENSITIVE_DATA_ACTION=block", EnvSensitiveDataAction, "block", "SensitiveDataAction", DetectionActionBlock},
-		{"SENSITIVE_DATA_ACTION=warn", EnvSensitiveDataAction, "warn", "SensitiveDataAction", DetectionActionWarn},
-		{"SENSITIVE_DATA_ACTION=log", EnvSensitiveDataAction, "log", "SensitiveDataAction", DetectionActionLog},
-		{"HIGH_RISK_ACTION=block", EnvHighRiskAction, "block", "HighRiskAction", DetectionActionBlock},
-		{"HIGH_RISK_ACTION=warn", EnvHighRiskAction, "warn", "HighRiskAction", DetectionActionWarn},
-		{"HIGH_RISK_ACTION=log", EnvHighRiskAction, "log", "HighRiskAction", DetectionActionLog},
-		{"DANGEROUS_QUERY_ACTION=block", EnvDangerousQueryAction, "block", "DangerousQueryAction", DetectionActionBlock},
-		{"DANGEROUS_QUERY_ACTION=warn", EnvDangerousQueryAction, "warn", "DangerousQueryAction", DetectionActionWarn},
-		{"DANGEROUS_QUERY_ACTION=log", EnvDangerousQueryAction, "log", "DangerousQueryAction", DetectionActionLog},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Clear all env vars
-			os.Unsetenv(EnvSQLIAction)
-			os.Unsetenv(EnvPIIAction)
-			os.Unsetenv(EnvSensitiveDataAction)
-			os.Unsetenv(EnvHighRiskAction)
-			os.Unsetenv(EnvDangerousQueryAction)
-			os.Unsetenv(EnvSQLIBlockModeDeprecated)
-			os.Unsetenv(EnvPIIBlockCriticalDeprecated)
-
-			// Set the test env var
-			os.Setenv(tt.envVar, tt.value)
-			defer os.Unsetenv(tt.envVar)
-
-			cfg := DetectionConfigFromEnv()
-
-			var got DetectionAction
-			switch tt.field {
-			case "SQLIAction":
-				got = cfg.SQLIAction
-			case "PIIAction":
-				got = cfg.PIIAction
-			case "SensitiveDataAction":
-				got = cfg.SensitiveDataAction
-			case "HighRiskAction":
-				got = cfg.HighRiskAction
-			case "DangerousQueryAction":
-				got = cfg.DangerousQueryAction
-			}
-
-			if got != tt.expected {
-				t.Errorf("%s: got %s, expected %s", tt.field, got, tt.expected)
-			}
-		})
-	}
-}
-
-// TestDetectionConfigFromEnv_DeprecatedEnvVars tests deprecated env var handling.
-func TestDetectionConfigFromEnv_DeprecatedEnvVars(t *testing.T) {
-	// Clear new env vars
-	os.Unsetenv(EnvSQLIAction)
-	os.Unsetenv(EnvPIIAction)
-
-	tests := []struct {
-		name     string
-		envVar   string
-		value    string
-		field    string
-		expected DetectionAction
-	}{
-		// SQLI_BLOCK_MODE (deprecated)
-		{"SQLI_BLOCK_MODE=block", EnvSQLIBlockModeDeprecated, "block", "SQLIAction", DetectionActionBlock},
-		{"SQLI_BLOCK_MODE=warn", EnvSQLIBlockModeDeprecated, "warn", "SQLIAction", DetectionActionWarn},
-		{"SQLI_BLOCK_MODE=invalid defaults to block", EnvSQLIBlockModeDeprecated, "invalid", "SQLIAction", DetectionActionBlock},
-		// PII_BLOCK_CRITICAL (deprecated)
-		{"PII_BLOCK_CRITICAL=true", EnvPIIBlockCriticalDeprecated, "true", "PIIAction", DetectionActionBlock},
-		{"PII_BLOCK_CRITICAL=false", EnvPIIBlockCriticalDeprecated, "false", "PIIAction", DetectionActionLog},
-		{"PII_BLOCK_CRITICAL=0", EnvPIIBlockCriticalDeprecated, "0", "PIIAction", DetectionActionLog},
-		{"PII_BLOCK_CRITICAL=1", EnvPIIBlockCriticalDeprecated, "1", "PIIAction", DetectionActionBlock},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Clear env vars
-			os.Unsetenv(EnvSQLIAction)
-			os.Unsetenv(EnvPIIAction)
-			os.Unsetenv(EnvSQLIBlockModeDeprecated)
-			os.Unsetenv(EnvPIIBlockCriticalDeprecated)
-
-			// Set the test env var
-			os.Setenv(tt.envVar, tt.value)
-			defer os.Unsetenv(tt.envVar)
-
-			cfg := DetectionConfigFromEnv()
-
-			var got DetectionAction
-			switch tt.field {
-			case "SQLIAction":
-				got = cfg.SQLIAction
-			case "PIIAction":
-				got = cfg.PIIAction
-			}
-
-			if got != tt.expected {
-				t.Errorf("%s: got %s, expected %s", tt.field, got, tt.expected)
-			}
-		})
-	}
-}
-
-// TestDetectionConfigFromEnv_NewOverridesDeprecated tests that new env vars take precedence.
-func TestDetectionConfigFromEnv_NewOverridesDeprecated(t *testing.T) {
-	// Set both new and deprecated env vars - new should win
-	os.Setenv(EnvSQLIAction, "warn")
-	os.Setenv(EnvSQLIBlockModeDeprecated, "block")
-	os.Setenv(EnvPIIAction, "log")
-	os.Setenv(EnvPIIBlockCriticalDeprecated, "true")
-	defer func() {
-		os.Unsetenv(EnvSQLIAction)
-		os.Unsetenv(EnvSQLIBlockModeDeprecated)
-		os.Unsetenv(EnvPIIAction)
-		os.Unsetenv(EnvPIIBlockCriticalDeprecated)
-	}()
-
-	cfg := DetectionConfigFromEnv()
-
-	// New env vars should take precedence
-	if cfg.SQLIAction != DetectionActionWarn {
-		t.Errorf("SQLIAction: expected new var to win, got %s", cfg.SQLIAction)
-	}
-	if cfg.PIIAction != DetectionActionLog {
-		t.Errorf("PIIAction: expected new var to win, got %s", cfg.PIIAction)
-	}
-}
-
-// TestDetectionConfigFromEnv_InvalidValues tests the fallback behavior for
-// malformed *_ACTION env var values.
-//
-// Post-v6.2.0 fix (review finding P2): invalid values MUST preserve the active
-// profile's value for that category, NOT silently revert to the legacy strict
-// default. Previously a typo like PII_ACTION=blok on a dev profile would flip
-// PII back to redact — silently tightening behavior and inverting the profile.
-// Now it inherits the profile's current PIIAction (warn under default, log
-// under dev, block under strict, etc.).
-func TestDetectionConfigFromEnv_InvalidValues(t *testing.T) {
-	// Clear deprecated + profile env vars so we're on ProfileDefault (warn).
-	os.Unsetenv(EnvSQLIBlockModeDeprecated)
-	os.Unsetenv(EnvPIIBlockCriticalDeprecated)
-	os.Unsetenv(EnvProfile)
-	os.Unsetenv(EnvEnforce)
-
-	tests := []struct {
-		name     string
-		envVar   string
-		value    string
-		expected DetectionAction // should be the ProfileDefault's value for that category
-	}{
-		// On ProfileDefault, both PII and SQLi resolve to warn. Any invalid
-		// value must preserve that, not flip to a hardcoded legacy default.
-		{"SQLI_ACTION invalid preserves profile (warn)", EnvSQLIAction, "invalid", DetectionActionWarn},
-		{"SQLI_ACTION empty preserves profile (warn)", EnvSQLIAction, "", DetectionActionWarn},
-		{"PII_ACTION invalid preserves profile (warn)", EnvPIIAction, "invalid", DetectionActionWarn},
-		// "redact" is not a valid SQLi action; it must fall back to the
-		// profile value (warn), NOT to the old hardcoded block.
-		{"SQLI_ACTION redact (invalid for sqli) preserves profile (warn)", EnvSQLIAction, "redact", DetectionActionWarn},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Clear env vars
-			os.Unsetenv(EnvSQLIAction)
-			os.Unsetenv(EnvPIIAction)
-
-			if tt.value != "" {
-				os.Setenv(tt.envVar, tt.value)
-				defer os.Unsetenv(tt.envVar)
-			}
-
-			cfg := DetectionConfigFromEnv()
-
-			var got DetectionAction
-			switch tt.envVar {
-			case EnvSQLIAction:
-				got = cfg.SQLIAction
-			case EnvPIIAction:
-				got = cfg.PIIAction
-			}
-
-			if got != tt.expected {
-				t.Errorf("got %s, expected %s", got, tt.expected)
-			}
-		})
-	}
-}
-
-// TestDetectionConfigFromEnv_InvalidValuesPreserveStrictProfile asserts that
-// invalid values on a strict-profile deployment keep block (not warn).
-// This is the critical fix from the review: invalid values must not silently
-// downgrade the profile.
-func TestDetectionConfigFromEnv_InvalidValuesPreserveStrictProfile(t *testing.T) {
-	t.Setenv(EnvProfile, "strict")
-	os.Unsetenv(EnvEnforce)
-	os.Unsetenv(EnvSQLIAction)
-	os.Unsetenv(EnvPIIAction)
-
-	t.Setenv(EnvPIIAction, "blok") // typo
-	cfg := DetectionConfigFromEnv()
-	if cfg.PIIAction != DetectionActionBlock {
-		t.Errorf("strict + invalid PII_ACTION: got %q, want block (must preserve strict profile, NOT fall through to redact)", cfg.PIIAction)
-	}
-
-	t.Setenv(EnvSQLIAction, "nope") // typo
-	cfg = DetectionConfigFromEnv()
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("strict + invalid SQLI_ACTION: got %q, want block", cfg.SQLIAction)
-	}
-}
-
-// TestDetectionConfigFromEnv_InvalidValuesPreserveDevProfile asserts the
-// symmetric case: invalid values on dev profile must keep log, not silently
-// escalate to block/redact.
-func TestDetectionConfigFromEnv_InvalidValuesPreserveDevProfile(t *testing.T) {
-	t.Setenv(EnvProfile, "dev")
-	os.Unsetenv(EnvEnforce)
-	os.Unsetenv(EnvSQLIAction)
-	os.Unsetenv(EnvPIIAction)
-
-	t.Setenv(EnvPIIAction, "redactt") // typo
-	cfg := DetectionConfigFromEnv()
-	if cfg.PIIAction != DetectionActionLog {
-		t.Errorf("dev + invalid PII_ACTION: got %q, want log (must preserve dev profile, NOT silently flip to redact)", cfg.PIIAction)
-	}
-}
-
-// TestPrecedenceChain is the end-to-end integration test for the review
-// finding that each layer was tested independently but the full chain was not.
-// Verifies ProfileDefaults → ApplyEnforce → *_ACTION env var override.
-func TestPrecedenceChain(t *testing.T) {
-	// Base case: dev profile, PII should be log.
-	t.Setenv(EnvProfile, "dev")
-	os.Unsetenv(EnvEnforce)
-	os.Unsetenv(EnvPIIAction)
-	cfg := DetectionConfigFromEnv()
-	if cfg.PIIAction != DetectionActionLog {
-		t.Errorf("dev base: PII = %q, want log", cfg.PIIAction)
-	}
-
-	// Layer 2: ENFORCE=pii adds PII block on top of dev profile.
-	t.Setenv(EnvEnforce, "pii")
-	cfg = DetectionConfigFromEnv()
-	if cfg.PIIAction != DetectionActionBlock {
-		t.Errorf("dev + ENFORCE=pii: PII = %q, want block", cfg.PIIAction)
-	}
-	// Other categories stay at dev values.
-	if cfg.SQLIAction != DetectionActionLog {
-		t.Errorf("dev + ENFORCE=pii: SQLi should stay log (dev profile preserved), got %q", cfg.SQLIAction)
-	}
-
-	// Layer 3: explicit PII_ACTION=warn wins over ENFORCE=pii (block).
-	t.Setenv(EnvPIIAction, "warn")
-	cfg = DetectionConfigFromEnv()
-	if cfg.PIIAction != DetectionActionWarn {
-		t.Errorf("dev + ENFORCE=pii + PII_ACTION=warn: got %q, want warn (explicit env wins)", cfg.PIIAction)
-	}
-}
 
 // TestDetectionAction_ShouldBlock tests the ShouldBlock method.
 func TestDetectionAction_ShouldBlock(t *testing.T) {
@@ -466,83 +119,6 @@ func TestDetectionAction_ToOverrideAction(t *testing.T) {
 	}
 }
 
-// TestParseDetectionAction tests the parseDetectionAction function.
-func TestParseDetectionAction(t *testing.T) {
-	tests := []struct {
-		name         string
-		value        string
-		defaultVal   DetectionAction
-		validActions []DetectionAction
-		expected     DetectionAction
-	}{
-		{
-			name:         "valid block",
-			value:        "block",
-			defaultVal:   DetectionActionWarn,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionBlock,
-		},
-		{
-			name:         "valid warn",
-			value:        "warn",
-			defaultVal:   DetectionActionBlock,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionWarn,
-		},
-		{
-			name:         "valid log",
-			value:        "log",
-			defaultVal:   DetectionActionBlock,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionLog,
-		},
-		{
-			name:         "case insensitive",
-			value:        "BLOCK",
-			defaultVal:   DetectionActionWarn,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionBlock,
-		},
-		{
-			name:         "with whitespace",
-			value:        "  warn  ",
-			defaultVal:   DetectionActionBlock,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionWarn,
-		},
-		{
-			name:         "invalid returns default",
-			value:        "invalid",
-			defaultVal:   DetectionActionBlock,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionBlock,
-		},
-		{
-			name:         "redact not in valid list returns default",
-			value:        "redact",
-			defaultVal:   DetectionActionBlock,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog},
-			expected:     DetectionActionBlock,
-		},
-		{
-			name:         "redact in valid list works",
-			value:        "redact",
-			defaultVal:   DetectionActionBlock,
-			validActions: []DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog},
-			expected:     DetectionActionRedact,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseDetectionAction(tt.value, "TEST_ENV", tt.defaultVal, tt.validActions)
-			if got != tt.expected {
-				t.Errorf("parseDetectionAction(%q) = %s, expected %s", tt.value, got, tt.expected)
-			}
-		})
-	}
-}
-
 // TestDetectionAction_Constants tests the constant values.
 func TestDetectionAction_Constants(t *testing.T) {
 	// Verify constant values match expected strings
@@ -565,46 +141,19 @@ func TestDetectionAction_Constants(t *testing.T) {
 	}
 }
 
-// TestEnvVarConstants tests environment variable constant values.
-func TestEnvVarConstants(t *testing.T) {
-	tests := []struct {
-		constant string
-		expected string
-	}{
-		{EnvSQLIAction, "SQLI_ACTION"},
-		{EnvPIIAction, "PII_ACTION"},
-		{EnvSensitiveDataAction, "SENSITIVE_DATA_ACTION"},
-		{EnvHighRiskAction, "HIGH_RISK_ACTION"},
-		{EnvDangerousQueryAction, "DANGEROUS_QUERY_ACTION"},
-		{EnvSQLIBlockModeDeprecated, "SQLI_BLOCK_MODE"},
-		{EnvPIIBlockCriticalDeprecated, "PII_BLOCK_CRITICAL"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			if tt.constant != tt.expected {
-				t.Errorf("constant value = %q, expected %q", tt.constant, tt.expected)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // ModeDetectionConfig Tests
 // =============================================================================
 
-// clearModeEnvVars clears all mode-specific env vars for clean test state.
+// clearModeEnvVars clears every mode env var AND every removed posture variable,
+// so a test starts from a process that sets none of them.
 func clearModeEnvVars() {
 	envVars := []string{
-		EnvSQLIAction, EnvPIIAction, EnvSensitiveDataAction,
-		EnvHighRiskAction, EnvDangerousQueryAction,
-		EnvSQLIBlockModeDeprecated, EnvPIIBlockCriticalDeprecated,
 		EnvMCPStaticPoliciesEnabled, EnvGatewayStaticPoliciesEnabled,
-		EnvMCPPIIAction, EnvMCPSQLIAction, EnvMCPDangerousQueryAction,
-		EnvGatewayPIIAction, EnvGatewaySQLIAction,
 		EnvMCPStaticPoliciesSkipCategories, EnvGatewayStaticPoliciesSkipCategories,
 		EnvMCPStaticPoliciesConnectors,
 	}
+	envVars = append(envVars, RemovedPostureEnvVars...)
 	for _, env := range envVars {
 		os.Unsetenv(env)
 	}
@@ -619,22 +168,67 @@ func TestMCPDetectionConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Expected MCP static policies enabled by default")
 	}
-	// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default.
-	// PII and SQLi now default to warn; only dangerous patterns block.
-	if cfg.PIIAction != DetectionActionWarn {
-		t.Errorf("PIIAction: got %s, expected warn (v6.2.0 default)", cfg.PIIAction)
-	}
-	if cfg.SQLIAction != DetectionActionWarn {
-		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0 default)", cfg.SQLIAction)
-	}
-	if cfg.DangerousQueryAction != DetectionActionBlock {
-		t.Errorf("DangerousQueryAction: got %s, expected block", cfg.DangerousQueryAction)
+	// No action is set by the environment (#3961): the action fields hold only
+	// an organization's recorded override, and a config read from the
+	// environment has none.
+	if cfg.PIIAction != "" || cfg.SQLIAction != "" || cfg.DangerousQueryAction != "" || cfg.DangerousCommandAction != "" {
+		t.Errorf("a config read from the environment carries actions %+v; only a recorded override may set one", cfg)
 	}
 	if len(cfg.SkipCategories) != 0 {
 		t.Errorf("SkipCategories: got %v, expected empty", cfg.SkipCategories)
 	}
 	if len(cfg.Connectors) != 0 {
 		t.Errorf("Connectors: got %v, expected empty", cfg.Connectors)
+	}
+}
+
+func TestGatewayDetectionConfigFromEnv_Defaults(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	cfg := GatewayDetectionConfigFromEnv()
+
+	if !cfg.Enabled {
+		t.Error("Expected Gateway static policies enabled by default")
+	}
+	if cfg.PIIAction != "" || cfg.SQLIAction != "" || cfg.DangerousQueryAction != "" || cfg.DangerousCommandAction != "" {
+		t.Errorf("a config read from the environment carries actions %+v; only a recorded override may set one", cfg)
+	}
+}
+
+// TestModeDetectionConfigFromEnv_RemovedVariablesSetNoAction is the #3961
+// invariant stated as a test: with EVERY removed detection-posture variable set
+// - to a blocking value and to a relaxing one - neither mode config carries an
+// action and neither builds an action override, so every stored policy action
+// stands.
+func TestModeDetectionConfigFromEnv_RemovedVariablesSetNoAction(t *testing.T) {
+	for _, value := range []string{"block", "warn", "log", "redact", "strict", "dev", "all", "true"} {
+		t.Run(value, func(t *testing.T) {
+			clearModeEnvVars()
+			for _, name := range RemovedPostureEnvVars {
+				t.Setenv(name, value)
+			}
+			ResetDetectionConfigCache()
+			t.Cleanup(ResetDetectionConfigCache)
+			InitDetectionConfigs()
+
+			for label, cfg := range map[string]ModeDetectionConfig{
+				"MCPDetectionConfigFromEnv":     MCPDetectionConfigFromEnv(),
+				"GatewayDetectionConfigFromEnv": GatewayDetectionConfigFromEnv(),
+				"GetMCPDetectionConfig":         GetMCPDetectionConfig(),
+				"GetGatewayDetectionConfig":     GetGatewayDetectionConfig(),
+			} {
+				if cfg.PIIAction != "" || cfg.SQLIAction != "" || cfg.DangerousQueryAction != "" || cfg.DangerousCommandAction != "" {
+					t.Errorf("%s with every removed variable = %q carries actions %+v", label, value, cfg)
+				}
+				if overrides := cfg.BuildActionOverrides(); len(overrides) != 0 {
+					t.Errorf("%s with every removed variable = %q builds action overrides %v: a stored action would be displaced by the environment", label, value, overrides)
+				}
+				if !cfg.Enabled {
+					t.Errorf("%s: a removed posture variable disabled static policy evaluation", label)
+				}
+			}
+		})
 	}
 }
 
@@ -648,36 +242,6 @@ func TestMCPDetectionConfigFromEnv_Disabled(t *testing.T) {
 
 	if cfg.Enabled {
 		t.Error("Expected MCP static policies disabled")
-	}
-}
-
-func TestMCPDetectionConfigFromEnv_ModeSpecificOverridesGlobal(t *testing.T) {
-	clearModeEnvVars()
-	defer clearModeEnvVars()
-
-	// Set global PII_ACTION=block
-	os.Setenv(EnvPIIAction, "block")
-	// Set MCP-specific to log (should override global)
-	os.Setenv(EnvMCPPIIAction, "log")
-
-	cfg := MCPDetectionConfigFromEnv()
-
-	if cfg.PIIAction != DetectionActionLog {
-		t.Errorf("Expected MCP_PII_ACTION=log to override PII_ACTION=block, got %s", cfg.PIIAction)
-	}
-}
-
-func TestMCPDetectionConfigFromEnv_GlobalFallback(t *testing.T) {
-	clearModeEnvVars()
-	defer clearModeEnvVars()
-
-	// Set global PII_ACTION=block, no MCP-specific override
-	os.Setenv(EnvPIIAction, "block")
-
-	cfg := MCPDetectionConfigFromEnv()
-
-	if cfg.PIIAction != DetectionActionBlock {
-		t.Errorf("Expected PII_ACTION=block to apply when no MCP override, got %s", cfg.PIIAction)
 	}
 }
 
@@ -716,45 +280,6 @@ func TestMCPDetectionConfigFromEnv_ConnectorsIgnoredWithoutEnterprise(t *testing
 	}
 }
 
-func TestMCPDetectionConfigFromEnv_AllOverrides(t *testing.T) {
-	clearModeEnvVars()
-	defer clearModeEnvVars()
-
-	os.Setenv(EnvMCPPIIAction, "warn")
-	os.Setenv(EnvMCPSQLIAction, "log")
-	os.Setenv(EnvMCPDangerousQueryAction, "warn")
-
-	cfg := MCPDetectionConfigFromEnv()
-
-	if cfg.PIIAction != DetectionActionWarn {
-		t.Errorf("PIIAction: got %s, expected warn", cfg.PIIAction)
-	}
-	if cfg.SQLIAction != DetectionActionLog {
-		t.Errorf("SQLIAction: got %s, expected log", cfg.SQLIAction)
-	}
-	if cfg.DangerousQueryAction != DetectionActionWarn {
-		t.Errorf("DangerousQueryAction: got %s, expected warn", cfg.DangerousQueryAction)
-	}
-}
-
-func TestGatewayDetectionConfigFromEnv_Defaults(t *testing.T) {
-	clearModeEnvVars()
-	defer clearModeEnvVars()
-
-	cfg := GatewayDetectionConfigFromEnv()
-
-	if !cfg.Enabled {
-		t.Error("Expected Gateway static policies enabled by default")
-	}
-	// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default.
-	if cfg.PIIAction != DetectionActionWarn {
-		t.Errorf("PIIAction: got %s, expected warn (v6.2.0 default)", cfg.PIIAction)
-	}
-	if cfg.SQLIAction != DetectionActionWarn {
-		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0 default)", cfg.SQLIAction)
-	}
-}
-
 func TestGatewayDetectionConfigFromEnv_Disabled(t *testing.T) {
 	clearModeEnvVars()
 	defer clearModeEnvVars()
@@ -765,20 +290,6 @@ func TestGatewayDetectionConfigFromEnv_Disabled(t *testing.T) {
 
 	if cfg.Enabled {
 		t.Error("Expected Gateway static policies disabled")
-	}
-}
-
-func TestGatewayDetectionConfigFromEnv_ModeSpecificOverridesGlobal(t *testing.T) {
-	clearModeEnvVars()
-	defer clearModeEnvVars()
-
-	os.Setenv(EnvPIIAction, "block")
-	os.Setenv(EnvGatewayPIIAction, "log")
-
-	cfg := GatewayDetectionConfigFromEnv()
-
-	if cfg.PIIAction != DetectionActionLog {
-		t.Errorf("Expected GATEWAY_PII_ACTION=log to override PII_ACTION=block, got %s", cfg.PIIAction)
 	}
 }
 
@@ -798,39 +309,55 @@ func TestGatewayDetectionConfigFromEnv_SkipCategories(t *testing.T) {
 	}
 }
 
-func TestBuildActionOverrides(t *testing.T) {
-	cfg := ModeDetectionConfig{
-		Enabled:                true,
-		PIIAction:              DetectionActionBlock,
-		SQLIAction:             DetectionActionWarn,
-		DangerousQueryAction:   DetectionActionLog,
-		DangerousCommandAction: DetectionActionBlock,
+// TestBuildActionOverrides_OnlyRecordedOverrides pins the shape of the map the
+// shared engine receives: a category appears only when the organization's
+// override for it is set, and then with exactly that action.
+func TestBuildActionOverrides_OnlyRecordedOverrides(t *testing.T) {
+	piiCats := []sharedpolicy.PolicyCategory{
+		sharedpolicy.CategoryPIIGlobal, sharedpolicy.CategoryPIIUS, sharedpolicy.CategoryPIIIndia,
+		sharedpolicy.CategoryPIIEU, sharedpolicy.CategoryPIISingapore, sharedpolicy.CategoryPIIIndonesia,
 	}
 
-	overrides := cfg.BuildActionOverrides()
-
-	// Verify PII categories all get block
-	for _, cat := range []sharedpolicy.PolicyCategory{
-		sharedpolicy.CategoryPIIGlobal,
-		sharedpolicy.CategoryPIIUS,
-		sharedpolicy.CategoryPIIIndia,
-		sharedpolicy.CategoryPIIEU,
-		sharedpolicy.CategoryPIISingapore,
-	} {
-		if overrides[cat] != sharedpolicy.ActionBlock {
-			t.Errorf("PII category %s: got %s, expected block", cat, overrides[cat])
+	t.Run("no override builds an empty map", func(t *testing.T) {
+		cfg := ModeDetectionConfig{Enabled: true}
+		if got := cfg.BuildActionOverrides(); len(got) != 0 {
+			t.Errorf("got %v, want no override", got)
 		}
-	}
+	})
 
-	// Verify SQLi gets warn
-	if overrides[sharedpolicy.CategorySecuritySQLi] != sharedpolicy.ActionWarn {
-		t.Errorf("SQLi: got %s, expected warn", overrides[sharedpolicy.CategorySecuritySQLi])
-	}
+	t.Run("a pii override reaches every pii category and nothing else", func(t *testing.T) {
+		cfg := ModeDetectionConfig{Enabled: true, PIIAction: DetectionActionRedact}
+		got := cfg.BuildActionOverrides()
+		if len(got) != len(piiCats) {
+			t.Errorf("got %d categories %v, want exactly the %d pii categories", len(got), got, len(piiCats))
+		}
+		for _, cat := range piiCats {
+			if got[cat] != sharedpolicy.ActionRedact {
+				t.Errorf("%s: got %q, want redact", cat, got[cat])
+			}
+		}
+	})
 
-	// Verify dangerous commands (security-dangerous) get block — separate from dangerous queries
-	if overrides[sharedpolicy.CategorySecurityDangerous] != sharedpolicy.ActionBlock {
-		t.Errorf("DangerousCommand: got %s, expected block", overrides[sharedpolicy.CategorySecurityDangerous])
-	}
+	t.Run("sqli and dangerous_command reach their own category", func(t *testing.T) {
+		cfg := ModeDetectionConfig{Enabled: true, SQLIAction: DetectionActionBlock, DangerousCommandAction: DetectionActionWarn}
+		got := cfg.BuildActionOverrides()
+		if len(got) != 2 || got[sharedpolicy.CategorySecuritySQLi] != sharedpolicy.ActionBlock ||
+			got[sharedpolicy.CategorySecurityDangerous] != sharedpolicy.ActionWarn {
+			t.Errorf("got %v, want security-sqli=block and security-dangerous=warn only", got)
+		}
+	})
+
+	t.Run("dangerous_query maps to no category and sensitive-data is never overridden", func(t *testing.T) {
+		cfg := ModeDetectionConfig{Enabled: true, DangerousQueryAction: DetectionActionBlock}
+		got := cfg.BuildActionOverrides()
+		if len(got) != 0 {
+			t.Errorf("got %v, want none", got)
+		}
+		full := ModeDetectionConfig{PIIAction: DetectionActionBlock, SQLIAction: DetectionActionBlock, DangerousQueryAction: DetectionActionBlock, DangerousCommandAction: DetectionActionBlock}
+		if _, ok := full.BuildActionOverrides()[sharedpolicy.CategorySensitiveData]; ok {
+			t.Error("sensitive-data was overridden; the override table has no category for it")
+		}
+	})
 }
 
 func TestIsConnectorEnabled(t *testing.T) {
@@ -957,150 +484,158 @@ func TestToPolicyAction(t *testing.T) {
 	}
 }
 
+// TestMCPAndGatewayIndependentConfig pins that the two mode configs read their
+// own switches.
 func TestMCPAndGatewayIndependentConfig(t *testing.T) {
 	clearModeEnvVars()
 	defer clearModeEnvVars()
 
-	// MCP: PII=warn, SQLi=log
-	os.Setenv(EnvMCPPIIAction, "warn")
-	os.Setenv(EnvMCPSQLIAction, "log")
-
-	// Gateway: PII=block, SQLi defaults (block)
-	os.Setenv(EnvGatewayPIIAction, "block")
+	os.Setenv(EnvMCPStaticPoliciesEnabled, "false")
+	os.Setenv(EnvGatewayStaticPoliciesSkipCategories, "security-sqli")
 
 	mcpCfg := MCPDetectionConfigFromEnv()
 	gwCfg := GatewayDetectionConfigFromEnv()
 
-	// Verify independence
-	if mcpCfg.PIIAction != DetectionActionWarn {
-		t.Errorf("MCP PIIAction: got %s, expected warn", mcpCfg.PIIAction)
+	if mcpCfg.Enabled {
+		t.Error("MCP: expected disabled")
 	}
-	if gwCfg.PIIAction != DetectionActionBlock {
-		t.Errorf("Gateway PIIAction: got %s, expected block", gwCfg.PIIAction)
+	if !gwCfg.Enabled {
+		t.Error("Gateway: expected enabled (MCP's switch must not reach it)")
 	}
-	if mcpCfg.SQLIAction != DetectionActionLog {
-		t.Errorf("MCP SQLIAction: got %s, expected log", mcpCfg.SQLIAction)
+	if len(mcpCfg.SkipCategories) != 0 {
+		t.Errorf("MCP SkipCategories: got %v, want none (the gateway list must not reach it)", mcpCfg.SkipCategories)
 	}
-	// v6.2.0+: gateway SQLi default is now warn (not block).
-	if gwCfg.SQLIAction != DetectionActionWarn {
-		t.Errorf("Gateway SQLIAction: got %s, expected warn (v6.2.0 default)", gwCfg.SQLIAction)
+	if len(gwCfg.SkipCategories) != 1 || gwCfg.SkipCategories[0] != "security-sqli" {
+		t.Errorf("Gateway SkipCategories: got %v, want [security-sqli]", gwCfg.SkipCategories)
 	}
 }
 
 func TestDetectionConfigCache_ReturnsStartupValues(t *testing.T) {
-	// Reset any existing cache
 	ResetDetectionConfigCache()
+	t.Cleanup(ResetDetectionConfigCache)
 
-	// Set initial env vars and cache
-	t.Setenv(EnvMCPPIIAction, "block")
-	t.Setenv(EnvGatewayPIIAction, "warn")
+	t.Setenv(EnvMCPStaticPoliciesEnabled, "false")
+	t.Setenv(EnvGatewayStaticPoliciesSkipCategories, "pii-us")
 	InitDetectionConfigs()
 
-	// Verify cached values
-	mcpCfg := GetMCPDetectionConfig()
-	if mcpCfg.PIIAction != DetectionActionBlock {
-		t.Errorf("Cached MCP PIIAction: got %s, expected block", mcpCfg.PIIAction)
+	if GetMCPDetectionConfig().Enabled {
+		t.Error("cached MCP config: expected disabled")
 	}
-	gwCfg := GetGatewayDetectionConfig()
-	if gwCfg.PIIAction != DetectionActionWarn {
-		t.Errorf("Cached Gateway PIIAction: got %s, expected warn", gwCfg.PIIAction)
+	if got := GetGatewayDetectionConfig().SkipCategories; len(got) != 1 || got[0] != "pii-us" {
+		t.Errorf("cached Gateway SkipCategories: got %v, want [pii-us]", got)
 	}
 
-	// Change env vars — cached values should NOT change
-	t.Setenv(EnvMCPPIIAction, "log")
-	t.Setenv(EnvGatewayPIIAction, "log")
-
-	mcpCfg2 := GetMCPDetectionConfig()
-	if mcpCfg2.PIIAction != DetectionActionBlock {
-		t.Errorf("Cache should be stable after env change: got %s, expected block", mcpCfg2.PIIAction)
+	// Change env vars - cached values must NOT change.
+	t.Setenv(EnvMCPStaticPoliciesEnabled, "true")
+	t.Setenv(EnvGatewayStaticPoliciesSkipCategories, "")
+	if GetMCPDetectionConfig().Enabled {
+		t.Error("cache should be stable after an env change: MCP became enabled")
 	}
-	gwCfg2 := GetGatewayDetectionConfig()
-	if gwCfg2.PIIAction != DetectionActionWarn {
-		t.Errorf("Cache should be stable after env change: got %s, expected warn", gwCfg2.PIIAction)
+	if got := GetGatewayDetectionConfig().SkipCategories; len(got) != 1 {
+		t.Errorf("cache should be stable after an env change: Gateway SkipCategories became %v", got)
 	}
 
-	// Reset cache and re-init — now picks up new values
+	// Reset + re-init picks up the new values.
 	ResetDetectionConfigCache()
 	InitDetectionConfigs()
-
-	mcpCfg3 := GetMCPDetectionConfig()
-	if mcpCfg3.PIIAction != DetectionActionLog {
-		t.Errorf("After reset+reinit: got %s, expected log", mcpCfg3.PIIAction)
+	if !GetMCPDetectionConfig().Enabled {
+		t.Error("after reset+reinit: expected MCP enabled")
 	}
-
-	// Clean up for other tests
-	ResetDetectionConfigCache()
 }
 
 func TestDetectionConfigCache_FallbackWhenNotInitialized(t *testing.T) {
-	// Ensure cache is empty
 	ResetDetectionConfigCache()
+	t.Cleanup(ResetDetectionConfigCache)
 
-	t.Setenv(EnvMCPPIIAction, "warn")
+	t.Setenv(EnvMCPStaticPoliciesEnabled, "false")
 
-	// Without InitDetectionConfigs(), should fall back to parsing from env
-	cfg := GetMCPDetectionConfig()
-	if cfg.PIIAction != DetectionActionWarn {
-		t.Errorf("Fallback should parse from env: got %s, expected warn", cfg.PIIAction)
+	// Without InitDetectionConfigs(), resolution parses the environment.
+	if GetMCPDetectionConfig().Enabled {
+		t.Error("fallback should parse from env: expected MCP disabled")
 	}
-
-	// Clean up
-	ResetDetectionConfigCache()
 }
 
-// TestWarnIfHighRiskActionNotEnforced pins the operator-visibility fix:
-// HighRiskAction is populated from HIGH_RISK_ACTION, forced to "block" by
-// AXONFLOW_ENFORCE's high_risk opt-in, and given per-profile defaults, but
-// is not a field on ModeDetectionConfig — so it is dropped at derivation and
-// enforced nowhere. DetectionConfigFromEnv must warn when either signal
-// indicates the operator actually configured it, and must NOT warn on a
-// plain, untouched default (which would fire on every process start).
-func TestWarnIfHighRiskActionNotEnforced(t *testing.T) {
-	captureLog := func(fn func()) string {
-		old := log.Writer()
-		var buf bytes.Buffer
-		log.SetOutput(&buf)
-		defer log.SetOutput(old)
-		fn()
-		return buf.String()
+// TestReportIgnoredPostureEnv pins the boot census: one WARN line naming the
+// variable, its value and what now decides, one counter increment per set
+// variable, and nothing for an unset or empty one.
+func TestReportIgnoredPostureEnv(t *testing.T) {
+	clearModeEnvVars()
+	t.Cleanup(clearModeEnvVars)
+	t.Setenv("PII_ACTION", "warn")
+	t.Setenv("AXONFLOW_PROFILE", "strict")
+	t.Setenv("MCP_SQLI_ACTION", "") // set but empty: chose nothing, reported as nothing
+
+	beforePII := testutil.ToFloat64(ignoredPostureEnvTotal.WithLabelValues("PII_ACTION"))
+	beforeProfile := testutil.ToFloat64(ignoredPostureEnvTotal.WithLabelValues("AXONFLOW_PROFILE"))
+	beforeEmpty := testutil.ToFloat64(ignoredPostureEnvTotal.WithLabelValues("MCP_SQLI_ACTION"))
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	found := ReportIgnoredPostureEnv("agent")
+	log.SetOutput(old)
+	out := buf.String()
+
+	if len(found) != 2 || found[0] != "PII_ACTION" || found[1] != "AXONFLOW_PROFILE" {
+		t.Errorf("reported %v, want [PII_ACTION AXONFLOW_PROFILE] in RemovedPostureEnvVars order", found)
+	}
+	for _, want := range []string{
+		"WARN [agent] detection posture env var ignored: PII_ACTION=warn no longer sets an action (v11); the stored policy action decides - see release notes",
+		"WARN [agent] detection posture env var ignored: AXONFLOW_PROFILE=strict no longer sets an action (v11); the stored policy action decides - see release notes",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("boot log is missing %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "MCP_SQLI_ACTION") {
+		t.Errorf("an empty variable was reported: %s", out)
+	}
+	if got := testutil.ToFloat64(ignoredPostureEnvTotal.WithLabelValues("PII_ACTION")) - beforePII; got != 1 {
+		t.Errorf("axonflow_ignored_posture_env_total{name=PII_ACTION} moved by %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(ignoredPostureEnvTotal.WithLabelValues("AXONFLOW_PROFILE")) - beforeProfile; got != 1 {
+		t.Errorf("axonflow_ignored_posture_env_total{name=AXONFLOW_PROFILE} moved by %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(ignoredPostureEnvTotal.WithLabelValues("MCP_SQLI_ACTION")) - beforeEmpty; got != 0 {
+		t.Errorf("an empty variable moved the counter by %v", got)
 	}
 
-	t.Run("no warning on untouched default", func(t *testing.T) {
-		out := captureLog(func() {
-			_ = DetectionConfigFromEnv()
-		})
-		if strings.Contains(out, "HighRiskAction is configured") {
-			t.Errorf("expected no HighRiskAction warning with no HIGH_RISK_ACTION/AXONFLOW_ENFORCE set, got: %s", out)
-		}
-	})
+	// Nothing set: nothing reported.
+	clearModeEnvVars()
+	buf.Reset()
+	log.SetOutput(&buf)
+	none := ReportIgnoredPostureEnv("agent")
+	log.SetOutput(old)
+	if len(none) != 0 || strings.Contains(buf.String(), "detection posture env var ignored") {
+		t.Errorf("with no removed variable set, reported %v and logged %q", none, buf.String())
+	}
+}
 
-	t.Run("warns when HIGH_RISK_ACTION is explicitly set", func(t *testing.T) {
-		t.Setenv(EnvHighRiskAction, "block")
-		out := captureLog(func() {
-			_ = DetectionConfigFromEnv()
-		})
-		if !strings.Contains(out, "HighRiskAction is configured") {
-			t.Errorf("expected a HighRiskAction warning with HIGH_RISK_ACTION set, got: %s", out)
+// TestRemovedPostureEnvVarsNameEveryLever holds the census list to the names
+// the #3961 ruling removes. A name dropped from the list would stop being
+// reported while still being ignored, so a deployment setting it would learn
+// nothing at boot.
+func TestRemovedPostureEnvVarsNameEveryLever(t *testing.T) {
+	want := []string{
+		"PII_ACTION", "SQLI_ACTION", "DANGEROUS_COMMAND_ACTION", "SENSITIVE_DATA_ACTION",
+		"MCP_PII_ACTION", "MCP_SQLI_ACTION", "MCP_DANGEROUS_QUERY_ACTION", "MCP_DANGEROUS_COMMAND_ACTION",
+		"GATEWAY_PII_ACTION", "GATEWAY_SQLI_ACTION", "GATEWAY_DANGEROUS_QUERY_ACTION", "GATEWAY_DANGEROUS_COMMAND_ACTION",
+		"SQLI_BLOCK_MODE", "PII_BLOCK_CRITICAL", "DANGEROUS_QUERY_ACTION", "HIGH_RISK_ACTION",
+		"AXONFLOW_PROFILE", "AXONFLOW_ENFORCE",
+	}
+	have := map[string]bool{}
+	for _, n := range RemovedPostureEnvVars {
+		if have[n] {
+			t.Errorf("%s is listed twice", n)
 		}
-	})
-
-	t.Run("warns when AXONFLOW_ENFORCE includes high_risk", func(t *testing.T) {
-		t.Setenv(EnvEnforce, "high_risk")
-		out := captureLog(func() {
-			_ = DetectionConfigFromEnv()
-		})
-		if !strings.Contains(out, "HighRiskAction is configured") {
-			t.Errorf("expected a HighRiskAction warning with AXONFLOW_ENFORCE=high_risk, got: %s", out)
+		have[n] = true
+	}
+	for _, n := range want {
+		if !have[n] {
+			t.Errorf("RemovedPostureEnvVars does not name %s", n)
 		}
-	})
-
-	t.Run("no warning for an unrelated AXONFLOW_ENFORCE category", func(t *testing.T) {
-		t.Setenv(EnvEnforce, "pii")
-		out := captureLog(func() {
-			_ = DetectionConfigFromEnv()
-		})
-		if strings.Contains(out, "HighRiskAction is configured") {
-			t.Errorf("expected no HighRiskAction warning for AXONFLOW_ENFORCE=pii, got: %s", out)
-		}
-	})
+	}
+	if len(have) != len(want) {
+		t.Errorf("RemovedPostureEnvVars names %d variables, want %d", len(have), len(want))
+	}
 }

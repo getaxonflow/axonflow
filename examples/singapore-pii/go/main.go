@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates Singapore PII detection with AxonFlow.
 //
 // This example tests detection and redaction of Singapore-specific PII:

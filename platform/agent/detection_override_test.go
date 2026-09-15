@@ -53,6 +53,44 @@ func installTestOverrideCache(t *testing.T, reader detectionOverrideReader, ttl 
 	return c
 }
 
+// pinGatewayOverride writes set's changes into the cached GATEWAY mode config
+// for the test's lifetime. The action fields of that config are exactly the slot
+// applyOrgDetectionOverrides fills from an organization's recorded override, so
+// this is how a test whose request resolves NO organization (a community-mode
+// pre-check, an AuthZEN envelope) puts the handler under an override. A test
+// whose request carries an org should install an override cache for that org
+// instead (installTestOverrideCache), which exercises the resolution itself.
+func pinGatewayOverride(t *testing.T, set func(*ModeDetectionConfig)) {
+	t.Helper()
+	cfg := GatewayDetectionConfigFromEnv()
+	set(&cfg)
+	detectionConfigMu.Lock()
+	orig := cachedGatewayConfig
+	cachedGatewayConfig = &cfg
+	detectionConfigMu.Unlock()
+	t.Cleanup(func() {
+		detectionConfigMu.Lock()
+		cachedGatewayConfig = orig
+		detectionConfigMu.Unlock()
+	})
+}
+
+// pinMCPOverride is pinGatewayOverride for the cached MCP mode config.
+func pinMCPOverride(t *testing.T, set func(*ModeDetectionConfig)) {
+	t.Helper()
+	cfg := MCPDetectionConfigFromEnv()
+	set(&cfg)
+	detectionConfigMu.Lock()
+	orig := cachedMCPConfig
+	cachedMCPConfig = &cfg
+	detectionConfigMu.Unlock()
+	t.Cleanup(func() {
+		detectionConfigMu.Lock()
+		cachedMCPConfig = orig
+		detectionConfigMu.Unlock()
+	})
+}
+
 // sameActions reports whether two configs carry identical detection actions
 // (ModeDetectionConfig has slice fields, so it isn't directly comparable).
 func sameActions(a, b ModeDetectionConfig) bool {
@@ -63,18 +101,16 @@ func sameActions(a, b ModeDetectionConfig) bool {
 		a.DangerousCommandAction == b.DangerousCommandAction
 }
 
-func blockBase() ModeDetectionConfig {
-	return ModeDetectionConfig{
-		Enabled:                true,
-		PIIAction:              DetectionActionBlock,
-		SQLIAction:             DetectionActionBlock,
-		DangerousQueryAction:   DetectionActionBlock,
-		DangerousCommandAction: DetectionActionBlock,
-	}
+// noOverrideBase is the process mode config as v11 builds it: enabled, and with
+// no action in any field, because only an organization's recorded override
+// writes one (#3961).
+func noOverrideBase() ModeDetectionConfig {
+	return ModeDetectionConfig{Enabled: true}
 }
 
 // An org with a per-category override gets that action; categories without an
-// override keep the deployment-global value. This is the core #2581 contract.
+// override stay empty, so their stored policy action decides. This is the core
+// #2581 contract.
 func TestApplyOrgDetectionOverrides_OverrideWinsPerCategory(t *testing.T) {
 	installTestOverrideCache(t, &fakeOverrideReader{
 		data: map[string]map[string]DetectionAction{
@@ -82,68 +118,76 @@ func TestApplyOrgDetectionOverrides_OverrideWinsPerCategory(t *testing.T) {
 		},
 	}, time.Minute)
 
-	got := applyOrgDetectionOverrides(context.Background(), "org-a", blockBase())
+	got := applyOrgDetectionOverrides(context.Background(), "org-a", noOverrideBase())
 	if got.PIIAction != DetectionActionRedact {
 		t.Errorf("PIIAction = %q, want redact (per-org override)", got.PIIAction)
 	}
 	if got.SQLIAction != DetectionActionWarn {
 		t.Errorf("SQLIAction = %q, want warn (per-org override)", got.SQLIAction)
 	}
-	// No override for these → keep the global (block).
-	if got.DangerousQueryAction != DetectionActionBlock || got.DangerousCommandAction != DetectionActionBlock {
-		t.Errorf("un-overridden categories must keep global block; got dq=%q dc=%q", got.DangerousQueryAction, got.DangerousCommandAction)
+	// No override for these → no action, the stored policy action decides.
+	if got.DangerousQueryAction != "" || got.DangerousCommandAction != "" {
+		t.Errorf("un-overridden categories must carry no action; got dq=%q dc=%q", got.DangerousQueryAction, got.DangerousCommandAction)
+	}
+	if overrides := got.BuildActionOverrides(); overrides[sharedpolicy.CategorySecurityDangerous] != "" {
+		t.Errorf("an un-overridden category reached ActionOverrides: %v", overrides)
 	}
 }
 
-// An org with NO override row resolves to the deployment-global config unchanged.
-func TestApplyOrgDetectionOverrides_NoOverrideUsesGlobal(t *testing.T) {
+// An org with NO override row resolves to the mode config unchanged.
+func TestApplyOrgDetectionOverrides_NoOverrideLeavesConfigUnchanged(t *testing.T) {
 	installTestOverrideCache(t, &fakeOverrideReader{
 		data: map[string]map[string]DetectionAction{"org-a": {DetectionCategoryPII: DetectionActionRedact}},
 	}, time.Minute)
 
-	got := applyOrgDetectionOverrides(context.Background(), "org-other", blockBase())
-	if !sameActions(got, blockBase()) {
-		t.Errorf("org with no override must equal global config; got %+v", got)
+	got := applyOrgDetectionOverrides(context.Background(), "org-other", noOverrideBase())
+	if !sameActions(got, noOverrideBase()) {
+		t.Errorf("org with no override must equal the mode config; got %+v", got)
+	}
+	// Control: the org that HAS an override resolves one through the same cache,
+	// so the equality above is not the cache being unreachable.
+	if a := applyOrgDetectionOverrides(context.Background(), "org-a", noOverrideBase()).PIIAction; a != DetectionActionRedact {
+		t.Fatalf("control: org-a PIIAction = %q, want redact", a)
 	}
 }
 
 // Empty orgID (unauthenticated / community / internal-service-with-no-org) must
-// NOT touch the cache and must return the global config — fail-safe + cheap.
-func TestApplyOrgDetectionOverrides_EmptyOrgUsesGlobalNoLookup(t *testing.T) {
+// NOT touch the cache and must return the mode config — fail-safe + cheap.
+func TestApplyOrgDetectionOverrides_EmptyOrgNoLookup(t *testing.T) {
 	r := &fakeOverrideReader{data: map[string]map[string]DetectionAction{"org-a": {DetectionCategoryPII: DetectionActionRedact}}}
 	installTestOverrideCache(t, r, time.Minute)
 
-	got := applyOrgDetectionOverrides(context.Background(), "", blockBase())
-	if !sameActions(got, blockBase()) {
-		t.Errorf("empty orgID must return global config; got %+v", got)
+	got := applyOrgDetectionOverrides(context.Background(), "", noOverrideBase())
+	if !sameActions(got, noOverrideBase()) {
+		t.Errorf("empty orgID must return the mode config; got %+v", got)
 	}
 	if r.callCount() != 0 {
 		t.Errorf("empty orgID must not hit the reader; calls=%d", r.callCount())
 	}
 }
 
-// With no cache wired (no-DB mode / community), resolution returns the global
-// config — byte-identical to the pre-#2581 behavior.
-func TestApplyOrgDetectionOverrides_NilCacheUsesGlobal(t *testing.T) {
+// With no cache wired (no-DB mode / community), resolution returns the mode
+// config: no override, stored actions decide.
+func TestApplyOrgDetectionOverrides_NilCacheNoOverride(t *testing.T) {
 	ResetDetectionOverrideCacheForTest()
-	got := applyOrgDetectionOverrides(context.Background(), "org-a", blockBase())
-	if !sameActions(got, blockBase()) {
-		t.Errorf("nil cache must return global config; got %+v", got)
+	got := applyOrgDetectionOverrides(context.Background(), "org-a", noOverrideBase())
+	if !sameActions(got, noOverrideBase()) {
+		t.Errorf("nil cache must return the mode config; got %+v", got)
 	}
 }
 
-// A lookup error falls back to the global config (NEVER fail-open to "no
+// A lookup error resolves no override (the stored actions decide - NEVER "no
 // governance") and is cached briefly so a failing DB is not re-hit per request.
-func TestDetectionOverrideCache_LookupErrorFailsSafeToGlobal(t *testing.T) {
+func TestDetectionOverrideCache_LookupErrorFailsSafeToStoredActions(t *testing.T) {
 	r := &fakeOverrideReader{err: errors.New("db down")}
 	installTestOverrideCache(t, r, time.Minute)
 
-	got := applyOrgDetectionOverrides(context.Background(), "org-a", blockBase())
-	if !sameActions(got, blockBase()) {
-		t.Errorf("lookup error must fall back to global config; got %+v", got)
+	got := applyOrgDetectionOverrides(context.Background(), "org-a", noOverrideBase())
+	if !sameActions(got, noOverrideBase()) {
+		t.Errorf("lookup error must resolve no override; got %+v", got)
 	}
 	// Second resolution within the error window must not re-hit the failing DB.
-	_ = applyOrgDetectionOverrides(context.Background(), "org-a", blockBase())
+	_ = applyOrgDetectionOverrides(context.Background(), "org-a", noOverrideBase())
 	if r.callCount() != 1 {
 		t.Errorf("error result must be cached (no hot-path hammering); calls=%d, want 1", r.callCount())
 	}
@@ -194,10 +238,11 @@ func TestDetectionOverrideCache_InvalidateForcesReread(t *testing.T) {
 	}
 }
 
-// ResolveMCPDetectionConfig / ResolveGatewayDetectionConfig layer the override on
-// top of the cached deployment-global config end to end.
-func TestResolveDetectionConfig_LayersOnGlobalEnv(t *testing.T) {
-	t.Setenv("PII_ACTION", "block")
+// ResolveMCPDetectionConfig / ResolveGatewayDetectionConfig carry the org's
+// recorded override end to end, and NOTHING else sets an action: PII_ACTION is
+// set here and an org with no override still resolves no action (#3961).
+func TestResolveDetectionConfig_OnlyTheRecordedOverrideSetsAnAction(t *testing.T) {
+	t.Setenv("PII_ACTION", "block") // removed variable: must set nothing
 	ResetDetectionConfigCache()
 	InitDetectionConfigs()
 	t.Cleanup(ResetDetectionConfigCache)
@@ -210,56 +255,58 @@ func TestResolveDetectionConfig_LayersOnGlobalEnv(t *testing.T) {
 	if got := ResolveMCPDetectionConfig(ctx, "org-redact").PIIAction; got != DetectionActionRedact {
 		t.Errorf("MCP org-redact PIIAction = %q, want redact", got)
 	}
-	if got := ResolveMCPDetectionConfig(ctx, "org-default").PIIAction; got != DetectionActionBlock {
-		t.Errorf("MCP org-default PIIAction = %q, want block (global)", got)
+	if got := ResolveMCPDetectionConfig(ctx, "org-default").PIIAction; got != "" {
+		t.Errorf("MCP org-default PIIAction = %q, want none: PII_ACTION=block must not set an action", got)
 	}
 	if got := ResolveGatewayDetectionConfig(ctx, "org-redact").PIIAction; got != DetectionActionRedact {
 		t.Errorf("Gateway org-redact PIIAction = %q, want redact", got)
 	}
-	if got := ResolveGatewayDetectionConfig(ctx, "org-default").PIIAction; got != DetectionActionBlock {
-		t.Errorf("Gateway org-default PIIAction = %q, want block (global)", got)
+	if got := ResolveGatewayDetectionConfig(ctx, "org-default").PIIAction; got != "" {
+		t.Errorf("Gateway org-default PIIAction = %q, want none: PII_ACTION=block must not set an action", got)
 	}
 }
 
-// WIRING + red-on-revert: the same agent process, with one global posture
-// (PII_ACTION=block), must produce DIFFERENT outcomes for two orgs based on the
-// org carried in the request context. This drives the real evaluateOutputPolicies
-// check path (which resolves the org from ctx), so reverting the call-site change
-// from ResolveMCPDetectionConfig(ctx, …) back to GetMCPDetectionConfig() turns it
-// red. Uses the built-in Indonesia NIK detector (no DB / no engine needed).
+// WIRING + red-on-revert: the same agent process must produce DIFFERENT
+// outcomes for orgs based on their recorded override. This drives the real
+// evaluateOutputPolicies check path, so reverting the call-site change from
+// ResolveMCPDetectionConfig(ctx, orgID) back to GetMCPDetectionConfig() turns it
+// red. Uses the built-in Indonesia NIK detector (no DB / no engine needed),
+// which blocks only under a pii=block override and masks only under redact.
+// (Test name predates v11, when the "posture" was a deployment-wide variable.)
 func TestEvaluateOutputPolicies_PerOrgPosture_SameProcess(t *testing.T) {
-	// Pin the deployment-global posture to block and nil the static engine so
-	// only the (DB-free) Indonesia response step runs — deterministic.
+	// The mode config carries no action (v11), so each organization's recorded
+	// override is the only action the Indonesia response step can take; the
+	// migrated database's shipped rows match nothing this message carries.
 	detectionConfigMu.Lock()
 	origCfg := cachedMCPConfig
-	cachedMCPConfig = &ModeDetectionConfig{Enabled: true, PIIAction: DetectionActionBlock}
+	cachedMCPConfig = &ModeDetectionConfig{Enabled: true}
 	detectionConfigMu.Unlock()
-	origEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
 	t.Cleanup(func() {
 		detectionConfigMu.Lock()
 		cachedMCPConfig = origCfg
 		detectionConfigMu.Unlock()
-		sharedpolicy.SetGlobalEngine(origEngine)
 	})
 
-	// org-redact overrides PII to redact; org-default has no override.
+	// org-block and org-redact carry pii overrides; org-default has none.
 	installTestOverrideCache(t, &fakeOverrideReader{
-		data: map[string]map[string]DetectionAction{"org-redact": {DetectionCategoryPII: DetectionActionRedact}},
+		data: map[string]map[string]DetectionAction{
+			"org-block":  {DetectionCategoryPII: DetectionActionBlock},
+			"org-redact": {DetectionCategoryPII: DetectionActionRedact},
+		},
 	}, time.Minute)
 
 	const nikMsg = "Pelanggan NIK 3174042506780001 terdaftar" // checksum-valid NIK
-
-	// org-default → deployment-global block → the NIK is BLOCKED on output.
-	ctxDefault := context.WithValue(context.Background(), ContextKeyOrgID, "org-default")
-	outDefault := evaluateOutputPolicies(ctxDefault, "t1", "org-default", "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */, nil)
-	if outDefault.StaticResult == nil || !outDefault.StaticResult.Blocked {
-		t.Fatalf("org-default must BLOCK the NIK under global block; got %+v", outDefault.StaticResult)
+	eval := func(orgID string) OutputPolicyOutcome {
+		return evaluateOutputPolicies(responseRouteContext(orgID), "t1", orgID, "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */)
 	}
 
-	// org-redact → per-org redact → the NIK is MASKED, not blocked.
-	ctxRedact := context.WithValue(context.Background(), ContextKeyOrgID, "org-redact")
-	outRedact := evaluateOutputPolicies(ctxRedact, "t1", "org-redact", "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true /* isGateway */, nil)
+	// org-block → pii=block override → the NIK is BLOCKED on output.
+	if out := eval("org-block"); out.StaticResult == nil || !out.StaticResult.Blocked {
+		t.Fatalf("org-block must BLOCK the NIK under its pii=block override; got %+v", out.StaticResult)
+	}
+
+	// org-redact → pii=redact override → the NIK is MASKED, not blocked.
+	outRedact := eval("org-redact")
 	if outRedact.StaticResult != nil && outRedact.StaticResult.Blocked {
 		t.Fatalf("org-redact must NOT block (override=redact); got blocked")
 	}
@@ -267,10 +314,14 @@ func TestEvaluateOutputPolicies_PerOrgPosture_SameProcess(t *testing.T) {
 		t.Fatalf("org-redact must MASK the NIK; got RedactedMessage=%q", outRedact.RedactedMessage)
 	}
 
-	// Empty org (no stamp) → deployment-global block (fail-safe).
-	outNoOrg := evaluateOutputPolicies(context.Background(), "t1", "" /* no org stamped */, "u1", "gw.test", "gw.test", nil, nikMsg, nil, 0, false, true, nil)
-	if outNoOrg.StaticResult == nil || !outNoOrg.StaticResult.Blocked {
-		t.Fatalf("no-org request must fall back to global block; got %+v", outNoOrg.StaticResult)
+	// org-default records no override, so it resolves no action: the code-backed
+	// detector detects and neither blocks nor masks.
+	out := eval("org-default")
+	if out.StaticResult != nil && out.StaticResult.Blocked {
+		t.Errorf("org-default: no override must not block; got %+v", out.StaticResult)
+	}
+	if out.RedactedMessage != "" || out.WasRedacted() {
+		t.Errorf("org-default: no override must not mask; got RedactedMessage=%q", out.RedactedMessage)
 	}
 }
 

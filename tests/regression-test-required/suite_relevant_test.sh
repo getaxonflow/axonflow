@@ -20,6 +20,22 @@
 #      way in the queue and another way overnight - the duplication class this
 #      repository keeps finding.
 set -euo pipefail
+# A required guard must not read bytecode compiled from source no longer on
+# disk. This suite loads a repo-resident script via importlib
+# (spec_from_file_location + exec_module), which caches a .pyc exactly as an
+# ordinary import does, and the cache is invalidated on (mtime, SIZE) - a pair
+# that misses a SAME-LENGTH edit written and reverted inside one second. That
+# is the cadence of a positive-control probe loop. See #3919.
+export PYTHONDONTWRITEBYTECODE=1
+# ...and that closes only the WRITE half. CPython still EXECUTES an existing
+# .pyc whose (mtime, size) header matches the source, so the sentence above -
+# "must not READ bytecode compiled from source no longer on disk" - is not
+# delivered by the line above on its own. Proved against this branch: a cache
+# poisoned by anything that ran without the variable, with the source left
+# pristine, was executed by this guard and it asserted on code that was not
+# there. Relocating the cache moves the READ off the in-tree directory as well,
+# which is what makes the claim true. See #3919.
+export PYTHONPYCACHEPREFIX="$(mktemp -d)"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REL="$PWD/.github/scripts/suite-relevant.py"
 DISP="$PWD/.github/scripts/nightly-e2e-dispatch.py"

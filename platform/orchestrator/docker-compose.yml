@@ -26,22 +26,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis for distributed rate limiting and budget tracking
-  redis:
-    image: redis:7-alpine
-    container_name: axonflow-orchestrator-redis
-    restart: unless-stopped
-    ports:
-      # #3097: loopback-bound. Reached as `redis:6379` over the compose network
-      # (REDIS_URL below); no consumer of THIS stack dials 6380 on a host
-      # interface, and nothing in the repo references that port outside this file.
-      - "127.0.0.1:6380:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   # AxonFlow Orchestrator
   axonflow-orchestrator:
     build:
@@ -73,18 +57,14 @@ services:
       # Audit Configuration
       - AUDIT_RETENTION_DAYS=90
       - AUDIT_BATCH_SIZE=100
-      # Redis for distributed rate limiting and budget tracking
-      - REDIS_URL=redis://redis:6379
     ports:
       # #3097 (deferred from #3068/#3073): loopback-bound. The orchestrator is
-      # an INTERNAL service (ADR-026) and this is a developer stack; a developer
+      # an INTERNAL service (ADR-024) and this is a developer stack; a developer
       # reaching it does so from the same host. The container healthcheck below
       # runs on the container's own loopback and is unaffected.
       - "127.0.0.1:8081:8081"
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]

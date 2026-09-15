@@ -1,6 +1,6 @@
 {
   "schema": "1.0",
-  "platform_version": "10.4.0",
+  "platform_version": "11.0.0",
   "generated": "2026-09-03",
   "scan_roots": [
     "platform/agent",
@@ -509,9 +509,6 @@
       "planes": [
         "agent"
       ],
-      "license_gate": [
-        "CustomPolicyConnectors"
-      ],
       "matrix": [
         "MCP Connectors (v1.0)",
         "MCP Policy Enforcement (v3.2.0)"
@@ -519,11 +516,11 @@
       "health_absent_reason": "Advertised as mcp_check_endpoints for the policy legs; the connector legs are discovered by listing connectors.",
       "score": {
         "basis": "MEASURED",
-        "community": "limited",
-        "evaluation": "limited",
+        "community": "full",
+        "evaluation": "full",
         "enterprise": "full"
       },
-      "notes": "All connectors register in every edition; only the number carrying CUSTOM policies is capped (2 / 5 / unlimited)."
+      "notes": "Every edition serves every connector it registers. v11 retired the custom-policy connector ceiling (2 / 5 / unlimited) with the MCP dynamic-policy plane (PRD v11 section 1.2)."
     },
     {
       "id": "connector.refresh",
@@ -574,9 +571,6 @@
         "agent",
         "orchestrator"
       ],
-      "license_gate": [
-        "CustomPolicyConnectors"
-      ],
       "migrations": [
         "core"
       ],
@@ -591,7 +585,8 @@
         "evaluation": "limited",
         "enterprise": "full",
         "reason": "Nine connectors are Community and seven are Enterprise-only by the matrix; the registry itself is open to every edition."
-      }
+      },
+      "notes": "The cap is which connectors an edition may run: the seven Enterprise-only connectors are absent below Enterprise."
     },
     {
       "id": "cost.budgets",
@@ -744,7 +739,7 @@
         "platform/decision"
       ],
       "owner": "platform/decision/registry/conformance_registry_test.go",
-      "portal": "Policies page, typed authoring section (ee/platform/customer-portal-ui/components/policies/TypedAuthoringSection.tsx), behind identity_org_settings.typed_authoring_enabled",
+      "portal": "Policies page, typed authoring section (ee/platform/customer-portal-ui/components/policies/TypedAuthoringSection.tsx), on for every organization (PRD §1.5; enterprise migration 157 retired the per-organization flag)",
       "health_absent_reason": "An internal engine reached only through the routes already advertised (decide, the MCP checks, AuthZEN).",
       "score": {
         "basis": "MEASURED",
@@ -829,28 +824,41 @@
       }
     },
     {
-      "id": "decision.shadow",
-      "title": "Per-organization decision shadow",
+      "id": "decision.typed_authoring",
+      "title": "Typed policy authoring",
       "family": "decision",
-      "summary": "The shadow-diff observer that runs the ADR-065 evaluator beside the legacy one and records disagreement, narrowed per organization and per plane.",
+      "summary": "The ADR-065 typed policy authoring control plane and its two transports: the orchestrator's /api/v1/typed-policies route, which every edition serves, and the Enterprise customer portal's editor over the same library.",
       "minimum_edition": "community",
       "source_classification": "community_core",
       "build_tag": "none",
       "sync": "mirrored",
       "implementation": [
-        "platform/shared/planeshadow",
-        "platform/agent/decision_shadow.go"
+        "platform/decision/authoring",
+        "platform/decision/authoringcatalog",
+        "platform/orchestrator/typed_authoring_route.go"
       ],
-      "owner": "platform/shared/planeshadow/observer_test.go",
-      "health_absent_reason": "#3618 names per-plane decision shadow as a candidate. It registers no route and adds no response field: it emits Prometheus series and audit rows. Under the served list's own rule an exported metric series does NOT get an entry, and a client cannot act on it. Recorded as a decision, per #3618 item 2.",
+      "owner": "platform/orchestrator/typed_authoring_route_test.go",
+      "routes": [
+        "/api/v1/typed-policies"
+      ],
+      "planes": [
+        "orchestrator"
+      ],
+      "license_gate": [
+        "OrgPolicies"
+      ],
+      "matrix": [
+        "Policy & Compliance"
+      ],
+      "portal": "Policies page, typed authoring section (ee/platform/customer-portal-ui/components/policies/TypedAuthoringSection.tsx), on for every organization (PRD §1.5; enterprise migration 157 retired the per-organization flag). The portal is a SECOND client of the library, not the only one, since #3907.",
+      "health_absent_reason": "The surface answers its own availability on GET /api/v1/typed-policies/edition, which reports the deployment's construct boundary and document ceiling as well - strictly more than a name on the edition-blind health list, and the thing a caller with no console actually needs.",
       "score": {
         "basis": "MEASURED",
-        "community": "full",
-        "evaluation": "full",
+        "community": "limited",
+        "evaluation": "limited",
         "enterprise": "full"
       },
-      "matrix_disagreement": "adr_target_differs_from_tree",
-      "notes": "This row and ADR-066's table disagree; the class is on matrix_disagreement and the narrative is in technical-docs/capability-census-disagreements.tsv, which the community sync excludes. The structural facts are the row itself: no build constraint, sync mirrored, minimum_edition community."
+      "notes": "Scored LIMITED rather than NONE on Community and Evaluation from #3906/#3907: the ladder gives them 20 and 50 customer-authored documents and the route is served on every edition, bounded by CONSTRUCTS rather than by the signing root. authoring.Profile carries that boundary, citing a PRD row per dimension - group scope and separation of duties are Enterprise (PRD 5.2, 5.3), route-restriction obligations are Evaluation and above (5.1), and the request-context namespaces widen across the three editions (5.1). Limited rather than full on Enterprise for a second reason too: the orchestrator route names no approver, so on an edition carrying separation of duties it refuses and the portal is the surface that publishes."
     },
     {
       "id": "execution.replay",
@@ -1171,7 +1179,7 @@
       "id": "governance.mcp_check",
       "title": "Standalone MCP policy check endpoints",
       "family": "governance",
-      "summary": "POST /api/v1/mcp/check-input, /check-output and /evaluate-policies are the MCP-shaped decision seam.",
+      "summary": "POST /api/v1/mcp/check-input and /check-output are the MCP-shaped decision seam.",
       "minimum_edition": "community",
       "source_classification": "community_core",
       "build_tag": "none",
@@ -1182,8 +1190,7 @@
       "owner": "platform/agent/mcp_handler_test.go",
       "routes": [
         "/api/v1/mcp/check-input",
-        "/api/v1/mcp/check-output",
-        "/api/v1/mcp/evaluate-policies"
+        "/api/v1/mcp/check-output"
       ],
       "planes": [
         "agent",
@@ -1300,7 +1307,7 @@
         "platform/agent/pep_handshake_precheck.go",
         "platform/agent/pep_handshake_precheck_enforce_community.go",
         "platform/agent/pep_handshake_precheck_enforce_enterprise.go",
-        "platform/shared/requirements/obligation/capability.go"
+        "platform/decision/contract/handshake.go"
       ],
       "owner": "platform/agent/pep_handshake_test.go",
       "planes": [
@@ -1623,34 +1630,6 @@
         "enterprise": "full"
       },
       "health_gap": true
-    },
-    {
-      "id": "identity.enforce_precondition",
-      "title": "Identity enforcement precondition",
-      "family": "identity",
-      "summary": "GET /api/v1/identity/internal/enforce-precondition reports whether the deployment is ready to move the identity compat mode to enforce.",
-      "minimum_edition": "enterprise",
-      "source_classification": "enterprise_implementation",
-      "build_tag": "split",
-      "sync": "stub",
-      "implementation": [
-        "platform/agent/identity_enforce_precondition.go",
-        "platform/agent/identity_enforce_precondition_community.go"
-      ],
-      "owner": "platform/agent/identity_enforce_precondition_test.go",
-      "routes": [
-        "/api/v1/identity/internal"
-      ],
-      "planes": [
-        "agent"
-      ],
-      "health_absent_reason": "An internal operator control, named `internal` in its own path. Advertising it would invite a client to depend on a route the rollout removes.",
-      "score": {
-        "basis": "MEASURED",
-        "community": "none",
-        "evaluation": "none",
-        "enterprise": "full"
-      }
     },
     {
       "id": "identity.realms",
@@ -2316,7 +2295,7 @@
       "id": "policy.overrides",
       "title": "Policy overrides",
       "family": "policy",
-      "summary": "Per-request and per-session policy overrides: /api/v1/overrides and the /api/v1/policy-overrides alias.",
+      "summary": "Per-request and per-session policy overrides: the /api/v1/overrides and /api/v1/policy-overrides routes, whose writes answer 409 LEGACY_POLICY_WRITE_FROZEN from v11.0.0 (#4252) while the reads are unchanged.",
       "minimum_edition": "community",
       "source_classification": "community_core",
       "build_tag": "none",
@@ -2496,7 +2475,8 @@
       ],
       "docs": "docs/api/policy-api.yaml",
       "matrix": [
-        "Three-Tier Licensing Model"
+        "Three-Tier Licensing Model",
+        "Scale boundaries"
       ],
       "health": {
         "name": "dynamic_policies",
@@ -2999,35 +2979,35 @@
   ],
   "route_exemptions": [
     {
-      "pattern": "platform/agent/static_policy_api_handlers.go:166 HandleFunc(<subrouter with an unresolved prefix>rt.suffix)",
+      "pattern": "platform/agent/static_policy_api_handlers.go:160 HandleFunc(<subrouter with an unresolved prefix>rt.suffix)",
       "reason": "Two unknowns in one call, and round 8 made the second one visible. The suffixes live in a struct slice, so the argument is a field read the scanner does not follow; and the receiver is the RANGE VARIABLE of `for _, sub := range []*mux.Router{legacy, successor}`, which is not a proven shape either, so the prefix is reported rather than guessed. Both subrouters it ranges over ARE priced where they are declared (/api/v1/system-policies and its /api/v1/static-policies legacy alias) and policy.system claims both, so the URL space is covered even though this one call site is not."
     },
     {
-      "pattern": "platform/agent/run.go:757 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
+      "pattern": "platform/agent/run.go:759 HandleFunc(<subrouter with an unresolved prefix>\"/health\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /health, the readiness-aware handler registered before initialisation finishes so ECS health checks pass during boot, and platform.health claims exactly that route — the URL space is covered by that entry."
     },
     {
-      "pattern": "platform/agent/run.go:1530 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
+      "pattern": "platform/agent/run.go:1548 HandleFunc(<subrouter with an unresolved prefix>\"/metrics\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /metrics, the JSON performance endpoint; platform.metrics claims it alongside /prometheus and /api/v1/metrics, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1533 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
+      "pattern": "platform/agent/run.go:1551 Handle(<subrouter with an unresolved prefix>\"/prometheus\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /prometheus, the Prometheus exposition endpoint, which platform.metrics claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1536 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
+      "pattern": "platform/agent/run.go:1554 HandleFunc(<subrouter with an unresolved prefix>\"/api/request\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/request, which every governed client call flows through; governance.proxy_request claims it, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1539 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:1557 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on GET, the client listing, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1540 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
+      "pattern": "platform/agent/run.go:1558 Handle(<subrouter with an unresolved prefix>\"/api/clients\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/clients on POST, client creation on the same path, which governance.proxy_request claims, so the URL space is covered."
     },
     {
-      "pattern": "platform/agent/run.go:1543 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
+      "pattern": "platform/agent/run.go:1561 Handle(<subrouter with an unresolved prefix>\"/api/policies/test\")",
       "reason": "`globalRouter` is a package-level `var globalRouter *mux.Router` with no value, assigned `mux.NewRouter()` inside `initServerImmediately`. Round 8 prices a receiver only from a proven shape and an assigned-in-body name is not one, so the PREFIX is reported; the argument is a plain string literal, so the path itself is not in doubt. The path is /api/policies/test, the policy dry-run endpoint, one of the four routes policy.system claims, so the URL space is covered."
     }
   ]

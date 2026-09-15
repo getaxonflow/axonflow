@@ -2,14 +2,6 @@
 
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package rbi
 
@@ -484,9 +476,9 @@ func TestEmailFiltering(t *testing.T) {
 	config := DefaultIndiaPIIDetectorConfig()
 	detector := NewIndiaPIIDetector(config)
 
-	// Note: The UPI regex matches partial email addresses like "john@gmail" from "john@gmail.com"
-	// because the handle part [a-zA-Z0-9]{2,49} doesn't include dots.
-	// The email filter checks for known email provider names (gmail, yahoo, etc.)
+	// The UPI pattern carries the whole domain after the @ (#4225), so an email
+	// arrives with its dots and isLikelyEmail refuses it; a provider name
+	// written without its TLD is refused by name.
 	tests := []struct {
 		name        string
 		input       string

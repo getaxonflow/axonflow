@@ -98,8 +98,8 @@ in #3570: every case names a test that must exist, every test marks its case and
 coverage cells are compared against the computed corpus.
 
 `TestSourceMutationsAreKilled` compiles a mutated copy of this package through
-`go test -overlay` for each of eighteen guards and requires the named test to go
-red. The tree is never edited in place. `TestTheMutationGateCanReportASurvivor`
+`go test -overlay` for each guard in `sourceMutations` and requires the named test
+to go red. The tree is never edited in place. `TestTheMutationGateCanReportASurvivor`
 is the other half: an inert mutation must leave the test passing, or a runner
 that always reported failure would produce the same green result.
 
@@ -135,3 +135,28 @@ The plane vocabulary belongs to the shadow-diff harness
 `legacy_plane_census_test.go` holds this table to a reviewed literal list
 unconditionally, and compares it against that package's own plane constants as
 soon as they are in the tree.
+
+## The supersession ledger
+
+`detectors_census_superseded.tsv` names the twelve pre-canonical shipped rows
+and records what the platform decided to do with each (#3323):
+`keep_first_class`, `keep_both` or `drop_superseded`. It is embedded and parsed
+by `ParseSupersessionLedger`, the one parser of that file; the policy importer
+reads it through the same function.
+
+A decision is a claim with a precondition, and nothing may carry one whose
+precondition is false. The file-local half is checked at parse time (a
+first-class row names no superseder; a pair decision names one).
+`CheckSupersessionLedgerAgainstCensus` holds the ledger to the census: every
+row seeded before the canonical pass - the earliest migration that seeds a
+system-tier row - carries a decision, and every kept generation is enabled.
+The strength half needs a ranking of legacy actions, which this package does
+not have, so `legacycompile.CheckSupersessionDecisions` checks it: `keep_both`
+requires the row to enforce more than at least one of its superseders, and
+`drop_superseded` forbids that. The `drop_superseded` precondition is necessary
+and not sufficient: it rules out lowering an action, and says nothing about
+inputs only the pre-canonical pattern matches, which no check can derive.
+
+All of it runs without a database, which is the point: the only other check of
+the five stronger pairs runs against a migrated database, on a lane that does
+not fire on a pull request.

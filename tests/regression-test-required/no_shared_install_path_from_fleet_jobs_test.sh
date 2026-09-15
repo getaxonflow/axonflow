@@ -46,6 +46,23 @@
 # if the matcher stops seeing THEM the guard fails here rather than reporting
 # a confident zero over a tree it can no longer read.
 set -uo pipefail
+# A required guard must not read bytecode compiled from source no longer on
+# disk. This suite reaches a repo Python module - directly, or TRANSITIVELY via
+# a helper it runs as __main__, which caches everything IT imports - and the
+# .pyc is invalidated on (mtime, SIZE), a pair that misses a SAME-LENGTH edit
+# written and reverted inside one second. That is the cadence of a
+# positive-control probe loop. Found by running every suite and detecting the
+# cache BY OUTCOME, after an idiom-based census missed this file. See #3919.
+export PYTHONDONTWRITEBYTECODE=1
+# ...and that closes only the WRITE half. CPython still EXECUTES an existing
+# .pyc whose (mtime, size) header matches the source, so the sentence above -
+# "must not READ bytecode compiled from source no longer on disk" - is not
+# delivered by the line above on its own. Proved against this branch: a cache
+# poisoned by anything that ran without the variable, with the source left
+# pristine, was executed by this guard and it asserted on code that was not
+# there. Relocating the cache moves the READ off the in-tree directory as well,
+# which is what makes the claim true. See #3919.
+export PYTHONPYCACHEPREFIX="$(mktemp -d)"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 CENSUS=tests/regression-test-required/lib/fleet_shared_install_census.py
@@ -188,7 +205,7 @@ if [ -n "$offenders" ]; then
   echo "    echo \"\$RUNNER_TEMP/bin\" >> \"\$GITHUB_PATH\""
   echo ""
   echo "For npm use --prefix \"\$RUNNER_TEMP/<tool>\" and add"
-  echo "<prefix>/node_modules/.bin to \$GITHUB_PATH - regression-test-required.yml"
+  echo "<prefix>/node_modules/.bin to \$GITHUB_PATH - the regression suite in repository-gates.yml"
   echo "installs spectral that way already."
   exit 1
 fi

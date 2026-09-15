@@ -378,12 +378,15 @@ func TestActorChainFromRFC8693IsRootFirst(t *testing.T) {
 		t.Fatalf("empty conversion produced %s", got)
 	}
 
-	// Contains covers the whole chain, which separation of duties depends on.
-	if !chain.Contains(fixtureAgentA) {
-		t.Fatalf("Contains missed a middle hop")
+	// ContainsSubject covers the whole chain, which separation of duties
+	// depends on. Its type-axis behaviour - the #3878 defect - is driven in
+	// TestSelfExclusionIsBySubjectRatherThanByClassification rather than here,
+	// because it needs a realm registry and a pool to mean anything.
+	if !chain.ContainsSubject(fixtureAgentA) {
+		t.Fatalf("ContainsSubject missed a middle hop")
 	}
-	if chain.Contains(fixtureBob) {
-		t.Fatalf("Contains matched a principal that is not in the chain")
+	if chain.ContainsSubject(fixtureBob) {
+		t.Fatalf("ContainsSubject matched a principal that is not in the chain")
 	}
 }
 

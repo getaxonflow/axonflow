@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -17,11 +9,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/decision/contract"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/policy/policytest"
 )
@@ -36,7 +31,7 @@ func openaiCompatForTest(t *testing.T, body []byte, headers map[string]string) *
 		req.Header.Set(k, v)
 	}
 	rr := httptest.NewRecorder()
-	handleOpenAICompat(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleOpenAICompat)).ServeHTTP(rr, req)
 	return rr
 }
 
@@ -54,7 +49,7 @@ func installSharedEngineForOpenAITest(t *testing.T) {
 	// so serve one benign never-matching system policy per pass.
 	for i := 0; i < 8; i++ {
 		mockSQL.ExpectQuery("SELECT").WillReturnRows(
-			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+			policytest.SystemPolicyRow(appendShippedGlobalRows(t, sqlmock.NewRows(policytest.LoaderCols()), nil, nil),
 				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
 				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
 		)
@@ -687,24 +682,23 @@ func TestOpenAICompat_UpstreamUnparseableResponse(t *testing.T) {
 
 // --- Test: Policy engine nil (disabled detection) ---
 
-func TestOpenAICompat_PolicyEngineDisabled(t *testing.T) {
+// TestOpenAICompat_NoSharedEngineFailsClosed pins what replaced the legacy
+// bypass. The shared engine is the anchored engine's detector input (PRD v11
+// §1.2), so without it every shipped control's detector is unknown: the route
+// refuses the request on the unknown constraint and never reaches the provider,
+// where it once forwarded the request uninspected.
+func TestOpenAICompat_NoSharedEngineFailsClosed(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
-	t.Setenv("AXONFLOW_GATEWAY_DETECTION_ENABLED", "false")
-	InitDetectionConfigs()
 
-	// Set shared engine to nil.
 	old := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(nil)
 	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(old) })
 
+	var upstreamCalls atomic.Int32
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(chatCompletionResponse{
-			ID: "test-nil", Object: "chat.completion", Created: 1700000000, Model: "gpt-4o",
-			Choices: []chatCompletionChoice{{Index: 0, Message: chatCompletionChoiceMessage{Role: "assistant", Content: strPtr("ok")}, FinishReason: strPtr("stop")}},
-			Usage:   &chatCompletionUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
-		})
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer mockServer.Close()
 
@@ -717,8 +711,12 @@ func TestOpenAICompat_PolicyEngineDisabled(t *testing.T) {
 		"X-Provider-Key": "test-key",
 	})
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"code":"policy_denied"`) ||
+		!strings.Contains(rr.Body.String(), string(contract.ReasonUnknownConstraint)) {
+		t.Fatalf("got %d: %s; want the policy refusal on %s", rr.Code, rr.Body.String(), contract.ReasonUnknownConstraint)
+	}
+	if n := upstreamCalls.Load(); n != 0 {
+		t.Fatalf("the provider was called %d time(s) for a request the engine refused", n)
 	}
 }
 
@@ -743,7 +741,7 @@ func TestRecordOpenAICompatAudit_NilDB(t *testing.T) {
 	t.Cleanup(func() { authDB = oldDB })
 
 	// Should not panic.
-	recordOpenAICompatAudit("test-id", "client", "org", "tenant", "openai", "gpt-4o", 10, 5, 15, 0.001, 100, VerdictAllow, "")
+	recordOpenAICompatAudit(requestPassEnforcement{engine: decisionEngineAnchored}, "test-id", "client", "org", "tenant", "openai", "gpt-4o", 10, 5, 15, 0.001, 100, VerdictAllow, "")
 }
 
 // strPtr is declared in static_policy_repository_test.go

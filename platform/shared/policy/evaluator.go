@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -32,7 +35,7 @@ func NewPatternEvaluator(enableValidators bool) *PatternEvaluator {
 		validators:       make(map[string]ValidatorFunc),
 		regexCache:       make(map[string]*regexp.Regexp),
 		maxCacheSize:     1000,
-		contextWindow:    50, // Characters before/after match for context
+		contextWindow:    DefaultContextWindow,
 	}
 
 	// Register built-in validators
@@ -56,111 +59,158 @@ func (e *PatternEvaluator) registerBuiltinValidators() {
 	e.validators["bank_account"] = ValidateBankAccount
 }
 
-// Evaluate checks input against a single policy and returns the first match.
-// Returns nil if no match is found.
-func (e *PatternEvaluator) Evaluate(input string, policy *CompiledPolicy) *PolicyMatch {
-	if !policy.Enabled {
-		return nil
-	}
+// AcceptedMatch is one occurrence of a row's pattern that the row's validator
+// accepted: its span in the input and the validator's confidence (1.0 when no
+// validator gates the row).
+type AcceptedMatch struct {
+	Start, End int
+	Confidence float64
+}
 
-	// Get compiled regex
-	re := policy.Pattern
-	if re == nil {
-		var err error
-		re, err = e.getCompiledRegex(policy.PatternStr)
-		if err != nil {
-			return nil
-		}
-	}
-
-	// Find first match
-	loc := re.FindStringIndex(input)
-	if loc == nil {
-		return nil
-	}
-
-	matchText := input[loc[0]:loc[1]]
-
-	// Run validator if enabled and available
-	confidence := 1.0
-	if e.enableValidators {
-		validator := e.getValidator(policy)
+// ScanAccepted is the ONE scan every detector evaluation runs, on every plane
+// (#3968; ADR-065 amendment 2026-09-10, "one validator set on every plane").
+//
+// It walks the occurrences of re in input in order and keeps the ones the
+// validator accepts, stopping once limit have been kept; limit <= 0 keeps every
+// accepted occurrence. A nil validator accepts every occurrence, so a row with
+// no validator still answers with its first regex hit. The context a validator
+// sees is MatchContext over window - see there for why that is load-bearing.
+//
+// # WHY EVERY OCCURRENCE, AND NOT THE FIRST REGEX HIT
+//
+// The request path used to take re.FindStringIndex - the first hit only - and
+// answer "no match" when the validator refused it, while the response path
+// skipped a refused hit and kept scanning. So `charge 4111111111111112 then
+// charge 4111111111111111` hid a Luhn-valid card from the request path and
+// showed it to the response path: one detector, two answers, chosen by which
+// phase asked. A validator exists to REMOVE a false occurrence, never to end
+// the search, so "does this row detect anything" is answered by the first
+// ACCEPTED occurrence.
+//
+// Every detector evaluation reaches the regex through here - the shared
+// engine's Evaluate (limit 1) and EvaluateAll (all), and the proxy-tier
+// engine's three walks - so the phases and the engines cannot diverge again by
+// each owning a scan loop.
+//
+// # WHY A BOUNDED FIRST PASS
+//
+// A limited scan asks the regex for one occurrence, then two, then four, and
+// validates only the occurrences it has not seen. FindAllStringIndex(input, n)
+// returns a prefix of the full occurrence list, so this visits exactly the
+// occurrences a full scan would, in the same order, but stops reading the input
+// once enough are accepted. A card near the start of a long prompt costs what
+// the old first-hit scan cost, not a read of the whole prompt; the re-scans are
+// geometric, so a run of refused hits costs at most twice a single full pass.
+func ScanAccepted(re *regexp.Regexp, input string, validator ValidatorFunc, window, limit int) []AcceptedMatch {
+	var out []AcceptedMatch
+	accept := func(loc []int) bool {
+		confidence := 1.0
 		if validator != nil {
-			context := e.extractContext(input, loc[0], loc[1])
-			valid, conf := validator(matchText, context)
+			valid, conf := validator(input[loc[0]:loc[1]], MatchContext(input, loc[0], loc[1], window))
 			if !valid {
-				return nil // Validator rejected the match
+				return false
 			}
 			confidence = conf
 		}
+		out = append(out, AcceptedMatch{Start: loc[0], End: loc[1], Confidence: confidence})
+		return limit > 0 && len(out) >= limit
 	}
 
-	return &PolicyMatch{
+	if limit <= 0 {
+		for _, loc := range re.FindAllStringIndex(input, -1) {
+			accept(loc)
+		}
+		return out
+	}
+
+	seen := 0
+	for n := limit; ; n *= 2 {
+		locs := re.FindAllStringIndex(input, n)
+		for _, loc := range locs[seen:] {
+			if accept(loc) {
+				return out
+			}
+		}
+		if len(locs) < n {
+			return out // the input holds no further occurrence
+		}
+		seen = len(locs)
+	}
+}
+
+// compiledPattern returns the policy's compiled regex, compiling and caching
+// PatternStr when the policy carries none. ok is false when it does not compile.
+func (e *PatternEvaluator) compiledPattern(policy *CompiledPolicy) (*regexp.Regexp, bool) {
+	if policy.Pattern != nil {
+		return policy.Pattern, true
+	}
+	re, err := e.getCompiledRegex(policy.PatternStr)
+	return re, err == nil
+}
+
+// validatorFor returns the validator gating this policy, or nil when validators
+// are disabled or none resolves.
+func (e *PatternEvaluator) validatorFor(policy *CompiledPolicy) ValidatorFunc {
+	if !e.enableValidators {
+		return nil
+	}
+	return e.getValidator(policy)
+}
+
+// matchFor renders one accepted occurrence as the PolicyMatch both phases return.
+func matchFor(input string, policy *CompiledPolicy, phase Phase, m AcceptedMatch) PolicyMatch {
+	return PolicyMatch{
 		PolicyID:   policy.PolicyID,
 		PolicyName: policy.Name,
 		Category:   policy.Category,
 		Severity:   policy.Severity,
-		Action:     policy.GetActionForPhase(PhaseRequest),
-		MatchText:  matchText,
-		StartIndex: loc[0],
-		EndIndex:   loc[1],
-		Confidence: confidence,
+		Action:     policy.GetActionForPhase(phase),
+		MatchText:  input[m.Start:m.End],
+		StartIndex: m.Start,
+		EndIndex:   m.End,
+		Confidence: m.Confidence,
 	}
 }
 
-// EvaluateAll checks input against a policy and returns ALL matches.
-// Used for response-phase evaluation where multiple PII instances may exist.
+// Evaluate checks input against a single policy and returns the FIRST
+// occurrence its validator accepts - not the first regex hit (#3968; see
+// ScanAccepted). Returns nil if no occurrence is accepted.
+func (e *PatternEvaluator) Evaluate(input string, policy *CompiledPolicy) *PolicyMatch {
+	if !policy.Enabled {
+		return nil
+	}
+	re, ok := e.compiledPattern(policy)
+	if !ok {
+		return nil
+	}
+	accepted := ScanAccepted(re, input, e.validatorFor(policy), e.contextWindow, 1)
+	if len(accepted) == 0 {
+		return nil
+	}
+	m := matchFor(input, policy, PhaseRequest, accepted[0])
+	return &m
+}
+
+// EvaluateAll checks input against a policy and returns EVERY occurrence its
+// validator accepts. Used for response-phase evaluation where multiple PII
+// instances may exist. It runs the same scan as Evaluate (ScanAccepted), so
+// Evaluate's answer is always EvaluateAll's first element.
 func (e *PatternEvaluator) EvaluateAll(input string, policy *CompiledPolicy) []PolicyMatch {
 	if !policy.Enabled {
 		return nil
 	}
-
-	// Get compiled regex
-	re := policy.Pattern
-	if re == nil {
-		var err error
-		re, err = e.getCompiledRegex(policy.PatternStr)
-		if err != nil {
-			return nil
-		}
-	}
-
-	// Find all matches
-	locs := re.FindAllStringIndex(input, -1)
-	if locs == nil {
+	re, ok := e.compiledPattern(policy)
+	if !ok {
 		return nil
 	}
-
-	var matches []PolicyMatch
-	validator := e.getValidator(policy)
-
-	for _, loc := range locs {
-		matchText := input[loc[0]:loc[1]]
-
-		// Run validator if enabled
-		confidence := 1.0
-		if e.enableValidators && validator != nil {
-			context := e.extractContext(input, loc[0], loc[1])
-			valid, conf := validator(matchText, context)
-			if !valid {
-				continue // Skip invalid matches
-			}
-			confidence = conf
-		}
-
-		matches = append(matches, PolicyMatch{
-			PolicyID:   policy.PolicyID,
-			PolicyName: policy.Name,
-			Category:   policy.Category,
-			Severity:   policy.Severity,
-			Action:     policy.GetActionForPhase(PhaseResponse),
-			MatchText:  matchText,
-			StartIndex: loc[0],
-			EndIndex:   loc[1],
-			Confidence: confidence,
-		})
+	accepted := ScanAccepted(re, input, e.validatorFor(policy), e.contextWindow, 0)
+	if len(accepted) == 0 {
+		return nil
 	}
-
+	matches := make([]PolicyMatch, 0, len(accepted))
+	for _, m := range accepted {
+		matches = append(matches, matchFor(input, policy, PhaseResponse, m))
+	}
 	return matches
 }
 
@@ -237,24 +287,39 @@ func (e *PatternEvaluator) getValidator(policy *CompiledPolicy) ValidatorFunc {
 		return policy.Validator
 	}
 
-	// Select by PII-type token within the policy ID (single source of truth
-	// shared with the loader — ValidatorForPolicyID), falling back to the
-	// category default only when no token matches. This is the in-memory
-	// fallback; DB-loaded policies arrive with Validator already set by the
-	// loader (PolicyLoader.getValidatorForPolicy uses the same helper).
-	if v := ValidatorForPolicyID(policy.PolicyID); v != nil {
-		return v
-	}
-	return GetValidatorForCategory(policy.Category)
+	// The in-memory fallback. DB-loaded policies arrive with Validator already
+	// set by the loader, which resolves it through the same ValidatorFor, so
+	// the two paths cannot disagree about which validator gates a row.
+	return ValidatorFor(policy.PolicyID, policy.Category)
 }
 
-// extractContext extracts surrounding text for context-aware validation.
-func (e *PatternEvaluator) extractContext(text string, start, end int) string {
-	contextStart := start - e.contextWindow
+// DefaultContextWindow is the number of characters taken either side of a match
+// to form the `context` argument every validator receives. It is what
+// NewPatternEvaluator uses, and nothing in the tree calls SetContextWindow.
+const DefaultContextWindow = 50
+
+// MatchContext builds the `context` string a ValidatorFunc is given: `window`
+// characters either side of the match, clamped to the input.
+//
+// IT IS EXPORTED BECAUSE THE CONTEXT IS LOAD-BEARING, NOT DECORATIVE. Four
+// shipped validators - ValidatePassport, ValidateDOB and the two Singapore
+// ones - require a label IMMEDIATELY PRECEDING the value, which they read out
+// of this string via leftContextOf. Hand any of them an empty context and they
+// reject every match: the detection disappears rather than becoming less
+// precise.
+//
+// So a caller that resolves a validator and cannot build this window has not
+// wired validation, it has switched four detectors off. #3963 wired the tier
+// engine, and that engine called `re.MatchString`, which returns a bool and no
+// location - there was nothing to build a window from. Since #3968 both engines
+// reach this function through ScanAccepted, which has every occurrence's
+// location, rather than through a copy of the arithmetic each.
+func MatchContext(text string, start, end, window int) string {
+	contextStart := start - window
 	if contextStart < 0 {
 		contextStart = 0
 	}
-	contextEnd := end + e.contextWindow
+	contextEnd := end + window
 	if contextEnd > len(text) {
 		contextEnd = len(text)
 	}

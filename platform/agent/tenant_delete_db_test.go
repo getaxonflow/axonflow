@@ -778,8 +778,15 @@ func TestTenantDelete_DB_Request_IPRateLimitDoesNotIssueToken(t *testing.T) {
 }
 
 func TestMigration082_TablesAndIndexesExist(t *testing.T) {
-	db := getTestDBForTenantDelete(t)
+	// HERMETIC SINCE #4034. See TestMigration076_TableExistsWithExpectedColumns
+	// for why this one test in the file provisions its own database while its
+	// neighbours keep the environment DSN: it asserts what a migration created.
+	db := migrationSchemaDB(t)
 	defer db.Close()
+	requireTables(t, db,
+		"community_saas_registrations",
+		"community_saas_deletion_tokens",
+		"tenant_deletion_log")
 
 	expectedIndexes := []string{
 		"idx_csaas_deletion_expires",

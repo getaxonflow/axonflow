@@ -3,13 +3,13 @@
 
 package agent
 
-// #3360: convertSharedResultToStatic must surface every DOWNWARD posture
-// displacement (a matched policy whose stored action the lever weakened) as a
-// truthful advisory reason plus a metric, and stay silent for upward/equal
-// resolution and for blocked results.
+// #3360: convertSharedResultToStatic counts every DOWNWARD displacement - a
+// matched policy whose stored action an organization's recorded detection
+// override weakened, since #3961 the only thing that can - and stays silent for
+// upward or equal resolution, for a match carrying no stored action, and for a
+// blocked result.
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -27,89 +27,58 @@ func displacedKTPMatch() sharedpolicy.PolicyMatch {
 	}
 }
 
-func TestConvert_DownwardDisplacementEmitsAdvisoryAndMetric(t *testing.T) {
-	before := testutil.ToFloat64(policyStoredActionDisplaced.WithLabelValues("pii-indonesia", "block", "redact"))
-	res := convertSharedResultToStatic(&sharedpolicy.RequestResult{
+// displacedCount reads the counter for one (stored, resolved) pair of the KTP
+// fixture's category.
+func displacedCount(stored, resolved sharedpolicy.Action) float64 {
+	return testutil.ToFloat64(policyStoredActionDisplaced.WithLabelValues(string(sharedpolicy.CategoryPIIIndonesia), string(stored), string(resolved)))
+}
+
+func TestConvert_DownwardDisplacementIsCounted(t *testing.T) {
+	before := displacedCount(sharedpolicy.ActionBlock, sharedpolicy.ActionRedact)
+	convertSharedResultToStatic(&sharedpolicy.RequestResult{
 		MatchedPolicies: []sharedpolicy.PolicyMatch{displacedKTPMatch()},
 	})
-	var advisory string
-	for _, r := range res.AdvisoryReasons {
-		if strings.Contains(r, "stores action=block") {
-			advisory = r
-		}
-	}
-	if advisory == "" {
-		t.Fatalf("downward displacement must emit an advisory reason, got %v", res.AdvisoryReasons)
-	}
-	for _, want := range []string{"sys_pii_indonesia_ktp", "resolved to action=redact", "PII_ACTION", "pii-indonesia"} {
-		if !strings.Contains(advisory, want) {
-			t.Fatalf("advisory must name %q: %q", want, advisory)
-		}
-	}
-	after := testutil.ToFloat64(policyStoredActionDisplaced.WithLabelValues("pii-indonesia", "block", "redact"))
-	if after != before+1 {
-		t.Fatalf("displacement metric must increment once: before=%v after=%v", before, after)
+	if after := displacedCount(sharedpolicy.ActionBlock, sharedpolicy.ActionRedact); after != before+1 {
+		t.Fatalf("a downward displacement must be counted once: %v -> %v", before, after)
 	}
 }
 
-func TestConvert_NoAdvisoryForEqualUpwardBlockedOrLegacy(t *testing.T) {
-	displacedNote := func(res *StaticPolicyResult) bool {
-		for _, r := range res.AdvisoryReasons {
-			if strings.Contains(r, "stores action=") {
-				return true
+func TestConvert_NoDisplacementCountedForEqualUpwardBlockedOrLegacy(t *testing.T) {
+	for _, c := range []struct {
+		name             string
+		stored, resolved sharedpolicy.Action
+		blocked          bool
+	}{
+		{"equal stored and resolved", sharedpolicy.ActionRedact, sharedpolicy.ActionRedact, false},
+		{"upward: an override tightening", sharedpolicy.ActionLog, sharedpolicy.ActionWarn, false},
+		// A match evaluated by an engine predating #3360 carries no StoredAction;
+		// absence must never be treated as displacement.
+		{"no stored action", "", sharedpolicy.ActionRedact, false},
+		// Nothing was weakened into an allow when the request was blocked.
+		{"a blocked result", sharedpolicy.ActionBlock, sharedpolicy.ActionRedact, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			match := displacedKTPMatch()
+			match.StoredAction, match.Action = c.stored, c.resolved
+			result := &sharedpolicy.RequestResult{MatchedPolicies: []sharedpolicy.PolicyMatch{match}}
+			if c.blocked {
+				result.Blocked, result.BlockReason = true, "blocked by another policy"
 			}
-		}
-		return false
-	}
-
-	equal := displacedKTPMatch()
-	equal.StoredAction = sharedpolicy.ActionRedact
-	if displacedNote(convertSharedResultToStatic(&sharedpolicy.RequestResult{
-		MatchedPolicies: []sharedpolicy.PolicyMatch{equal},
-	})) {
-		t.Fatalf("equal stored/resolved must not emit a displacement note")
-	}
-
-	upward := displacedKTPMatch()
-	upward.StoredAction = sharedpolicy.ActionLog
-	upward.Action = sharedpolicy.ActionWarn
-	if displacedNote(convertSharedResultToStatic(&sharedpolicy.RequestResult{
-		MatchedPolicies: []sharedpolicy.PolicyMatch{upward},
-	})) {
-		t.Fatalf("upward displacement (lever tightening) must not emit a note")
-	}
-
-	// A match evaluated by an engine predating #3360 carries no StoredAction;
-	// absence must never be treated as displacement.
-	legacy := displacedKTPMatch()
-	legacy.StoredAction = ""
-	if displacedNote(convertSharedResultToStatic(&sharedpolicy.RequestResult{
-		MatchedPolicies: []sharedpolicy.PolicyMatch{legacy},
-	})) {
-		t.Fatalf("empty StoredAction must not emit a note")
-	}
-
-	blocked := displacedKTPMatch()
-	if displacedNote(convertSharedResultToStatic(&sharedpolicy.RequestResult{
-		Blocked:         true,
-		BlockReason:     "blocked by another policy",
-		MatchedPolicies: []sharedpolicy.PolicyMatch{blocked},
-	})) {
-		t.Fatalf("a blocked result must not emit displacement notes (nothing weakened into an allow)")
+			before := displacedCount(c.stored, c.resolved)
+			convertSharedResultToStatic(result)
+			if after := displacedCount(c.stored, c.resolved); after != before {
+				t.Fatalf("counted a displacement: %v -> %v", before, after)
+			}
+		})
 	}
 }
 
-func TestConvert_DisplacementDedupedPerPolicy(t *testing.T) {
-	res := convertSharedResultToStatic(&sharedpolicy.RequestResult{
+func TestConvert_DisplacementCountedOncePerPolicy(t *testing.T) {
+	before := displacedCount(sharedpolicy.ActionBlock, sharedpolicy.ActionRedact)
+	convertSharedResultToStatic(&sharedpolicy.RequestResult{
 		MatchedPolicies: []sharedpolicy.PolicyMatch{displacedKTPMatch(), displacedKTPMatch()},
 	})
-	count := 0
-	for _, r := range res.AdvisoryReasons {
-		if strings.Contains(r, "stores action=block") {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("one displacement note per policy id, got %d (%v)", count, res.AdvisoryReasons)
+	if after := displacedCount(sharedpolicy.ActionBlock, sharedpolicy.ActionRedact); after != before+1 {
+		t.Fatalf("one displacement per policy id: %v -> %v", before, after)
 	}
 }

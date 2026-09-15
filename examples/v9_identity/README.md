@@ -54,5 +54,5 @@ v9 identity forwarding example: OK
 
 - ADR-052 §5 (v9 identity model + compatibility window)
 - ADR-053 §Step 2 (code identity migration)
-- `technical-docs/LICENSE_AND_TENANT_ARCHITECTURE.md` (canonical reference)
+- `technical-docs/LICENSE_TENANT_ORG_CURRENT_STATE.md` (canonical reference; enterprise repository only, not in the community mirror)
 - Epic [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230) Phase 4

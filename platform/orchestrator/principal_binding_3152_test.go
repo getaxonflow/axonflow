@@ -177,8 +177,7 @@ func TestProcess3152_ForgedRoleNeverReachesThePolicyFieldResolver(t *testing.T) 
 	t.Cleanup(func() { dynamicPolicyEngine, auditLogger = oldEngine, oldAudit })
 	auditLogger = NewAuditLogger("")
 
-	engine := &gs3066Engine{}
-	dynamicPolicyEngine = engine
+	engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 	handler := gs3066ServedHandler(t, "/api/v1/process", processRequestHandler)
 	rr := gs3066Post(t, handler, "/api/v1/process", pb3152Headers(nil), map[string]any{
@@ -188,7 +187,7 @@ func TestProcess3152_ForgedRoleNeverReachesThePolicyFieldResolver(t *testing.T) 
 		"client":       map[string]any{"tenant_id": pb3152Tenant, "org_id": pb3152Org},
 	})
 	if rr.Code != http.StatusForbidden {
-		// gs3066Engine always blocks, so 403 is the success path here.
+		// The engine double denies, so 403 is the success path here.
 		t.Fatalf("status = %d, want 403 (body=%s)", rr.Code, rr.Body.String())
 	}
 	if len(engine.captured) != 1 {
@@ -222,13 +221,13 @@ func TestProcess3152_ForgedRoleNeverReachesThePolicyFieldResolver(t *testing.T) 
 	//    actually governs the request.
 	if !resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "not_equals", "value": "admin",
-	}, got, nil, nil) {
+	}, got, nil) {
 		t.Error("{user.role not_equals \"admin\"} did not match: the body still chose the role, " +
 			"so the shipped role-gated policy shape is still evadable")
 	}
 	if resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "equals", "value": "admin",
-	}, got, nil, nil) {
+	}, got, nil) {
 		t.Error("{user.role equals \"admin\"} matched: the caller successfully asserted the admin role")
 	}
 
@@ -260,8 +259,7 @@ func TestProcess3152_ValidatedRoleHeaderIsHonoured(t *testing.T) {
 	t.Cleanup(func() { dynamicPolicyEngine, auditLogger = oldEngine, oldAudit })
 	auditLogger = NewAuditLogger("")
 
-	engine := &gs3066Engine{}
-	dynamicPolicyEngine = engine
+	engine := withRecordingRouteFacts(t, routeDenyVerdict("policy-denies"))
 
 	handler := gs3066ServedHandler(t, "/api/v1/process", processRequestHandler)
 	rr := gs3066Post(t, handler, "/api/v1/process", pb3152Headers(map[string]string{
@@ -287,7 +285,7 @@ func TestProcess3152_ValidatedRoleHeaderIsHonoured(t *testing.T) {
 	}
 	if resolver.evaluateCondition(map[string]interface{}{
 		"field": "user.role", "operator": "not_equals", "value": "admin",
-	}, got, nil, nil) {
+	}, got, nil) {
 		t.Error("{user.role not_equals \"admin\"} matched for a validated admin: " +
 			"the fix has made role-keyed policy unenforceable rather than unforgeable")
 	}
@@ -381,8 +379,8 @@ func TestApplyAuthoritativeIdentity3152_BindsTheWholePrincipal(t *testing.T) {
 // the sample actor. If either verdict ever becomes authoritative for anything,
 // the entry must be removed before that change ships.
 var principalBindExemptions = map[string]string{
-	"testPolicyHandler": "POST /api/v1/policies/test — dry run, advisory verdict only",
-	"SimulatePolicies":  "POST /api/v1/policies/simulate — dry run, advisory verdict only",
+	"testPolicyHandler": "the policy dry-run route — dry run, advisory verdict only",
+	"SimulatePolicies":  "the simulation route — dry run, advisory verdict only",
 }
 
 func TestEveryBodyDecodedPrincipalIsBound(t *testing.T) {
@@ -505,7 +503,7 @@ func TestProcess3152_AuditWriterSeesTheBoundPrincipal(t *testing.T) {
 	// LogBlockedRequest is the writer on the deny path; with no DB configured
 	// it must still build the entry without panicking and without the forged
 	// identity.
-	al.LogBlockedRequest(context.Background(), req, &PolicyEvaluationResult{Allowed: false})
+	al.LogBlockedRequest(context.Background(), req, &PolicyEvaluationResult{Allowed: false}, nil)
 
 	if req.User.Email != "" || req.User.Role != "" || req.User.ID != 0 {
 		t.Fatalf("audit writer was handed a forged principal: %+v", req.User)

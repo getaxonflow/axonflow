@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package pep is the blessed Policy Enforcement Point client for AxonFlow
 // Decision Mode (ADR-056, epic #2563).
@@ -468,6 +460,51 @@ type DecideResponse struct {
 	EvaluatedPolicies []string     `json:"evaluated_policies"`
 	Stage             string       `json:"stage,omitempty"`
 	ExpiresAt         time.Time    `json:"expires_at"`
+	// Engine, SubjectType and PolicyBundle say which policy engine authored the
+	// verdict (`anchored`, the ADR-065 decision plane, the only author since v11:
+	// PRD v11 §1.1), for which type of principal (`User` for a verified user
+	// token, `Client` when the client credential is the principal, §1.6), and
+	// under which policy set, by digest. The platform omits all three on a
+	// refusal no engine decided.
+	Engine       string `json:"engine,omitempty"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	PolicyBundle string `json:"policy_bundle,omitempty"`
+	// PolicyPacks names the add-on policy packs whose controls composed into
+	// PolicyBundle, each as <pack id>@<pack document digest> (PRD v11 §1.9).
+	// Omitted when none bound.
+	PolicyPacks []string `json:"policy_packs,omitempty"`
+	// PolicyIdentities names each of EvaluatedPolicies, in its order (PRD v11
+	// §1.14): the policy's own display name where it has one, whose it is, and
+	// for an organization's own policy or an installed pack's the version it was
+	// published at. Omitted when EvaluatedPolicies is empty.
+	PolicyIdentities []PolicyIdentity `json:"policy_identities,omitempty"`
+	// DocumentVersion is the published version of the organization's active
+	// typed document; omitted under the implicit baseline, which PolicyBundle
+	// names by digest.
+	DocumentVersion int `json:"document_version,omitempty"`
+	// LegacyValidators names a checksum validator that acted before the
+	// anchored engine decided (#4122): under an organization's recorded pii
+	// detection override, the Indonesia or India validator blocked the request.
+	// Omitted when none did.
+	LegacyValidators []LegacyValidatorAction `json:"legacy_validators,omitempty"`
+}
+
+// PolicyIdentity is one matched policy as policy_identities names it (PRD v11
+// §1.14): Source is "shipped", "organization" or "pack"; Version is set for an
+// organization's own policy and a pack's, and never for a shipped control.
+type PolicyIdentity struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Version int    `json:"version,omitempty"`
+}
+
+// LegacyValidatorAction is one checksum validator's action ahead of the
+// decision plane: Validator is "indonesia_pii" or "india_pii", Action is
+// "blocked" or "masked".
+type LegacyValidatorAction struct {
+	Validator string `json:"validator"`
+	Action    string `json:"action"`
 }
 
 // Obligation is a self-describing, engine-fulfillable PEP requirement.

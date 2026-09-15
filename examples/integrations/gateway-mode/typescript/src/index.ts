@@ -12,9 +12,11 @@
  * - Complete audit trail for compliance
  * - Works with any LLM provider
  *
- * Gateway-specific policy config env vars (override defaults for gateway mode only):
- *   GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
- *   GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+ * Detection actions (v11): the stored action of each matched policy decides,
+ * on this plane as on every other; environment variables no longer set them.
+ * Out of the box the pre-check WARNS on PII and SQL injection: the request is
+ * approved and the matched policy ids are returned with it. An organization
+ * override (Enterprise customer portal) or a policy action change alters that.
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
@@ -113,14 +115,14 @@ async function main() {
     console.log("");
 
     // =========================================================================
-    // STEP 1b: PII Detection - SSN triggers redaction flag
+    // STEP 1b: PII Detection - SSN is detected (stored request action: warn)
     // =========================================================================
     console.log("Step 1b: PII Detection (SSN)...");
     const piiResult = await axonflow.getPolicyApprovedContext({
       userToken,
       query: "Process refund for customer with SSN 123-45-6789",
     });
-    assertCheck(piiResult.approved === true, "PII query approved (redact mode)");
+    assertCheck(piiResult.approved === true, "PII query approved (stored request action is warn)");
     assertCheck((piiResult.policies?.length || 0) > 0, "PII policies detected");
     console.log(`   Policies: ${piiResult.policies?.join(", ")}`);
     console.log("");
@@ -133,7 +135,7 @@ async function main() {
       userToken,
       query: "Verify PAN number ABCPD1234E for tax filing",
     });
-    assertCheck(panResult.approved === true, "India PAN approved (redact mode)");
+    assertCheck(panResult.approved === true, "India PAN approved (stored request action is warn)");
     assertCheck((panResult.policies?.length || 0) > 0, "India PII policies detected for PAN");
     console.log(`   Policies: ${panResult.policies?.join(", ")}`);
 
@@ -142,31 +144,31 @@ async function main() {
       userToken,
       query: "Link Aadhaar 2345 6789 0123 to bank account",
     });
-    assertCheck(aadhaarResult.approved === true, "India Aadhaar approved (redact mode)");
+    assertCheck(aadhaarResult.approved === true, "India Aadhaar approved (stored request action is warn)");
     assertCheck((aadhaarResult.policies?.length || 0) > 0, "India PII policies detected for Aadhaar");
     console.log(`   Policies: ${aadhaarResult.policies?.join(", ")}`);
     console.log("");
 
     // =========================================================================
-    // STEP 1d: SQL Injection Detection - should be BLOCKED
+    // STEP 1d: SQL Injection Detection - WARNS (every sys_sqli_* row stores warn)
     // =========================================================================
     console.log("Step 1d: SQL Injection Detection (DROP TABLE)...");
     const sqliResult = await axonflow.getPolicyApprovedContext({
       userToken,
       query: "SELECT * FROM users; DROP TABLE users;--",
     });
-    assertCheck(sqliResult.approved === false, "SQLi query is BLOCKED");
-    assertCheck(sqliResult.blockReason !== undefined && sqliResult.blockReason !== "", "Block reason provided for SQLi");
-    console.log(`   Block reason: ${sqliResult.blockReason}`);
+    assertCheck(sqliResult.approved === true, "SQLi query approved with a warning (stored action is warn, not block)");
+    assertCheck((sqliResult.policies || []).some((p) => p.startsWith("sys_sqli_")), "SQLi policy matched (sys_sqli_*)");
+    console.log(`   Policies: ${sqliResult.policies?.join(", ")}`);
 
     console.log("Step 1d: SQL Injection Detection (UNION SELECT)...");
     const unionResult = await axonflow.getPolicyApprovedContext({
       userToken,
       query: "Get user where id = 1 UNION SELECT password FROM admin",
     });
-    assertCheck(unionResult.approved === false, "UNION SQLi query is BLOCKED");
-    assertCheck(unionResult.blockReason !== undefined && unionResult.blockReason !== "", "Block reason provided for UNION SQLi");
-    console.log(`   Block reason: ${unionResult.blockReason}`);
+    assertCheck(unionResult.approved === true, "UNION SQLi query approved with a warning (stored action is warn, not block)");
+    assertCheck((unionResult.policies || []).some((p) => p.startsWith("sys_sqli_")), "UNION SQLi policy matched (sys_sqli_*)");
+    console.log(`   Policies: ${unionResult.policies?.join(", ")}`);
     console.log("");
 
     // =========================================================================

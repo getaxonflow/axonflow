@@ -78,10 +78,8 @@ func TestRefreshDynamicPolicies_WithSegment_ScansAllColumns(t *testing.T) {
 	}
 	// updated_at is asserted with a value DISTINCT from created_at, because a
 	// scan that landed created_at in both destinations would satisfy an
-	// assertion written against one timestamp. The ADR-065 decision shadow
-	// keys a bundle on (policy_id, updated_at), so the two columns landing in
-	// the wrong fields would make every comparison compare against a bundle
-	// built from a policy version that never existed.
+	// assertion written against one timestamp, and the two columns sit next to
+	// each other in the SELECT.
 	if !got.UpdatedAt.Valid || !got.UpdatedAt.Time.Equal(wantUpdatedAt) {
 		t.Errorf("expected updated_at = %v, got %+v", wantUpdatedAt, got.UpdatedAt)
 	}

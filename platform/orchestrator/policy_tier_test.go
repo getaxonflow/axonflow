@@ -4,11 +4,15 @@
 package orchestrator
 
 import (
+	"axonflow/platform/agent/license/admission"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +73,6 @@ type mockLicenseChecker struct {
 	tier                     license.Tier
 	policyLimit              int
 	orgPolicyLimit           int
-	policyConnectorLimit     int
 	auditRetentionDays       int
 	maxLLMProviders          int
 	maxExecutionHistory      int
@@ -97,7 +100,6 @@ func newMockLicenseChecker(tier license.Tier) *mockLicenseChecker {
 	limits := license.GetTierLimits(tier)
 	m.policyLimit = limits.TenantPolicies
 	m.orgPolicyLimit = limits.OrgPolicies
-	m.policyConnectorLimit = limits.CustomPolicyConnectors
 	m.auditRetentionDays = limits.AuditRetentionDays
 	m.maxLLMProviders = limits.MaxLLMProviders
 	m.maxExecutionHistory = limits.MaxExecutionHistory
@@ -134,10 +136,6 @@ func (m *mockLicenseChecker) PolicyLimit() int {
 
 func (m *mockLicenseChecker) OrgPolicyLimit() int {
 	return m.orgPolicyLimit
-}
-
-func (m *mockLicenseChecker) CustomPolicyConnectorLimit() int {
-	return m.policyConnectorLimit
 }
 
 func (m *mockLicenseChecker) AuditRetentionDays() int {
@@ -281,11 +279,8 @@ func TestMockLicenseChecker(t *testing.T) {
 	if communityChecker.PolicyLimit() != license.CommunityLimits.TenantPolicies {
 		t.Errorf("Expected policy limit %d, got %d", license.CommunityLimits.TenantPolicies, communityChecker.PolicyLimit())
 	}
-	if communityChecker.OrgPolicyLimit() != 0 {
-		t.Errorf("Expected org policy limit 0, got %d", communityChecker.OrgPolicyLimit())
-	}
-	if communityChecker.CustomPolicyConnectorLimit() != license.CommunityLimits.CustomPolicyConnectors {
-		t.Errorf("Expected connector limit %d, got %d", license.CommunityLimits.CustomPolicyConnectors, communityChecker.CustomPolicyConnectorLimit())
+	if communityChecker.OrgPolicyLimit() != license.CommunityLimits.OrgPolicies {
+		t.Errorf("Expected org policy limit %d, got %d", license.CommunityLimits.OrgPolicies, communityChecker.OrgPolicyLimit())
 	}
 	if communityChecker.AuditRetentionDays() != 3 {
 		t.Errorf("Expected audit retention 3 days, got %d", communityChecker.AuditRetentionDays())
@@ -305,9 +300,6 @@ func TestMockLicenseChecker(t *testing.T) {
 	if evalChecker.OrgPolicyLimit() != license.EvaluationLimits.OrgPolicies {
 		t.Errorf("Expected org policy limit %d, got %d", license.EvaluationLimits.OrgPolicies, evalChecker.OrgPolicyLimit())
 	}
-	if evalChecker.CustomPolicyConnectorLimit() != license.EvaluationLimits.CustomPolicyConnectors {
-		t.Errorf("Expected connector limit %d, got %d", license.EvaluationLimits.CustomPolicyConnectors, evalChecker.CustomPolicyConnectorLimit())
-	}
 	if evalChecker.AuditRetentionDays() != 14 {
 		t.Errorf("Expected audit retention 14 days, got %d", evalChecker.AuditRetentionDays())
 	}
@@ -325,9 +317,6 @@ func TestMockLicenseChecker(t *testing.T) {
 	}
 	if enterpriseChecker.OrgPolicyLimit() != -1 {
 		t.Errorf("Expected unlimited org policy limit (-1), got %d", enterpriseChecker.OrgPolicyLimit())
-	}
-	if enterpriseChecker.CustomPolicyConnectorLimit() != -1 {
-		t.Errorf("Expected unlimited connector limit (-1), got %d", enterpriseChecker.CustomPolicyConnectorLimit())
 	}
 }
 
@@ -377,7 +366,21 @@ func TestPolicyService_CreatePolicy_RejectSystemTier(t *testing.T) {
 	}
 }
 
-func TestPolicyService_CreatePolicy_OrganizationTierRequiresEvaluationOrHigher(t *testing.T) {
+// TestPolicyService_CreatePolicy_OrganizationTierSpendsTheCustomerAuthoredCeiling
+// replaces TestPolicyService_CreatePolicy_OrganizationTierRequiresEvaluationOrHigher,
+// whose NAME carried a ruling that has now been withdrawn twice.
+//
+// It asserted that Community is refused an organization-tier policy outright.
+// That was written against the three-tier vocabulary where "organization" meant
+// "the tier above teams"; #3593 D4 then set the ceiling to 0 on Evaluation too,
+// making the name already stale; and #3906 withdrew the zero entirely, because
+// in the ADR-065 model every customer-authored policy is organization-root and
+// a ceiling of 0 therefore read as "Community authors nothing".
+//
+// So the rule to lock is no longer "refused" but "spends the ceiling", and the
+// two directions are asserted separately: a test that only ever observes a
+// refusal is satisfied by a gate that refuses everything.
+func TestPolicyService_CreatePolicy_OrganizationTierSpendsTheCustomerAuthoredCeiling(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create mock: %v", err)
@@ -385,40 +388,68 @@ func TestPolicyService_CreatePolicy_OrganizationTierRequiresEvaluationOrHigher(t
 	defer db.Close()
 
 	repo := NewPolicyRepository(db)
-
-	// Test with Community license (should fail)
 	communityService := NewPolicyServiceWithLicense(repo, nil, newMockLicenseChecker(license.TierCommunity))
 
-	req := &CreatePolicyRequest{
-		Name:        "Org Policy",
-		Description: "Organization-wide policy",
-		Type:        "content",
-		Tier:        TierOrganization,
-		Conditions: []PolicyCondition{
-			{Field: "query", Operator: "contains", Value: "test"},
-		},
-		Actions: []PolicyAction{
-			{Type: "log"},
-		},
-		Priority: 100,
-		Enabled:  true,
+	newRequest := func(name string) *CreatePolicyRequest {
+		return &CreatePolicyRequest{
+			Name:        name,
+			Description: "Organization-wide policy",
+			Type:        "content",
+			Tier:        TierOrganization,
+			Conditions:  []PolicyCondition{{Field: "query", Operator: "contains", Value: "test"}},
+			Actions:     []PolicyAction{{Type: "log"}},
+			Priority:    100,
+			Enabled:     true,
+		}
 	}
 
-	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", "org-1", req, "user-1")
+	restore := wireTestTierAdmitter(t, license.TierCommunity)
+	defer restore()
+
+	ceiling := license.CommunityLimits.OrgPolicies
+	if ceiling <= 0 {
+		t.Fatalf("this test is about a POSITIVE ceiling and the limits table says %d; if the ruling moved back to "+
+			"zero it is the assertions below that have to change, not this guard", ceiling)
+	}
+
+	// UNDER THE CEILING: the tier gate ADMITS. The create then fails against the
+	// sqlmock, which expects no statements — and that is the assertion. What is
+	// being checked is that the refusal is no longer a TIER refusal, so the
+	// error must be anything but a TierValidationError.
+	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", "org-1", newRequest("Org Policy 1"), "user-1")
 	if err == nil {
-		t.Fatal("Expected error for organization tier in Community mode")
+		t.Fatal("the sqlmock expects no statements, so the create cannot succeed; this test has lost its subject")
+	}
+	if IsTierValidationError(err) {
+		t.Fatalf("Community was refused its FIRST organization-tier policy by the tier gate, which #3906 withdrew: %v", err)
 	}
 
+	// AT THE CEILING: spend the remaining budget through the same one admission
+	// the service uses, then assert the next is refused BY THE CEILING.
+	for i := 2; i <= ceiling; i++ {
+		if err := admitOrgRootPolicies(context.Background(), "org-1", []string{fmt.Sprintf("filler-%02d", i)}); err != nil {
+			t.Fatalf("spending budget slot %d of %d was refused: %v", i, ceiling, err)
+		}
+	}
+	_, err = communityService.CreatePolicy(context.Background(), "tenant-1", "org-1", newRequest("Org Policy Over"), "user-1")
+	if err == nil {
+		t.Fatal("Expected a refusal past the ceiling")
+	}
 	if !IsTierValidationError(err) {
-		t.Errorf("Expected TierValidationError, got %T: %v", err, err)
+		t.Fatalf("Expected TierValidationError past the ceiling, got %T: %v", err, err)
 	}
-
 	tierErr := err.(*TierValidationError)
-	if tierErr.Code != ErrCodeOrgTierEvaluationOrHigher {
-		t.Errorf("Expected code %s, got %s", ErrCodeOrgTierEvaluationOrHigher, tierErr.Code)
+	if tierErr.Code != admission.OrgRootPolicy.Code() {
+		t.Errorf("Expected code %s, got %s", admission.OrgRootPolicy.Code(), tierErr.Code)
+	}
+	// The REASON, not merely the refusal: the same code and status carry an
+	// unreachable ledger too, so a test that stopped at the code would pass with
+	// the admission store simply broken.
+	if !strings.Contains(tierErr.Message, strconv.Itoa(ceiling)) {
+		t.Errorf("the refusal does not name the ceiling of %d: %q", ceiling, tierErr.Message)
 	}
 
-	// Ensure no database operations were attempted
+	// No database operations were attempted on either path.
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unexpected database operations: %v", err)
 	}
@@ -533,13 +564,28 @@ func TestPolicyService_CreatePolicy_EvaluationTierOrgPolicyLimit(t *testing.T) {
 	repo := NewPolicyRepository(db)
 	evalService := NewPolicyServiceWithLicense(repo, nil, newMockLicenseChecker(license.TierEvaluation))
 
-	// Mock count returning at Evaluation tier limit (5 org policies)
-	mock.ExpectQuery("SELECT COUNT").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(license.EvaluationLimits.OrgPolicies))
+	// #3906/#3907: Evaluation's ceiling is 50, not the 0 this test was written
+	// against, so the boundary is now at the 51st rather than the first. What
+	// the test still pins is unchanged and is the point of it: the refusal
+	// comes from the ONE admission, with its own code, and with NO count query
+	// at all - sqlmock's "no expectations" is what proves the old COUNT path is
+	// still gone.
+	restore := wireTestTierAdmitter(t, license.TierEvaluation)
+	defer restore()
+
+	ceiling := license.EvaluationLimits.OrgPolicies
+	if ceiling <= 0 {
+		t.Fatalf("this test is about a POSITIVE ceiling and the limits table says %d", ceiling)
+	}
+	for i := 1; i <= ceiling; i++ {
+		if err := admitOrgRootPolicies(context.Background(), "org-1", []string{fmt.Sprintf("filler-%02d", i)}); err != nil {
+			t.Fatalf("spending budget slot %d of %d was refused: %v", i, ceiling, err)
+		}
+	}
 
 	req := &CreatePolicyRequest{
-		Name:        "Org Policy 6",
-		Description: "One too many org policies",
+		Name:        "Org Policy Over",
+		Description: "The policy past Evaluation's ceiling",
 		Type:        "content",
 		Tier:        TierOrganization,
 		Conditions: []PolicyCondition{
@@ -562,8 +608,11 @@ func TestPolicyService_CreatePolicy_EvaluationTierOrgPolicyLimit(t *testing.T) {
 	}
 
 	tierErr := err.(*TierValidationError)
-	if tierErr.Code != ErrCodeOrgPolicyLimitExceeded {
-		t.Errorf("Expected code %s, got %s", ErrCodeOrgPolicyLimitExceeded, tierErr.Code)
+	if tierErr.Code != admission.OrgRootPolicy.Code() {
+		t.Errorf("Expected code %s, got %s", admission.OrgRootPolicy.Code(), tierErr.Code)
+	}
+	if want := fmt.Sprintf("evaluation edition admits at most %d", ceiling); !strings.Contains(tierErr.Message, want) {
+		t.Errorf("refusal must name the edition and the limit (%q): %s", want, tierErr.Message)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -908,5 +957,33 @@ func TestPolicyService_DeletePolicy_RejectSystemTier(t *testing.T) {
 	tierErr := err.(*TierValidationError)
 	if tierErr.Code != ErrCodeSystemTierImmutable {
 		t.Errorf("Expected code %s, got %s", ErrCodeSystemTierImmutable, tierErr.Code)
+	}
+}
+
+// wireTestTierAdmitter installs an Admitter over an in-memory ledger that
+// reads the given tier, so the org_root_policy admission (#3593) decides
+// without a database, and returns the restore function. An unwired admitter
+// admits by default (counted), which is the boot-window posture and would let
+// these refusal tests pass vacuously.
+func wireTestTierAdmitter(t *testing.T, tier license.Tier) func() {
+	t.Helper()
+	return installTestTierAdmitter(t, admission.New(admission.NewMemoryLedger(),
+		admission.WithTierReader(func(context.Context) license.TierRead {
+			return license.TierRead{Tier: tier, KeyPresent: tier != license.TierCommunity}
+		})))
+}
+
+// installTestTierAdmitter installs a as the process admitter and returns the
+// function that restores the one it replaced.
+func installTestTierAdmitter(t *testing.T, a *admission.Admitter) func() {
+	t.Helper()
+	prev := tierAdmitter.Load()
+	tierAdmitter.Store(a)
+	return func() {
+		if prev == nil {
+			tierAdmitter.Store(nil)
+		} else {
+			tierAdmitter.Store(prev)
+		}
 	}
 }

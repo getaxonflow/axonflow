@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -61,6 +64,13 @@ type Document struct {
 	APIVersion string       `json:"api_version"`
 	Metadata   Metadata     `json:"metadata"`
 	Policy     pdp.Document `json:"policy"`
+	// SystemControls is the organization's control of the shipped system
+	// controls, one entry per control (PRD v11 §1.5). It is carried in the
+	// signed source, so it is versioned, published, governed by separation of
+	// duties and covered by rollback and withdraw like any other edit. A
+	// document that controls nothing OMITS it, so such a document renders, and
+	// digests, exactly as it did before the section existed.
+	SystemControls []SystemControlEntry `json:"system_controls,omitempty"`
 }
 
 // Version is the author's revision number for this document.
@@ -91,20 +101,30 @@ func (d *Document) Root() pdp.Root {
 // warnings do not block and a portal has to render them next to the saved
 // document. On rejection the document is nil and the findings say why, in the
 // order a person should read them.
-func NewDocument(meta Metadata, policy pdp.Document, cat *Catalog) (*Document, Findings, error) {
+//
+// It takes the document WHOLE and writes only what this package derives:
+// api_version, and the catalog's interactive realms. Every other member - the
+// metadata, the policy, the system_controls - is the author's. A constructor
+// that took the members one by one silently dropped any member it was not
+// written to copy: the orchestrator's typed route rebuilt every document from
+// its metadata and policy, so a system_controls section was neither validated
+// nor signed there, and the publish still answered 200 with a new digest
+// (W3-I item 9, measured by runtime-e2e 3564).
+func NewDocument(in Document, cat *Catalog) (*Document, Findings, error) {
 	if err := cat.Validate(); err != nil {
 		return nil, nil, err
 	}
+	d := in
+	d.APIVersion = APIVersion
 	// The derived copy is written HERE and nowhere else. See
 	// Catalog.InteractiveRealms for why the copy exists at all and
 	// CodeCatalogDisagreement for what stops it drifting.
-	policy.InteractiveRealms = cat.InteractiveRealms()
-	d := &Document{APIVersion: APIVersion, Metadata: meta, Policy: policy}
-	findings := Validate(d, cat)
+	d.Policy.InteractiveRealms = cat.InteractiveRealms()
+	findings := Validate(&d, cat)
 	if err := findings.Error(); err != nil {
 		return nil, findings, err
 	}
-	return d, findings, nil
+	return &d, findings, nil
 }
 
 // Render returns the byte-exact canonical encoding of a document.

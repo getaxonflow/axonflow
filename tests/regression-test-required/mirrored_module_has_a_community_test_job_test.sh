@@ -86,6 +86,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export REPO_ROOT   # read by PY_PRELUDE's _tsv_modules (#3940)
 SYNC_WORKFLOW="$REPO_ROOT/.github/workflows/sync-community-repo.yml"
 COMMUNITY_WORKFLOW="$REPO_ROOT/.github/workflows/test-community.yml"
 
@@ -231,16 +232,48 @@ CD_LOOP_VAR = re.compile(r'cd\s+"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"')
 # - scoring a module the lane genuinely skips as covered, which is the #3574
 # defect this file exists to catch.
 EXEMPT_ASSIGN = re.compile(r"^[ \t]*EXEMPT[A-Za-z0-9_]*=(['\"])(.*?)\1", re.M | re.S)
+# SINCE #3940 THE LANE'S EXEMPTIONS COME FROM go-module-dispositions.tsv, not
+# from an inline EXEMPT string. Both forms are read here: the inline one is
+# still the mechanism in any lane that has not moved, and this file's whole
+# point is to mirror the lane's real behaviour rather than the behaviour it had
+# when this guard was written. When #3940 moved the standalone lane's single
+# exemption into the TSV and this helper still read only the inline form, it
+# scored platform/decision as covered by a lane that skips it - the #3574
+# defect, and this file's own control caught it.
+DISPOSITIONS_REF = re.compile(r"DISPOSITIONS=(\S*go-module-dispositions\.tsv)")
+
+
+def _tsv_modules(rel):
+    """Every module path listed in the dispositions file, whatever its disposition.
+
+    The lane skips a module if its path appears at all, so the disposition
+    column is not consulted here - matching `awk '{print $1}'` in the lane.
+    """
+    path = os.path.join(os.environ.get("REPO_ROOT", "."), rel)
+    if not os.path.isfile(path):
+        return []
+    out = []
+    with open(path) as fh:
+        lines = fh.read().splitlines()
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) >= 2 and cols[0].strip():
+            out.append(cols[0].strip())
+    return out
 
 
 def exempt_paths(code):
-    """The exact module paths the lane's EXEMPT assignments name."""
+    """The exact module paths this lane's exemption mechanism names."""
     out = []
     for _quote, value in EXEMPT_ASSIGN.findall(code):
         for entry in value.splitlines():
             entry = entry.split(" :: ", 1)[0].strip()
             if entry:
                 out.append(entry)
+    for m in DISPOSITIONS_REF.finditer(code):
+        out.extend(_tsv_modules(m.group(1)))
     return out
 PYP
 )"

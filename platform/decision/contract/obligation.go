@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package contract
 
 import (
@@ -125,6 +128,23 @@ func FamilyOf(t ObligationType) (ObligationFamily, error) {
 	return f, nil
 }
 
+// DisclosureRank reports a disclosure transform's position in the fixed
+// information-disclosure order and whether it sits on that order at all.
+//
+// It is exported so that the stateful planner (#3891) can DESCRIBE the order
+// in a trace without carrying a second copy of it. The rank is read with the
+// two-value idiom for the reason deliveryStrength gives: a bare read of an
+// undeclared type would return 0, which is the rank of field_remove - the
+// strongest possible disclosure claim, handed to a transform nobody declared.
+func DisclosureRank(t ObligationType) (rank int, comparable bool) {
+	r, ok := disclosureRank[t]
+	return r, ok
+}
+
+// IncomparableDisclosure reports whether a disclosure transform is declared
+// incomparable with the fixed order (see incomparableDisclosure).
+func IncomparableDisclosure(t ObligationType) bool { return incomparableDisclosure[t] }
+
 // Assurance is the required authentication assurance level of a step-up
 // obligation. It is a declared ORDER rather than a string, because the merge of
 // two step-up requirements takes the maximum and a lexicographic comparison of
@@ -148,6 +168,13 @@ var assuranceStrength = map[Assurance]int{
 // AllAssurances returns every declared level, weakest first.
 func AllAssurances() []Assurance {
 	return []Assurance{AssuranceLevel1, AssuranceLevel2, AssuranceLevel3}
+}
+
+// Strength returns the level's rank and whether it is declared. Two-value,
+// never bare, for the reason deliveryStrength gives.
+func (a Assurance) Strength() (int, bool) {
+	s, ok := assuranceStrength[a]
+	return s, ok
 }
 
 // Delivery is the required delivery guarantee for an audit or notification
@@ -304,7 +331,199 @@ func (o Obligation) Validate() error {
 				o.Type, o.SourcePolicy, raw, "true", "false", "false")
 		}
 	}
+	// expiry_seconds is the per-policy challenge lifetime (#3891). Same shape
+	// as the two checks above: refused on a family that would never read it,
+	// and refused when carried in a spelling that is not a positive integer,
+	// because the composition rule is "the SHORTEST expiry wins" and a value
+	// that parsed as zero would win every time and expire the challenge at
+	// issue - a deny the policy set does not require.
+	if raw, carried := o.Params[ParamExpirySeconds]; carried {
+		if fam != FamilyApproval {
+			return fmt.Errorf("obligation %q: family %q declares no challenge expiry, so the %q parameter would be read by nothing",
+				o.Type, fam, ParamExpirySeconds)
+		}
+		if _, err := parseExpirySeconds(raw); err != nil {
+			return fmt.Errorf("obligation %q from policy %q: %w", o.Type, o.SourcePolicy, err)
+		}
+	}
+	// THE STEP-UP FAMILY'S PARAMETER SET IS CLOSED, and an undeclared key is
+	// REFUSED rather than dropped.
+	//
+	// This is the same rule the two checks above apply from the other side -
+	// a parameter on a family that would not read it is refused - and it is
+	// here because composeStepUp REBUILDS the merged instruction's parameter
+	// map from `assurance` and `methods` alone. Every other key an author
+	// attached would vanish between the policy and the enforcement point with
+	// no denial and nothing in the trace, which is the defect this change
+	// fixes for the routing family. Routing has a second declared dimension
+	// (ADR-065: "intersection of allowed destinations AND required route
+	// properties"), so its extra keys are MEANINGFUL and now compose. Step-up
+	// has no second dimension - the ADR names a maximum assurance and a method
+	// intersection and nothing else - so there is no correct thing to do with
+	// an extra key except refuse it, and refusing is what stops the silent
+	// drop.
+	//
+	// Nothing in the tree emits a step-up obligation, so no shipped policy is
+	// affected; this closes the class rather than leaving a comment beside a
+	// fix for one instance of it.
+	if fam == FamilyStepUp {
+		for key := range o.Params {
+			if key == ParamAssurance || key == ParamMethods {
+				continue
+			}
+			return fmt.Errorf("obligation %q: family %q declares only %q and %q, so the %q parameter would be read by nothing and composition would drop it",
+				o.Type, fam, ParamAssurance, ParamMethods, key)
+		}
+	}
+	// THE BUDGET FAMILY'S PARAMETERS ARE REQUIRED, NOT MERELY DECLARED.
+	//
+	// A reservation is handed to a service that will take real capacity, and
+	// every field it needs to do so comes from here. Without these checks
+	// an obligation carrying NO parameters at all composed to a permit and
+	// reached the reservation service naming no budget, no counter and no
+	// amount - which is not a reservation, and the caller proceeds believing
+	// capacity was held. The typed model this vocabulary replaced enforced the
+	// same set from its own shape; the flat model has to say so.
+	if fam == FamilyRouting {
+		for key := range o.Params {
+			if key == ParamAllowedDestinations {
+				continue
+			}
+			if strings.HasPrefix(key, RoutePropertyPrefix) {
+				// The bare prefix is not a property NAME. It passes the prefix
+				// test, composes into an intersection keyed on the empty
+				// string, and would deny naming `route.` - a constraint on
+				// nothing, reported as a conflict on nothing.
+				if key == RoutePropertyPrefix {
+					return fmt.Errorf("obligation %q: %q names no route property; the prefix is a namespace and needs a property after it",
+						o.Type, key)
+				}
+				continue
+			}
+			return fmt.Errorf("obligation %q: family %q reads %q and route properties namespaced %q...; the %q parameter is neither, so it would be read by nothing - and an unnamespaced key treated as a route property turns an annotation into a deny",
+				o.Type, fam, ParamAllowedDestinations, RoutePropertyPrefix, key)
+		}
+	}
+	if fam == FamilyBudget {
+		for key := range o.Params {
+			if !budgetParams[key] {
+				return fmt.Errorf("obligation %q: family %q declares no %q parameter, so it would be read by nothing", o.Type, fam, key)
+			}
+		}
+		for _, required := range []string{ParamCounter, ParamWindow, ParamUnit, ParamAmountFrom} {
+			if strings.TrimSpace(o.Params[required]) == "" {
+				return fmt.Errorf("obligation %q from policy %q: %q is required; a reservation that does not name it cannot be discharged",
+					o.Type, o.SourcePolicy, required)
+			}
+		}
+		if _, err := parseLimit(o.Params[ParamLimit]); err != nil {
+			return fmt.Errorf("obligation %q from policy %q: %w", o.Type, o.SourcePolicy, err)
+		}
+	}
 	return nil
+}
+
+// ParamAssurance and ParamMethods are the step_up_authentication family's
+// complete parameter set: the minimum required assurance level, and the
+// authentication methods permitted to reach it. Composition takes the maximum
+// of the first and the intersection of the second.
+//
+// ParamMethods is OPTIONAL and its absence means UNCONSTRAINED - a policy may
+// require a higher assurance without also enumerating how it is reached. An
+// empty CARRIED value is a different fact ("no method is permitted") and is
+// refused, because a requirement nothing can discharge is an authoring defect
+// rather than a deny to hand an operator at runtime.
+const (
+	ParamAssurance = "assurance"
+	ParamMethods   = "methods"
+)
+
+// The quota_reservation family's closed parameter set.
+//
+// THE AMOUNT IS A REFERENCE, NOT A VALUE, and that is the whole shape of this
+// family. `amount_from` names the request attribute carrying the quantity, and
+// the reservation service resolves it per request: "a budget that reserved a
+// number the POLICY carried would not be measuring the request at all"
+// (platform/decision/conformance/reservation.go). `limit` is the cap the
+// counter is measured against, and `counter`, `window` and `unit` identify
+// what is being counted over what period in what units.
+//
+// It follows that composition CANNOT sum demands: there is no per-policy
+// quantity to add. Two obligations naming the same counter, window, unit,
+// limit and amount attribute are the SAME constraint stated twice and
+// deduplicate; two naming different limits on one counter are two constraints
+// and both must hold, which the conjunction already expresses by keeping both.
+const (
+	ParamCounter    = "counter"
+	ParamWindow     = "window"
+	ParamUnit       = "unit"
+	ParamLimit      = "limit"
+	ParamAmountFrom = "amount_from"
+)
+
+// budgetParams are the keys a quota_reservation may carry. Closed for the same
+// reason step-up's is: a key nobody reads on a reservation is an author
+// believing they constrained something.
+var budgetParams = map[string]bool{
+	ParamCounter: true, ParamWindow: true, ParamUnit: true,
+	ParamLimit: true, ParamAmountFrom: true,
+}
+
+// parseLimit reads a reservation's cap as a positive whole number.
+func parseLimit(raw string) (int64, error) {
+	trimmed := strings.TrimSpace(raw)
+	n, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil || strconv.FormatInt(n, 10) != trimmed {
+		return 0, fmt.Errorf("%s is %q, which is not a whole number", ParamLimit, raw)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s is %d; a cap of zero or less admits nothing and is a denial written as a budget", ParamLimit, n)
+	}
+	return n, nil
+}
+
+// ParamExpirySeconds is the optional approval_challenge parameter carrying the
+// attaching policy's challenge lifetime in seconds. When several policies carry
+// one, the shortest wins; when none does, the evaluator's ApprovalExpiry stamps
+// the requirement, exactly as before the parameter existed.
+const ParamExpirySeconds = "expiry_seconds"
+
+// MaxApprovalExpirySeconds is the outer bound an approval hold can be
+// coordinated with a budget reservation (ADR-065 "coordinated approval and
+// reservation expiry"). An approval whose expiry exceeds it would leave
+// capacity pinned longer than the reservation service will hold it.
+//
+// It is enforced HERE, on the live path, and not only in the executor
+// registry: the registry is consulted by the stateful planner, and a policy
+// authored with a longer expiry reaches composition without passing through
+// one. A ceiling that only the planner applies is a ceiling no deployment has.
+const MaxApprovalExpirySeconds = 7 * 24 * 60 * 60
+
+// MinApprovalExpirySeconds is the floor. Timeout is always deny, so an expiry
+// short enough that no human could answer is a denial wearing a duration, and
+// the composed minimum makes the SHORTEST authored value win - which means one
+// careless policy sets it for every other policy on the request.
+const MinApprovalExpirySeconds = 60
+
+// parseExpirySeconds reads the parameter as a whole number of seconds within
+// the declared bounds. Both bounds refuse rather than clamp: clamping would
+// silently enforce a window the author did not write, in a control whose whole
+// purpose is that a human answered inside a stated one.
+func parseExpirySeconds(raw string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(raw)
+	n, err := strconv.Atoi(trimmed)
+	if err != nil || strconv.Itoa(n) != trimmed {
+		return 0, fmt.Errorf("%s is %q, which is not a whole number of seconds", ParamExpirySeconds, raw)
+	}
+	if n < MinApprovalExpirySeconds {
+		return 0, fmt.Errorf("%s is %d, below the %d-second minimum; timeout is always deny, so a window no approver could answer within is a denial wearing a duration",
+			ParamExpirySeconds, n, MinApprovalExpirySeconds)
+	}
+	if n > MaxApprovalExpirySeconds {
+		return 0, fmt.Errorf("%s is %d, above the %d-second maximum an approval hold can be coordinated with a budget reservation",
+			ParamExpirySeconds, n, MaxApprovalExpirySeconds)
+	}
+	return time.Duration(n) * time.Second, nil
 }
 
 // parseObligationBool reads a boolean-valued obligation parameter.
@@ -326,6 +545,12 @@ func parseObligationBool(raw string) (value bool, declared bool) {
 		return false, false
 	}
 }
+
+// CanonicalParams renders the parameter map in the ONE canonical order the
+// algebra compares parameters in, so a consumer that needs a parameter identity
+// (a deduplication key, a trace line) reads the algebra's rather than
+// rendering its own.
+func (o Obligation) CanonicalParams() string { return o.paramsKey() }
 
 // paramsKey renders the parameter map canonically so that two obligations can
 // be compared for parameter identity without depending on map order.
@@ -504,16 +729,46 @@ func (a *ApprovalRequirement) Validate() error {
 }
 
 // Capability is one obligation type and version a PEP advertises.
+//
+// It is ALSO the identity an executor registers under and the identity a
+// completion-evidence record is keyed by (#3891): capability discovery, the
+// wire and execution name an obligation the same way, so a PEP that advertises
+// `field_redact@1` is handed `field_redact` at schema version 1 and its
+// receipt is filed under `field_redact@1`. Comparable, so it is a map key.
 type Capability struct {
 	Type    ObligationType `json:"type"`
 	Version int            `json:"version"`
 }
 
+// String renders the identity as `type@vN`, the spelling traces and refusals
+// use.
+func (c Capability) String() string { return fmt.Sprintf("%s@v%d", c.Type, c.Version) }
+
+// CapabilityOf returns the exact capability an obligation demands of a PEP.
+func (o Obligation) CapabilityOf() Capability {
+	return Capability{Type: o.Type, Version: o.SchemaVersion}
+}
+
 // PEPProfile is what an enforcement point advertises about itself.
 //
-// A nil profile is not "no obligations needed"; it is an enforcement point that
+// A nil profile is not "no obligations needed": it is an enforcement point that
 // has not advertised the decision profile at all, and ADR-065 invariant 12 says
-// such a plane refuses the request rather than interpreting it partially.
+// such a plane must not interpret the decision partially.
+//
+// WHAT THE ENGINE ACTUALLY DOES WITH ONE, because the sentence above used to
+// say "refuses the request" and that is measurably not it. The capability check
+// runs over MANDATORY obligations only, so a nil or empty profile against a
+// decision carrying none returns PERMIT - there was nothing to discharge and
+// nothing to refuse. The profile is a FLOOR, not an equivalent: it decides
+// whether obligations the decision does carry can be honoured, and says nothing
+// where there are none. An empty profile and a capable one differ only on
+// decisions that carry a mandatory obligation.
+//
+// The refusal invariant belongs to the ADMISSION path, where an enforcement
+// point that advertised nothing is not admitted in the first place, and not to
+// this type. Stating it here read as a guarantee this struct does not provide,
+// on the doc comment of the type a per-request profile is threaded through -
+// the first thing the next author reads.
 type PEPProfile struct {
 	ID           string       `json:"id"`
 	Capabilities []Capability `json:"capabilities"`
@@ -575,6 +830,213 @@ type ObligationOutcome struct {
 	UnplacedDetail string
 }
 
+// PayloadLeaves is the leaf field schema disclosure transforms expand over,
+// carried as a TRI-STATE rather than a bare list (#3891).
+//
+// ADR-065 keeps two facts apart everywhere it resolves an attribute: "Sarah is
+// not in Finance" (the source answered, and the answer is no) and "the
+// directory could not say" (the source did not answer). The leaf schema is the
+// same shape one level down. A mandatory transform whose target names no leaf
+// of a KNOWN schema is vacuously satisfied - an organization-wide rule to
+// redact a date of birth is honoured by an action whose response has no such
+// field - and composition REPORTS it as Unplaced rather than denying, because
+// denying would make every cross-action data policy refuse every action
+// missing one of its fields. A transform whose target cannot be resolved at
+// all, because the schema is UNKNOWN, has unknown applicability and denies.
+//
+// Before this type the bare list carried both facts in one value: an empty
+// list meant "unknown" (deny) and there was no way to say "known and empty".
+// The two shipped algebras then read a target that matched nothing as absent
+// on one path and as unknown on the other, which is the divergence #3891
+// reproduces.
+//
+// State is StateKnown or StateUnknown. StateAbsent is deliberately not a
+// schema-level state: absence is a fact about ONE TARGET against a known
+// schema, and composeDisclosure establishes it per obligation.
+type PayloadLeaves struct {
+	State AttrState `json:"state"`
+	// Leaves is the complete set of canonical leaf field paths when State is
+	// StateKnown. A broad target expands over these. It may be empty: an
+	// action whose payload has no leaves is a known fact, and every
+	// disclosure target is then absent from it.
+	Leaves []string `json:"leaves,omitempty"`
+	// Reason names why the schema could not be established when State is
+	// StateUnknown, using the same declared set the attribute plane uses.
+	Reason UnknownReason `json:"reason,omitempty"`
+}
+
+// KnownPayloadLeaves builds a known schema, possibly empty.
+func KnownPayloadLeaves(leaves ...string) PayloadLeaves {
+	return PayloadLeaves{State: StateKnown, Leaves: append([]string(nil), leaves...)}
+}
+
+// UnknownPayloadLeaves builds a schema the evaluator could not establish.
+func UnknownPayloadLeaves(reason UnknownReason) PayloadLeaves {
+	return PayloadLeaves{State: StateUnknown, Reason: reason}
+}
+
+// DeclaredPayloadLeaves converts an action registry DECLARATION into the
+// tri-state, and is the ONE place the boundary rule is stated: an entry that
+// declares no leaves has not said "this action returns nothing", it has said
+// nothing, so the schema is unknown with reason attribute_not_supplied. A
+// registry that can distinguish the two is the day this constructor loses its
+// empty branch; until then the rule lives here rather than at each of the
+// call sites that hold a `[]string`.
+func DeclaredPayloadLeaves(declared []string) PayloadLeaves {
+	if len(declared) == 0 {
+		return UnknownPayloadLeaves(ReasonNotSupplied)
+	}
+	return KnownPayloadLeaves(declared...)
+}
+
+// Validate rejects a tri-state that is not one of the two schema-level states
+// or that carries the wrong companions for its state.
+func (p PayloadLeaves) Validate() error {
+	switch p.State {
+	case StateKnown:
+		if p.Reason != "" {
+			return fmt.Errorf("payload leaves: a known schema must not carry an unknown-reason, got %q", p.Reason)
+		}
+		return nil
+	case StateUnknown:
+		if len(p.Leaves) != 0 {
+			return fmt.Errorf("payload leaves: an unknown schema must not carry leaves, got %d", len(p.Leaves))
+		}
+		if !validUnknownReason(p.Reason) {
+			return fmt.Errorf("payload leaves: unknown schema carries reason %q, which is not one of %v", p.Reason, AllUnknownReasons())
+		}
+		return nil
+	case StateAbsent:
+		return fmt.Errorf("payload leaves: %q is not a schema-level state; absence is a fact about one target against a known schema, so pass a known schema and let composition establish it per target", p.State)
+	}
+	return fmt.Errorf("payload leaves: state %q is not declared; a caller must say whether the schema is known or unknown", p.State)
+}
+
+// TransformRef names a disclosure INSTRUCTION independent of its target: what
+// to do and with which parameters. It is the unit a reviewed subsumption rule
+// relates, because a rule that named a target would apply to one field only.
+type TransformRef struct {
+	Type   ObligationType    `json:"type"`
+	Params map[string]string `json:"params,omitempty"`
+}
+
+func (r TransformRef) key() string {
+	return string(r.Type) + "\x1e" + Obligation{Params: r.Params}.paramsKey()
+}
+
+// SubsumptionRule is the REVIEWED escape hatch ADR-065 allows for otherwise
+// incomparable disclosure transforms: "incomparable unless the registry
+// contains a reviewed subsumption rule". The rule asserts that Stronger
+// reveals no more than Weaker, so on a leaf carrying both, Stronger wins and
+// Weaker is discharged by it.
+//
+// It is an input to composition and is validated by NewSubsumptionRules, never
+// by a schema or a policy: a schema is authored per obligation type and could
+// be added by anyone extending the type set, while a rule set is
+// platform-owned, reviewed once, and applies to the family.
+type SubsumptionRule struct {
+	Weaker   TransformRef `json:"weaker"`
+	Stronger TransformRef `json:"stronger"`
+	// Reason records the review that approved the rule. Required: an
+	// unexplained subsumption rule is an unreviewed one.
+	Reason string `json:"reason"`
+}
+
+// SubsumptionRules is a validated, acyclic rule set. A nil *SubsumptionRules
+// is the empty set, which is the shipped state.
+type SubsumptionRules struct {
+	stronger map[string]string // weaker key -> stronger key
+	rules    []SubsumptionRule
+}
+
+// NewSubsumptionRules validates and seals a rule set. Every refusal below
+// names the property it protects: a rule with no reason is unreviewed; a
+// reflexive rule says nothing; two rules for one weaker transform would make
+// resolution depend on which the loop visited first; a cycle would make "the
+// least-disclosing transform" depend on the starting point; and a rule naming
+// a type outside the disclosure family relates instructions the order does
+// not cover.
+func NewSubsumptionRules(rules ...SubsumptionRule) (*SubsumptionRules, error) {
+	out := &SubsumptionRules{stronger: map[string]string{}}
+	for i, r := range rules {
+		for _, side := range []struct {
+			name string
+			ref  TransformRef
+		}{{"weaker", r.Weaker}, {"stronger", r.Stronger}} {
+			fam, err := FamilyOf(side.ref.Type)
+			if err != nil {
+				return nil, fmt.Errorf("subsumption rule %d: %s side: %w", i, side.name, err)
+			}
+			if fam != FamilyDisclosure {
+				return nil, fmt.Errorf("subsumption rule %d: %s side %q belongs to family %q, and only the disclosure order admits a reviewed subsumption", i, side.name, side.ref.Type, fam)
+			}
+		}
+		if strings.TrimSpace(r.Reason) == "" {
+			return nil, fmt.Errorf("subsumption rule %d (%s -> %s) has no recorded review reason", i, r.Weaker.Type, r.Stronger.Type)
+		}
+		w, s := r.Weaker.key(), r.Stronger.key()
+		if w == s {
+			return nil, fmt.Errorf("subsumption rule %d is reflexive (%s)", i, r.Weaker.Type)
+		}
+		if prev, dup := out.stronger[w]; dup {
+			return nil, fmt.Errorf("subsumption rule %d: %s is already subsumed by %s; a second rule would make resolution order-dependent", i, r.Weaker.Type, strings.SplitN(prev, "\x1e", 2)[0])
+		}
+		out.stronger[w] = s
+		out.rules = append(out.rules, r)
+	}
+	for start := range out.stronger {
+		seen := map[string]struct{}{start: {}}
+		cur := start
+		for {
+			next, ok := out.stronger[cur]
+			if !ok {
+				break
+			}
+			if _, loop := seen[next]; loop {
+				return nil, fmt.Errorf("subsumption cycle through %s", strings.SplitN(next, "\x1e", 2)[0])
+			}
+			seen[next] = struct{}{}
+			cur = next
+		}
+	}
+	return out, nil
+}
+
+// Rules lists the reviewed rules in a stable order. Nil-safe.
+func (s *SubsumptionRules) Rules() []SubsumptionRule {
+	if s == nil {
+		return nil
+	}
+	out := append([]SubsumptionRule(nil), s.rules...)
+	sort.Slice(out, func(i, j int) bool {
+		if a, b := out[i].Weaker.key(), out[j].Weaker.key(); a != b {
+			return a < b
+		}
+		return out[i].Stronger.key() < out[j].Stronger.key()
+	})
+	return out
+}
+
+// subsumes reports whether stronger subsumes weaker through a reviewed rule,
+// following the chain. Nil-safe. Both arguments are TransformRef keys.
+func (s *SubsumptionRules) subsumes(weaker, stronger string) bool {
+	if s == nil {
+		return false
+	}
+	cur := weaker
+	for i := 0; i <= len(s.stronger); i++ {
+		next, ok := s.stronger[cur]
+		if !ok {
+			return false
+		}
+		if next == stronger {
+			return true
+		}
+		cur = next
+	}
+	return false
+}
+
 // ComposeInput carries everything composition needs. Keeping it in one struct
 // means a new input cannot be added at one call site and forgotten at another.
 type ComposeInput struct {
@@ -584,14 +1046,22 @@ type ComposeInput struct {
 	// that lives in one of several call sites is an invariant the next call
 	// site will not have.
 	Obligations []Obligation
-	// Leaves is the complete set of canonical leaf field paths of the payload
-	// the disclosure family transforms. A broad target expands over these.
-	Leaves []string
+	// Payload is the tri-state leaf schema the disclosure family transforms
+	// expand over. Read only when a disclosure obligation is present.
+	Payload PayloadLeaves
 	// PEP is the advertised enforcement profile.
 	PEP *PEPProfile
-	// ApprovalExpiry is the challenge expiry to stamp on a composed approval
-	// requirement.
+	// ApprovalExpiry is the evaluator's challenge expiry: the requirement is
+	// stamped with it unless a policy carried a shorter expiry_seconds.
 	ApprovalExpiry time.Time
+	// Now is the evaluation instant, read only to convert a carried
+	// expiry_seconds into an instant. A carried expiry with a zero Now is
+	// refused rather than defaulted: the shortest expiry cannot win if the
+	// evaluator did not say when the clock started.
+	Now time.Time
+	// Subsumption is the reviewed rule set for otherwise incomparable
+	// disclosure transforms. Nil is the empty set, which is the shipped state.
+	Subsumption *SubsumptionRules
 }
 
 // ComposeObligations applies one algebra per family and returns either a
@@ -705,7 +1175,7 @@ func composeSet(in ComposeInput, obligations []Obligation) ObligationOutcome {
 		}
 		switch fam {
 		case FamilyDisclosure:
-			out, outcome := composeDisclosure(set, in.Leaves)
+			out, outcome := composeDisclosure(set, in.Payload, in.Subsumption)
 			if outcome.Denied {
 				return outcome
 			}
@@ -713,7 +1183,7 @@ func composeSet(in ComposeInput, obligations []Obligation) ObligationOutcome {
 			unplacedDetail = append(unplacedDetail, outcome.UnplacedDetail)
 			composed = append(composed, out...)
 		case FamilyApproval:
-			req, outcome := composeApproval(set, in.ApprovalExpiry)
+			req, outcome := composeApproval(set, in.ApprovalExpiry, in.Now)
 			if outcome.Denied {
 				return outcome
 			}
@@ -769,9 +1239,10 @@ func composeSet(in ComposeInput, obligations []Obligation) ObligationOutcome {
 			if in.PEP != nil {
 				who = fmt.Sprintf("enforcement point %q advertises no %s at schema version %d", in.PEP.ID, o.Type, o.SchemaVersion)
 			}
+			detail := fmt.Sprintf("mandatory obligation %q from policy %q cannot be discharged: %s", o.Type, o.SourcePolicy, who)
 			return ObligationOutcome{
-				Denied: true, Reason: ReasonUnsupportedObligation,
-				Detail: fmt.Sprintf("mandatory obligation %q from policy %q cannot be discharged: %s", o.Type, o.SourcePolicy, who),
+				Denied: true, Reason: ReasonUnsupportedObligation, Detail: detail,
+				Err: &UndischargedObligationError{Obligation: o, Detail: detail},
 			}
 		}
 	}
@@ -793,15 +1264,31 @@ func composeSet(in ComposeInput, obligations []Obligation) ObligationOutcome {
 // annotate elsewhere; the mirror case, a broad redact plus a narrow hash, must
 // not downgrade the redaction to a hash. A per-policy "most specific target
 // wins" rule gets the second case backwards and fails open.
-func composeDisclosure(set []Obligation, leaves []string) ([]Obligation, ObligationOutcome) {
-	if len(leaves) == 0 {
+func composeDisclosure(set []Obligation, payload PayloadLeaves, rules *SubsumptionRules) ([]Obligation, ObligationOutcome) {
+	// The tri-state is read HERE, in the one place that expands targets, so
+	// that unknown and absent cannot be answered differently by two callers.
+	if err := payload.Validate(); err != nil {
 		return nil, ObligationOutcome{
-			Denied: true, Reason: ReasonObligationConflict,
-			Detail: "disclosure obligations were attached but the payload leaf schema is empty, so no target can be resolved",
+			Denied: true, Reason: ReasonSchemaViolation,
+			Detail: "disclosure obligations were attached but the evaluator's payload leaf schema is malformed: " + err.Error(),
+			Err:    err,
 		}
 	}
+	if payload.State == StateUnknown {
+		// UNKNOWN denies. A transform whose target cannot be resolved has
+		// unknown applicability, and ADR-065 invariant 4 says unknown never
+		// becomes a permit. This is the branch a bare empty list used to take
+		// silently; the detail now names why the schema is unknown.
+		return nil, ObligationOutcome{
+			Denied: true, Reason: ReasonObligationConflict,
+			Detail: fmt.Sprintf("disclosure obligations were attached but the payload leaf schema is unknown (%s), so no target can be resolved; "+
+				"unknown is not absent - a target that names no leaf of a KNOWN schema is reported, not denied", payload.Reason),
+		}
+	}
+	leaves := payload.Leaves
 	// A mandatory transform whose target covers no leaf of THIS action's
-	// declared payload is reported rather than dropped in silence.
+	// KNOWN payload is ABSENT from it, and absence is reported rather than
+	// dropped in silence.
 	//
 	// It is not a denial, and that is a judgement worth stating. An
 	// organization-wide requirement to redact a date of birth is vacuously
@@ -841,7 +1328,7 @@ func composeDisclosure(set []Obligation, leaves []string) ([]Obligation, Obligat
 		if len(cov) == 0 {
 			continue
 		}
-		chosen, outcome := chooseLeastDisclosing(cov, leaf)
+		chosen, outcome := chooseLeastDisclosing(cov, leaf, rules)
 		if outcome.Denied {
 			return nil, outcome
 		}
@@ -903,7 +1390,7 @@ func targetCovers(target, leaf string) bool {
 // apart from a vacuous match.
 func TargetCovers(target, leaf string) bool { return targetCovers(target, leaf) }
 
-func chooseLeastDisclosing(cov []Obligation, leaf string) (Obligation, ObligationOutcome) {
+func chooseLeastDisclosing(cov []Obligation, leaf string, rules *SubsumptionRules) (Obligation, ObligationOutcome) {
 	// Comparison is by INSTRUCTION. Two policies attaching the same transform
 	// with the same parameters are not in conflict because one of them marked
 	// it mandatory, so the mandatory flag is merged rather than compared.
@@ -928,6 +1415,37 @@ func chooseLeastDisclosing(cov []Obligation, leaf string) (Obligation, Obligatio
 				Detail: fmt.Sprintf("leaf %q is covered by transform %q at %d different schema versions; an enforcement point advertising one version cannot be assumed to implement another",
 					leaf, distinct[k].Type, len(vs)),
 			}
+		}
+	}
+	// A reviewed subsumption rule is applied BEFORE the order is consulted,
+	// because a rule can rescue a pair the order would deny. A transform is
+	// dropped when a rule says another transform present on this leaf reveals
+	// no more than it; the flag and the sources of every covering obligation
+	// are still merged into the winner below, so a mandatory requirement that
+	// was discharged by a stronger transform stays mandatory.
+	if len(distinct) > 1 && rules != nil {
+		keep := map[string]Obligation{}
+		for k, o := range distinct {
+			ref := TransformRef{Type: o.Type, Params: o.Params}.key()
+			dropped := false
+			for j, other := range distinct {
+				if j == k {
+					continue
+				}
+				if rules.subsumes(ref, TransformRef{Type: other.Type, Params: other.Params}.key()) {
+					dropped = true
+					break
+				}
+			}
+			if !dropped {
+				keep[k] = o
+			}
+		}
+		// Every transform subsumed by another can only happen on a cycle,
+		// which NewSubsumptionRules refuses; keeping the input unchanged keeps
+		// this on the deny path rather than applying nothing to the leaf.
+		if len(keep) > 0 {
+			distinct = keep
 		}
 	}
 	if len(distinct) == 1 {
@@ -978,16 +1496,73 @@ func chooseLeastDisclosing(cov []Obligation, leaf string) (Obligation, Obligatio
 // composeApproval takes the conjunction of every approval clause contributed by
 // every matched policy, deduplicating identical clauses without flattening
 // pools, and stamps the earliest expiry.
-func composeApproval(set []Obligation, expiry time.Time) (*ApprovalRequirement, ObligationOutcome) {
+//
+// THE SHORTEST EXPIRY WINS. A conjunction of requirements is discharged only
+// while all of them are live, and taking the longest would keep a challenge
+// open past the point one policy said it should have timed out - and timeout
+// is always deny, so extending it is the permissive direction. The evaluator's
+// own stamp (the caller's ApprovalExpiry) takes part in the same minimum.
+func composeApproval(set []Obligation, expiry, now time.Time) (*ApprovalRequirement, ObligationOutcome) {
 	req := &ApprovalRequirement{ExpiresAt: expiry}
 	seen := map[string]struct{}{}
+	var shortest time.Duration
+	shortestFrom := ""
 	for _, o := range set {
 		clause, sod, err := decodeApprovalParams(o)
 		if err != nil {
 			return nil, ObligationOutcome{Denied: true, Reason: ReasonUnsupportedObligation, Detail: err.Error()}
 		}
+		// NOTHING AN ADVISORY APPROVAL CARRIES REACHES THE REQUIREMENT.
+		//
+		// The first version of this fix gated only the EXPIRY and justified it
+		// by claiming a clause "only ever adds an approver requirement the
+		// composed challenge can still satisfy". An independent review
+		// falsified that with two probes, both reproduced here before this
+		// change: an advisory-only approval composed to a real hold
+		// (`{1 of [Group::r:nobody]}`, nothing dropped, PERMIT with an approval
+		// outstanding) so a detector alone could put a request into a CHALLENGE
+		// whose timeout is deny; and a mandatory `separation_of_duties=false`
+		// composed with an advisory `true` produced `true`, an advisory control
+		// tightening a mandatory one.
+		//
+		// A clause is not additive in the harmless direction: every clause is a
+		// conjunct, so adding one makes the challenge STRICTLY HARDER to
+		// discharge, and one naming an unsatisfiable pool makes it impossible.
+		// The obligation itself is still carried in the composed set, because
+		// an advisory instruction is recorded rather than hidden - what it may
+		// not do is bind.
+		//
+		// The parameters are still DECODED for every obligation above, so a
+		// malformed advisory approval still reaches the advisory-drop rule in
+		// ComposeObligations rather than being skipped silently.
+		if !o.Mandatory {
+			continue
+		}
 		if sod {
 			req.SeparationOfDuties = true
+		}
+		// ONLY A MANDATORY OBLIGATION MAY SHORTEN THE WINDOW.
+		//
+		// The advisory rule in ComposeObligations protects exactly one
+		// property - an advisory control must not produce a DENIAL - and it
+		// implements that by re-running composition and keeping the advisory
+		// contribution whenever the combined set does not deny. An advisory
+		// expiry does not deny, so it would sail through: measured, an
+		// advisory approval_challenge carrying expiry_seconds=1 turned a
+		// mandatory 24-hour approval window into a challenge that expires one
+		// second after issue, with DroppedAdvisory empty and nothing in the
+		// trace. Timeout is always deny, so that is a detector deciding a
+		// request cannot proceed - the failure ADR-065 forbids, arriving
+		// through the expiry instead of through a refusal.
+		if raw, carried := o.Params[ParamExpirySeconds]; carried {
+			d, err := parseExpirySeconds(raw)
+			if err != nil {
+				return nil, ObligationOutcome{Denied: true, Reason: ReasonUnsupportedObligation,
+					Detail: fmt.Sprintf("obligation %q from policy %q: %v", o.Type, o.SourcePolicy, err)}
+			}
+			if shortestFrom == "" || d < shortest {
+				shortest, shortestFrom = d, o.SourcePolicy
+			}
 		}
 		k := clause.key()
 		if _, dup := seen[k]; dup {
@@ -995,6 +1570,25 @@ func composeApproval(set []Obligation, expiry time.Time) (*ApprovalRequirement, 
 		}
 		seen[k] = struct{}{}
 		req.AllOf = append(req.AllOf, clause.canonical())
+	}
+	// NO MANDATORY APPROVAL CONTRIBUTED A CLAUSE, SO THERE IS NO HOLD.
+	//
+	// Returning an empty requirement here would fail Validate and DENY, which
+	// is the advisory-causes-a-denial failure arriving from the other side; and
+	// returning a hold with no clauses would be a challenge nobody can
+	// discharge. The correct answer to "only detectors asked for approval" is
+	// that approval was not required.
+	if len(req.AllOf) == 0 {
+		return nil, ObligationOutcome{}
+	}
+	if shortestFrom != "" {
+		if now.IsZero() {
+			return nil, ObligationOutcome{Denied: true, Reason: ReasonUnsupportedObligation,
+				Detail: fmt.Sprintf("policy %q carries %s but the evaluator supplied no clock, so the shortest expiry cannot be established", shortestFrom, ParamExpirySeconds)}
+		}
+		if candidate := now.Add(shortest); expiry.IsZero() || candidate.Before(expiry) {
+			req.ExpiresAt = candidate
+		}
 	}
 	sort.Slice(req.AllOf, func(i, j int) bool { return req.AllOf[i].key() < req.AllOf[j].key() })
 	if err := req.Validate(); err != nil {
@@ -1119,11 +1713,46 @@ func composeAuditNotify(set []Obligation) ([]Obligation, ObligationOutcome) {
 	return dedupeObligations(sortedDistinct(strongest)), ObligationOutcome{}
 }
 
-// composeRouting intersects allowed destinations. An empty intersection denies.
+// ParamAllowedDestinations is the route_restriction parameter carrying the
+// permitted destination set as a comma-separated list. Every OTHER parameter
+// on a route restriction is a route PROPERTY (`tls`, `region`, `method`) whose
+// value is the comma-separated set of permitted values for it.
+const ParamAllowedDestinations = "allowed_destinations"
+
+// RoutePropertyPrefix namespaces a route restriction's route properties.
+//
+// ADR-065 requires routing to intersect "allowed destinations AND required
+// route properties", so the family genuinely has a second, OPEN-ENDED
+// dimension - a deployment may constrain `tls`, `region`, `method` or
+// something this build has never heard of. That is why routing composes its
+// extra keys where step-up refuses them.
+//
+// Open-ended is not the same as unnamespaced, and the difference is a measured
+// defect rather than a preference. With every non-destination key treated as a
+// route property, two policies attaching an ordinary annotation - say
+// `note=authored-by-alice` and `note=authored-by-bob` - intersect to an empty
+// permitted set and DENY the request, and a single policy carrying `note=""`
+// is refused as a property with no permitted values. Neither policy said
+// anything about routing. The prefix makes the author declare the intent:
+// `route.tls` is a constraint that composes, `note` is refused as a parameter
+// nothing would read, and there is no third reading in which a comment becomes
+// a deny.
+const RoutePropertyPrefix = "route."
+
+// composeRouting intersects allowed destinations and, per key, the permitted
+// values of every required route property. An empty intersection denies.
+//
+// ADR-065's rule is "intersection of allowed destinations AND required route
+// properties". Before #3891 this function rebuilt the merged parameter map
+// with the destinations alone, so a property a policy attached (`tls=1.3`)
+// was silently dropped from the composed instruction - a requirement removed
+// on the way to the enforcement point without a denial or a warning. The
+// properties now compose under the same rule as the destinations.
 func composeRouting(set []Obligation) ([]Obligation, ObligationOutcome) {
 	var current map[string]struct{}
+	properties := map[string]map[string]struct{}{}
 	for _, o := range set {
-		allowed := splitSet(o.Params["allowed_destinations"])
+		allowed := splitSet(o.Params[ParamAllowedDestinations])
 		if len(allowed) == 0 {
 			return nil, ObligationOutcome{
 				Denied: true, Reason: ReasonUnsupportedObligation,
@@ -1132,9 +1761,29 @@ func composeRouting(set []Obligation) ([]Obligation, ObligationOutcome) {
 		}
 		if current == nil {
 			current = allowed
-			continue
+		} else {
+			current = intersect(current, allowed)
 		}
-		current = intersect(current, allowed)
+		for key, raw := range o.Params {
+			if !strings.HasPrefix(key, RoutePropertyPrefix) {
+				// Validate has already refused anything that is neither the
+				// destination set nor a namespaced property; this skip is the
+				// destinations themselves.
+				continue
+			}
+			values := splitSet(raw)
+			if len(values) == 0 {
+				return nil, ObligationOutcome{
+					Denied: true, Reason: ReasonUnsupportedObligation,
+					Detail: fmt.Sprintf("route restriction from policy %q declares route property %q with no permitted values", o.SourcePolicy, key),
+				}
+			}
+			if have, ok := properties[key]; ok {
+				properties[key] = intersect(have, values)
+			} else {
+				properties[key] = values
+			}
+		}
 	}
 	if len(current) == 0 {
 		return nil, ObligationOutcome{
@@ -1142,12 +1791,31 @@ func composeRouting(set []Obligation) ([]Obligation, ObligationOutcome) {
 			Detail: "route restrictions intersect to an empty destination set",
 		}
 	}
+	for _, key := range sortStrings(mapKeys(properties)) {
+		if len(properties[key]) == 0 {
+			return nil, ObligationOutcome{
+				Denied: true, Reason: ReasonObligationConflict,
+				Detail: fmt.Sprintf("route restrictions intersect to an empty permitted set for route property %q", key),
+			}
+		}
+	}
 	merged, outcome := mergedShell(set, "route restriction")
 	if outcome.Denied {
 		return nil, outcome
 	}
-	merged.Params = map[string]string{"allowed_destinations": joinSet(current)}
+	merged.Params = map[string]string{ParamAllowedDestinations: joinSet(current)}
+	for key, values := range properties {
+		merged.Params[key] = joinSet(values)
+	}
 	return []Obligation{merged}, ObligationOutcome{}
+}
+
+func mapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // composeStepUp takes the maximum required assurance and intersects permitted
@@ -1156,33 +1824,48 @@ func composeStepUp(set []Obligation) ([]Obligation, ObligationOutcome) {
 	maxAssurance := Assurance("")
 	maxStrength := 0
 	var methods map[string]struct{}
+	methodsSet := false
 	for _, o := range set {
-		a := Assurance(o.Params["assurance"])
+		a := Assurance(o.Params[ParamAssurance])
 		strength, declared := assuranceStrength[a]
 		if !declared {
 			return nil, ObligationOutcome{
 				Denied: true, Reason: ReasonUnsupportedObligation,
 				Detail: fmt.Sprintf("step-up requirement from policy %q declares assurance %q, which is not one of %v",
-					o.SourcePolicy, o.Params["assurance"], AllAssurances()),
+					o.SourcePolicy, o.Params[ParamAssurance], AllAssurances()),
 			}
 		}
 		if strength > maxStrength {
 			maxStrength, maxAssurance = strength, a
 		}
-		m := splitSet(o.Params["methods"])
+		// ABSENT means UNCONSTRAINED; CARRIED-AND-EMPTY is refused.
+		//
+		// A policy may require a higher assurance without enumerating how it
+		// is reached, and the typed model this replaced said so with a nil
+		// slice. Reading an absent parameter as "no method is permitted" would
+		// make every such policy an automatic deny, and would leave no way to
+		// author "aal3, by any means this deployment supports". An empty
+		// CARRIED value is the author stating the unsatisfiable thing, and it
+		// is refused at authoring rather than denied at runtime.
+		raw, carried := o.Params[ParamMethods]
+		if !carried {
+			continue
+		}
+		m := splitSet(raw)
 		if len(m) == 0 {
 			return nil, ObligationOutcome{
 				Denied: true, Reason: ReasonUnsupportedObligation,
-				Detail: fmt.Sprintf("step-up requirement from policy %q declares no permitted methods", o.SourcePolicy),
+				Detail: fmt.Sprintf("step-up requirement from policy %q carries %q with no permitted method; omit it to mean unconstrained",
+					o.SourcePolicy, ParamMethods),
 			}
 		}
-		if methods == nil {
-			methods = m
+		if !methodsSet {
+			methods, methodsSet = m, true
 			continue
 		}
 		methods = intersect(methods, m)
 	}
-	if len(methods) == 0 {
+	if methodsSet && len(methods) == 0 {
 		return nil, ObligationOutcome{
 			Denied: true, Reason: ReasonObligationConflict,
 			Detail: "step-up requirements intersect to an empty authentication method set",
@@ -1192,13 +1875,29 @@ func composeStepUp(set []Obligation) ([]Obligation, ObligationOutcome) {
 	if outcome.Denied {
 		return nil, outcome
 	}
-	merged.Params = map[string]string{"assurance": string(maxAssurance), "methods": joinSet(methods)}
+	merged.Params = map[string]string{ParamAssurance: string(maxAssurance)}
+	if methodsSet {
+		merged.Params[ParamMethods] = joinSet(methods)
+	}
 	return []Obligation{merged}, ObligationOutcome{}
 }
 
-// composeBudget takes the conjunction: every distinct reservation must succeed.
-// Reservations are not merged, because two budgets with different scopes are
-// two independent atomic operations.
+// composeBudget takes the conjunction: every applicable reservation must
+// succeed atomically.
+//
+// IT DOES NOT SUM, AND THE REASON IS THE PARAMETER MODEL RATHER THAN A
+// PREFERENCE. A reservation's quantity is not carried by the policy: the
+// obligation names an attribute with `amount_from` and the reservation service
+// resolves it from the request. There is therefore no per-policy amount to
+// add, and an implementation that summed would be adding limits - the caps -
+// which is the opposite of tightening them.
+//
+// Two obligations stating the same constraint deduplicate through
+// dedupeObligations, which merges the mandatory flag and keeps every demanding
+// policy in the source. Two stating DIFFERENT caps on one counter are two
+// constraints and both survive, which is what a conjunction means: the
+// reservation service must satisfy each, so the tighter one binds without
+// composition having to decide that here.
 func composeBudget(set []Obligation) []Obligation {
 	return dedupeObligations(set)
 }

@@ -60,9 +60,16 @@ if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then pass "clean request reached upst
 echo ""
 
 # ------------------------------------------------------------------
-# Test 2: PII request (SSN) -> expect deny (403) + mock NOT hit
+# Test 2: PII request (SSN + card) -> expect allow (200) + mock hit
+#
+# v11: the stored policy action decides; environment variables no longer
+# set detection actions. sys_pii_ssn and sys_pii_credit_card store
+# action_request=warn, so the request is allowed and the match recorded.
+# To deny it, record an organization override (Enterprise customer portal:
+# PUT /api/v1/detection-posture/pii {"action":"block"}) or change the
+# policy's action.
 # ------------------------------------------------------------------
-echo "Test 2: PII request — SSN (expect deny)"
+echo "Test 2: PII request - SSN (expect allow: stored action is warn)"
 COUNT_BEFORE=$(get_mock_count)
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$ADAPTER_URL/v1/chat/completions" \
     -H "Content-Type: application/json" \
@@ -79,17 +86,20 @@ BODY=$(echo "$RESP" | sed '$d')
 PII_TRACE=$(grep -i "x-axonflow-trace-id" /tmp/poc-headers-pii.txt 2>/dev/null | tr -d '\r' | awk '{print $2}' || true)
 COUNT_AFTER=$(get_mock_count)
 
-if [ "$HTTP_CODE" = "403" ]; then pass "PII request returns 403"; else fail "PII request returns 403 (got $HTTP_CODE)"; fi
-if echo "$BODY" | grep -q "policy_deny"; then pass "PII response contains policy_deny"; else fail "PII response contains policy_deny"; fi
+if [ "$HTTP_CODE" = "200" ]; then pass "PII request returns 200 (warn does not deny)"; else fail "PII request returns 200 (got $HTTP_CODE)"; fi
+if echo "$BODY" | grep -q "policy_deny"; then fail "PII response must not contain policy_deny"; else pass "PII response has no policy_deny"; fi
 if [ -n "$PII_TRACE" ]; then pass "PII response has trace_id header"; else fail "PII response has trace_id header"; fi
-if echo "$BODY" | grep -q "decision_id"; then pass "PII response has decision_id"; else fail "PII response has decision_id"; fi
-if [ "$COUNT_AFTER" = "$COUNT_BEFORE" ]; then pass "PII request did NOT reach upstream mock (count stayed $COUNT_BEFORE)"; else fail "PII request SHOULD NOT reach upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; fi
+if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then pass "PII request reached upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; else fail "PII request should reach upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; fi
 echo ""
 
 # ------------------------------------------------------------------
-# Test 3: SQLi request -> expect deny (403) + mock NOT hit
+# Test 3: SQLi request -> expect allow (200) + mock hit
+#
+# Every shipped sys_sqli_* row stores action_request=warn, so SQL injection
+# warns out of the box. An organization sqli=block override or a policy
+# action change turns this into a deny.
 # ------------------------------------------------------------------
-echo "Test 3: SQL injection (expect deny)"
+echo "Test 3: SQL injection (expect allow: stored action is warn)"
 COUNT_BEFORE=$(get_mock_count)
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$ADAPTER_URL/v1/chat/completions" \
     -H "Content-Type: application/json" \
@@ -106,17 +116,45 @@ BODY=$(echo "$RESP" | sed '$d')
 SQLI_TRACE=$(grep -i "x-axonflow-trace-id" /tmp/poc-headers-sqli.txt 2>/dev/null | tr -d '\r' | awk '{print $2}' || true)
 COUNT_AFTER=$(get_mock_count)
 
-if [ "$HTTP_CODE" = "403" ]; then pass "SQLi request returns 403"; else fail "SQLi request returns 403 (got $HTTP_CODE)"; fi
-if echo "$BODY" | grep -q "policy_deny"; then pass "SQLi response contains policy_deny"; else fail "SQLi response contains policy_deny"; fi
+if [ "$HTTP_CODE" = "200" ]; then pass "SQLi request returns 200 (warn does not deny)"; else fail "SQLi request returns 200 (got $HTTP_CODE)"; fi
+if echo "$BODY" | grep -q "policy_deny"; then fail "SQLi response must not contain policy_deny"; else pass "SQLi response has no policy_deny"; fi
 if [ -n "$SQLI_TRACE" ]; then pass "SQLi response has trace_id header"; else fail "SQLi response has trace_id header"; fi
-if echo "$BODY" | grep -q "decision_id"; then pass "SQLi response has decision_id"; else fail "SQLi response has decision_id"; fi
-if [ "$COUNT_AFTER" = "$COUNT_BEFORE" ]; then pass "SQLi request did NOT reach upstream mock (count stayed $COUNT_BEFORE)"; else fail "SQLi request SHOULD NOT reach upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; fi
+if [ "$COUNT_AFTER" -gt "$COUNT_BEFORE" ]; then pass "SQLi request reached upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; else fail "SQLi request should reach upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; fi
 echo ""
 
 # ------------------------------------------------------------------
-# Test 4: Traceparent propagation — send a known trace_id, verify it round-trips
+# Test 4: Destructive command -> expect deny (403) + mock NOT hit
+#
+# sys_dangerous_destructive_fs stores action_request=block, so the
+# Decision API denies and the adapter never forwards the request.
 # ------------------------------------------------------------------
-echo "Test 4: Traceparent propagation"
+echo "Test 4: Destructive command (expect deny)"
+COUNT_BEFORE=$(get_mock_count)
+RESP=$(curl -s -w "\n%{http_code}" -X POST "$ADAPTER_URL/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -D /tmp/poc-headers-deny.txt \
+    -d '{
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "user", "content": "Run rm -rf / on the payments host to free disk space"}
+        ]
+    }')
+
+HTTP_CODE=$(echo "$RESP" | tail -1)
+BODY=$(echo "$RESP" | sed '$d')
+DENY_TRACE=$(grep -i "x-axonflow-trace-id" /tmp/poc-headers-deny.txt 2>/dev/null | tr -d '\r' | awk '{print $2}' || true)
+COUNT_AFTER=$(get_mock_count)
+
+if [ "$HTTP_CODE" = "403" ]; then pass "destructive command returns 403"; else fail "destructive command returns 403 (got $HTTP_CODE)"; fi
+if echo "$BODY" | grep -q "policy_deny"; then pass "deny response contains policy_deny"; else fail "deny response contains policy_deny"; fi
+if [ -n "$DENY_TRACE" ]; then pass "deny response has trace_id header"; else fail "deny response has trace_id header"; fi
+if echo "$BODY" | grep -q "decision_id"; then pass "deny response has decision_id"; else fail "deny response has decision_id"; fi
+if [ "$COUNT_AFTER" = "$COUNT_BEFORE" ]; then pass "denied request did NOT reach upstream mock (count stayed $COUNT_BEFORE)"; else fail "denied request SHOULD NOT reach upstream mock (count $COUNT_BEFORE->$COUNT_AFTER)"; fi
+
+# ------------------------------------------------------------------
+# Test 5: Traceparent propagation - send a known trace_id, verify it round-trips
+# ------------------------------------------------------------------
+echo "Test 5: Traceparent propagation"
 KNOWN_TRACE="aabbccdd11223344aabbccdd11223344"
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$ADAPTER_URL/v1/chat/completions" \
     -H "Content-Type: application/json" \

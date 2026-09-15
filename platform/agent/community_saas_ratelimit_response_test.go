@@ -379,6 +379,11 @@ func TestWriteRateLimitErrorJSONRPC_EnvelopeShape(t *testing.T) {
 	rr := httptest.NewRecorder()
 	writeRateLimitErrorJSONRPC(rr, "test-id", "cs_test_tenant", "Free", 200)
 
+	// #4261: a 429, not a 200. The installed hooks read the envelope only
+	// from a 429 or a 403; a 200 is passed by as an ordinary result.
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429", rr.Code)
+	}
 	if got := rr.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}

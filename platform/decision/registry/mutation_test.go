@@ -230,6 +230,69 @@ func sourceMutations() []sourceMutation {
 			Test:     "TestPublicationRefusesAnUndischargeableObligation",
 			Property: "the capability is proved before the policy ships rather than by the first caller through it",
 		},
+		// THE PER-PLANE CLASS (#3884). No shipped detector is plane-dependent
+		// since #3963, so a derivation that reported an algorithmic detector as
+		// gating everywhere would pass every test over the shipped census.
+		{
+			Name: "an algorithmic detector's gating planes collapse to every plane it runs on",
+			File: "detector_census.go",
+			Old: `		for _, p := range r.ValidatorPlanes {
+			if on[p] {
+				gating = append(gating, p)
+			}
+		}`,
+			New:  `		gating = append(gating, r.Planes...)`,
+			Test: "TestAPlaneDependentCensusRowProjectsToAPlaneDependentRecord",
+			Property: "a control validated on one plane and bare on another is represented per plane, and the plane that " +
+				"disagrees is named, rather than imported as one class",
+		},
+		{
+			Name:     "the corpus stops declaring where an algorithmic detector ran bare",
+			File:     "../legacycompile/system_corpus.go",
+			Package:  "../legacycompile",
+			Old:      `	divs = append(divs, detectorPlaneDivergence(rec, cat)...)`,
+			New:      `	_ = cat`,
+			Test:     "TestAPlaneDependentDetectorIsDeclaredPerPlaneInTheCorpus",
+			Property: "a migrated policy that reads one detector verdict declares every plane whose legacy answer was the bare pattern's",
+		},
+		// THE SUPERSESSION LEDGER (#3323).
+		{
+			Name: "a pre-canonical row nobody decided about is accepted",
+			File: "supersession.go",
+			Old: `		if pre {
+			problems = append(problems, fmt.Sprintf("%s is seeded by %s, before the canonical pass`,
+			New: `		if false && pre {
+			problems = append(problems, fmt.Sprintf("%s is seeded by %s, before the canonical pass`,
+			Test:     "TestTheLedgerCensusCrossCheckRefusesEachDisagreementByName",
+			Property: "every row seeded before the canonical pass carries a recorded decision, derived from the census rather than listed",
+		},
+		{
+			Name:     "a drop is accepted on a row that enforces more than its superseders",
+			File:     "../legacycompile/supersession.go",
+			Package:  "../legacycompile",
+			Old:      `			if len(outranked) > 0 {`,
+			New:      `			if false && len(outranked) > 0 {`,
+			Test:     "TestTheShippedSupersessionDecisionsHoldAgainstTheCensus",
+			Property: "none of the five superseded rows that enforce more than their superseders can be decided drop_superseded",
+		},
+		{
+			Name:     "a disabled census row carrying a corpus policy is accepted",
+			File:     "../legacycompile/supersession.go",
+			Package:  "../legacycompile",
+			Old:      `		case !r.Enabled && own+other > 0:`,
+			New:      `		case false && !r.Enabled && own+other > 0:`,
+			Test:     "TestTheShippedCorpusRepresentsEveryCensusRowsEnabledState",
+			Property: "a ship-disabled integration seed cannot be switched on by the migration without a red",
+		},
+		{
+			Name:     "an enabled census row with no corpus policy is accepted",
+			File:     "../legacycompile/supersession.go",
+			Package:  "../legacycompile",
+			Old:      `		case r.Enabled && own == 0:`,
+			New:      `		case false && r.Enabled && own == 0:`,
+			Test:     "TestTheShippedCorpusRepresentsEveryCensusRowsEnabledState",
+			Property: "one of the five stronger superseded rows cannot be dropped from the corpus without a red",
+		},
 	}
 }
 

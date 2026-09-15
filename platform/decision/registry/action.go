@@ -2,6 +2,7 @@ package registry
 
 import (
 	"sort"
+	"strings"
 
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/pdp"
@@ -81,6 +82,12 @@ func (e Effects) CompatibilityIneligible() []string {
 type ActionRecord struct {
 	// ID is the canonical action identifier.
 	ID contract.ID `json:"id"`
+	// DisplayName is what an operator reads in place of the identifier when
+	// choosing what a policy governs (#3789). It is REQUIRED: a record without
+	// one would put a machine string in front of a person.
+	DisplayName string `json:"display_name"`
+	// Description says what the action does, for the same reader. Optional.
+	Description string `json:"description,omitempty"`
 	// Aliases are legacy connector and terminal names that resolve to this
 	// action. They are a MIGRATION surface: ADR-065 keeps string-heuristic
 	// naming only in an observable, time-bound adapter, and an alias is how
@@ -125,6 +132,10 @@ func (a ActionRecord) Validate() Findings {
 	}
 	if err := a.ID.Validate(); err != nil {
 		out = out.errorf(CodeIdentifierInvalid, subject, "%v", err)
+	}
+	if strings.TrimSpace(a.DisplayName) == "" {
+		out = out.errorf(CodeDisplayNameNotDeclared, subject,
+			"an action record names the action for an operator, and this one has no display name")
 	}
 	out = append(out, a.Posture.Validate(subject)...)
 	out = append(out, a.Effects.Validate(subject)...)

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -42,31 +34,6 @@ func TestDecisionStageForPreCheck(t *testing.T) {
 	}
 }
 
-// TestVerdictFromPreCheck covers the three-valued verdict mapping. HITL
-// takes precedence over Approved (a HITL request is also unapproved
-// pending review) so the verdict enum reflects the *reason* the
-// request was held, not just the outcome boolean.
-func TestVerdictFromPreCheck(t *testing.T) {
-	cases := []struct {
-		name         string
-		resp         PreCheckResponse
-		requiresHITL bool
-		want         string
-	}{
-		{"approved no-HITL → allow", PreCheckResponse{Approved: true}, false, "allow"},
-		{"denied no-HITL → deny", PreCheckResponse{Approved: false}, false, "deny"},
-		{"HITL beats Approved=true → needs_approval", PreCheckResponse{Approved: true}, true, "needs_approval"},
-		{"HITL beats Approved=false → needs_approval (HITL is the cause)", PreCheckResponse{Approved: false}, true, "needs_approval"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := verdictFromPreCheck(tc.resp, tc.requiresHITL); got != tc.want {
-				t.Errorf("verdictFromPreCheck() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestReasonsFromPreCheck covers reason aggregation: BlockReason is
 // authoritative, policyResult.Reason supplements only when distinct
 // (no duplicate strings on the span attribute).
@@ -86,7 +53,7 @@ func TestReasonsFromPreCheck(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reasonsFromPreCheck(tc.resp, tc.policyResult, policyStepUpResult{})
+			got := reasonsFromPreCheck(tc.resp, tc.policyResult)
 			if len(got) != len(tc.want) {
 				t.Fatalf("reasonsFromPreCheck() len=%d, want len=%d (got=%v want=%v)", len(got), len(tc.want), got, tc.want)
 			}

@@ -408,7 +408,7 @@ We would like to thank the following security researchers for responsibly disclo
 - [Organizations, Tenants, and Licenses](https://docs.getaxonflow.com/docs/identity/organizations-tenants-licenses/) - the `org_id` isolation model enforced with PostgreSQL Row-Level Security
 - [Audit logging](https://docs.getaxonflow.com/docs/governance/audit-logging/) and [Non-repudiation](https://docs.getaxonflow.com/docs/governance/non-repudiation/) - audit trail, signed and hash-chained decision records
 - [Security best practices](https://docs.getaxonflow.com/docs/security/best-practices/) - service identity and permissions, hardening checklist
-- Internal design records (enterprise repository only, not in the community mirror): `technical-docs/RLS_ARCHITECTURE.md`, `technical-docs/AUDIT_LOGGING_ARCHITECTURE.md`, `technical-docs/SERVICE_IDENTITY_ARCHITECTURE.md`
+- Internal design records (enterprise repository only, not in the community mirror): `technical-docs/architecture-decisions/ADR-053-rls-enforcement-v9.md`, `technical-docs/AUDIT_LOGGING_ARCHITECTURE.md`, `technical-docs/SERVICE_IDENTITY_ARCHITECTURE.md`
 
 ---
 

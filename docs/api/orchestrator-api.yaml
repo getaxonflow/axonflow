@@ -2,10 +2,10 @@ openapi: 3.0.3
 info:
   title: AxonFlow Orchestrator API
   description: |
-    REST API for the AxonFlow Orchestrator service - Dynamic Policy Enforcement, LLM Routing, and Multi-Agent Planning.
+    REST API for the AxonFlow Orchestrator service - Policy Enforcement on the anchored engine, LLM Routing, and Multi-Agent Planning.
 
     The Orchestrator handles:
-    - **Dynamic Policy Evaluation**: Database-backed policy rules with risk scoring
+    - **Policy Enforcement**: the anchored policy engine (ADR-065) decides each request, workflow step, plan step and LLM response from the typed policies in force; a stored dynamic policy decides none of them
     - **LLM Routing**: Intelligent routing across OpenAI, Anthropic, Bedrock, Ollama
     - **Multi-Agent Planning (MAP)**: LLM-powered task decomposition and parallel execution
     - **Response Processing**: PII detection and redaction
@@ -20,14 +20,38 @@ info:
     ```
 
     The Orchestrator receives pre-authenticated requests from the Agent and handles
-    complex processing including LLM calls and dynamic policy evaluation.
+    complex processing including LLM calls and anchored policy decisions.
+
+    ## Policy writes in v11
+
+    `migrations/core/172` makes the legacy policy tables (`static_policies`,
+    `dynamic_policies`) read-only to the application roles. The legacy policy
+    writes this service serves - create, update, delete and bulk import on
+    `/api/v1/policies`, and the same four on the Tenant Policy API in
+    `policy-api.yaml` - answer `409 LEGACY_POLICY_WRITE_FROZEN`. Policy is
+    authored through the **Typed Policy Authoring** routes below
+    (`/api/v1/typed-policies`) on every edition. Reads are unaffected: the
+    policies already stored are still listed, tested and evaluated. A
+    deployment whose connection may still write the tables (the database
+    owner; a property of the connection, not of `AXONFLOW_DB_USE_APP_ROLE`
+    alone) is not bound by the revoke. Where the connection cannot write
+    them, create, update and bulk import answer the `409` before reading
+    the request body. The
+    template apply route (`POST /api/v1/templates/{id}/apply`, in
+    `policy-api.yaml`) writes the same table and answers the same `409`.
 
     ## Internal API
 
     These endpoints are typically called by the Agent service, not directly by clients.
     For client-facing APIs, see the Agent API specification.
 
-  version: 1.1.0
+  # Tracks the platform VERSION file. These four documents describe ONE
+  # platform, so a per-spec version answered a question nobody asks and
+  # answered it wrong: agent-api sat at 2.1.0 and orchestrator-api at
+  # 1.1.0 through 139 commits between them. Kept true by
+  # tests/regression-test-required/api_spec_coverage_test.sh, and WRITTEN by
+  # scripts/docs/stamp-docs-versions.py.
+  version: 11.0.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -56,7 +80,39 @@ tags:
   - name: LLM Providers
     description: LLM provider management
   - name: Dynamic Policies
-    description: Runtime policy management
+    description: |
+      Legacy policy management on `/api/v1/policies`. Reads, tests and
+      simulation are served; writes answer `409 LEGACY_POLICY_WRITE_FROZEN` in
+      v11 (see the `LegacyPolicyWriteFrozen` response) - author policy through
+      Typed Policy Authoring instead.
+  - name: Typed Policy Authoring
+    description: |
+      The ADR-065 typed policy authoring surface, available on EVERY edition
+      (#3907). It is the write path a deployment without the Enterprise customer
+      portal uses, and the portal is one client of the same library rather than
+      the only way in.
+
+      What an edition may express is bounded by CONSTRUCTS - scope kinds, the
+      request-context attribute namespaces, obligation families - and not by the
+      signing root: every customer-authored policy on every edition is
+      organization-root. `GET /api/v1/typed-policies/edition` reports this
+      deployment's boundary and its document ceiling, so a caller can read the
+      limits rather than discover them one refusal at a time.
+
+      The organization and the author are taken from the `X-Org-ID` and
+      `X-User-ID` headers the agent gateway stamps, never from the request body:
+      the author is carried inside the signed policy source. No endpoint in this
+      family accepts an organization anywhere.
+
+      **The Enterprise customer portal serves some of these same paths with a
+      DIFFERENT handler**, and this document describes the orchestrator's. The
+      portal's `/api/v1/typed-policies/*` surface is behind a portal session and
+      `policy:write`, takes an explicit approver list resolved against the
+      organization's directory, and carries editor affordances (catalog, schema,
+      diff, artifacts, rollback) this surface does not. A caller reaches one or
+      the other by which service it addresses, never by a field in the request.
+      The two share the library, the vocabulary and the document format; they do
+      not share this specification.
   - name: Workflows
     description: Workflow execution engine
   - name: Workflow Control Plane
@@ -264,9 +320,9 @@ paths:
       summary: Process orchestrator request
       description: |
         Main processing endpoint. Handles:
-        1. Dynamic policy evaluation
+        1. Request plane: the anchored engine decides the request; a withheld request answers 403 (see `engine` and `verdict`)
         2. LLM provider routing
-        3. Response processing (PII detection)
+        3. Response plane: the anchored engine decides the LLM response (see `engine` and `verdict`)
         4. Audit logging
         5. Metrics collection
 
@@ -345,10 +401,14 @@ paths:
                   tokens_used: 350
                   cost: 0.021
                 processing_time: "1.3s"
+                engine: "anchored"
+                subject_type: "Client"
+                policy_bundle: "sha256:<the digest of the bundle that decided the response>"
+                verdict: "allowed"
         '400':
           $ref: '#/components/responses/BadRequest'
         '403':
-          description: Blocked by dynamic policy
+          description: Blocked by policy
           content:
             application/json:
               schema:
@@ -356,15 +416,19 @@ paths:
               example:
                 request_id: "req_12345"
                 success: false
-                error: "Request blocked by dynamic policy"
+                error: "Request blocked by policy"
                 policy_info:
                   allowed: false
                   applied_policies:
-                    - "high-risk-content"
-                  risk_score: 0.85
+                    - "corpus:dynamic_policies:sys__dyn__debug__restrict"
+                  risk_score: 0
                   required_actions:
-                    - "approval_required"
+                    - "blocked: explicit_constraint"
                 processing_time: "8ms"
+                engine: "anchored"
+                subject_type: "Client"
+                policy_bundle: "sha256:<the digest of the bundle that decided the request>"
+                verdict: "blocked"
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1604,7 +1668,7 @@ paths:
                     supports_streaming: true
                     requires_api_key: false
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
 
   /api/v1/llm-providers:
     get:
@@ -1648,7 +1712,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMProviderListResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
 
     post:
       tags:
@@ -1672,9 +1736,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMProviderResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '409':
           description: Provider already exists
           content:
@@ -1704,7 +1768,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMProviderResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Provider not found
           content:
@@ -1741,9 +1805,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMProviderResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Provider not found
           content:
@@ -1768,7 +1832,7 @@ paths:
         '204':
           description: Provider deleted
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Provider not found
           content:
@@ -1798,7 +1862,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMProviderHealthResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Provider not found
           content:
@@ -1862,26 +1926,27 @@ paths:
                 latency_ms: 245
                 response: "Hello!"
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Provider not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LLMProviderAPIError'
-        '503':
-          description: Provider connection failed
+        '500':
+          description: |
+            The provider connection test failed. `error.code` is `TEST_FAILED`.
+
+            This replaces a documented `503` with a `{success, error}` body that
+            the handler never emitted in any shape - handleTestProvider answers
+            a failed connection with 500 through the same coded writeError as
+            its other refusals. The 503 was found by the error-family guard,
+            which reported this operation as mixing the two families; it was
+            not mixing them, it was documenting one response that did not exist.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: false
-                  error:
-                    type: string
-                    example: "Connection timeout"
+                $ref: '#/components/schemas/LLMProviderAPIError'
 
   /api/v1/llm-providers/status:
     get:
@@ -1933,7 +1998,7 @@ paths:
                     last_check: "2025-01-03T10:30:00Z"
                     models_count: 3
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
 
   /api/v1/llm-providers/routing:
     get:
@@ -1950,7 +2015,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMRoutingConfigResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
 
     put:
       tags:
@@ -1974,15 +2039,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMRoutingConfigResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
 
   # =============================================================================
   # Policy CRUD API
   # =============================================================================
   /api/v1/policies:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: List policies
@@ -2042,10 +2108,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/PoliciesListResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
     post:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Create policy
@@ -2076,18 +2143,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/Policy'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/policies/import:
     post:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Import policies
       description: |
         Bulk import policies from JSON or YAML format.
         Supports create or update semantics based on policy_id.
+
+        On a deployment whose database connection cannot write the legacy
+        policy tables (migrations/core/172), the request is refused `409
+        LEGACY_POLICY_WRITE_FROZEN` before its body is read, whatever it
+        contains, and the refusal names the typed authoring route. An
+        owner-role deployment still imports.
       operationId: importPolicies
       parameters:
         - name: X-Tenant-ID
@@ -2137,12 +2213,15 @@ paths:
                     items:
                       type: string
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/policies/export:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Export policies
@@ -2190,10 +2269,604 @@ paths:
               schema:
                 type: string
         '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+
+  /api/v1/typed-policies/edition:
+    get:
+      tags:
+        - Typed Policy Authoring
+      summary: What this deployment may author
+      description: |
+        Reports the edition's construct boundary and its customer-authored
+        document ceiling. A deployment with no console has nothing else to read
+        the boundary from, so this exists to be consulted BEFORE a publication
+        rather than after a refusal.
+
+        `reserved` names constructs withheld for want of an edition ruling
+        rather than by one. The two have different remedies - an excluded
+        construct is an upgrade, a reserved one is an open question - so they
+        are reported separately rather than folded together.
+      operationId: getTypedAuthoringEdition
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      responses:
+        '200':
+          description: The edition boundary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  catalog:
+                    type: string
+                    description: The configured authoring vocabulary
+                    example: conformance
+                  catalog_digest:
+                    type: string
+                    description: |
+                      The vocabulary's IDENTITY rather than its name: the digest over the
+                      authoring view's actions, realms and resource types. Two snapshots with
+                      equal digests admit and refuse the same policies, and an author reading a
+                      refusal needs to know which snapshot refused them.
+                  registry_version:
+                    type: integer
+                    format: int64
+                    description: |
+                      The action and tool registry version this vocabulary carries. It is the
+                      same integer the wire carries as a decision snapshot's registry_version
+                      and a proof binding's tool registry version.
+                  catalog_fixture:
+                    type: boolean
+                    description: |
+                      True when the vocabulary is a test world rather than the deployment's
+                      own. Production activation refuses a fixture snapshot.
+                  root:
+                    type: string
+                    enum: [organization]
+                    description: |
+                      The one authority root this surface publishes under. It is
+                      fixed and is NOT the edition boundary.
+                  max_documents:
+                    type: integer
+                    description: |
+                      Customer-authored documents this edition admits per
+                      organization. -1 is unlimited.
+                    example: 20
+                  constructs:
+                    $ref: '#/components/schemas/EditionConstructReport'
+                  persistence:
+                    type: string
+                    enum: [process, database, unavailable]
+                    description: |
+                      Where a publication by THIS organization is kept.
+
+                      `database` means the artifact and its activation history
+                      are in postgres and outlive the process and the replica.
+
+                      `process` means they live in this orchestrator process
+                      only and do not survive a restart. It is the honest answer
+                      for a deployment with no database configured, which is a
+                      supported posture.
+
+                      `unavailable` means this deployment HAS a database
+                      configured for typed authoring and could not reach it.
+                      Writes are refused with 503 `storage_unavailable` rather
+                      than accepted into a store that cannot keep them, and so
+                      is the read of the active document, which the in-process
+                      view cannot answer (#4255); the other reads, this one
+                      included, are still served. It is reported
+                      separately from `process` because an outage is not a
+                      design choice, and a deployment promised durability that
+                      is not getting it must not read like one that never had
+                      it.
+
+                      Derived from the workspace the organization actually has,
+                      through the same call a publish makes, so it reports the
+                      posture a write would really get. It is the same field,
+                      with the same two values, that the customer portal's
+                      settings endpoint reports, so one deployment reads the
+                      same way through either surface.
+                    example: database
+                  signing_key_custody:
+                    type: string
+                    enum: [process]
+                    description: |
+                      Where the PRIVATE half of the signing key lives, and it is
+                      reported separately from `persistence` because it is a
+                      different fact.
+
+                      It is `process` even when `persistence` is `database`:
+                      each process mints its own key and records only the public
+                      half, so a restart cannot invalidate what was already
+                      signed - every authorized public key is loaded back - and
+                      also cannot re-sign with the old key. Conflating the two
+                      would overstate what durability buys. A durable signing
+                      identity is tracked separately.
+                    example: process
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/TypedAuthoringUnconfigured'
+
+  /api/v1/typed-policies/validate:
+    post:
+      tags:
+        - Typed Policy Authoring
+      summary: Validate a candidate document
+      description: |
+        Runs the declared save-time checks and returns every finding, ordered
+        and complete rather than first-error.
+
+        It is deliberately EDITION-INDEPENDENT: well-formedness is a fact about
+        the document and entitlement is a fact about the licence, so this
+        answers identically on every edition and the construct boundary is
+        applied at publication. Collapsing the two would leave an author unable
+        to tell a broken policy from an unlicensed one.
+      operationId: validateTypedPolicyDocument
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TypedAuthoringDocumentRequest'
+      responses:
+        '200':
+          description: |
+            The findings. `success` is false when any finding is a rejection;
+            the status is 200 either way, because a validated document that was
+            refused is a successful validation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  findings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuthoringFinding'
+        '400':
+          description: The request carries no document, or one that cannot be parsed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/TypedAuthoringUnconfigured'
+
+  /api/v1/typed-policies/publish:
+    post:
+      tags:
+        - Typed Policy Authoring
+      summary: Publish a document as a signed artifact
+      description: |
+        Admits the document against the edition's ceiling, then validates,
+        compiles, runs the publication gauntlet, signs and pins it by digest.
+
+        The ceiling is counted on the DOCUMENT ID and admission is idempotent on
+        it, so a new version of an existing document spends nothing and an
+        author at the ceiling can still edit what they hold.
+
+        Publishing names no approver and there is no field for one. On an
+        edition that carries separation of duties this endpoint therefore
+        refuses every publication with `APPROVER_IS_AUTHOR`, which is the
+        intended behaviour rather than a gap: such a deployment has the customer
+        portal, which resolves approvers against the organization's own
+        directory.
+
+        The `author` inside the returned artifact is the caller resolved from
+        `X-User-ID`; a value supplied in the request body is overwritten, since
+        the author is covered by the signature.
+      operationId: publishTypedPolicyDocument
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TypedAuthoringDocumentRequest'
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  digest:
+                    type: string
+                    description: The artifact digest. Activation names this, never a version number.
+                  version:
+                    type: integer
+                  findings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuthoringFinding'
+                  template_omissions:
+                    $ref: '#/components/schemas/TemplateOmissionReport'
+                  template_omissions_unavailable:
+                    type: string
+                    description: |
+                      Present INSTEAD OF `template_omissions` when the report could not be
+                      produced. The publication stands; this says why the omissions are not
+                      reported.
+        '400':
+          description: Malformed request, or a document carrying no document_id
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/TypedAuthoringTierLimit'
+        '422':
+          description: |
+            The publication was refused. `findings` carries the declared codes;
+            an edition boundary appears as `GROUP_SCOPE_NOT_IN_EDITION`,
+            `OBLIGATION_FAMILY_NOT_IN_EDITION`,
+            `ATTRIBUTE_NAMESPACE_NOT_IN_EDITION` or
+            `CONSTRUCT_HAS_NO_EDITION_RULING`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [document_refused, publication_refused]
+                  error:
+                    type: string
+                  findings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuthoringFinding'
+        '429':
+          description: This process holds its cap of admitted artifacts for this organization
+        '503':
+          $ref: '#/components/responses/TypedAuthoringUnavailable'
+
+  /api/v1/typed-policies/activate:
+    post:
+      tags:
+        - Typed Policy Authoring
+      summary: Activate a published digest
+      description: |
+        Promotes a published artifact to active. The activation is audited and
+        names the caller; that is required on every edition, including those
+        with no separation of duties, because an unattributed change of enforced
+        policy is what the audit trail exists to prevent.
+      operationId: activateTypedPolicyDigest
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [digest]
+              properties:
+                digest:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  activation:
+                    $ref: '#/components/schemas/TypedAuthoringActivation'
+                  template_omissions:
+                    $ref: '#/components/schemas/TemplateOmissionReport'
+                  template_omissions_unavailable:
+                    type: string
+                    description: |
+                      Present INSTEAD OF `template_omissions` when the report could not be
+                      produced. THE ACTIVATION STANDS: it has already happened, so the answer
+                      remains 200 and this says why the omissions are not reported. Where the
+                      activated artifact could not be read back it is a fixed sentence, and the
+                      store's own error is logged rather than returned.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            Refused on the STATE of the root rather than on the shape of the
+            request: the digest is not admitted, the version does not advance,
+            the parent is not the active digest, or the actor may not activate
+            this version. Reload the active version and rebase.
+        '503':
+          $ref: '#/components/responses/TypedAuthoringUnavailable'
+
+  /api/v1/typed-policies/active:
+    get:
+      tags:
+        - Typed Policy Authoring
+      summary: The document currently in force
+      description: |
+        Returns the exact byte sequence that was signed. It parses, re-renders
+        identically and recompiles to the module being enforced - all three
+        proven before the signature and re-proven on every load.
+      operationId: getActiveTypedPolicyDocument
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      responses:
+        '200':
+          description: The signed document source
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: |
+            Nothing is active on this organization's authority root (`reason:
+            nothing_active`). Answered only when the store was read and holds no
+            active document: a store that could not be read answers `503
+            storage_unavailable`, never this (#4255).
+        '500':
+          description: |
+            The document active on this organization no longer verifies on load
+            (`reason: active_unverifiable`, #4255): its signing key has been
+            de-authorized, or its signature, digest or compiled module no longer
+            holds. It is an integrity fault, not a storage outage, and a
+            document that verifies must be activated. The verification
+            error is logged, never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [active_unverifiable]
+                  error:
+                    type: string
+        '503':
+          $ref: '#/components/responses/TypedAuthoringUnavailable'
+
+  /api/v1/typed-policies/active/summary:
+    get:
+      tags:
+        - Typed Policy Authoring
+      summary: How many policies are in force on this organization, and whose
+      description: |
+        Counts the policies this organization has in force on the decide scope,
+        through the same activation the agent enforces (#4152): the published
+        document when one is active, and the implicit baseline when none is.
+
+        - `shipped`: what the platform ships.
+        - `organization`: the organization's own, including the shipped
+          controls its document re-actions and the replacements its recorded
+          detection overrides carry.
+        - `disabled`: the policies of the shipped controls its document
+          disabled; one control can bind several. These are not enforced and
+          are not in `total`.
+
+        `pack` is null and `packs_counted` is false. Only the agent loads a
+        deployment's installed policy packs, so this count leaves them out and
+        says so, rather than reporting zero. One scope is counted and named in
+        `scope`: a policy binds on every scope it applies to, so a sum across
+        scopes would count it once per scope.
+      operationId: getTypedPolicyActiveSummary
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      responses:
+        '200':
+          description: The count of the policies in force
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, scope, shipped, organization, pack, packs_counted, disabled, total]
+                properties:
+                  success:
+                    type: boolean
+                  scope:
+                    type: string
+                    enum: [decide]
+                  shipped:
+                    type: integer
+                  organization:
+                    type: integer
+                  pack:
+                    type: integer
+                    nullable: true
+                  packs_counted:
+                    type: boolean
+                  disabled:
+                    type: integer
+                  total:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: |
+            The document active on this organization no longer verifies on load
+            (`reason: active_unverifiable`), as on `GET
+            /api/v1/typed-policies/active`. The verification error is logged,
+            never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [active_unverifiable]
+                  error:
+                    type: string
+        '503':
+          description: |
+            The count cannot be given. `reason` says why:
+
+            - `catalog_not_configured`, `storage_unavailable` and
+              `key_not_loaded`: as on `GET /api/v1/typed-policies/active`. A
+              store that cannot be read is refused, never answered with a count
+              of the implicit baseline.
+            - `summary_unavailable`: what is in force could not be activated to
+              be counted, for example because the organization's recorded
+              detection posture could not be read. The cause is logged, never
+              returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [catalog_not_configured, storage_unavailable, key_not_loaded, summary_unavailable]
+                  error:
+                    type: string
+
+  /api/v1/typed-policies/system:
+    get:
+      tags:
+        - Typed Policy Authoring
+      summary: The platform's own controls, read-only
+      description: |
+        Returns the shipped system corpus: the system-root document this binary
+        activates beneath every organization document, each control with its
+        declared assurance class (enforcement, gating_risk or advisory - what
+        happens when it cannot be evaluated), and the digest an enforcing engine
+        anchors the system bundle to.
+
+        There is no write operation on this path or anywhere else: the system
+        root's one authority is the corpus this binary shipped. It does not
+        require a configured typed-authoring vocabulary, because the corpus is
+        enforced whether or not this deployment authors typed policy.
+      operationId: getTypedPolicySystemCorpus
+      parameters:
+        - $ref: '#/components/parameters/TypedAuthoringOrg'
+        - $ref: '#/components/parameters/TypedAuthoringUser'
+      responses:
+        '200':
+          description: The shipped system corpus
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  system:
+                    type: object
+                    properties:
+                      root:
+                        type: string
+                        enum: [system]
+                      version:
+                        type: integer
+                      digest:
+                        type: string
+                      authority:
+                        type: string
+                        enum: [shipped_corpus]
+                      controls:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            control:
+                              type: string
+                              description: |
+                                The corpus control this policy belongs to: the identifier an organization
+                                document's system_controls names. The variants a control ships as, one
+                                per enforcement scope's action, share it.
+                            dynamic:
+                              type: boolean
+                              description: |
+                                A shipped DYNAMIC control, which an organization may disable but not
+                                re-action.
+                            name:
+                              type: string
+                              description: The control's readable name.
+                            authority:
+                              type: string
+                            assurance:
+                              type: string
+                              enum: [enforcement, gating_risk, advisory]
+                            mandatory:
+                              type: boolean
+                            description:
+                              type: string
+                            obligations:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  type:
+                                    type: string
+                                    description: The obligation type.
+                                  target:
+                                    type: string
+                                    description: |
+                                      The canonical field path for a disclosure transform, absent for every
+                                      other family.
+                                  params:
+                                    type: object
+                                    additionalProperties:
+                                      type: string
+                                    description: |
+                                      The type's own parameters. Two obligations of the same type and target
+                                      with different params are incomparable.
+                                  mandatory:
+                                    type: boolean
+                                    description: |
+                                      A mandatory obligation DENIES when it cannot be discharged; an advisory
+                                      one is recorded and dropped.
+                                  source_policy:
+                                    type: string
+                                    description: The policy that attached this obligation.
+                                  schema_version:
+                                    type: integer
+                                    description: The obligation schema version the PEP must support.
+                      assurance_counts:
+                        type: object
+                        additionalProperties:
+                          type: integer
+                      document:
+                        type: object
+                        additionalProperties: true
+                        description: |
+                          The system document itself, as the exact canonical bytes the digest is
+                          computed over, so a client can render any field this view does not
+                          summarize without a second endpoint and without a second encoding.
+
+                          OPAQUE BY DESIGN: its interior is the typed document as published, and
+                          this response does not restate that shape. `additionalProperties: true`
+                          says so rather than leaving a reader to infer it from silence.
+        '401':
           $ref: '#/components/responses/Unauthorized'
 
   /api/v1/policies/{id}:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Get policy by ID
@@ -2218,10 +2891,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Policy'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Policy not found
     put:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Update policy
@@ -2257,12 +2931,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/Policy'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Policy not found
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
     delete:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Delete policy
@@ -2288,12 +2965,15 @@ paths:
         '204':
           description: Policy deleted
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Policy not found
+        '409':
+          $ref: '#/components/responses/LegacyPolicyWriteFrozen'
 
   /api/v1/policies/{id}/test:
     post:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Test policy against input
@@ -2334,12 +3014,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/PolicyEvaluationResult'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Policy not found
 
   /api/v1/policies/{id}/versions:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Get policy version history
@@ -2388,12 +3069,13 @@ paths:
                   count:
                     type: integer
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
           description: Policy not found
 
   /api/v1/policies/dynamic:
     get:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: List active dynamic policies
@@ -2449,6 +3131,7 @@ paths:
 
   /api/v1/policies/test:
     post:
+      deprecated: true
       tags:
         - Dynamic Policies
       summary: Test policy evaluation
@@ -2508,6 +3191,50 @@ paths:
                 type: object
 
   /api/v1/audit/search:
+    get:
+      tags:
+        - Audit
+      summary: Not supported - audit search is POST-only
+      description: |
+        THIS OPERATION ALWAYS RETURNS 405, and it is documented because it is
+        registered deliberately rather than by accident.
+
+        Audit search takes a JSON criteria body, so it is POST-only. Without an
+        explicit GET registration the request fell through to the greedy
+        `GET /api/v1/audit/{id}` with `id="search"` and answered
+        `audit record not found` - a 404 that lies about the resource and sends
+        anyone probing the API hunting for a data problem that does not exist.
+
+        A working query-string mirror is deliberately NOT offered: it would be a
+        second, silently diverging spelling of a contract the SDKs and plugins
+        already drive over POST.
+      operationId: auditSearchMethodNotAllowed
+      responses:
+        '405':
+          description: Method not allowed - use POST
+          headers:
+            Allow:
+              schema:
+                type: string
+                example: "POST, OPTIONS"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    head:
+      tags:
+        - Audit
+      summary: Not supported - audit search is POST-only
+      description: Same 405 sentinel as GET on this path; see that operation.
+      operationId: auditSearchMethodNotAllowedHead
+      responses:
+        '405':
+          description: Method not allowed - use POST
+          headers:
+            Allow:
+              schema:
+                type: string
+                example: "POST, OPTIONS"
     post:
       tags:
         - Audit
@@ -3403,16 +4130,19 @@ paths:
     post:
       tags:
         - Decisions & Overrides
-      summary: Create a session-scoped policy override
+      summary: Create a session-scoped policy override (retired in v11)
       description: |
-        Creates a time-boxed override for a static or dynamic policy
-        (ADR-044). A justification (`override_reason`, max 500 chars) is
-        mandatory. TTL is clamped server-side: default 3600s when omitted,
-        minimum 60s, hard cap 86400s (24h) — the response reports the
-        requested value and the clamp reason when clamping occurred.
+        Retired in v11 (PRD v11 §1.5, #4252). The workflow step gate no
+        longer reads an ADR-044 session override (the last deciding reader,
+        the agent's tier pass, goes with #4281), so this route writes nothing: a
+        policy is enabled, disabled or re-actioned in the organization's
+        typed document through `/api/v1/typed-policies`. The route stays
+        registered so a caller is told where the write went.
 
-        Critical-risk policies and policies with `allow_override=false`
-        cannot be overridden (403).
+        The guards that authenticate the request answer first (the agent's
+        proxy token, 403; the per-user identity, 401; the tenant, 400), then
+        every caller is answered `409 LEGACY_POLICY_WRITE_FROZEN`. The body
+        is not read. The override reads (`GET`) are unaffected.
       operationId: createPolicyOverride
       parameters:
         - name: X-User-Email
@@ -3424,7 +4154,8 @@ paths:
         - $ref: '#/components/parameters/TenantIDHeader'
         - $ref: '#/components/parameters/OrgIDHeader'
       requestBody:
-        required: true
+        required: false
+        description: Not read. The route answers the freeze before any body is decoded (#4252).
         content:
           application/json:
             schema:
@@ -3436,16 +4167,8 @@ paths:
               override_reason: "Approved incident-response exception INC-4432"
               ttl_seconds: 1800
       responses:
-        '201':
-          description: Override created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateOverrideResponse'
         '400':
-          description: |
-            Invalid body; missing/invalid policy_id, policy_type (must be
-            `static` or `dynamic`) or override_reason; or missing X-Tenant-ID
+          description: Missing X-Tenant-ID
           content:
             application/json:
               schema:
@@ -3457,23 +4180,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Policy is critical-risk or has allow_override=false
+          description: The request did not arrive through the agent gateway (proxy authentication)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Policy not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/PolicyOverrideWriteRetired'
     get:
       tags:
         - Decisions & Overrides
@@ -3588,10 +4301,14 @@ paths:
     delete:
       tags:
         - Decisions & Overrides
-      summary: Revoke a policy override
+      summary: Revoke a policy override (retired in v11)
       description: |
-        Revokes an active override (tenant-scoped). An already-revoked or
-        cross-tenant override returns 404.
+        Retired in v11 (PRD v11 §1.5, #4252). The step gate no longer
+        reads a session override (the last deciding reader, the agent's tier
+        pass, goes with #4281), so this route revokes nothing and leaves the
+        row as the record of what was granted. After the guards
+        that authenticate the request (403, 401, 400, as on `POST`), every
+        caller is answered `409 LEGACY_POLICY_WRITE_FROZEN`.
       operationId: revokePolicyOverride
       parameters:
         - name: id
@@ -3609,20 +4326,8 @@ paths:
         - $ref: '#/components/parameters/TenantIDHeader'
         - $ref: '#/components/parameters/OrgIDHeader'
       responses:
-        '200':
-          description: Override revoked
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  revoked_at:
-                    type: string
-                    format: date-time
         '400':
-          description: Missing override id or missing X-Tenant-ID header
+          description: Missing X-Tenant-ID header
           content:
             application/json:
               schema:
@@ -3633,18 +4338,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Override not found or already revoked
+        '403':
+          description: The request did not arrive through the agent gateway (proxy authentication)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/PolicyOverrideWriteRetired'
 
   /api/v1/decisions:
     get:
@@ -3883,7 +4584,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/CodedErrorResponse'
 
   /api/v1/sebi/audit/export:
     post:
@@ -3945,7 +4646,7 @@ paths:
                   org_id: 123
                   retention_days: 1825
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
 
   /api/v1/sebi/audit/export/{export_id}:
     get:
@@ -3984,27 +4685,28 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/CodedErrorResponse'
               example:
-                error_code: "ASYNC_EXPORT_NOT_IMPLEMENTED"
-                error: >-
-                  SEBI audit export is synchronous: POST /api/v1/sebi/audit/export returns the data
-                  in the response, so there is no export job to poll and no status to report.
-                  For an asynchronous, downloadable regulatory artifact use
-                  POST /api/v1/compliance/reports with regulator=sebi, then poll
-                  GET /api/v1/compliance/reports/{id}.
+                error:
+                  code: "ASYNC_EXPORT_NOT_IMPLEMENTED"
+                  message: >-
+                    SEBI audit export is synchronous: POST /api/v1/sebi/audit/export returns the data
+                    in the response, so there is no export job to poll and no status to report.
+                    For an asynchronous, downloadable regulatory artifact use
+                    POST /api/v1/compliance/reports with regulator=sebi, then poll
+                    GET /api/v1/compliance/reports/{id}.
         '400':
           description: Export ID is required
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/CodedErrorResponse'
         '401':
           description: Missing tenant ID
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/CodedErrorResponse'
 
   /api/v1/sebi/audit/retention:
     get:
@@ -5300,7 +6002,7 @@ paths:
         '307':
           description: Temporary redirect to presigned cloud storage URL
         '400':
-          description: Export not yet completed
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -6036,7 +6738,7 @@ paths:
                 status: "in_progress"
                 started_at: "2026-01-17T10:00:00Z"
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/TripletBadRequest'
     get:
       tags:
         - Workflow Control Plane
@@ -6106,7 +6808,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/WorkflowStatusResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
 
   /api/v1/workflows/{workflow_id}/steps/{step_id}/gate:
     post:
@@ -6249,8 +6951,18 @@ paths:
           description: |
             Bad request — missing step_type, invalid retry_policy, or
             idempotency_key exceeds 255 characters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripletErrorResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: |
+            The workflow, step or gate named by the path does not exist within
+            the caller's tenancy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripletErrorResponse'
         '409':
           description: |
             `IDEMPOTENCY_KEY_MISMATCH` (Issue #1673 Phase 2) — the supplied
@@ -6307,9 +7019,15 @@ paths:
         '204':
           description: Step marked completed
         '400':
-          description: idempotency_key exceeds 255 characters
+          $ref: '#/components/responses/TripletBadRequest'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: |
+            The workflow, step or gate named by the path does not exist within
+            the caller's tenancy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripletErrorResponse'
         '409':
           description: |
             `IDEMPOTENCY_KEY_MISMATCH` (Issue #1673 Phase 2) — the supplied
@@ -6338,7 +7056,7 @@ paths:
         '200':
           description: Workflow completed
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
 
   /api/v1/workflows/{workflow_id}/fail:
     post:
@@ -6389,11 +7107,11 @@ paths:
                   reason:
                     type: string
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/TripletBadRequest'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
         '409':
-          description: Workflow is already in a terminal state (code WORKFLOW_TERMINAL)
+          $ref: '#/components/responses/TripletConflict'
 
   /api/v1/workflows/{workflow_id}/abort:
     post:
@@ -6424,7 +7142,7 @@ paths:
         '200':
           description: Workflow aborted
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
 
   /api/v1/workflows/{workflow_id}/resume:
     post:
@@ -6444,7 +7162,7 @@ paths:
         '200':
           description: Workflow resumed
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
 
   /api/v1/workflows/{workflow_id}/checkpoints:
     get:
@@ -6470,7 +7188,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CheckpointListResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
 
   /api/v1/workflows/{workflow_id}/checkpoints/resume:
     post:
@@ -6480,6 +7198,14 @@ paths:
       description: |
         Re-evaluates the step gate at the last resumable checkpoint with
         current policies. The step gate uses retry_policy=reevaluate internally.
+
+        Editions: served by Evaluation **and by Enterprise**. Until #3953 it was
+        registered only on the Evaluation code path, so an Enterprise deployment
+        answered the router's `text/plain` 404 here while this document
+        described the operation unconditionally - a route that stopped working
+        on a tier UPGRADE. Enterprise additionally serves
+        POST .../checkpoints/{checkpoint_id}/resume, which this operation does
+        not replace.
 
         Identity: because this re-enters the SAME policy evaluation as
         POST .../steps/{step_id}/gate, it honours the caller identity on THIS
@@ -6532,9 +7258,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ResumeFromCheckpointResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
         '409':
-          description: Workflow not resumable (completed, no checkpoints)
+          $ref: '#/components/responses/TripletConflict'
 
   /api/v1/workflows/{workflow_id}/checkpoints/{checkpoint_id}/resume:
     post:
@@ -6543,7 +7269,8 @@ paths:
       summary: Resume workflow from specific checkpoint (Enterprise)
       description: |
         Re-evaluates the step gate at a specific checkpoint with current policies.
-        Enterprise only.
+        **Enterprise only** - it is the capability Enterprise has in addition to
+        POST .../checkpoints/resume above, which both editions serve.
 
         Identity: same contract as POST .../checkpoints/resume above - the
         caller identity on THIS request drives segment resolution, the
@@ -6595,9 +7322,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ResumeFromCheckpointResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
         '409':
-          description: Checkpoint not resumable
+          $ref: '#/components/responses/TripletConflict'
 
   /api/v1/workflows/{workflowId}/steps/{stepId}/approve:
     post:
@@ -6676,16 +7403,44 @@ paths:
                   last_attempt_at: "2026-04-22T10:00:00Z"
                 message: "Step approved"
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
         '409':
-          description: Step is not in a pending approval state
+          description: |
+            The step cannot be approved: it is not in a pending approval state
+            (`NOT_PENDING`, or `NO_APPROVAL_NEEDED` for a step that does not
+            require approval), or its approval has timed out
+            (`APPROVAL_EXPIRED`). A timed-out approval is a deny: an approval
+            after the `expires_at` of the step's approval queue row, or of a row
+            the queue has already expired, is refused and the step stays
+            pending. A step with no queue row declares no expiry.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/TripletErrorResponse'
+              examples:
+                not_pending:
+                  value:
+                    error: "not_pending"
+                    code: "NOT_PENDING"
+                    message: "Step step-2 is not awaiting approval"
+                approval_expired:
+                  value:
+                    error: "approval_expired"
+                    code: "APPROVAL_EXPIRED"
+                    message: "approval_expired: the approval for step step-2 timed out at 2026-04-22T12:00:00Z, and a timed-out approval is a deny"
+        '503':
+          description: |
+            The expiry of the step's approval could not be read, so the step is
+            not approved (fail-closed). The step stays pending, and the approval
+            can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripletErrorResponse'
               example:
-                success: false
-                error: "Step step-2 is not awaiting approval"
+                error: "approval_state_unreadable"
+                code: "APPROVAL_STATE_UNREADABLE"
+                message: "approval_state_unreadable: the approval's expiry could not be read, so the step is not approved (fail-closed)"
 
   /api/v1/workflows/{workflowId}/steps/{stepId}/reject:
     post:
@@ -6764,16 +7519,17 @@ paths:
                   last_attempt_at: "2026-04-22T10:00:00Z"
                 message: "Step rejected, workflow aborted"
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/TripletNotFound'
         '409':
           description: Step is not in a pending approval state
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/TripletErrorResponse'
               example:
-                success: false
-                error: "Step step-2 is not awaiting approval"
+                error: "not_pending"
+                code: "NOT_PENDING"
+                message: "Step step-2 is not awaiting approval"
 
   /api/v1/plans/{planId}/steps/{stepId}/approve:
     post:
@@ -6864,6 +7620,14 @@ paths:
           description: MAP step approval requires Enterprise license (community mode)
         '404':
           description: No paused execution / plan step found
+        '409':
+          description: |
+            The step cannot be approved, and the plan stays paused. On a plan
+            backed by a workflow, the workflow step is not pending, its approval
+            timed out (`approval_expired`), or its expiry could not be read
+            (`approval_state_unreadable`). On a plan paused in memory, its
+            approval timed out (`approval_expired`). A timed-out approval is a
+            deny.
         '503':
           description: HITL is not enabled in the orchestrator configuration
 
@@ -6938,6 +7702,28 @@ paths:
         Enterprise or Enterprise Plus, but a deployment that already holds
         entries can always list, approve and reject them. Community has no
         approval queue to list.
+
+        **A tier that may not list gets `404`, not `403`.** This route is
+        REGISTERED conditionally (`RegisterEnterpriseRoutes`, or the community
+        branch gated on the resolve entitlement), so on a deployment that is
+        not entitled the path is not on the router at all. The `403` below is
+        therefore NOT a tier refusal — it described one until issue #3948, and
+        that description was of a status this operation cannot produce for that
+        reason. It is the agent-gateway proxy-auth refusal, which this handler
+        raises itself, before it looks at tenancy.
+
+        Every refusal THIS HANDLER produces carries the triplet
+        `{error, code, message}` envelope — this plane's writer. Its MAP
+        counterpart uses the flat envelope throughout for the same reason in
+        reverse, and the two are documented as they are rather than converged,
+        because converging either is a wire change on that plane.
+
+        One refusal a client can receive is NOT this handler's and is not the
+        triplet: a request that does not reach the orchestrator through the
+        agent gateway is stopped by the deployment-wide internal-service gate
+        before any route matches, and that answers the FLAT envelope. It
+        applies identically to every operation in this document and is
+        therefore described here rather than repeated on each one.
       operationId: listPendingApprovals
       parameters:
         - name: limit
@@ -6968,10 +7754,46 @@ paths:
                     approval_status: "pending"
                     created_at: "2026-04-22T10:00:00Z"
                 count: 1
-        '400':
-          description: Tenant ID missing from request
+        '401':
+          description: |
+            Missing tenant or org identity. BOTH `X-Org-ID` and `X-Tenant-ID`
+            must be present and neither may be the unowned-row sentinel; they
+            are stamped by the AxonFlow Agent gateway or the customer-portal
+            proxy from a validated credential, never supplied by the client.
+
+            This was documented as `400` and has always been `401`. The
+            refusal does not depend on the resource — the handler binds the
+            caller scope before it looks at any workflow — so `401` is correct
+            and `400` never described it. The MAP counterpart now answers `401`
+            here too; it previously read `X-Tenant-ID` raw and answered `400`,
+            which is the mismatch issue #3948 records.
+
+            Note the ORDER: the proxy-auth gate below runs BEFORE this one, so
+            a request that is both unproxied and unbound is answered `403`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripletErrorResponse'
+              example:
+                error: "unauthorized"
+                code: "UNAUTHORIZED"
+                message: "Missing tenant or org identity"
         '403':
-          description: Tier does not permit approval listing
+          description: |
+            The request did not arrive through the AxonFlow Agent gateway.
+            Raised by this handler's own proxy-auth gate, which runs BEFORE the
+            tenancy bind, so it is reachable independently of `401`.
+
+            It is NOT a tier refusal: this route is registered conditionally, so
+            an unentitled deployment answers `404` (see the description above).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripletErrorResponse'
+              example:
+                error: "forbidden"
+                code: "FORBIDDEN"
+                message: "Unauthorized: request must be routed through AxonFlow Agent"
 
   /api/v1/plans/approvals/pending:
     get:
@@ -7031,12 +7853,42 @@ paths:
                     approval_status: "pending"
                     created_at: "2026-04-22T10:00:00Z"
                 count: 1
-        '400':
-          description: Tenant ID missing from request
+        '401':
+          description: |
+            Missing tenant or org identity. BOTH `X-Org-ID` and `X-Tenant-ID`
+            must be present and neither may be the unowned-row sentinel.
+
+            Documented as `400` until issue #3948, and the handler really did
+            answer `400`: it read `X-Tenant-ID` raw, never looked at
+            `X-Org-ID`, and accepted the sentinel, while the WCP endpoint this
+            one is documented as the counterpart of demanded both and refused
+            the sentinel. A reviewer UI got `200` from one and `401` from the
+            other for the same request. Both now bind the caller scope and both
+            answer `401`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Missing tenant or org identity"
         '403':
-          description: License tier does not permit approval listing (Community; Evaluation and above may list, approve and reject)
+          description: |
+            License tier does not permit approval listing (Community;
+            Evaluation and above may list, approve and reject). Unlike the WCP
+            counterpart, this route is registered unconditionally and the tier
+            gate runs INSIDE the handler, so the refusal really is a `403`
+            here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Workflow control plane unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/connectors:
     get:
@@ -7243,15 +8095,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RBIAISystem'
-    put:
+    patch:
       tags:
         - RBI Compliance
       summary: Update AI system
+      description: |
+        Partial update: only the members present in the body are applied.
+
+        PATCH, not PUT. Until #3935 this operation was documented as PUT and
+        registered as PUT, and the handler implemented only PATCH - so the
+        published contract and the router agreed with each other, both
+        disagreed with the code, and every update answered 405.
       operationId: updateAISystem
       parameters:
         - name: id
           in: path
           required: true
+          description: The AI system's identifier.
           schema:
             type: string
       requestBody:
@@ -7415,7 +8275,7 @@ paths:
                   offset:
                     type: integer
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
     post:
       tags:
         - RBI Compliance
@@ -7460,9 +8320,9 @@ paths:
                   export:
                     $ref: '#/components/schemas/RBIAuditExport'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
 
   /api/v1/rbi/audit-exports/{export_id}:
     get:
@@ -7501,9 +8361,9 @@ paths:
                   export:
                     $ref: '#/components/schemas/RBIAuditExport'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/CodedNotFound'
     delete:
       tags:
         - RBI Compliance
@@ -7533,9 +8393,9 @@ paths:
         '204':
           description: Export deleted
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/CodedNotFound'
 
   /api/v1/rbi/audit-exports/{export_id}/process:
     post:
@@ -7576,11 +8436,11 @@ paths:
                   export:
                     $ref: '#/components/schemas/RBIAuditExport'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/CodedNotFound'
 
   /api/v1/rbi/policies/templates:
     get:
@@ -8790,17 +9650,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/MediaGovernanceConfig'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '500':
-          $ref: '#/components/responses/InternalError'
+          $ref: '#/components/responses/CodedInternalError'
     put:
       tags: [Media Governance]
       summary: Update media governance configuration
       description: |
         Updates media governance configuration. Enterprise tier only.
         Community and Evaluation tiers receive a 403 TIER_RESTRICTED response.
-        To toggle system media policies on/off (available to all tiers), use the
-        Dynamic Policy API (/api/v1/dynamic-policies) instead.
+        System media policies are stored in the legacy `dynamic_policies`
+        table. Before v11 they were toggled on or off, on every tier, through
+        the Tenant Policy API (`/api/v1/tenant-policies`, deprecated spelling
+        `/api/v1/dynamic-policies`); in v11 that write answers
+        `409 LEGACY_POLICY_WRITE_FROZEN`, because `migrations/core/172` made the
+        table read-only to the application roles.
       operationId: updateMediaGovernanceConfig
       security:
         - BearerAuth: []
@@ -8818,13 +9682,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/MediaGovernanceConfig'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/CodedBadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/CodedForbidden'
         '500':
-          $ref: '#/components/responses/InternalError'
+          $ref: '#/components/responses/CodedInternalError'
 
   /api/v1/media-governance/status:
     get:
@@ -8842,9 +9706,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/MediaGovernanceStatus'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CodedUnauthorized'
         '500':
-          $ref: '#/components/responses/InternalError'
+          $ref: '#/components/responses/CodedInternalError'
 
   /api/v1/media-governance/audit/export:
     get:
@@ -8920,6 +9784,7 @@ paths:
 
   /api/v1/policies/simulate:
     post:
+      deprecated: true
       tags: [Policy Simulation]
       summary: Simulate all active policies (Evaluation+)
       description: |
@@ -9003,6 +9868,7 @@ paths:
 
   /api/v1/policies/impact-report:
     post:
+      deprecated: true
       tags: [Policy Simulation]
       summary: Generate impact report for a policy (Evaluation+)
       description: |
@@ -9087,6 +9953,7 @@ paths:
 
   /api/v1/policies/conflicts:
     post:
+      deprecated: true
       tags: [Policy Simulation]
       summary: Detect policy conflicts (Evaluation+)
       description: |
@@ -9295,6 +10162,779 @@ paths:
         '403':
           description: Feature requires Evaluation or Enterprise license
 
+  # ---------------------------------------------------------------------------
+  # Operations added by #3896: registered on the orchestrator and described by
+  # NO published document until the route-parity guard was made bidirectional.
+  # ---------------------------------------------------------------------------
+  /api/v1/compliance/reports:
+    post:
+      tags:
+        - Compliance
+      summary: Request a compliance report
+      description: |
+        Queue an asynchronous compliance report for a regulator and period. The
+        job is returned immediately with `status` and `progress`; poll
+        `GET /api/v1/compliance/reports/{id}` and then follow
+        `GET /api/v1/compliance/reports/{id}/download`.
+
+        The request body is decoded with unknown fields REJECTED and a 32 KiB
+        limit. `period_start` and `period_end` are RFC 3339.
+
+        This route is additionally gated by the tenant-wide audit export check,
+        which refuses a caller without an admin or owner role with a 403 in the
+        FLAT envelope rather than this module's own.
+      operationId: createComplianceReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                regulator:
+                  type: string
+                framework:
+                  type: string
+                period_start:
+                  type: string
+                  format: date-time
+                period_end:
+                  type: string
+                  format: date-time
+                format:
+                  type: string
+              required:
+                - regulator
+                - period_start
+                - period_end
+                - format
+      responses:
+        '202':
+          description: Report job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportJob'
+        '400':
+          description: Invalid body, period, regulator, framework or format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+        '401':
+          description: Tenant scope required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          description: Method not allowed on this collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+        '503':
+          description: The compliance report module is not available on this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+
+  /api/v1/compliance/reports/{id}:
+    get:
+      tags:
+        - Compliance
+      summary: Poll a compliance report job
+      description: |
+        Return the current state of a report job. This is the POLL shape and is
+        exempt from the tenant-wide audit-export role gate that guards the
+        create and download routes.
+      operationId: getComplianceReport
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The report job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportJob'
+        '401':
+          description: Tenant scope required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+        '404':
+          description: Report not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+
+  /api/v1/compliance/reports/{id}/download:
+    get:
+      tags:
+        - Compliance
+      summary: Download a completed compliance report
+      description: |
+        Redirects to a short-lived presigned object-storage URL. There is NO
+        response body on success - follow the `Location` header. The response
+        carries `Cache-Control: no-store` because the presigned URL is a
+        bearer credential for the report artifact.
+
+        Returns 409 when the job exists but is not yet complete, or is complete
+        with no retrievable artifact; `error_code` distinguishes the two.
+      operationId: downloadComplianceReport
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '307':
+          description: Redirect to the presigned artifact URL
+          headers:
+            Location:
+              description: Short-lived presigned URL for the report artifact.
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-store, no-cache, must-revalidate, private"
+        '401':
+          description: Tenant scope required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Report not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+        '409':
+          description: Report not completed, or its artifact is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceReportError'
+
+  /api/v1/plans/estimate:
+    post:
+      tags:
+        - Cost Management
+      summary: Estimate the cost of a plan before running it
+      description: |
+        Estimate token usage and cost for a list of workflow steps. `breakdown`
+        is returned on Evaluation tier and above; Community receives the total
+        only. A response header warns when the daily estimate quota is 80%
+        consumed.
+      operationId: estimatePlanCost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostEstimateRequest'
+      responses:
+        '200':
+          description: Cost estimate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostEstimateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Tenant scope required. NOTE - this refusal uses a third envelope, `{error, code, message}`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    example: TENANT_REQUIRED
+                  message:
+                    type: string
+        '429':
+          description: Daily cost-estimate quota exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodedErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/plans/{id}/cost:
+    get:
+      tags:
+        - Cost Management
+      summary: Get the cost estimate for a stored plan
+      operationId: getPlanCost
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization scope. Stamped by the AxonFlow Agent gateway from the validated client credential.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cost estimate for the plan, with `plan_id` populated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostEstimateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Daily cost-estimate quota exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodedErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: Planning is not enabled on this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/workflows/executions/{id}/hitl-status:
+    get:
+      tags:
+        - Workflows
+      summary: Human-in-the-loop status for a workflow execution
+      description: |
+        Report whether an execution is paused awaiting human approval, and which
+        approval it is waiting on. Available only on deployments with HITL
+        enabled; otherwise 503.
+      operationId: getHITLExecutionStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: HITL status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HITLExecutionStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: HITL is not enabled on this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/rbi/ai-systems/summary:
+    get:
+      tags:
+        - RBI Compliance
+      summary: AI system registry summary
+      operationId: getRBIAISystemSummary
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization scope. The orchestrator fails closed with 401 when it is absent or blank.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Registry summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RBIAISystemSummary'
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '500':
+          $ref: '#/components/responses/CodedInternalError'
+
+  /api/v1/rbi/validations/{id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get a model validation
+      description: Reads one RBI FREE-AI model validation record by its identifier.
+      operationId: getRBIValidation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The model validation
+          content:
+            application/json:
+              schema:
+                type: object
+                description: |
+                  RBI model validation record. The full member set is large and
+                  evolves with the RBI FREE-AI schedule; it is not enumerated
+                  here.
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+    patch:
+      tags:
+        - RBI Compliance
+      summary: Update a model validation
+      description: |
+        Partial update: only the members present in the body are applied.
+
+        PATCH, not PUT. Until #3935 this path registered PUT, which no handler
+        implements, so every update answered 405 and this operation was
+        unreachable by any verb.
+      operationId: updateRBIValidation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The model validation's identifier.
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization scope. The orchestrator fails closed with 401 when it is absent or blank.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Members of the validation record to change. Absent members are
+                left as they are.
+              additionalProperties: true
+      responses:
+        '200':
+          description: The updated model validation
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/CodedBadRequest'
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+
+  /api/v1/rbi/incidents/{id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get an AI incident
+      description: Reads one RBI FREE-AI incident record by its identifier.
+      operationId: getRBIIncident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The AI incident
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+    patch:
+      tags:
+        - RBI Compliance
+      summary: Update an AI incident
+      description: |
+        Partial update: only the members present in the body are applied.
+
+        This operation does NOT change the incident's status. Status is a
+        lifecycle transition rather than a field edit; the terminal one is
+        `POST /api/v1/rbi/incidents/{id}/resolve`.
+
+        PATCH, not PUT — see the note on `PATCH /api/v1/rbi/validations/{id}`.
+      operationId: updateRBIIncident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The incident's identifier.
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization scope. The orchestrator fails closed with 401 when it is absent or blank.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |
+                Members of the incident record to change. Absent members are
+                left as they are.
+              additionalProperties: true
+      responses:
+        '200':
+          description: The updated AI incident
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/CodedBadRequest'
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+
+  /api/v1/rbi/incidents/{id}/resolve:
+    post:
+      tags:
+        - RBI Compliance
+      summary: Resolve an AI incident
+      description: |
+        Moves the incident to `resolved`, stamps `resolved_at`, and records the
+        resolution summary.
+
+        `resolution` is required. This operation is the only writer of
+        `resolution_summary` on an incident record — `PATCH
+        /api/v1/rbi/incidents/{id}` does not carry the field — so an incident
+        resolved without one could never acquire it afterwards.
+
+        Registered since the module's first release and unserved until #3935:
+        the handler's sub-route switch had no case for `resolve`, so every
+        request answered 405.
+      operationId: resolveRBIIncident
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The incident's identifier.
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization scope. The orchestrator fails closed with 401 when it is absent or blank.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - resolution
+              properties:
+                resolution:
+                  type: string
+                  minLength: 1
+                  description: How the incident was resolved. Stored as `resolution_summary`.
+      responses:
+        '200':
+          description: The resolved AI incident
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/CodedBadRequest'
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+
+  /api/v1/rbi/killswitches/{id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get a kill switch
+      operationId: getRBIKillSwitch
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The kill switch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+
+  /api/v1/rbi/reports/{id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get a board report
+      description: |
+        Only GET is served on this path, and that is the whole of it.
+
+        There is no update-report operation here under any verb: a board
+        report's mutations are the `/submit`, `/approve` and `/reject`
+        sub-routes. Deletion is implemented in the handler and deliberately not
+        registered — whether an RBI FREE-AI board report may be destroyed over
+        the API is a retention decision, tracked separately.
+      operationId: getRBIBoardReport
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The board report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+
+  /api/v1/rbi/reports/{id}/submit:
+    post:
+      tags:
+        - RBI Compliance
+      summary: Submit a board report for approval
+      operationId: submitRBIBoardReport
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: The submitted board report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/CodedBadRequest'
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+
+  /api/v1/rbi/audit-exports/{export_id}/download:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Download an RBI audit export
+      description: |
+        TWO MUTUALLY EXCLUSIVE OUTCOMES, and a client must handle both. When
+        cloud storage is configured the response is a 307 redirect to a
+        presigned URL; otherwise the file bytes are streamed inline with a
+        `Content-Disposition: attachment` header. Unlike the compliance-report
+        download, the redirect here does NOT set `Cache-Control: no-store`.
+      operationId: downloadRBIAuditExport
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The export file, streamed inline
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: 'attachment; filename="export.json"'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '307':
+          description: Redirect to the presigned export URL
+          headers:
+            Location:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/CodedUnauthorized'
+        '404':
+          $ref: '#/components/responses/CodedNotFound'
+        '500':
+          $ref: '#/components/responses/CodedInternalError'
+
+  /api/v1/rbi/policies/templates/{id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get an RBI policy template
+      description: |
+        Static, compiled-in template data. This route requires NO organization
+        scope, and its errors are `text/plain` rather than either JSON envelope
+        - it is one of only two routes in the RBI module that use http.Error.
+      operationId: getRBIPolicyTemplate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The policy template
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RBIPolicyTemplate'
+        '400':
+          description: Template ID required
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: Template not found
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/rbi/policies/categories:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List RBI policy template categories
+      description: |
+        Static, compiled-in category data with the templates nested under each
+        category. Requires no organization scope; errors are `text/plain`.
+      operationId: listRBIPolicyCategories
+      responses:
+        '200':
+          description: The categories, each carrying its templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RBIPolicyTemplateCategory'
+        '405':
+          description: Method not allowed
+          content:
+            text/plain:
+              schema:
+                type: string
+
 components:
   headers:
     # Single source of truth for the RBAC read-scope diagnostic header
@@ -9352,6 +10992,33 @@ components:
         example: tenant
 
   parameters:
+    # The typed-authoring surface's two identity headers (#3907). Both are
+    # stamped by the agent gateway - the org from the validated licence, the
+    # user from the authenticated caller - and neither can be supplied by the
+    # request body: the org selects the isolation boundary and the user is
+    # signed into the policy source as its author.
+    TypedAuthoringOrg:
+      name: X-Org-ID
+      in: header
+      required: true
+      description: |
+        The organization, stamped by the agent gateway from the validated
+        licence. There is no path, query or body field on any endpoint in this
+        family by which a caller can name an organization, so reading another
+        organization's documents is not a check that could be forgotten - it is
+        a request that cannot be expressed.
+      schema:
+        type: string
+    TypedAuthoringUser:
+      name: X-User-ID
+      in: header
+      required: true
+      description: |
+        The authoring principal, stamped by the agent gateway. It is carried
+        INSIDE the signed policy source as the author, so a value supplied in a
+        request body is overwritten with this one.
+      schema:
+        type: string
     # Reusable header / query parameters referenced from path operations
     # via the standard OpenAPI components.parameters mechanism. Each
     # declaration mirrors the inline shape used in older endpoints (e.g.
@@ -9420,6 +11087,198 @@ components:
         default: 0
 
   schemas:
+    TypedAuthoringDocumentRequest:
+      type: object
+      required: [document]
+      description: |
+        A candidate document and the author-declared fixtures the publication
+        gauntlet runs against it. A publication with no fixtures is refused by
+        name: no policy in the document has been shown to do anything.
+      properties:
+        document:
+          type: object
+          description: |
+            An `authoring.axonflow.com/v1` document. It is the authoring model
+            itself rather than a mirror of it, so a field added to the policy
+            vocabulary is authorable here without this schema changing. Its
+            members are `api_version`, `metadata`, `policy` and, optionally,
+            `system_controls` (PRD v11 §1.5), and every member the author sent is
+            validated and signed. `GET /api/v1/typed-policies/schema` serves the
+            JSON schema of all of them.
+        fixtures:
+          type: array
+          items:
+            type: object
+    EditionConstructReport:
+      type: object
+      description: |
+        What this edition may spend. Derived from the edition profile, whose
+        every row cites a row of the Edition Capability Boundaries PRD.
+      properties:
+        edition:
+          type: string
+          enum: [community, evaluation, enterprise]
+        obligation_families:
+          type: array
+          description: |
+            The obligation families this edition may attach. Community and
+            Evaluation carry disclosure and audit/notify; route restriction is
+            Evaluation and above; approval and budget are Enterprise.
+          items:
+            type: string
+        attribute_namespaces:
+          type: array
+          description: |
+            The request-context attribute namespaces a condition may read.
+            Community carries `principal`, `action`, `resource` and `args`;
+            Evaluation adds `env` and `signal`; Enterprise adds `agent` and
+            `state`.
+          items:
+            type: string
+        group_scope:
+          type: boolean
+          description: |
+            Whether a policy may be scoped to a group. Group scope resolves
+            through the nested group graph, which is Enterprise.
+        separation_of_duties:
+          type: boolean
+          description: |
+            Whether a publication needs an approver other than the author and an
+            activation an actor other than that author. True on Enterprise, and
+            true on ANY edition when `tier_established` is false. Where it is
+            false, a sole administrator can publish and activate; nothing else
+            is relaxed, and every activation is still attributed and audited.
+        tier_established:
+          type: boolean
+          description: |
+            Whether this process could DETERMINE the deployment's licensed
+            tier, or fell back to Community because it could not. False means
+            either that a licence key was present and did not verify, or that
+            none reached this process on a deployment whose `DEPLOYMENT_MODE`
+            is entitled to Enterprise.
+
+            When it is false the two fields above disagree on purpose:
+            `edition` reads `community`, because losing a construct loses a
+            capability and the smallest boundary is the safe fallback for one;
+            `separation_of_duties` reads true regardless, because losing an
+            approver loses a control and the smallest boundary is the
+            PERMISSIVE one there. Read together they say "this deployment may
+            be entitled to more than it is being given, and nothing is being
+            relaxed while that is unresolved". The remedy is an operator's:
+            give this process `AXONFLOW_LICENSE_KEY`, or re-issue the licence.
+        reserved:
+          type: array
+          description: |
+            Constructs withheld for want of an edition ruling rather than by
+            one, reported separately because an excluded construct is an upgrade
+            and a reserved one is an open question.
+          items:
+            type: string
+    TemplateOmissionReport:
+      type: object
+      description: |
+        Which of the organization template's policies a document does not carry. The
+        document an organization activates REPLACES the implicit bundle's template,
+        so each policy it omits stops deciding for that organization; publish and
+        activation return this report so that dropping a template control is a
+        visible edit rather than a silent one.
+
+        It counts POLICIES, not controls: a template redaction ships as two policies
+        bound by discharge, and a document carrying only one of them drops the
+        control on the other's scopes.
+      properties:
+        omitted:
+          type: array
+          items:
+            type: string
+          description: The template policy identifiers this document does not carry.
+        of:
+          type: integer
+          description: How many policies the organization template ships.
+        message:
+          type: string
+          description: The same fact as a sentence, naming each omitted policy.
+    TypedAuthoringActivation:
+      type: object
+      description: |
+        One activation record. Promote, rollback and withdraw each append one, and
+        the history is the chain they form.
+      properties:
+        kind:
+          type: string
+          description: Which activation this is - a promote, a rollback or a withdrawal.
+        root:
+          type: string
+          description: The authority root the activation applies to.
+        digest:
+          type: string
+          description: |
+            The artifact digest activated. An activation names a DIGEST and never a
+            version number, so "which policy produced this decision" survives the
+            next edit.
+        previous_digest:
+          type: string
+          description: |
+            The entry this activation chains onto: the digest the previous
+            activation named. Absent on the first activation an organization
+            performs. It is what makes the history a chain rather than a list.
+
+            A promotion and a rollback chain onto the ledger's TIP; a withdrawal
+            names the document it removes, which is the active one. The tip and
+            the active digest differ only after a withdrawal, which appends an
+            entry naming the shipped organization template while leaving nothing
+            active - so the promotion after a withdrawal chains onto that entry
+            rather than onto a document.
+        document_id:
+          type: string
+          description: The document identifier the activated artifact carries.
+        document_version:
+          type: integer
+          description: |
+            The activated document's own version. A rollback re-activates an earlier
+            version and does NOT advance it.
+        actor:
+          type: object
+          description: |
+            The principal that performed the activation, as the gateway resolved the
+            caller - never as the request claimed.
+          properties:
+            kind:
+              type: string
+            type:
+              type: string
+            qualifier:
+              type: string
+            local:
+              type: string
+        at:
+          type: string
+          format: date-time
+          description: When the activation was recorded, in UTC.
+        reason:
+          type: string
+          description: |
+            The reason the actor gave. A withdrawal and a rollback both require one:
+            an unexplained return to the shipped set wants explaining as much as a
+            rollback does.
+    AuthoringFinding:
+      type: object
+      description: One declared save-time or publication result.
+      properties:
+        code:
+          type: string
+        severity:
+          type: string
+          enum: [reject, warn]
+        policy_id:
+          type: string
+        summary:
+          type: string
+          description: The declared, code-level sentence, renderable verbatim.
+        detail:
+          type: string
+          description: What was wrong in this document, naming the offending value.
+
     HealthResponse:
       type: object
       description: |
@@ -9516,18 +11375,18 @@ components:
           additionalProperties:
             type: string
           example:
-            python: "9.3.0"
-            typescript: "9.3.0"
-            go: "9.3.0"
-            java: "9.3.0"
-            rust: "0.10.0"
+            python: "9.4.0"
+            typescript: "9.4.0"
+            go: "9.4.0"
+            java: "9.4.0"
+            rust: "0.11.0"
 
     PluginCompatInfo:
       type: object
       description: |
         Plugin version pins, mirroring SDKCompatInfo. Keys are the canonical
-        plugin ids (e.g. openclaw, claude-code, cursor, codex,
-        claude-desktop). Versions below the minimum receive a
+        plugin ids (openclaw, claude-code, cursor, codex, claude-desktop,
+        n8n, google-adk). Versions below the minimum receive a
         downgrade-warning header on every governed call.
       properties:
         min_plugin_version:
@@ -9541,17 +11400,21 @@ components:
             cursor: "1.4.0"
             codex: "1.4.0"
             claude-desktop: "0.2.0"
+            n8n: "1.2.0"
+            google-adk: "1.2.0"
         recommended_plugin_version:
           type: object
           additionalProperties:
             type: string
           description: Per-plugin version this platform was tested against.
           example:
-            openclaw: "2.9.0"
-            claude-code: "1.12.0"
-            cursor: "1.8.0"
-            codex: "1.8.0"
+            openclaw: "2.9.1"
+            claude-code: "1.13.0"
+            cursor: "1.9.0"
+            codex: "1.9.0"
             claude-desktop: "0.4.0"
+            n8n: "1.2.1"
+            google-adk: "1.3.0"
 
     PlanStatusResponse:
       type: object
@@ -9879,6 +11742,40 @@ components:
           description: Media governance analysis results (present when media was submitted)
           allOf:
             - $ref: '#/components/schemas/MediaAnalysisResponse'
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            The engine that decided: `anchored`, the ADR-065 decision plane
+            (PRD v11 §1.1). On a request the request plane withholds (403,
+            `error` "Request blocked by policy") it names that decision; otherwise
+            it names the response plane's verdict on the LLM response, decided
+            over the shared engine's detector facts. Omitted on an answer no
+            anchored decision covers.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the request or response was decided for.
+            The orchestrator admits the client credential the agent's proxy
+            authentication forwards, so it is `Client` on every edition.
+            Omitted on an answer withheld before a subject was admitted, and
+            wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided the request or the
+            response. Omitted wherever `subject_type` is.
+        verdict:
+          type: string
+          enum: [allowed, redacted, blocked]
+          description: |
+            The verdict `engine` names: `allowed` (released as the provider
+            sent it), `redacted` (released masked, as a `field_redact`
+            obligation required; `data` carries the masked content) or
+            `blocked` (withheld: `success` is false and `error` says so; a
+            request the request plane withholds is always `blocked`). A request
+            or response that could not be decided is withheld, never released.
+            Omitted wherever `engine` is.
 
     PolicyEvaluationResult:
       type: object
@@ -9943,20 +11840,11 @@ components:
         applied_policies_detail:
           type: array
           description: |
-            Structured mirror of `applied_policies` carrying risk and override
-            semantics, so a consumer can decide override eligibility without a
-            second query.
+            Structured mirror of `applied_policies` carrying each matched
+            policy's risk level and allow_override metadata, without a second
+            query. No session override is applied to a result in v11 (#4252).
           items:
             $ref: '#/components/schemas/AppliedPolicyDetail'
-        override_applied:
-          type: boolean
-          description: True when a session override flipped a deny into an allow.
-        override_id:
-          type: string
-          description: Identifier of the override that was applied.
-        override_reason:
-          type: string
-          description: Reason recorded with the applied override.
         preferred_provider:
           type: string
           description: LLM provider a matched routing policy prefers.
@@ -10121,6 +12009,30 @@ components:
           description: Policy evaluation result for the plan execution (Issue #1020)
           allOf:
             - $ref: '#/components/schemas/PolicyEvaluationResult'
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            The engine that decided a refused plan: `anchored`, the ADR-065
+            decision plane (PRD v11 §1.1). Present on the policy refusal (HTTP
+            403) only, with the same meaning as on `/api/v1/process`.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the plan was decided for. The orchestrator
+            admits the client credential the agent's proxy authentication
+            forwards, so it is `Client` on every edition. Omitted on a refusal
+            made before a subject was admitted, and wherever `engine` is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided the plan. Omitted
+            wherever `subject_type` is.
+        verdict:
+          type: string
+          enum: [blocked]
+          description: |
+            `blocked` on the policy refusal. Omitted wherever `engine` is.
         complexity:
           type: string
           description: |
@@ -10446,6 +12358,11 @@ components:
           type: string
         organization_id:
           type: string
+          description: |
+            The organisation that owns this policy. This is the current wire
+            field name and it is not deprecated: it is unrelated to a database
+            column of the same name that was retired in an earlier release. The
+            two share a name and nothing else.
         created_by:
           type: string
         created_at:
@@ -11394,6 +13311,24 @@ components:
           description: Policies that matched and contributed to the decision (Issue #1021)
           items:
             $ref: '#/components/schemas/PolicyMatch'
+        engine:
+          type: string
+          enum: [anchored]
+          description: |
+            The engine that decided the step: `anchored`, the ADR-065 decision
+            plane (PRD v11 §1.1). Omitted on a cached replay (`cached: true`),
+            which reproduces a stored decision without deciding again.
+        subject_type:
+          type: string
+          description: |
+            The type of principal the step was decided for. Omitted on a
+            decision made before a subject was admitted, and wherever `engine`
+            is.
+        policy_bundle:
+          type: string
+          description: |
+            The digest of the policy set that decided the step. Omitted
+            wherever `subject_type` is.
         cached:
           type: boolean
           deprecated: true
@@ -11897,14 +13832,334 @@ components:
         healthy:
           type: boolean
 
+    ComplianceReportError:
+      type: object
+      description: |
+        The compliance-report facade's error envelope. It is neither the flat
+        `{success, error}` nor the coded `{error: {code, message}}` family: it is
+        a third, MODULE-LOCAL shape that carries `report_state` alongside the
+        code, because a caller that gets a refusal needs to distinguish "this
+        regulator is not enabled" from "it is enabled and the period is empty"
+        from "the report exists but is not finished". Documented as its own
+        shape rather than forced into one of the two families, because a
+        document that claims a shape the handler does not emit is the defect
+        this reconciliation exists to remove.
+      properties:
+        error:
+          type: string
+        error_code:
+          type: string
+          enum: [UNKNOWN_REGULATOR, UNKNOWN_FRAMEWORK, UNSUPPORTED_FORMAT, INVALID_PERIOD,
+                 INVALID_BODY, SCOPE_REQUIRED, REPORT_NOT_FOUND, REGULATOR_NOT_AVAILABLE,
+                 COMPLIANCE_REPORT_REQUIRES_EVALUATION_LICENSE, COMPLIANCE_REPORT_LIMIT_EXCEEDED,
+                 REPORT_NOT_COMPLETED, REPORT_ARTIFACT_UNAVAILABLE, INTERNAL_ERROR]
+        report_state:
+          type: string
+          enum: ["", not_available, enabled_empty, populated]
+          description: Omitted when the refusal does not depend on report state.
+      required:
+        - error
+        - error_code
+    ComplianceReportJob:
+      type: object
+      description: |
+        An asynchronous compliance-report job. `org_id`, `tenant_id` and
+        `storage_key` are deliberately NOT on the wire (json:"-" in the platform
+        type); the tenancy is the caller's own and the storage key is internal.
+      properties:
+        id:
+          type: string
+        regulator:
+          type: string
+        framework:
+          type: string
+        format:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        status:
+          type: string
+        report_state:
+          type: string
+          enum: ["", not_available, enabled_empty, populated]
+        progress:
+          type: integer
+        record_count:
+          type: integer
+        size_bytes:
+          type: integer
+          format: int64
+        checksum:
+          type: string
+        error:
+          type: string
+        requested_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+    StepCostEstimate:
+      type: object
+      properties:
+        step_name:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        estimated_tokens_in:
+          type: integer
+        estimated_tokens_out:
+          type: integer
+        estimated_cost_usd:
+          type: number
+          format: double
+    CostEstimateResponse:
+      type: object
+      properties:
+        plan_id:
+          type: string
+          description: |
+            Present only on GET /api/v1/plans/{id}/cost. The estimate endpoint
+            has no plan to name and omits it.
+        estimated_cost_usd:
+          type: number
+          format: double
+        currency:
+          type: string
+        breakdown:
+          type: array
+          description: |
+            Per-step breakdown. Populated for Evaluation tier and above; omitted
+            on Community, where only the total is returned.
+          items:
+            $ref: '#/components/schemas/StepCostEstimate'
+      required:
+        - estimated_cost_usd
+        - currency
+    CostEstimateRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStep'
+      required:
+        - steps
+    HITLExecutionStatus:
+      type: object
+      properties:
+        execution_id:
+          type: string
+        status:
+          type: string
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            The approval this execution is waiting on. NOTE: this member is
+            present as the all-zero UUID rather than omitted when the execution
+            is not awaiting approval - `omitempty` does not drop a zero UUID,
+            because the Go type is an array. Treat
+            "00000000-0000-0000-0000-000000000000" as absent.
+        approval_status:
+          type: string
+        paused_at_step:
+          type: integer
+        paused_reason:
+          type: string
+      required:
+        - execution_id
+        - status
+    RBIAISystemSummary:
+      type: object
+      properties:
+        total_systems:
+          type: integer
+        systems_by_risk:
+          type: object
+          additionalProperties:
+            type: integer
+        systems_by_status:
+          type: object
+          additionalProperties:
+            type: integer
+        systems_pending_approval:
+          type: integer
+        systems_overdue_validation:
+          type: integer
+    RBIPolicyCondition:
+      type: object
+      properties:
+        field:
+          type: string
+        operator:
+          type: string
+        value: {}
+    RBIPolicyAction:
+      type: object
+      properties:
+        type:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+    RBIPolicyTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+        severity:
+          type: string
+        priority:
+          type: integer
+          description: Higher is evaluated first.
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RBIPolicyCondition'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RBIPolicyAction'
+        regulatory_reference:
+          type: string
+          description: The RBI circular this template implements.
+        applicable_risk_levels:
+          type: array
+          items:
+            type: string
+        requires_board_approval:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RBIPolicyTemplateCategory:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        templates:
+          type: array
+          items:
+            $ref: '#/components/schemas/RBIPolicyTemplate'
     ErrorResponse:
       type: object
+      description: |
+        The FLAT error envelope: `{success, error}`. This is what
+        `sendErrorResponse` emits, which is the orchestrator's dominant error
+        writer (240 call sites), so it is the shape of every error from the
+        core request, audit, plan, workflow, execution and connector surfaces.
+
+        It is one of THREE error SHAPES this document describes. See
+        `CodedErrorResponse` and `TripletErrorResponse` for the other two, and
+        the note on `components.responses` for why there is more than one.
+        `LLMProviderAPIError` is a code-constrained refinement of the coded
+        shape, not a fourth shape.
+
+        This paragraph said "TWO" until issue #3941. `TripletErrorResponse` was
+        added by the #3901 reconciliation and this sentence was not updated with
+        it, so the document undercounted its own families — which is the same
+        defect one level up as the operations that named the wrong one.
       properties:
         success:
           type: boolean
           example: false
         error:
           type: string
+          description: Human-readable message. There is no machine-readable code on this envelope.
+      required:
+        - success
+        - error
+    TripletErrorResponse:
+      type: object
+      description: |
+        The TRIPLET error envelope: `{error, code, message}`, where `error` is
+        the lowercased form of `code`. It is a THIRD shape, distinct from both
+        `ErrorResponse` and `CodedErrorResponse`, and it is what the workflow
+        control plane, the execution replay handlers and the policy simulation
+        handlers emit (112 call sites).
+
+        IT IS NAMED RATHER THAN QUIETLY MAPPED ONTO ONE OF THE OTHER TWO.
+        Two operations on the workflow step surface documented a `{success,
+        error}` 404 beside an `{error:{code,message}}` 409, and the handler
+        emits neither of those shapes on either status. Picking whichever of
+        the two was closer would have made the document consistently wrong
+        instead of inconsistently wrong, which is not an improvement.
+
+        `error` is REDUNDANT with `code` here and carries no information a
+        client needs; it exists because the shape predates the code field.
+        Read `code`.
+      properties:
+        error:
+          type: string
+          description: The lowercased `code`. Redundant; prefer `code`.
+        code:
+          type: string
+          description: Machine-readable error code, screaming snake case.
+        message:
+          type: string
+      required:
+        - error
+        - code
+        - message
+    CodedErrorResponse:
+      type: object
+      description: |
+        The CODED error envelope: `{error: {code, message}}`, where `code` is a
+        screaming-snake string enum. This is what the per-handler `writeError`
+        methods emit across the policy API, the LLM provider API, the agents,
+        template, unified-execution and media-governance APIs, and every
+        handler in the RBI module (362 call sites in total).
+
+        It is one of TWO error SHAPES this document describes. `code` is a
+        STRING on this envelope; it is never an HTTP status integer.
+        `LLMProviderAPIError` is this shape with the `code` enum constrained to
+        the five values the LLM-provider handlers emit.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code, screaming snake case.
+              example: "NOT_FOUND"
+            message:
+              type: string
+          required:
+            - code
+            - message
+      required:
+        - error
 
     # ============================================================================
     # Agent Management Schemas (MAP 0.8)
@@ -12882,14 +15137,38 @@ components:
             `unknown` was MISSING from this enum and is emitted on the stock
             path (#3435 R8), so a generated strict client failed to
             deserialise GET /api/v1/sebi/audit/readiness on every stock
-            deployment. Two of the five checks assign it
-            (sebi_audit_export_service.go, the Retention Configuration and PII
-            Detection Policies checks) whenever the control could not be
-            INSPECTED, which is not an edge case: `audit_retention_config`
-            ships empty and the `policies` relation the PII check reads exists
-            in no migration. A control this deployment cannot inspect must not
-            be reported as one it has, so `unknown` is distinct from `fail`
-            and fails closed on `ready`.
+            deployment. A control this deployment cannot INSPECT must not be
+            reported as one it has, so `unknown` is distinct from `fail`.
+
+            THREE of the five checks assign it (sebi_audit_export_service.go:
+            Retention Configuration, PII Detection Policies, Human Oversight).
+            Human Oversight joined them in #3874, which gave that check the
+            third answer its two siblings already had -- until then a
+            deployment nobody could inspect was reported identically to one
+            measured to have no oversight.
+
+            #3874 removed the reason `unknown` was the STOCK answer for two of
+            them rather than an edge case: they queried relations no migration
+            creates (`policies`, `hitl_config`), so they could return nothing
+            else on any deployment. They now read `static_policies` and
+            `hitl_approval_queue`.
+
+            Retention Configuration still answers `unknown` on a stock
+            deployment, and that is CORRECT rather than pending. Its table
+            exists, but nothing in the product ever writes a row to it, so no
+            organisation has a configured retention period to read. Making it
+            answerable needs a retention configuration surface that does not
+            exist yet; reading the system defaults instead was tried and
+            reverted, because it contradicts GET /api/v1/sebi/audit/retention,
+            which reports the same data types as not_available on the stated
+            grounds that a default is what WOULD be applied and not evidence of
+            what is configured.
+
+            `unknown` fails closed on `ready` for Retention Configuration and
+            PII Detection Policies. It does NOT clear `ready` for Human
+            Oversight, whose FAILING branch has always been a non-blocking
+            warning: blocking on unknown alone would rank "nobody could
+            inspect this control" as worse than "this control is absent".
         details:
           type: string
           description: Additional information
@@ -13161,6 +15440,17 @@ components:
           description: Provider name to weight mapping
 
     LLMProviderAPIError:
+      description: |
+        A REFINEMENT OF `CodedErrorResponse`, not a third envelope: the same
+        `{error: {code, message}}` shape with `code` constrained to the five
+        values the LLM-provider handlers emit.
+
+        It is kept rather than collapsed into `CodedErrorResponse` because the
+        enum is real information a generated client can switch on, and deleting
+        it to make a count come out at two would make the document less precise
+        in order to make a sentence in it true. The error-family guard
+        classifies it as a member of the coded family, so an operation cannot
+        mix it with the flat family and pass.
       type: object
       properties:
         error:
@@ -14787,79 +17077,102 @@ components:
             Override lifetime in seconds. Omitted/0 defaults to 3600.
             Clamped server-side to [60, 86400]; the response reports any clamp.
 
-    CreateOverrideResponse:
+    OverrideView:
       type: object
-      properties:
-        id:
-          type: string
-        policy_id:
-          type: string
-          description: Echoes the value sent in the request (not resolved to a UUID)
-        policy_type:
-          type: string
-        expires_at:
-          type: string
-          format: date-time
-        ttl_seconds:
-          type: integer
-          format: int64
-          description: Effective TTL after clamping
-        requested_ttl:
-          type: integer
-          format: int64
-          description: Present when the requested TTL was clamped
-        clamped:
-          type: boolean
-          description: Present (true) when the TTL was clamped
-        clamped_reason:
-          type: string
-          description: exceeds_hard_cap or below_minimum; present when clamped
-        created_at:
-          type: string
-          format: date-time
+      description: |
+        THE element shape for `policy_overrides`. One shape behind all three
+        of this plane's views — list, by-id and create.
 
-    OverrideSummary:
-      type: object
+        It is NOT member-for-member identical to the agent plane's view of the
+        same table (`PolicyOverride`), and saying so precisely matters: this
+        shape adds the deprecated `organization_id` alias and does not carry
+        `updated_by` / `updated_at`. What it does carry is everything an
+        integrator was missing — `action_override` and `enabled_override` above
+        all.
+
+        Issue #3944: these were three different shapes. The list view omitted
+        `org_id`, `tool_signature`, `created_by` and — the two that matter —
+        `action_override` and `enabled_override`, which are what an override
+        DOES; the by-id view omitted the same two and spelled the organisation
+        key `organization_id`; and the create response echoed no
+        `override_reason`, the mandatory ADR-044 justification the caller had
+        just supplied. Listing overrides through this plane could not tell an
+        operator what any of them was.
+
+        The three schema NAMES below are retained and each is now this one
+        shape, so a client generated from an earlier revision keeps its type.
       properties:
         id:
           type: string
         policy_id:
           type: string
+          description: |
+            The policy this override applies to.
+
+            **Its VALUE differs by view, deliberately, and has since before the
+            three views were collapsed onto one shape.** `GET /api/v1/overrides`
+            and `GET /api/v1/overrides/{id}` return the canonical UUID stored on
+            the row. Before v11.0.0 the create ECHOED THE VALUE SENT IN THE
+            REQUEST and does not resolve it to a UUID — a caller may create an
+            override by slug or name, and the create response hands back what
+            they sent. A client correlating a created override with a later
+            listing must key on `id`, not on `policy_id`.
+
+            One SHAPE across the views is what issue #3944 asked for and what
+            these three now have; identical values on every member is a
+            different property, and this member does not hold it.
         policy_type:
           type: string
+          description: |
+            `static` or `dynamic`. Deliberately NOT declared as an `enum`: on a
+            RESPONSE property oasdiff reads a newly-declared enum as values being
+            ADDED to a set clients already switch on, and reports four breaking
+            changes for a constraint that tightens nothing.
         tenant_id:
           type: string
+          description: |
+            ABSENT on an org-scoped override — the key is omitted, not sent as
+            `null`. A NULL tenant column is what makes a row org-scoped rather
+            than tenant-scoped, and the platform marshals that as an omitted
+            member. An earlier revision of this description said "null", which
+            no response ever contains and which this schema would reject.
+        org_id:
+          type: string
+          description: |
+            The organisation that owns this override. This is the canonical
+            spelling on this surface — it is what the column is called and what
+            the agent plane's view of the same table has always emitted.
+        organization_id:
+          type: string
+          deprecated: true
+          description: |
+            DEPRECATED alias of `org_id`, always carrying the same value. Read
+            `org_id`. Retained rather than removed because this is a published
+            endpoint and a shipped client may read it.
+
+            Unrelated to the `organization_id` on the POLICY surface, which is
+            current and not deprecated; the two share a name and nothing else.
+        action_override:
+          type: string
+          description: |
+            WHAT THE OVERRIDE DOES. Absent from this plane's views before
+            #3944, which is why an operator could not tell one override from
+            another. Every row created before v11.0.0 carries `allow`.
+        enabled_override:
+          type: boolean
+          description: |
+            Whether the policy is force-enabled or force-disabled by this
+            override. Absent on a row created before v11.0.0 through
+            `POST /api/v1/overrides`, which does not set it.
         override_reason:
           type: string
+          description: The mandatory ADR-044 justification (max 500 chars).
         expires_at:
           type: string
           format: date-time
-        revoked_at:
-          type: string
-          format: date-time
-          description: Present only on revoked overrides
-        created_at:
-          type: string
-          format: date-time
-
-    OverrideDetail:
-      type: object
-      properties:
-        id:
-          type: string
-        policy_id:
-          type: string
-        policy_type:
-          type: string
-        tenant_id:
-          type: string
         tool_signature:
           type: string
-        override_reason:
-          type: string
-        expires_at:
-          type: string
-          format: date-time
+          description: Present when the override is restricted to a single tool.
         created_by:
           type: string
         created_at:
@@ -14868,8 +17181,33 @@ components:
         revoked_at:
           type: string
           format: date-time
+          description: Present only on revoked overrides
         revoked_by:
           type: string
+          description: Present only on revoked overrides
+      required:
+        - id
+        - policy_id
+        - policy_type
+        - org_id
+        - organization_id
+        - override_reason
+        - created_by
+        - created_at
+
+
+    # The element of `GET /api/v1/overrides`. Retained as a NAME so a client
+    # generated from an earlier revision keeps its type; it is exactly the
+    # shared OverrideView shape (#3944). Written as a plain `$ref` rather than
+    # a single-branch `allOf`, which oasdiff reads as the type widening to
+    # `any` and reports as a change that is not happening.
+    OverrideSummary:
+      $ref: '#/components/schemas/OverrideView'
+
+    # The body of `GET /api/v1/overrides/{id}`. Same treatment as
+    # OverrideSummary above, and for the same two reasons.
+    OverrideDetail:
+      $ref: '#/components/schemas/OverrideView'
 
     DecisionListResponse:
       type: object
@@ -14996,11 +17334,13 @@ components:
         override_available:
           type: boolean
           description: |
-            True when at least one matched policy has allow_override=true
-            and is not critical-risk
+            Always false from v11.0.0: session overrides are retired (PRD v11
+            §1.5, #4252), so explain offers none.
         override_existing_id:
           type: string
-          description: Id of an already-active override covering this decision, when one exists
+          description: |
+            Not set from v11.0.0: explain offers no override, and the step
+            gate no longer reads one (#4252).
         historical_hit_count_session:
           type: integer
           description: Rolling-24h hit count for the first matched policy by this user
@@ -15897,22 +18237,25 @@ components:
         fraud_risk_addon_active:
           type: boolean
           description: |
-            Whether the Fraud and Risk Add-on's control pack is active on this
-            deployment. MEASURED from the seeded pack rather than from a licence
-            field: the licence feature reader ADR-061 designs does not exist in
-            the tree, and the pack is installed by a deliberate operator action
-            rather than by a migration, so its presence is what decides whether
-            deterministic financial-crime controls run.
+            Whether the Fraud and Risk Add-on's FinCrime pack was in force on at
+            least one decision of this tenancy in the window. MEASURED from the
+            audit trail: a decision on a scope the pack binds on records it in
+            policy_details.policy_packs as fincrime@<digest>. The licence feature
+            reader ADR-061 designs does not exist in the tree, and this service
+            cannot see which packs the agent installed, so a deployment that
+            installed the pack and made no decision in the window reads false
+            (#4164).
 
             It is published here because the answer changes what the
             financial-crime section of a generated package SAYS - disclosed
             absent rather than empty - and an operator deciding whether to
             generate should see that first.
-        fraud_risk_addon_policy_rows:
+        fraud_risk_addon_decisions:
           type: integer
           description: |
-            The number of enabled financial-crime controls visible to this
-            organization, deployment-wide rows included.
+            The number of this tenancy's decisions in the window whose audit
+            record names the FinCrime pack. fraud_risk_addon_active is true
+            exactly when this is above zero.
         generated_at:
           type: string
           format: date-time
@@ -16176,7 +18519,125 @@ components:
         error:
           type: string
 
+  # TWO FAMILIES OF ERROR RESPONSE, AND WHY THERE ARE TWO.
+  #
+  # This platform emits two error envelopes, and until #3901 this section
+  # claimed otherwise in the most damaging possible way: `BadRequest` described
+  # the FLAT shape `{success, error}` while `Unauthorized` described the CODED
+  # shape `{error: {code, message}}`, and ten operations referenced BOTH. An
+  # integrator generating a client from this document got two incompatible
+  # error types on one endpoint and could not write a single deserialiser -
+  # which is exactly the complaint #3897 opens with.
+  #
+  # The two shapes are NOT reconciled into one here, because that would be a
+  # wire change to 602 call sites and would break every shipped SDK. They are
+  # reconciled into two NAMED, non-overlapping families, and each operation now
+  # references the family its handler actually emits:
+  #
+  #   BadRequest / Unauthorized / NotFound / Forbidden / InternalError
+  #       -> ErrorResponse, the flat `{success, error}` shape written by
+  #          sendErrorResponse. The core surfaces.
+  #   CodedBadRequest / CodedUnauthorized / CodedNotFound / CodedConflict /
+  #   CodedInternalError
+  #       -> CodedErrorResponse, the `{error: {code, message}}` shape written by
+  #          the per-handler writeError methods. The policy, LLM-provider,
+  #          media-governance and RBI surfaces.
+  #
+  # An operation must reference ONE family throughout. Mixing them is the
+  # defect this note exists to prevent, and it is checked: the route and field
+  # parity guards in platform/orchestrator compare this document against the
+  # types the platform marshals.
   responses:
+    TypedAuthoringUnconfigured:
+      description: |
+        This deployment's typed-authoring vocabulary could not be resolved: an
+        unrecognised `AXONFLOW_TYPED_AUTHORING_CATALOG` value, or a deployment
+        vocabulary this process could not build. Unset means `deployment` (PRD
+        §1.5), so a stock deployment never answers this. The surface refuses
+        rather than validating against an empty catalog, which would reject
+        every policy for naming an unregistered action.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              reason:
+                type: string
+                enum: [catalog_not_configured]
+              error:
+                type: string
+    TypedAuthoringUnavailable:
+      description: |
+        The typed-authoring route cannot answer. `reason` says why:
+
+        - `catalog_not_configured`: this deployment's typed-authoring
+          vocabulary could not be resolved, as `TypedAuthoringUnconfigured`
+          describes.
+        - `storage_unavailable`: this deployment has a database configured for
+          typed authoring and could not use it. A publish or an activation is
+          refused rather than kept in memory, where the next restart would lose
+          it; a read of the active document is refused rather than answered
+          `404 nothing_active` (#4255), which would say the organization has no
+          active document. Retry once the database is reachable. The store's own
+          error is logged, never returned.
+        - `key_not_loaded` (`GET /api/v1/typed-policies/active` only, #4255):
+          the active document is signed by a key this replica has not loaded,
+          and the reload that would load it was deferred. The key may have
+          been authorized by another replica moments ago, or not be
+          authorized at all. A retry after a few seconds usually settles it,
+          though under concurrent reads a retry can land inside another
+          read's reload floor and answer `key_not_loaded` again. A `500
+          active_unverifiable` on retry means the document does not verify.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              reason:
+                type: string
+                enum: [catalog_not_configured, storage_unavailable, key_not_loaded]
+              error:
+                type: string
+    TypedAuthoringTierLimit:
+      description: |
+        The edition's customer-authored document ceiling. 402 rather than 429
+        because a tier limit is a commercial ceiling and not a rate: the caller
+        has nothing to wait for.
+
+        The same status and the same `code` also carry the retryable OUTAGE
+        refusal, when the admission ledger cannot be reached. `Retry-After` is
+        what separates them, and the message says which applied.
+      headers:
+        Retry-After:
+          description: Present only on the retryable (ledger unreachable) refusal.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+              reason:
+                type: string
+                enum: [tier_limit]
+              code:
+                type: string
+                example: ERR_TIER_LIMIT_ORG_ROOT_POLICY
+              error:
+                type: string
+              policy:
+                type: string
+                description: |
+                  The policy that crossed the ceiling, present only on a refusal that names
+                  one. A batch admission is all-or-nothing, so this is the first policy of
+                  the submitted set that did not fit; it is absent on the outage refusal,
+                  where no particular policy is at fault.
     BadRequest:
       description: Invalid request
       content:
@@ -16188,15 +18649,180 @@ components:
             error: "Invalid request body"
 
     Unauthorized:
-      description: Unauthorized - missing or invalid tenant ID
+      description: |
+        Unauthorized - missing or invalid tenant/organization scope.
+
+        NOTE: this is the FLAT-family member. Before #3901 it described the
+        coded shape while its siblings described the flat one, so any operation
+        referencing it alongside BadRequest documented two incompatible bodies.
+        Operations whose handler emits the coded shape now reference
+        CodedUnauthorized instead.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/LLMProviderAPIError'
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "missing tenant ID"
+
+    CodedBadRequest:
+      description: Invalid request (coded envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "INVALID_INPUT"
+              message: "connector_name is required"
+
+    CodedUnauthorized:
+      description: Unauthorized - missing or invalid organization scope (coded envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
           example:
             error:
               code: "UNAUTHORIZED"
-              message: "missing tenant ID"
+              message: "Organization ID required"
+
+    CodedNotFound:
+      description: Resource not found (coded envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "NOT_FOUND"
+              message: "Resource not found"
+
+    CodedConflict:
+      description: The resource is not in a state that permits this operation (coded envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "REPORT_NOT_COMPLETED"
+              message: "report is not completed"
+
+    LegacyPolicyWriteFrozen:
+      description: |
+        The legacy policy tables are read-only. migrations/core/172 revoked
+        INSERT/UPDATE/DELETE/TRUNCATE on static_policies and dynamic_policies
+        from the application roles, and this endpoint writes them, so the write
+        is refused permanently rather than transiently. It is not an
+        entitlement fact: no licence, edition or upgrade changes it. Author
+        policies through the typed authoring route instead. Reads on this
+        endpoint are unaffected. A deployment whose connection may still
+        write the tables (the database owner) does not receive this
+        response. Where the connection cannot write them, the create, update
+        and bulk-import routes answer this before reading the request body,
+        whatever it contains.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "LEGACY_POLICY_WRITE_FROZEN"
+              message: "The legacy policy tables are read-only in v11: migrations/core/172 revoked write access from the application role, and this endpoint writes them. Author policies through the typed authoring route at /api/v1/typed-policies instead. Reads on this endpoint are unaffected."
+
+    PolicyOverrideWriteRetired:
+      description: |
+        Policy overrides are retired in v11 (PRD v11 §1.5, #4252). The
+        workflow step gate no longer reads a session override (the last
+        deciding reader, the agent's tier pass, goes with #4281), so the
+        session override writes answer this in every edition and on every
+        database role, after the guards that authenticate the request. A
+        policy is enabled, disabled or re-actioned in the organization's
+        typed document through `/api/v1/typed-policies`. The body is the
+        coded envelope with `code` the string `LEGACY_POLICY_WRITE_FROZEN`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "LEGACY_POLICY_WRITE_FROZEN"
+              message: "Policy overrides are retired in v11: a policy is enabled, disabled or re-actioned in the organization's typed document (a shipped system control in its system_controls section) through the typed authoring route at /api/v1/typed-policies. Reads on this endpoint are unaffected."
+
+    CodedForbidden:
+      description: Forbidden - insufficient permissions or enterprise license required (coded envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "FORBIDDEN"
+              message: "Enterprise license required"
+
+    CodedInternalError:
+      description: Internal server error (coded envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CodedErrorResponse'
+          example:
+            error:
+              code: "INTERNAL_ERROR"
+              message: "Internal server error"
+
+    # The TRIPLET family, `{error, code, message}` — three members at the TOP
+    # level, which is neither the flat nor the coded shape. It is what the
+    # Workflow Control Plane's own `Handler.writeError` emits
+    # (platform/orchestrator/workflow_control/handlers.go), on every refusal it
+    # produces, and it is named here for the same reason the coded family is:
+    # so an operation can reference the family its handler actually emits
+    # instead of the one that happened to be nearest.
+    #
+    # Issue #3941. These operations documented the FLAT family while emitting
+    # this one, so a strict client generated from this document failed to
+    # deserialise every workflow-control error — `success` is `required` on
+    # ErrorResponse and no body from this plane has ever carried it.
+    #
+    # NOT converged into the coded family, and the asymmetry with euaiact and
+    # webhooks (which WERE converged in the same change) is the whole reason
+    # the two were treated differently: adding `success` to `{error: "msg"}` is
+    # a pure ADDITION and breaks no reader, whereas moving `{error, code,
+    # message}` to `{error: {code, message}}` retypes `error` from a string to
+    # an object and breaks every shipped SDK that reads it.
+    TripletBadRequest:
+      description: Invalid request (triplet envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TripletErrorResponse'
+          example:
+            error: "bad_request"
+            code: "BAD_REQUEST"
+            message: "workflow_name is required"
+
+    TripletNotFound:
+      description: Resource not found (triplet envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TripletErrorResponse'
+          example:
+            error: "not_found"
+            code: "NOT_FOUND"
+            message: "Workflow not found"
+
+    TripletConflict:
+      description: Conflicting state (triplet envelope)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TripletErrorResponse'
+          example:
+            error: "workflow_terminal"
+            code: "WORKFLOW_TERMINAL"
+            message: "Workflow is already in a terminal state"
 
     NotFound:
       description: Resource not found

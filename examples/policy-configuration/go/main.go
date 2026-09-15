@@ -1,22 +1,27 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES policy configuration using the pre-check API.
 //
-// AxonFlow's static policies can be configured using environment variables.
-// This example validates the CURRENT configuration by sending test queries through
-// the pre-check API (GetPolicyApprovedContext) and checking that the Agent responds
-// according to the configured policy actions.
+// This example sends test queries through the pre-check API
+// (GetPolicyApprovedContext) and checks that the Agent responds according to the
+// shipped policy actions.
 //
-// Environment variables (must match Agent-side config):
+// v11: the stored policy action decides. Environment variables no longer set
+// detection actions (PII_ACTION, SQLI_ACTION and their GATEWAY_/MCP_ variants are
+// ignored, with a boot WARN). The shipped request-phase actions exercised here:
 //
-//	PII_ACTION   = block | redact | log  (default: redact)
-//	SQLI_ACTION  = block | warn | log    (default: block)
+//	sys_pii_ssn, sys_pii_credit_card = warn (approved, policy id in Policies)
+//	sys_sqli_*                       = warn (approved, policy id in Policies)
+//
+// To change an outcome, record an organization override (customer portal API,
+// Enterprise: PUT /api/v1/detection-posture/{pii|sqli} with {"action":"block"})
+// or change the policy's action. This example validates the shipped actions with
+// no override recorded.
+//
+// Still read from the environment (a non-action knob, must match Agent config):
+//
 //	GATEWAY_STATIC_POLICIES_ENABLED = true | false (default: true)
-//
-// Mode-specific overrides (higher precedence):
-//
-//	GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION
-//
-// IMPORTANT: Changing policy behavior requires restarting the AxonFlow Agent with
-// different env vars. This example validates behavior for the CURRENT configuration.
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
 //
@@ -50,19 +55,26 @@ func assert(condition bool, message string) {
 	}
 }
 
+// hasPolicyPrefix reports whether any matched policy id starts with prefix.
+func hasPolicyPrefix(policies []string, prefix string) bool {
+	for _, p := range policies {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	fmt.Println("AxonFlow Per-Mode Policy Configuration - Go SDK")
 	fmt.Println("================================================")
 	fmt.Println()
 
-	// Read expected policy actions (must match Agent-side config)
-	// Pre-check API uses the Gateway engine, so read Gateway-specific overrides first
-	piiAction := getEnv("GATEWAY_PII_ACTION", getEnv("PII_ACTION", "redact"))
-	sqliAction := getEnv("GATEWAY_SQLI_ACTION", getEnv("SQLI_ACTION", "block"))
+	// The pre-check API uses the Gateway engine. Detection actions come from the
+	// stored policy rows (no org override recorded), not from the environment.
 	policiesEnabled := getEnv("GATEWAY_STATIC_POLICIES_ENABLED", "true")
 
-	fmt.Printf("Expected PII_ACTION:  %s\n", piiAction)
-	fmt.Printf("Expected SQLI_ACTION: %s\n", sqliAction)
+	fmt.Println("Expected actions: shipped stored actions (PII warn at request phase, SQLi warn)")
 	fmt.Printf("Static policies enabled: %s\n", policiesEnabled)
 	fmt.Println()
 
@@ -85,11 +97,11 @@ func main() {
 	fmt.Println()
 
 	// ---------------------------------------------------------------
-	// Test 2: PII query (SSN) — behavior depends on PII_ACTION
+	// Test 2: PII query (SSN) — sys_pii_ssn stores warn for the request phase
 	// ---------------------------------------------------------------
 	fmt.Println("Test 2: PII Query (SSN '123-45-6789')")
 	fmt.Println("--------------------------------------")
-	fmt.Printf("  Expected action: %s\n", piiAction)
+	fmt.Println("  Expected action: warn (stored)")
 	result, err = client.GetPolicyApprovedContext("", "Process refund for SSN 123-45-6789", nil, nil)
 	if err != nil {
 		fmt.Printf("   ❌ FATAL: Policy check failed: %v\n", err)
@@ -101,31 +113,22 @@ func main() {
 		assert(result.Approved, "PII query approved (static policies disabled)")
 		assert(len(result.Policies) == 0, "No policies matched (static policies disabled)")
 	} else {
-		switch strings.ToLower(piiAction) {
-		case "block":
-			assert(!result.Approved, "PII query blocked (PII_ACTION=block)")
-			assert(result.BlockReason != "", "Block reason provided")
-			fmt.Printf("   Block reason: %s\n", result.BlockReason)
-		case "redact":
-			// In redact mode, request phase approves but flags PII
-			assert(result.Approved, "PII query approved in request phase (PII_ACTION=redact)")
-			assert(len(result.Policies) > 0, "PII policies detected")
-			fmt.Printf("   Policies: %v\n", result.Policies)
-		case "warn":
-			assert(result.Approved, "PII query approved (PII_ACTION=warn)")
-			assert(len(result.Policies) > 0, "PII policies detected for warning")
-		case "log":
-			assert(result.Approved, "PII query approved (PII_ACTION=log)")
+		// warn approves the request and reports the matched policy
+		assert(result.Approved, "PII query approved with a warning (stored action: warn)")
+		assert(hasPolicyPrefix(result.Policies, "sys_pii_"), "PII policy detected (sys_pii_* in Policies)")
+		fmt.Printf("   Policies: %v\n", result.Policies)
+		if !result.Approved {
+			fmt.Printf("   Block reason: %s (an org pii=block override or an edited policy action is in force)\n", result.BlockReason)
 		}
 	}
 	fmt.Println()
 
 	// ---------------------------------------------------------------
-	// Test 3: SQLi query — behavior depends on SQLI_ACTION
+	// Test 3: SQLi query — every sys_sqli_* policy stores warn
 	// ---------------------------------------------------------------
 	fmt.Println("Test 3: SQL Injection (UNION SELECT)")
 	fmt.Println("-------------------------------------")
-	fmt.Printf("  Expected action: %s\n", sqliAction)
+	fmt.Println("  Expected action: warn (stored)")
 	result, err = client.GetPolicyApprovedContext("", "SELECT name FROM employees UNION SELECT password FROM admin", nil, nil)
 	if err != nil {
 		fmt.Printf("   ❌ FATAL: Policy check failed: %v\n", err)
@@ -135,15 +138,12 @@ func main() {
 	if strings.ToLower(policiesEnabled) == "false" {
 		assert(result.Approved, "SQLi query approved (static policies disabled)")
 	} else {
-		switch strings.ToLower(sqliAction) {
-		case "block":
-			assert(!result.Approved, "SQLi query blocked (SQLI_ACTION=block)")
-			assert(result.BlockReason != "", "Block reason provided")
-			fmt.Printf("   Block reason: %s\n", result.BlockReason)
-		case "warn":
-			assert(result.Approved, "SQLi query approved with warning (SQLI_ACTION=warn)")
-		case "log":
-			assert(result.Approved, "SQLi query approved (SQLI_ACTION=log)")
+		// SQL injection warns by default; it is not blocked
+		assert(result.Approved, "SQLi query approved with a warning (stored action: warn)")
+		assert(hasPolicyPrefix(result.Policies, "sys_sqli_"), "SQLi policy detected (sys_sqli_* in Policies)")
+		fmt.Printf("   Policies: %v\n", result.Policies)
+		if !result.Approved {
+			fmt.Printf("   Block reason: %s (an org sqli=block override or an edited policy action is in force)\n", result.BlockReason)
 		}
 	}
 	fmt.Println()
@@ -162,15 +162,9 @@ func main() {
 	if strings.ToLower(policiesEnabled) == "false" {
 		assert(result.Approved, "Credit card query approved (static policies disabled)")
 	} else {
-		switch strings.ToLower(piiAction) {
-		case "block":
-			assert(!result.Approved, "Credit card blocked (PII_ACTION=block)")
-		case "redact":
-			assert(result.Approved, "Credit card approved for redaction (PII_ACTION=redact)")
-			assert(len(result.Policies) > 0, "Credit card PII detected")
-		case "warn", "log":
-			assert(result.Approved, "Credit card approved (PII_ACTION="+piiAction+")")
-		}
+		// sys_pii_credit_card stores warn for the request phase
+		assert(result.Approved, "Credit card approved with a warning (stored action: warn)")
+		assert(hasPolicyPrefix(result.Policies, "sys_pii_"), "Credit card PII detected (sys_pii_* in Policies)")
 	}
 	fmt.Println()
 
@@ -182,7 +176,7 @@ func main() {
 		fmt.Println("✓ ALL TESTS PASSED")
 		fmt.Println()
 		fmt.Printf("Policy configuration validated:\n")
-		fmt.Printf("  PII_ACTION=%s, SQLI_ACTION=%s, enabled=%s\n", piiAction, sqliAction, policiesEnabled)
+		fmt.Printf("  shipped stored actions (PII warn, SQLi warn), enabled=%s\n", policiesEnabled)
 	} else {
 		fmt.Printf("❌ %d TEST(S) FAILED:\n", len(failures))
 		for _, f := range failures {

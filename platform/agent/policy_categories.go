@@ -220,22 +220,13 @@ const (
 
 // AllOverrideActions returns all valid override actions. The canonical list
 // lives in platform/shared/policy.ValidOverrideActions; this function is a
-// typed view for callers using the local OverrideAction string-newtype. Both
-// the customer-portal override validator and this agent-side repository now
-// agree on the same set.
+// typed view for callers using the local OverrideAction string-newtype.
 func AllOverrideActions() []OverrideAction {
 	out := make([]OverrideAction, 0, len(sharedpolicy.ValidOverrideActions))
 	for _, a := range sharedpolicy.ValidOverrideActions {
 		out = append(out, OverrideAction(a))
 	}
 	return out
-}
-
-// IsValidOverrideAction returns true if the action is valid. Delegates to the
-// canonical list in platform/shared/policy so the agent and the customer-portal
-// override validator can never drift.
-func IsValidOverrideAction(action OverrideAction) bool {
-	return sharedpolicy.IsValidOverrideAction(string(action))
 }
 
 // ActionRestrictiveness returns the restrictiveness level of an action.

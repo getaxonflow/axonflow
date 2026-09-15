@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package testutil provides shared test utilities including database containers.
 package testutil
@@ -452,30 +444,6 @@ func StaticPoliciesSchema() string {
 			changed_by VARCHAR(255),
 			changed_at TIMESTAMPTZ DEFAULT NOW()
 		)
-	`
-}
-
-// SingaporePIISeedData returns INSERT statements that seed Singapore PII policies
-// into the static_policies table for integration testing.
-func SingaporePIISeedData() string {
-	return `
-		INSERT INTO static_policies (policy_id, name, description, category, pattern, severity, action, tier, priority, enabled)
-		VALUES
-		('sys_pii_singapore_nric', 'Singapore NRIC Detection',
-		 'Singapore National Registration Identity Card detected',
-		 'pii-singapore', '\b[STFGM]\d{7}[A-Z]\b', 'critical', 'redact', 'system', 100, true),
-		('sys_pii_singapore_fin', 'Singapore FIN Detection',
-		 'Singapore Foreign Identification Number detected',
-		 'pii-singapore', '\b[FG]\d{7}[A-Z]\b', 'critical', 'redact', 'system', 100, true),
-		('sys_pii_singapore_uen', 'Singapore UEN Detection',
-		 'Singapore Unique Entity Number detected',
-		 'pii-singapore', '\b\d{8,9}[A-Z]\b|\b[TS]\d{2}[A-Z]{2}\d{4}[A-Z]\b', 'high', 'redact', 'system', 90, true),
-		('sys_pii_singapore_phone', 'Singapore Phone Detection',
-		 'Singapore phone number detected',
-		 'pii-singapore', '\+65\s?[689]\d{3}\s?\d{4}\b', 'medium', 'redact', 'system', 70, true),
-		('sys_pii_singapore_postal', 'Singapore Postal Code Detection',
-		 'Singapore postal code detected',
-		 'pii-singapore', '\b(?:0[1-9]|[1-7]\d|8[0-2])\d{4}\b', 'low', 'warn', 'system', 30, true)
 	`
 }
 

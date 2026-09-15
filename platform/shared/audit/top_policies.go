@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package audit
 
@@ -224,7 +216,7 @@ const topPoliciesAlias = "fired_policy"
 //
 //	orchestrator LogOverrideEvent (override_audit.go)
 //	    request_type = the event type, policy_decision = override_lifecycle
-//	agent writeOverrideUsedEvent (mcp_richer_context.go:512)
+//	the agent's MCP planes, before v11 (no longer written; the rows remain)
 //	    request_type = "override_used", policy_decision = "allowed"
 //
 // So `policy_decision <> 'override_lifecycle'` excludes the orchestrator plane

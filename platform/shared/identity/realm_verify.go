@@ -200,7 +200,7 @@ func VerifyCredential(
 	}
 	if !cred.HasAssertedOrg && cred.AssertedOrgID != "" {
 		// Internally inconsistent, and inconsistent in the one direction that
-		// matters: the flag is what gates the #3488 check, so an adapter that
+		// matters: the flag is what gates the #3488 check, so a builder that
 		// populates AssertedOrgID and forgets the companion bool silently
 		// reinstates the historical defect, and no later check can see it. The
 		// flag is not redundant with a non-empty string (it is what separates

@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -16,10 +8,12 @@ package agent
 //
 // Migrations 066/067 relaxed security-sqli's base `action` 'block' -> 'warn'
 // (ADR-036 observe-first default) but left the phase columns at 'block'. Those
-// columns are inert for enforcement (the AXONFLOW_PROFILE override always wins —
-// see platform/shared/policy/engine.go + detection_config.go BuildActionOverrides),
-// but the stored 'block' misleads readers and the metrics action label. Migration
-// 124 makes the phase columns match the base action.
+// columns were inert for enforcement while AXONFLOW_PROFILE's override always
+// won, but the stored 'block' misled readers and the metrics action label.
+// Migration 124 makes the phase columns match the base action. Since #3961 no
+// profile or environment variable displaces the stored action, so the aligned
+// phase action is what enforcement runs unless an organization records an sqli
+// override - which makes assertion (1) load-bearing, not cosmetic.
 //
 // This test stands up a fresh enterprise DB, applies EVERY core migration in
 // production composite-key order, and asserts:

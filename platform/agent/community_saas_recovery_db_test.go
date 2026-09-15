@@ -494,8 +494,14 @@ func TestRecoveryRequest_DB_FullEndToEnd_RecoveryProducesUsableTenant(t *testing
 // =============================================================================
 
 func TestMigration076_TableExistsWithExpectedColumns(t *testing.T) {
-	db := getTestDBForRecovery(t)
+	// HERMETIC SINCE #4034, unlike its neighbours in this file. The other
+	// tests here exercise recovery BEHAVIOUR against whatever database the
+	// environment points at; this one and TestMigration076_IndexesExist
+	// assert what migration 076 CREATED, so the database has to be one the
+	// migrations made, or the assertion is about somebody's leftover schema.
+	db := migrationSchemaDB(t)
 	defer db.Close()
+	requireTables(t, db, "community_saas_registrations", "community_saas_recovery_tokens")
 
 	expectedCols := map[string]string{
 		"token_hash":         "character varying",
@@ -537,8 +543,9 @@ func TestMigration076_TableExistsWithExpectedColumns(t *testing.T) {
 }
 
 func TestMigration076_IndexesExist(t *testing.T) {
-	db := getTestDBForRecovery(t)
+	db := migrationSchemaDB(t)
 	defer db.Close()
+	requireTables(t, db, "community_saas_recovery_tokens")
 
 	expectedIndexes := []string{
 		"idx_csaas_recovery_expires",

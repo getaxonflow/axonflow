@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -8,6 +11,7 @@ import (
 	"testing"
 
 	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/decision/pdp"
 )
 
@@ -32,6 +36,7 @@ func TestEveryEnumMatchesTheGoDeclarations(t *testing.T) {
 		want []string
 	}{
 		{"authority", stringsOf(contract.AllAuthorities())},
+		{"assurance_class", stringsOf(pdp.AllAssuranceClasses())},
 		{"root", stringsOf(pdp.AllRoots())},
 		{"value_type", stringsOf(pdp.AllValueTypes())},
 		{"condition_kind", stringsOf(pdp.AllCondKinds())},
@@ -39,6 +44,15 @@ func TestEveryEnumMatchesTheGoDeclarations(t *testing.T) {
 		{"absence_handling", stringsOf(pdp.AllAbsenceHandlings())},
 		{"obligation_type", stringsOf(contract.AllObligationTypes())},
 		{"identifier_kind", stringsOf(contract.AllKinds())},
+		// The principal vocabulary is closed (#3711) and the authoring schema
+		// is enforced at the wire by NewDocument and by Parse for stored
+		// artifacts, so the closure has to be here too or a policy scoped to a
+		// seventh principal type is accepted by the surface that saves it.
+		{"principal_type", stringsOf(contract.PrincipalTypes())},
+		// The actions an organization may assign to a shipped control (PRD v11
+		// §1.5): the one list the validator, the activation fold and this
+		// schema all read.
+		{"system_control_action", stringsOf(legacycompile.OverrideActions())},
 	}
 	if len(cases) == 0 {
 		t.Fatal("no enums are checked, so this gate asserts nothing")
@@ -106,6 +120,29 @@ func TestTheSchemaRejectsWhatItShould(t *testing.T) {
 		name string
 		edit func(map[string]any)
 	}{
+		// system_controls (PRD v11 §1.5): each entry names a corpus control and
+		// carries exactly one instruction.
+		{"a system control entry that says enabled true", func(m map[string]any) {
+			m["system_controls"] = []any{map[string]any{"control": sysStaticControl, "enabled": true}}
+		}},
+		{"a system control entry carrying both enabled and action", func(m map[string]any) {
+			m["system_controls"] = []any{map[string]any{"control": sysStaticControl, "enabled": false, "action": "block"}}
+		}},
+		{"a system control entry carrying neither enabled nor action", func(m map[string]any) {
+			m["system_controls"] = []any{map[string]any{"control": sysStaticControl}}
+		}},
+		{"a system control action nobody can assign", func(m map[string]any) {
+			m["system_controls"] = []any{map[string]any{"control": sysStaticControl, "action": "allow"}}
+		}},
+		{"a system control entry with an undeclared member", func(m map[string]any) {
+			m["system_controls"] = []any{map[string]any{"control": sysStaticControl, "enabled": false, "reason": "quiet"}}
+		}},
+		{"a system control named by something other than a corpus identifier", func(m map[string]any) {
+			m["system_controls"] = []any{map[string]any{"control": "sys_admin_audit_log", "enabled": false}}
+		}},
+		{"a system_controls section that is not a list", func(m map[string]any) {
+			m["system_controls"] = map[string]any{"control": sysStaticControl, "enabled": false}
+		}},
 		{"an undeclared authority", func(m map[string]any) {
 			policies(m)[0].(map[string]any)["authority"] = "advisory"
 		}},
@@ -225,4 +262,151 @@ func deepCopy(t *testing.T, in map[string]any) map[string]any {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// TestTheCompiledSchemaRefusesAPrincipalTypeOutsideTheVocabulary exercises the
+// COMPILED schema, not the enum's presence at a path (#3711).
+//
+// The enum-parity test above reads `$defs/principal_type/enum` and compares it
+// to the Go declaration. That is necessary and not sufficient: the enum is
+// applied through an `if`/`then` on `$defs/identifier`, and JSON Schema 2020-12
+// IGNORES a `then` with no `if`. So deleting one line leaves the enum present,
+// correct, and completely inert - the parity test still passes and every
+// principal type is accepted again. R3 round 2 found exactly that, by deleting
+// the `if` and watching the whole package stay green.
+//
+// This test asks the compiled schema to judge a real document instead, which is
+// what NewDocument and Parse do, so an inert constraint fails here. The
+// document comes from the same generator the corpus test uses, so it is valid
+// for every reason other than the one under test - a hand-written probe that
+// the schema refused for a MISSING FIELD would have "passed" this test while
+// proving nothing.
+func TestTheCompiledSchemaRefusesAPrincipalTypeOutsideTheVocabulary(t *testing.T) {
+	cat := baseCatalog(t)
+	g := &generator{rng: rand.New(rand.NewSource(20260908))}
+	base := g.document(t, cat, 0)
+	if err := ValidateAgainstSchema(base); err != nil {
+		t.Fatalf("the generated document does not satisfy the schema before any edit: %v", err)
+	}
+	raw, err := Render(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := documentSchema()
+	if err != nil {
+		t.Fatalf("compiling the authoring schema: %v", err)
+	}
+
+	// EVERY POSITION THE SCHEMA $refs THE IDENTIFIER FROM, probed by NAME.
+	//
+	// The first version of this test rewrote whatever principal identifiers the
+	// generated document happened to contain, and at this seed that is exactly
+	// one: /metadata/author. scope.principals is a one-in-three draw and came
+	// up empty, so its n == 0 anti-vacuity guard could not fire and the doc
+	// comment claiming "EVERY principal identifier" was not true of it. R3
+	// round 3 moved the constraint from $defs/identifier onto metadata.author
+	// alone and all eleven packages of platform/decision stayed green, with the
+	// compiled schema still accepting Robot in scope.principals.
+	//
+	// So the positions are enumerated here rather than sampled. A position
+	// added to the schema and not added here is not covered, and that is a
+	// visible omission in a list rather than an invisible property of a seed.
+	positions := []struct {
+		name string
+		// place installs one identifier at this position, replacing whatever
+		// is there, and reports whether it could.
+		place func(doc map[string]any, id map[string]any) bool
+	}{
+		{"/metadata/author", func(doc map[string]any, id map[string]any) bool {
+			md, ok := doc["metadata"].(map[string]any)
+			if !ok {
+				return false
+			}
+			md["author"] = id
+			return true
+		}},
+		{"/policy/policies/0/scope/principals", func(doc map[string]any, id map[string]any) bool {
+			return placeInFirstPolicy(doc, id, "scope", "principals")
+		}},
+		{"/policy/policies/0/scope/groups", func(doc map[string]any, id map[string]any) bool {
+			return placeInFirstPolicy(doc, id, "scope", "groups")
+		}},
+		{"/policy/policies/0/actions/actions", func(doc map[string]any, id map[string]any) bool {
+			return placeInFirstPolicy(doc, id, "actions", "actions")
+		}},
+		{"/policy/policies/0/pierceable_by", func(doc map[string]any, id map[string]any) bool {
+			pol, ok := firstPolicy(doc)
+			if !ok {
+				return false
+			}
+			pol["pierceable_by"] = []any{id}
+			return true
+		}},
+	}
+
+	principal := func(typ string) map[string]any {
+		return map[string]any{"kind": "principal", "type": typ, "qualifier": "acme", "local": "probe"}
+	}
+	load := func() map[string]any {
+		var v map[string]any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	for _, pos := range positions {
+		t.Run(pos.name, func(t *testing.T) {
+			// The position must ACCEPT a member of the vocabulary. Without
+			// this every refusal below could be a refusal for some other
+			// reason, and a position that rejected all principals outright
+			// would look like perfect enforcement.
+			for _, member := range contract.PrincipalTypes() {
+				doc := load()
+				if !pos.place(doc, principal(string(member))) {
+					t.Fatalf("could not place an identifier at %s in the generated document; this position is not being probed at all", pos.name)
+				}
+				if err := sch.Validate(doc); err != nil {
+					t.Fatalf("the compiled schema refuses %q at %s, so a refusal at this position says nothing about the type: %v", member, pos.name, err)
+				}
+			}
+			for _, outside := range []string{"Robot", "Machine.v2", "user", "Users"} {
+				doc := load()
+				if !pos.place(doc, principal(outside)) {
+					t.Fatalf("could not place an identifier at %s", pos.name)
+				}
+				if err := sch.Validate(doc); err == nil {
+					t.Errorf("the compiled schema ACCEPTS %q at %s; the $defs/identifier if/then is missing or inert at this position, and an authoring document naming a seventh principal type would be saved", outside, pos.name)
+				}
+			}
+		})
+	}
+}
+
+func firstPolicy(doc map[string]any) (map[string]any, bool) {
+	body, ok := doc["policy"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	policies, ok := body["policies"].([]any)
+	if !ok || len(policies) == 0 {
+		return nil, false
+	}
+	pol, ok := policies[0].(map[string]any)
+	return pol, ok
+}
+
+// placeInFirstPolicy installs id as the sole member of doc.policies[0][outer][inner].
+func placeInFirstPolicy(doc map[string]any, id map[string]any, outer, inner string) bool {
+	pol, ok := firstPolicy(doc)
+	if !ok {
+		return false
+	}
+	sub, ok := pol[outer].(map[string]any)
+	if !ok {
+		sub = map[string]any{}
+		pol[outer] = sub
+	}
+	sub[inner] = []any{id}
+	return true
 }

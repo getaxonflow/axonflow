@@ -29,6 +29,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"axonflow/platform/decision/contract"
 	"sync"
 	"time"
 
@@ -338,7 +340,13 @@ func CheckOIDCEndpointSSRF(rawURL string) error {
 // attribution and read scoping MUST both key on this exact value or a
 // developer sees zero of their own rows (#2920 gap 2).
 func CanonicalEmail(email string) string {
-	return strings.ToLower(strings.TrimSpace(email))
+	// DELEGATES rather than restating (#3876). This rule decides whether two
+	// spellings are the same person, and it is asked in two modules: here, and
+	// in platform/decision, where separation of duties compares an author
+	// against an approver. Two implementations of one rule are two answers the
+	// day either changes, so the rule lives in contract - the module both sides
+	// import - and TestCanonicalEmailIsTheContractsFold pins the delegation.
+	return contract.CanonicalLocal(email)
 }
 
 // --- Validator registry (the #2920 resolver seam) ---

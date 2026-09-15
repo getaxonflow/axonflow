@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -498,14 +501,12 @@ func resolvePEPHandshake(r *http.Request, authenticatedClientID string) pepHands
 // here, so this function resolves first and refuses rather than reusing that
 // predicate's fallback.
 func externalPEPEdition() (registry.Edition, bool) {
-	mode, recognised := deploymode.Resolve(deploymode.Current())
-	if !recognised {
-		return registry.EditionUnspecified, false
-	}
-	if deploymode.AppliesCategory(mode, deploymode.CategoryEnterprise) {
-		return registry.EditionEnterprise, true
-	}
-	return registry.EditionCommunity, true
+	// ONE DERIVATION, in platform/shared/deploymode (#3895). It used to be this
+	// function's own copy of the same resolution; the authoring vocabulary
+	// needs the same answer to register the same planes as enforcement points,
+	// and two copies would let a request be admitted against one plane set and
+	// evaluated against the other.
+	return deploymode.PlaneEdition()
 }
 
 // pepHandshakeCountedCtxKey marks that THIS HTTP request's handshake outcome

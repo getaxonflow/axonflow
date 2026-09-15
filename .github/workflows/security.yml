@@ -48,6 +48,7 @@ permissions:
   pull-requests: write
   security-events: write  # Required for SARIF uploads
   actions: read           # Required for CodeQL
+  issues: write
 
 # Cancel orphaned PR runs when a new commit is pushed. Pushes to main / merge_group
 # / scheduled runs use the SHA so they never share a group and never cancel
@@ -87,8 +88,10 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: write
     outputs:
       security-relevant: ${{ steps.filter.outputs.security-relevant }}
+      dependency-manifests: ${{ steps.filter.outputs.dependency-manifests }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -111,6 +114,54 @@ jobs:
               - '**/pom.xml'
               - '**/Dockerfile*'
               - '.github/workflows/security.yml'
+            # Every manifest the dependency graph reads (W3-J, 2026-09-12).
+            # Dependency Review diffs the graph between base and head, so a PR
+            # that changes none of these has an empty diff and nothing to
+            # review - yet it ran, one hosted minute, on every PR push (544 runs
+            # over 2026-09-08..11). GitHub Actions workflows are in the graph
+            # too (a `uses:` bump is a dependency change), hence the workflow
+            # globs. Broad on purpose: a manifest missing here is a review that
+            # silently does not run, a manifest too many is a minute.
+            dependency-manifests:
+              - '**/go.mod'
+              - '**/go.sum'
+              - '**/pom.xml'
+              - '**/build.gradle'
+              - '**/build.gradle.kts'
+              - '**/package.json'
+              - '**/package-lock.json'
+              - '**/npm-shrinkwrap.json'
+              - '**/yarn.lock'
+              - '**/pnpm-lock.yaml'
+              - '**/requirements*.txt'
+              - '**/pyproject.toml'
+              - '**/poetry.lock'
+              - '**/uv.lock'
+              - '**/setup.py'
+              - '**/setup.cfg'
+              - '**/Pipfile'
+              - '**/Pipfile.lock'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/Gemfile'
+              - '**/Gemfile.lock'
+              - '**/*.gemspec'
+              - '**/composer.json'
+              - '**/composer.lock'
+              - '**/*.csproj'
+              - '**/packages.config'
+              - '**/Package.resolved'
+              - '**/pubspec.yaml'
+              - '**/pubspec.lock'
+              - '.github/workflows/**'
+              - '**/action.yml'
+              - '**/action.yaml'
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # CodeQL Analysis - Static code analysis for security vulnerabilities
   # Only runs on nightly schedule - too slow (~7 min) for PR/merge queue workflow
@@ -155,20 +206,25 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:go"
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # Dependency Review - Block PRs that introduce vulnerable dependencies
   dependency-review:
     name: Dependency Review
-    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
-    # real work - it reads other jobs' results, or greps the tree - but it
-    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
-    # suites it blocks a merge having tested nothing. Measured: #3795's
-    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
-    # every unit job already green. A few seconds of hosted time is the
-    # correct price for a gate; slot-time is what the suites need.
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    if: github.event_name == 'pull_request'
+    # Only when a dependency manifest changed (see the filter above). This job
+    # feeds NO required context - Security Scan Summary does not `need` it - so
+    # a job-level skip is not a satisfied gate standing in for a review; it is
+    # the absence of anything to review. Needing detect-changes also means it
+    # inherits that job's draft gate: a draft does not run it, ready_for_review does.
+    needs: [detect-changes]
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.dependency-manifests == 'true'
 
     steps:
       - name: Checkout code
@@ -179,6 +235,12 @@ jobs:
         with:
           fail-on-severity: high
           deny-licenses: GPL-3.0, AGPL-3.0
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # Trivy Filesystem Scan
   trivy-filesystem-scan:
@@ -384,6 +446,12 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
           skip-dirs: ${{ env.TRIVY_SKIP_DIRS }}
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # Trivy Configuration Scan
   trivy-config-scan:
@@ -452,6 +520,12 @@ jobs:
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # Trivy Secret Scan
   trivy-secret-scan:
@@ -511,6 +585,12 @@ jobs:
           # manifests, not credential stores — skipping them does not
           # weaken secret detection. Same logic for build.gradle*.
           skip-files: '**/pom.xml,**/build.gradle,**/build.gradle.kts'
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # Docker Image Scans - Skip on PRs for speed
   trivy-docker-agent:
@@ -572,6 +652,12 @@ jobs:
         with:
           sarif_file: 'trivy-agent-results.sarif'
           category: 'trivy-docker-agent'
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   trivy-docker-orchestrator:
     name: Trivy Scan - Orchestrator Docker Image
@@ -632,6 +718,12 @@ jobs:
         with:
           sarif_file: 'trivy-orchestrator-results.sarif'
           category: 'trivy-docker-orchestrator'
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}
 
   # Security Summary
   security-summary:
@@ -725,7 +817,31 @@ jobs:
           # cause outside every diff. They are watched instead, by
           # scripts/ci/check-main-guard-freshness.sh - see the reason column in
           # tests/regression-test-required/lib/main-guard-dispositions.tsv.
-          # This scan reads the tree, not a DB, so it can gate.
+          #
+          # THIS COMMENT USED TO END "This scan reads the tree, not a DB, so it
+          # can gate", AND THAT SENTENCE WAS FALSE IN BOTH HALVES. The scan that
+          # actually gates on advisory data is trivy-filesystem-scan, read
+          # further up: it reads go.mod and package-lock.json from the tree and
+          # then resolves those versions against THE SAME vulnerability DB, so
+          # it goes red with no commit changing in exactly the way the paragraph
+          # above says disqualifies a scan from gating. On 2026-09-09 it did:
+          # main went from green at 17:12 to five consecutive reds from 02:21
+          # on three newly published advisories, no merge of ours having touched
+          # the files.
+          #
+          # WHAT ACTUALLY DISTINGUISHES THEM IS `exit-code`, not the data
+          # source. The image scans set none, so they never fail their own job
+          # on findings and excluding them here is belt-and-braces.
+          # trivy-filesystem-scan sets `exit-code: 1` on CRITICAL,HIGH, so it
+          # does fail and IS gated above. trivy-config-scan and
+          # trivy-secret-scan set `exit-code: 0`, so their results can only be
+          # non-success when the scanner itself errors - which is what the two
+          # checks below and above are really asserting.
+          #
+          # So the gating choice does not rest on tree-versus-DB. It rests on
+          # which scans are configured to fail on findings, and one of those is
+          # DB-driven. Whether that is the right line is a separate decision and
+          # is deliberately not changed here.
           CONFIG_RESULT="${{ needs.trivy-config-scan.result }}"
           if [[ "$CONFIG_RESULT" != "success" && "$CONFIG_RESULT" != "skipped" ]]; then
             echo "Configuration scan failed"
@@ -740,3 +856,15 @@ jobs:
             echo ""
             echo "All critical security scans passed"
           fi
+      - name: Check out the main-red reporter (#4041)
+        if: always()
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/actions/report-main-red
+          sparse-checkout-cone-mode: false
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}

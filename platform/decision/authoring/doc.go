@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package authoring is the typed policy authoring control plane: the layer
 // above the deterministic PDP that owns how a policy comes into existence,
 // how it is rejected, how it is published, and how it is rendered back.

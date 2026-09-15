@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -141,17 +133,11 @@ func auditVerificationAuthorized(r *http.Request) bool {
 	if credentialTenant == "" {
 		credentialTenant = TenantIDFromContext(ctx)
 	}
-	// #3550: through adaptedValidateUserToken, not validateUserToken directly.
-	// This gate turns a per-user token into TENANT-WIDE AUDIT READ, so an
-	// identity the organization's trust realms refuse must not buy read scope
-	// here while the same token is refused on every other route.
-	//
-	// #3602: the synthetic tag is read from the request here rather than
-	// inherited from an AuthResult, because this gate does not go through
-	// ResolveUser. It is a metric label and nothing else - it buys no read
-	// authority and is not consulted below.
-	user, err := adaptedValidateUserToken(OrgIDFromContext(ctx), token, credentialTenant,
-		sharedidentity.IsSyntheticProbeHeader(r.Header.Get(sharedidentity.SyntheticProbeHeader)))
+	// Through admitUserToken, not validateUserToken directly: this gate turns a
+	// per-user token into TENANT-WIDE AUDIT READ, so a principal the licence's
+	// ceiling refuses must not buy read scope here while the same token is
+	// refused on every other route.
+	user, err := admitUserToken(OrgIDFromContext(ctx), token, credentialTenant)
 	if err != nil || user == nil {
 		return false
 	}

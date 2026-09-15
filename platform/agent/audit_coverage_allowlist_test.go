@@ -31,26 +31,20 @@ package agent
 func auditCoverageAllowlist() map[string]string {
 	return map[string]string{
 		// ---- BY-DESIGN: MCP plane helpers (caller writes the canonical row) ----
-		// evaluateInputPolicies returns an input outcome; the MCP handlers
-		// (mcpQueryHandler / mcpExecuteHandler / mcpCheckInputHandler) run
-		// emitDecisionAudit → writeMCPDecisionAudit on the resulting verdict
-		// (mcp_handler.go ~1523, ~1885, ~2391). Closed by #2641 + #2679.
-		"platform/agent/mcp_handler.go::evaluateInputPolicies": "by-design: returns input outcome; caller mcpQuery/Execute/CheckInput handlers audit via emitDecisionAudit→writeMCPDecisionAudit (#2641/#2679).",
+		// evaluateInputPolicies is the request-phase DETECTOR pass: it returns the
+		// shared engine's evaluation, whose detector facts the anchored engine
+		// decides from, and decides nothing itself. Its callers (the MCP request
+		// pass's entry points and handleDecide) audit the anchored verdict.
+		"platform/agent/mcp_handler.go::evaluateInputPolicies": "by-design: detector pass only, no verdict; the MCP request pass's entry points and handleDecide audit the anchored verdict (#2641/#2679, #3564).",
+		// proxyDetectorPass is /api/request's DETECTOR pass (#4253): it returns the
+		// shared engine's evaluation, whose detector facts the anchored engine
+		// decides from, and decides nothing itself. clientRequestHandler audits the
+		// anchored verdict; the policy-test preview is a dry run and records nothing.
+		"platform/agent/run.go::proxyDetectorPass": "by-design: detector pass only, no verdict; clientRequestHandler audits the anchored verdict and the policy-test preview records nothing (#4253).",
 		// evaluateOutputPolicies returns an output outcome; callers run
 		// mcpOutputDecisionVerdict → writeMCPDecisionAudit / recordDecideDecision
 		// (mcp_handler.go ~1589, ~1956, ~2808). Closed by #2641.
 		"platform/agent/mcp_handler.go::evaluateOutputPolicies": "by-design: returns output outcome; caller handlers audit via mcpOutputDecisionVerdict→writeMCPDecisionAudit/recordDecideDecision (#2641).",
-		// redactInputStatement masks PII in a statement (response prep); it
-		// makes no terminal verdict. mcpCheckInputHandler records the redacted
-		// verdict via writeMCPDecisionAudit (mcp_handler.go ~2588).
-		"platform/agent/mcp_handler.go::redactInputStatement": "by-design: pure redaction helper, no verdict; mcpCheckInputHandler audits the redacted verdict via writeMCPDecisionAudit (#2641).",
-
-		// redactInputStatement is also reached one hop up by the request-plane
-		// redactor adapter textPIIDetector.Redact (a Redactor-interface impl that
-		// just wraps the engine-backed redactor and returns the masked text). It
-		// makes no terminal verdict; the PEP that drives the redaction pipeline
-		// (decide / gateway / mcp) records the redacted verdict.
-		"platform/agent/request_redaction_detector.go::textPIIDetector.Redact": "by-design: engine-backed redactor adapter (Redactor iface impl) wrapping redactInputStatement; no verdict, the invoking PEP records the redaction.",
 
 		// ---- BY-DESIGN: Cowork / Claude Code OTEL ingest plane (caller audits) ----
 		// coworkRedactDefault is the redact-at-collector helper: it wraps the SAME
@@ -63,18 +57,16 @@ func auditCoverageAllowlist() map[string]string {
 		"platform/agent/cowork_otel_ingest.go::coworkRedactDefault": "by-design: redact-at-collector helper wrapping evaluateOutputPolicies; caller processCoworkRecord audits via writeCoworkAuditLog + recordSignedDecision on every verdict (#2760).",
 
 		// ---- BY-DESIGN: orchestrator response plane (handler audits) ----
-		// DetectWithSharedEngine is the shared-engine detector; it returns a
-		// ResponseResult. The orchestrator response plane audits the outcome in
-		// run.go's llmProxyHandler via LogBlockedResponse / LogSuccessfulRequest
-		// (#2626 response-plane canonical row).
-		"platform/orchestrator/pii_detector.go::DetectWithSharedEngine": "by-design: detector returning ResponseResult; orchestrator response plane audits via LogBlockedResponse (run.go llmProxyHandler, #2626).",
-		// processWithSharedEngine runs response-content evaluation and returns
-		// redaction info; the same llmProxyHandler audits the response verdict
-		// (#2626). No verdict is terminal inside this helper.
-		"platform/orchestrator/response_processor.go::ResponseProcessor.processWithSharedEngine": "by-design: returns processed data + redaction info; llmProxyHandler audits via LogBlockedResponse/LogSuccessfulRequest (#2626).",
-		// ProcessResponse is the public entrypoint that calls processWithSharedEngine
-		// (one hop); same response plane, same llmProxyHandler audit (#2626).
-		"platform/orchestrator/response_processor.go::ResponseProcessor.ProcessResponse": "by-design: response-plane entrypoint delegating to processWithSharedEngine; llmProxyHandler audits via LogBlockedResponse/LogSuccessfulRequest (#2626).",
+		// responseDetectorPass runs the response-phase evaluation for its detector
+		// facts only and returns them; decideResponse, which calls it, returns the
+		// anchored decision up, and run.go's llmProxyHandler audits the response
+		// verdict via LogBlockedResponse / LogSuccessfulRequest (#2626). No verdict
+		// is terminal inside either helper.
+		"platform/orchestrator/response_enforcing_seam.go::responseDetectorPass": "by-design: detector pass returning facts to decideResponse; llmProxyHandler audits the response verdict via LogBlockedResponse/LogSuccessfulRequest (#2626).",
+		"platform/orchestrator/response_enforcing_seam.go::decideResponse":       "by-design: returns the anchored response decision to ProcessResponse; llmProxyHandler audits via LogBlockedResponse/LogSuccessfulRequest (#2626).",
+		// ProcessResponse is the public entrypoint that calls decideResponse (one
+		// hop); same response plane, same llmProxyHandler audit (#2626).
+		"platform/orchestrator/response_processor.go::ResponseProcessor.ProcessResponse": "by-design: response-plane entrypoint delegating to decideResponse; llmProxyHandler audits via LogBlockedResponse/LogSuccessfulRequest (#2626).",
 
 		// ---- BY-DESIGN: WCP step-gate (adapter returns up; Service audits) ----
 		// The adapter evaluates and returns a StepGateEvaluation; Service.StepGate

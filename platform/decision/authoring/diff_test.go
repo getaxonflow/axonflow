@@ -1,6 +1,10 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -252,7 +256,9 @@ func TestDiffCoversEveryPolicyField(t *testing.T) {
 		"Unless":        func(p *pdp.Policy) { c := pdp.Compare("args.amount_cents", pdp.OpGt, 7); p.Unless = &c },
 		"Obligations":   func(p *pdp.Policy) { p.Obligations = []contract.Obligation{auditObligation("x")} },
 		"Mandatory":     func(p *pdp.Policy) { p.Mandatory = !p.Mandatory },
+		"Assurance":     func(p *pdp.Policy) { p.Assurance = pdp.AssuranceEnforcement },
 		"PierceableBy":  func(p *pdp.Policy) { p.PierceableBy = []contract.ID{gid(t, groupIncident)} },
+		"Name":          func(p *pdp.Policy) { p.Name = "renamed for people" },
 		"Description":   func(p *pdp.Policy) { p.Description = "changed" },
 	}
 	if len(mutators) != typ.NumField() {
@@ -338,23 +344,24 @@ func TestDiffReportsAttributeSchemaChanges(t *testing.T) {
 // ordinary state during a review.
 func TestAPIDiffComparesAgainstWhatIsActive(t *testing.T) {
 	cat := baseCatalog(t)
-	trust, priv := systemTrust(t)
-	api, err := NewAPI(cat, trust)
+	// THE ORGANIZATION ROOT: an API is the organization authority (#4047).
+	trust, priv := organizationTrust(t)
+	api, err := NewAPI(cat, StaticTrust(trust), mustProfile(t, EditionEnterprise))
 	if err != nil {
 		t.Fatal(err)
 	}
-	v1, _, err := api.Publish(t.Context(), baseDocument(t), publishOptions(t, priv))
+	v1, _, err := api.Publish(t.Context(), organizationDocument(t), organizationPublishOptions(t, priv))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Before promotion nothing is active, so a candidate diffs as all additions.
-	candidate := documentWith(t, cat, func(m *Metadata, d *pdp.Document) {
+	candidate := organizationDocumentWith(t, cat, func(m *Metadata, d *pdp.Document) {
 		d.Version = 2
 		m.Supersedes = v1.Digest()
 		policyByIDIn(d, "perm.refund").Where = pdp.Compare("args.amount_cents", pdp.OpLe, 250000)
 	})
-	diff, err := api.Diff(candidate)
+	diff, err := api.Diff(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,10 +371,10 @@ func TestAPIDiffComparesAgainstWhatIsActive(t *testing.T) {
 		}
 	}
 
-	if _, err := api.Promote(pdp.RootSystem, v1.Digest(), pid(t, principalBob), timeFixture(), "rollout"); err != nil {
+	if _, err := api.Promote(context.Background(), pdp.RootOrganization, v1.Digest(), pid(t, principalBob), timeFixture(), "rollout"); err != nil {
 		t.Fatal(err)
 	}
-	diff, err = api.Diff(candidate)
+	diff, err = api.Diff(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)
 	}

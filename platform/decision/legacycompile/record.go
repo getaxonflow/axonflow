@@ -1,8 +1,12 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"axonflow/platform/decision/pdp"
 )
@@ -68,18 +72,30 @@ const (
 	// so had compiled a live block condition into nothing.
 	ReasonLegacyDeadConditionField ReasonCode = "legacy_dead_condition_field"
 
-	// ReasonReadPathActionDivergence is the migration's central finding: this
-	// row's two disjoint read paths resolve to DIFFERENT actions, so what the
-	// row does depends on which plane asked.
-	ReasonReadPathActionDivergence ReasonCode = "read_path_action_divergence"
 	// ReasonNoStoredActionForPhase means the phase column the plane reads is
 	// NULL, so the legacy engine resolves through GetActionForPhase's
 	// category/severity fallback. The action the operator sees in the row is
 	// not the action that runs.
 	ReasonNoStoredActionForPhase ReasonCode = "no_stored_action_for_phase"
-	// ReasonPostureLeverDisplaces means the deployment detection posture
-	// replaces this row's resolved action on lever-bearing planes.
-	ReasonPostureLeverDisplaces ReasonCode = "posture_lever_displaces_stored_action"
+	// ReasonOrgOverrideDisplaces means an action assigned to the row's category
+	// - an organization's recorded detection override - replaces its resolved
+	// action on a plane that passes the override map (#3961).
+	ReasonOrgOverrideDisplaces ReasonCode = "org_override_displaces_stored_action"
+	// ReasonPlaneCoercesAction means the plane itself coerces an action over the
+	// row's resolved one, whatever any override says: the cowork ingest storage
+	// plane forces redact before it persists content. It is not a posture and not
+	// an override, and before #3961 it shared the lever's reason code.
+	ReasonPlaneCoercesAction ReasonCode = "plane_coerces_stored_action"
+	// ReasonRetiredTierPassAction records that a plane enforces a row's STORED
+	// action where the row's phase column resolves something weaker (#4253):
+	// PlaneSpec.EnforcesRetiredTierPassRead keeps on proxy_request what
+	// /api/request's retired second pass read from the stored column, and the
+	// detail names the arm ("system stored block" or "template stored action
+	// outranks the phase resolution") and the action. It is a fidelity rule, not
+	// a preserved defect and not a compiler gap, so it is in neither bucket
+	// below. It replaced read_path_action_divergence, which compared the two
+	// read paths and went with the second one.
+	ReasonRetiredTierPassAction ReasonCode = "retired_tier_pass_action"
 
 	// ReasonPatternNotTypedCondition records that legacy content matching has
 	// no ADR-065 typed-condition equivalent, so it compiles to a DETECTOR
@@ -145,6 +161,63 @@ const (
 	// conditions are NULL or absent: the engine treats that as vacuous truth
 	// and the policy applies to everything.
 	ReasonVacuousConditionSet ReasonCode = "vacuous_condition_set"
+	// ReasonTenantColumnNotAPredicate records that a row carries a non-global
+	// `tenant_id` which is READ AND DELIBERATELY NOT TRANSLATED (#3899).
+	//
+	// IT IS NOT A DEFECT AND NOT A COMPILER GAP, which is why it is in neither
+	// set below, and the distinction is the whole content of the code: the
+	// compiled Scope{Organization: true} is what the legacy engine ALREADY
+	// does, so nothing is widened by the compilation and nothing is lost.
+	//
+	// THE EVIDENCE, recorded here so the next reader does not re-derive it and
+	// reach the opposite conclusion, which #3899 did. `tenant_id` is not an
+	// applicability predicate on either enforcement path:
+	//
+	//   - STATIC. StaticPolicyRepository.GetEffective's pass A selects on
+	//     `sp.tier IN ('organization','tenant') AND sp.org_id = $1`. The tenant
+	//     leg was REMOVED by #3490 decision 5, as a security fix, because it
+	//     "keyed on the Basic-auth username, which is caller-chosen and
+	//     validated by nothing".
+	//   - DYNAMIC. dbCachedPolicyAppliesToOrg narrows on org and then segment
+	//     and never reads tenant_id; the cache is "deliberately loaded
+	//     ALL-TENANTS through the BYPASSRLS pool", and a NULL tenant_id is
+	//     given an applies-to-everyone sentinel while a NULL org_id is refused.
+	//
+	// The remaining readers of the column on those two tables are CRUD
+	// ownership, the tenant-policy quota count and a licence-tier lookup -
+	// none of them applicability.
+	//
+	// THE ONE THING THAT LOOKS LIKE COUNTER-EVIDENCE, named here because an
+	// argument that does not address it gets re-opened by the next reader.
+	// Thirty lines below the pass-A predicate above, on the SAME enforcement
+	// path, `policy_overrides` IS read with a tenant narrowing:
+	//
+	//	AND po.org_id = $1
+	//	AND (po.tenant_id IS NULL OR po.tenant_id = $2)
+	//
+	// That is a different table and a different object, and the code there
+	// says why in its own words: "an override is an EXCEPTION granted to a
+	// caller, not a policy targeted at one, so narrowing it to its grantee is
+	// the same reasoning that leaves the ADR-044 Mechanism-B lookups keyed on
+	// created_by." Reading every override row in the org was REJECTED IN
+	// REVIEW there, because a sibling tenant's block-to-warn downgrade would
+	// then outrank the caller's own org-scoped override - a loosening. So the
+	// single surviving enforcement-time tenant narrowing exists to keep a
+	// change RESTRICTIVE, and it is on overrides rather than on policies.
+	// legacycompile does not compile overrides.
+	//
+	// SO WHY RECORD ANYTHING. Because this package's contract is "zero silent
+	// drops: every input row produces exactly one Record", and a column read
+	// and not carried across is exactly what an operator reviewing an import
+	// proposal is entitled to be told about, whether or not it changes the
+	// outcome. Silence would be indistinguishable from not having looked.
+	//
+	// TRANSLATING IT WOULD BE A NARROWING, and that is the reason this is a
+	// reason code rather than a condition. A condition on the tenant would make
+	// the imported policy apply to FEWER principals than the engine applies it
+	// to today - for a constraint, a loss of governance coverage arriving in
+	// the shape of a bug fix.
+	ReasonTenantColumnNotAPredicate ReasonCode = "tenant_column_not_a_predicate"
 )
 
 // defectReasons are the reason codes that mean "a legacy defect was preserved
@@ -155,9 +228,9 @@ var defectReasons = map[ReasonCode]string{
 	ReasonLegacyScanDrop:           "#3397",
 	ReasonLegacyCompileDrop:        "#3397",
 	ReasonLegacyDeadConditionField: "#3515",
-	ReasonReadPathActionDivergence: "#3563",
 	ReasonNoStoredActionForPhase:   "#3563",
-	ReasonPostureLeverDisplaces:    "#3360",
+	ReasonOrgOverrideDisplaces:     "#3961",
+	ReasonPlaneCoercesAction:       "#3360",
 	ReasonInertLegacyAction:        "#3563",
 	// Malformed conditions or actions JSONB is the SAME substrate behaviour as
 	// an uncompilable regex on a static row: the engine logs, continues, and
@@ -231,7 +304,10 @@ type SourceRef struct {
 	OrgScope string `json:"org_scope"`
 	ID       string `json:"id"`
 	PolicyID string `json:"policy_id"`
-	Version  int    `json:"version"`
+	// Name is the legacy row's own name, which the corpus carries as each
+	// compiled policy's operator-facing name (#4127).
+	Name    string `json:"name,omitempty"`
+	Version int    `json:"version"`
 	// RowDigest is a content digest over the captured columns, so a later
 	// capture can prove a row did or did not change.
 	RowDigest string `json:"row_digest"`
@@ -254,9 +330,29 @@ type PlaneResult struct {
 	// contributes nothing on this plane, and Reasons says why.
 	Policies []pdp.Policy `json:"policies,omitempty"`
 	// ResolvedAction is the legacy action this plane resolves for the row,
-	// AFTER phase resolution and category fallback but BEFORE the posture
-	// lever. Empty when the plane resolves nothing.
+	// AFTER phase resolution and category fallback but BEFORE any category
+	// action (an organization override). Empty when the plane resolves nothing.
 	ResolvedAction string `json:"resolved_action,omitempty"`
+	// EnforcedAction is the action this plane ACTUALLY APPLIES for the row:
+	// ResolvedAction after any category action and after any plane-level
+	// coercion. Empty when the plane applies nothing.
+	//
+	// IT EXISTS BECAUSE ResolvedAction WAS BEING READ AS THOUGH IT WERE THIS.
+	// The two differ on exactly the planes a reader is least likely to check,
+	// and the difference is not cosmetic - it decides which generation of a
+	// superseded pair an importer keeps. A consumer re-deriving the enforced
+	// action for itself has to know, per plane, whether the lever reaches it
+	// (PlaneSpec.PassesOrgOverrides) and whether the plane coerces (PlaneSpec.Forces),
+	// and the one consumer that tried knew neither: it applied the deployment
+	// posture on proxy_tier (retired by #4253) and cowork_ingest, where the
+	// engines never see the override map at all, and ignored the cowork plane's
+	// forced redact.
+	//
+	// So the compiler states what it enforces rather than leaving it to be
+	// reconstructed. Anything asking "what does this row do on this plane"
+	// reads THIS field; ResolvedAction remains the pre-lever value, which is
+	// what makes a displacement visible as a displacement.
+	EnforcedAction string `json:"enforced_action,omitempty"`
 	// StoredAction is the explicit column value the plane's read path
 	// supplies, empty when that column is NULL. The pair
 	// (StoredAction, ResolvedAction) is what makes a category fallback
@@ -309,6 +405,52 @@ func (r Record) HasReason(c ReasonCode) bool {
 		}
 	}
 	return false
+}
+
+// StatusForPlane derives the compilation status as it applies to ONE plane.
+//
+// THE Status FIELD STAYS ROW-LEVEL AND THAT IS DELIBERATE: it is the
+// corpus-wide truth CountsByStatus and the census report, and a row carrying a
+// preserved defect anywhere does carry it. This is for the other kind of
+// consumer - one scoped to a single plane, which must not inherit a defect
+// earned somewhere it is not looking.
+//
+// The two differ in practice and the difference is not marginal. Setting a
+// category action raises ReasonOrgOverrideDisplaces on every plane whose
+// PlaneSpec.PassesOrgOverrides is true; HasReason scans r.Planes as well as
+// r.Reasons; so a row-level read reported `preserved_defect` for proxy_tier -
+// a plane whose engine resolved through GetEffective and never saw the
+// override map at all (#4253 retired both). Measured: across two compilations of one row differing
+// only in CategoryActions, the resolved action, the emitted policy and the supersession
+// winner were identical and the status was not.
+//
+// Row-level reasons are KEPT in the scoped view. A pattern that does not
+// compile or a scan that drops the row is a fact about the row on every plane,
+// not a per-plane one, and dropping those would report a silently unenforced
+// row as cleanly compiled.
+//
+// It reuses statusFrom rather than re-deriving, so the three buckets and the
+// ordering between them keep exactly one definition.
+//
+// THE SECOND RETURN SEPARATES "ABSENT" FROM "UNCOMPILABLE", which the three
+// Status values cannot. A record carries no result for a plane that never
+// evaluated its substrate - every dynamic plane on a static row - and a scoped
+// view of one of those has no policies, so statusFrom would answer
+// `uncompilable`: the word meaning THE COMPILER COULD NOT EXPRESS THIS ROW.
+// It could; it was never asked. Reporting that as a compiler gap would put a
+// migration backlog entry where there is no row. False when the plane is not
+// present on this record at all, and the Status is then meaningless.
+func (r Record) StatusForPlane(plane Plane) (Status, bool) {
+	scoped := Record{Source: r.Source, Reasons: r.Reasons}
+	for _, p := range r.Planes {
+		if p.Plane == plane {
+			scoped.Planes = append(scoped.Planes, p)
+		}
+	}
+	if len(scoped.Planes) == 0 {
+		return "", false
+	}
+	return statusFrom(scoped), true
 }
 
 // Limitation is a known, whole-population gap recorded once on the report
@@ -523,4 +665,33 @@ func (rep Report) Reconcile(dbCounts map[string]int) error {
 		}
 	}
 	return nil
+}
+
+// tenantColumnReason returns the #3899 reason for a row whose `tenant_id` is a
+// real tenant rather than the global sentinel, and nil otherwise.
+//
+// It is one function called from both compilers because the two rows carry the
+// same column with the same meaning, and a second copy of this judgement is how
+// one of them would later acquire a condition the other did not.
+//
+// A SYSTEM-ROOT ROW GETS NOTHING. `tenant_id = 'global'` is what routes a row
+// to the system root in the first place, so there is no tenant to report; and a
+// row whose tier is `system` is the platform's own, where the column is not a
+// customer scoping statement at all.
+func tenantColumnReason(tenantID, tier string, root pdp.Root) *Reason {
+	if root == pdp.RootSystem {
+		return nil
+	}
+	t := strings.TrimSpace(tenantID)
+	if t == "" || t == "global" {
+		return nil
+	}
+	return &Reason{
+		Code: ReasonTenantColumnNotAPredicate,
+		Detail: fmt.Sprintf("the row carries tenant_id %q, which is NOT translated into the typed document and is not "+
+			"a loss: neither enforcement path selects on it - the static read path's tenant leg was removed by #3490 "+
+			"decision 5 because it keyed on a caller-chosen username, and the dynamic cache is loaded all-tenants and "+
+			"narrows on org and segment - so this policy already applies to the whole organisation before compilation, "+
+			"and the compiled Scope{Organization: true} reproduces that rather than widening it (#3899)", t),
+	}
 }

@@ -27,6 +27,8 @@ import (
 // platform/agent, so both collectors can end up linked into one binary, and
 // two registrations of the same metric name would panic at init. Converging
 // the two names once #3514 lands is tracked as a checklist row on #3408.
+// #4253 removed the agent's collector with /api/request's hold exit, so no
+// second registration remains to collide with this one.
 var hitlEnqueueTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "axonflow_hitl_enqueue_total",

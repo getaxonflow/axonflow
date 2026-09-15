@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -72,6 +64,11 @@ type DynamicPolicy struct {
 // IsOverridable returns true if the policy's deny decision can be overridden
 // by an active session override. Critical-risk policies cannot be overridden
 // regardless of the AllowOverride flag (ADR-044 invariant).
+//
+// NO CALLER REMAINS from v11.0.0 (#4252): the workflow step gate reads no
+// session override and explain offers none. It is kept beside AllowOverride,
+// the wire member the read surface and historic rows still carry, and goes
+// when that member does.
 func (p *DynamicPolicy) IsOverridable() bool {
 	if p.RiskLevel == "critical" {
 		return false

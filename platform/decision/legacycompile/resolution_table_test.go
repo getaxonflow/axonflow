@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
@@ -72,48 +75,31 @@ func TestResolutionTableIsExhaustiveAndAgrees(t *testing.T) {
 		len(rows), len(categories), len(severities), len(phases), len(storedStates))
 }
 
-// TestPostureLeverTableAgrees is the same pin for the detection-posture lever.
-// Its main-module half is
-// platform/agent/legacy_posture_lever_table_test.go.
-func TestPostureLeverTableAgrees(t *testing.T) {
-	rows := readTSV(t, "legacy_posture_levers.tsv", []string{"category", "posture_lever"})
-	if len(rows) == 0 {
-		t.Fatal("legacy_posture_levers.tsv is empty")
+// TestCategoryActionsApplyByCategory pins that an assigned action is looked up
+// by the policy CATEGORY - the key EvalOptions.ActionOverrides carries - and by
+// nothing else (#3961). It was keyed by environment-variable name while the
+// decision shadow's observer (retired in v11) passed the engine's category-keyed
+// map, so on that path no action was ever found. Without these assertions Apply
+// could be a no-op and every override case would silently assert nothing.
+func TestCategoryActionsApplyByCategory(t *testing.T) {
+	c := CategoryActions{"pii-us": ActionWarn}
+	if got, did := c.Apply("pii-us", ActionBlock); !did || got != ActionWarn {
+		t.Fatalf("an action assigned to pii-us did not displace a pii-us block: got %q displaced=%t", got, did)
 	}
-	levered, unlevered := 0, 0
-	for i, r := range rows {
-		want := undash(r["posture_lever"])
-		got := PostureLeverFor(r["category"])
-		if got != want {
-			t.Fatalf("legacy_posture_levers.tsv line %d: PostureLeverFor(%q) = %q, table says %q",
-				i+2, r["category"], got, want)
-		}
-		if want == "" {
-			unlevered++
-		} else {
-			levered++
-		}
+	if got, did := c.Apply("pii-eu", ActionBlock); did || got != ActionBlock {
+		t.Fatalf("an action assigned to pii-us displaced pii-eu: got %q displaced=%t", got, did)
 	}
-	if levered == 0 || unlevered == 0 {
-		t.Fatalf("the table records %d levered and %d unlevered categories; both directions must appear or the pin only checks one", levered, unlevered)
+	// The retired lever-name key must not be read as a category.
+	if got, did := (CategoryActions{"PII_ACTION": ActionWarn}).Apply("pii-us", ActionBlock); did || got != ActionBlock {
+		t.Fatalf("a lever-name key displaced a category action: got %q displaced=%t", got, did)
 	}
-
-	// The lever must actually displace, and must not displace where no lever
-	// applies. Without both, Posture.Apply could be a no-op and every posture
-	// case in the shadow corpus would silently assert nothing.
-	p := Posture{"PII_ACTION": ActionWarn}
-	if got, did := p.Apply("pii-us", ActionBlock); !did || got != ActionWarn {
-		t.Fatalf("PII_ACTION did not displace a pii-us block: got %q displaced=%t", got, did)
+	// No action assigned is not the same as one assigned the stored action.
+	if got, did := (CategoryActions{}).Apply("pii-us", ActionBlock); did || got != ActionBlock {
+		t.Fatalf("empty category actions displaced an action: got %q displaced=%t", got, did)
 	}
-	if got, did := p.Apply("compliance-gdpr", ActionBlock); did || got != ActionBlock {
-		t.Fatalf("a category no lever reaches was displaced: got %q displaced=%t", got, did)
+	if _, did := (CategoryActions{"pii-us": ActionBlock}).Apply("pii-us", ActionBlock); !did {
+		t.Fatal("an action assigned equal to the stored one was not reported as a displacement; the audit trail must still show it")
 	}
-	// An empty posture is "no lever configured", which is not the same as a
-	// lever set to the stored action.
-	if got, did := (Posture{}).Apply("pii-us", ActionBlock); did || got != ActionBlock {
-		t.Fatalf("an unconfigured posture displaced an action: got %q displaced=%t", got, did)
-	}
-	t.Logf("pinned %d levered and %d unlevered categories", levered, unlevered)
 }
 
 func readTSV(t *testing.T, path string, wantHeader []string) []map[string]string {

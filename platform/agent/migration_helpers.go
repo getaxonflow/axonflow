@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -15,18 +7,20 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"axonflow/platform/shared/deploymode"
 )
 
 // =============================================================================
-// Multi-Edition Migration Architecture (ADR-012)
+// Multi-Edition Migration Architecture (ADR-011)
 // =============================================================================
 // This implements the Flyway-style multi-location pattern for migrations.
 // Directory structure:
@@ -333,6 +327,14 @@ func collectMigrations(basePath string) ([]MigrationFile, error) {
 	})
 
 	return migrations, nil
+}
+
+// CollectMigrations is collectMigrations for callers outside this package: the
+// orchestrator's half of the #3894 upgrade test builds its migration lists
+// exactly as the boot selects and orders them, rather than re-sorting files
+// itself.
+func CollectMigrations(basePath string) ([]MigrationFile, error) {
+	return collectMigrations(basePath)
 }
 
 // validateMigrationDependencies validates that dependencies are satisfied
@@ -770,4 +772,199 @@ func getMigrationStatus(db *sql.DB) string {
 	}
 
 	return fmt.Sprintf("%d migrations applied (latest: %s at %s)", count, lastVersion, lastApplied)
+}
+
+// =============================================================================
+// The boot migration runner (#3894 clause (a))
+// =============================================================================
+
+// MigrationSessionVars are the values setMigrationSessionVars puts into the
+// migration connection's session: app.db_password, app.deployment_org_id and
+// app.deployment_kind.
+type MigrationSessionVars struct {
+	DBPassword      string
+	DeploymentOrgID string
+	DeploymentKind  string
+}
+
+// migrationStage names the step of RunMigrations that failed, so the boot path
+// can exit with exactly the message that step logged when the runner was inline
+// in run.go.
+type migrationStage int
+
+const (
+	stageSubstitute    migrationStage = iota + 1 // substituteGrafanaPassword refused the file
+	stageExec                                    // the migration's own SQL failed
+	stageEnforcerCheck                           // looking up the #3905 enforcer failed
+	stageEnforce                                 // running the #3905 enforcer failed
+)
+
+// MigrationError is a RunMigrations failure. File and Category name the
+// migration where the failing step had one; Err is the underlying error.
+type MigrationError struct {
+	stage    migrationStage
+	File     string
+	Category string
+	Err      error
+}
+
+func (e *MigrationError) Error() string {
+	switch e.stage {
+	case stageSubstitute:
+		return fmt.Sprintf("migration %s: %v", e.File, e.Err)
+	case stageExec:
+		return fmt.Sprintf("migration %s [%s]: %v", e.File, e.Category, e.Err)
+	case stageEnforcerCheck:
+		return fmt.Sprintf("checking for the legacy-policy read-only enforcer: %v", e.Err)
+	default:
+		return fmt.Sprintf("enforcing the legacy-policy read-only invariant (#3905): %v", e.Err)
+	}
+}
+
+func (e *MigrationError) Unwrap() error { return e.Err }
+
+// migrationFailureLines returns the log line (possibly empty) and the fatal
+// line the boot path writes for a RunMigrations failure. They are the exact
+// strings the inline runner and the fatal enforcer wrote before the extraction;
+// TestTheBootPathKeepsEveryMigrationFatalMessageByteForByte builds them from the
+// old format strings and compares byte for byte.
+func migrationFailureLines(err error) (logLine, fatalLine string) {
+	var me *MigrationError
+	if !errors.As(err, &me) {
+		return "", fmt.Sprintf("Database migrations failed: %v", err)
+	}
+	switch me.stage {
+	case stageSubstitute:
+		return "", fmt.Sprintf("Migration %s failed: %v", me.File, me.Err)
+	case stageExec:
+		return fmt.Sprintf("❌ Migration %s [%s] FAILED: %v", me.File, me.Category, me.Err),
+			"Database migrations failed. Exiting to prevent incomplete setup."
+	case stageEnforcerCheck:
+		return "", fmt.Sprintf("Failed to check for the legacy-policy read-only enforcer: %v", me.Err)
+	default:
+		return "", fmt.Sprintf("Failed to enforce the legacy-policy read-only invariant (#3905): %v", me.Err)
+	}
+}
+
+// fatalMigrationError is the boot path's exit for a RunMigrations failure
+// (Principle 3: No Silent Failures).
+func fatalMigrationError(err error) {
+	logLine, fatalLine := migrationFailureLines(err)
+	if logLine != "" {
+		log.Print(logLine)
+	}
+	log.Fatal(fatalLine)
+}
+
+// RunMigrations is the agent's boot migration runner, moved out of run.go
+// unchanged so that the v10.2.0 -> v11 upgrade test (#3894 clause (a)) drives
+// this code and not a copy of it. It ensures the schema_migrations table, sets
+// the session variables the migration SQL reads, applies every migration not
+// yet applied in the order given, then runs the #3905 view-write closure, and
+// returns how many migrations it applied and skipped. run.go exits on its
+// error with the message the inline runner logged (fatalMigrationError).
+//
+// Kept from the inline runner, deliberately: a file that cannot be READ is
+// logged and passed over rather than fatal, and any other failure stops the run
+// at that migration, recorded in schema_migrations, with nothing after it
+// applied.
+func RunMigrations(db *sql.DB, migrations []MigrationFile, vars MigrationSessionVars) (applied, skipped int, err error) {
+	// Ensure schema_migrations table exists (run migration 020 first if needed)
+	ensureSchemaMigrationsTable(db)
+
+	// Set Postgres session variables that downstream migration SQL
+	// reads via current_setting(): app.db_password (migration 017
+	// dblink_exec) + app.deployment_org_id (migration 094 Pass-2
+	// org_id backfill) + app.deployment_kind (migration 094 prod-
+	// safety precondition, #2320). Extracted to
+	// setMigrationSessionVars so the wiring is unit-testable; the
+	// inline form was untested for years and the v9 Pass-2 backfill
+	// regressed on it (Epic #2230 Follow-up A).
+	setMigrationSessionVars(db, vars.DBPassword, vars.DeploymentOrgID, vars.DeploymentKind)
+
+	// Get list of applied migrations (keyed by composite version/name).
+	// See migrations/core/096_schema_migrations_dedup_composite.sql
+	// for why we cannot dedup on version alone — files like
+	// 025_decision_chain.sql + 025_hitl_oversight_queue.sql share
+	// the version prefix and must be tracked independently.
+	appliedMigrations := getAppliedMigrations(db)
+
+	for _, migration := range migrations {
+		filename := filepath.Base(migration.Path)
+
+		// Skip if already applied (composite version/name key)
+		if appliedMigrations[migrationKey(migration.Version, migration.Name)] {
+			log.Printf("⏭️  Migration %s [%s] already applied (skipping)", filename, migration.Category)
+			skipped++
+			continue
+		}
+
+		// Read migration file
+		sqlBytes, err := os.ReadFile(migration.Path)
+		if err != nil {
+			log.Printf("⚠️  Failed to read migration %s: %v", filename, err)
+			continue
+		}
+
+		// Substitute GRAFANA_PASSWORD for migration 107 (grafana_database)
+		sqlContent, err := substituteGrafanaPassword(string(sqlBytes))
+		if err != nil {
+			return applied, skipped, &MigrationError{stage: stageSubstitute, File: filename, Category: migration.Category, Err: err}
+		}
+		if sqlContent == "" {
+			log.Printf("⚠️  Skipping %s (Grafana not deployed)", filename)
+			skipped++
+			continue
+		}
+
+		// Execute migration (not in transaction to allow migrations to manage their own transactions)
+		startTime := time.Now()
+		_, err = db.Exec(sqlContent)
+		executionTimeMs := int(time.Since(startTime).Milliseconds())
+
+		if err != nil {
+			// Record failure
+			recordMigrationFailure(db, migration.Version, filename, err, executionTimeMs)
+
+			// Fail immediately on migration error (Principle 3: No Silent Failures):
+			// the boot path logs it and exits (fatalMigrationError)
+			return applied, skipped, &MigrationError{stage: stageExec, File: filename, Category: migration.Category, Err: err}
+		}
+
+		// Record success
+		recordMigrationSuccess(db, migration.Version, filename, executionTimeMs)
+		log.Printf("✅ Migration %s [%s] applied successfully (%dms)", filename, migration.Category, executionTimeMs)
+		applied++
+	}
+
+	log.Printf("✅ Database migrations completed: %d applied, %d skipped, %d total", applied, skipped, len(migrations))
+
+	// #3905: close the auto-updatable VIEW write paths into the legacy
+	// policy tables, AFTER every migration rather than inside one.
+	//
+	// An auto-updatable view over static_policies is a cross-tenant
+	// write path: it executes with the VIEW OWNER's privileges, and
+	// static_policies is ENABLE - not FORCE - row level security, so
+	// migration 018's org isolation does not bind it. Measured at
+	// core/171: a role scoped to one org could not see another org's
+	// row directly, and updated and deleted it through the view.
+	//
+	// The reason this call exists here rather than only in 174: the
+	// industry verticals are numbered 200+ *so that they run after*
+	// core and enterprise, and four of the five such views are
+	// theirs. On a fresh in-vpc-banking or travel deployment they are
+	// created after 174 has run, each arriving writable through
+	// core/098's ALTER DEFAULT PRIVILEGES. A migration cannot bind a
+	// relation that does not exist yet; this is the first point at
+	// which all DDL is done.
+	//
+	// It is idempotent, a no-op on a schema older than 174, and FATAL
+	// on failure. A deployment that cannot establish the invariant is
+	// one where an application role can reach another organization's
+	// policy rows, and a warning here would be indistinguishable from
+	// success in a boot log.
+	if err := runLegacyPolicyReadOnlyEnforcer(db); err != nil {
+		return applied, skipped, err
+	}
+	return applied, skipped, nil
 }

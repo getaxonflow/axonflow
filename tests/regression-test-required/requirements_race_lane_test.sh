@@ -7,7 +7,7 @@
 # approval authority, quota reservation, decision-proof single use - and its
 # tests race 64 to 96 goroutines against a shared store. Until #3689, none of
 # them ran under `-race` in CI: the three race lanes on main covered
-# platform/orchestrator, shared/planeshadow + shared/policy, and the decision
+# platform/orchestrator, the shadow observer with shared/policy, and the decision
 # module, and none of them reached shared/requirements. The board was green and
 # the detector had never been pointed at the code the gate is about. That is
 # the same shape as #3555's own criterion, "wired to an executing CI target,

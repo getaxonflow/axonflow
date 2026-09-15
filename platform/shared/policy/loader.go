@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -13,7 +16,6 @@ import (
 	"time"
 
 	"axonflow/platform/agent/rls"
-	"axonflow/platform/shared/planeshadow"
 )
 
 // globalTenantSentinel is the tenant_id/org_id wildcard used by system-seeded
@@ -54,6 +56,10 @@ var ErrEmptySystemPolicySet = errors.New(
 type PolicyLoader struct {
 	db    *sql.DB
 	cache *PolicyCache
+	// installed are the detectors of the policy packs this deployment
+	// installed (installed_packs.go), appended to every load. They are never
+	// rows and never count toward the system-tier floor.
+	installed []CompiledPolicy
 }
 
 // NewPolicyLoader creates a new policy loader.
@@ -147,7 +153,7 @@ func (l *PolicyLoader) loadFromDatabase(ctx context.Context, tenantID string, or
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
 			enabled, priority, tenant_id, segment_id, metadata,
-			created_at, updated_at
+			created_at
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -220,6 +226,15 @@ func (l *PolicyLoader) loadFromDatabase(ctx context.Context, tenantID string, or
 		return nil, ErrEmptySystemPolicySet
 	}
 
+	// THE INSTALLED PACKS' DETECTORS (installed_packs.go), after the floor so
+	// they cannot satisfy it, in place of any row under one of their ids, merged
+	// into the evaluation order by priority. The sort is stable, so the database
+	// rows keep the order the query gave them among themselves.
+	if len(l.installed) > 0 {
+		policies = append(withoutInstalledIDs(policies, l.installed), l.installed...)
+		sort.SliceStable(policies, func(i, j int) bool { return policies[i].Priority > policies[j].Priority })
+	}
+
 	return policies, nil
 }
 
@@ -248,7 +263,7 @@ func (l *PolicyLoader) scopedPolicyRows(ctx context.Context, query, scopeOrg str
 				&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 				&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
 				&p.Enabled, &p.Priority, &p.TenantID, &p.SegmentID, &p.Metadata,
-				&p.CreatedAt, &p.UpdatedAt,
+				&p.CreatedAt,
 			); sErr != nil {
 				log.Printf("[PolicyLoader] Error scanning row: %v", sErr)
 				continue
@@ -282,26 +297,15 @@ type policyRow struct {
 	SegmentID      sql.NullString
 	Metadata       json.RawMessage
 	CreatedAt      time.Time
-	// UpdatedAt is SCANNED AS NULLABLE, and that is not defensive style.
-	//
-	// migrations/core/010 declares it `TIMESTAMP WITH TIME ZONE DEFAULT NOW()`
-	// with no NOT NULL, so a row can hold SQL NULL. A non-nullable time.Time
-	// destination would make rows.Scan fail for such a row, and the scan loop
-	// above logs and CONTINUES - which is #3397 exactly: the policy is
-	// silently never enforced. Adding a column to this scan is therefore the
-	// one edit in this file that can un-enforce policy, and it is made in the
-	// only shape that cannot.
-	//
-	// It is read by the ADR-065 decision shadow, which uses (policy_id,
-	// updated_at) to prove the bundle it compares against describes the same
-	// policy set this load returned. Nothing on the enforcement path reads it.
-	UpdatedAt sql.NullTime
 }
 
 // compilePolicy converts a database row to a CompiledPolicy.
 func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
-	// Compile regex pattern
-	re, err := regexp.Compile(row.Pattern)
+	// The pattern as it is matched AND masked: the case rule (EffectivePattern,
+	// #4131) is applied once, here, so the evaluator's regex and the redactor's
+	// PatternStr can never disagree about which spans a policy found.
+	pattern := EffectivePattern(PolicyCategory(row.Category), row.Pattern)
+	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid pattern: %w", err)
 	}
@@ -341,7 +345,7 @@ func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
 		Category:       PolicyCategory(row.Category),
 		Tier:           row.Tier,
 		Pattern:        re,
-		PatternStr:     row.Pattern,
+		PatternStr:     pattern,
 		Severity:       Severity(row.Severity),
 		Description:    description,
 		Phase:          phase,
@@ -351,40 +355,8 @@ func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
 		Priority:       row.Priority,
 		TenantID:       row.TenantID,
 		SegmentID:      segmentID,
-		UpdatedAt:      stampOf(row.UpdatedAt, row.CreatedAt),
 		Validator:      l.getValidatorForPolicy(row.PolicyID, PolicyCategory(row.Category)),
 	}, nil
-}
-
-// stampOf renders a row's version for the ADR-065 shadow snapshot key.
-//
-// It falls back to created_at when updated_at is NULL, because
-// migrations/core/010 declares updated_at nullable and a row written before
-// the update trigger existed can hold one. The fallback is not a guess: a row
-// that has never been updated IS at its creation version, and the alternative -
-// an empty key - makes every comparison involving that row permanently
-// not-comparable, which is a silently empty denominator rather than a visible
-// failure. A row with neither renders empty, and the shadow refuses to compare
-// against it rather than assuming the versions match.
-func stampOf(updated sql.NullTime, created time.Time) string {
-	return PolicyVersionStamp(updated, sql.NullTime{Time: created, Valid: !created.IsZero()})
-}
-
-// PolicyVersionStamp is the ONE rendering of a policy row's version, shared by
-// both substrates so a static row and a dynamic row cannot key differently.
-//
-// Exported because the dynamic substrate's cache is built in the orchestrator
-// from DynamicPolicyRow, and a second rendering there would be a second
-// spelling of one instant - which makes every comparison permanently
-// not-comparable, a silently empty denominator that reads as a healthy gate.
-func PolicyVersionStamp(updated, created sql.NullTime) string {
-	if updated.Valid {
-		return planeshadow.StampKey(updated.Time)
-	}
-	if created.Valid {
-		return planeshadow.StampKey(created.Time)
-	}
-	return ""
 }
 
 // getValidatorForPolicy returns the appropriate validator for a policy.
@@ -397,10 +369,7 @@ func PolicyVersionStamp(updated, created sql.NullTime) string {
 // detection was inert on every DB-loaded path. See ValidatorForPolicyID for the
 // full per-policy resolution change (incl. PAN and the two locale phone policies).
 func (l *PolicyLoader) getValidatorForPolicy(policyID string, category PolicyCategory) ValidatorFunc {
-	if validator := ValidatorForPolicyID(policyID); validator != nil {
-		return validator
-	}
-	return GetValidatorForCategory(category)
+	return ValidatorFor(policyID, category)
 }
 
 // filterByPhase filters policies by evaluation phase.
@@ -458,8 +427,7 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 		SELECT
 			id, policy_id, name, category, tier, pattern, severity,
 			description, phase, action_request, action_response,
-			enabled, priority, tenant_id, segment_id, metadata,
-			updated_at
+			enabled, priority, tenant_id, segment_id, metadata
 		FROM static_policies
 		WHERE enabled = true
 		  AND deleted_at IS NULL
@@ -481,7 +449,6 @@ func (l *PolicyLoader) LoadSystemPolicies(ctx context.Context) ([]CompiledPolicy
 				&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Tier, &p.Pattern,
 				&p.Severity, &p.Description, &p.Phase, &p.ActionRequest, &p.ActionResponse,
 				&p.Enabled, &p.Priority, &p.TenantID, &p.SegmentID, &p.Metadata,
-				&p.UpdatedAt,
 			); sErr != nil {
 				continue
 			}
@@ -611,6 +578,60 @@ type EffectivePolicyRow struct {
 // exactly as the pre-#3296 single-file implementation did -- this preserves
 // that atomicity and, not incidentally, keeps every existing sqlmock
 // Begin/Query/Query/Commit expectation shape unchanged.
+// PresentPolicyIDs reports which of the supplied policy_ids exist in
+// dynamic_policies, as a set.
+//
+// It lives here because this file is the single sanctioned choke point for
+// reads of the legacy policy tables (epic #3293/#3296). The caller that needed
+// it - the orchestrator's boot-time check that migrations/core/173 actually
+// seeded the five sys_media_* governance controls (#4026) - first carried its
+// own SELECT, which is precisely the bespoke-reader drift the choke-point lint
+// exists to refuse. A boot-time existence check is a legitimate read; a second
+// definition of how to read the table is not.
+//
+// Deliberately tx-scoped rather than db-owning, for the same reason
+// ScanEffectivePolicyRows is: the caller wraps it in rls.WithOrgScope itself.
+// dynamic_policies is RLS-gated (mig 018, `org_id = get_current_org_id()`), so
+// an app-role connection without the GUC matches ZERO rows - a bare read here
+// would report every id absent on exactly the deployments the check is for.
+//
+// An empty ids slice returns an empty set without querying: the alternative is
+// an `IN ()` that no database accepts, and a caller with nothing to ask about
+// is not an error.
+func PresentPolicyIDs(ctx context.Context, tx *sql.Tx, ids []string) (map[string]bool, error) {
+	present := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return present, nil
+	}
+
+	placeholders := make([]string, 0, len(ids))
+	args := make([]interface{}, 0, len(ids))
+	for i, id := range ids {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+	query := "SELECT policy_id FROM dynamic_policies WHERE policy_id IN (" +
+		strings.Join(placeholders, ", ") + ")"
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying present policy ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id string
+		if sErr := rows.Scan(&id); sErr != nil {
+			return nil, fmt.Errorf("scanning present policy id: %w", sErr)
+		}
+		present[id] = true
+	}
+	if rErr := rows.Err(); rErr != nil {
+		return nil, fmt.Errorf("iterating present policy ids: %w", rErr)
+	}
+	return present, nil
+}
+
 func ScanEffectivePolicyRows(ctx context.Context, tx *sql.Tx, tierPredicate string, args ...interface{}) ([]EffectivePolicyRow, error) {
 	query := fmt.Sprintf(effectivePolicyQueryTemplate, tierPredicate)
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -725,7 +746,8 @@ type DynamicPolicyRow struct {
 	// it is typed to match. This scan logs and CONTINUES on a scan error, so a
 	// non-nullable destination here would silently un-enforce every row that
 	// held SQL NULL - #3397's exact shape, in the one file that already models
-	// it. Read only by the ADR-065 decision shadow (#3564).
+	// it. Nothing reads it since the decision shadow was removed; it goes with
+	// the dynamic-policy engine that scans it (PRD v11 §1.2).
 	UpdatedAt sql.NullTime
 	SegmentID sql.NullString
 }

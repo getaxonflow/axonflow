@@ -211,7 +211,7 @@ func getConnectorDetailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if found == nil {
-		http.Error(w, "Connector not found", http.StatusNotFound)
+		sendErrorResponse(w, "Connector not found", http.StatusNotFound)
 		return
 	}
 
@@ -246,7 +246,7 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req ConnectorInstallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
@@ -261,20 +261,20 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if connectorType == "" {
-		http.Error(w, "Connector not found", http.StatusNotFound)
+		sendErrorResponse(w, "Connector not found", http.StatusNotFound)
 		return
 	}
 
 	// Create connector instance
 	connector, err := createConnectorInstanceByType(connectorType)
 	if err != nil {
-		http.Error(w, "Unsupported connector type", http.StatusBadRequest)
+		sendErrorResponse(w, "Unsupported connector type", http.StatusBadRequest)
 		return
 	}
 
 	tenantID := resolveTenantID(r, req.TenantID)
 	if usageDB != nil && (tenantID == "" || tenantID == "*") {
-		http.Error(w, "tenant_id is required for connector installation", http.StatusBadRequest)
+		sendErrorResponse(w, "tenant_id is required for connector installation", http.StatusBadRequest)
 		return
 	}
 	if tenantID == "" {
@@ -297,7 +297,7 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := upsertConnectorConfig(r.Context(), connectorID, connectorType, tenantID, &req, config); err != nil {
-		http.Error(w, "Failed to persist connector config: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to persist connector config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -307,7 +307,7 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 		if rbErr := deleteConnectorConfig(r.Context(), connectorID, tenantID); rbErr != nil {
 			log.Printf("[Connector Marketplace] WARNING: Registry failed and DB rollback also failed for %s: register=%v, rollback=%v", logutil.Sanitize(connectorID), err, rbErr)
 		}
-		http.Error(w, "Failed to install connector: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to install connector: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -337,13 +337,13 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if usageDB != nil && (tenantID == "" || tenantID == "*") {
-		http.Error(w, "tenant_id is required for connector uninstall", http.StatusBadRequest)
+		sendErrorResponse(w, "tenant_id is required for connector uninstall", http.StatusBadRequest)
 		return
 	}
 	// Unregister from memory first — if this fails, the DB record is still intact
 	// and the connector remains consistently registered in both places.
 	if err := connectorRegistry.Unregister(tenantID, connectorID); err != nil {
-		http.Error(w, "Failed to uninstall connector: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to uninstall connector: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -353,7 +353,7 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 		// can't serve requests without being in the registry) and will be
 		// overwritten on re-install.
 		log.Printf("Warning: connector %q unregistered from memory but DB delete failed: %v", logutil.Sanitize(connectorID), err)
-		http.Error(w, "Failed to delete connector config: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to delete connector config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -559,7 +559,7 @@ func connectorHealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 
 	status, err := connectorRegistry.HealthCheckSingle(ctx, tenantID, connectorID)
 	if err != nil {
-		http.Error(w, "Health check failed: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Health check failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

@@ -51,12 +51,25 @@ type KnownIntegration struct {
 // function UPDATEs zero rows if it is ever invoked explicitly). The prefix
 // deliberately avoids claude-code's "int_claude" LIKE-prefix so neither
 // activation can ever shadow the other's policy set.
+// n8n and google-adk joined on the 11.0.0 train and are registry-only in the
+// same sense claude-desktop is: they exist here so /health can advertise their
+// min/recommended versions, which requires every map key to be a known
+// integration. Neither auto-activates. Each reaches the platform through the
+// governed HTTP routes (the ADK plugin through the Python SDK, except on its MCP
+// helper path), not through the agent's MCP clientInfo handshake, so no
+// "n8n." or "google_adk." connector types exist in practice and migration 060
+// carries no int_n8n or int_adk policies: the activation function UPDATEs zero
+// rows if it is ever invoked explicitly. The prefixes avoid every existing
+// LIKE-prefix so no activation can shadow another's policy set, and they carry
+// no dash, which the policy_id convention forbids.
 var knownIntegrations = []KnownIntegration{
 	{ID: "openclaw", DisplayName: "OpenClaw", ConnectorPrefix: "openclaw.", PolicyPrefix: "int_openclaw"},
 	{ID: "claude-code", DisplayName: "Claude Code", ConnectorPrefix: "claude_code.", PolicyPrefix: "int_claude"},
 	{ID: "cursor", DisplayName: "Cursor IDE", ConnectorPrefix: "cursor.", PolicyPrefix: "int_cursor"},
 	{ID: "codex", DisplayName: "OpenAI Codex", ConnectorPrefix: "codex.", PolicyPrefix: "int_codex"},
 	{ID: "claude-desktop", DisplayName: "Claude Desktop", ConnectorPrefix: "claude_desktop.", PolicyPrefix: "int_desktop"},
+	{ID: "n8n", DisplayName: "n8n", ConnectorPrefix: "n8n.", PolicyPrefix: "int_n8n"},
+	{ID: "google-adk", DisplayName: "Google ADK", ConnectorPrefix: "google_adk.", PolicyPrefix: "int_adk"},
 }
 
 var (
@@ -232,15 +245,28 @@ func activateIntegration(db *sql.DB, integrationID, activatedBy string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// #3048 census: activate_integration is a plain (SECURITY INVOKER)
-	// plpgsql function whose body UPDATEs static_policies rows with
-	// tenant_id='global' / org_id='global'. static_policies is RLS-enabled
-	// (mig 018), so under axonflow_app_role the UPDATE's USING predicate saw
-	// zero rows with the GUC unset — activation "succeeded" with
-	// policy_count=0 and the integration's int_* policies silently never
-	// enabled on app-role deployments. Wrap in the 'global' org scope so the
-	// UPDATE sees (and WITH CHECK re-admits) the global rows. The call slips
-	// past the write-audit static test because it is lexically a SELECT.
+	// #3048 census: activate_integration's body UPDATEs static_policies rows
+	// with tenant_id='global' / org_id='global', and the GUC has to be set or
+	// activation "succeeds" with policy_count=0 and the integration's int_*
+	// policies are silently never enabled. Wrap in the 'global' org scope so
+	// the UPDATE sees those rows.
+	//
+	// SINCE migrations/core/172 THIS SCOPE IS LOAD BEARING FOR A SECOND,
+	// STRONGER REASON. The function is now SECURITY DEFINER — it had to be,
+	// because 172 revokes UPDATE on static_policies from both application
+	// roles and this is the one legitimate writer — so its body runs as the
+	// OWNER, for whom static_policies' ENABLE (not FORCE) row-level security
+	// does not apply at all. The org predicate that mig 018's
+	// tenant_isolation_update used to supply is therefore written INTO the
+	// function body, as `org_id = get_current_org_id()`, and the value it
+	// reads is the one this wrap sets. Passing a different scope here would
+	// point a definer-privileged UPDATE at a different organization's rows.
+	// Pinned by TestTheDefinerFunctionCannotReachAnotherOrgsRowsOrEnableEverything_RealPG.
+	//
+	// The call slips past the write-audit static test because it is lexically
+	// a SELECT — which is exactly how it also slipped past the write-surface
+	// census when 172 was written, and why that census now has a pg_proc
+	// companion that reads function bodies from the catalogue.
 	var policyCount int
 	err := WithOrgScope(ctx, db, GlobalOrgSentinel, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx,

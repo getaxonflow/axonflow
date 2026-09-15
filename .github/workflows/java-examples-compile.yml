@@ -14,35 +14,31 @@ name: Java Examples Compile
 # to it would make every Go-only PR pay for Java example compilation on the
 # critical path to merge.
 #
-# HOW THIS IS SCOPED, AND WHY IT IS NOT A `paths:` FILTER ON pull_request
-# -----------------------------------------------------------------------
-# The obvious formulation — `pull_request: paths: ['examples/**', ...]` — is
-# wrong here in two independent ways, and this repo had already solved both:
+# HOW THIS IS SCOPED
+# ------------------
+# Two tiers, two mechanisms, and the reason each is the one it is:
 #
-#   1. It makes requiredness UNACHIEVABLE. With a paths filter on
-#      pull_request, a PR touching no example produces no check-run at all.
-#      An operator who adds this to the ruleset would leave every such PR
-#      sitting at "Expected — waiting for status to be reported", forever.
-#      lint.yml states the counter-pattern in its own header: run
-#      detect-changes and the Summary on every PR, "so the required Lint
-#      Summary check is present for merge queue entry".
-#   2. `merge_group` does not support `paths:` at all (GitHub supports it only
-#      on push / pull_request / pull_request_target). A paths filter therefore
-#      does nothing for merge-queue entries, and the full 58-project compile
-#      would run on every single one regardless of content — the exact cost
-#      the note above says this workflow avoids.
+#   * pull_request: a WORKFLOW-LEVEL `paths:` filter (W3-J, 2026-09-12). This
+#     file used to argue against one, and the argument is still the condition
+#     it rests on: a workflow skipped by a paths filter creates NO check run,
+#     so a REQUIRED context it produces would sit at "Expected - waiting for
+#     status to be reported" on every PR that touches no example. Measured on
+#     #4117, where the same shape on migrations-gate.yml read BLOCKED with the
+#     context absent. It is legal here only because `Java Examples Summary` is
+#     required on NEITHER ruleset (enterprise 9199766, mirror 10855245). IF IT
+#     IS EVER MADE REQUIRED, REMOVE THE FILTER FIRST and let detect-changes
+#     scope the pull_request tier too, the way lint.yml and test.yml do.
+#     Before the filter, the three bookkeeping jobs ran on every PR - 3 hosted
+#     minutes a run, 544 runs over 2026-09-08..11 - to report that nothing was
+#     compiled on the ~92% of PRs that touch no example.
+#   * merge_group: `detect-changes` (dorny/paths-filter) with the compile gated
+#     on its output. `merge_group` accepts no `paths:` at all, so without the
+#     detector the full 58-project compile would run on every queue entry.
 #
-# So the scoping is done the way this repo's other EXPENSIVE merge_group
-# workflows do it — `lint.yml`, `test.yml`, `build.yml`, `security.yml`,
-# `test-community.yml`, `build-community.yml` and `sdk-smoke-tests.yml`, seven
-# of the fourteen that declare `merge_group`: no `paths:` on pull_request, a
-# `detect-changes` job using dorny/paths-filter, and the expensive job gated on
-# its output. (The other six declare `merge_group` with no filter at all
-# because they are seconds-long lints; that is not this job.) A PR that
-# touches no example still reports `Java Examples Summary` — in seconds,
-# without a JDK — so it can be made required; a PR that does touch one pays
-# the compile. Requiredness itself is a repository ruleset setting and cannot
-# be changed from a PR.
+# The two lists are the same list: the pull_request `paths:` equals the
+# detector's `java-examples` filter entry for entry, and
+# pr_board_hosted_cost_test.sh fails if they ever differ - two tiers must not
+# disagree about when this gate runs.
 #
 # COMMUNITY MIRROR
 # ----------------
@@ -55,11 +51,18 @@ name: Java Examples Compile
 # mirror's CI for a reason unrelated to the examples.
 
 on:
-  # No `paths:` here, on purpose — see the header. Scoping is done by
-  # detect-changes so the Summary job is always reported.
+  # pull_request: a workflow-level paths filter; merge_group: detect-changes.
+  # See the header for why each tier uses the mechanism it does.
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+    # The detector's `java-examples` list, verbatim (see the header).
+    paths:
+      - 'examples/**'
+      - '.github/workflows/java-examples-compile.yml'
+      - '.github/scripts/compile-java-examples.sh'
+      - '.github/scripts/pom_introspect.py'
+      - 'tests/regression-test-required/java_examples_compile_gate_test.sh'
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -182,14 +185,21 @@ jobs:
   # run of the suite; the #3555 gate rerun had to discard it as evidence by hand.
   # The summary job above cannot carry this - it is a REQUIRED context and must
   # stay satisfiable on a docs-only change, so it accepts a skip. This job is
-  # NOT required: it counts the jobs that executed, writes the count to the step
-  # summary and goes RED when the count is zero, so "nothing ran" is a
-  # first-class outcome a citer sees on the checks list rather than a detail
-  # inside a green run. Red, not neutral: a skipped or neutral conclusion
-  # satisfies a required check exactly as success does (#3755), and a census
-  # that could be satisfied by not running would be the defect it counts.
-  # `needs` mirrors the summary's so the two report on one set. Pinned by
-  # tests/regression-test-required/zero_executed_jobs_are_visible_test.sh.
+  # NOT required: it counts the jobs that executed and writes the count to the
+  # step summary. Zero executed is reported either way, but the CONCLUSION now
+  # depends on why (#3649): RED when jobs were SELECTED and did not run, or when
+  # the detector broke or declared no output carrying a value; a NOTICE when it
+  # selected nothing or was itself skipped. It used to go red on ALL FIVE, which
+  # made every PR that touched no gated path carry a permanent red - and the red
+  # was then explained away with a sentence about drafts that the tool had never
+  # observed. Red where it means something, so it is not the noise a citer
+  # learns to skip past. Red rather than neutral in those cases: a skipped or
+  # neutral conclusion satisfies a required check exactly as success does
+  # (#3755), and a census that could be satisfied by not running would be the
+  # defect it counts. `needs` mirrors the summary's so the two report on one
+  # set. Pinned by tests/regression-test-required/
+  # census_red_only_when_jobs_were_expected_test.sh (which branch fires for
+  # which state) and zero_executed_jobs_are_visible_test.sh (the block's shape).
   tests-executed-census:
     name: Tests executed census
     runs-on: ubuntu-latest
@@ -213,29 +223,64 @@ jobs:
               print("::error::the census needs no job besides the change detector; it is counting nothing")
               sys.exit(1)
           executed = [j for j, r in substantive if r in ("success", "failure", "cancelled")]
-          skipped = [j for j, r in substantive if r == "skipped"]
           verdict = f"{len(executed)} of {len(substantive)} jobs executed"
           lines = [f"## Tests executed census: {verdict}", "", "| Job | Result |", "|---|---|"]
           lines += [f"| `{j}` | {r} |" for j, r in rows]
-          if not executed:
-              detector_result = dict(rows).get(detector, "absent")
-              if detector_result == "success":
-                  why = "the change detector ran and matched no relevant path"
-              elif detector_result == "skipped":
-                  why = "the change detector itself was skipped - a draft-tier run, or an event this workflow does not act on - so nothing was asked to run"
-              else:
-                  why = f"the change detector reported {detector_result}"
-              lines += ["", f"**Nothing failed and nothing was tested.** Every job this workflow could run was skipped ({why}),",
-                        "so this run is NOT evidence about the code. A green summary beside this red is a statement about",
-                        "mergeability only (#3649). On a draft this red is expected and clears when the PR is marked ready."]
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as fh:
-                  fh.write("\n".join(lines) + "\n")
-          print("\n".join(lines))
-          if not executed:
-              print(f"::error::{verdict}: nothing failed and nothing was tested. This run proves nothing about the code; do not cite it as evidence (#3649).")
+          def emit():
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as fh:
+                      fh.write("\n".join(lines) + "\n")
+              print("\n".join(lines))
+          if executed:
+              emit()
+              sys.exit(0)
+          # Nothing executed. Whether that is a finding depends on whether anything
+          # was EXPECTED to run, which only the change detector can say (#3649):
+          #   detector success + an output flag true  -> jobs were selected and did
+          #       not run: RED, the rollup beside this is green on a skip.
+          #   detector success + no flag true        -> nothing was SELECTED. What is
+          #       observed is that no output was the string `true` - NOT that the
+          #       globs matched nothing, and NOT that any skip was by design. Say
+          #       only that. Not evidence, not a failure: NOTICE.
+          #   detector success + no output with a VALUE -> a detector that declares no
+          #       output carrying a value cannot have selected anything: wiring broken,
+          #       not a path miss, and indistinguishable from the line above unless it is
+          #       separated here. RED.
+          #   detector skipped                       -> draft tier or an event this
+          #       workflow does not act on: nothing was asked to run: NOTICE.
+          #   detector failure/cancelled             -> the selector itself broke: RED.
+          detector_info = needs.get(detector) or {}
+          detector_result = detector_info.get("result", "absent")
+          outputs = detector_info.get("outputs") or {}
+          selected = sorted(k for k, v in outputs.items() if str(v).strip().lower() == "true")
+          sentence = ("**Nothing failed and nothing was tested.** Every job this workflow could run was skipped, "
+                      "so this run is NOT evidence about the code; a green summary beside it is a statement about "
+                      "mergeability only (#3649).")
+          if detector_result == "success" and not any(str(v).strip() for v in outputs.values()):
+              lines += ["", sentence, f"The change detector reported success but declared no output carrying a VALUE (outputs: {json.dumps(outputs)}). Every detector here declares at least one, and `dorny/paths-filter` always writes the literal `true` or `false` - so an absent map, or one whose values are all empty, is the detector's own wiring rather than a path that failed to match. The two causes its comment names, a renamed step id and a misspelled output key, yield the EMPTY STRING rather than a missing key, so testing for an absent map alone would have missed exactly the defects this branch is for. A run in this state would acquit itself on every PR forever."]
+              emit()
+              print(f"::error::{verdict}: the change detector succeeded but declared no output carrying a value; it cannot have selected anything, so this is a detector wiring defect rather than a path miss (#3649).")
               sys.exit(1)
+          if detector_result == "success" and not selected:
+              lines += ["", sentence, f"The change detector reported no selection flag true (outputs: {json.dumps(outputs)}). That is what was OBSERVED; whether its globs matched nothing, or matched something this workflow does not gate on, is not visible from here."]
+              emit()
+              print(f"::notice::{verdict}: the change detector reported no selection flag true; nothing was expected to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "skipped":
+              lines += ["", sentence, "The change detector itself was skipped (a draft-tier run, or an event this workflow does not act on), so nothing was asked to run."]
+              emit()
+              print(f"::notice::{verdict}: the change detector was skipped; nothing was asked to run. Not evidence about the code (#3649).")
+              sys.exit(0)
+          if detector_result == "success":
+              lines += ["", sentence, f"The change detector SELECTED {', '.join('`'+s+'`' for s in selected)} and the jobs that carry them did not run - a skip-accepting rollup would call that green."]
+              emit()
+              print(f"::error::{verdict}: nothing failed and nothing was tested, but the change detector selected {', '.join(selected)} and no job ran. Jobs were expected and did not execute; this run proves nothing about the code (#3649).")
+              sys.exit(1)
+          lines += ["", sentence, f"The change detector reported `{detector_result}`, so nothing downstream could be selected."]
+          emit()
+          print(f"::error::{verdict}: nothing failed and nothing was tested, and the change detector reported {detector_result}; the selector itself did not run to a verdict (#3649).")
+          sys.exit(1)
           PY
 
   java-examples-summary:

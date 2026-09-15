@@ -134,12 +134,9 @@ ALL TESTS PASSED
 
 ## Policy Configuration for MAP
 
-MAP plan generation and execution respects the same policy configuration as other AxonFlow operations:
+MAP plan generation and execution is governed by the same policies as other AxonFlow operations. Since v11 the stored action of each matched policy decides; environment variables no longer set detection actions. For example, `sys_pii_ssn` stores `warn` on the request side, so the SSN plan test generates a plan rather than being blocked.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PII_ACTION` | `redact` | Controls PII detection behavior globally |
-| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | Override for gateway mode |
+To change that, record an organization override (Enterprise customer portal API: `PUT /api/v1/detection-posture/pii` with `{"action":"block"}`) or change the policy's action.
 
 ## New MAP v1.0 SDK Methods
 

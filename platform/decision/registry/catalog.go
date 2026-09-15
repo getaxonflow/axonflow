@@ -92,6 +92,7 @@ type Catalog struct {
 	peps      map[string]PEPRecord
 	realms    map[string]bool
 	compat    map[string]CompatibilityException
+	detectors map[string]DetectorRecord
 
 	// aliases maps an alias to the canonical action it resolves to.
 	aliases map[string]contract.ID
@@ -112,6 +113,7 @@ func NewCatalog(now time.Time) *Catalog {
 		peps:        map[string]PEPRecord{},
 		realms:      map[string]bool{},
 		compat:      map[string]CompatibilityException{},
+		detectors:   map[string]DetectorRecord{},
 		aliases:     map[string]contract.ID{},
 		toolAliases: map[string]contract.ID{},
 		events:      nil,
@@ -480,6 +482,15 @@ func (c *Catalog) Validate() Findings {
 	}
 	for _, key := range sortedKeys(c.tags) {
 		out = append(out, c.tags[key].Validate()...)
+	}
+	// Detectors are validated here as well as at registration, for the reason
+	// the alias check above is: a rule enforced only at its call site is a rule
+	// the next writer into these maps does not have. A catalog assembled by a
+	// future seeder that bypasses RegisterDetector must not be projectable.
+	for _, key := range sortedKeys(c.detectors) {
+		d := c.detectors[key]
+		out = append(out, d.Validate()...)
+		out = append(out, c.crossCheckDetector(d)...)
 	}
 	for _, key := range sortedKeys(c.compat) {
 		out = append(out, c.compat[key].Validate(c.Now)...)

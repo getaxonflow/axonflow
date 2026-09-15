@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -17,11 +9,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 // Test timestamp for consistent mock data
@@ -809,6 +804,7 @@ func TestHandleCreateOverride(t *testing.T) {
 		requestBody    CreateOverrideRequest
 		setupMock      func(sqlmock.Sqlmock)
 		expectedStatus int
+		expectedCode   string
 	}{
 		{
 			name:     "missing tenant ID",
@@ -819,6 +815,19 @@ func TestHandleCreateOverride(t *testing.T) {
 			},
 			setupMock:      func(mock sqlmock.Sqlmock) {},
 			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			// Retired in v11 (PRD v11 §1.5): refused before anything is read or
+			// written, so no statement is expected.
+			name:     "a tenant's per-policy override is refused as retired",
+			policyID: "test-policy",
+			tenantID: "test-tenant",
+			requestBody: CreateOverrideRequest{
+				OverrideReason: "Testing",
+			},
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusConflict,
+			expectedCode:   legacyfreeze.ErrCode,
 		},
 	}
 
@@ -851,6 +860,12 @@ func TestHandleCreateOverride(t *testing.T) {
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
 			}
+			if tt.expectedCode != "" && !strings.Contains(rr.Body.String(), tt.expectedCode) {
+				t.Errorf("the refusal does not carry %s: %s", tt.expectedCode, rr.Body.String())
+			}
+			if tt.expectedCode != "" && !strings.Contains(rr.Body.String(), legacyfreeze.TypedAuthoringRoute) {
+				t.Errorf("the refusal does not name %s: %s", legacyfreeze.TypedAuthoringRoute, rr.Body.String())
+			}
 		})
 	}
 }
@@ -862,6 +877,7 @@ func TestHandleDeleteOverride(t *testing.T) {
 		tenantID       string
 		setupMock      func(sqlmock.Sqlmock)
 		expectedStatus int
+		expectedCode   string
 	}{
 		{
 			name:           "missing tenant ID",
@@ -869,6 +885,14 @@ func TestHandleDeleteOverride(t *testing.T) {
 			tenantID:       "",
 			setupMock:      func(mock sqlmock.Sqlmock) {},
 			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "a tenant's per-policy override delete is refused as retired",
+			policyID:       "test-policy",
+			tenantID:       "test-tenant",
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusConflict,
+			expectedCode:   legacyfreeze.ErrCode,
 		},
 	}
 
@@ -898,6 +922,12 @@ func TestHandleDeleteOverride(t *testing.T) {
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+			if tt.expectedCode != "" && !strings.Contains(rr.Body.String(), tt.expectedCode) {
+				t.Errorf("the refusal does not carry %s: %s", tt.expectedCode, rr.Body.String())
+			}
+			if tt.expectedCode != "" && !strings.Contains(rr.Body.String(), legacyfreeze.TypedAuthoringRoute) {
+				t.Errorf("the refusal does not name %s: %s", legacyfreeze.TypedAuthoringRoute, rr.Body.String())
 			}
 		})
 	}
@@ -1193,15 +1223,17 @@ func TestHandlerOverrideCreate_AuthContext(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects invalid JSON body", func(t *testing.T) {
+	// The refusal comes before the body is read (PRD v11 §1.5), so even a
+	// malformed body is answered with the freeze, never a 400.
+	t.Run("refuses before reading the body", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/static-policies/test-id/overrides", bytes.NewBufferString("{invalid"))
 		req.Header.Set("Content-Type", "application/json")
 		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
 		req = req.WithContext(ctx)
 		w := httptest.NewRecorder()
 		handler.HandleCreateOverride(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("Expected 400, got %d", w.Code)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), legacyfreeze.ErrCode) {
+			t.Errorf("Expected 409 %s, got %d: %s", legacyfreeze.ErrCode, w.Code, w.Body.String())
 		}
 	})
 }

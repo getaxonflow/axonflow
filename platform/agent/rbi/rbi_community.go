@@ -2,14 +2,6 @@
 
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package rbi provides India-specific PII detection for RBI compliance.
 // This Community edition provides pattern-based detection for Aadhaar, PAN, UPI, and other Indian PII.
@@ -116,8 +108,10 @@ func (d *IndiaPIIDetector) loadPatterns(enabledTypes []IndiaPIIType) {
 	allPatterns := []*indiaPIIPattern{
 		// UPI ID - username@provider format
 		{
-			Type:        IndiaPIITypeUPI,
-			Pattern:     regexp.MustCompile(`\b[a-zA-Z0-9][a-zA-Z0-9._-]{2,255}@[a-zA-Z][a-zA-Z0-9]{2,49}\b`),
+			Type: IndiaPIITypeUPI,
+			// The match carries the whole domain after the @, dots and hyphens
+			// included, so isLikelyEmail sees an email as the address it is (#4225).
+			Pattern:     regexp.MustCompile(`\b[a-zA-Z0-9][a-zA-Z0-9._-]{2,255}@[a-zA-Z][a-zA-Z0-9]{2,49}(?:[.-][a-zA-Z0-9]+)*\b`),
 			Severity:    IndiaPIISeverityCritical,
 			MinLength:   7,
 			MaxLength:   256,
@@ -709,8 +703,9 @@ func isDigitString(s string) bool {
 
 // isLikelyEmail checks if a UPI-like pattern is actually an email address.
 // This provides basic false positive filtering for the Community edition.
-// Note: The UPI regex may match partial email addresses (e.g., "john@gmail" from "john@gmail.com")
-// so we check for common email provider names both with and without domain extensions.
+// The UPI pattern carries the whole domain after the @ (#4225), so an email
+// arrives with its dots; a provider name written without its TLD is the other
+// shape it can take.
 func isLikelyEmail(match string) bool {
 	parts := strings.Split(match, "@")
 	if len(parts) != 2 {
@@ -719,7 +714,16 @@ func isLikelyEmail(match string) bool {
 
 	handle := strings.ToLower(parts[1])
 
-	// Common email provider names (regex may match partial: "john@gmail" from "john@gmail.com")
+	// A UPI handle is one alphanumeric label (ybl, okicici, okhdfcbank), so a dot
+	// or a hyphen after the @ is a mail domain (#4225). Before the pattern
+	// carried the domain, jane.doe@acme.com arrived here as "acme" and was
+	// reported as a UPI id; the TLD and full-domain lists that stood below never
+	// saw a dot, and this rule subsumes them for every TLD.
+	if strings.ContainsAny(handle, ".-") {
+		return true
+	}
+
+	// Common email provider names, written without their TLD
 	emailProviders := []string{
 		"gmail", "yahoo", "outlook", "hotmail", "rediffmail",
 		"live", "msn", "aol", "icloud", "protonmail", "zoho",
@@ -728,27 +732,6 @@ func isLikelyEmail(match string) bool {
 
 	for _, provider := range emailProviders {
 		if handle == provider {
-			return true
-		}
-	}
-
-	// Full domain matches (for cases where the full email is matched)
-	emailDomains := []string{
-		"gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
-		"rediffmail.com", "live.com", "msn.com", "aol.com",
-		"icloud.com", "protonmail.com", "zoho.com",
-	}
-
-	for _, domain := range emailDomains {
-		if handle == domain {
-			return true
-		}
-	}
-
-	// TLD suffixes
-	emailTLDs := []string{".com", ".org", ".net", ".in", ".co.in", ".edu", ".gov"}
-	for _, tld := range emailTLDs {
-		if strings.HasSuffix(handle, tld) {
 			return true
 		}
 	}

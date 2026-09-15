@@ -31,8 +31,8 @@ import "time"
 // |---|----------------------------------------------------------------------------|-----------|----------------------------------------|-----------------------------------------------|----------------------------------------------------------|-------------------|
 // | 1 | agent/policy_override_repository.go GetEffectiveAction (deleted)          | A         | policy_id + tenant_id / organization_id | tenant beats org beats none (two sequential queries, first hit wins) | no segment param at all — caller had to gate separately | none — deleted as dead code; coverage ported to override_test.go |
 // | 2 | agent/static_policy_repository.go applyEffectiveOverride (calls EffectiveOverride below) | A | policy_id (UUID) | delegated to EffectiveOverride: tenant beats org beats none, unconditionally | excluded before EffectiveOverride is even consulted (`policy.SegmentID != nil` short-circuits); EffectiveOverride's own segmentID check is redundant defense-in-depth | yes |
-// | 3 | orchestrator/override_enforcement.go ApplyOverrideToResult (+ FindActiveOverride) | B | policy_id + created_by(user) + tenant_id(or NULL) + tool_signature | SQL ORDER BY tool-signature-specificity then created_at DESC, LIMIT 1 | not excluded — deliberately (see below) | yes, wcp_policy_adapter.go |
-// | 4 | agent/mcp_richer_context.go applyOverrideToCheckInputBlock (+ lookupActiveOverride) | B | policy_id + created_by(user) + tenant_id(or NULL), no tool dimension | SQL ORDER BY created_at DESC, LIMIT 1 | no SegmentID field exists on the input type at all | yes, 3 call sites in mcp_server_handler.go / mcp_handler.go |
+// | 3 | orchestrator/override_enforcement.go ApplyOverrideToResult (+ FindActiveOverride) (deleted) | B | policy_id + created_by(user) + tenant_id(or NULL) + tool_signature | SQL ORDER BY tool-signature-specificity then created_at DESC, LIMIT 1 | not excluded — deliberately (see below) | none - deleted in v11 (#4252): the WCP step gate reads no session override, and the session override writes answer the freeze |
+// | 4 | agent/mcp_richer_context.go applyOverrideToCheckInputBlock (deleted) | B | policy_id + created_by(user) + tenant_id(or NULL), no tool dimension | SQL ORDER BY created_at DESC, LIMIT 1 | no SegmentID field existed on the input type at all | none — deleted in v11 with the MCP override flip: the anchored engine authors both MCP passes, and nothing flips its verdict |
 //
 // Divergence #1 (Mechanism A, rows 1 vs 2, now fixed): the original
 // GetEffectiveAction enforced strict tenant-beats-org precedence via two
@@ -68,7 +68,8 @@ import "time"
 // downgrade can both be in effect on the same policy simultaneously, each
 // correctly attributed to its own row's reason/expiry.
 //
-// Divergence #2 (Mechanism A vs Mechanism B, rows 1-2 vs 3-4) on segment
+// Divergence #2 (Mechanism A vs Mechanism B, rows 1-2 vs 3-4; rows 3 and 4
+// were deleted in v11, #4252, so what follows is history) on segment
 // scoping: an earlier revision of the ADR-044 (Mechanism B) design forced
 // AppliedPolicyDetail.AllowOverride false for segment-scoped policies at
 // construction AND had ApplyOverrideToResult check
@@ -96,30 +97,26 @@ import "time"
 //	SegmentID check cannot pass silently).
 //
 // This is why EffectiveOverride's segment exclusion is NOT wired into
-// ApplyOverrideToResult (row 3) or applyOverrideToCheckInputBlock (row 4):
-// doing so would reverse a deliberate, tested, and explicitly-guarded design
+// ApplyOverrideToResult (row 3), nor was it into applyOverrideToCheckInputBlock
+// (row 4, deleted in v11): doing so would reverse a deliberate, tested, and explicitly-guarded design
 // decision. It IS the correct behavior for Mechanism A (rows 1-2), which is
 // why static_policy_repository.go's applyEffectiveOverride adopts it, and
 // why GetEffectiveAction's precedence tests were ported onto
 // EffectiveOverride rather than discarded when GetEffectiveAction was
 // deleted as dead code.
 //
-// applyOverrideToCheckInputBlock (row 4) also has no SegmentID field on its
-// input (RicherPolicyMatch / sharedpolicy.PolicyMatch) to plumb one through
-// even if it were wanted: its own doc comment states it deliberately
-// "mirrors orchestrator.ApplyOverrideToResult ... so the plugin and SDK see
-// consistent behavior regardless of which surface fired the request." Adding
-// a segment exclusion here would break that stated parity with row 3, not
-// fix a gap, so no field was added.
+// applyOverrideToCheckInputBlock (row 4, deleted in v11) also had no
+// SegmentID field on its input (RicherPolicyMatch / sharedpolicy.PolicyMatch)
+// to plumb one through even if it were wanted: its doc comment stated it
+// deliberately "mirrors orchestrator.ApplyOverrideToResult ... so the plugin
+// and SDK see consistent behavior regardless of which surface fired the
+// request." Adding a segment exclusion there would have broken that stated
+// parity with row 3, not fixed a gap, so no field was added.
 //
-// What IS shared across Mechanism B's two live implementations (rows 3-4)
-// and was also duplicated a third time in SelectOverridablePolicy
-// (orchestrator/override_enforcement.go) is the per-policy ELIGIBILITY gate
-// itself — "is this specific matched policy even a candidate for a session
-// override" — identical two-line logic
-// (`RiskLevel == "critical" || !AllowOverride`) copy-pasted three times.
-// IsOverrideEligible below is the single implementation; all three call
-// sites now route through it.
+// What WAS shared across Mechanism B's implementations (rows 3 and 4, both
+// deleted in v11) was the per-policy ELIGIBILITY gate - "is this specific
+// matched policy even a candidate for a session override" - consolidated
+// here as IsOverrideEligible and deleted with its last caller (#4252).
 
 // OverrideScope is the tenancy at which a Mechanism-A (admin tier-downgrade)
 // policy_overrides row was written: tenant_id set (OverrideScopeTenant) or
@@ -261,8 +258,8 @@ type OverrideResolution struct {
 //
 // A segment-scoped policy (segmentID != "") is NEVER overridable through this
 // path (Mechanism A only — see Divergence #2 above for why this exclusion
-// does NOT extend to Mechanism B / ApplyOverrideToResult /
-// applyOverrideToCheckInputBlock): returns a zero OverrideResolution
+// does NOT extend to Mechanism B / ApplyOverrideToResult): returns a zero
+// OverrideResolution
 // unconditionally, mirroring static_policy_repository.go's own
 // `policy.SegmentID != nil` short-circuit in applyEffectiveOverride, which
 // gates before this function is even called — the check here is redundant
@@ -344,27 +341,4 @@ func EffectiveOverride(policyID, segmentID string, rows []OverrideRow) OverrideR
 		res.Contributions = append(res.Contributions, *contributions[i])
 	}
 	return res
-}
-
-// IsOverrideEligible reports whether a single matched policy is a candidate
-// for a Mechanism-B (ADR-044 session break-glass) override lookup, given its
-// risk level and its own allow_override flag. This is the eligibility gate
-// duplicated, byte-for-byte, in three places prior to this change:
-//   - orchestrator/override_enforcement.go ApplyOverrideToResult's loop
-//     (`p.RiskLevel == "critical" || !p.AllowOverride` -> continue)
-//   - orchestrator/override_enforcement.go SelectOverridablePolicy
-//     (`p.RiskLevel != "critical" && p.AllowOverride` -> return)
-//   - agent/mcp_richer_context.go applyOverrideToCheckInputBlock's loop
-//     (`m.RiskLevel == "critical" || !m.AllowOverride` -> continue)
-//
-// A critical-risk policy is NEVER eligible regardless of allowOverride (the
-// DB trigger backing allow_override already forces this at write time for
-// critical policies; this is defense-in-depth for in-memory evaluation, per
-// the existing ADR-044 invariant tests). Otherwise eligibility echoes
-// allowOverride exactly.
-func IsOverrideEligible(riskLevel string, allowOverride bool) bool {
-	if riskLevel == "critical" {
-		return false
-	}
-	return allowOverride
 }

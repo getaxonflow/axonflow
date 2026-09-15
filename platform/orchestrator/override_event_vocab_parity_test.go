@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -60,11 +52,12 @@ func TestOverrideEventRequestTypesMatchOrchestrator(t *testing.T) {
 		}
 	}
 
-	// The MCP plane's writer (platform/agent writeOverrideUsedEvent) stamps this
-	// literal directly rather than importing either constant, and it is the row
-	// the policy_decision-keyed exclusion used to miss entirely. Pin the string.
+	// The agent's MCP planes stamped this literal directly before v11, rather
+	// than importing either constant, and those rows remain in audit_logs: the
+	// row the policy_decision-keyed exclusion used to miss entirely. Pin the
+	// string.
 	if !sharedaudit.IsOverrideEventRequestType("override_used") {
-		t.Error(`"override_used" (the literal platform/agent/mcp_richer_context.go stamps) is not an override event type`)
+		t.Error(`"override_used" (the literal the agent's MCP planes stamped before v11) is not an override event type`)
 	}
 
 	// The generated SQL must actually mention every event type; a builder that

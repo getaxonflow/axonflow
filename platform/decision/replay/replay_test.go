@@ -417,8 +417,14 @@ func TestAnEnvironmentChangeAloneChangesTheDecision(t *testing.T) {
 	weakened := cloneEnvironment(t, env)
 	weakened.PEP = &contract.PEPProfile{ID: "deaf-pep"}
 
-	before, _ := env.BundleDigests(), 0
-	after := weakened.BundleDigests()
+	before, err := env.BundleDigests()
+	if err != nil {
+		t.Fatalf("recomputing the bundle digests: %v", err)
+	}
+	after, err := weakened.BundleDigests()
+	if err != nil {
+		t.Fatalf("recomputing the clone's bundle digests: %v", err)
+	}
 	if len(before) != len(after) {
 		t.Fatalf("the clone changed the bundle set")
 	}

@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -17,12 +9,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 
-	"axonflow/platform/agent/sqli"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
 	sharedpolicy "axonflow/platform/shared/policy"
@@ -146,69 +138,16 @@ func registerExecConnector(t *testing.T, conn *mockConnector) {
 	}
 }
 
-// quietPolicyEngines nils the static + dynamic engines and resets the exfil
-// checker so a handler reaches a clean terminal verdict deterministically.
+// quietPolicyEngines resets the exfil checker so a handler reaches a clean
+// terminal verdict deterministically. The
+// shared engine stays the migrated database's: its shipped rows match nothing a
+// test sends, and the anchored engine decides on their facts.
 func quietPolicyEngines(t *testing.T) {
 	t.Helper()
-	origEngine := sharedpolicy.GetGlobalEngine()
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
 	origExfil := sharedpolicy.GetGlobalExfiltrationChecker()
-	sharedpolicy.SetGlobalEngine(nil)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 	sharedpolicy.ResetGlobalExfiltrationChecker()
 	t.Cleanup(func() {
-		sharedpolicy.SetGlobalEngine(origEngine)
-		sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval)
 		sharedpolicy.SetGlobalExfiltrationChecker(origExfil)
-	})
-}
-
-// denyingDynamicEvaluator points the global dynamic evaluator at a mock
-// orchestrator that blocks "test-db", and nils the static engine (dynamic-ONLY).
-func denyingDynamicEvaluator(t *testing.T) {
-	t.Helper()
-	origEngine := sharedpolicy.GetGlobalEngine()
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalEngine(nil) // no static match → dynamic-ONLY block
-	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed:           false,
-		BlockReason:       "Budget exhausted",
-		PoliciesEvaluated: 1,
-		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
-			{PolicyID: "budget-1", PolicyType: "budget", Action: "block"},
-		},
-	})
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: server.URL,
-		Timeout:              5 * time.Second,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"test-db"},
-	})
-	t.Cleanup(func() {
-		server.Close()
-		sharedpolicy.SetGlobalEngine(origEngine)
-		sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval)
-	})
-}
-
-// unreachableDynamicEvaluator forces EvalUnavailable (fail-closed) by pointing the
-// evaluator at an unroutable endpoint with GracefulDegradation=false.
-func unreachableDynamicEvaluator(t *testing.T) {
-	t.Helper()
-	origEngine := sharedpolicy.GetGlobalEngine()
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalEngine(nil)
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: "http://127.0.0.1:0", // unroutable
-		Timeout:              200 * time.Millisecond,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"test-db"},
-	})
-	t.Cleanup(func() {
-		sharedpolicy.SetGlobalEngine(origEngine)
-		sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval)
 	})
 }
 
@@ -232,32 +171,10 @@ func postExecute(req MCPExecuteRequest) *httptest.ResponseRecorder {
 
 // --- resources/query ---------------------------------------------------------
 
-// TestMCPQueryHandler_DynamicBlock_EmitsBlockedAudit: a dynamic-ONLY request block
-// (no StaticResult present) must write a canonical 'blocked' row — previously it
-// wrote only the reader-less satellite and showed as "Logged".
-func TestMCPQueryHandler_DynamicBlock_EmitsBlockedAudit(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	mock, restore := setUsageDBMock(t)
-	defer restore()
-	registerExecConnector(t, &mockConnector{})
-	denyingDynamicEvaluator(t)
-
-	expectCanonicalDecisionRow(mock, "mcp_resources_query", mcpVerdictBlocked)
-
-	w := postQuery(MCPQueryRequest{Connector: "test-db", Statement: "SELECT * FROM users"})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 (dynamic block), got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("dynamic block did not emit a canonical 'blocked' audit row: %v", err)
-	}
-}
-
 // TestMCPQueryHandler_ResponseRedaction_EmitsRedactedAudit: a NIK in the response
-// rows is masked under PII_ACTION=redact. The decision is ALLOWED (200) yet a
+// rows is masked under a pii=redact override. The decision is ALLOWED (200) yet a
 // 'redacted' row carrying redacted_fields must still be written — the worst hole
-// (a leak-mask that wrote nothing). Precondition-absent: no static engine, no block.
+// (a leak-mask that wrote nothing). Precondition-absent: no shipped row matches, no block.
 func TestMCPQueryHandler_ResponseRedaction_EmitsRedactedAudit(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
@@ -268,11 +185,8 @@ func TestMCPQueryHandler_ResponseRedaction_EmitsRedactedAudit(t *testing.T) {
 		RowCount: 1,
 		Duration: time.Millisecond,
 	}})
-	// PII_ACTION=redact + Indonesia response detector (also nils the static engine).
+	// A pii=redact override + the Indonesia response detector.
 	withMCPPIIAction(t, DetectionActionRedact)
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval) })
 
 	var redactedFieldsJSON []byte
 	expectRedactedDecisionRow(mock, "mcp_resources_query", &redactedFieldsJSON)
@@ -322,19 +236,13 @@ func TestMCPQueryHandler_ExfilBlock_EmitsBlockedAudit(t *testing.T) {
 	mock, restore := setUsageDBMock(t)
 	defer restore()
 
-	origEngine := sharedpolicy.GetGlobalEngine()
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
 	origExfil := sharedpolicy.GetGlobalExfiltrationChecker()
-	sharedpolicy.SetGlobalEngine(nil)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
 	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
 		MaxRowsPerQuery:  2,
 		MaxBytesPerQuery: 10 * 1024 * 1024,
 		Enabled:          true,
 	})
 	t.Cleanup(func() {
-		sharedpolicy.SetGlobalEngine(origEngine)
-		sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval)
 		sharedpolicy.SetGlobalExfiltrationChecker(origExfil)
 	})
 
@@ -349,6 +257,9 @@ func TestMCPQueryHandler_ExfilBlock_EmitsBlockedAudit(t *testing.T) {
 	w := postQuery(MCPQueryRequest{Connector: "test-db", Statement: "SELECT * FROM users"})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 (exfil block), got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"limit_type":"rows"`) {
+		t.Fatalf("the 403 is not the row-count limit's: %s", w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("exfil block did not emit a canonical 'blocked' audit row: %v", err)
@@ -376,52 +287,10 @@ func TestMCPQueryHandler_ToolError_EmitsErrorAudit(t *testing.T) {
 	}
 }
 
-// TestMCPQueryHandler_EvalUnavailable_EmitsErrorAudit: an unreachable dynamic
-// evaluator fails closed (503) and must record the unevaluated attempt as 'error'.
-func TestMCPQueryHandler_EvalUnavailable_EmitsErrorAudit(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	mock, restore := setUsageDBMock(t)
-	defer restore()
-	registerExecConnector(t, &mockConnector{})
-	unreachableDynamicEvaluator(t)
-
-	expectCanonicalDecisionRow(mock, "mcp_resources_query", mcpVerdictError)
-
-	w := postQuery(MCPQueryRequest{Connector: "test-db", Statement: "SELECT 1"})
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 (eval unavailable), got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("eval-unavailable did not emit a canonical 'error' audit row: %v", err)
-	}
-}
-
 // --- tools/execute -----------------------------------------------------------
 
-// TestMCPExecuteHandler_DynamicBlock_EmitsBlockedAudit: dynamic-ONLY block on the
-// execute route → canonical 'blocked' row.
-func TestMCPExecuteHandler_DynamicBlock_EmitsBlockedAudit(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	mock, restore := setUsageDBMock(t)
-	defer restore()
-	registerExecConnector(t, &mockConnector{})
-	denyingDynamicEvaluator(t)
-
-	expectCanonicalDecisionRow(mock, "mcp_tools_execute", mcpVerdictBlocked)
-
-	w := postExecute(MCPExecuteRequest{Connector: "test-db", Action: "INSERT", Statement: "INSERT INTO t VALUES (1)"})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 (dynamic block), got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("dynamic block did not emit a canonical 'blocked' audit row: %v", err)
-	}
-}
-
 // TestMCPExecuteHandler_ResponseRedaction_EmitsRedactedAudit: a NIK in the execute
-// result message is masked under PII_ACTION=redact → 'redacted' row + redacted_fields.
+// result message is masked under a pii=redact override → 'redacted' row + redacted_fields.
 func TestMCPExecuteHandler_ResponseRedaction_EmitsRedactedAudit(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
 	defer cleanup()
@@ -433,9 +302,6 @@ func TestMCPExecuteHandler_ResponseRedaction_EmitsRedactedAudit(t *testing.T) {
 		Message:      validNIKResponse, // contains a valid NIK
 	}})
 	withMCPPIIAction(t, DetectionActionRedact)
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	t.Cleanup(func() { sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval) })
 
 	var redactedFieldsJSON []byte
 	expectRedactedDecisionRow(mock, "mcp_tools_execute", &redactedFieldsJSON)
@@ -476,48 +342,6 @@ func TestMCPExecuteHandler_CleanAllow_EmitsAllowedAudit(t *testing.T) {
 	}
 }
 
-// TestMCPExecuteHandler_SQLiResponseBlock_EmitsBlockedAudit: a SQLi pattern in the
-// execute result message triggers a response-phase block → canonical 'blocked' row
-// (covers the execute route's response-phase emit call site).
-func TestMCPExecuteHandler_SQLiResponseBlock_EmitsBlockedAudit(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	mock, restore := setUsageDBMock(t)
-	defer restore()
-
-	origEngine := sharedpolicy.GetGlobalEngine()
-	origEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	origSQLi := sqli.GetGlobalMiddleware()
-	sharedpolicy.SetGlobalEngine(nil)
-	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
-	mw, err := sqli.NewScanningMiddleware(sqli.WithMiddlewareConfig(sqli.DefaultConfig().WithBlockOnDetection(true)))
-	if err != nil {
-		t.Fatalf("new sqli middleware: %v", err)
-	}
-	sqli.SetGlobalMiddleware(mw)
-	t.Cleanup(func() {
-		sharedpolicy.SetGlobalEngine(origEngine)
-		sharedpolicy.SetGlobalDynamicPolicyEvaluator(origEval)
-		sqli.SetGlobalMiddleware(origSQLi)
-	})
-
-	registerExecConnector(t, &mockConnector{executeResult: &base.CommandResult{
-		RowsAffected: 1,
-		Duration:     time.Millisecond,
-		Message:      "admin' UNION SELECT password FROM users WHERE 1=1 OR 1=1 --",
-	}})
-
-	expectCanonicalDecisionRow(mock, "mcp_tools_execute", mcpVerdictBlocked)
-
-	w := postExecute(MCPExecuteRequest{Connector: "test-db", Action: "UPDATE", Statement: "UPDATE t SET x=1"})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 (SQLi response block), got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("SQLi response block did not emit a canonical 'blocked' audit row: %v", err)
-	}
-}
-
 // TestMCPExecuteHandler_ToolError_EmitsErrorAudit: execute failure → 'error' row.
 func TestMCPExecuteHandler_ToolError_EmitsErrorAudit(t *testing.T) {
 	cleanup := setupCommunityModeForTest(t)
@@ -535,25 +359,5 @@ func TestMCPExecuteHandler_ToolError_EmitsErrorAudit(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("tool error did not emit a canonical 'error' audit row: %v", err)
-	}
-}
-
-// TestMCPExecuteHandler_EvalUnavailable_EmitsErrorAudit: fail-closed 503 → 'error' row.
-func TestMCPExecuteHandler_EvalUnavailable_EmitsErrorAudit(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-	mock, restore := setUsageDBMock(t)
-	defer restore()
-	registerExecConnector(t, &mockConnector{})
-	unreachableDynamicEvaluator(t)
-
-	expectCanonicalDecisionRow(mock, "mcp_tools_execute", mcpVerdictError)
-
-	w := postExecute(MCPExecuteRequest{Connector: "test-db", Action: "INSERT", Statement: "INSERT INTO t VALUES (1)"})
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 (eval unavailable), got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("eval-unavailable did not emit a canonical 'error' audit row: %v", err)
 	}
 }

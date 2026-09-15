@@ -140,6 +140,11 @@ const (
 	// exception. It is an alarm because it is the only sanctioned deviation
 	// from default deny.
 	EventCompatibilityRegistered EventCode = "COMPATIBILITY_REGISTERED"
+	// EventDetectorRegistered records a new detector. Its detail names the
+	// planes the implementation gates on and the planes it runs bare on,
+	// because the second set is the one a reader would otherwise assume is
+	// empty.
+	EventDetectorRegistered EventCode = "DETECTOR_REGISTERED"
 )
 
 // Event is one recorded registry change.

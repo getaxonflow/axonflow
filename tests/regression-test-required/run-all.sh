@@ -77,7 +77,7 @@ if [[ ! -d "$suite_dir" ]]; then
     echo "::error::Regression-test suite directory not found: $suite_dir"
     echo "Refusing to report success: a runner that cannot find its tests has" >&2
     echo "verified nothing. If the directory moved, update this runner and the" >&2
-    echo "job in .github/workflows/regression-test-required.yml together." >&2
+    echo "\`Run regression-test suite\` job in .github/workflows/repository-gates.yml together." >&2
     exit 1
 fi
 

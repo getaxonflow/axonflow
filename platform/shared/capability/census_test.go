@@ -411,9 +411,14 @@ func overlap(narrative, notes string) float64 {
 // in the same commit as the registry change, and say in the PR body which
 // direction moved and why.
 const (
-	pinnedCapabilities        = 85
+	// 86 since #3907: decision.typed_authoring, the ADR-065 authoring control
+	// plane and its two transports. UP by one, and the direction is the point -
+	// it is a capability that existed in the code and had no row, not a new
+	// feature. Neither the /health gap count nor the matrix-disagreement count
+	// moves with it.
+	pinnedCapabilities        = 84
 	pinnedFamilies            = 20
-	pinnedMatrixDisagreements = 17
+	pinnedMatrixDisagreements = 16
 	pinnedHealthGaps          = 9
 	pinnedEditionBlindAdverts = 5
 	pinnedAgentHealthEntries  = 30
@@ -818,7 +823,7 @@ func TestTheMirrorGuardSeesEveryFieldAndEverySentence(t *testing.T) {
 	// All three spellings must be caught: the verbatim sentence, the round-1
 	// wording with "therefore", and a plural paraphrase — which is why matching
 	// is on lightly stemmed words.
-	shadowNarrative := "Every file of platform/shared/planeshadow carries no build " +
+	shadowNarrative := "Every file of the observer package carries no build " +
 		"constraint. A Community deployment gets the shadow observer in full. The ADR " +
 		"states intent."
 	// M-D: the SHORT arm had no control. All three spellings above carry six

@@ -11,10 +11,13 @@
 #   - AxonFlow Agent running at http://localhost:8080
 #   - curl and jq installed
 #
-# Default Behavior (Issue #891):
-#   PII detection defaults to "redact" mode - requests are APPROVED but flagged
-#   with requires_redaction=true for downstream redaction by the Orchestrator.
-#   Set PII_ACTION=block to restore blocking behavior.
+# Default Behavior (v11):
+#   The stored action of each matched PII policy decides. On the request side
+#   the shipped SSN, credit card, PAN and Aadhaar policies store warn: requests
+#   are APPROVED and the matched policy ids are returned in "policies".
+#   Environment variables no longer set detection actions; to block, record an
+#   organization pii=block override (Enterprise customer portal) or change the
+#   policy's action.
 
 set -e
 
@@ -31,19 +34,21 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+FAILED=0
+
 echo "AxonFlow PII Detection - HTTP/curl"
 echo "========================================"
 echo ""
 echo "Agent URL: $AGENT_URL"
-echo "Default Mode: redact (PII flagged for redaction, not blocked)"
+echo "Stored policy actions decide: request-side PII warns (approved, policy recorded)"
 echo ""
 
 # Test function
-# expect_redact: "true" = expect requires_redaction=true, "false" = no PII expected
+# expect_detect: "true" = expect a matched PII policy (approved), "false" = no critical PII expected
 test_pii() {
     local name="$1"
     local query="$2"
-    local expect_redact="$3"
+    local expect_detect="$3"
 
     echo -e "${YELLOW}Test: $name${NC}"
     echo "  Query: ${query:0:60}..."
@@ -79,15 +84,16 @@ test_pii() {
         echo "  Policies: $policies"
     fi
 
-    # Verify expected behavior
-    if [ "$expect_redact" = "true" ] && [ "$requires_redaction" = "true" ]; then
-        echo -e "  Test: ${GREEN}PASS${NC} (PII detected, flagged for redaction)"
-    elif [ "$expect_redact" = "false" ] && [ "$requires_redaction" = "false" ] && [ "$approved" = "true" ]; then
-        echo -e "  Test: ${GREEN}PASS${NC} (no PII detected)"
+    # Verify expected behavior against the shipped stored actions
+    if [ "$expect_detect" = "true" ] && [ "$approved" = "true" ] && [ -n "$policies" ]; then
+        echo -e "  Test: ${GREEN}PASS${NC} (PII detected, approved: stored request action is warn)"
+    elif [ "$expect_detect" = "false" ] && [ "$requires_redaction" = "false" ] && [ "$approved" = "true" ]; then
+        echo -e "  Test: ${GREEN}PASS${NC} (no critical PII, approved)"
     else
-        expected="requires_redaction=true"
-        [ "$expect_redact" = "false" ] && expected="no PII"
+        expected="approved with a matched PII policy"
+        [ "$expect_detect" = "false" ] && expected="approved, no redaction flag"
         echo -e "  Test: ${RED}FAIL${NC} (expected $expected)"
+        FAILED=$((FAILED + 1))
     fi
 
     echo ""
@@ -97,9 +103,9 @@ test_pii() {
 echo "Running PII Detection Tests..."
 echo ""
 
-# Test cases: (name, query, expect_redact)
-# Critical PII (SSN, credit card, PAN, Aadhaar) - expect_redact="true"
-# Non-critical PII (email, phone) - expect_redact="false" (logged but not flagged)
+# Test cases: (name, query, expect_detect)
+# Critical PII (SSN, credit card, PAN, Aadhaar) - expect_detect="true"
+# Non-critical PII (email, phone) - expect_detect="false" (approved, no redaction flag)
 
 test_pii "Safe Query (No PII)" \
     "What is the capital of France?" \
@@ -133,9 +139,14 @@ echo "========================================"
 echo "PII Detection Tests Complete"
 echo ""
 echo "Configuration:"
-echo "  - Default: PII_ACTION=redact (PII flagged for redaction, not blocked)"
-echo "  - To block PII: PII_ACTION=block docker compose up -d"
+echo "  - The stored policy action decides; request-side PII rows store warn (approved, recorded)"
+echo "  - To block PII: record an organization pii=block override (Enterprise customer portal:"
+echo "    PUT /api/v1/detection-posture/pii {\"action\":\"block\"}) or change the policy's action"
 echo ""
 echo "Next steps:"
 echo "  - Custom Policies: ../policies/http/"
 echo "  - Use SDK examples for production: ../go/, ../python/, ../typescript/, ../java/"
+
+if [ "$FAILED" -gt 0 ]; then
+    exit 1
+fi

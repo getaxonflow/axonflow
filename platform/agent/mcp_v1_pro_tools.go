@@ -36,6 +36,7 @@ import (
 	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/rls"
+	"axonflow/platform/shared/legacyfreeze"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -146,7 +147,7 @@ func v1ProMCPTools() []mcpTool {
 		},
 		{
 			Name:        mcpToolNameCreateTenantPolicy,
-			Description: "Create a custom tenant-scoped governance policy. Free tier supports 4 active policies (delete one to make room); Pro raises the cap to 50. Useful for rules like 'block writes to ~/.ssh/' or 'require approval for any rm -rf'.",
+			Description: "Create a custom tenant-scoped governance policy. Free tier supports 4 active policies (delete one to make room); Pro raises the cap to 50. Useful for rules like 'block writes to ~/.ssh/' or 'require approval for any rm -rf'. On a deployment whose legacy policy tables are read-only (v11.0.0 application-role deployments, including Community SaaS), this tool refuses and names the typed authoring route (" + legacyfreeze.TypedAuthoringRoute + ") to author the policy through instead.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -626,6 +627,22 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 		if isOrchestratorPaidTierReject(err) {
 			return nil, fmt.Errorf("tenant-policy creation rejected by the deployment's license tier (Community caps at 20 tenant policies; Evaluation at 50; paid tiers unlimited) — upgrade at https://getaxonflow.com/evaluation-license — orchestrator detail: %w", err)
 		}
+		// v11.0.0 legacy write freeze (PRD v11 §5 item 5). On a deployment whose
+		// application role lost write access to the legacy policy tables
+		// (migrations/core/172), the orchestrator refuses this create with 409 and
+		// legacyfreeze.ErrCode: before it reads the body when its privilege probe
+		// answers, and on the database's own refusal when it does not. The freeze is
+		// CONDITIONAL: an owner-role deployment still writes, so this branch is
+		// decided by the orchestrator's answer and never by the agent guessing the
+		// database role. Checked after the paid-tier branch, which keys on its own
+		// status and words, and before the generic wrap that used to bury the
+		// answer inside a JSON blob. No fallback write and no retry.
+		if isOrchestratorLegacyWriteFrozen(err) {
+			return nil, fmt.Errorf("tenant-policy creation through this tool is frozen on this deployment in v11.0.0 because the legacy policy tables are read-only for the application role; "+
+				"author the policy through the typed authoring route (%s) instead; "+
+				"re-pointing this tool at typed authoring is tracked on #4249; orchestrator detail: %w",
+				legacyfreeze.TypedAuthoringRoute, err)
+		}
 		return nil, fmt.Errorf("could not create tenant policy: %w", err)
 	}
 
@@ -635,58 +652,15 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 	// when this tool used direct DB writes.
 	policyMap := extractPolicyFromResponse(resp)
 
-	// #3061: report the deployment's ACTUAL enforcement posture instead of
-	// unconditionally promising "It will apply to subsequent governed calls."
-	// That promise was false on every default install (both community
-	// docker-compose and the community-saas CFN template ship
-	// MCP_DYNAMIC_POLICIES_ENABLED=false), and a policy the operator believes
-	// is blocking but is not is worse than no policy at all.
-	enforced, blockedReason, restrictedTo := tenantPolicyEnforcementStatus()
+	// #3061 and v11: report the enforcement the MCP tool-governance plane
+	// actually applies, instead of promising "It will apply to subsequent
+	// governed calls". The anchored engine decides that plane's requests, and
+	// an organization's tenant dynamic policies no longer decide there, so the
+	// stored policy is not enforced on it.
 	message := fmt.Sprintf(
-		"Successfully created tenant-scoped policy %q. It will apply to subsequent governed calls.",
-		name)
-	if enforced && len(restrictedTo) > 0 {
-		message += fmt.Sprintf(
-			" This deployment restricts governed calls to connectors [%s] (MCP_DYNAMIC_POLICIES_CONNECTORS),"+
-				" so the policy applies only there.", strings.Join(restrictedTo, ", "))
-	}
-	// The connector the caller named is NOT enforced as a scope — see
-	// buildTenantPolicyConditions. Say so rather than let connector_type imply
-	// a narrowing the stored policy does not carry.
-	if enforced {
-		message += fmt.Sprintf(
-			" NOTE: connector_type %q is recorded in the policy description but is NOT yet enforced as a scope,"+
-				" so this policy matches its pattern on EVERY governed connector, not only %q.",
-			connectorType, connectorType)
-	}
-	if !enforced {
-		message = fmt.Sprintf(
-			"Created tenant-scoped policy %q, but it is STORED AND NOT ENFORCED on this deployment: %s. "+
-				"To enforce it, set MCP_DYNAMIC_POLICIES_ENABLED=true on the agent (and, if "+
-				"MCP_DYNAMIC_POLICIES_CONNECTORS is set, include the connectors you want governed in that "+
-				"list), then restart the agent. The policy is stored and takes effect as soon as that is "+
-				"done — no need to recreate it.",
-			name, blockedReason)
-	}
-	// Only `block` gates a call on this plane: the MCP evaluation response
-	// carries allow/deny (MCPPolicyEvaluationResponse), with no approval or
-	// alert channel, so alert/log/require_approval policies are RECORDED as
-	// matched and do not stop the call. Say so rather than let the action name
-	// imply a gate that does not exist here.
-	if enforced && engineAction != "block" {
-		message += fmt.Sprintf(
-			" NOTE: on the MCP tool-governance plane the %q action is recorded on the matching decision"+
-				" but does not stop the call; only the \"block\" action denies a tool call there.", action)
-	}
-	// `enforced` describes the MCP tool-governance plane only. Decision Mode
-	// (/decide) passes runDynamicPolicy=false — dynamic evaluation there is M2
-	// scope per epic #2426 — so a PEP integrated via /decide does not evaluate
-	// this policy at all, whatever the flag says.
-	if enforced {
-		message += " Scope: this covers MCP tool-governance calls (check-input and the MCP planes)." +
-			" Decision Mode (POST /api/v1/decide) does not evaluate tenant dynamic policies yet, so a" +
-			" PEP integrated through /decide is not governed by this policy."
-	}
+		"Created tenant-scoped policy %q, but it is STORED AND NOT ENFORCED on the MCP tool-governance plane: %s. "+
+			"To govern MCP tool calls, publish the rule as a typed policy.",
+		name, tenantPolicyNotEnforcedReason)
 
 	created := map[string]interface{}{
 		// Explicit positive signal for LLM consumers (#1986). Without
@@ -701,21 +675,16 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 		"action":         action,
 		"enabled":        true,
 		// Machine-readable sibling of `message` so an LLM consumer does not
-		// have to parse prose to learn the policy is inert. `enabled` describes
-		// the stored row; `enforced` describes this deployment's runtime.
-		"enforced": enforced,
+		// have to parse prose to learn the policy is inert on this plane.
+		// `enabled` describes the stored row; `enforced` the MCP plane.
+		"enforced":                   false,
+		"enforcement_blocked_reason": tenantPolicyNotEnforcedReason,
 		// #3061: the stored policy carries no connector condition, so the
 		// connector the caller named is descriptive only. Machine-readable so an
 		// LLM consumer does not have to infer it from prose.
 		"connector_scope_enforced": false,
 		"applies_to_connectors":    "all",
 		"message":                  message,
-	}
-	if enforced && len(restrictedTo) > 0 {
-		created["applies_to_connectors"] = restrictedTo
-	}
-	if !enforced {
-		created["enforcement_blocked_reason"] = blockedReason
 	}
 	if policyID, ok := policyMap["id"].(string); ok && policyID != "" {
 		created["id"] = policyID
@@ -726,6 +695,10 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 	return created, nil
 }
 
+// tenantPolicyNotEnforcedReason says why a tenant policy created through this
+// tool is stored but not enforced on the MCP tool-governance plane.
+const tenantPolicyNotEnforcedReason = "in v11 the anchored engine decides the MCP tool-governance plane's requests, and tenant dynamic policies no longer decide there (PRD v11 §1.2)"
+
 // buildTenantPolicyConditions builds the condition list for a tenant policy:
 // the pattern, and ONLY the pattern.
 //
@@ -733,17 +706,17 @@ func mcpToolCreateTenantPolicy(ctx context.Context, session *mcpSession, args ma
 //
 // The obvious fix for "the user's connector is discarded into the description"
 // is to emit {field:"connector", operator:"equals", value:connectorType}. That
-// is correct for the MCP plane, whose evaluator has resolved `connector` from
-// MCPPolicyEvaluationRequest.ConnectorName since #968 — but it BREAKS the
-// planes where these policies already work today. These rows are
+// was correct only for the MCP dynamic-policy plane, whose evaluator resolved
+// `connector` from the request's connector name until v11 retired it, and it
+// BREAKS the planes where these policies work today. These rows are
 // policy_type='content', and the orchestrator content engine that governs the
 // LLM / MAP / WCP planes has no `connector` field at all: getFieldValue
 // (db_dynamic_policies.go) falls through to its default arm and returns nil,
 // `equals` then compares "<nil>" against the real connector name and yields
 // false, and with conditions present ALL must match — so the entire policy is
-// skipped. Adding the condition would therefore trade MCP-plane enforcement
-// for the loss of enforcement where it already worked: the same defect class
-// #3061 exists to fix, inverted.
+// skipped. Adding the condition would therefore lose enforcement where it
+// works, for a plane that no longer evaluates these rows: the same defect
+// class #3061 exists to fix, inverted.
 //
 // Making `connector` resolvable on the orchestrator content engine is the real
 // fix, and it belongs in db_dynamic_policies.go — a file owned by another
@@ -761,46 +734,6 @@ func buildTenantPolicyConditions(pattern string) []map[string]interface{} {
 			"value":    pattern,
 		},
 	}
-}
-
-// tenantPolicyEnforcementStatus reports whether tenant policies are EVALUATED
-// at all on this agent's MCP governance plane, plus (when they are) any
-// connector allowlist that narrows where they apply (#3061).
-//
-// Deliberately a PLANE-level question, not a per-connector one. The stored
-// policy carries no connector condition (see buildTenantPolicyConditions), so
-// it applies to every connector the plane evaluates; asking
-// IsEnabled(connectorType) would answer a question about a scoping that does
-// not exist. It would also be actively misleading: with an empty allowlist
-// IsEnabled returns true for ANY string, so a caller who passed a connector
-// name the platform never emits — "shell" rather than the composite
-// "<client>.<Tool>" the plugins send — would be told the policy is enforced
-// for that connector, which is exactly the false-promise class #3061 exists
-// to eliminate.
-//
-// This inspects the agent's live evaluator rather than auto-enabling anything.
-// Auto-enabling on first policy creation would flip a deployment-wide
-// enforcement posture as a side effect of one MCP tool call:
-// MCP_DYNAMIC_POLICIES_ENABLED gates the plane for EVERY connector and every
-// caller, not just this policy, and with MCP_DYNAMIC_POLICIES_GRACEFUL
-// defaulting to true an orchestrator blip would then fail open on traffic the
-// operator never opted into governing. Reporting honestly is the safe half of
-// that trade; the operator keeps the decision.
-//
-// A nil evaluator means the process never initialized one, which is itself a
-// not-enforced state — never dereference it (IsEnabled takes a lock).
-func tenantPolicyEnforcementStatus() (enforced bool, blockedReason string, restrictedTo []string) {
-	evaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	if evaluator == nil {
-		return false, "the agent has no MCP dynamic-policy evaluator initialized", nil
-	}
-	cfg := evaluator.GetConfig()
-	if !cfg.Enabled {
-		return false, "MCP dynamic policy evaluation is disabled on this agent (MCP_DYNAMIC_POLICIES_ENABLED is not true)", nil
-	}
-	// Empty allowlist means every connector; a non-empty one means the plane —
-	// and therefore this policy — only runs for those connectors.
-	return true, "", cfg.EnabledConnectors
 }
 
 // mapTenantPolicyAction translates the user-facing tenant-policy
@@ -825,8 +758,9 @@ func mapTenantPolicyAction(userAction string) (engineAction string, ok bool) {
 // isOrchestratorPaidTierReject reports whether the orchestrator's
 // error is a tier-validation rejection that the user should see
 // re-worded with deployment-license context. Matches:
-//   - The Organization-tier evaluation-or-higher gate
-//     (policy_api_service.validateTierForCreate, ErrCodeOrgTierEvaluationOrHigher)
+//   - The Organization-root policy scale limit (#3593:
+//     policy_api_service.validateTierForCreate -> admitOrgRootPolicies,
+//     code ERR_TIER_LIMIT_ORG_ROOT_POLICY, 0 on Community and Evaluation)
 //   - The Tenant-tier policy-count cap for non-paid tiers
 //     (policy_api_service.validateTierForCreate, ErrCodePolicyLimitExceeded)
 //
@@ -841,12 +775,28 @@ func isOrchestratorPaidTierReject(err error) bool {
 	if !strings.Contains(msg, "orchestrator returned 403") {
 		return false
 	}
-	return strings.Contains(msg, "enterprise license") ||
+	return strings.Contains(msg, "err_tier_limit_") ||
+		strings.Contains(msg, "enterprise license") ||
 		strings.Contains(msg, "evaluation or enterprise") ||
 		strings.Contains(msg, "evaluation license") ||
 		strings.Contains(msg, "tier_validation") ||
 		strings.Contains(msg, "policy limit") ||
 		strings.Contains(msg, "policy_limit_exceeded")
+}
+
+// isOrchestratorLegacyWriteFrozen reports whether the orchestrator refused
+// the create with the v11.0.0 legacy write freeze: a 409 carrying
+// legacyfreeze.ErrCode. BOTH keys are required. A 409 without the code is some
+// other conflict and stays generic, and the code under any other status is not
+// the freeze. The status text is the one mcpProxyToOrchestrator writes for
+// every non-2xx answer ("orchestrator returned %d: %s").
+func isOrchestratorLegacyWriteFrozen(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "orchestrator returned 409") &&
+		strings.Contains(msg, legacyfreeze.ErrCode)
 }
 
 // extractPolicyFromResponse pulls the inner `policy` object from the

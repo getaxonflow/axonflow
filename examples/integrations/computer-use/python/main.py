@@ -175,14 +175,14 @@ async def test_pii_in_type_action(governor: ComputerUseGovernor, client: AxonFlo
         result.policies_evaluated > 0,
         f"Governor evaluated {result.policies_evaluated} policies",
     )
-    # Under PII_ACTION=redact (default), input is allowed but PII is detected
-    # Under PII_ACTION=block, input is blocked
+    # v11: the stored action decides. sys_pii_ssn stores action_request=warn, so
+    # input is allowed; an organization pii=block override or a policy edit blocks it
     if not result.allowed:
         assert_check(True, f"PII blocked at input: {result.block_reason}")
     else:
         assert_check(
             result.allowed,
-            "PII detected but not blocking at input (PII_ACTION=redact/warn)",
+            "PII detected but not blocking at input (stored request action is warn)",
         )
     print()
 

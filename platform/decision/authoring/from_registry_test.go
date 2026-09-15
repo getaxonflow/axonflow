@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -39,6 +42,8 @@ func sourceRegistry(t *testing.T) *registry.Catalog {
 	}
 	if err := c.RegisterAction(registry.ActionRecord{
 		ID:                 contract.MustParseID(contract.KindAction, "Action::docs.search"),
+		DisplayName:        "Search documents",
+		Description:        "full-text search over the document store",
 		Tags:               []string{"read_only"},
 		Posture:            registry.FailClosedPosture(),
 		MaxDelegationDepth: 3,
@@ -210,5 +215,32 @@ func TestTheDerivationInheritsTheRegistrysRefusal(t *testing.T) {
 	reg.Now = registryNow.Add(2 * time.Hour)
 	if _, err := NewCatalogFromRegistry(reg, sourceRealms()); err == nil {
 		t.Fatalf("a registry whose compatibility exception expired still derived an authoring catalog")
+	}
+}
+
+// TestTheDerivedCatalogCarriesEachActionsLabel (#3789): every action's display
+// name and description reach the authoring catalog from its registry record,
+// which the pdp projection alone would drop.
+func TestTheDerivedCatalogCarriesEachActionsLabel(t *testing.T) {
+	reg := sourceRegistry(t)
+	cat, err := NewCatalogFromRegistry(reg, sourceRealms())
+	if err != nil {
+		t.Fatalf("deriving the authoring catalog: %v", err)
+	}
+	if len(reg.ActionIDs()) == 0 {
+		t.Fatal("the source registry holds no action, so this test checks nothing")
+	}
+	for _, id := range reg.ActionIDs() {
+		rec, ok := reg.Action(contract.MustParseID(contract.KindAction, id))
+		if !ok {
+			t.Fatalf("the registry lists %q but does not hold it", id)
+		}
+		got, ok := cat.ActionLabels[id]
+		if !ok || got.DisplayName != rec.DisplayName || got.Description != rec.Description {
+			t.Errorf("action %q is labelled %+v in the catalog, the registry declares %q / %q", id, got, rec.DisplayName, rec.Description)
+		}
+	}
+	if got := cat.ActionLabels["Action::docs.search"]; got.DisplayName != "Search documents" {
+		t.Fatalf("Action::docs.search is labelled %+v, want the registered display name", got)
 	}
 }

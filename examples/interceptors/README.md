@@ -105,8 +105,8 @@ response, err := wrappedCall(ctx, req)
 
 Each example demonstrates:
 1. Safe query (allowed through)
-2. PII query (blocked by default policies)
-3. SQL injection (blocked by security policies)
+2. PII query (approved with a warning by the shipped policy actions; blocked under an organization `pii=block` override)
+3. SQL injection (approved with a warning: every shipped `sys_sqli_*` policy stores `warn`; blocked under an organization `sqli=block` override or when the policy's action is changed to `block`)
 
 ```bash
 # Set environment variables

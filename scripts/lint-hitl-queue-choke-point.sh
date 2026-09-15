@@ -86,8 +86,9 @@ set -euo pipefail
 #                                           shared status transition
 #                                           (UpdateStatusSQL). 2 statements.
 #   platform/agent/hitl/queue/transitions.go - the state transitions: Override,
-#                                           ExpireByIDs, ExpireDueReturning and
-#                                           ConsumeGrant. 4 statements.
+#                                           ExpireByIDs and ExpireDueReturning.
+#                                           3 statements (ConsumeGrant went
+#                                           with the grant path, #4254).
 #
 #   Both files are IN THE SAME PACKAGE, which is the invariant; they are listed
 #   separately because a count keyed per FILE is what makes adding a statement
@@ -117,7 +118,7 @@ set -euo pipefail
 #
 ALLOW_LIST=$(cat <<'EOF'
 2 platform/agent/hitl/queue/writer.go
-4 platform/agent/hitl/queue/transitions.go
+3 platform/agent/hitl/queue/transitions.go
 1 migrations/core/025_hitl_oversight_queue.sql
 1 scripts/e2e/fixtures/readiness-gate-shape/decoy/05-curl-fail-flag.sh
 EOF
@@ -293,7 +294,7 @@ scan() {
 #      open - the statement does not modify hitl_approval_queue - but it is
 #      stated rather than assumed, and pinned by a fixture.
 #   6. A SELECT is never flagged, including the `SELECT id FROM
-#      hitl_approval_queue` subselect inside ConsumeGrant's own UPDATE. Verb
+#      hitl_approval_queue` subselect inside ExpireDueReturning's own UPDATE. Verb
 #      adjacency is what distinguishes them: the UPDATE names the table, the
 #      subselect's FROM does not follow a write verb.
 #   7. A file containing a NUL BYTE is skipped entirely, before any verb
@@ -486,8 +487,7 @@ self_test() {
 const upd = \`UPDATE hitl_approval_queue SET status = \$1 WHERE request_id = \$2\`"
     mk "$1/platform/agent/hitl/queue/transitions.go" "const a = \`UPDATE hitl_approval_queue SET status = 'overridden'\`
 const b = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE id = ANY(\$1)\`
-const c = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE request_id IN (SELECT request_id FROM hitl_approval_queue)\`
-const d = \`UPDATE hitl_approval_queue SET consumed_at = CURRENT_TIMESTAMP WHERE id = (SELECT id FROM hitl_approval_queue)\`"
+const c = \`UPDATE hitl_approval_queue SET status = 'expired' WHERE request_id IN (SELECT request_id FROM hitl_approval_queue)\`"
     mk "$1/migrations/core/025_hitl_oversight_queue.sql" "WITH expired AS (
         UPDATE hitl_approval_queue SET status = 'expired' RETURNING request_id
     ) SELECT 1;"
@@ -819,7 +819,7 @@ $NEEDLE (a) VALUES ('x');
   check "a lowercase, spaced, schema-qualified UPDATE is caught" 1 "$plantlower"
 
   #      ...and the widening must not have turned every READ into a violation.
-  #      The chokepoint's OWN ConsumeGrant statement contains
+  #      The chokepoint's OWN ExpireDueReturning statement contains
   #      `SELECT id FROM hitl_approval_queue` inside its UPDATE, so a matcher
   #      that counted the table name after any keyword would score transitions.go
   #      higher than its allow-listed count and red the tree.
@@ -931,8 +931,8 @@ z := 3 // delete from decisions, hitl_history, hitl_approval_queue in that order
   #     been dropped from the matcher, which is the exact regression this whole
   #     change is about.
   real_scan=$(scan "$REPO_ROOT")
-  if printf '%s\n' "$real_scan" | grep -qx '2 platform/agent/hitl/queue/writer.go' &&
-     printf '%s\n' "$real_scan" | grep -qx '4 platform/agent/hitl/queue/transitions.go'; then
+  if grep -qx '2 platform/agent/hitl/queue/writer.go' <<<"$real_scan" &&
+     grep -qx '3 platform/agent/hitl/queue/transitions.go' <<<"$real_scan"; then
     echo "  ok   the real scan actually FINDS both chokepoint files (INSERT and the transitions)"
   else
     echo "  FAIL the real scan found no choke point - it is passing vacuously"

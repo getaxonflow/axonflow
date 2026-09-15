@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -28,6 +20,7 @@ import (
 
 	"axonflow/platform/agent/license"
 	"axonflow/platform/connectors/registry"
+	sharedidentity "axonflow/platform/shared/identity"
 )
 
 // =============================================================================
@@ -89,7 +82,7 @@ const utrTestEntSeedB64 = "fifqSWAaVJy1qk89VwvqXYnXmlSCF3VfGRiK4e1kF0g="
 // utrSetupTestKeypair has overridden the package's embedded public keys to
 // match — otherwise it verifies against neither the evaluation nor
 // enterprise production key, in either build.
-func utrGenTestLicenseKey(tier string) string {
+func utrGenTestLicenseKey(tier, org string) string {
 	seed, _ := base64.StdEncoding.DecodeString(utrTestEntSeedB64)
 	privKey := ed25519.NewKeyFromSeed(seed)
 
@@ -101,18 +94,25 @@ func utrGenTestLicenseKey(tier string) string {
 	// these tests rely on for their (empirically-determined, non-401) control
 	// status. Leaving ServiceName empty keeps this a plain client-credential
 	// license — Basic auth succeeds, but no MCP-permission side door opens.
+	// org is written to deployment_id and org_id both: the validator resolves
+	// the licence's organization from deployment_id and then org_id, and a
+	// licence naming none is refused (PRD v11 §1.8).
 	type payload struct {
-		Tier      string `json:"tier"`
-		TenantID  string `json:"tenant_id"`
-		IssuedAt  string `json:"issued_at"`
-		ExpiresAt string `json:"expires_at"`
+		Tier         string `json:"tier"`
+		TenantID     string `json:"tenant_id"`
+		DeploymentID string `json:"deployment_id"`
+		OrgID        string `json:"org_id"`
+		IssuedAt     string `json:"issued_at"`
+		ExpiresAt    string `json:"expires_at"`
 	}
 
 	p := payload{
-		Tier:      tier,
-		TenantID:  "utr-test-deployment",
-		IssuedAt:  time.Now().Format("20060102"),
-		ExpiresAt: time.Now().AddDate(1, 0, 0).Format("20060102"),
+		Tier:         tier,
+		TenantID:     "utr-test-deployment",
+		DeploymentID: org,
+		OrgID:        org,
+		IssuedAt:     time.Now().Format("20060102"),
+		ExpiresAt:    time.Now().AddDate(1, 0, 0).Format("20060102"),
 	}
 	pJSON, _ := json.Marshal(p)
 	pB64 := base64.RawURLEncoding.EncodeToString(pJSON)
@@ -152,7 +152,7 @@ func utrSetupTestKeypair(t *testing.T) {
 func utrInjectMintedWhitelistEntry(t *testing.T) {
 	t.Helper()
 	utrSetupTestKeypair(t)
-	minted := utrGenTestLicenseKey("Enterprise")
+	minted := utrGenTestLicenseKey("Enterprise", getDeploymentOrgID())
 
 	origEntry, existed := knownClients[utrTestClientID]
 	var origCopy *ClientAuth
@@ -210,12 +210,31 @@ func utrBasicAuthHeader() string {
 	return "Basic " + creds
 }
 
+// presentTestClientCredential makes req the request a caller on THIS
+// deployment sends to a route behind apiAuthMiddleware: nothing on a Community
+// deployment, which authenticates no one, and otherwise the licensed test
+// client's Basic credential, which the middleware authenticates to the
+// deployment's organization. A request presenting neither on an Enterprise
+// deployment is refused 401 before any handler runs, so a test driving a
+// handler without one measures a request no production caller can send.
+func presentTestClientCredential(t *testing.T, req *http.Request) {
+	t.Helper()
+	if isCommunityMode() {
+		return
+	}
+	utrInjectMintedWhitelistEntry(t)
+	req.Header.Set("Authorization", utrBasicAuthHeader())
+}
+
 // --- token minting helpers -------------------------------------------------
 
 func utrMintValidToken(t *testing.T, jti string) string {
 	t.Helper()
 	claims := jwt.MapClaims{
+		"iss":       sharedidentity.UserTokenIssuer,
+		"sub":       "user@example.com",
 		"tenant_id": utrTestTenant,
+		"org_id":    getDeploymentOrgID(),
 		"email":     "user@example.com",
 		"role":      "user",
 		"exp":       time.Now().Add(time.Hour).Unix(),

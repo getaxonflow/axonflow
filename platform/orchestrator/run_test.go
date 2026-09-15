@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package orchestrator
 
 import (
@@ -882,7 +885,7 @@ func TestTestPolicyHandler(t *testing.T) {
 // TestTestPolicyHandlerIgnoresBodyTenant pins that the policy dry-run scopes
 // itself to the tenant the GATEWAY stamped, never the one in the request body.
 //
-// /api/v1/policies/test is deliberately ungated for read-only roles (it is a
+// The policy dry-run route is deliberately ungated for read-only roles (it is a
 // dry-run, and the policy screens call it), but it is not side-effect free:
 // EvaluateDynamicPolicies records a policy_metrics analytics row, and that
 // row's org_id is ALSO the app.current_org_id binding its INSERT is checked
@@ -3260,34 +3263,9 @@ func TestGetPlanStatusHandler_ResponseFormat(t *testing.T) {
 // MAP Policy Enforcement Tests (Issue #1020)
 // ============================================================================
 
-// mockPolicyEngineForMAP implements the dynamicPolicyEngine interface for testing
-type mockPolicyEngineForMAP struct {
-	result   *PolicyEvaluationResult
-	captured []OrchestratorRequest // captures every request passed to EvaluateDynamicPolicies
-}
-
-func (m *mockPolicyEngineForMAP) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
-	m.captured = append(m.captured, req)
-	if m.result != nil {
-		return m.result
-	}
-	return &PolicyEvaluationResult{
-		Allowed:         true,
-		AppliedPolicies: []string{},
-	}
-}
-
-func (m *mockPolicyEngineForMAP) ListActivePolicies() []DynamicPolicy {
-	return []DynamicPolicy{}
-}
-
-func (m *mockPolicyEngineForMAP) ListActivePoliciesForTenant(_ string, _ []string) []DynamicPolicy {
-	return []DynamicPolicy{}
-}
-
-func (m *mockPolicyEngineForMAP) IsHealthy() bool {
-	return true
-}
+// The plan execute policy tests read the request the plane decided through a
+// recording route fact source (withRecordingRouteFacts), since the anchored
+// engine decides the route (#4254).
 
 // TestExecutePlanHandler_PolicyBlocked tests that the handler blocks execution when policy returns Allowed=false
 func TestExecutePlanHandler_PolicyBlocked(t *testing.T) {
@@ -3320,14 +3298,8 @@ func TestExecutePlanHandler_PolicyBlocked(t *testing.T) {
 	_ = mockRepo.SavePlan(context.Background(), testPlan)
 	planService = planning.NewService(mockRepo)
 
-	// Setup mock policy engine that blocks
-	dynamicPolicyEngine = &mockPolicyEngineForMAP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false,
-			AppliedPolicies: []string{"pii-detection", "sqli-prevention"},
-			RiskScore:       0.95,
-		},
-	}
+	// #4254: the anchored engine denies, naming the policy (the enforcer double).
+	withRecordingRouteFacts(t, routeDenyVerdict("pii-detection"))
 
 	// Setup minimal workflow engine and audit logger
 	workflowEngine = NewWorkflowEngine()
@@ -3378,9 +3350,18 @@ func TestExecutePlanHandler_PolicyBlocked(t *testing.T) {
 		if response.PolicyInfo.Allowed {
 			t.Error("Expected PolicyInfo.Allowed=false")
 		}
-		if len(response.PolicyInfo.AppliedPolicies) == 0 {
-			t.Error("Expected AppliedPolicies in PolicyInfo")
+		// BY REASON, not by any 403: with no enforcer wired the route also
+		// answers 403, and only the named policy and reason tell a policy
+		// deny from an outage (#4254).
+		if got := strings.Join(response.PolicyInfo.AppliedPolicies, ","); got != "pii-detection" {
+			t.Errorf("AppliedPolicies = %q, want the denying policy pii-detection", got)
 		}
+		if got, want := strings.Join(response.PolicyInfo.RequiredActions, ","), "blocked: "+routeDenyReason; got != want {
+			t.Errorf("RequiredActions = %q, want %q", got, want)
+		}
+	}
+	if response.Error != "Policy blocked MAP execution" {
+		t.Errorf("Error = %q, want the route's unchanged refusal text", response.Error)
 	}
 }
 
@@ -3415,15 +3396,8 @@ func TestExecutePlanHandler_PolicyAllowed(t *testing.T) {
 	_ = mockRepo.SavePlan(context.Background(), testPlan)
 	planService = planning.NewService(mockRepo)
 
-	// Setup mock policy engine that allows
-	dynamicPolicyEngine = &mockPolicyEngineForMAP{
-		result: &PolicyEvaluationResult{
-			Allowed:          true,
-			AppliedPolicies:  []string{"pii-detection", "sqli-prevention"},
-			RiskScore:        0.1,
-			ProcessingTimeMs: 5,
-		},
-	}
+	// #4254: the anchored engine allows (the enforcer double).
+	withRecordingRouteFacts(t, allowedStepVerdict())
 
 	// Setup workflow engine with mock storage
 	workflowEngine = NewWorkflowEngine()
@@ -3536,14 +3510,9 @@ func TestExecutePlanHandler_HeaderOrgWinsOverBody(t *testing.T) {
 	}
 	planService = planning.NewService(mockRepo)
 
-	// Capturing policy engine — we want to read what Client.OrgID it received
-	capturingEngine := &mockPolicyEngineForMAP{
-		result: &PolicyEvaluationResult{
-			Allowed:         false, // block to short-circuit the rest of the handler cleanly
-			AppliedPolicies: []string{"test-block"},
-		},
-	}
-	dynamicPolicyEngine = capturingEngine
+	// #4254: a recording route fact source reads the request the plane decided,
+	// and the engine double denies to short-circuit the rest of the handler.
+	capturingEngine := withRecordingRouteFacts(t, routeDenyVerdict("test-block"))
 
 	workflowEngine = NewWorkflowEngine()
 	auditLogger = NewAuditLogger("")
@@ -3671,15 +3640,10 @@ func TestExecutePlanHandler_PolicyBlocked_ResponseFields(t *testing.T) {
 	_ = mockRepo.SavePlan(context.Background(), testPlan)
 	planService = planning.NewService(mockRepo)
 
-	// Setup mock policy engine that blocks
-	dynamicPolicyEngine = &mockPolicyEngineForMAP{
-		result: &PolicyEvaluationResult{
-			Allowed:          false,
-			AppliedPolicies:  []string{"sqli-prevention"},
-			RiskScore:        1.0,
-			ProcessingTimeMs: 3,
-		},
-	}
+	// #4254: the anchored engine denies (the enforcer double). Without it the
+	// route fails closed with the same three fields, so the policy id is
+	// asserted below as well.
+	withRecordingRouteFacts(t, routeDenyVerdict("sqli-prevention"))
 
 	workflowEngine = NewWorkflowEngine()
 	auditLogger = NewAuditLogger("")
@@ -3725,6 +3689,9 @@ func TestExecutePlanHandler_PolicyBlocked_ResponseFields(t *testing.T) {
 
 	if _, ok := response["policy_info"]; !ok {
 		t.Error("Response should have 'policy_info' field when blocked")
+	}
+	if !strings.Contains(w.Body.String(), `"sqli-prevention"`) {
+		t.Errorf("the 403 does not name the denying policy, so it is not shown to be a policy deny: %s", w.Body.String())
 	}
 }
 

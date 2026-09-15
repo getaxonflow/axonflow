@@ -1,0 +1,9 @@
+policy_id	category	revisit
+corpus:static_policies:eu__gdpr__credit__card__detection:redact	pii_detection	#4230
+corpus:static_policies:eu__gdpr__loyalty__number__detection:redact	pii_detection	#4230
+corpus:static_policies:eu__gdpr__passport__detection:redact	pii_detection	#4230
+corpus:static_policies:pii__ssn__detection:redact	pii_detection	#4230
+corpus:static_policies:sys__admin__audit__log:log	security-admin	#3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup
+corpus:static_policies:sys__admin__config__table:log	security-admin	#3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup
+corpus:static_policies:sys__admin__info__schema:log	security-admin	#3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup
+corpus:static_policies:sys__admin__users__table:log	security-admin	#3323: lifted when the security-admin rename lands (the category admitted on the planes that resolve log for these rows) or the rows are dropped by that cleanup

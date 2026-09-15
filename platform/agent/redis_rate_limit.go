@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -103,16 +95,7 @@ func checkRateLimitRedis(ctx context.Context, customerID string, limitPerMinute 
 // where the pre-bcrypt path has already incremented the counter.
 func rateLimitCount(customerID string) int {
 	if redisClient == nil {
-		rateLimitMu.RLock()
-		defer rateLimitMu.RUnlock()
-		entry, exists := rateLimitMap[customerID]
-		if !exists {
-			return 0
-		}
-		if time.Since(entry.ResetTime) > 0 {
-			return 0
-		}
-		return entry.Count
+		return inMemoryRateLimitCount(customerID)
 	}
 
 	ctx := context.Background()
@@ -121,9 +104,24 @@ func rateLimitCount(customerID string) int {
 	minScore := now.Add(-time.Minute).Unix()
 	count, err := redisClient.ZCount(ctx, key, fmt.Sprintf("%d", minScore), "+inf").Result()
 	if err != nil {
-		return 0
+		// While Redis fails, checkRateLimitRedis counts in memory, so read that
+		// count. Reading none let every sessionless MCP call past its tier's
+		// per-minute limit for as long as Redis failed (#4261).
+		return inMemoryRateLimitCount(customerID)
 	}
 	return int(count)
+}
+
+// inMemoryRateLimitCount reads the in-memory limiter's count for the current
+// window without incrementing it.
+func inMemoryRateLimitCount(customerID string) int {
+	rateLimitMu.RLock()
+	defer rateLimitMu.RUnlock()
+	entry, exists := rateLimitMap[customerID]
+	if !exists || time.Since(entry.ResetTime) > 0 {
+		return 0
+	}
+	return entry.Count
 }
 
 // getRateLimitStatusRedis returns current rate limit status from Redis

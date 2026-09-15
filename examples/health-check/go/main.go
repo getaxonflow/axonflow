@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Health Check Example - Go
 //
 // Demonstrates how to check the health of AxonFlow Agent and Orchestrator services.

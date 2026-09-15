@@ -19,7 +19,6 @@ package agent
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -29,27 +28,11 @@ func TestMigration107_B8MiscTablesForceRLS(t *testing.T) {
 	if os.Getenv("TEST_PG_INTEGRATION") != "1" {
 		t.Skip("TEST_PG_INTEGRATION not set — skipping")
 	}
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set — skipping")
-	}
-
 	ctx := context.Background()
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	db := migrationTestDB(t)
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
-
-	// Schema reset + GUCs.
-	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
+	// GUCs. The schema reset that used to sit here is migrationTestDB's.
 	for _, guc := range []struct{ k, v string }{
 		{"app.db_password", "test-pass"},
 		{"app.deployment_kind", "dev"},

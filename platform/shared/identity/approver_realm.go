@@ -187,17 +187,69 @@ func InteractiveMembers(reg *RealmRegistry, orgID string, pool ApproverPool) ([]
 // emptied by self-exclusion and a pool emptied by an unanswerable realm need
 // different remedies, and the caller can only tell them apart if the
 // unanswerable case is reported before the exclusion happens.
+//
+// # EXCLUSION IS BY SUBJECT, NOT BY CLASSIFIED PRINCIPAL (#3878)
+//
+// The two sides of this comparison get their principal type from different
+// places. A chain hop's comes from the request's token; a pool member's comes
+// from configuration, and ValidateApproverPool's own comment above describes a
+// pool assembled from several directories. Two sources for one subject is
+// exactly where two classifications diverge, and while the comparison included
+// the type, a requester presenting as `Service::workspace:raj` was not struck
+// out of a pool naming `User::workspace:raj` - so raj remained eligible to
+// answer raj's own escalation.
+//
+// THE COST OF THE CORRECTION IS A SMALLER POOL, and that is the point rather
+// than a side effect. Self-exclusion is the only control here, so its failure
+// direction has to be "one fewer approver", never "the requester counts". A
+// deployment whose quorum is exactly its pool size can therefore go from
+// reachable to QUORUM_UNREACHABLE; that outcome is asserted in
+// TestWideningSelfExclusionCanMakeAQuorumUnreachable so it is visible in the
+// suite rather than discovered by an operator.
 func EligibleApprovers(reg *RealmRegistry, orgID string, pool ApproverPool, chain ActorChain) ([]PrincipalID, Admission) {
 	interactive, adm := InteractiveMembers(reg, orgID, pool)
 	if !adm.State.IsAdmitted() {
 		return nil, adm
 	}
-	var out, excluded []PrincipalID
+	var out, excluded, collapsed []PrincipalID
+	bySubject := make(map[string]struct{}, len(interactive))
 	for _, m := range interactive {
-		if chain.Contains(m) {
+		if chain.ContainsSubject(m) {
 			excluded = append(excluded, m)
 			continue
 		}
+		// ONE ENTRY PER SUBJECT, BECAUSE A QUORUM COUNTS PEOPLE. Found by the
+		// hostile review of the exclusion fix above, and it is the same class
+		// pointing at the harder control: nothing deduplicated this set, so a
+		// pool naming one person under two classifications - the exact
+		// divergence self-exclusion had to be corrected for, arriving from the
+		// same several directories - offered TWO eligible approvers, and
+		// ApproverQuorumReachable compares len(eligible) against the clause's
+		// quorum. A two-person rule was satisfiable by one person listed
+		// twice, which is a worse outcome than the eligibility hole, on the
+		// same pool, reached by the same configuration.
+		//
+		// The surviving spelling is the FIRST in sorted order, which
+		// InteractiveMembers has already established, so the choice is
+		// deterministic rather than dependent on the pool's declaration order.
+		//
+		// ValidateApproverPool is deliberately NOT changed to refuse such a
+		// pool: a pool assembled from several directories naming one person
+		// twice is untidy configuration, not an unanswerable pool, and
+		// refusing the whole thing at save time is a worse remedy than
+		// counting them once at request time.
+		key, ok := m.SubjectKey()
+		if !ok {
+			// Unreachable: InteractiveMembers has already dropped a member
+			// that fails Validate. Read rather than assumed, because an empty
+			// key would collapse every malformed member into one.
+			continue
+		}
+		if _, dup := bySubject[key]; dup {
+			collapsed = append(collapsed, m)
+			continue
+		}
+		bySubject[key] = struct{}{}
 		out = append(out, m)
 	}
 	if len(out) == 0 {
@@ -209,14 +261,53 @@ func EligibleApprovers(reg *RealmRegistry, orgID string, pool ApproverPool, chai
 		// The admission that arrives here describes the INTERACTIVE set. After
 		// self-exclusion it would otherwise still describe a set this function
 		// is not returning, so it is rebuilt rather than passed through.
+		// EACH EXCLUSION NAMES BOTH SPELLINGS. A member struck out under a
+		// principal type the chain does not use looks, in a one-sided log line,
+		// like a member who was never in the chain at all - which is the one
+		// question an operator asks when a pool comes back smaller than the
+		// configuration says. Naming the chain hop that matched turns "why is
+		// raj not eligible" into a sentence instead of an investigation.
 		names := make([]string, len(excluded))
 		for i, e := range excluded {
-			names[i] = e.String()
+			names[i] = e.String() + matchedHopSuffix(chain, e)
 		}
 		sort.Strings(names)
 		adm = AcceptPoolAdmission(fmt.Sprintf(
-			"%s; a further %d excluded as members of the requesting actor chain: %s",
+			"%s; a further %d excluded as the subject of a hop in the requesting actor chain: %s",
 			adm.Detail, len(excluded), strings.Join(names, ", ")))
 	}
+	if len(collapsed) > 0 {
+		// DISCLOSED FOR THE SAME REASON THE EXCLUSIONS ARE. A pool of six that
+		// offers four approvers is a question an operator will ask, and the
+		// answer - "two of those six name one person twice" - is not
+		// reconstructable from the count.
+		names := make([]string, len(collapsed))
+		for i, c := range collapsed {
+			names[i] = c.String()
+		}
+		sort.Strings(names)
+		adm = AcceptPoolAdmission(fmt.Sprintf(
+			"%s; a further %d counted once, as a second spelling of a subject already eligible: %s",
+			adm.Detail, len(collapsed), strings.Join(names, ", ")))
+	}
 	return out, adm
+}
+
+// matchedHopSuffix names the chain hop that struck a member out, and says so
+// only when the two spellings differ.
+//
+// An empty suffix for an exact match is deliberate: adding "(matched
+// User::workspace:raj)" after "User::workspace:raj" is noise on the ordinary
+// case, and the whole reason this exists is the case that is NOT ordinary.
+func matchedHopSuffix(chain ActorChain, member PrincipalID) string {
+	for _, hop := range chain {
+		if !hop.SameSubject(member) {
+			continue
+		}
+		if hop == member {
+			return ""
+		}
+		return fmt.Sprintf(" (the same subject as chain hop %s)", hop)
+	}
+	return ""
 }

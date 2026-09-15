@@ -300,38 +300,3 @@ func TestEffectiveOverride_ExpiryIsUpstreamOfThisFunction(t *testing.T) {
 		t.Errorf("once the action-row is filtered out upstream, no row has an opinion on action, got %+v", resAfterActionExpires)
 	}
 }
-
-// IsOverrideEligible ports the coverage of the identical eligibility gate
-// previously duplicated in orchestrator.ApplyOverrideToResult,
-// orchestrator.SelectOverridablePolicy, and
-// agent.applyOverrideToCheckInputBlock (see override_enforcement_test.go's
-// TestSelectOverridablePolicy_* and TestApplyOverrideToResult_AllCriticalNoOp
-// for the pre-consolidation equivalents, which now exercise this function
-// indirectly through the two live adapters).
-
-func TestIsOverrideEligible_CriticalNeverEligible(t *testing.T) {
-	if IsOverrideEligible("critical", true) {
-		t.Error("critical-risk policy must never be eligible, even with allow_override=true")
-	}
-}
-
-func TestIsOverrideEligible_NonCriticalEchoesAllowOverride(t *testing.T) {
-	cases := []struct {
-		risk          string
-		allowOverride bool
-		want          bool
-	}{
-		{"high", true, true},
-		{"high", false, false},
-		{"medium", true, true},
-		{"medium", false, false},
-		{"low", true, true},
-		{"low", false, false},
-		{"", true, true},
-	}
-	for _, tc := range cases {
-		if got := IsOverrideEligible(tc.risk, tc.allowOverride); got != tc.want {
-			t.Errorf("IsOverrideEligible(%q, %v) = %v, want %v", tc.risk, tc.allowOverride, got, tc.want)
-		}
-	}
-}

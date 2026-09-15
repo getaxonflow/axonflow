@@ -2,7 +2,14 @@
  * Azure OpenAI SQL Injection Detection Example
  *
  * Demonstrates AxonFlow's SQL injection scanning with Azure OpenAI as the LLM provider.
- * AxonFlow detects and blocks SQL injection attempts before they reach Azure.
+ *
+ * v11: the stored policy action decides. Every shipped sys_sqli_* policy stores
+ * "warn", so AxonFlow detects SQL injection and reports the matched policy in
+ * policyInfo.policiesEvaluated, but does NOT block it. To block SQL injection,
+ * record an organization override of category "sqli" with action "block"
+ * (PUT /api/v1/detection-posture/sqli on the customer portal API, Enterprise) or
+ * change the policy's action. This example validates the shipped actions with no
+ * override recorded. SQLI_ACTION no longer sets an action.
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
@@ -13,6 +20,7 @@ interface TestCase {
   name: string;
   query: string;
   shouldBlock: boolean;
+  expectDetected?: boolean;
 }
 
 const failures: string[] = [];
@@ -43,30 +51,35 @@ async function main(): Promise<void> {
       query: "What are the best practices for Azure OpenAI?",
       shouldBlock: false,
     },
+    // SQL injection warns by default: detected, not blocked.
     {
       name: "Classic SQL Injection",
       query: "SELECT * FROM users WHERE id = 1 OR 1=1",
-      shouldBlock: true,
+      shouldBlock: false,
+      expectDetected: true,
     },
     {
       name: "DROP TABLE Attack",
       query: "DROP TABLE users; SELECT * FROM admin;",
-      shouldBlock: true,
+      shouldBlock: false,
+      expectDetected: true,
     },
     {
       name: "Union-based Injection",
       query: "SELECT name FROM products UNION SELECT password FROM users",
-      shouldBlock: true,
+      shouldBlock: false,
+      expectDetected: true,
     },
     {
       name: "Comment-based Injection",
       query: "SELECT * FROM users WHERE name = 'admin'--",
-      shouldBlock: true, // Blocked due to accessing users table
+      shouldBlock: false,
     },
     {
       name: "Truncate Attack",
       query: "TRUNCATE TABLE customer_data;",
-      shouldBlock: true,
+      shouldBlock: false,
+      expectDetected: true,
     },
     {
       name: "Legitimate SQL Question",
@@ -108,12 +121,25 @@ async function main(): Promise<void> {
           `${tc.name}: blocked response has blockReason`
         );
         console.log(`  Reason: ${response.blockReason}`);
+        console.log("  (not the shipped outcome: an org sqli=block override or an edited policy action is in force)");
       } else {
         // Assert allowed responses have data
         assertCheck(
           response.data !== undefined,
           `${tc.name}: allowed response has data`
         );
+        const detected = (response.policyInfo?.policiesEvaluated ?? []).filter((p) =>
+          p.startsWith("sys_sqli_")
+        );
+        if (detected.length > 0) {
+          console.log(`  SQLi WARNED: ${detected.join(", ")}`);
+        }
+        if (tc.expectDetected) {
+          assertCheck(
+            detected.length > 0,
+            `${tc.name}: sys_sqli_* policy detected (stored action: warn)`
+          );
+        }
       }
     } catch (error) {
       // PolicyViolationError means the request was blocked
@@ -132,6 +158,7 @@ async function main(): Promise<void> {
           `${tc.name}: PolicyViolationError has message`
         );
         console.log(`  Reason: ${error.message}`);
+        console.log("  (not the shipped outcome: an org sqli=block override or an edited policy action is in force)");
       } else {
         console.log(`  Error: ${error}`);
         failures.push(`${tc.name}: unexpected error - ${error}`);

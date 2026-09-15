@@ -64,58 +64,14 @@ func TestWriteExplainableAuditLog_OrgIDPersisted(t *testing.T) {
 	}
 }
 
-// TestWriteOverrideUsedEvent_OrgIDPersisted is the override-event sibling.
-// mcp_server_handler.go:1083 + :1208 also called this with orgID="".
-// Phase 4 routes session.orgID through; assert the writer carries it
-// onto the INSERT.
-func TestWriteOverrideUsedEvent_OrgIDPersisted(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	const wantOrgID = "acme-corp"
-
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO audit_logs")).
-		WithArgs(
-			sqlmock.AnyArg(), // id
-			sqlmock.AnyArg(), // request_id (decisionID)
-			sqlmock.AnyArg(), // timestamp
-			0,                // user_id
-			"bob@example.com",
-			"user",
-			"client-xyz",
-			"travel_tenant", // tenant_id
-			wantOrgID,       // org_id — v9 fix
-			"override_used",
-			"override applied",
-			"none",
-			"allowed",          // policy_decision — override flips deny→allowed (#2641/#2638)
-			sqlmock.AnyArg(),   // policy_details JSONB
-			"decision-1",       // decision_id (first-class column; #2592)
-			PlaneMCP,           // plane — MCP check-input override surface
-			"corr-trace-ovr-1", // correlation_id (#2598)
-			nil,                // session_id (#2753)
-		).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	writeOverrideUsedEvent(context.Background(), db,
-		"override-1", "decision-1",
-		"travel_tenant", wantOrgID, "client-xyz", "bob@example.com",
-		"policy-1", "Policy One", 7,
-		"corr-trace-ovr-1")
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("sqlmock expectations: %v", err)
-	}
-}
-
 // TestMCPSession_OrgIDPropagatesFromAuth confirms the wiring: when the
 // MCP session is built from authenticateMCPServerRequest's returned
 // orgID, the session struct carries that value through to the audit
-// writer. Combined with the two writer tests above, this gives the v9
+// writer. Combined with the writer test above, this gives the v9
 // MCP-path org_id chain end-to-end coverage:
 //
 //	Authenticate() → authenticateMCPServerRequest() → mcpSession.orgID
-//	→ writeExplainableAuditLog / writeOverrideUsedEvent → DB column.
+//	→ writeExplainableAuditLog → DB column.
 func TestMCPSession_OrgIDPropagatesFromAuth(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 

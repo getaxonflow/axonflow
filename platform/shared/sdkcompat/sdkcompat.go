@@ -76,6 +76,17 @@ var minVersion = map[string]string{
 //
 // Release-train history, newest first:
 //
+//   - the 11.0.0 train moves python/typescript/go/java 9.3.0 -> 9.4.0 and rust
+//     0.10.0 -> 0.11.0: the tags carrying the v11 decision provenance on every
+//     governed response, the PEP capability handshake, and the typed policy
+//     authoring clients, with the policy simulation family deprecated in the
+//     four SDKs that have it (rust never had it). Rust moves its MINOR because
+//     a 0.x breaking change goes there: its error type becomes non-exhaustive
+//     and its policy-category type gains an unknown-value variant. The bump is
+//     made in the release-prep commit so the release's own images advertise the
+//     train's targets, and the tags are cut AFTER the community platform
+//     release, per RUNBOOK_PLATFORM_RELEASE.md's ordering.
+//
 //   - the 10.4.0 train moves python/typescript/go/java 9.2.0 -> 9.3.0 and rust
 //     0.9.0 -> 0.10.0: the tags carrying the SDK read-path identity surface
 //     (#3651, merged in all five on 2026-09-03 and unpublished since) and, in
@@ -102,11 +113,11 @@ var minVersion = map[string]string{
 // Nothing in this repository validates a recommended value against the registry
 // it names, so when an SDK publishes, move this map in the same round.
 var recommendedVersion = map[string]string{
-	"python":     "9.3.0",
-	"typescript": "9.3.0",
-	"go":         "9.3.0",
-	"java":       "9.3.0",
-	"rust":       "0.10.0",
+	"python":     "9.4.0",
+	"typescript": "9.4.0",
+	"go":         "9.4.0",
+	"java":       "9.4.0",
+	"rust":       "0.11.0",
 }
 
 // MinVersions returns the floor map.

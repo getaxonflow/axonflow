@@ -28,7 +28,13 @@ concurrency:
 
 jobs:
   commitlint:
-    runs-on: ubuntu-latest
+    # ON THE SELF-HOSTED FLEET in this repository (W3-J, 2026-09-12). A 5-second
+    # string check billed a whole hosted minute on every push AND every body
+    # edit (743 runs against 541 pushes over 2026-09-08..11), and nothing on the
+    # required path waits for it, so the fleet's queue costs no board any time.
+    # Selected by repository because this workflow syncs to the community
+    # mirror, which has no fleet (mirror_can_schedule_every_staged_job_test.sh).
+    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Check PR title

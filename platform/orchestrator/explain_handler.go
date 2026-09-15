@@ -23,18 +23,42 @@ import (
 // Additive fields may be added with omitempty; renames/removals require
 // a major version bump.
 type DecisionExplanation struct {
-	DecisionID                string          `json:"decision_id"`
-	Timestamp                 time.Time       `json:"timestamp"`
-	PolicyMatches             []ExplainPolicy `json:"policy_matches"`
-	MatchedRules              []ExplainRule   `json:"matched_rules,omitempty"`
-	Decision                  string          `json:"decision"` // "allow"|"deny"|"require_approval"
-	Reason                    string          `json:"reason"`
-	RiskLevel                 string          `json:"risk_level,omitempty"`
-	OverrideAvailable         bool            `json:"override_available"`
-	OverrideExistingID        string          `json:"override_existing_id,omitempty"`
-	HistoricalHitCountSession int             `json:"historical_hit_count_session"`
-	PolicySourceLink          string          `json:"policy_source_link,omitempty"`
-	ToolSignature             string          `json:"tool_signature,omitempty"`
+	DecisionID    string          `json:"decision_id"`
+	Timestamp     time.Time       `json:"timestamp"`
+	PolicyMatches []ExplainPolicy `json:"policy_matches"`
+	MatchedRules  []ExplainRule   `json:"matched_rules,omitempty"`
+	// Decision is the audit row's policy_decision column ECHOED VERBATIM, so
+	// the vocabulary is audit.All() - "allowed"|"blocked"|"redacted"|
+	// "needs_approval"|"error" - plus any historical spelling still in the
+	// table.
+	//
+	// THE COMMENT THAT USED TO BE HERE NAMED "allow"|"deny"|"require_approval",
+	// AND NONE OF THOSE THREE IS EVER EMITTED (#3901 §5). That is the wire
+	// verdict vocabulary of POST /api/v1/decide, a deliberately distinct set (the
+	// VerdictAllow/Deny/NeedsApproval consts in platform/agent/decision_handler.go
+	// - a DIFFERENT package from this one); it reached this comment by being the
+	// vocabulary the reader had in mind rather than the one the column holds.
+	//
+	// NOT NORMALIZED, DELIBERATELY, AND THIS DIVERGES FROM ITS SIBLING.
+	// GET /api/v1/decisions runs the same column through audit.Normalize in its
+	// row scan (decisions_list_handler.go - cited by symbol rather than by line,
+	// because the line number this comment first carried was made stale by the
+	// same commit that wrote it), so for one decision_id whose row carries a
+	// legacy spelling the FEED says "allowed" and this endpoint says "allow".
+	// That is the documented contract on both sides, not an oversight: this is
+	// the forensic endpoint and must report what was recorded, while the feed
+	// is verdict-centric and must report one vocabulary. The published schema
+	// states it (orchestrator-api.yaml, DecisionExplanation.decision: "echoed
+	// verbatim ... not normalized, so historical spellings can appear").
+	// A client comparing a verdict across the two endpoints must normalize.
+	Decision                  string `json:"decision"`
+	Reason                    string `json:"reason"`
+	RiskLevel                 string `json:"risk_level,omitempty"`
+	OverrideAvailable         bool   `json:"override_available"`
+	OverrideExistingID        string `json:"override_existing_id,omitempty"`
+	HistoricalHitCountSession int    `json:"historical_hit_count_session"`
+	PolicySourceLink          string `json:"policy_source_link,omitempty"`
+	ToolSignature             string `json:"tool_signature,omitempty"`
 
 	// V1.1 forensic fields (ADR-043 amendment 2026-05-07). Both fields
 	// are scoped to the FIRST matched policy. Both `omitempty` so pre-V1.1
@@ -235,15 +259,10 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		exp.LatestPolicyVersion = queryLatestPolicyVersion(callerOrg, exp.PolicyMatches[0].PolicyID)
 	}
 
-	// Check for existing active override (drives override_available).
-	// Pass the decision's tool_signature so override lookup matches the same
-	// tool-scoped precedence as FindActiveOverride / ApplyOverrideToResult —
-	// otherwise explain could surface an override scoped to tool A when the
-	// user asks about a decision for tool B, which would be stricter than
-	// runtime enforcement and mislead the unblock UX (reviewer-caught).
-	exp.OverrideAvailable, exp.OverrideExistingID = checkOverrideAvailability(
-		callerOrg, callerTenant, callerEmail, exp.ToolSignature, exp.PolicyMatches,
-	)
+	// override_available stays false and override_existing_id empty. Session
+	// overrides are retired in v11 (#4252, PRD v11 §1.5): the write answers
+	// the freeze and the step gate reads no session override, so explain
+	// names neither.
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(exp)
@@ -437,66 +456,4 @@ func queryHistoricalHitCount(userEmail string, matches []ExplainPolicy, anchorTi
 		return 0
 	}
 	return count
-}
-
-// checkOverrideAvailability returns (available, existing_override_id) for
-// the given caller, tool signature, and policy matches. Override is available
-// if at least one match has allow_override=true AND risk_level != critical.
-//
-// toolSignature is the tool the decision was scoped to (may be empty if the
-// decision had no tool context). Lookup follows the same scope rules as
-// FindActiveOverride / ApplyOverrideToResult (ADR-044): tool-specific
-// override wins over tool-agnostic when both exist for the same policy;
-// when the decision has no tool context, only tool-agnostic overrides match.
-// scopeOrg is the RLS scope key (#3048 R3 HIGH-3): caller org else the
-// org_id==tenant_id identity — the same key the override writers stamp.
-func checkOverrideAvailability(scopeOrg, tenantID, userEmail, toolSignature string, matches []ExplainPolicy) (bool, string) {
-	if userEmail == "" || len(matches) == 0 {
-		return false, ""
-	}
-	any := false
-	for _, m := range matches {
-		if m.RiskLevel != "critical" && m.AllowOverride {
-			any = true
-			break
-		}
-	}
-	if !any {
-		return false, ""
-	}
-
-	// Look for existing active override for first overridable match,
-	// applying the same scope rules as runtime enforcement.
-	for _, m := range matches {
-		if m.RiskLevel == "critical" || !m.AllowOverride {
-			continue
-		}
-		// #3048: org-scoped (mig 110 RLS) — bare, this matched 0 rows under
-		// axonflow_app_role and explain always reported "no existing
-		// override". Same org_id==tenant_id key the create path stamps.
-		var id string
-		err := agent.WithOrgScope(context.Background(), usageDB, scopeOrg, func(tx *sql.Tx) error {
-			return tx.QueryRow(`
-			SELECT id FROM policy_overrides
-			WHERE policy_id = $1 AND created_by = $2 AND tenant_id = $3
-			  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
-			  AND (tool_signature IS NULL OR tool_signature = $4)
-			  -- Match FindActiveOverride: only ADR-044 session "allow" overrides
-			  -- count as an active bypass. Action-overrides (warn/block/redact)
-			  -- share this table but must not be reported as an available session
-			  -- override, keeping explain consistent with runtime enforcement.
-			  AND (action_override IS NULL OR action_override = 'allow')
-			ORDER BY
-			  CASE WHEN tool_signature = $4 AND $4 <> '' THEN 0
-			       WHEN tool_signature IS NULL THEN 1
-			       ELSE 2 END,
-			  created_at DESC
-			LIMIT 1
-		`, m.PolicyID, userEmail, tenantID, toolSignature).Scan(&id)
-		})
-		if err == nil {
-			return true, id
-		}
-	}
-	return true, ""
 }

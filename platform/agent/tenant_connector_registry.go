@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -80,7 +72,7 @@ func IsValidConnectorType(connectorType string) bool {
 var tenantConnectorRegistryMu sync.RWMutex
 
 // tenantConnectorRegistry is the global TenantConnectorRegistry instance for the agent.
-// It implements ADR-007 dynamic connector loading: per-tenant connector isolation.
+// It implements ADR-006 dynamic connector loading: per-tenant connector isolation.
 // Access to this variable must be protected by tenantConnectorRegistryMu.
 var tenantConnectorRegistry *TenantConnectorRegistry
 
@@ -99,7 +91,7 @@ func (e *TenantConnectorEntry) IsExpired() bool {
 }
 
 // TenantConnectorRegistry provides per-tenant connector management with dynamic loading.
-// It implements ADR-007 runtime connector configuration by:
+// It implements ADR-006 runtime connector configuration by:
 // 1. Loading connector configs from RuntimeConfigService (DB > File > Env)
 // 2. Caching connector instances per-tenant with 30-second TTL
 // 3. Supporting lazy initialization of connectors on first use
@@ -160,7 +152,7 @@ func NewTenantConnectorRegistry(opts TenantConnectorRegistryOptions) *TenantConn
 
 	cacheTTL := opts.CacheTTL
 	if cacheTTL <= 0 {
-		cacheTTL = 30 * time.Second // Default 30s TTL as per ADR-007
+		cacheTTL = 30 * time.Second // Default 30s TTL as per ADR-006
 	}
 
 	return &TenantConnectorRegistry{

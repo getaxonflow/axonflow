@@ -17,8 +17,14 @@ import (
 )
 
 func setupTestHandler() (*Handler, *Service, *MockRepository) {
+	return setupTestHandlerWith(nil)
+}
+
+// setupTestHandlerWith builds the handler over a service with evaluator. A nil
+// evaluator is the service's own fallback, which withholds every step (#4254).
+func setupTestHandlerWith(evaluator PolicyEvaluator) (*Handler, *Service, *MockRepository) {
 	repo := NewMockRepository()
-	svc := NewService(repo, nil, nil)
+	svc := NewService(repo, evaluator, nil)
 	handler := NewHandler(svc)
 	return handler, svc, repo
 }
@@ -152,7 +158,9 @@ func TestHandlerListWorkflows(t *testing.T) {
 }
 
 func TestHandlerStepGate(t *testing.T) {
-	handler, svc, _ := setupTestHandler()
+	// An explicit allowing double (#4254): the subject is the handler's gate
+	// response, and a service with no evaluator withholds every step.
+	handler, svc, _ := setupTestHandlerWith(allowingPolicyEvaluator{})
 	ctx := context.Background()
 
 	// Create a workflow first

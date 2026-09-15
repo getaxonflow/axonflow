@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -76,8 +68,10 @@ func setupTestDBEnv(t *testing.T) func() {
 // refreshPolicies SELECT and consumed downstream by override enforcement.
 //
 // #3319: also includes org_id, client_id, version, created_by, updated_by
-// (migrations 010/022/090) — seedSystemMediaPolicies and insertSamplePolicies
-// both INSERT into those columns, and without them the seed silently fails
+// (migrations 010/022/090) — insertSamplePolicies INSERTs into those columns
+// (and seedSystemMediaPolicies did too, until #4026 turned it into a read:
+// core/172 revoked the application role's INSERT and core/173 seeds those five
+// rows as the owner), and without them the seed silently fails
 // with a "column does not exist" warning on every boot, landing the engine
 // on a genuinely empty (0-row) policies table. Pre-#3319 that was invisible:
 // NewDatabaseDynamicPolicyEngine masked a 0-row-after-seed load by silently

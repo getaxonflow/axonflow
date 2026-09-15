@@ -65,7 +65,7 @@ AxonFlow is a **control plane**, not an orchestration framework. It doesn't repl
 ```
 
 **AxonFlow provides:**
-- **Policy enforcement** - 80 built-in system policies (70 pattern-based, 10 condition-based; seeded by `migrations/core`, count pinned by `platform/agent/system_policy_count_realpg_test.go`) block PII, SQLi and dangerous queries before they reach LLMs or tools
+- **Policy enforcement** - 85 built-in system policies (70 pattern-based, 15 condition-based; seeded by `migrations/core`, count pinned by `platform/agent/system_policy_count_realpg_test.go`) block PII, SQLi and dangerous queries before they reach LLMs or tools
 - **Media and code governance** - Image classification, code scanning policies
 - **Workflow Control Plane (WCP)** - Step-level gates for external orchestrators (LangChain, Temporal, etc.)
 - **Circuit breaker** - Emergency kill switch to halt all LLM calls instantly
@@ -338,9 +338,9 @@ sequenceDiagram
     else allow
         Note over Agent: tenant-tier policies, then budget check (402 on exceed)
         Agent->>Orch: POST /api/v1/process (X-Org-ID, X-Tenant-ID, internal proxy auth)
-        Note over Orch: bind principal + tenancy, dynamic (tenant) policy engine
+        Note over Orch: bind principal + tenancy, the anchored policy engine decides the request (403 if withheld)
         alt request_type = mcp-query
-            Orch->>Agent: /mcp/resources/query (connector; SQLi response scan)
+            Orch->>Agent: /mcp/resources/query (connector, SQLi response scan)
         else LLM request
             Orch->>Ext: routed call (platform/orchestrator/llm/router.go)
             Ext-->>Orch: response
@@ -372,8 +372,8 @@ flowchart LR
         Rate[Rate Limits]
     end
 
-    subgraph Phase2["Phase 2: Orchestrator (Tenant)"]
-        Tenant[Tenant Policies]
+    subgraph Phase2["Phase 2: Orchestrator (Organization)"]
+        Tenant["Organization policy document (anchored engine)"]
         Risk[Risk Scoring]
         Cost[Cost Budgets]
     end
@@ -385,17 +385,17 @@ flowchart LR
     Phase2 -->|Block| Deny
 ```
 
-**Phase 1 (System Policies):** Compiled regex patterns evaluated in-process against a cached policy set (5-minute TTL, 30-second background refresh; `platform/shared/policy/types.go` defaults). Evaluation code: `platform/shared/policy/engine.go` and `evaluator.go`; policy types and the `/api/policies` admin handlers: `platform/agent/static_policies.go`. Tenant-tier static policies run in a second pass through `platform/agent/tier_aware_policy_engine.go`.
+**Phase 1 (System Policies):** Compiled regex patterns evaluated in-process against a cached policy set (5-minute TTL, 30-second background refresh; `platform/shared/policy/types.go` defaults). Evaluation code: `platform/shared/policy/engine.go` and `evaluator.go`; policy types and the `/api/policies` admin handlers: `platform/agent/static_policies.go`. On `/api/request` this evaluation is the detector input to one decision, the anchored engine's; the second pass that ran tenant-tier static policies through the tier engine was deleted in v11.0.0 (#4253).
 
-**Phase 2 (Tenant Policies):** Condition-based (`dynamic_policies` table), evaluated by the orchestrator from an in-memory snapshot refreshed every 30 seconds. Code: `platform/orchestrator/db_dynamic_policies.go` (`DatabaseDynamicPolicyEngine.EvaluateDynamicPolicies`).
+**Phase 2 (Organization Policies):** In v11.0.0 the orchestrator's planes - the workflow step gate, the multi-agent plane, `/api/v1/process` and plan execute - are decided by the anchored engine from the shipped set and the organization's published typed policy document (PRD v11 items 2 and 4). Tenant `dynamic_policies` rows author no verdict there. Their condition matcher stays only as a fact producer for the shipped corpus's dynamic controls: `platform/orchestrator/db_dynamic_policies.go`, read through `platform/orchestrator/dynamic_fact_producer.go`.
 
-| Access Type | Phase 1 (System) | Phase 2 (Tenant) |
+| Access Type | Phase 1 (System) | Phase 2 (Tenant dynamic policies) |
 |-------------|------------------|------------------|
-| **LLM - Proxy Mode** | ✅ | ✅ |
+| **LLM - Proxy Mode** | ✅ | ❌ (v11: tenant dynamic policies author no verdict; the anchored engine decides the request from the shipped set and the organization's typed policy document) |
 | **LLM - Gateway Mode** | ✅ | ❌ (you handle LLM directly) |
-| **MCP Connectors** | ✅ | ✅ (when `MCP_DYNAMIC_POLICIES_ENABLED=true`) |
+| **MCP Connectors** | ✅ | ❌ (v11: the anchored engine decides MCP requests from the organization's typed policy document) |
 
-> **Note:** MCP connectors are evaluated independently from LLM mode selection. You can use Gateway Mode for LLM calls (lowest latency) while still having full two-phase policy evaluation on MCP connector access. See `platform/agent/mcp_handler.go` for MCP policy flow.
+> **Note:** MCP connectors are evaluated independently from LLM mode selection. You can use Gateway Mode for LLM calls (lowest latency) while MCP connector access stays governed: in v11 the anchored decision engine (ADR-065) decides it from the organization's typed policy document, and tenant dynamic policies no longer apply there (PRD v11 §1.2). See `platform/agent/mcp_handler.go` for MCP policy flow.
 
 ### Human-in-the-Loop Approvals (Evaluation+)
 
@@ -564,7 +564,7 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 | Component | File | Purpose |
 |-----------|------|---------|
 | Entry point | `run.go` | Service initialization |
-| Tenant policies | `db_dynamic_policies.go` | Condition-based rules, risk |
+| Dynamic condition matcher | `db_dynamic_policies.go`, `dynamic_fact_producer.go` | v11: a fact producer for the shipped corpus's dynamic controls; authors no verdict |
 | LLM routing | `llm/router.go` | Provider selection |
 | Planning engine | `planning_engine.go` | MAP |
 | WCP handlers | `workflow_control/` | Step gates, workflow lifecycle |

@@ -84,21 +84,6 @@ func TestPolicyNamesFromMatches_SkipsEmptyAndFirstWins(t *testing.T) {
 	}
 }
 
-func TestPolicyNamesFromDynamic(t *testing.T) {
-	m := policyNamesFromDynamic(&sharedpolicy.DynamicPolicyInfo{
-		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
-			{PolicyID: "dyn-1", PolicyName: "Rate limit"},
-			{PolicyID: "dyn-2"},
-		},
-	})
-	if len(m) != 1 || m["dyn-1"] != "Rate limit" {
-		t.Fatalf("dynamic names: %v", m)
-	}
-	if policyNamesFromDynamic(nil) != nil {
-		t.Fatalf("nil info must return nil")
-	}
-}
-
 func TestMergePolicyNames_DstWins(t *testing.T) {
 	dst := map[string]string{"a": "keep"}
 	got := mergePolicyNames(dst, map[string]string{"a": "lose", "b": "add"})

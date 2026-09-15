@@ -11,9 +11,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"axonflow/platform/decision/legacycompile"
-	"github.com/gorilla/mux"
 )
 
 // PolicySimulationHandler handles policy simulation and impact report endpoints.
@@ -79,8 +76,10 @@ func NewPolicySimulationHandler(engine interface {
 	}
 }
 
-// RegisterRoutes registers simulation endpoints.
-func (h *PolicySimulationHandler) RegisterRoutes(r *mux.Router) {
+// RegisterRoutes registers simulation endpoints on the stamped subrouter
+// registerLegacyPolicyRoutes builds: they are part of the v11 deprecated export
+// surface (PRD §1.11), and a legacyRouter is the only router that stamps it.
+func (h *PolicySimulationHandler) RegisterRoutes(r legacyRouter) {
 	r.HandleFunc("/api/v1/policies/simulate", h.SimulatePolicies).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/policies/impact-report", h.ImpactReport).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/policies/conflicts", h.DetectConflicts).Methods("POST", "OPTIONS")
@@ -203,7 +202,6 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 	}
 
 	// Evaluate
-	orchReq.ShadowPlane = legacycompile.PlanePolicySimulation // ADR-065 decision shadow (#3564)
 	result := h.engine.EvaluateDynamicPolicies(r.Context(), orchReq)
 	// Count only the policies visible to the CALLER's org. The raw
 	// ListActivePolicies cache is deployment-wide, so counting it leaked how

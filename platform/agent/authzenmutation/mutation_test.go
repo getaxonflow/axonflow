@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package authzenmutation holds the source-mutation proofs for the AuthZEN
 // surface's refusal guards.
 //

@@ -41,8 +41,8 @@ async function main(): Promise<void> {
   console.log();
 
   // Create AxonFlow client with OAuth2-style credentials
-  // Note: As of SDK v3.0.0 (ADR-028), use clientId/clientSecret for authentication.
-  // The Agent proxies orchestrator routes internally (ADR-026).
+  // Note: As of SDK v3.0.0 (ADR-027), use clientId/clientSecret for authentication.
+  // The Agent proxies orchestrator routes internally (ADR-024).
   const client = new AxonFlow({
     endpoint: getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
     clientId: getEnv("AXONFLOW_CLIENT_ID", "demo-tenant"),

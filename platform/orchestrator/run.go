@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -40,7 +32,6 @@ import (
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/node_enforcement"
-	"axonflow/platform/decision/legacycompile"
 	"axonflow/platform/orchestrator/cloudstorage"     // Cloud storage backends for audit exports (#589)
 	"axonflow/platform/orchestrator/compliancereport" // Unified compliance report facade (#3241) - Community stub or EE impl
 	"axonflow/platform/orchestrator/cost"             // Cost controls & budget management (#764)
@@ -59,6 +50,7 @@ import (
 	"axonflow/platform/orchestrator/ussecurities" // US securities module (ADR-064) - Community stub or EE impl
 	"axonflow/platform/orchestrator/webhooks"
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
+	"axonflow/platform/shared/authoringvocabulary"
 	"axonflow/platform/shared/deploymode"
 	"axonflow/platform/shared/edition"
 	"axonflow/platform/shared/execution" // Unified execution tracking (#1075)
@@ -67,6 +59,8 @@ import (
 	sharedidentity "axonflow/platform/shared/identity" // Canonical identity key + role model (#2922)
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/policypath"
+	"axonflow/platform/shared/retiredenv"
 	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 	"axonflow/platform/shared/tenantscope"
@@ -124,10 +118,10 @@ var (
 	heartbeatService        *node_enforcement.HeartbeatService // Node enforcement
 	nodeMonitor             *node_enforcement.NodeMonitor      // Node enforcement
 	policyAPIHandler        *PolicyAPIHandler                  // Policy CRUD API handler
-	dynamicPolicyAPIHandler *DynamicPolicyAPIHandler           // Dynamic Policy API handler (ADR-026)
+	dynamicPolicyAPIHandler *DynamicPolicyAPIHandler           // Dynamic Policy API handler (ADR-024)
 	templateAPIHandler      *TemplateAPIHandler                // Policy Templates API handler
-	llmProviderRouter       *llm.UnifiedRouter                 // Unified LLM provider router (ADR-007, ADR-022)
-	llmRouterWrapper        LLMRouterInterface                 // Interface for router compatibility (ADR-022 Phase 6)
+	llmProviderRouter       *llm.UnifiedRouter                 // Unified LLM provider router (ADR-006, ADR-021)
+	llmRouterWrapper        LLMRouterInterface                 // Interface for router compatibility (ADR-021 Phase 6)
 	llmProviderAPIHandler   *LLMProviderAPIHandler             // LLM Provider REST API handler
 
 	// Enterprise Compliance Modules
@@ -301,7 +295,7 @@ var (
 	// never a policy ID, tenant ID, field name, or operator value, so this
 	// stays low-cardinality by construction. plane identifies the call site:
 	// "memory" (DynamicPolicyEngine), "database" (DatabaseDynamicPolicyEngine),
-	// "mcp" (MCPDynamicPolicyHandler), or "policy_test" (PolicyService.TestPolicy).
+	// "mcp" (the retired MCP dynamic-policy handler), or "policy_test" (PolicyService.TestPolicy).
 	// See condition_unevaluable_metrics.go for the adapter that binds plane
 	// per call site and satisfies sharedpolicy.UnevaluableRecorder — that
 	// indirection is what keeps platform/shared/policy free of a Prometheus
@@ -338,20 +332,11 @@ type OrchestratorRequest struct {
 	Media       []MediaContentRequest  `json:"media,omitempty"` // Optional media (images) for multimodal requests
 	Timestamp   time.Time              `json:"timestamp"`
 
-	// ShadowPlane names the ADR-065 enforcement plane this evaluation belongs
-	// to (#3564, session v10.3-A). Nothing on the enforcement path reads it;
-	// the only consumer is the decision shadow's observation site inside
-	// EvaluateDynamicPolicies, which uses it to attribute a comparison to the
-	// surface it came from - gate 18 is stated per plane.
-	//
-	// IT IS `json:"-"` AND THAT IS LOAD-BEARING, NOT TIDINESS. Every other
-	// field on this struct is deserialized from the request body, and a
-	// caller able to set this one could attribute its own traffic to a plane
-	// it never touched - moving a denominator an operator reads to decide
-	// whether that plane may cut over, and doing it from outside the trust
-	// boundary. It is set by the five server-side call sites and by nothing
-	// else, which TestDynamicShadowPlaneIsNotCallerSuppliable pins.
-	ShadowPlane legacycompile.Plane `json:"-"`
+	// mediaAnalysis is the media analysis this process wrote for the request
+	// (#4254, R3 A-H2), read by the fact producer. Unexported, so a caller can
+	// never set it: context.media_analysis is the caller's to send, and a
+	// caller's claim is not a detector finding.
+	mediaAnalysis map[string]interface{}
 }
 
 // MediaContentRequest represents a media item in the API request.
@@ -390,6 +375,15 @@ type OrchestratorResponse struct {
 	ProviderInfo   *ProviderInfo           `json:"provider_info"`
 	MediaAnalysis  *MediaAnalysisResponse  `json:"media_analysis,omitempty"` // Results of media governance analysis
 	ProcessingTime string                  `json:"processing_time"`
+	// Engine, SubjectType, PolicyBundle and Verdict name the response plane's
+	// decision on an LLM response: the engine that authored it (always
+	// anchored), the type of principal it was decided for, the digest of the
+	// policy set that decided, and the verdict (allowed, redacted or blocked).
+	// Omitted on an answer no response-plane decision covers.
+	Engine       string `json:"engine,omitempty"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	PolicyBundle string `json:"policy_bundle,omitempty"`
+	Verdict      string `json:"verdict,omitempty"`
 }
 
 // MediaAnalysisResponse contains aggregated media analysis results in the API response.
@@ -464,20 +458,20 @@ type PolicyEvaluationResult struct {
 	SegmentsResolved bool `json:"segments_resolved,omitempty"`
 
 	// Structured per-policy detail (ADR-044 / ADR-043). Mirror of AppliedPolicies
-	// with risk and override semantics so downstream code (WCP adapter, explain
-	// handler) can decide overridability without re-querying policies.
+	// with risk and override metadata, which the WCP step gate projects onto its
+	// per-policy matches without re-querying policies.
 	AppliedPoliciesDetail []AppliedPolicyDetail `json:"applied_policies_detail,omitempty"`
-
-	// Override enforcement (ADR-044): when a session override flipped a deny
-	// into an allow, these fields record which override was applied.
-	OverrideApplied bool   `json:"override_applied,omitempty"`
-	OverrideID      string `json:"override_id,omitempty"`
-	OverrideReason  string `json:"override_reason,omitempty"`
 
 	// LLM Routing overrides from dynamic policies
 	PreferredProvider string   `json:"preferred_provider,omitempty"` // Preferred LLM provider
 	AllowedProviders  []string `json:"allowed_providers,omitempty"`  // Strict list for compliance (failover only within this list)
 	RoutingReason     string   `json:"routing_reason,omitempty"`     // Why routing was changed
+
+	// hold is the typed approval a challenge held a workflow step with (#4254).
+	// It is unexported, so it is never on the wire: it rides from the step
+	// gate's seam to the enqueue that writes the approval queue row, and
+	// nowhere else.
+	hold *stepGateHold
 }
 
 // AppliedPolicyDetail is the structured per-policy match carried inside
@@ -499,9 +493,8 @@ type AppliedPolicyDetail struct {
 	// matched policy targeted. It is NOT read as an override-eligibility
 	// signal anywhere: a segment-scoped policy uses the same AllowOverride
 	// contract as a tenant policy (own allow_override column, not
-	// critical-risk), enforced identically by ApplyOverrideToResult
-	// (override_enforcement.go). Do not reintroduce a SegmentID check into
-	// that function's eligibility logic — see its doc comment for why.
+	// critical-risk). The session override that read it was deleted in v11
+	// (#4252): the step gate reads no session override.
 	SegmentID string `json:"segment_id,omitempty"`
 }
 
@@ -633,13 +626,12 @@ func min(a, b int) int {
 func Run() {
 	log.Println("Starting AxonFlow Orchestrator...")
 
-	// Resolve and log the active governance profile at orchestrator startup.
-	// This mirrors the agent startup banner so operators can see what posture
-	// BOTH components are running under. The orchestrator consults the same
-	// detection engine for response-side PII/SQLi scoring, so the profile
-	// must be visible here too. (Review finding M2.)
-	profile := agent.ResolveProfile()
-	agent.LogProfileBanner("orchestrator", profile, agent.DetectionConfigFromEnv())
+	// The removed detection-posture variables (#3961), reported here as well as
+	// in the agent: the orchestrator's response plane read PII_ACTION directly,
+	// so a deployment that set it on this process must learn here that it no
+	// longer decides anything. One WARN line and one
+	// axonflow_ignored_posture_env_total increment per variable still set.
+	agent.ReportIgnoredPostureEnv("orchestrator")
 
 	// Initialize components
 	initializeComponents()
@@ -651,13 +643,6 @@ func Run() {
 	if nodeMonitor != nil {
 		defer nodeMonitor.Stop()
 	}
-	// Cleanup Redis for policy enforcement on shutdown
-	defer func() {
-		if err := ClosePolicyRedis(); err != nil {
-			log.Printf("Error closing Redis: %v", err)
-		}
-	}()
-
 	// Setup router
 	r := mux.NewRouter()
 
@@ -680,6 +665,11 @@ func Run() {
 	// non-admin callers (it is the budget-enforcement decision plane).
 	r.Use(enforceDomainReadAuthority)
 
+	// #4254 (R3 A-H1): install the credential subject the workflow step gate
+	// decides for on every request, from the headers the agent Set on its hop
+	// (wcp_enforcing_seam.go, installWCPPlaneSubject).
+	r.Use(installWCPPlaneSubject)
+
 	// CORS middleware.
 	// #3096: the origin policy is resolved from configuration rather than
 	// hardcoded to `"*"` + AllowCredentials. See resolveCORSOptions (cors.go).
@@ -698,10 +688,6 @@ func Run() {
 	// Provider management
 	r.HandleFunc("/api/v1/providers/status", providerStatusHandler).Methods("GET")
 	r.HandleFunc("/api/v1/providers/weights", updateProviderWeightsHandler).Methods("PUT")
-
-	// Dynamic policy endpoints
-	r.HandleFunc("/api/v1/policies/dynamic", listDynamicPoliciesHandler).Methods("GET")
-	r.HandleFunc("/api/v1/policies/test", testPolicyHandler).Methods("POST")
 
 	// Metrics and monitoring
 	r.HandleFunc("/api/v1/metrics", metricsHandler).Methods("GET")
@@ -733,10 +719,7 @@ func Run() {
 	r.HandleFunc("/api/v1/audit/{id}", auditGetByIDHandler).Methods("GET")
 
 	// Policy overrides (ADR-044) + explainability (ADR-043) — Plugin Batch 1
-	r.HandleFunc("/api/v1/overrides", createOverrideHandler).Methods("POST")
-	r.HandleFunc("/api/v1/overrides", listOverridesHandler).Methods("GET")
-	r.HandleFunc("/api/v1/overrides/{id}", getOverrideHandler).Methods("GET")
-	r.HandleFunc("/api/v1/overrides/{id}", revokeOverrideHandler).Methods("DELETE")
+	registerOverrideRoutes(r)
 	r.HandleFunc("/api/v1/decisions/{id}/explain", explainDecisionHandler).Methods("GET")
 	// V1.1 decision-list companion (issue #1982). Lookback window + page
 	// size are tier-gated (see decisions_list_handler.go); cap-hit returns
@@ -784,47 +767,43 @@ func Run() {
 	r.HandleFunc("/api/v1/connectors/{id}/uninstall", uninstallConnectorHandler).Methods("DELETE")
 	r.HandleFunc("/api/v1/connectors/{id}/health", connectorHealthCheckHandler).Methods("GET")
 
-	// Policy Management CRUD API (Track A - Policy Enforcement)
-	// These endpoints use http.ServeMux pattern - adapt for gorilla/mux
-	r.HandleFunc("/api/v1/policies", policyAPIListCreateHandler).Methods("GET", "POST", "OPTIONS")
-	r.HandleFunc("/api/v1/policies/import", policyAPIImportHandler).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/policies/export", policyAPIExportHandler).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/policies/{id}", policyAPIGetUpdateDeleteHandler).Methods("GET", "PUT", "DELETE", "OPTIONS")
-	r.HandleFunc("/api/v1/policies/{id}/test", policyAPITestHandler).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/policies/{id}/versions", policyAPIVersionsHandler).Methods("GET", "OPTIONS")
-	// NOTE: per-policy override is system/static-only (per the #2753 override
-	// decision; #2768 closed the dynamic variant). Overrides are handled by the
-	// agent static-policy override path; dynamic/tenant policies use edit/delete.
+	// The legacy policy surface - /api/v1/policies*, /api/v1/templates*, the
+	// tenant-policy family in both #1431 spellings, and simulation - is the v11
+	// deprecated export surface (PRD §1.11): reads served, writes 409, every
+	// response stamped. One registrar owns all of it; see
+	// registerLegacyPolicyRoutes for why a legacy route registered anywhere
+	// else is refused.
+	registerLegacyPolicyRoutes(r, dynamicPolicyAPIHandler, policySimulationHandler)
 
-	// Policy Templates API (Track D - Policy Templates)
-	r.HandleFunc("/api/v1/templates", templateAPIListHandler).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/templates/categories", templateAPICategoriesHandler).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/templates/stats", templateAPIStatsHandler).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/templates/{id}", templateAPIGetHandler).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/templates/{id}/apply", templateAPIApplyHandler).Methods("POST", "OPTIONS")
-
-	// Tenant Policy API (ADR-026: Single Entry Point Architecture).
-	// Registered under BOTH /api/v1/tenant-policies (#1431, current) and
-	// /api/v1/dynamic-policies (deprecated, still served).
+	// Community typed-authoring write route (#3907, ADR-065).
 	//
-	// RegisterRoutes logs both prefixes itself. It used to be followed by a
-	// second log line naming only the deprecated one, which meant an operator
-	// grepping the boot log for the successor found nothing and would conclude
-	// it had not been registered.
-	if dynamicPolicyAPIHandler != nil {
-		dynamicPolicyAPIHandler.RegisterRoutes(r)
-	}
+	// Registered UNCONDITIONALLY and on every edition, unlike the enterprise
+	// portal's copy. Two reasons, and the second is the point of the issue:
+	// the handler answers its own availability (503 naming the catalog
+	// variable) so an operator who has not configured a vocabulary learns that
+	// from the route rather than from its absence; and typed authoring is
+	// `community_core` in ADR-066, so a build tag or a tier gate HERE would be
+	// an edition boundary drawn at the transport - which is exactly the shape
+	// #3906 withdrew. The boundary is carried by authoring.Profile at
+	// publication, per document, on the constructs it uses.
+	//
+	// usageDB is passed so a publication is DURABLE (#3975). It is live here:
+	// initializeComponents() above opened it, and nil only where DATABASE_URL
+	// is unset or that connection failed - in which case the handler keeps the
+	// in-process store and says so on /edition rather than pretending.
+	//
+	// THE DEPLOYMENT ACCESSOR IS A FUNCTION, AND THE VOCABULARY RESOLVES ON
+	// FIRST USE (#3895). Whether this process wired a SCIM directory decides
+	// whether the built-in realms carry a group graph in the authoring catalog.
+	// initializeComponents() above has already settled that, so a value would be
+	// correct today; passing the ACCESSOR is what keeps it correct if either
+	// this line or that one ever moves.
+	typedAuthoringRouteHandler := NewTypedAuthoringRouteHandler(usageDB, func() authoringvocabulary.CatalogDeployment {
+		return orchestratorRealmDeployment
+	})
+	typedAuthoringRouteHandler.RegisterRoutes(r)
 
-	// MCP Dynamic Policy Evaluation Endpoint (Issue #968)
-	// Called by Agent for dynamic policy evaluation before MCP queries
-	// Works with both in-memory and database-backed policy engines
-	if engine, ok := dynamicPolicyEngine.(MCPPolicyEngine); ok {
-		mcpDynamicPolicyHandler := NewMCPDynamicPolicyHandler(engine)
-		mcpDynamicPolicyHandler.RegisterRoutes(r)
-		log.Println("MCP Dynamic Policy API routes registered (/api/v1/mcp/evaluate-policies)")
-	}
-
-	// LLM Provider Management API (ADR-007 - Pluggable LLM Providers)
+	// LLM Provider Management API (ADR-006 - Pluggable LLM Providers)
 	// Register routes only if bootstrap was successful
 	if llmProviderAPIHandler != nil {
 		llmProviderAPIHandler.RegisterRoutesWithMux(r)
@@ -1016,12 +995,6 @@ func Run() {
 	if unifiedExecutionHandler != nil {
 		unifiedExecutionHandler.RegisterRoutes(r)
 		log.Println("Unified Execution API routes registered (/api/v1/unified/executions/...)")
-	}
-
-	// Policy Simulation (Evaluation tier+)
-	if policySimulationHandler != nil {
-		policySimulationHandler.RegisterRoutes(r)
-		log.Println("Policy Simulation API routes registered (/api/v1/policies/simulate, /api/v1/policies/impact-report)")
 	}
 
 	// Evidence Export (Evaluation tier+)
@@ -1236,15 +1209,6 @@ func initializeComponents() {
 		log.Println("⚠️  Usage metering disabled - DATABASE_URL required")
 	}
 
-	// Initialize Redis for distributed policy enforcement (rate limiting, budget tracking)
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL != "" {
-		if err := InitPolicyRedis(redisURL); err != nil {
-			log.Printf("⚠️  Failed to initialize Redis for policy enforcement: %v", err)
-			log.Println("Falling back to in-memory policy storage")
-		}
-	}
-
 	// Wire idempotency dedup for /api/v1/audit/tool-call (#2420). Opens an
 	// admin pool for the cross-tenant background sweep; appDB is the same
 	// pool the audit handler already uses. nil-tolerant if admin open
@@ -1345,11 +1309,11 @@ func initializeComponents() {
 		}
 	}
 
-	// Initialize RuntimeConfigService for ADR-007 three-tier config
+	// Initialize RuntimeConfigService for ADR-006 three-tier config
 	// Priority: Database > Config File > Env Vars
 	selfHosted := os.Getenv("AXONFLOW_SELF_HOSTED") == "true"
 	InitRuntimeConfigService(usageDB, selfHosted)
-	log.Println("RuntimeConfigService initialized (ADR-007 compliant)")
+	log.Println("RuntimeConfigService initialized (ADR-006 compliant)")
 
 	// Wire config file loader for Priority 2 (Community config file support)
 	// Checks AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE env vars
@@ -1391,20 +1355,15 @@ func initializeComponents() {
 	// registerFleetValidators wiring — never lazy-on-first-request.
 	initSegmentPolicyGate(usageDB)
 
-	// ADR-065 identity compatibility adapters (#3550). After
-	// initSegmentPolicyGate, because that is what establishes whether a
-	// SCIM-backed directory exists in this process, and DirectorySourceNone is
-	// a positive declaration that one does not.
-	initIdentityCompat()
+	// v11 retired the decision mode and its shadow observer (PRD v11 §1.1,
+	// §5.1): a process whose environment still sets one of its variables
+	// refuses to start, naming it, rather than running in a posture its own
+	// configuration misdescribes.
+	if err := retiredenv.Refuse(); err != nil {
+		log.Fatalf("❌ %v", err)
+	}
 
-	// ADR-065 per-plane decision shadow (#3564). AFTER initIdentityCompat, for
-	// the same reason the agent's copy is: both read the same
-	// identity_org_settings row, and the two per-organization modes must come
-	// from one store on one TTL or an operator cannot say which instant either
-	// was true at.
-	initDecisionShadow(usageDB)
-
-	// Initialize LLM Router context (ADR-007)
+	// Initialize LLM Router context (ADR-006)
 	ctx := context.Background()
 	tenantID := os.Getenv("ORG_ID") // Use org ID as tenant ID
 	if tenantID == "" {
@@ -1420,9 +1379,9 @@ func initializeComponents() {
 	tierChecker = NewEnvLicenseChecker()
 	log.Printf("License tier: %s", tierChecker.Tier())
 
-	// Initialize pluggable LLM provider system (ADR-007 Phase 2, ADR-022)
+	// Initialize pluggable LLM provider system (ADR-006 Phase 2, ADR-021)
 	// This uses the factory pattern from llm/factories.go and bootstrap from llm/bootstrap.go
-	log.Println("Initializing pluggable LLM provider system (ADR-007 Phase 2)...")
+	log.Println("Initializing pluggable LLM provider system (ADR-006 Phase 2)...")
 	// Create registry with tier-aware provider count limit
 	llmRegistry := llm.NewRegistry(llm.WithMaxProviders(tierChecker.MaxLLMProviders()))
 	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
@@ -1446,7 +1405,7 @@ func initializeComponents() {
 		// Note: We use the registry from bootstrapResult directly instead of calling
 		// QuickBootstrap() which would bootstrap providers again.
 		//
-		// Use routing config from environment variables (ADR-021: LLM Provider Routing Control)
+		// Use routing config from environment variables (ADR-020: LLM Provider Routing Control)
 		routingConfig := LoadRoutingConfig()
 		weights := make(map[string]float64)
 		if len(routingConfig.ProviderWeights) > 0 {
@@ -1465,7 +1424,7 @@ func initializeComponents() {
 			}
 		}
 
-		// Create unified router that bridges legacy and new APIs (ADR-022: Router Consolidation)
+		// Create unified router that bridges legacy and new APIs (ADR-021: Router Consolidation)
 		// Convert orchestrator.RoutingStrategy to llm.RoutingStrategy
 		llmProviderRouter = llm.NewUnifiedRouter(llm.UnifiedRouterConfig{
 			Registry: bootstrapResult.Registry,
@@ -1477,14 +1436,14 @@ func initializeComponents() {
 		})
 		log.Printf("[LLM Router] Unified router initialized with strategy: %s", routingConfig.Strategy)
 
-		// Create wrapper for LLMRouterInterface compatibility (ADR-022 Phase 6)
+		// Create wrapper for LLMRouterInterface compatibility (ADR-021 Phase 6)
 		llmRouterWrapper = NewUnifiedRouterWrapper(llmProviderRouter)
 		log.Println("[LLM Router] Interface wrapper created for legacy compatibility")
 
 		// Create API handler using the underlying Router
 		llmProviderAPIHandler = NewLLMProviderAPIHandlerWithRouter(llmProviderRouter.Router(), log.Default())
 		if llmProviderAPIHandler != nil {
-			log.Println("✅ LLM Provider API handler initialized (ADR-007 Phase 2)")
+			log.Println("✅ LLM Provider API handler initialized (ADR-006 Phase 2)")
 		} else {
 			log.Println("⚠️  Failed to create LLM Provider API handler (router registry issue)")
 		}
@@ -1498,8 +1457,12 @@ func initializeComponents() {
 		log.Println("Amadeus API Client initialized (not configured - will use mock data)")
 	}
 
-	// Initialize shared policy engine in orchestrator process (required for response PII detection).
-	// The agent has its own engine — the orchestrator needs its own since they're separate processes.
+	// Initialize the shared policy engine in the orchestrator process. On the
+	// response plane it is the DETECTOR layer and the redactor: its evaluation
+	// produces the facts the anchored engine decides from, and RedactDecided
+	// discharges a field_redact. It authors no verdict (PRD v11 §1.2). The agent
+	// has its own instance; the orchestrator needs its own since they're
+	// separate processes.
 	if usageDB != nil {
 		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(
 			usageDB, sharedpolicy.DefaultEngineConfig(), nil))
@@ -1507,18 +1470,20 @@ func initializeComponents() {
 
 		// Wire the orchestrator's OWN per-org detection-action override cache
 		// (#2612). Separate binary → separate cache instance + DB handle from the
-		// agent's. Makes the response plane honor a per-org redact/block/warn/log
-		// posture instead of only the deployment-global config. Fail-safe to global.
+		// agent's. Makes the response plane honor an organization's recorded redact/block/warn/log
+		// override. Fail-safe to no override: the stored policy actions decide.
 		InitDetectionOverrides(usageDB)
 	}
 
-	// Initialize Response Processor (uses shared engine if available, else legacy regexes)
+	// Wire the anchored enforcer every orchestrator enforcing scope decides
+	// through (PRD v11 §1.1). It refuses to boot without a database or when the
+	// enforcer cannot be built (anchored_enforcement.go).
+	wireOrchestratorEnforcer(usageDB)
+
+	// Initialize the Response Processor. The anchored engine decides every LLM
+	// response (response_enforcing_seam.go), over the shared engine's facts.
 	responseProcessor = NewResponseProcessor()
-	if responseProcessor.IsUsingSharedEngine() {
-		log.Println("Response Processor initialized with shared policy engine (database-driven PII detection)")
-	} else {
-		log.Println("Response Processor initialized with legacy PII detection (shared engine not available)")
-	}
+	log.Println("Response Processor initialized: the anchored engine decides every LLM response")
 
 	// Initialize Audit Logger
 	auditLogger = NewAuditLogger(dbURL)
@@ -1740,6 +1705,9 @@ func initializeComponents() {
 		if rls3039AdminDB != nil {
 			policyRepo.SetCrossOrgDB(rls3039AdminDB)
 		}
+		// #3593: organization-root policy admissions ride the same pool the
+		// repository writes through.
+		initTierAdmission(usageDB)
 		// Issue #1082: Pass the policy engine as a PolicyEngineRefresher so the
 		// PolicyService can trigger immediate cache refresh after policy
 		// changes. #3319: dbEngine is the one engine constructed above (no
@@ -1750,9 +1718,9 @@ func initializeComponents() {
 		policyAPIHandler = NewPolicyAPIHandler(policyService)
 		log.Println("Policy CRUD API initialized ✅")
 
-		// Initialize Dynamic Policy API (ADR-026: Single Entry Point)
+		// Initialize Dynamic Policy API (ADR-024: Single Entry Point)
 		dynamicPolicyAPIHandler = NewDynamicPolicyAPIHandler(policyService)
-		log.Println("Dynamic Policy API initialized ✅ (ADR-026)")
+		log.Println("Dynamic Policy API initialized ✅ (ADR-024)")
 
 		// Initialize Policy Simulation + Conflict Detection (Evaluation tier+)
 		conflictService := NewPolicyConflictService(policyService)
@@ -1880,8 +1848,9 @@ func initializeComponents() {
 		workflowControlConfig := &workflow_control.ServiceConfig{
 			BaseURL: os.Getenv("PORTAL_BASE_URL"), // For generating approval URLs
 		}
-		// Create policy adapter to connect WCP to dynamic policy engine (Issue #1021)
-		wcpPolicyAdapter := NewWCPPolicyAdapter(dynamicPolicyEngine)
+		// The step gate's adapter (Issue #1021): it decides each step on the anchored
+		// engine (wcp_enforcing_seam.go, #4254).
+		wcpPolicyAdapter := NewWCPPolicyAdapter()
 
 		// Issue #1082: Wire WCP require_approval action to HITL queue (Enterprise only)
 		if err := InitializeWCPHITL(usageDB, wcpPolicyAdapter); err != nil {
@@ -2154,12 +2123,24 @@ func initializeComponents() {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+	// EVERY component is nil-checked, not four of five.
+	//
+	// /health is registered before the rest of initialization so a load
+	// balancer can probe a starting process - that is the whole reason the
+	// endpoint answers early - and four of these five globals were dereferenced
+	// unguarded, so a probe arriving in that window panicked the handler while
+	// `llm_router` alone was written defensively. The agent's /health has
+	// answered `status: starting` through the same window since it was written.
+	//
+	// A component that has not been constructed yet is reported false, which is
+	// the honest answer to "is it healthy": not "unknown", and certainly not a
+	// dropped connection.
 	components := map[string]bool{
-		"policy_engine":      dynamicPolicyEngine.IsHealthy(),
+		"policy_engine":      dynamicPolicyEngine != nil && dynamicPolicyEngine.IsHealthy(),
 		"llm_router":         llmRouterWrapper != nil && llmRouterWrapper.IsHealthy(),
-		"response_processor": responseProcessor.IsHealthy(),
-		"audit_logger":       auditLogger.IsHealthy(),
-		"workflow_engine":    workflowEngine.IsHealthy(),
+		"response_processor": responseProcessor != nil && responseProcessor.IsHealthy(),
+		"audit_logger":       auditLogger != nil && auditLogger.IsHealthy(),
+		"workflow_engine":    workflowEngine != nil && workflowEngine.IsHealthy(),
 	}
 
 	// Add Multi-Agent Planning components (v0.1)
@@ -2209,8 +2190,17 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	health := map[string]interface{}{
-		"status":               "healthy",
-		"service":              "axonflow-orchestrator",
+		"status":  "healthy",
+		"service": "axonflow-orchestrator",
+		// tier is the licence tier, and it is here because the agent's /health
+		// has always carried it while this one did not (#3901 §3) - so a client
+		// that probed the orchestrator port got an answer with a member missing,
+		// breaking the rule stated in the comment below THIS handler's own
+		// identity block. It is the licence tier vocabulary
+		// (community/evaluation/professional/enterprise), NOT the policy scope
+		// tier (system/organization/tenant) that GET /api/v1/policies?tier=
+		// takes; the two vocabularies share a name and nothing else.
+		"tier":                 orchestratorLicenseTier(),
 		"version":              getPlatformVersion(),
 		"timestamp":            time.Now().UTC(),
 		"components":           components,
@@ -2235,6 +2225,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	// `platform_deployment_mode`.
 	for k, v := range heartbeat.HealthIdentityMembers(edition.Current) {
 		health[k] = v
+	}
+	// Which scopes the anchored engine authors the verdict on in this process
+	// (PRD v11 §5.1), the member the agent's /health carries for its own.
+	if posture := orchestratorDecisionPosture(); posture != nil {
+		health["decision"] = posture
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2288,12 +2283,12 @@ type bodyTenancyClaim struct {
 //
 // # Why this is a hard 401 and not a plane split
 //
-// #3066 C3-4 (POST /api/v1/mcp/evaluate-policies) deliberately did NOT fail a
-// header-less caller closed, because that route has a real internal-service
-// plane — shared/policy.DynamicPolicyEvaluator calls it with the HMAC token,
-// no tenancy headers and its own validated tenant in the body — and
-// EvaluateWithGracefulDegradation refuses to absorb a 401/403, so a blanket
-// refusal there would have hard-blocked every governed MCP tool call.
+// #3066 C3-4 (the MCP policy-evaluation route, removed in v11) deliberately did NOT fail a
+// header-less caller closed, because that route had a real internal-service
+// plane — the agent's MCP dynamic-policy evaluator, deleted in v11, called it
+// with the HMAC token, no tenancy headers and its own validated tenant in the
+// body, and refused to absorb a 401/403 — so a blanket refusal there would
+// have hard-blocked every governed MCP tool call.
 //
 // The four handlers here have no such caller. The census (see the PR body):
 //
@@ -2321,7 +2316,7 @@ type bodyTenancyClaim struct {
 // without a bindable scope therefore did not traverse an authenticating hop,
 // and the only safe answer is to refuse it.
 //
-// carriesStampedTenancy (mcp_dynamic_policy_handler.go, #3066 C3-4) is reused
+// carriesStampedTenancy (below, from #3066 C3-4) is used
 // here for LOG FIDELITY ONLY, not to select a plane: both branches return the
 // same 401. The distinction is worth keeping in the log because the two causes
 // need different operator responses — "nothing stamped this request" points at
@@ -2346,6 +2341,23 @@ func resolveGovernedScope(r *http.Request, endpoint string) (tenantscope.Scope, 
 		return tenantscope.Scope{}, http.StatusUnauthorized, refusal
 	}
 	return scope, 0, ""
+}
+
+// carriesStampedTenancy reports whether this request traversed a hop that
+// stamps the caller's AUTHENTICATED tenancy onto the request headers.
+//
+// It tests PRESENCE, not emptiness, and that distinction is the whole point.
+// platform/agent/proxy.go Sets, never Adds, X-Tenant-ID and X-Org-ID from the
+// validated credential on every proxied route, so on that plane the headers are
+// present even when the credential resolved an empty tenancy. Reading presence
+// keeps a stamped-but-empty tenancy apart from an unstamped request in
+// resolveGovernedScope's log.
+//
+// Either header alone is enough: the gateway sets both together, so a request
+// carrying exactly one did not come from it.
+func carriesStampedTenancy(r *http.Request) bool {
+	return len(r.Header.Values(tenantscope.HeaderTenantID)) > 0 ||
+		len(r.Header.Values(tenantscope.HeaderOrgID)) > 0
 }
 
 // authorizeBodyTenancy refuses a body-borne tenancy that names a DIFFERENT
@@ -2522,8 +2534,7 @@ func logDeploymentOrgDrift(orgID string) {
 // {user.role equals X} condition, one of which ships as a default in
 // policy_defaults.go and ADDS risk when it matches. So an absent actor is
 // fail-closed for allowlist-shaped conditions and fail-OPEN for the
-// deny-or-escalate-on-role shape. That is exactly why observeCompatPrincipal
-// records and does not clear.
+// deny-or-escalate-on-role shape.
 func applyAuthoritativePrincipal(r *http.Request, u *UserContext) {
 	if u == nil {
 		return
@@ -2533,16 +2544,6 @@ func applyAuthoritativePrincipal(r *http.Request, u *UserContext) {
 	u.ID = 0
 	u.Region = ""
 	u.Permissions = nil
-
-	// ADR-065 identity compatibility adapter (#3550). It runs INSIDE this
-	// function, after the binding it is about, so every plane that binds a
-	// principal through here is covered and none of them has a flag to
-	// consult. Under the default mode (off) it returns before reading a clock.
-	//
-	// It RECORDS and does not act: see observeCompatPrincipal for why clearing
-	// the actor is a widening on this plane rather than the fail-closed answer
-	// it looks like, and where this credential is actually enforced.
-	observeCompatPrincipal(r, u, r.Header.Get("X-Org-ID"))
 }
 
 func processRequestHandler(w http.ResponseWriter, r *http.Request) {
@@ -2712,16 +2713,16 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			delete(mediaCtx, "_pii_set") // Remove temporary dedup set
 			req.Context["media_analysis"] = mediaCtx
+			req.mediaAnalysis = mediaCtx
 			log.Printf("[MEDIA] Analysis complete for request %s: %d item(s) analyzed", logutil.Sanitize(req.RequestID), len(results))
 		}
 	}
 
-	// 1. Evaluate dynamic policies
+	// 1. The anchored engine decides the request, and the rows that apply
+	// carry its routing hints (route_request_enforcing_seam.go, #4254).
 	policyStartTime := time.Now()
-	// ADR-065 decision shadow (#3564): name the plane this evaluation is for.
-	// Server-set; ShadowPlane is json:"-" precisely so a caller cannot.
-	req.ShadowPlane = legacycompile.PlaneWCP
-	policyResult := dynamicPolicyEngine.EvaluateDynamicPolicies(ctx, req)
+	decision := decideRouteRequest(ctx, r.Header, req, processRouteAction)
+	policyResult := decision.result
 	policyEvalTime := time.Since(policyStartTime)
 
 	// Record policy evaluation metric
@@ -2760,7 +2761,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !policyResult.Allowed {
 		// Log blocked request
-		auditLogger.LogBlockedRequest(ctx, req, policyResult)
+		auditLogger.LogBlockedRequest(ctx, req, policyResult, decision.anchoredDecision())
 
 		// Record blocked request metrics
 		promRequestsTotal.WithLabelValues("blocked").Inc()
@@ -2776,9 +2777,13 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		response := OrchestratorResponse{
 			RequestID:      req.RequestID,
 			Success:        false,
-			Error:          "Request blocked by dynamic policy",
+			Error:          "Request blocked by policy",
 			PolicyInfo:     policyResult,
 			ProcessingTime: time.Since(startTime).String(),
+			Engine:         routeRequestEngine,
+			SubjectType:    decision.subjectType,
+			PolicyBundle:   decision.policyBundle,
+			Verdict:        routeRequestVerdictBlocked,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -2899,7 +2904,9 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Record successful LLM call
 	promLLMCalls.WithLabelValues(providerInfo.Provider, "success").Inc()
 
-	// 3. Process response (PII detection, redaction, etc.)
+	// 3. The response plane: the anchored engine decides the LLM response for
+	// the client credential the agent forwarded (response_enforcing_seam.go).
+	ctx = withResponsePlaneSeam(ctx, req.RequestID, headerCredentialSubject(r.Header))
 	processedResponse, redactionInfo := responseProcessor.ProcessResponse(ctx, req.User, llmResponse)
 
 	// Canonical response-plane audit (#2626). The verdict carried by
@@ -2935,6 +2942,10 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Data:           processedResponse,
 			PolicyInfo:     policyResult,
 			ProcessingTime: time.Since(startTime).String(),
+			Engine:         redactionInfo.Engine,
+			SubjectType:    redactionInfo.SubjectType,
+			PolicyBundle:   redactionInfo.PolicyBundle,
+			Verdict:        redactionInfo.Verdict,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -2979,6 +2990,10 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		ProviderInfo:   providerInfo,
 		MediaAnalysis:  mediaAnalysisResp,
 		ProcessingTime: time.Since(startTime).String(),
+		Engine:         redactionInfo.Engine,
+		SubjectType:    redactionInfo.SubjectType,
+		PolicyBundle:   redactionInfo.PolicyBundle,
+		Verdict:        redactionInfo.Verdict,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3182,7 +3197,6 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Evaluate policies
-	req.ShadowPlane = legacycompile.PlanePolicyTest // ADR-065 decision shadow (#3564)
 	result := dynamicPolicyEngine.EvaluateDynamicPolicies(r.Context(), req)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4355,6 +4369,20 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #4254: every step this workflow runs is presented to the anchored engine,
+	// and a conditional step's branch steps are not. Refused here, before any
+	// step executes, rather than letting the branches run undecided.
+	if err := refuseUnpresentableSteps(req.Workflow.Spec.Steps); err != nil {
+		recordUngovernablePlan(r.Context(), OrchestratorRequest{
+			RequestID:   req.Workflow.Metadata.Name,
+			RequestType: "workflow_execute",
+			User:        req.User,
+			Client:      ClientContext{ID: r.Header.Get("X-Client-ID"), OrgID: req.User.OrgID, TenantID: req.User.TenantID},
+		}, err)
+		sendErrorResponse(w, "Workflow cannot be governed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// #3066 C3-6 write-side guard. req.User is about to become the tenancy on
 	// every execution / workflow_step / checkpoint row this call creates, so
 	// assert at the boundary that creates them, not only at the one that
@@ -4370,7 +4398,10 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 
 	if hitlEnabled && hitlWorkflowEngine != nil {
 		// HITL-aware execution with pause/resume support
-		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(r.Context(), req.Workflow, req.Input, req.User)
+		// #4254: every step of this execution is decided for the credential the
+		// agent authenticated (map_enforcing_seam.go).
+		mapCtx := withMAPPlaneSubject(r.Context(), headerCredentialSubject(r.Header))
+		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(mapCtx, req.Workflow, req.Input, req.User)
 		if hitlErr != nil {
 			// Check if this is a pause for approval (not an error)
 			if hitlExec != nil && hitlExec.Status == StatusPaused {
@@ -4633,6 +4664,13 @@ type PlanResponse struct {
 	Metadata            PlanMetadata            `json:"metadata"`
 	Error               string                  `json:"error,omitempty"`
 	PolicyInfo          *PolicyEvaluationResult `json:"policy_info,omitempty"` // Policy evaluation result (Issue #1020)
+	// Engine, SubjectType, PolicyBundle and Verdict name how a refused plan was
+	// decided, the members OrchestratorResponse carries on /api/v1/process (PRD
+	// v11 §5.7). Set on the policy refusal only.
+	Engine       string `json:"engine,omitempty"`
+	SubjectType  string `json:"subject_type,omitempty"`
+	PolicyBundle string `json:"policy_bundle,omitempty"`
+	Verdict      string `json:"verdict,omitempty"`
 }
 
 // PlanMetadata holds metadata about plan execution
@@ -5033,8 +5071,11 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	policyStartTime := time.Now()
-	policyReq.ShadowPlane = legacycompile.PlaneWCP // ADR-065 decision shadow (#3564)
-	policyResult := dynamicPolicyEngine.EvaluateDynamicPolicies(r.Context(), policyReq)
+	// The anchored engine decides the plan (route_request_enforcing_seam.go,
+	// #4254). The 403 below keeps its text and carries the engine envelope
+	// /api/v1/process carries (PRD v11 §5.7).
+	planDecision := decideRouteRequest(r.Context(), r.Header, policyReq, planExecuteRouteAction)
+	policyResult := planDecision.result
 	policyEvalTime := time.Since(policyStartTime)
 
 	log.Printf("[ExecutePlan] Policy evaluation completed in %v: allowed=%t, policies=%v",
@@ -5047,7 +5088,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if !policyResult.Allowed {
 		// Log blocked request
 		log.Printf("[ExecutePlan] BLOCKED: Plan %s blocked by policy: %v", logutil.Sanitize(planID), policyResult.AppliedPolicies)
-		auditLogger.LogBlockedRequest(r.Context(), policyReq, policyResult)
+		auditLogger.LogBlockedRequest(r.Context(), policyReq, policyResult, planDecision.anchoredDecision())
 
 		// Mark plan as failed due to policy block
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Blocked by policy: "+strings.Join(policyResult.AppliedPolicies, ", "))
@@ -5064,10 +5105,14 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Return 403 Forbidden with policy details
 		response := PlanResponse{
-			Success:    false,
-			PlanID:     planID,
-			Error:      "Policy blocked MAP execution",
-			PolicyInfo: policyResult,
+			Success:      false,
+			PlanID:       planID,
+			Error:        "Policy blocked MAP execution",
+			PolicyInfo:   policyResult,
+			Engine:       routeRequestEngine,
+			SubjectType:  planDecision.subjectType,
+			PolicyBundle: planDecision.policyBundle,
+			Verdict:      routeRequestVerdictBlocked,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -5091,6 +5136,20 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #4254: every step this plan runs is presented to the anchored engine, and
+	// a conditional step's branch steps are not. Refused here, before any step
+	// executes, on every execution mode this handler dispatches to.
+	if err := refuseUnpresentableSteps(workflow.Spec.Steps); err != nil {
+		log.Printf("[ExecutePlan] Plan %s cannot be governed: %v", logutil.Sanitize(planID), err)
+		recordUngovernablePlan(r.Context(), policyReq, err)
+		_ = planService.MarkPlanFailed(r.Context(), planID, "Plan cannot be governed: "+err.Error())
+		if mapExecutionTracker != nil && unifiedExecID != "" {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Plan cannot be governed")
+		}
+		sendErrorResponse(w, "Plan cannot be governed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Step 3: Execute workflow (with parallel support)
 	ctx, cancel := context.WithTimeout(r.Context(), planExecutionTimeout(len(workflow.Spec.Steps)))
 	defer cancel()
@@ -5108,7 +5167,10 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// If HITL is enabled and the mode is not confirm/step (which has its own WCP flow),
 	// use the HITL-aware engine for policy-driven pause/resume (#1076)
 	if hitlEnabled && hitlWorkflowEngine != nil && plan.ExecutionMode != "confirm" && plan.ExecutionMode != "step" {
-		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(ctx, workflow, execContext, req.User)
+		// #4254: every step of this plan is decided for the credential the agent
+		// authenticated (map_enforcing_seam.go).
+		mapCtx := withMAPPlaneSubject(ctx, headerCredentialSubject(r.Header))
+		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(mapCtx, workflow, execContext, req.User)
 		if hitlErr != nil {
 			if hitlExec != nil && hitlExec.Status == StatusPaused {
 				// Store execution for later resume via /plans/{id}/steps/{step_id}/approve
@@ -5804,6 +5866,30 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #4254 (R3 B-M4): the plan's definition is parsed, and a conditional
+	// carrying branch steps refused, BEFORE the pending step is approved or
+	// rejected. A plan that cannot be governed leaves no approval, mirror
+	// resolution, audit row or webhook behind, and its workflow is aborted. A
+	// conditional carrying no branch steps is then left out of the governed steps
+	// (R3 B-H1), numbered as the confirm and step executors number them.
+	var workflow Workflow
+	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
+		sendErrorResponse(w, "Invalid workflow definition", http.StatusInternalServerError)
+		return
+	}
+	if err := refuseUnpresentableSteps(workflow.Spec.Steps); err != nil {
+		log.Printf("[ResumePlan] Plan %s cannot be governed: %v", logutil.Sanitize(planID), err)
+		recordUngovernablePlan(r.Context(), ungovernableResumeRequest(planID, orgID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Client-ID")), err)
+		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Plan cannot be governed: "+err.Error(), r.Header.Get("X-Tenant-ID"), orgID)
+		_ = planService.MarkPlanFailed(r.Context(), planID, "Plan cannot be governed: "+err.Error())
+		if mapExecutionTracker != nil {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Plan cannot be governed")
+		}
+		sendErrorResponse(w, "Plan cannot be governed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	workflow.Spec.Steps = presentedSteps(workflow.Spec.Steps)
+
 	// Handle rejection: reject the pending step (which aborts the workflow and
 	// resolves the decide-plane mirror), then fail the plan.
 	if !approved {
@@ -5880,13 +5966,8 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Execute the step (parse workflow, run through engine)
-	var workflow Workflow
-	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
-		sendErrorResponse(w, "Invalid workflow definition", http.StatusInternalServerError)
-		return
-	}
-
+	// Execute the step through the engine; the workflow was parsed and refused or
+	// admitted above, before any approval.
 	stepIndex := targetCurrentStep
 	if stepIndex >= len(workflow.Spec.Steps) {
 		// All steps completed — mark plan as completed
@@ -5917,6 +5998,11 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ResumePlan] Step execution failed: %v", err)
 		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, err.Error(), r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		// R3: the unified tracker hears of the failure, as it does on every
+		// sibling refusal.
+		if mapExecutionTracker != nil {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, err.Error())
+		}
 		sendErrorResponse(w, "Step execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -5948,12 +6034,22 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Gate the next step for approval (confirm/step mode: all subsequent steps need approval)
 	nextStep := workflow.Spec.Steps[nextStepIndex]
+	// #4254: a step type the multi-agent map does not name is not gated under a
+	// borrowed one. The plan stops here rather than advancing to a step this
+	// plane cannot govern.
+	nextGateType, err := mapStepTypeToWCP(nextStep.Type)
+	if err != nil {
+		log.Printf("[ResumePlan] Plan %s: %v", logutil.Sanitize(planID), err)
+		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		sendErrorResponse(w, "Next step cannot be gated: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	requireApproval := workflow_control.GateDecisionRequireApproval
 	_, _ = workflowControlService.StepGate(r.Context(), targetWorkflowID,
 		fmt.Sprintf("step_%d_%s", nextStepIndex, nextStep.Name),
 		&workflow_control.StepGateRequest{
 			StepName:     nextStep.Name,
-			StepType:     mapStepTypeToWCP(nextStep.Type),
+			StepType:     nextGateType,
 			GateOverride: &requireApproval,
 		}, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), r.Header.Get("X-Tenant-ID"))
 
@@ -6138,7 +6234,7 @@ func policyAPIGetUpdateDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	// Rewrite the URL path to match the expected format
 	vars := mux.Vars(r)
 	policyID := vars["id"]
-	r.URL.Path = "/api/v1/policies/" + policyID
+	r.URL.Path = policypath.Policies + "/" + policyID
 	policyAPIHandler.handlePolicyByID(w, r)
 }
 
@@ -6150,7 +6246,7 @@ func policyAPITestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	vars := mux.Vars(r)
 	policyID := vars["id"]
-	r.URL.Path = "/api/v1/policies/" + policyID + "/test"
+	r.URL.Path = policypath.Policies + "/" + policyID + "/test"
 	policyAPIHandler.handlePolicyByID(w, r)
 }
 
@@ -6162,7 +6258,7 @@ func policyAPIVersionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	vars := mux.Vars(r)
 	policyID := vars["id"]
-	r.URL.Path = "/api/v1/policies/" + policyID + "/versions"
+	r.URL.Path = policypath.Policies + "/" + policyID + "/versions"
 	policyAPIHandler.handlePolicyByID(w, r)
 }
 

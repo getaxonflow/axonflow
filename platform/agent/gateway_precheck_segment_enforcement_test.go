@@ -20,17 +20,13 @@ import (
 	"axonflow/platform/shared/policy/policytest"
 )
 
-// #3312 (ADR-060 Slice 3, #18): handlePolicyPreCheck now resolves the
-// caller's governance-segment set and passes it into the shared engine
-// instead of the hardcoded Segments: nil that #3266 left as a deliberate
-// restriction-only deferral. These tests prove real enforcement: a segment
-// MEMBER is blocked by a segment-scoped policy, a NON-member is not, a
-// resolution FAILURE denies fail-closed and is audited, and a nil
-// resolver / no-identity case proceeds org-only WITHOUT suppressing a
-// non-segment-scoped (org-tier) policy. Mirrors
-// run_shared_engine_segment_gate_test.go's Phase-1 coverage for
-// clientRequestHandler; the live-stack proof is
-// runtime-e2e/3312_gateway_segment_enforcement/.
+// #3312 (ADR-060 Slice 3, #18) made handlePolicyPreCheck resolve the caller's
+// governance-segment set, and refuse the request when that failed. v11 retired
+// it: the pre-check is decided by the anchored engine, which reads no segments,
+// and a legacy static_policies row - segment-scoped or org-tier - authors no
+// verdict there (PRD v11 §1.1, §1.2). What these tests prove now is that the
+// handler never consults the segment resolver, and that an absent identity is
+// still refused.
 
 // orgTierControlPolicyRow appends an ENABLED tenant-tier policy row with
 // segment_id = NULL — an org-wide control policy that must enforce
@@ -42,7 +38,7 @@ func orgTierControlPolicyRow(rows *sqlmock.Rows, id, policyID, tenantID, categor
 		id, policyID, "Test policy "+policyID, category, "tenant", pattern, severity,
 		nil, phase, actionRequest, nil,
 		true, priority, tenantID, nil, []byte(`{}`),
-		time.Now().UTC(), time.Now().UTC(),
+		time.Now().UTC(),
 	)
 }
 
@@ -59,7 +55,7 @@ func installSharedEngineWithSegmentAndOrgPolicy(t *testing.T, segmentID, tenantI
 	mockSQL.MatchExpectationsInOrder(false)
 
 	for i := 0; i < 8; i++ {
-		rows := policytest.SegmentScopedPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
+		rows := policytest.SegmentScopedPolicyRow(appendShippedGlobalRows(t, sqlmock.NewRows(policytest.LoaderCols()), nil, nil),
 			"seg-policy-1", "seg_finance_ledger_block", tenantID, segmentID,
 			"compliance-rbi", segPattern, "critical", "request", "block", 100)
 		rows = orgTierControlPolicyRow(rows,
@@ -144,165 +140,42 @@ func doGatewayPreCheckSegmentRequest(t *testing.T, tenantID, orgID, email, query
 	return rr
 }
 
-// TestHandlePolicyPreCheck_SegmentMember_PolicyEnforced is the headline
-// #3312 proof: a member of the policy's segment is BLOCKED by the gateway
-// pre-check — before this fix, Segments: nil excluded this row for every
-// caller including a member, so a finance-segment member blocked on
-// /api/request could re-route the identical query through the gateway
-// pre-check unblocked.
-func TestHandlePolicyPreCheck_SegmentMember_PolicyEnforced(t *testing.T) {
-	mock, cleanup := setupGatewaySegmentPreCheckTest(t)
-	defer cleanup()
+// TestHandlePolicyPreCheck_ReadsNoSegments: the pre-check is decided by the
+// anchored engine, which reads no segments, so the handler never consults the
+// segment resolver and a resolver that would fail changes nothing. The gate that
+// stood here refused the request on a resolution failure (#3293), on behalf of
+// an organization's segment-scoped static rows, which no longer decide.
+func TestHandlePolicyPreCheck_ReadsNoSegments(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolver *fakeSegmentResolver
+	}{
+		{"a resolver that fails", &fakeSegmentResolver{err: errAssertSegmentResolutionFailed}},
+		{"a resolver that would answer a membership", &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
+			Segments: []sharedidentity.Segment{{ID: "finance", DisplayName: "Finance"}},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, cleanup := setupGatewaySegmentPreCheckTest(t)
+			defer cleanup()
+			withFleetSegmentResolver(t, tc.resolver)
+			expectGatewayAuditRow(mock, gatewayAuditAllowed)
 
-	const tenantID, orgID, email = "seg-gw-mem-tenant", "seg-gw-mem-org", "carol@corp.example"
-	installSharedEngineWithSegmentAndOrgPolicy(t, "finance", tenantID, "confidential_ledger", "ZZ_ORG_CONTROL_NEVER_MATCHES_ZZ")
-
-	fake := &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
-		Segments: []sharedidentity.Segment{{ID: "finance", DisplayName: "Finance"}},
-	}}
-	withFleetSegmentResolver(t, fake)
-
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	rr := doGatewayPreCheckSegmentRequest(t, tenantID, orgID, email, "please read the confidential_ledger for Q3")
-
-	var resp PreCheckResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Approved {
-		t.Fatalf("#3312: expected a segment MEMBER to be blocked by the segment-scoped policy, got approved=true response=%+v", resp)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet audit expectations: %v", err)
-	}
-}
-
-// TestHandlePolicyPreCheck_SegmentNonMember_NotBlocked is the #3266
-// restriction-only regression proof carried into #3312: a caller who
-// resolves to a DIFFERENT segment must NOT be blocked by the segment-scoped
-// policy.
-func TestHandlePolicyPreCheck_SegmentNonMember_NotBlocked(t *testing.T) {
-	mock, cleanup := setupGatewaySegmentPreCheckTest(t)
-	defer cleanup()
-
-	const tenantID, orgID, email = "seg-gw-nonmem-tenant", "seg-gw-nonmem-org", "dave@corp.example"
-	installSharedEngineWithSegmentAndOrgPolicy(t, "finance", tenantID, "confidential_ledger", "ZZ_ORG_CONTROL_NEVER_MATCHES_ZZ")
-
-	// Caller resolves to segment "engineering" — NOT a member of "finance".
-	fake := &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
-		Segments: []sharedidentity.Segment{{ID: "engineering", DisplayName: "Engineering"}},
-	}}
-	withFleetSegmentResolver(t, fake)
-
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	rr := doGatewayPreCheckSegmentRequest(t, tenantID, orgID, email, "please read the confidential_ledger for Q3")
-
-	var resp PreCheckResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if !resp.Approved {
-		t.Fatalf("#3266/#3312: expected a non-member NOT to be blocked by a segment-scoped policy outside their segment, got response=%+v", resp)
-	}
-	for _, p := range resp.Policies {
-		if p == "seg_finance_ledger_block" {
-			t.Fatalf("segment-scoped policy leaked into a non-member's triggered policies: %+v", resp.Policies)
-		}
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet audit expectations: %v", err)
-	}
-}
-
-// TestHandlePolicyPreCheck_SegmentResolutionError_FailsClosedAndAudited pins
-// the #3293 locked invariant on THIS surface: a genuine resolver error must
-// deny the WHOLE request before the shared engine ever runs, and that deny
-// must be observable via the canonical audit_logs row (not merely a silent
-// fail-closed). installCanarySharedEngine (run_shared_engine_segment_gate_test.go)
-// has ZERO query expectations registered — if Phase evaluation ran anyway it
-// would hit an unexpected-query error, so reaching a clean 200-with-decode
-// response here proves the deny happened at the resolution site.
-func TestHandlePolicyPreCheck_SegmentResolutionError_FailsClosedAndAudited(t *testing.T) {
-	mock, cleanup := setupGatewaySegmentPreCheckTest(t)
-	defer cleanup()
-
-	installCanarySharedEngine(t)
-
-	fake := &fakeSegmentResolver{err: errAssertSegmentResolutionFailed}
-	withFleetSegmentResolver(t, fake)
-
-	expectGatewayAuditRow(mock, gatewayAuditBlocked)
-
-	const tenantID, orgID, email = "seg-gw-fc-tenant", "seg-gw-fc-org", "erin@corp.example"
-	rr := doGatewayPreCheckSegmentRequest(t, tenantID, orgID, email, "hello, totally benign query")
-
-	var resp PreCheckResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Approved {
-		t.Fatalf("#3293: a segment-resolution failure must deny the whole request, got approved=true response=%+v", resp)
-	}
-	const wantReason = "segment resolution unavailable — request denied (fail-closed, ADR-060 #2989)"
-	if resp.BlockReason != wantReason {
-		t.Fatalf("BlockReason = %q, want the resolution-site reason %q — a different reason means the deny came from somewhere else (e.g. the canary engine failing closed on its own), meaning the failure reached the engine as a nil Segments set instead of being denied at the source",
-			resp.BlockReason, wantReason)
-	}
-	if fake.callCount() != 1 {
-		t.Fatalf("expected the segment resolver to be called exactly once, got %d", fake.callCount())
-	}
-	// The audit row IS the observability requirement (Real-World-Path clause):
-	// the fail-closed deny must be visible on the canonical audit_logs surface,
-	// not just enforced silently.
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("fail-closed deny did not emit the canonical audit_logs row: %v", err)
-	}
-}
-
-// TestHandlePolicyPreCheck_NilResolver_OrgOnlyDoesNotSuppressOrgTierPolicy
-// covers the nil-resolver / no-SCIM-configured case: resolution must
-// legitimately proceed org-only (never a failure), the segment-scoped
-// policy must NOT enforce (no resolved segments to match against), and —
-// the over-enforcement regression R3 is told to hunt for — a
-// NON-segment-scoped (org-tier, segment_id IS NULL) policy must still
-// enforce normally. Segment gating is restriction-only; it must never
-// suppress an org-tier policy for anyone.
-func TestHandlePolicyPreCheck_NilResolver_OrgOnlyDoesNotSuppressOrgTierPolicy(t *testing.T) {
-	mock, cleanup := setupGatewaySegmentPreCheckTest(t)
-	defer cleanup()
-	ResetFleetSegmentResolverForTest()
-
-	const tenantID, orgID, email = "seg-gw-orgonly-tenant", "seg-gw-orgonly-org", "frank@corp.example"
-	installSharedEngineWithSegmentAndOrgPolicy(t, "finance", tenantID, "confidential_ledger", "org_wide_secret")
-
-	t.Run("segment-scoped policy does not enforce (no resolver)", func(t *testing.T) {
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-		rr := doGatewayPreCheckSegmentRequest(t, tenantID, orgID, email, "please read the confidential_ledger for Q3")
-		var resp PreCheckResponse
-		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
-		if !resp.Approved {
-			t.Fatalf("expected org-only (no resolver) NOT to enforce a segment-scoped policy, got response=%+v", resp)
-		}
-	})
-
-	t.Run("org-tier control policy still enforces", func(t *testing.T) {
-		mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-		rr := doGatewayPreCheckSegmentRequest(t, tenantID, orgID, email, "this query contains org_wide_secret data")
-		var resp PreCheckResponse
-		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
-		if resp.Approved {
-			t.Fatalf("over-enforcement regression: a non-segment-scoped org-tier policy must still enforce when Segments is nil, got approved=true response=%+v", resp)
-		}
-	})
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet audit expectations: %v", err)
+			rr := doGatewayPreCheckSegmentRequest(t, "seg-gw-tenant", "seg-gw-org", "erin@corp.example", "hello, totally benign query")
+			var resp PreCheckResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !resp.Approved || resp.Engine != decisionEngineAnchored {
+				t.Fatalf("approved=%v engine=%q, want an anchored approval: %+v", resp.Approved, resp.Engine, resp)
+			}
+			if c := tc.resolver.callCount(); c != 0 {
+				t.Fatalf("the pre-check consulted the segment resolver %d time(s); it reads no segments", c)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("the approved pre-check did not write its canonical audit row: %v", err)
+			}
+		})
 	}
 }
 
@@ -336,75 +209,5 @@ func TestHandlePolicyPreCheck_IdentityAbsent_MalformedToken(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("malformed-token refusal must be observable via the canonical audit_logs row: %v", err)
-	}
-}
-
-// TestHandlePolicyPreCheck_SegmentResolution_UsesJWTOrgID_NotContextOrg is
-// the R3 round-2 LOW-6 guard: every OTHER test in this file sets the JWT's
-// org_id claim and the auth-context org to the SAME value (both ultimately
-// derived from the same tenantID/orgID params), so a future accidental
-// swap from user.OrgID (the validated JWT claim
-// resolveUserSegments(ctx, user.OrgID, user.Email) actually resolves
-// against — matching run.go's clientRequestHandler and the
-// EvalOptions.OrganizationID scoping two lines below in
-// gateway_handlers.go) to client.OrgID (the auth-context/license org — see
-// db_auth.go's validateViaOrganizations) would be COMPLETELY SILENT to
-// every other test here. That swap would let a caller select which org's
-// SCIM directory their membership resolves from — the same class of defect
-// as the B-1 finding that dropped this PR's OpenAI-compat half. This test
-// sets the two orgs to DIFFERENT values and pins resolution to the
-// JWT-derived one specifically. Reuses orgCapturingSegmentResolver
-// (run_policy_test_org_binding_test.go, the #3255 policyTestHandler
-// counterpart of this exact same org-binding contract) rather than a
-// second copy of the same double.
-func TestHandlePolicyPreCheck_SegmentResolution_UsesJWTOrgID_NotContextOrg(t *testing.T) {
-	mock, cleanup := setupGatewaySegmentPreCheckTest(t)
-	defer cleanup()
-
-	const (
-		contextOrgID = "seg-gw-context-org-should-be-ignored"
-		jwtOrgID     = "seg-gw-jwt-org-should-be-used"
-		tenantID     = "seg-gw-orgmismatch-tenant"
-		email        = "orgmismatch@corp.example"
-	)
-
-	// Phase 1 (shared engine) does not need to matter for this test — a
-	// zero-expectation canary means if resolveUserSegments is EVER
-	// reached with a segment set (regardless of which org it came from),
-	// EvaluateRequest still runs against it; the assertions below are on
-	// the resolver call itself, not on the final HTTP verdict.
-	installCanarySharedEngine(t)
-
-	capture := &orgCapturingSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
-		Segments: []sharedidentity.Segment{{ID: "finance", DisplayName: "Finance"}},
-	}}
-	withFleetSegmentResolver(t, capture)
-
-	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(0, 1))
-
-	token := generateTestJWTWithOrgEmail(1, tenantID, jwtOrgID, email, []string{"query", "llm"}, "developer")
-	body, _ := json.Marshal(PreCheckRequest{ClientID: "seg-gw-orgmismatch-client", Query: "hello, totally benign query", UserToken: token})
-	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	ctx := context.WithValue(req.Context(), ContextKeyAuthKind, AuthKindEnterprise)
-	ctx = context.WithValue(ctx, ContextKeyClientID, "seg-gw-orgmismatch-client")
-	ctx = context.WithValue(ctx, ContextKeyTenantID, tenantID)
-	// Deliberately DIFFERENT from the JWT's org_id claim above.
-	ctx = context.WithValue(ctx, ContextKeyOrgID, contextOrgID)
-	req = req.WithContext(ctx)
-
-	rr := httptest.NewRecorder()
-	handlePolicyPreCheck(rr, req)
-
-	orgs := capture.capturedOrgs()
-	if len(orgs) != 1 {
-		t.Fatalf("expected the segment resolver to be called exactly once, got %d calls: %v", len(orgs), orgs)
-	}
-	if orgs[0] != jwtOrgID {
-		t.Fatalf("resolveUserSegments resolved against org %q, want the JWT-derived user.OrgID %q (NOT the context/license org %q) — a silent swap to client.OrgID would let a caller select which org's SCIM directory their membership resolves from",
-			orgs[0], jwtOrgID, contextOrgID)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet audit expectations: %v", err)
 	}
 }

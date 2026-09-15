@@ -5,10 +5,8 @@ gateway_request	community	immutable_audit@1	platform/agent/audit_coverage_test.g
 gateway_request	enterprise	approval_challenge@1,immutable_audit@1	platform/agent/gateway_handlers.go::handlePolicyPreCheck
 proxy_request	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
 proxy_request	enterprise	approval_challenge@1,immutable_audit@1	platform/agent/run.go::clientRequestHandler
-proxy_tier	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
-proxy_tier	enterprise	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
-mcp	community	field_redact@1,immutable_audit@1	platform/agent/mcp_handler.go::redactInputStatement
-mcp	enterprise	field_redact@1,immutable_audit@1	platform/agent/mcp_handler.go::redactInputStatement
+mcp	community	field_redact@1,immutable_audit@1	platform/agent/mcp_request_enforcing_seam.go::projectMCPStatement
+mcp	enterprise	approval_challenge@1,field_redact@1,immutable_audit@1	platform/agent/mcp_request_enforcing_seam.go::projectMCPStatement
 openai_compatible	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
 openai_compatible	enterprise	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEveryPolicyEnforcementPointAudits
 orchestrator_response	community	field_redact@1,immutable_audit@1	platform/orchestrator/response_processor.go::ResponseProcessor
@@ -20,5 +18,5 @@ map	community	immutable_audit@1	platform/agent/audit_coverage_test.go::TestEvery
 map	enterprise	approval_challenge@1,immutable_audit@1	platform/orchestrator/map_hitl_adapter.go::MAPHITLApprovalAdapter.CreateApproval
 policy_simulation	community	-	platform/orchestrator/policy_simulation_handler.go::PolicySimulationHandler.SimulatePolicies
 policy_simulation	enterprise	-	platform/orchestrator/policy_simulation_handler.go::PolicySimulationHandler.SimulatePolicies
-policy_test	community	-	platform/agent/run.go::policyTestHandler
-policy_test	enterprise	-	platform/agent/run.go::policyTestHandler
+policy_test	community	-	platform/orchestrator/run.go::testPolicyHandler
+policy_test	enterprise	-	platform/orchestrator/run.go::testPolicyHandler

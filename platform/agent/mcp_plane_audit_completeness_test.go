@@ -12,12 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-
-	"axonflow/platform/agent/sqli"
-	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // =============================================================================
@@ -31,8 +27,8 @@ import (
 //
 // These tests are red-on-revert: each pins the INSERT that the fix adds, so
 // removing the fix leaves an unmet sqlmock expectation (test fails). The
-// precondition-absent cases (dynamic-ONLY block, SQLi-ONLY block,
-// clean-then-redact) are exercised explicitly per
+// precondition-absent cases (SQLi-ONLY block, clean-then-redact) are
+// exercised explicitly per
 // feedback_tests_must_exercise_precondition_absent_case.
 // =============================================================================
 
@@ -193,138 +189,6 @@ func TestWriteMCPDecisionAudit_NoopGuards(t *testing.T) {
 
 // --- mcp_server_handler.go JSON-RPC tools: the StaticResult-gated holes ---
 
-// TestMcpToolCheckPolicy_DynamicBlock_EmitsCanonicalAudit is the red-on-revert
-// guard for MCPSRV-CHECKPOLICY-DYNAMIC-ONLY-BLOCK. A dynamic-ONLY block carries
-// NO StaticResult, so the writeExplainableAuditLog call (gated on
-// StaticResult.Blocked) never fires — the block was portal-invisible. The fix
-// emits a canonical 'blocked' row. Precondition-absent: there is no static match.
-func TestMcpToolCheckPolicy_DynamicBlock_EmitsCanonicalAudit(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	origDB := usageDB
-	usageDB = db
-	defer func() { usageDB = origDB }()
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil) // no static engine → dynamic-ONLY
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
-		Allowed:           false,
-		BlockReason:       "Budget exhausted",
-		PoliciesEvaluated: 1,
-		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
-			{PolicyID: "budget-1", PolicyType: "budget", Action: "block"},
-		},
-	})
-	defer server.Close()
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: server.URL,
-		Timeout:              5 * time.Second,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"postgres"},
-	})
-
-	mock.ExpectExec("INSERT INTO audit_logs").
-		WithArgs(
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), "client-1", "tenant-1", "org-1",
-			"mcp_check_policy", sqlmock.AnyArg(), sqlmock.AnyArg(),
-			mcpVerdictBlocked, // canonical 'blocked' — NOT legacy 'deny'
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
-			PlaneMCP,
-			nil,              // correlation_id (no traceparent on the MCP-server session)
-			nil,              // redacted_fields NULL on a block
-			nil,              // session_id NULL - session carries no clientSessionID (#2753)
-			sqlmock.AnyArg(), // response_time_ms (#3424)
-		).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	resp, err := mcpToolCheckPolicy(context.Background(), &mcpSession{
-		tenantID: "tenant-1", orgID: "org-1", clientID: "client-1",
-		userID: "u1", userRole: "admin", userEmail: "u@e.com",
-	}, map[string]interface{}{
-		"connector_type": "postgres", // not an integration prefix → AutoDetect no-ops
-		"statement":      "SELECT 1",
-	}, pepHandshakeResolution{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if m, _ := resp.(map[string]interface{}); m["allowed"] != false {
-		t.Errorf("expected allowed=false on dynamic block, got %v", resp)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("dynamic-only block did not emit a canonical audit row: %v", err)
-	}
-}
-
-// TestMcpToolCheckOutput_SQLiBlock_EmitsCanonicalAudit is the red-on-revert guard
-// for MCPSRV-CHECKOUTPUT-SQLI-NO-AUDIT. A SQLi-ONLY block has no StaticResult, so
-// it wrote ZERO rows. Precondition-absent: no static policy match.
-func TestMcpToolCheckOutput_SQLiBlock_EmitsCanonicalAudit(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	origDB := usageDB
-	usageDB = db
-	defer func() { usageDB = origDB }()
-
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	originalSQLi := sqli.GetGlobalMiddleware()
-	defer sqli.SetGlobalMiddleware(originalSQLi)
-	cfg := sqli.DefaultConfig().WithBlockOnDetection(true)
-	mw, err := sqli.NewScanningMiddleware(sqli.WithMiddlewareConfig(cfg))
-	if err != nil {
-		t.Fatalf("new middleware: %v", err)
-	}
-	sqli.SetGlobalMiddleware(mw)
-
-	mock.ExpectExec("INSERT INTO audit_logs").
-		WithArgs(
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), "client-1", "tenant-1", "org-1",
-			"mcp_check_output", sqlmock.AnyArg(), sqlmock.AnyArg(),
-			mcpVerdictBlocked,
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
-			PlaneMCP,
-			nil,
-			nil,              // redacted_fields NULL
-			nil,              // session_id NULL (#2753)
-			sqlmock.AnyArg(), // response_time_ms (#3424)
-		).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	resp, err := mcpToolCheckOutput(context.Background(), &mcpSession{
-		tenantID: "tenant-1", orgID: "org-1", clientID: "client-1",
-		userID: "u1", userRole: "admin", userEmail: "u@e.com",
-	}, map[string]interface{}{
-		"connector_type": "postgres",
-		"response_data": []interface{}{
-			map[string]interface{}{"id": 1, "data": "admin' UNION SELECT password FROM users--"},
-		},
-	}, pepHandshakeResolution{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if m, _ := resp.(map[string]interface{}); m["allowed"] != false {
-		t.Errorf("expected allowed=false on SQLi block, got %v", resp)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("SQLi-only block did not emit a canonical audit row: %v", err)
-	}
-}
-
 // TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit is the red-on-revert
 // guard for MCPSRV-CHECKOUTPUT-REDACT-NO-AUDIT — the WORST writer: an OJK
 // NIK/NPWP response mask is allowed (blocked=false) and previously early-returned
@@ -340,8 +204,8 @@ func TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit(t *testing.T) {
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	// PII_ACTION=redact + the Indonesia response detector masks the NIK; the
-	// static engine is nil'd so only the Indonesia step runs (an allow, not a block).
+	// A pii=redact override + the Indonesia response detector masks the NIK; no
+	// shipped row matches the masked message, so the anchored engine allows it.
 	withMCPPIIAction(t, DetectionActionRedact)
 
 	var redactedFieldsJSON []byte
@@ -360,10 +224,11 @@ func TestMcpToolCheckOutput_RedactAndAllow_EmitsRedactedAudit(t *testing.T) {
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	resp, err := mcpToolCheckOutput(context.Background(), &mcpSession{
+	session := &mcpSession{
 		tenantID: "tenant-1", orgID: "org-1", clientID: "client-1",
 		userID: "u1", userRole: "admin", userEmail: "u@e.com",
-	}, map[string]interface{}{
+	}
+	resp, err := mcpToolCheckOutput(authenticatedToolContext(session), session, map[string]interface{}{
 		"connector_type": "postgres",
 		"message":        validNIKResponse, // contains a valid NIK
 	}, pepHandshakeResolution{})
@@ -400,14 +265,9 @@ func TestMcpToolCheckOutput_CleanAllow_NoAuditRow(t *testing.T) {
 	usageDB = db
 	defer func() { usageDB = origDB }()
 
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
 	// No ExpectExec registered → any INSERT would be an unexpected-query failure.
-	resp, err := mcpToolCheckOutput(context.Background(), &mcpSession{
-		tenantID: "tenant-1", orgID: "org-1", clientID: "client-1",
-	}, map[string]interface{}{
+	session := &mcpSession{tenantID: "tenant-1", orgID: "org-1", clientID: "client-1"}
+	resp, err := mcpToolCheckOutput(authenticatedToolContext(session), session, map[string]interface{}{
 		"connector_type": "postgres",
 		"message":        "1 row affected",
 	}, pepHandshakeResolution{})
@@ -486,9 +346,12 @@ func TestHandleMCPToolsCall_Unauthenticated_EmitsBlockedAudit(t *testing.T) {
 			sqlmock.AnyArg(), "service", sqlmock.AnyArg(),
 			mcpUnauthenticatedTenant, // tenant_id sentinel — NOT caller-claimed
 			"",                       // org_id empty → out of every real tenant feed
-			"mcp_tools_call", sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"mcp_tools_call", "mcp tools/call: unauthenticated", sqlmock.AnyArg(),
 			mcpVerdictBlocked,
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			// #4261: a genuinely unauthenticated call keeps these labels; only a
+			// credential the pre-credential limiter refused is recorded as per_minute.
+			detailsNaming{"unauthenticated", "authentication required for tools/call"},
+			sqlmock.AnyArg(),
 			PlaneMCP,
 			nil, nil, // correlation_id, redacted_fields
 			nil,              // session_id NULL (#2753)
@@ -561,70 +424,6 @@ func TestMCPCheckInputHandler_UnsupportedContentType_EmitsBlockedAudit(t *testin
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("415 early return did not emit a 'blocked' audit row: %v", err)
-	}
-}
-
-// TestMCPCheckInputHandler_EvalUnavailable_EmitsErrorAudit is the red-on-revert
-// guard for the fail-closed dynamic-evaluator-unavailable early return: a 503
-// records a canonical 'error' row keyed by the decision_id.
-func TestMCPCheckInputHandler_EvalUnavailable_EmitsErrorAudit(t *testing.T) {
-	cleanup := setupCommunityModeForTest(t)
-	defer cleanup()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	origDB := usageDB
-	usageDB = db
-	defer func() { usageDB = origDB }()
-
-	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
-	originalEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
-	defer sharedpolicy.SetGlobalEngine(originalEngine)
-
-	// An unreachable orchestrator with GracefulDegradation=false → EvalUnavailable.
-	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:              true,
-		OrchestratorEndpoint: "http://127.0.0.1:0", // unroutable
-		Timeout:              200 * time.Millisecond,
-		GracefulDegradation:  false,
-		EnabledConnectors:    []string{"postgres"},
-	})
-
-	mock.ExpectExec("INSERT INTO audit_logs").
-		WithArgs(
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			"mcp_check_input", sqlmock.AnyArg(), sqlmock.AnyArg(),
-			mcpVerdictError, // fail-closed → canonical 'error'
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
-			PlaneMCP,
-			sqlmock.AnyArg(),
-			nil,
-			nil,              // session_id NULL (#2753)
-			sqlmock.AnyArg(), // response_time_ms (#3424)
-		).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	body, _ := json.Marshal(MCPCheckInputRequest{
-		ConnectorType: "postgres",
-		Statement:     "SELECT 1",
-		TenantID:      "default",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	mcpCheckInputHandler(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("EvalUnavailable did not emit an 'error' audit row: %v", err)
 	}
 }
 

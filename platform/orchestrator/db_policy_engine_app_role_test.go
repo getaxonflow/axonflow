@@ -48,19 +48,21 @@ func TestDatabaseDynamicPolicyEngine_AppRoleGate_RealPostgres(t *testing.T) {
 
 	// What this test verifies (and what it does NOT):
 	//
-	// `NewDatabaseDynamicPolicyEngine` invokes seedSystemMediaPolicies +
-	// loadDefaultPolicies + refreshPolicies internally. Under
-	// AXONFLOW_DB_USE_APP_ROLE=true + the testcontainer's full core migration
-	// schema, the seed-path INSERTs against `dynamic_policies` fail because
-	// the seed code doesn't `SET LOCAL app.current_org_id` before inserting
-	// and the table's RLS WITH CHECK policy rejects the rows. (`dynamic_policies`
-	// has ENABLE ROW LEVEL SECURITY per migration 018, not FORCE; that's
-	// irrelevant here because axonflow_app_role is non-owner + NOBYPASSRLS,
-	// so ENABLE is sufficient to gate it.) The engine logs "Warning: Failed
-	// to seed ..." then falls back to in-memory defaults via
-	// loadDefaultPolicies + returns a healthy engine handle. That fallback
-	// IS the existing v9.0.0 contract for the seed path; it is not what
-	// this test exercises.
+	// `NewDatabaseDynamicPolicyEngine` invokes verifySystemMediaPolicies +
+	// loadDefaultPolicies + refreshPolicies internally.
+	//
+	// THIS PARAGRAPH DESCRIBED A WRITE UNTIL #4026. The seed path used to INSERT
+	// the five sys_media_* rows here and be refused, and the engine logged
+	// "Warning: Failed to seed ..." then fell back to in-memory defaults and
+	// returned a healthy handle. That refusal is gone rather than tolerated:
+	// migrations/core/172 revoked INSERT on `dynamic_policies` from the
+	// application roles, core/173 seeds those rows as the owner, and the boot
+	// path now VERIFIES them with a SELECT. A refused write in the boot log is
+	// what the production-posture clean-boot guard fails a stack for.
+	//
+	// The fallback itself is unchanged and is still not what this test
+	// exercises: loadDefaultPolicies still populates the in-memory set and the
+	// constructor still returns a healthy engine handle.
 	//
 	// This test only asserts the constructor's boot-time pool-open wire:
 	// both `db` and `metricsDB` MUST authenticate as `axonflow_app_role`

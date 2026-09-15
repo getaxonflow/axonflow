@@ -8,12 +8,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,13 +23,12 @@ import (
 	"axonflow/platform/common/usage"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedidentity "axonflow/platform/shared/identity"
+	"axonflow/platform/shared/legacyfreeze"
 	logutil "axonflow/platform/shared/logger"
-	sharedpolicy "axonflow/platform/shared/policy"
 
 	"axonflow/platform/shared/serviceauth"
 	"github.com/google/uuid"
 
-	"axonflow/platform/decision/legacycompile"
 	"github.com/gorilla/mux"
 )
 
@@ -175,7 +176,7 @@ type mcpSession struct {
 	tenantID  string
 	// orgID is the v9 customer/account identity (ADR-052) captured at
 	// session-create time. Audit writers (writeExplainableAuditLog,
-	// writeOverrideUsedEvent) read this so audit_logs rows carry a
+	// writeMCPDecisionAudit) read this so audit_logs rows carry a
 	// non-empty org_id; passing "" here was the bug that produced empty
 	// org_id rows on the MCP path (see Epic #2230 Phase 0 callout).
 	orgID     string
@@ -206,6 +207,14 @@ type mcpSession struct {
 	// path was identified as not stamping.
 	client   *Client
 	authKind AuthKind
+
+	// authenticatedThisRequest marks a session built for one request that
+	// carried no Mcp-Session-Id, so authenticated on this call (#4261).
+	// Authenticate's pre-credential limiter has then already counted the
+	// request, and enforceMCPSessionDailyCap reads the count instead of
+	// taking it again. A session created by initialize and served from the
+	// cache is never marked.
+	authenticatedThisRequest bool
 
 	// identityInputs records WHY userEmail resolved the way it did, captured
 	// from the SAME request that resolved it (#3077). Diagnostic only — read
@@ -426,13 +435,12 @@ func getMCPTools() []mcpTool {
 			},
 		},
 		// --- Plugin Batch 1 (ADR-044 + ADR-043) ---
-		// These MCP tools proxy to the new platform HTTP endpoints so
-		// agents running in Claude Code / Cursor / Codex / OpenClaw can
-		// drive the override lifecycle + explainability without leaving
-		// the MCP surface.
+		// explain_decision and list_overrides proxy to the platform HTTP
+		// endpoints; create_override and delete_override answer the v11
+		// freeze locally (#4252).
 		{
 			Name:        "explain_decision",
-			Description: "Explain a previously-made policy decision (ADR-043). Returns matched policies, risk level, reason, override availability, and a rolling 24h hit count. Use this to answer 'why was this blocked?' when a user sees a deny.",
+			Description: "Explain a previously-made policy decision (ADR-043). Returns matched policies, risk level, reason, and a rolling 24h hit count (override availability is always false from v11.0.0). Use this to answer 'why was this blocked?' when a user sees a deny.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -446,7 +454,7 @@ func getMCPTools() []mcpTool {
 		},
 		{
 			Name:        "create_override",
-			Description: "Create a governed session override for a policy that would otherwise deny (ADR-044). Requires a mandatory free-text justification. TTL clamped server-side (default 60m, hard cap 24h, 0 for critical risk). Critical-risk and allow_override=false policies are rejected.",
+			Description: "Retired in v11 (PRD v11 §1.5): answers LEGACY_POLICY_WRITE_FROZEN and writes nothing. A policy is enabled, disabled or re-actioned in the organization's typed document through the typed authoring route (/api/v1/typed-policies). A session attributed to the client-shared identity is refused for its identity first.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -477,7 +485,7 @@ func getMCPTools() []mcpTool {
 		},
 		{
 			Name:        "delete_override",
-			Description: "Revoke an active session override (ADR-044). Next policy evaluation after revocation will not consult this override. Emits override_revoked audit event.",
+			Description: "Retired in v11 (PRD v11 §1.5): answers LEGACY_POLICY_WRITE_FROZEN and revokes nothing.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -491,7 +499,7 @@ func getMCPTools() []mcpTool {
 		},
 		{
 			Name:        "list_overrides",
-			Description: "List active session overrides scoped to the caller's tenant (ADR-044). Use to audit or revoke dangling overrides.",
+			Description: "List session overrides recorded before v11.0.0, scoped to the caller's tenant (ADR-044). A read-only record: session overrides are retired in v11 (PRD v11 §1.5), and create_override and delete_override answer LEGACY_POLICY_WRITE_FROZEN.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -736,6 +744,21 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 	// Verify the caller has valid credentials for this session's tenant
 	_, _, _, _, _, clientID, _, auth, err := authenticateMCPServerRequest(r)
 	if err != nil && !isCommunityMode() {
+		// #4261: the pre-credential limiter's refusal keeps its 429 and
+		// Retry-After here too. A DELETE carries no JSON-RPC body.
+		var authErr *AuthError
+		if errors.As(err, &authErr) && authErr.HTTPStatus == http.StatusTooManyRequests {
+			auditMCPServerDeny(r.Context(), session, "mcp_session_delete", "delete_session",
+				mcpVerdictBlocked, "per-minute rate limit exceeded", []string{LimitTypePerMinute},
+				time.Since(startTime).Milliseconds())
+			retryAfter := authErr.RetryAfter
+			if retryAfter == "" {
+				retryAfter = "60"
+			}
+			w.Header().Set("Retry-After", retryAfter)
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
 		// #2641 (MCPSRV-SESSIONDELETE-AUTHZ, unauth arm): an unauthenticated DELETE
 		// against an existing session is a denied attempt. Record it against the
 		// TARGET session's tenant (the resource being protected) for security audit.
@@ -774,6 +797,9 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
 	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, idInputs, err := authenticateMCPSession(r)
 	if err != nil {
+		if writeMCPAuthRateLimited(w, req.ID, err) {
+			return
+		}
 		writeJSONRPCAuthError(w, req.ID, err.Error())
 		return
 	}
@@ -922,21 +948,28 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	// Captured up front so the usage_events row (#2758) records the true
 	// end-to-end handler latency for this governed call.
 	startTime := time.Now()
-	session, r := requireMCPAuth(w, r, req)
+	session, r, rateLimited := requireMCPAuthOrRateLimit(w, r, req)
 	if session == nil {
 		// #2641 (MCPSRV-UNAUTH-JSONRPC): an unauthenticated tools/call is a denied
 		// governance attempt that previously left no audit trail. Record it under the
 		// `mcpUnauthenticatedTenant` sentinel (NOT a caller-claimed tenant → no
 		// spoofing) with the credential the caller presented, for security audit.
 		// Scoped to tools/call (the governance-bearing method) to bound volume.
+		// #4261: a credential the pre-credential limiter refused was answered
+		// 429 per_minute, so its row says so; the tenant stays the sentinel,
+		// since the credential was never checked.
+		policyID, reason, query := "unauthenticated", "authentication required for tools/call", "mcp tools/call: unauthenticated"
+		if rateLimited {
+			policyID, reason, query = LimitTypePerMinute, "per-minute rate limit exceeded", "mcp tools/call: rate limited before authentication"
+		}
 		writeMCPDecisionAudit(r.Context(), usageDB,
 			uuid.New().String(), "",
 			mcpUnauthenticatedTenant, "", extractClientID(r), "",
 			"", "service",
-			"mcp_tools_call", "mcp tools/call: unauthenticated", "",
+			"mcp_tools_call", query, "",
 			mcpVerdictBlocked,
-			[]string{"unauthenticated"},
-			[]string{"authentication required for tools/call"},
+			[]string{policyID},
+			[]string{reason},
 			nil,
 			"",
 			nil,
@@ -1021,10 +1054,15 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	// plugins' pre/post-tool hooks all flow through tools/call. The
 	// matrix harness at runtime-e2e/v1_pro_full_matrix exercises this
 	// path on real wire traffic.
-	if enforceMCPSessionDailyCap(w, req, session) {
+	if refusedBy := enforceMCPSessionLimits(w, req, session); refusedBy != "" {
 		// #2641 (MCPSRV-DAILYCAP-DENY): the daily-cap 429 was portal-invisible.
+		// #4261: the row names the limit that refused the call.
+		reason, limitID := "daily usage cap exceeded", "daily_cap"
+		if refusedBy == LimitTypePerMinute {
+			reason, limitID = "per-minute rate limit exceeded", LimitTypePerMinute
+		}
 		auditMCPServerDeny(r.Context(), session, "mcp_tools_call", params.Name,
-			mcpVerdictBlocked, "daily usage cap exceeded", []string{"daily_cap"},
+			mcpVerdictBlocked, reason, []string{limitID},
 			time.Since(startTime).Milliseconds())
 		return
 	}
@@ -1249,10 +1287,21 @@ func mcpUsageMetrics(result interface{}) (policiesEvaluated, policyViolations in
 // Callers MUST use the returned *http.Request for downstream calls so the
 // stamped context propagates.
 func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) (*mcpSession, *http.Request) {
-	session := resolveMCPSession(r)
+	session, r, _ := requireMCPAuthOrRateLimit(w, r, req)
+	return session, r
+}
+
+// requireMCPAuthOrRateLimit is requireMCPAuth that also reports whether the
+// refusal it wrote was the pre-credential limiter's per-minute answer
+// (#4261), so tools/call can audit it as that rather than as unauthenticated.
+func requireMCPAuthOrRateLimit(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) (*mcpSession, *http.Request, bool) {
+	session, err := resolveMCPSessionWithErr(r)
 	if session == nil {
+		if writeMCPAuthRateLimited(w, req.ID, err) {
+			return nil, r, true
+		}
 		writeJSONRPCAuthError(w, req.ID, "Authentication required")
-		return nil, r
+		return nil, r, false
 	}
 	// Stamp auth context for downstream telemetry/audit consistency.
 	// session.client may be nil for legacy sessions (created pre-#2305-finish);
@@ -1266,7 +1315,7 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 	if session.clientSessionID != "" {
 		r = r.WithContext(withClientSessionID(r.Context(), session.clientSessionID))
 	}
-	return session, r
+	return session, r, false
 }
 
 // authenticateMCPServerRequest is the 9-return convenience form of
@@ -1315,7 +1364,9 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 
 	authResult, authErr := Authenticate(r, nil)
 	if authErr != nil {
-		return "", "", "", "", "", "", "", nil, idInputs, fmt.Errorf("%s", authErr.Message)
+		// The *AuthError itself, not a copy of its message: its status is
+		// what lets a rate-limited credential be answered 429 (#4261).
+		return "", "", "", "", "", "", "", nil, idInputs, authErr
 	}
 	auth = authResult
 	// Populate telemetry identity for community-saas tracking
@@ -1349,14 +1400,15 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 		// #2932: a token presented with no validator registered is a misconfig
 		// (fail-safe: the token is ignored → least-privilege). Surface it.
 		warnIfTokenWithoutValidator(perUserToken)
-		// #3602: ContextWithSyntheticProbe before ResolveToken, always. The
-		// shared resolver reads the tag off the context because it has no
-		// request; TestEveryResolveTokenCallerStampsTheSyntheticProbe pins
-		// that every caller here does this.
-		vid, resolveErr := sharedidentity.ResolveToken(
-			sharedidentity.ContextWithSyntheticProbe(r.Context(), auth.Synthetic),
-			auth.OrgID, perUserToken)
+		vid, resolveErr := resolveTokenAdmitted(r.Context(), auth.OrgID, perUserToken)
 		if resolveErr != nil {
+			// A tier-limit refusal (#3593) is returned AS IS: its message
+			// begins with its own code (ERR_TIER_LIMIT_HUMAN_PRINCIPAL), and
+			// wrapping it as "invalid user token" would file a refused
+			// principal under an authentication failure.
+			if _, ok := asTierLimitRefusal(resolveErr); ok {
+				return "", "", "", "", "", "", "", nil, idInputs, resolveErr
+			}
 			// A per-user token WAS presented but no registered validator
 			// accepted it (tampered / expired / revoked / wrong org /
 			// unrecognized). Fail closed: reject rather than silently
@@ -1382,6 +1434,7 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 			// "@"; ResolveToken checks nothing), so vid.Email CAN be a reserved
 			// spelling and CAN reach the shared-identity refusal.
 			idInputs.tokenResolvedIdentity = true
+			idInputs.validatedToken = vid
 			// #2989 (ADR-060 P2) / #3473: resolve governance segments now
 			// that identity is VALIDATED (never before — see
 			// resolveUserSegments's Real-World-Path doc), covering both
@@ -1392,11 +1445,9 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 			// — this call exists purely so the resolution outcome stays
 			// OBSERVABLE (segmentResolutionTotal{phase="session_auth"},
 			// segment_resolution_metrics.go), never so a caller reads a
-			// session-scoped segment set back. check_policy/check_output
-			// still enforce segments via a SEPARATE, independently
-			// fail-closed resolution performed fresh at each tools/call
-			// (resolveMCPServerSegmentsForPolicy, mcp_identity.go) — never
-			// by consuming this call's result.
+			// session-scoped segment set back. Neither tool consults segments:
+			// check_policy and check_output are decided by the anchored
+			// engine, which reads none.
 			_, _ = resolveUserSegmentsForObservability(r.Context(), auth.OrgID, vid.Email)
 			return auth.TenantID, auth.OrgID, vid.Email, vid.Email, vid.Role, auth.ClientID, resolvedTier, auth, idInputs, nil
 		}
@@ -1464,51 +1515,6 @@ func authenticateMCPSession(r *http.Request) (tenantID, orgID, userID, userEmail
 		resolvedUserID = resolvedEmail
 	}
 
-	// ADR-065 identity compatibility adapter (#3550), on the trusted-header
-	// path. This is the branch where an upstream's assertion actually BECOMES
-	// the session's identity, which is what makes it the credential path's
-	// entry point; the reads a few lines above and gateProxyIdentityHeaders in
-	// proxy.go move header bytes around and resolve no principal.
-	//
-	// The values passed are the ones that SURVIVED the #2896 gate, not the
-	// ones the caller sent. With the gate off both are empty here and the
-	// counterfactual truthfully records that this deployment resolved no
-	// upstream identity at all, which is a different fact from an upstream
-	// that asserted one.
-	//
-	// The email is presented as an alias and can never become the canonical
-	// subject: a deployment whose upstream asserts only an address records
-	// SUBJECT_MISSING, which is the honest statement that it has attribution
-	// and not identity.
-	//
-	// `accepted` is whether the LEGACY path resolved an identity from the
-	// headers at all, which is EITHER header surviving the gate. It is
-	// deliberately not `headerUserID != ""`: the legacy path accepts an
-	// email-only assertion and makes it the session's identity, so reporting
-	// that as a legacy rejection would hide the one divergence this path
-	// exists to surface, by comparing a refusal against a refusal.
-	//
-	// A request that asserted NOTHING is skipped, for the same reason
-	// ResolveToken skips a request that presented no token: there is no
-	// credential decision to compare against, and recording it would inflate
-	// the agreement rate with requests that carried no upstream identity at
-	// all - on the higher-volume path, since under the default posture the
-	// gate strips both headers and every MCP request lands here.
-	if headerUserID != "" || headerEmail != "" {
-		legacyHeader := sharedidentity.TrustedHeaderLegacyAuth(
-			auth.OrgID, headerUserID, headerEmail, true, "", time.Now())
-		// #3602: the observation-window canary tag, from the AuthResult that
-		// Authenticate already stamped it on. Taken from there rather than
-		// re-read here so one request cannot be tagged on the client-credential
-		// path and untagged on this one.
-		legacyHeader.Synthetic = auth.Synthetic
-		if ref := sharedidentity.CompatResolve(r.Context(), legacyHeader).Refusal(); ref != nil {
-			return "", "", "", "", "", "", "", nil, idInputs,
-				fmt.Errorf("%s: upstream-asserted identity refused by the identity plane (%s)",
-					sharedidentity.CompatRefusalCode, ref.Reason)
-		}
-	}
-
 	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "", auth.ClientID, resolvedTier, auth, idInputs, nil
 }
 
@@ -1547,6 +1553,16 @@ func clientSessionIDFromContext(ctx context.Context) string {
 // Session ID is verified to belong to the same client (prevents session hijacking)
 // and checked against the TTL (24h).
 func resolveMCPSession(r *http.Request) *mcpSession {
+	session, _ := resolveMCPSessionWithErr(r)
+	return session
+}
+
+// resolveMCPSessionWithErr is resolveMCPSession with the authentication
+// error kept, so requireMCPAuth can answer a rate-limited credential with a
+// 429 instead of the 401 every other refusal gets (#4261). The error is nil
+// when no session is returned for a reason other than authentication (a
+// session owned by another client).
+func resolveMCPSessionWithErr(r *http.Request) (*mcpSession, error) {
 	sessionID := r.Header.Get(mcpSessionHeaderKey)
 	if sessionID != "" {
 		session := getSessionByID(sessionID)
@@ -1565,7 +1581,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 					if callerClientID != "" && callerClientID != session.clientID {
 						log.Printf("[MCP-Server] Session %s: client ID mismatch (session=%s, caller=%s)",
 							logutil.MaskSecret(sessionID, 8), logutil.Sanitize(session.clientID), logutil.Sanitize(callerClientID))
-						return nil
+						return nil, nil
 					}
 				}
 				// Refresh lastUsed
@@ -1584,7 +1600,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 				// stamp here would be empty anyway.
 				// Populate telemetry for cached sessions (container is per-request)
 				SetTelemetryTenantID(r.Context(), session.tenantID)
-				return session
+				return session, nil
 			}
 		}
 	}
@@ -1599,7 +1615,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 	// before invoking downstream handlers.
 	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, idInputs, err := authenticateMCPSession(r)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var sessClient *Client
 	var sessAuthKind AuthKind
@@ -1624,7 +1640,9 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		// session — and because only the resolver can see whether a validated
 		// per-user token, rather than a header, supplied the identity.
 		identityInputs: idInputs,
-	}
+
+		authenticatedThisRequest: true, // #4261: Authenticate counted this request
+	}, nil
 }
 
 func getSessionByID(id string) *mcpSession {
@@ -1638,8 +1656,8 @@ func getSessionByID(id string) *mcpSession {
 // check_policy: uses Agent-internal evaluateInputPolicies() directly.
 //
 // Plugin Batch 1 parity: the response includes decision_id + risk_level +
-// policy_matches + override_available/override_existing_id on blocks, and
-// consults active session overrides to flip deny -> allow. Claude Code /
+// policy_matches on blocks (override_available/override_existing_id are no
+// longer set, and no session override flips a deny, #4252). Claude Code /
 // Cursor / Codex plugins all read these fields from the MCP tool response
 // to render a useful block message; without them every plugin block comes
 // back as a terse 'blocked' string.
@@ -1651,9 +1669,8 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	// route through recordDecideDecision) while the blocks and redactions
 	// beside them, which do MORE work, recorded nothing.
 	startTime := time.Now()
-	// #3430 R3: an absent session is unreachable from a served request
-	// (requireMCPAuth refuses before dispatch) but every line below reads
-	// session fields, and the segment gate must never be handed one either.
+	// An absent session is unreachable from a served request (requireMCPAuth
+	// refuses before dispatch) but every line below reads session fields.
 	// Refuse explicitly rather than panic if that invariant ever changes.
 	if session == nil {
 		return nil, fmt.Errorf("unauthenticated MCP session")
@@ -1724,271 +1741,124 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		params = p
 	}
 
-	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
-	// #2581: per-org posture. orgID is the auth-derived org for this request; an
-	// org with no override row resolves to the deployment-global config.
+	// THE ANCHORED ENGINE AUTHORS THE REQUEST PASS'S VERDICT (PRD v11 §1.1,
+	// mcp_request_enforcing_seam.go). No segment gate stands here any more: the
+	// anchored engine reads no segments, as on decide.
 	//
-	// Resolved BEFORE the segment gate below (it was resolved after, pre-R3)
-	// because the gate needs to know whether the static pass is going to run
-	// for this request at all: if it is not, no segment-scoped row can fire and
-	// an indeterminate segment set must not deny. This expression is the exact
-	// gate evaluateInputPolicies applies to its own static pass; the pairing is
-	// pinned by TestMCPToolCheckPolicy_DetectionDisabled_IndeterminateIdentityAllowed.
+	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
+	// #2581: per-org posture; an org with no override row keeps the stored
+	// policy actions.
+	//
+	// decision_id is minted up front (Plugin Batch 1 / ADR-042 / ADR-043): every
+	// governance decision carries one, so a caller can correlate it with
+	// /explain/{id} without an extra round trip.
+	decisionID := uuid.New().String()
+	ctx = withMCPRequestSeam(ctx)
+	seam := mcpRequestSeamFrom(ctx)
 	mcpDetectionCfg := ResolveMCPDetectionConfig(ctx, session.orgID)
-	staticEvaluationWillRun := mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorType)
+	// The Indonesia checksum validator acts BEFORE the pass, named (#4122).
+	evaluated := maskIndonesiaBeforeTheRequestPass(ctx, session.orgID, session.tenantID, decisionID, statement, mcpDetectionCfg)
+	outcome := evaluateInputPolicies(ctx,
+		session.tenantID, session.orgID, session.userID,
+		connectorType,
+		// The caller runs the tool and reports its own name, which is the
+		// premise capability scoping rests on (#2801, #2904, #3717).
+		tool,
+		evaluated, params,
+		mcpDetectionCfg)
+	observation := observationOf(outcome.StaticResult)
+	enforced := enforceMCPRequest(ctx, requestPassInput{
+		orgID:       session.orgID,
+		decisionID:  decisionID,
+		query:       evaluated,
+		observation: observation,
+		// The session's principal: the per-user token a validator accepted
+		// when the session was created, else its client credential.
+		subject: sessionSubject(session),
+	}, pepHandshake)
+	projected := projectMCPStatement(ctx, session.orgID, enforced, pepHandshake, statement, evaluated, outcome.Options, observation)
+	descriptor := fmt.Sprintf("mcp check_policy: %s", connectorType)
 
-	// #3430 (ADR-060 P3 fleet-plane promotion): resolve the caller's
-	// governance-segment set fail-closed, BEFORE evaluation, so neither a
-	// genuine resolution failure NOR an indeterminate principal reaches the
-	// engine with a set that looks identical to "resolved to none". This is a
-	// SEPARATE, fresh, enforcement-phase resolution from the session-auth
-	// resolution authenticateMCPSession performs purely for observability
-	// (#3473 — that call's result is discarded; there is no longer any
-	// session-scoped segment set to read back) - see
-	// resolveMCPServerSegmentsForPolicy's doc (mcp_identity.go) for why a
-	// caller with no validated per-user token is DENIED (when segment-scoped
-	// policies exist) rather than silently evaluated against a narrowed set.
-	segmentIDs, segGate := resolveMCPServerSegmentsForPolicy(ctx, session, sharedpolicy.PhaseRequest, staticEvaluationWillRun)
-	if segGate != mcpSegmentGateProceed {
-		decisionID := uuid.New().String()
-		policyID, reason := mcpSegmentGateRefusal(segGate, mcpSegmentPhaseRequest)
-		if segGate == mcpSegmentGateDenyIdentityUnresolved {
-			segmentIdentityUnresolvedTotal.WithLabelValues("check_policy").Inc()
-		}
-		log.Printf("🛡️ [MCP-Server] check_policy denied by the segment gate (%s, fail-closed) for org %s", policyID, logutil.Sanitize(session.orgID))
-		// Canonical "blocked" audit row (#2684) so the fail-closed deny is
-		// portal-visible, mirroring run.go's clientRequestHandler deny (the
-		// canonical pattern for this contract on the agent static plane).
+	if projected.unavailable != "" {
+		// FAIL CLOSED (PRD v11 §1.7): the JSON-RPC error names the cause, and the
+		// canonical "error" row keeps the attempt portal-visible (#2641).
+		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, "unavailable", projected.unavailable)
 		writeMCPDecisionAudit(ctx, usageDB,
 			decisionID, uuid.New().String(),
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
-			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
-			mcpVerdictBlocked,
-			[]string{policyID},
-			[]string{reason},
+			"mcp_check_policy", descriptor, "",
+			mcpVerdictError,
+			[]string{"decision_enforcement_unavailable"},
+			[]string{projected.unavailable},
 			nil,
 			"",                                   // MCP-server session has no inbound traceparent → singleton
 			nil,                                  // #3365: guard id resolves via the builtin table
 			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
 			connectorType, tool)                  // #2904: tool_server, tool_name
-		return map[string]interface{}{
-			"allowed":      false,
-			"decision_id":  decisionID,
-			"block_reason": reason,
-			"blocked_by":   policyID,
-		}, nil
+		return nil, fmt.Errorf("%s: %s", projected.unavailable, enforceCauseMessages[projected.unavailable])
 	}
 
-	outcome := evaluateInputPolicies(
-		ctx,
-		session.tenantID,
-		session.orgID,
-		session.userID,
-		session.userRole,
-		connectorType,
-		// ADVISORY plane: the caller executes the tool and reports its own name,
-		// which is the premise capability scoping rests on, so the same identity
-		// serves both roles (#2801, #2904, #3717).
-		tool, // toolIdentity
-		tool, // capabilityScopeIdentity
-		operation,
-		statement,
-		params,
-		mcpDetectionCfg,
-		true, // runDynamicPolicy
-		segmentIDs,
-		legacycompile.PlaneMCP,
-	)
-
-	if outcome.EvalUnavailable {
-		return nil, fmt.Errorf("policy evaluation temporarily unavailable")
-	}
-
-	blocked := outcome.DynamicBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)
-
-	// Mint decision_id up front. Plugin Batch 1 / ADR-042 / ADR-043
-	// require it on every governance decision (allow + deny + redact)
-	// so callers can correlate the decision back to /explain/{id}
-	// without an extra round-trip. Allowed responses surface the same
-	// id even though there's no audit-log dual-write needed.
-	decisionID := uuid.New().String()
 	resp := map[string]interface{}{
-		"allowed":     !blocked,
+		"allowed":     projected.allowed,
 		"decision_id": decisionID,
 	}
-
 	if outcome.StaticResult != nil {
 		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
 	}
-	if outcome.DynamicInfo != nil {
-		resp["dynamic_info"] = outcome.DynamicInfo
-	}
 
-	// Allowed — check for PII that should be redacted (redact-action policy, not block).
-	// Mirrors what mcpCheckInputHandler does on its allow path (#2563 ADR-056):
-	// call redactInputStatement so the plugin gets the engine-masked statement and
-	// can deny + retry with the clean version instead of letting the first Write
-	// execute with raw PII (issue #2746).
-	if !blocked {
-		masked, didRedact, evaluated := redactInputStatement(ctx, session.tenantID, session.userID, connectorType, statement)
-		// #3766 / ADR-065 invariant 8: an enforcement point that DECLARED it
-		// cannot discharge field_redact must not be handed the masked statement
-		// and trusted to substitute it for the original.
-		//
-		// This is the route that matters most for the fleet: six of the eight
-		// shipped plugins reach the platform through check_policy and nothing
-		// else, so this is where their capability declaration first has teeth.
-		//
-		// Raised BEFORE redaction_evaluated and redacted_statement are written
-		// onto the response, so the refusal withholds the content rather than
-		// reporting on content it already handed over.
-		if reason, denied := applyMCPRedactionRefusal(pepHandshake, didRedact); denied {
-			log.Printf("[pep-handshake] check_policy denied on plane %s: the advertising enforcement point cannot discharge the inline redaction (decision_id=%s)",
-				PlaneMCP, decisionID)
-			writeMCPDecisionAudit(ctx, usageDB,
-				decisionID, uuid.New().String(),
-				session.tenantID, session.orgID, session.clientID, session.userEmail,
-				session.userID, session.userRole,
-				"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
-				mcpVerdictBlocked,
-				[]string{pepCapabilityUnsupportedCode},
-				[]string{reason},
-				nil,
-				"",
-				nil,
-				time.Since(startTime).Milliseconds(),
-				connectorType, tool)
-			return map[string]interface{}{
-				"allowed":      false,
-				"decision_id":  decisionID,
-				"block_reason": reason,
-			}, nil
+	if !projected.allowed {
+		recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, VerdictDeny, projected.reasonCode)
+		matches := anchoredPolicyMatches(enforced)
+		resp["block_reason"] = projected.blockReason
+		if len(enforced.evaluatedPolicies) > 0 {
+			resp["blocked_by"] = enforced.evaluatedPolicies[0]
 		}
-		resp["redaction_evaluated"] = evaluated
-		if didRedact {
-			resp["requires_redaction"] = true
-			resp["redacted_statement"] = masked
-			// Canonical "redacted" audit row so the decision is portal-visible —
-			// a redact-and-allow is its own verdict, not a clean allow (#2641 MCPIN).
-			// query is a non-PII descriptor; raw statement MUST NOT land in audit_logs.query.
-			_, pids, _, pnames := mcpInputDecisionVerdict(outcome, didRedact)
-			writeMCPDecisionAudit(ctx, usageDB,
-				decisionID, uuid.New().String(),
-				session.tenantID, session.orgID, session.clientID, session.userEmail,
-				session.userID, session.userRole,
-				"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), computeStatementHash(fmt.Sprintf("mcp check_policy: %s", connectorType)),
-				mcpVerdictRedacted,
-				pids,
-				[]string{"request PII redacted"},
-				[]string{"statement"},
-				"",                                   // MCP-server session has no inbound traceparent → singleton
-				pnames,                               // #3365
-				time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
-				connectorType, tool)                  // #2904: tool_server, tool_name
+		if len(matches) > 0 {
+			resp["policy_matches"] = matches
 		}
-		return resp, nil
-	}
-
-	// Block path. Build richer context + dual-write audit_logs + apply any
-	// active override. Same helpers the HTTP /api/v1/mcp/check-input handler
-	// uses, so plugin-visible shape is consistent across the two surfaces.
-
-	if outcome.DynamicBlocked {
-		resp["block_reason"] = outcome.DynamicBlockReason
-		// #2641 (MCPSRV-CHECKPOLICY-DYNAMIC-ONLY-BLOCK): a dynamic-only block carries
-		// no StaticResult, so the audit write below (gated on StaticResult.Blocked)
-		// never fired — the block was invisible to the portal decisions feed. Emit the
-		// canonical "blocked" row here. Dynamic blocks have no override flow (overrides
-		// are static-policy-only), so this is the single terminal write for this branch.
-		// query is a non-PII descriptor — the raw statement MUST NOT land in audit_logs.query.
-		writeMCPDecisionAudit(ctx, usageDB,
-			decisionID, uuid.New().String(),
-			session.tenantID, session.orgID, session.clientID, session.userEmail,
-			session.userID, session.userRole,
-			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), "",
-			mcpVerdictBlocked,
-			extractDynamicPolicyIDs(outcome.DynamicInfo),
-			[]string{outcome.DynamicBlockReason},
-			nil,
-			"", // MCP-server session has no inbound traceparent → singleton
-			policyNamesFromDynamic(outcome.DynamicInfo), // #3365
-			time.Since(startTime).Milliseconds(),        // #3424: agent-local check_policy evaluation, no proxy hop
-			connectorType, tool)                         // #2904: tool_server, tool_name
-	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
-		resp["block_reason"] = outcome.StaticResult.BlockReason
-		var blockedByID string
-		if outcome.StaticResult.BlockedBy != nil {
-			blockedByID = outcome.StaticResult.BlockedBy.PolicyID
-		}
-		resp["blocked_by"] = blockedByID
-	}
-
-	// Only static matches carry richer policy metadata; dynamic block
-	// reasons don't produce MatchedPolicies.
-	var matches []RicherPolicyMatch
-	var topRisk string
-	var overrideAvail *bool
-	var overrideExistingID string
-	if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
-		matches, topRisk, overrideAvail, overrideExistingID =
-			buildRicherCheckInputBlock(ctx, usageDB, session.tenantID, session.userEmail,
-				outcome.StaticResult.MatchedPolicies)
-
-		// ADR-044: if the caller has an active session override on any
-		// overridable matched policy, flip deny -> allow and emit an
-		// override_used event. Consistent with the HTTP path.
-		if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
-			ctx, usageDB, session.tenantID, session.userEmail, matches,
-		); applied {
-			var overriddenPolicyID string
-			var overriddenPolicyName string
-			var overriddenPolicyVersion int
-			if overriddenMatch != nil {
-				overriddenPolicyID = overriddenMatch.PolicyID
-				overriddenPolicyName = overriddenMatch.PolicyName
-				overriddenPolicyVersion = overriddenMatch.Version
-			}
-			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
-				overriddenPolicyID, overriddenPolicyName, overriddenPolicyVersion,
-				"") // #2598: MCP-server session has no inbound traceparent → singleton
-			resp["allowed"] = true
-			resp["override_existing_id"] = usedOverrideID
-			delete(resp, "block_reason")
-			delete(resp, "blocked_by")
-			return resp, nil
-		}
-
-		// Dual-write so explainDecision(id) resolves against audit_logs.
-		// #2641 (R3 Finding 12 / PII safety): the `query` column gets a NON-PII
-		// descriptor, never the raw statement (the /explain + /decisions endpoints
-		// read policy_details, not this column; the StatementHash preserves
-		// correlation).
+		// Dual-write so explainDecision(id) resolves against audit_logs. The
+		// query column carries a NON-PII descriptor; the statement hash keeps it
+		// correlatable (#2641).
 		writeExplainableAuditLog(ctx, usageDB,
 			decisionID, uuid.New().String(),
 			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
-			"mcp_check_policy", fmt.Sprintf("mcp check_policy: %s", connectorType), computeStatementHash(statement),
-			outcome.StaticResult.BlockReason, topRisk, matches,
+			"mcp_check_policy", descriptor, computeStatementHash(statement),
+			projected.blockReason, "", matches,
 			"",                                   // #2598: MCP-server session has no inbound traceparent → singleton
 			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
 			connectorType, tool)                  // #2904: tool_server, tool_name
+		seam.stamp(resp)
+		return resp, nil
 	}
 
-	if topRisk != "" {
-		resp["risk_level"] = topRisk
+	recordAnchoredEnforcement(mcpRequestSeamScope, enforced.engine, VerdictAllow, projected.reasonCode)
+	// The anchored decision ran and its redaction, if any, was discharged here,
+	// so a plugin fulfilling a redact_pii obligation may forward what it is
+	// handed (#2563 B1, #2746).
+	resp["redaction_evaluated"] = true
+	if projected.redacted {
+		resp["requires_redaction"] = true
+		resp["redacted_statement"] = projected.statement
+		// A redact-and-allow is its own verdict, not a clean allow (#2641 MCPIN);
+		// the query column is a non-PII descriptor.
+		_, pids, reasons, pnames := mcpInputDecisionVerdict(enforced, true)
+		writeMCPDecisionAudit(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_policy", descriptor, computeStatementHash(descriptor),
+			mcpVerdictRedacted,
+			pids,
+			reasons,
+			[]string{"statement"},
+			"",                                   // MCP-server session has no inbound traceparent → singleton
+			pnames,                               // #3365
+			time.Since(startTime).Milliseconds(), // #3424: agent-local check_policy evaluation, no proxy hop
+			connectorType, tool)                  // #2904: tool_server, tool_name
 	}
-	if len(matches) > 0 {
-		resp["policy_matches"] = matches
-	}
-	if overrideAvail != nil {
-		resp["override_available"] = *overrideAvail
-	}
-	if overrideExistingID != "" {
-		resp["override_existing_id"] = overrideExistingID
-	}
-
+	seam.stamp(resp)
 	return resp, nil
 }
 
@@ -2021,55 +1891,27 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	rowCount := len(rows)
 	checkExfil := rows != nil
 
-	// #3430 (ADR-060 P3 fleet-plane promotion): same fail-closed gate as
-	// mcpToolCheckPolicy above, applied to the response phase. The response
-	// phase is restriction-only (redact/withhold, never grant), so enforcing
-	// segment scoping here only ever makes the response MORE restrictive than
-	// the pre-#3430 unconditional nil - see evaluateOutputPolicies' doc for
-	// why the response phase is in scope for this issue rather than deferred
-	// alongside it.
+	// #3447: the org scope evaluateOutputPolicies takes explicitly - the same
+	// value the context carries.
 	//
-	// staticEvaluationWillRun mirrors evaluateOutputPolicies' own detectionGate
-	// for an isGateway caller (check_output IS one, so the connector allowlist
-	// does not apply and only .Enabled remains) - resolved from the same
-	// ResolveMCPDetectionConfig(ctx, OrgIDFromContext(ctx)) expression that
-	// function uses, so the two cannot mean different things. The pairing is
-	// pinned by TestMCPToolCheckOutput_DetectionDisabled_IndeterminateIdentityAllowed.
-	// #3447: evaluateOutputPolicies now takes the org scope explicitly rather
-	// than reading it back out of ctx. Bind it once here so the detection
-	// config, the gate and the evaluator below all name the SAME expression
-	// (OrgIDFromContext(ctx)) — the exact value this plane used before, so
-	// nothing about its scope changes.
+	// No segment gate stands here any more. It withheld the response when a
+	// caller's governance segments could not be resolved, on behalf of an
+	// organization's segment-scoped response rows, and those rows no longer
+	// decide: the response pass's verdict is the anchored engine's, which reads
+	// no segments (PRD v11 §1.1, §1.2). So the pass is evaluated with no segment
+	// set, and a segment resolution that would fail changes nothing.
 	outEvalOrgID := OrgIDFromContext(ctx)
-	outDetectionCfg := ResolveMCPDetectionConfig(ctx, outEvalOrgID)
-	segmentIDs, segGate := resolveMCPServerSegmentsForPolicy(ctx, session, sharedpolicy.PhaseResponse, outDetectionCfg.Enabled)
-	if segGate != mcpSegmentGateProceed {
-		decisionID := uuid.New().String()
-		policyID, reason := mcpSegmentGateRefusal(segGate, mcpSegmentPhaseResponse)
-		if segGate == mcpSegmentGateDenyIdentityUnresolved {
-			segmentIdentityUnresolvedTotal.WithLabelValues("check_output").Inc()
-		}
-		log.Printf("🛡️ [MCP-Server] check_output denied by the segment gate (%s, fail-closed) for org %s", policyID, logutil.Sanitize(session.orgID))
-		writeMCPDecisionAudit(ctx, usageDB,
-			decisionID, uuid.New().String(),
-			session.tenantID, session.orgID, session.clientID, session.userEmail,
-			session.userID, session.userRole,
-			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
-			mcpVerdictBlocked,
-			[]string{policyID},
-			[]string{reason},
-			nil,
-			"",                                   // MCP-server session has no inbound traceparent → singleton
-			nil,                                  // #3365: guard id resolves via the builtin table
-			time.Since(startTime).Milliseconds(), // #3424: agent-local check_output evaluation, no proxy hop
-			connectorType, tool)                  // #2955: tool_server, tool_name
-		return map[string]interface{}{
-			"allowed":      false,
-			"decision_id":  decisionID,
-			"block_reason": reason,
-			"blocked_by":   policyID,
-		}, nil
-	}
+
+	// Mint decision_id up front for the same reason as
+	// mcpToolCheckPolicy — surface it on every decision (allow + deny
+	// + redact) per Plugin Batch 1 / ADR-042 / ADR-043. Minted BEFORE the
+	// evaluation (#3564) so the enforcing seam's request carries the same id
+	// the response and every audit row do.
+	decisionID := uuid.New().String()
+	// #3564: the MCP response pass's enforcing seam reads the session's subject
+	// and the admitted handshake off the context, and records which engine
+	// decided for the response body and the audit writers below.
+	ctx = withMCPResponseSeam(ctx, decisionID, sessionSubject(session), pepHandshake)
 
 	outcome := evaluateOutputPolicies(
 		ctx,
@@ -2084,16 +1926,9 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		rowCount,
 		checkExfil,
 		true, // isGateway: check_output is a PEP/gateway caller (no managed connector)
-		segmentIDs,
-		legacycompile.PlaneMCP,
 	)
 
-	blocked := outcome.SQLiBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)
-
-	// Mint decision_id up front for the same reason as
-	// mcpToolCheckPolicy — surface it on every decision (allow + deny
-	// + redact) per Plugin Batch 1 / ADR-042 / ADR-043.
-	decisionID := uuid.New().String()
+	blocked := outcome.StaticResult != nil && outcome.StaticResult.Blocked
 
 	// #3766 / ADR-065 invariant 8: an enforcement point that DECLARED it cannot
 	// discharge field_redact must not be handed redacted_data / redacted_message
@@ -2124,11 +1959,15 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 				nil,
 				time.Since(startTime).Milliseconds(),
 				connectorType, tool)
-			return map[string]interface{}{
+			resp := map[string]interface{}{
 				"allowed":      false,
 				"decision_id":  decisionID,
 				"block_reason": reason,
-			}, nil
+			}
+			// The refusal names the engine, the bundle and the policy packs the
+			// pass decided under, as its REST twin's body does (#4196).
+			mcpResponseSeamFrom(ctx).stamp(resp)
+			return resp, nil
 		}
 	}
 
@@ -2140,6 +1979,8 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	if outcome.StaticResult != nil {
 		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
 	}
+	// #3564: which engine authored the verdict.
+	mcpResponseSeamFrom(ctx).stamp(resp)
 	// #2865: mirror check_input — report whether the response redaction pipeline
 	// ran so a plugin governing post-tool results via tools/call can fail closed
 	// when it did not (absence/false ⇒ don't trust an un-redacted response).
@@ -2180,36 +2021,15 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			connectorType, tool)                  // #2955: tool_server, tool_name
 	}
 
-	// Allowed — no richer context or override flow needed.
+	// Allowed — no richer context needed.
 	if !blocked {
 		return resp, nil
 	}
 
-	// Block path. Mirror mcpToolCheckPolicy's richer-context + override-
-	// apply + audit dual-write so check_output behaves consistently with
-	// check_policy across the MCP surface.
-	if outcome.SQLiBlocked {
-		resp["block_reason"] = fmt.Sprintf("SQL injection detected: %s", outcome.SQLiPattern)
-		// #2641 (MCPSRV-CHECKOUTPUT-SQLI-NO-AUDIT): a SQLi block carries no
-		// StaticResult, so the writeExplainableAuditLog call below (gated on
-		// StaticResult.Blocked) never fired — the block was portal-invisible. Emit the
-		// canonical "blocked" row here. SQLi blocks have no override flow.
-		writeMCPDecisionAudit(ctx, usageDB,
-			decisionID, uuid.New().String(),
-			session.tenantID, session.orgID, session.clientID, session.userEmail,
-			session.userID, session.userRole,
-			"mcp_check_output", fmt.Sprintf("mcp check_output: %s", connectorType), "",
-			mcpVerdictBlocked,
-			[]string{"sqli_response_scan"},
-			[]string{fmt.Sprintf("SQL injection detected in response: %s", outcome.SQLiPattern)},
-			nil,
-			"",                                   // MCP-server session has no inbound traceparent → singleton
-			nil,                                  // #3365: guard id resolves via the builtin table
-			time.Since(startTime).Milliseconds(), // #3424: agent-local check_output evaluation, no proxy hop
-			connectorType, tool)                  // #2955: tool_server, tool_name
-	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
-		resp["block_reason"] = outcome.StaticResult.BlockReason
-	}
+	// Block path: the richer context and the audit dual-write, as on
+	// check_policy. No session override applies: the anchored engine authors
+	// this verdict, and nothing flips it (PRD v11 §1.1).
+	resp["block_reason"] = outcome.StaticResult.BlockReason
 
 	var matches []RicherPolicyMatch
 	var topRisk string
@@ -2219,27 +2039,6 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		matches, topRisk, overrideAvail, overrideExistingID =
 			buildRicherCheckInputBlock(ctx, usageDB, session.tenantID, session.userEmail,
 				outcome.StaticResult.MatchedPolicies)
-
-		if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
-			ctx, usageDB, session.tenantID, session.userEmail, matches,
-		); applied {
-			var overriddenPolicyID string
-			var overriddenPolicyName string
-			var overriddenPolicyVersion int
-			if overriddenMatch != nil {
-				overriddenPolicyID = overriddenMatch.PolicyID
-				overriddenPolicyName = overriddenMatch.PolicyName
-				overriddenPolicyVersion = overriddenMatch.Version
-			}
-			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
-				overriddenPolicyID, overriddenPolicyName, overriddenPolicyVersion,
-				"") // #2598: MCP-server session has no inbound traceparent → singleton
-			resp["allowed"] = true
-			resp["override_existing_id"] = usedOverrideID
-			delete(resp, "block_reason")
-			return resp, nil
-		}
 
 		// Dual-write for explainability. #2641 (R3 Finding 12 / PII safety): hash the
 		// actual response content for correlation, but record only a NON-PII
@@ -2321,15 +2120,20 @@ func mcpToolAuditCall(session *mcpSession, args map[string]interface{}) (interfa
 	}, nil
 }
 
-// list_policies: fetches both static and dynamic policies from Orchestrator.
-// Both APIs return {policies: [...], pagination: {...}}. We request limit=200
-// to get all policies in one call (typical deployments have <200 policies).
+// list_policies: fetches the static policies from the Agent and the dynamic
+// policies from the Orchestrator. Both APIs return {policies: [...],
+// pagination: {...}}. We request limit=200 to get all policies in one call
+// (typical deployments have <200 policies).
 func mcpToolListPolicies(session *mcpSession, args map[string]interface{}) (interface{}, error) {
-	// Static policies are served by the Agent itself (not the Orchestrator).
-	// Dynamic policies are served by the Orchestrator.
+	// Static policies are served by the Agent itself, read over loopback with
+	// the internal-service credential (mcpProxyToLocal). Dynamic policies are
+	// served by the Orchestrator, read with its proxy credential and the
+	// session's identity like every other tool that reads it
+	// (mcpProxyToOrchestrator). Both reads carried no credential before #4265,
+	// so on an Enterprise deployment each answered 401.
 	agentPort := getEnv("PORT", "8080")
 	staticResp, staticErr := mcpProxyToLocal(session, "GET", "http://localhost:"+agentPort+"/api/v1/static-policies?limit=200")
-	dynamicResp, dynamicErr := mcpProxyToLocal(session, "GET", "http://localhost:"+agentPort+"/api/v1/dynamic-policies?limit=200")
+	dynamicResp, dynamicErr := mcpProxyToOrchestrator(session, "GET", "/api/v1/dynamic-policies?limit=200", nil)
 
 	if staticErr != nil && dynamicErr != nil {
 		return nil, fmt.Errorf("failed to list policies: static: %v, dynamic: %v", staticErr, dynamicErr)
@@ -2575,9 +2379,41 @@ func mcpProxyToAgent(session *mcpSession, method, url string, body interface{}) 
 	return result, nil
 }
 
+// errLoopbackUnsigned refuses a loopback read an ENTERPRISE agent cannot sign:
+// without the internal-service secret it would reach the route as an
+// unauthenticated caller. Community and Community-SaaS admit the public
+// fallback token instead, so the refusal does not apply there (#4265).
+var errLoopbackUnsigned = fmt.Errorf("this agent has no %s configured, so it cannot sign its read of its own policy routes; set it to the value the orchestrator and the customer portal use", serviceauth.SecretEnvVar)
+
+// errLoopbackUnscoped refuses a loopback read for a session with no tenant or
+// organization: the internal service would be scoped to a default instead of
+// the session (#4265).
+var errLoopbackUnscoped = errors.New("this MCP session carries no tenant or organization to scope the agent's read of its own policy routes to")
+
 // mcpProxyToLocal makes an HTTP call to the Agent's own endpoints (localhost).
 // Used for read-only endpoints like static policies that don't need a body.
+//
+// The call carries the internal-service credential internalServiceHints reads
+// (auth.go), signed as the sibling forwarders sign the orchestrator's proxy
+// header, and the session's tenant and organization, which the admitted
+// internal service is scoped to: the read answers what the session's own
+// credential would (#4265). Without the secret, or without the session's
+// scope, it is refused rather than sent.
 func mcpProxyToLocal(session *mcpSession, method, url string) (interface{}, error) {
+	// Community and Community-SaaS ADMIT the public fallback token this call
+	// falls back to (serviceauth.GetInternalServiceToken with no generator,
+	// accepted by IsValidInternalServiceRequest under the allowFallback the
+	// community arm sets, authenticator.go). The documented community
+	// configuration ships no secret at all, so refusing here would turn a
+	// working count into a partial answer on a shipped path. Enterprise admits
+	// no fallback, so there the refusal stands: an unsigned read would reach
+	// the route as an unauthenticated caller.
+	if proxyTokenGenerator == nil && !isCommunityMode() && !isCommunitySaasMode() {
+		return nil, errLoopbackUnsigned
+	}
+	if session.tenantID == "" || session.orgID == "" {
+		return nil, errLoopbackUnscoped
+	}
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -2589,6 +2425,8 @@ func mcpProxyToLocal(session *mcpSession, method, url string) (interface{}, erro
 	req.Header.Set("X-Tenant-ID", session.tenantID)
 	req.Header.Set("X-Client-ID", session.clientID)
 	req.Header.Set("X-Org-ID", session.orgID)
+	req.Header.Set(internalServiceIDHeader, serviceauth.ClientID)
+	req.Header.Set(internalServiceTokenHeader, serviceauth.GetInternalServiceToken(proxyTokenGenerator))
 
 	resp, err := orchestratorHTTPClient.Do(req)
 	if err != nil {
@@ -2634,86 +2472,32 @@ func mcpToolExplainDecision(session *mcpSession, args map[string]interface{}) (i
 	return resp, nil
 }
 
-// mcpToolCreateOverride proxies to POST /api/v1/overrides.
-// Mandatory fields (per ADR-044): policy_id, policy_type, override_reason.
-func mcpToolCreateOverride(session *mcpSession, args map[string]interface{}) (interface{}, error) {
-	policyID, _ := args["policy_id"].(string)
-	policyType, _ := args["policy_type"].(string)
-	reason, _ := args["override_reason"].(string)
-	if policyID == "" || policyType == "" || reason == "" {
-		return nil, fmt.Errorf("policy_id, policy_type, and override_reason are required")
-	}
-	// #2896: refuse LOUDLY instead of creating an override keyed to the
-	// client-shared pseudo-identity — such a row either never applies (the
-	// check planes key on a different identity) or applies to every caller
-	// on the client. This happens when the caller sent no per-user identity,
-	// or the deployment has not opted in to trusting identity headers.
-	//
-	// #3077: the refusal itself is unchanged; the MESSAGE now comes from the
-	// shared choke point so this plane stops carrying its own copy. The old
-	// text unconditionally told the caller to "set
-	// AXONFLOW_TRUST_IDENTITY_HEADERS=true", which is the wrong remedy on the
-	// commonest path into here — a deployment that has ALREADY enabled the gate
-	// and simply received no header still lands on this branch, and flipping an
-	// already-true flag cannot help it.
+// errOverrideWriteRetired is what the create_override and delete_override tools
+// answer from v11 (#4252, PRD v11 §1.5): the freeze's code and remedy, rendered
+// here rather than proxied, so the caller reads the code instead of a flattened
+// "orchestrator returned 409" string. The remedy loses only its closing full
+// stop: a Go error string does not end in punctuation (staticcheck ST1005),
+// because a caller may wrap it.
+var errOverrideWriteRetired = errors.New(legacyfreeze.ErrCode + ": " + strings.TrimSuffix(legacyfreeze.OverrideMessage, "."))
+
+// mcpToolCreateOverride answers the v11 freeze. The shared-identity refusal
+// answers first (#2896, #3077), as the orchestrator route's identity guard does
+// in the #4279 order: a session attributed to the client-shared pseudo-identity
+// is told what is wrong with its identity, and a session with a real one is told
+// where the write went.
+func mcpToolCreateOverride(session *mcpSession, _ map[string]interface{}) (interface{}, error) {
 	if isClientSharedPseudoIdentity(session.userEmail) {
 		return nil, errSharedIdentityRefusal(session, "per-user session overrides")
 	}
-
-	body := map[string]interface{}{
-		"policy_id":       policyID,
-		"policy_type":     policyType,
-		"override_reason": reason,
-	}
-	if toolSig, ok := args["tool_signature"].(string); ok && toolSig != "" {
-		body["tool_signature"] = toolSig
-	}
-	if ttl, ok := args["ttl_seconds"].(float64); ok {
-		body["ttl_seconds"] = int64(ttl)
-	}
-
-	resp, err := mcpProxyToOrchestrator(session, "POST", "/api/v1/overrides", body)
-	if err != nil {
-		return nil, fmt.Errorf("create override failed: %w", err)
-	}
-	return resp, nil
+	return nil, errOverrideWriteRetired
 }
 
-// mcpToolDeleteOverride proxies to DELETE /api/v1/overrides/:id.
-func mcpToolDeleteOverride(session *mcpSession, args map[string]interface{}) (interface{}, error) {
-	overrideID, _ := args["override_id"].(string)
-	if overrideID == "" {
-		return nil, fmt.Errorf("override_id is required")
-	}
-	// #3077: revoke deliberately does NOT carry the create path's shared-identity
-	// guard, and the asymmetry is load-bearing rather than an oversight.
-	//
-	// The first draft of this fix added one, reasoning that a shared identity
-	// cannot own an override so the orchestrator would refuse anyway. That is
-	// true in enterprise mode and FALSE in the two modes this plane is most used
-	// in. resolveCallerReadScope (read_scope.go) returns
-	// {TenantWide, AdminAuthority} as its FIRST statement in community mode, and
-	// {TenantWide} for community-saas over a validated proxy token, which
-	// mcpProxyToOrchestrator presents whenever a token generator is wired,
-	// alongside a non-blank X-Tenant-ID. With TenantWide set, revokeOverrideHandler skips the
-	// `createdBy == scope.UserEmail` ownership check entirely and the revoke
-	// SUCCEEDS. Guarding here would have broken revoking an override created out
-	// of band (the customer portal, the REST API, an SDK) on every community and
-	// community-saas deployment — and since create is already refused in those
-	// modes, revoke is the only half of the lifecycle that works there.
-	//
-	// So a refusal that "cannot change the outcome" was not that at all. The
-	// remaining defect is cosmetic and pre-existing: when the orchestrator DOES
-	// refuse (enterprise, own-rows scope), it answers "Override not found or
-	// already revoked" — a correct non-oracle that names the wrong thing for a
-	// caller whose id was fine. Tracked separately rather than fixed by breaking
-	// two modes.
-	path := "/api/v1/overrides/" + url.PathEscape(overrideID)
-	resp, err := mcpProxyToOrchestrator(session, "DELETE", path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("delete override failed: %w", err)
-	}
-	return resp, nil
+// mcpToolDeleteOverride answers the v11 freeze for every caller. It never carried
+// the create path's shared-identity guard (#3077: community grants a tenant-wide
+// revoke scope), and with the freeze no revoke is left for that guard to
+// protect.
+func mcpToolDeleteOverride(_ *mcpSession, _ map[string]interface{}) (interface{}, error) {
+	return nil, errOverrideWriteRetired
 }
 
 // mcpToolListRecentDecisions proxies to GET /api/v1/decisions with the
@@ -2987,4 +2771,22 @@ func writeJSONRPCAuthError(w http.ResponseWriter, id interface{}, message string
 	}); err != nil {
 		log.Printf("[MCP-Server] Failed to write JSON-RPC auth error: %v", err)
 	}
+}
+
+// writeMCPAuthRateLimited answers a credential the pre-credential per-minute
+// limiter refused with a 429, its Retry-After and the per-minute envelope
+// (#4261). Before #4261 that refusal was flattened into the 401
+// "Authentication required", which reads as a bad credential, not a limit.
+// For every other error it writes nothing and returns false.
+func writeMCPAuthRateLimited(w http.ResponseWriter, id interface{}, err error) bool {
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.HTTPStatus != http.StatusTooManyRequests {
+		return false
+	}
+	retrySecs, convErr := strconv.Atoi(authErr.RetryAfter)
+	if convErr != nil || retrySecs < 1 {
+		retrySecs = 60
+	}
+	writeMinuteRateLimitErrorJSONRPC(w, id, "", "", authErr.Limit, retrySecs)
+	return true
 }

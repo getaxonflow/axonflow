@@ -1,12 +1,16 @@
 # AxonFlow Orchestrator
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
 
-The intelligent orchestration layer of the AxonFlow platform that handles dynamic policy enforcement, multi-LLM routing, and response processing.
+
+The intelligent orchestration layer of the AxonFlow platform that handles policy enforcement on the anchored engine, multi-LLM routing, and response processing.
+
+> **v11:** the anchored policy engine (ADR-065) decides this service's requests, workflow steps, multi-agent plan steps and LLM responses from the typed policies in force, and a stored dynamic (tenant) policy decides none of them. The dynamic policies can no longer be written either: `migrations/core/172` makes the legacy policy tables read-only to the application roles, the write routes below answer `409 LEGACY_POLICY_WRITE_FROZEN`, and policy is authored through the typed policy routes (ADR-065) listed under [Typed Policy Authoring](#typed-policy-authoring-adr-065-every-edition).
 
 ## Overview
 
 The AxonFlow Orchestrator is the core intelligence engine that:
 - Routes requests to appropriate LLM providers based on cost, performance, and capabilities
-- Applies dynamic policies based on content analysis
+- Decides each request, workflow step and multi-agent plan step on the anchored policy engine (ADR-065)
 - Performs response filtering and PII redaction
 - Maintains comprehensive audit logs
 - Handles failover and load balancing across providers
@@ -17,7 +21,7 @@ The AxonFlow Orchestrator is the core intelligence engine that:
 ┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
 │  AxonFlow Agent │────▶│  AxonFlow Orchestrator │────▶│  LLM Providers  │
 │                 │     │                        │     │                 │
-│ Static Policies │     │  • Dynamic Policies    │     │ • OpenAI        │
+│ Static Policies │     │  • Policy Decisions    │     │ • OpenAI        │
 │ Authentication  │     │  • LLM Routing         │     │ • Anthropic     │
 │                 │     │  • Response Processing │     │ • Local Models  │
 └─────────────────┘     │  • Audit Logging       │     └─────────────────┘
@@ -38,15 +42,26 @@ The AxonFlow Orchestrator is the core intelligence engine that:
 - Provider health monitoring and automatic failover
 - Load balancing across multiple provider instances
 
-### 2. Dynamic Policy Engine
-- Content-based policy evaluation
-- Real-time risk assessment
-- Custom policy rule execution
+### 2. Request and Step Decisions
+- ONE anchored decision per request on `/api/v1/process` and `/api/v1/plan/execute`, and per gated workflow
+  or multi-agent plan step, from the typed policies in force (ADR-065)
+- A stored dynamic policy decides nothing: its content detector supplies a fact the decision reads, and its
+  routing hints steer a request the decision admitted
+- A request answered in one round trip cannot be held, so a challenge withholds it (`approval_required`); a
+  workflow step or plan step can be held for approval
 
 ### 3. Response Processor
-- PII detection in LLM responses
-- Dynamic redaction based on user permissions
+- ONE anchored decision per LLM response, on the `orchestrator_response` plane, evaluated for the client
+  credential the agent forwarded rather than for the end user
+- Three outcomes, and only these three: the response as the provider sent it, the response masked, or the
+  response withheld. A pass that cannot decide withholds and names its cause; it never releases by default
+- Detectors produce the FACTS that decision reads. They author no verdict: a detector saying "blocked"
+  changes nothing on its own
 - Response enrichment with metadata
+
+The decision travels where a reader can see it: `engine`, `subject_type`, `policy_bundle` and `verdict` on
+the API response, and the same members on the canonical plane=llm audit row. A withheld response carries no
+content: the body and the audit row both carry a substitute. See PRD v11 §1.1 and ADR-065.
 
 ### 4. Audit Logger
 - Complete request/response logging
@@ -59,7 +74,7 @@ The AxonFlow Orchestrator is the core intelligence engine that:
 ```
 POST /api/v1/process
 - Processes requests from AxonFlow Agent
-- Applies dynamic policies
+- Decides the request on the anchored policy engine; a withheld request answers 403
 - Routes to appropriate LLM
 - Returns filtered response
 ```
@@ -75,16 +90,31 @@ GET /api/v1/providers/status
 - Performance metrics
 ```
 
-### Dynamic Policies (ADR-024)
+### Tenant Policies (ADR-024)
 ```
-GET    /api/v1/dynamic-policies           - List all dynamic policies
-POST   /api/v1/dynamic-policies           - Create a dynamic policy
-GET    /api/v1/dynamic-policies/{id}      - Get policy by ID
-PUT    /api/v1/dynamic-policies/{id}      - Update policy
-DELETE /api/v1/dynamic-policies/{id}      - Delete policy
-GET    /api/v1/dynamic-policies/effective - Get effective policies
-POST   /api/v1/dynamic-policies/{id}/test - Test policy evaluation
+GET    /api/v1/tenant-policies           - List tenant policies
+POST   /api/v1/tenant-policies           - Create a policy (v11: 409 LEGACY_POLICY_WRITE_FROZEN)
+GET    /api/v1/tenant-policies/{id}      - Get policy by ID
+PUT    /api/v1/tenant-policies/{id}      - Update policy (v11: 409 LEGACY_POLICY_WRITE_FROZEN)
+DELETE /api/v1/tenant-policies/{id}      - Delete policy (v11: 409 LEGACY_POLICY_WRITE_FROZEN)
+GET    /api/v1/tenant-policies/effective - Get effective policies
+POST   /api/v1/tenant-policies/{id}/test - Test policy evaluation
 ```
+
+`/api/v1/dynamic-policies` is the deprecated spelling of the same routes and is still served. The full reference, including import and export, is [`policy-api.yaml`](../../docs/api/policy-api.yaml). A deployment connecting as the database owner (`AXONFLOW_DB_USE_APP_ROLE=false`) is not bound by the v11 revoke.
+
+### Typed Policy Authoring (ADR-065, every edition)
+```
+GET  /api/v1/typed-policies/edition  - What this deployment may author
+POST /api/v1/typed-policies/validate - Validate a candidate document
+POST /api/v1/typed-policies/publish  - Publish a document as a signed artifact
+POST /api/v1/typed-policies/activate - Activate a published digest
+GET  /api/v1/typed-policies/active   - The document currently in force
+GET  /api/v1/typed-policies/active/summary - How many policies are in force, and whose
+GET  /api/v1/typed-policies/system   - The platform's own controls, read-only
+```
+
+The v11 policy write path; specified in [`orchestrator-api.yaml`](../../docs/api/orchestrator-api.yaml).
 
 ### LLM Providers
 ```

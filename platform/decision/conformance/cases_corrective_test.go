@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package conformance
 
 import (
@@ -167,13 +170,13 @@ func correctiveCases() []Case {
 					{Type: contract.ObFieldTokenize, Version: 1}, {Type: contract.ObFieldRedact, Version: 1},
 				}}
 				alone := contract.ComposeObligations(contract.ComposeInput{
-					Obligations: []contract.Obligation{tokenize}, Leaves: leaves, PEP: pep})
+					Obligations: []contract.Obligation{tokenize}, Payload: contract.KnownPayloadLeaves(leaves...), PEP: pep})
 				rec.True("a reversible surrogate standing alone applies as authored", !alone.Denied)
 				rec.EqualStrings("and it is the transform on the leaf",
 					[]string{string(alone.Obligations[0].Type)}, []string{string(contract.ObFieldTokenize)})
 
 				both := contract.ComposeObligations(contract.ComposeInput{
-					Obligations: []contract.Obligation{tokenize, redact}, Leaves: leaves, PEP: pep})
+					Obligations: []contract.Obligation{tokenize, redact}, Payload: contract.KnownPayloadLeaves(leaves...), PEP: pep})
 				// The source proposal ranked tokenization between a one-way
 				// digest and a partial reveal. That placement is wrong: a value
 				// recoverable from a vault does not reveal less than a digest,
@@ -258,9 +261,15 @@ func correctiveCases() []Case {
 			ID: "AXC-008", Title: "Approval clauses deduplicate without flattening pools",
 			Family: "P Approval", Kind: KindContract,
 			Run: func(t *testing.T, rec *Recorder) {
+				// MANDATORY, because this case asserts on the composed
+				// REQUIREMENT and only a mandatory approval contributes one
+				// (#3891): an advisory obligation may not create a hold, add a
+				// clause or tighten separation of duties. Before that rule an
+				// advisory fixture here silently exercised the clause algebra
+				// through a requirement a detector alone had created.
 				clause := func(source string, quorum string, groups string) contract.Obligation {
 					return contract.Obligation{
-						Type: contract.ObApprovalChallenge, SourcePolicy: source, SchemaVersion: 1,
+						Type: contract.ObApprovalChallenge, SourcePolicy: source, SchemaVersion: 1, Mandatory: true,
 						Params: map[string]string{"quorum": quorum, "eligible": groups, "separation_of_duties": "true"},
 					}
 				}
@@ -276,6 +285,13 @@ func correctiveCases() []Case {
 					PEP:            DefaultPEP(),
 				})
 				rec.True("composition succeeds", !out.Denied)
+				// Guarded, so a build that composes NO requirement fails this
+				// case with a readable assertion instead of panicking on a nil
+				// dereference three lines later.
+				rec.True("an approval requirement was composed", out.Approval != nil)
+				if out.Approval == nil {
+					return
+				}
 				// The two identical clauses collapse to one because they are
 				// the same clause written twice, not because their pools were
 				// merged. The third stays separate: a conjunction of "2 of
@@ -632,7 +648,7 @@ func correctiveCases() []Case {
 			},
 		},
 		{
-			ID: "AXC-019", Title: "Identical input and bundle reproduce an identical decision",
+			ID: "AXC-019", Title: "Identical input, bundle and PEP profile reproduce an identical decision",
 			Family: "V Replay", Kind: KindDecision,
 			Run: func(t *testing.T, rec *Recorder) {
 				w := defaultWorld(t)

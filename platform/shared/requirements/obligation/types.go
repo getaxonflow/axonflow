@@ -6,94 +6,17 @@ package obligation
 import (
 	"fmt"
 	"sort"
-	"strings"
+
+	"axonflow/platform/decision/contract"
 )
 
-// Family partitions obligation types by the ONE composition algebra that
-// governs them. ADR-065's obligation table has seven rows and this enum has
-// seven values; TestEveryFamilyHasExactlyOneAlgebra pins the correspondence.
-//
-// FamilyPhaseOrdering is the one family whose domain is the whole plan rather
-// than a partition of it: no obligation TYPE belongs to it, because phase
-// ordering composes the dependency edges declared by every other obligation.
-// It is still a Family rather than a loose helper so that the "one algebra per
-// family, selected by family alone" rule has no exception to argue about.
-type Family string
-
-const (
-	// FamilyDisclosure covers field and response disclosure transforms.
-	FamilyDisclosure Family = "disclosure"
-	// FamilyApproval covers human approval challenges.
-	FamilyApproval Family = "approval"
-	// FamilyRouting covers destination and route-property restrictions.
-	FamilyRouting Family = "routing"
-	// FamilyStepUp covers step-up authentication requirements.
-	FamilyStepUp Family = "step_up"
-	// FamilyBudget covers budget and quota reservations.
-	FamilyBudget Family = "budget"
-	// FamilyAuditNotification covers immutable audit and notification.
-	FamilyAuditNotification Family = "audit_notification"
-	// FamilyPhaseOrdering covers request/response phase dependency ordering.
-	// No obligation type declares it; see the type comment.
-	FamilyPhaseOrdering Family = "phase_ordering"
-)
-
-// AllFamilies is the closed set, in a stable order for tests and traces.
-var AllFamilies = []Family{
-	FamilyDisclosure,
-	FamilyApproval,
-	FamilyRouting,
-	FamilyStepUp,
-	FamilyBudget,
-	FamilyAuditNotification,
-	FamilyPhaseOrdering,
-}
-
-// Type is a registered obligation type. ADR-065 names nine initial types.
-type Type string
-
-const (
-	// TypeApprovalChallenge holds execution until an approval requirement is
-	// discharged. Enterprise enforcement lives in
-	// platform/shared/requirements/approval.
-	TypeApprovalChallenge Type = "approval_challenge"
-	// TypeFieldRedaction transforms named request fields before execution.
-	TypeFieldRedaction Type = "field_redaction"
-	// TypeSchemaConstrainedTransform applies a declared, schema-validated
-	// transform to named fields.
-	TypeSchemaConstrainedTransform Type = "schema_constrained_transform"
-	// TypeRouteRestriction constrains where a call may be sent.
-	TypeRouteRestriction Type = "route_restriction"
-	// TypeImmutableAudit requires a tamper-evident audit record.
-	TypeImmutableAudit Type = "immutable_audit"
-	// TypeNotification requires a notification to be delivered.
-	TypeNotification Type = "notification"
-	// TypeQuotaReservation requires an atomic budget/quota reservation.
-	TypeQuotaReservation Type = "quota_reservation"
-	// TypeStepUpAuthentication requires a higher authentication assurance.
-	TypeStepUpAuthentication Type = "step_up_authentication"
-	// TypeResponseFiltering transforms named response fields before release.
-	TypeResponseFiltering Type = "response_filtering"
-)
-
-// Enforcement says whether an obligation binds the decision.
-//
-// The asymmetry is the whole point and it runs both ways: a failed MANDATORY
-// obligation denies, and an ADVISORY obligation can never satisfy a mandatory
-// requirement nor turn a permit into a deny. Everything that reads this enum
-// must branch on it explicitly; there is no "default to mandatory" fallback,
-// because a zero-valued Enforcement is a construction defect and Validate
-// rejects it rather than guessing in either direction.
-type Enforcement string
-
-const (
-	// Mandatory obligations bind: unknown, unsupported, conflicting or failed
-	// mandatory obligations deny.
-	Mandatory Enforcement = "mandatory"
-	// Advisory obligations are audit, warning or tuning evidence. They cannot
-	// deny and cannot satisfy a mandatory requirement.
-	Advisory Enforcement = "advisory"
-)
+// THERE IS NO VOCABULARY IN THIS FILE. The obligation types, families,
+// parameter keys, disclosure order, delivery guarantees and assurance levels
+// are platform/decision/contract's, and this package names them through that
+// import. What is declared here is what only the stateful planner knows: WHEN
+// an instruction is discharged (Phase), WHETHER the policy that attached it
+// applied (Applicability), and what happens when discharge fails
+// (FailureBehavior). None of these takes part in composition.
 
 // Phase is when an obligation is discharged relative to the governed action.
 type Phase string
@@ -111,6 +34,9 @@ const (
 	PhaseOutOfBand Phase = "out_of_band"
 )
 
+// AllPhases lists the declared phases in a stable order.
+func AllPhases() []Phase { return []Phase{PhaseRequest, PhaseResponse, PhaseOutOfBand} }
+
 // GatesRelease reports whether an obligation in this phase must be complete
 // before anything is handed onward.
 //
@@ -120,6 +46,15 @@ const (
 // they are exactly the ones that carry a delivery guarantee instead.
 func (p Phase) GatesRelease() bool { return p == PhaseRequest || p == PhaseResponse }
 
+// Valid reports whether p is a declared phase.
+func (p Phase) Valid() bool {
+	switch p {
+	case PhaseRequest, PhaseResponse, PhaseOutOfBand:
+		return true
+	}
+	return false
+}
+
 // Applicability is the tri-state that closes the source proposal's
 // obligations-INDET fail-open.
 //
@@ -128,6 +63,10 @@ func (p Phase) GatesRelease() bool { return p == PhaseRequest || p == PhaseRespo
 // answer - "not applicable, carry on" - is the bug. Here `Unknown` is a value
 // the planner must handle, and the planner's handling of it for a mandatory
 // obligation is Deny.
+//
+// It is about the requirement policy's CONDITION, not about the instruction,
+// which is why it lives on the planner's wrapper and not on the canonical
+// obligation: by the time the PDP composes, its conditions are resolved.
 type Applicability string
 
 const (
@@ -151,31 +90,6 @@ func (a Applicability) Valid() bool {
 	return false
 }
 
-// DeliveryGuarantee is the durability contract for an out-of-band obligation.
-type DeliveryGuarantee string
-
-const (
-	// DeliveryNone - best effort, no retry, no durable queue.
-	DeliveryNone DeliveryGuarantee = "none"
-	// DeliveryAtLeastOnceDurable - persisted before acknowledgement and
-	// retried until acknowledged.
-	DeliveryAtLeastOnceDurable DeliveryGuarantee = "at_least_once_durable"
-)
-
-// Rank orders delivery guarantees so the audit/notification algebra can take
-// "the strongest required delivery guarantee". This is an ordering WITHIN one
-// family over one property, which is exactly what ADR-065 asks for; it is not
-// a cross-family severity rank.
-func (d DeliveryGuarantee) Rank() int {
-	switch d {
-	case DeliveryAtLeastOnceDurable:
-		return 1
-	case DeliveryNone:
-		return 0
-	}
-	return -1
-}
-
 // FailureBehavior is what happens when discharging the obligation fails.
 type FailureBehavior string
 
@@ -187,106 +101,92 @@ const (
 	FailRecorded FailureBehavior = "record"
 )
 
-// Capability is one obligation type at one exact schema version, as advertised
-// by a PEP.
+// Obligation is one candidate instruction the planner is asked about: the
+// canonical instruction, exactly as the PDP would compose it, plus the two
+// facts only the requirement policy's evaluation knows.
 //
-// The version is part of the identity, not metadata: a PEP that supports
-// field_redaction v1 does not support field_redaction v2, and ADR-065 requires
-// the coordinator to prove "the PEP advertises the exact capability and
-// version" before permit. Comparable, so it is usable as a map key.
-type Capability struct {
-	Type    Type
-	Version int
-}
-
-func (c Capability) String() string { return fmt.Sprintf("%s@v%d", c.Type, c.Version) }
-
-// Obligation is one planned instruction attached to one decision.
-//
-// Params is family-typed rather than a free map so that composition cannot be
-// asked to merge two things it has no algebra for. A nil Params on an
-// applicable obligation is a construction defect, not an empty parameter set.
+// The canonical half is EMBEDDED, not translated. A planner obligation IS a
+// contract obligation with a phase and an applicability attached, so there is
+// no second parameter model to keep in step and nothing to convert before the
+// algebra runs. Type, target, params, mandatory, source policy and schema
+// version all read through the embedding.
 type Obligation struct {
-	// Type and Version identify the schema. Both are required; version 0 is
-	// not "latest", it is invalid.
-	Type    Type
-	Version int
+	contract.Obligation
 
-	// Enforcement is mandatory or advisory. No default.
-	Enforcement Enforcement
+	// Phase is the phase this instance is discharged in. It must be one the
+	// registered schema declares; Registry.ValidateObligation checks that.
+	Phase Phase
 
 	// Applicability is the tri-state from the requirement policy's condition.
 	Applicability Applicability
-	// ApplicabilityReason is the named cause when Applicability is Unknown
-	// (resolution_failed, stale_attribute, schema_mismatch, unevaluable_condition,
-	// ...). It is carried into the deny reason and the audit trace so an
-	// operator sees WHY the deny happened, which the source proposal's silent
-	// drop never produced.
-	ApplicabilityReason string
-
-	// SourcePolicyID attributes the obligation to the requirement policy that
-	// produced it. Free-form, carried into the trace.
-	SourcePolicyID string
-
-	// Params carries the family-typed parameters.
-	Params Params
+	// ApplicabilityReason is the DECLARED class of unknown-ness when
+	// Applicability is Unknown, spelled with the same vocabulary the attribute
+	// plane uses for an attribute it could not establish. Required in that
+	// state, refused in the others.
+	ApplicabilityReason contract.UnknownReason
+	// ApplicabilityDetail is the operator-audience expansion (which attribute,
+	// which bound). Free text; it names paths and policies, never values.
+	ApplicabilityDetail string
 }
 
 // Validate checks the instance-level invariants that hold regardless of
 // schema. Schema-level checks live in Registry.Validate.
+//
+// The canonical half is validated by the canonical validator ONLY when the
+// obligation is applicable: a NotApplicable or Unknown obligation carries no
+// parameters and possibly no target, because there was nothing to
+// parameterise, and the contract's own validator would refuse a disclosure
+// transform with no target. Its type must still be a registered one, because
+// an obligation of a type nobody declared cannot be planned in any state.
 func (o Obligation) Validate() error {
 	if o.Type == "" {
 		return fmt.Errorf("obligation: type is required")
 	}
-	if o.Version <= 0 {
-		return fmt.Errorf("obligation %s: version must be >= 1 (0 is not 'latest')", o.Type)
+	if _, err := contract.FamilyOf(o.Type); err != nil {
+		return fmt.Errorf("obligation: %w", err)
 	}
-	switch o.Enforcement {
-	case Mandatory, Advisory:
-	default:
-		return fmt.Errorf("obligation %s: enforcement must be %q or %q, got %q (there is no default)",
-			o.Type, Mandatory, Advisory, o.Enforcement)
+	if o.SchemaVersion <= 0 {
+		return fmt.Errorf("obligation %s: schema_version must be >= 1 (0 is not 'latest')", o.Type)
+	}
+	if !o.Phase.Valid() {
+		return fmt.Errorf("obligation %s: phase must be one of %v, got %q (there is no default)", o.Type, AllPhases(), o.Phase)
 	}
 	if !o.Applicability.Valid() {
 		return fmt.Errorf("obligation %s: applicability must be one of %q/%q/%q, got %q",
 			o.Type, Applicable, NotApplicable, Unknown, o.Applicability)
 	}
-	if o.Applicability == Unknown && o.ApplicabilityReason == "" {
-		return fmt.Errorf("obligation %s: applicability %q requires a named reason", o.Type, Unknown)
+	switch o.Applicability {
+	case Unknown:
+		if !validUnknownReason(o.ApplicabilityReason) {
+			return fmt.Errorf("obligation %s: applicability %q requires a declared reason, one of %v; got %q",
+				o.Type, Unknown, contract.AllUnknownReasons(), o.ApplicabilityReason)
+		}
+	default:
+		if o.ApplicabilityReason != "" {
+			return fmt.Errorf("obligation %s: applicability %q must not carry an unknown-reason (%q)", o.Type, o.Applicability, o.ApplicabilityReason)
+		}
 	}
-	// An applicable obligation must carry parameters. A NotApplicable or
-	// Unknown one need not: there was nothing to parameterise, or the
-	// condition that would have parameterised it could not be evaluated.
-	if o.Applicability == Applicable && o.Params == nil {
-		return fmt.Errorf("obligation %s: applicable obligation has nil params", o.Type)
+	if o.Applicability == Applicable {
+		if err := o.Obligation.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
+func validUnknownReason(r contract.UnknownReason) bool {
+	for _, known := range contract.AllUnknownReasons() {
+		if r == known {
+			return true
+		}
+	}
+	return false
+}
+
 // Capability returns the exact capability this obligation demands of a PEP.
-func (o Obligation) Capability() Capability {
-	return Capability{Type: o.Type, Version: o.Version}
-}
+func (o Obligation) Capability() contract.Capability { return o.CapabilityOf() }
 
-// Params is the family-typed parameter payload of an obligation.
-//
-// Family() must agree with the registered schema's family; Registry.Validate
-// rejects a mismatch rather than trusting either side. Canonical() renders a
-// stable, sorted string used for deduplication and for the obligations digest
-// that the decision proof binds - two obligations that differ in any parameter
-// must differ in Canonical(), or the proof would bind fewer facts than it
-// claims.
-type Params interface {
-	Family() Family
-	Canonical() string
-	Validate() error
-}
-
-// --- helpers shared by the concrete Params types -------------------------
-
-// sortedUnique returns a sorted, duplicate-free copy of in. Used everywhere a
-// collection reaches a digest, because ADR-065 requires collections to be
-// "normalized, sorted, and duplicate-free before hashing".
+// sortedUnique returns a sorted, duplicate-free copy of in.
 func sortedUnique(in []string) []string {
 	if len(in) == 0 {
 		return nil
@@ -302,56 +202,4 @@ func sortedUnique(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// intersect returns the sorted intersection of a and b. A nil slice means
-// "unconstrained" to every caller in this package, so the caller - not this
-// helper - decides what to do with it; intersect itself treats nil as the
-// empty set and callers must not pass nil where unconstrained is meant.
-func intersect(a, b []string) []string {
-	set := make(map[string]struct{}, len(a))
-	for _, s := range a {
-		set[s] = struct{}{}
-	}
-	out := make([]string, 0, len(a))
-	for _, s := range b {
-		if _, ok := set[s]; ok {
-			out = append(out, s)
-		}
-	}
-	return sortedUnique(out)
-}
-
-// canonicalKV renders a map as `k=v` pairs joined by `;`, sorted by key. Keys
-// and values are rendered verbatim; a key or value containing `;` or `=` would
-// be ambiguous, so Validate on each Params type rejects those characters
-// rather than escaping them. Ambiguity in a digest input is a collision.
-func canonicalKV(m map[string]string) string {
-	if len(m) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+m[k])
-	}
-	return strings.Join(parts, ";")
-}
-
-// rejectSeparators refuses map keys/values that would make canonicalKV
-// ambiguous. Named separately so the error message can say which field.
-func rejectSeparators(what string, m map[string]string) error {
-	for k, v := range m {
-		if strings.ContainsAny(k, ";=") {
-			return fmt.Errorf("%s: key %q contains a canonical separator (';' or '=')", what, k)
-		}
-		if strings.ContainsAny(v, ";") {
-			return fmt.Errorf("%s: value of %q contains a canonical separator (';')", what, k)
-		}
-	}
-	return nil
 }

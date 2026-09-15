@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -27,10 +30,15 @@ import (
 // turning a typed document into Rego - is measured separately again, because it
 // is what an authoring surface pays when a policy is saved.
 //
-// Activation here has no warm path to be confused with a cold one: NewRuntime
-// runs LintBundleModule and rego.PrepareForEval on every call
-// (runtime.go:170-197), with no cache between them. A cached compile reported as
-// activation would be the same class of error as reporting the harness.
+// Activation here is the COLD path, deliberately. Since #3693 NewRuntime
+// consults a prepared-query cache keyed on the bundle's content digest, so a
+// loop that called it would compile once and then measure a map lookup - a
+// beautifully stable figure that is a statement about the cache rather than
+// about activation, and one that would make the activation shape budget
+// unfalsifiable. The loops below call newRuntimeUncached, which is the same
+// code path with the cache bypassed: LintBundleModule and rego.PrepareForEval
+// on every iteration. A cached compile reported as activation would be the
+// same class of error as reporting the harness.
 //
 // # THE TWO CONTROLS, WHICH FAIL IN DIFFERENT DIRECTIONS
 //
@@ -133,6 +141,7 @@ func benchEngine(tb testing.TB, d *Document) *Engine {
 	ts := NewTrustStore()
 	ts.Authorize(d.Root, "k1", pub)
 	e, err := NewEngine(context.Background(), EngineConfig{
+		SystemCorpus:  Unanchored("an in-package test builds a fixture document to exercise one rule of the decision algebra; it never activates the shipped system corpus"),
 		Bundles:       []*Bundle{b},
 		Documents:     []*Document{d},
 		TrustStore:    ts,
@@ -309,7 +318,7 @@ func activateBench(n int) func(*testing.B) {
 func activateLoop(bundle *Bundle) func(*testing.B) {
 	return func(b *testing.B) {
 		ctx := context.Background()
-		if _, err := NewRuntime(ctx, bundle, DefaultLimits()); err != nil {
+		if _, err := newRuntimeUncached(ctx, bundle, DefaultLimits()); err != nil {
 			b.Fatalf("the benchmarked call fails: %v", err)
 		}
 		samples := make([]time.Duration, 0, b.N)
@@ -317,8 +326,8 @@ func activateLoop(bundle *Bundle) func(*testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			start := time.Now()
-			if _, err := NewRuntime(ctx, bundle, DefaultLimits()); err != nil {
-				b.Fatalf("NewRuntime: %v", err)
+			if _, err := newRuntimeUncached(ctx, bundle, DefaultLimits()); err != nil {
+				b.Fatalf("newRuntimeUncached: %v", err)
 			}
 			samples = append(samples, time.Since(start))
 		}

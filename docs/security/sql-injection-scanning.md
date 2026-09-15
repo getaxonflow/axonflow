@@ -1,4 +1,6 @@
 # SQL Injection Scanning
+> Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 
 AxonFlow provides built-in SQL injection (SQLi) detection for MCP connector responses to protect against data exfiltration and manipulation attacks.
 
@@ -94,10 +96,8 @@ For Docker and containerized deployments, configure SQL injection scanning using
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | Sets the scanning mode for both input and response |
-| `SQLI_ACTION` | `block`, `warn`, `log` | `block` | Controls the action when SQLi is detected |
-| `SQLI_BLOCK_MODE` | `block`, `warn` | `block` | **Deprecated** - use `SQLI_ACTION` instead |
 
-> **Note (Issue #891):** `SQLI_BLOCK_MODE` is deprecated. Use `SQLI_ACTION` for unified detection configuration.
+> **Removed in v11 (#3961):** `SQLI_ACTION` and `SQLI_BLOCK_MODE` no longer set the action taken on a detection. A deployment that still sets either keeps running: the agent logs a boot `WARN [agent] detection posture env var ignored: ...` line and increments `axonflow_ignored_posture_env_total{name="SQLI_ACTION"}` (or `name="SQLI_BLOCK_MODE"`) on `/prometheus`. The action is the one stored on the matching `security-sqli` policy; see [Response Handling](#response-handling) for how to change it.
 
 **Example: docker-compose.yml**
 
@@ -107,27 +107,22 @@ services:
     environment:
       # Scanning mode: off, basic, advanced
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
-      # Action on detection: block (reject), warn (log+allow), log (audit only)
-      SQLI_ACTION: ${SQLI_ACTION:-block}
 ```
 
 **Usage Examples:**
 
 ```bash
-# Default: basic scanning with blocking enabled
+# Default: basic scanning; the stored policy action decides the outcome
 docker compose up -d
 
 # Disable scanning entirely
 SQLI_SCANNER_MODE=off docker compose up -d
 
-# Enable scanning in warn-only mode (log but don't block)
-SQLI_ACTION=warn docker compose up -d
-
-# Use advanced scanning (Enterprise only) with blocking
-SQLI_SCANNER_MODE=advanced SQLI_ACTION=block docker compose up -d
+# Use advanced scanning (Enterprise only)
+SQLI_SCANNER_MODE=advanced docker compose up -d
 ```
 
-> **Note:** Invalid environment variable values are logged and fall back to defaults (basic mode, blocking enabled) to ensure security-first behavior.
+> **Note:** An invalid `SQLI_SCANNER_MODE` value is logged and falls back to `basic`.
 
 ## Detection Categories
 
@@ -144,9 +139,16 @@ SQLI_SCANNER_MODE=advanced SQLI_ACTION=block docker compose up -d
 
 ## Response Handling
 
-When SQL injection is detected, behavior depends on the configured block mode:
+When SQL injection is detected, the outcome is the action stored on the matching `security-sqli` policy, unless the organization has recorded an `sqli` detection-posture override, which replaces it. Every shipped `sys_sqli_*` row stores `warn` for both the request and the response phase, so **out of the box a detection is recorded and the request proceeds**. On the gateway pre-check the request is `approved: true` and the matched `sys_sqli_*` policy id is listed in `policies`.
 
-### Block Mode (`SQLI_ACTION=block`, default)
+To block SQL injection, either:
+
+- record the organization override (Enterprise): `PUT /api/v1/detection-posture/sqli` with body `{"action":"block"}` on the customer portal API (session auth, `sso:configure` permission; audited to `admin_audit_log`). Agents apply it within `AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS` (default 60 seconds); or
+- change the policy's action: create a system-policy override (`POST /api/v1/system-policies/{id}/override`, Enterprise). Editing the tenant policy was the other way before v11; in v11 the legacy policy tables are read-only to the application roles (`migrations/core/172`), so that edit answers `409 LEGACY_POLICY_WRITE_FROZEN`.
+
+Community SaaS (try.getaxonflow.com) warns until its provisioning writes an override (#4017). See [Policy Actions and Detection-Posture Overrides](../governance/policy-action-authority.md) for the per-plane detail.
+
+### Block (`sqli=block` override, or a policy whose action is `block`)
 
 Returns HTTP 403 Forbidden and rejects the request:
 ```json
@@ -156,9 +158,9 @@ Returns HTTP 403 Forbidden and rejects the request:
 }
 ```
 
-### Warn Mode (`SQLI_ACTION=warn`)
+### Warn (shipped default)
 
-Logs the detection but allows the request through. Useful for:
+Records the detection but allows the request through. Useful for:
 - Initial deployment to assess false positive rates
 - Testing detection patterns before enabling enforcement
 - Environments where availability is prioritized over strict blocking
@@ -242,5 +244,5 @@ If scanning adds unacceptable latency:
 ## Related Documentation
 
 - [Row-Level Security](row-level-security.md)
-- [MCP Connector Configuration](../guides/connector-configuration.md)
-- [Compliance Guide](../compliance/overview.md)
+- [MCP Connector Development](../guides/connector-development.md)
+- [Compliance Guide](https://docs.getaxonflow.com/docs/compliance/overview/)

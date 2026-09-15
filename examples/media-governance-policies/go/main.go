@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Media Governance Policies Example - Go
 //
 // Demonstrates and VALIDATES media governance policy management using the Go SDK.

@@ -3,9 +3,9 @@
 
 package agent
 
-// Unit tests for issue #2746: check_policy must call redactInputStatement on
-// the allow path so a PII-bearing Write call is denied before execution and
-// Claude retries with the masked content.
+// Unit tests for issue #2746: check_policy hands a PII-bearing statement back
+// masked on the allow path, so a PII-bearing Write call is denied before
+// execution and Claude retries with the masked content.
 
 import (
 	"context"
@@ -30,8 +30,8 @@ const validNIKStatement = "write NIK 3174042506780001 to customer record"
 // (issue #2746).
 func TestMCPToolCheckPolicy_PIIRedact_RequiresRedactionField(t *testing.T) {
 	// Set MCP detection config to redact mode. withMCPPIIAction also nil's the
-	// global engine — we override that below with a non-nil stub engine so
-	// redactInputStatement passes its nil-guard and reaches the Indonesia detector.
+	// global engine, and a request pass with no engine refuses unknown_constraint
+	// (PRD v11 §1.7), so a stub engine is installed below.
 	withMCPPIIAction(t, DetectionActionRedact)
 
 	// Provide a non-nil engine backed by a mock DB that LOADS SUCCESSFULLY with
@@ -40,9 +40,8 @@ func TestMCPToolCheckPolicy_PIIRedact_RequiresRedactionField(t *testing.T) {
 	// Indonesia detector runs, which masks the NIK without any DB-seeded policy.
 	//
 	// #2820: the mock MUST return empty rows (a successful empty load), NOT run
-	// out of expectations (a load ERROR). redactInputStatement now fails CLOSED
-	// on a load error (returns evaluated=false so the PEP withholds) — an
-	// expectation-less mock would trip that path and mask nothing. A successful
+	// out of expectations (a load ERROR). A load error fails the request pass
+	// closed — an expectation-less mock would trip that path and mask nothing. A successful
 	// empty load is the honest "engine present, no PII policies" state this test
 	// intends.
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
@@ -55,15 +54,18 @@ func TestMCPToolCheckPolicy_PIIRedact_RequiresRedactionField(t *testing.T) {
 	// no PII policies" state is a benign never-matching non-PII system row.
 	for i := 0; i < 8; i++ {
 		mock.ExpectQuery("SELECT").WillReturnRows(
-			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
-			"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
-			"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
+			policytest.SystemPolicyRow(appendShippedGlobalRows(t, sqlmock.NewRows(policytest.LoaderCols()), nil, nil),
+				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
+				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
 		)
 	}
 	policytest.ScopedTxPlumbing(mock, 8)
-	// withMCPPIIAction set the engine to nil; replace it with the stub.
-	// The t.Cleanup registered by withMCPPIIAction restores the original engine.
+	// The request pass evaluates this stub engine. Restore the process default
+	// afterwards: the stub reads through db, which closes when this test returns,
+	// and every later test would read its policies through a closed database.
+	prevEngine := sharedpolicy.GetGlobalEngine()
 	sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(db, sharedpolicy.EngineConfig{GracefulDegradation: true}, nil))
+	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(prevEngine) })
 
 	resp, err := mcpToolCheckPolicy(context.Background(), &mcpSession{
 		tenantID: "t1", orgID: "o1", clientID: "c1",

@@ -10,13 +10,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"axonflow/platform/agent/license"
-	"axonflow/platform/shared/envcompat"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // Cached detection configs — loaded once at startup via InitDetectionConfigs().
-// Follows the same pattern as sharedpolicy.InitGlobalDynamicPolicyEvaluator().
 var (
 	cachedMCPConfig     *ModeDetectionConfig
 	cachedGatewayConfig *ModeDetectionConfig
@@ -36,249 +36,6 @@ const (
 	// DetectionActionLog allows the request and logs for audit only.
 	DetectionActionLog DetectionAction = "log"
 )
-
-// Environment variable names for detection configuration.
-// These provide unified control over all detection types.
-//
-// Note: for strict RBI / regulated-environment posture, use
-// AXONFLOW_PROFILE=compliance (see ADR-036). That supersedes the earlier
-// proposal for a standalone RBI_COMPLIANCE_MODE flag.
-const (
-	// EnvSQLIAction controls SQL injection detection behavior.
-	// Valid values: "block", "warn", "log"
-	// Default (v6.2.0+): "warn". Set AXONFLOW_PROFILE=strict to block.
-	EnvSQLIAction = "SQLI_ACTION"
-
-	// EnvPIIAction controls PII detection behavior.
-	// Valid values: "block", "warn", "redact", "log"
-	// Default (v6.2.0+): "warn" (honest detection signal, no silent data mutation).
-	// Set AXONFLOW_PROFILE=strict for the previous "redact" behavior.
-	EnvPIIAction = "PII_ACTION"
-
-	// EnvSensitiveDataAction controls sensitive data (credentials, tokens) detection.
-	// Valid values: "block", "warn", "log"
-	// Default: "warn" (may have false positives)
-	EnvSensitiveDataAction = "SENSITIVE_DATA_ACTION"
-
-	// EnvHighRiskAction controls high risk score (>0.8) behavior.
-	// Valid values: "block", "warn", "log"
-	// Default: "warn" (composite score needs tuning)
-	EnvHighRiskAction = "HIGH_RISK_ACTION"
-
-	// EnvDangerousQueryAction controls dangerous SQL query (DROP, TRUNCATE) behavior.
-	// Valid values: "block", "warn", "log"
-	// Default: "block" (destructive SQL operations)
-	EnvDangerousQueryAction = "DANGEROUS_QUERY_ACTION"
-
-	// EnvDangerousCommandAction controls dangerous shell command behavior
-	// (reverse shells, rm -rf, credential access, SSRF, path traversal, curl|bash).
-	// Valid values: "block", "warn", "log"
-	// Default: "block" (dangerous command execution)
-	EnvDangerousCommandAction = "DANGEROUS_COMMAND_ACTION"
-
-	// Deprecated environment variables - these will be removed in a future release.
-	// Use the new *_ACTION variables instead.
-
-	// EnvSQLIBlockModeDeprecated is deprecated. Use SQLI_ACTION instead.
-	EnvSQLIBlockModeDeprecated = "SQLI_BLOCK_MODE"
-
-	// EnvPIIBlockCriticalDeprecated is deprecated. Use PII_ACTION instead.
-	EnvPIIBlockCriticalDeprecated = "PII_BLOCK_CRITICAL"
-)
-
-// DetectionConfig holds the unified detection configuration for all detection types.
-// This replaces the fragmented configuration across multiple env vars.
-type DetectionConfig struct {
-	// SQLIAction determines behavior when SQL injection is detected.
-	// Default: block
-	SQLIAction DetectionAction
-
-	// PIIAction determines behavior when PII is detected.
-	// Default: redact
-	PIIAction DetectionAction
-
-	// SensitiveDataAction determines behavior when sensitive data (credentials) is detected.
-	// Default: warn
-	SensitiveDataAction DetectionAction
-
-	// HighRiskAction determines behavior when risk score exceeds threshold.
-	// Default: warn
-	HighRiskAction DetectionAction
-
-	// DangerousQueryAction determines behavior when dangerous SQL queries are detected
-	// (DROP TABLE, TRUNCATE, etc.).
-	// Default: block
-	DangerousQueryAction DetectionAction
-
-	// DangerousCommandAction determines behavior when dangerous shell commands are
-	// detected (reverse shells, rm -rf, credential access, SSRF, path traversal,
-	// curl|bash, etc.). Separate from DangerousQueryAction because SQL dangers
-	// and shell dangers have different risk profiles and different teams own them.
-	// Default: block
-	DangerousCommandAction DetectionAction
-}
-
-// DefaultDetectionConfig returns the default detection configuration.
-// Philosophy (v6.2.0+): block only unambiguously dangerous patterns by default;
-// warn on PII / SQLi / sensitive data so evaluators see honest detection signal
-// without silent data mutation. Equivalent to AXONFLOW_PROFILE=default.
-//
-// To restore the v6.1.0 behavior (PII=redact, SQLi=block), set
-// AXONFLOW_PROFILE=strict or PII_ACTION=redact + SQLI_ACTION=block.
-func DefaultDetectionConfig() DetectionConfig {
-	return ProfileDefaults(ProfileDefault)
-}
-
-// DetectionConfigFromEnv creates a detection configuration from environment
-// variables, layered on top of the active profile and per-category enforce set.
-//
-// Precedence (highest → lowest):
-//  1. Explicit category env vars (PII_ACTION, SQLI_ACTION, ...)
-//  2. AXONFLOW_ENFORCE per-category opt-in
-//  3. AXONFLOW_PROFILE built-in posture
-//  4. Built-in defaults (DefaultDetectionConfig)
-//
-// See ADR-036 for the rationale.
-func DetectionConfigFromEnv() DetectionConfig {
-	profile := ResolveProfile()
-	base := ProfileDefaults(profile)
-	enforce, err := LoadEnforceFromEnv()
-	if err != nil {
-		// Log and keep going with just the profile base. The previous
-		// behaviour (log.Fatalf) made a typo in AXONFLOW_ENFORCE crash
-		// every test run that happened to have the env var set. Fail
-		// loudly in logs so operators notice, but do not abort the
-		// process — the profile base is still a valid, safe config.
-		log.Printf("[Profile] ERROR: invalid AXONFLOW_ENFORCE — ignoring: %v", err)
-	} else {
-		base = ApplyEnforce(base, enforce)
-	}
-	warnIfHighRiskActionNotEnforced(enforce)
-	return DetectionConfigFromEnvWithBase(base)
-}
-
-// warnIfHighRiskActionNotEnforced makes an enforcement gap visible to
-// operators rather than leaving it silent. HighRiskAction is populated from
-// HIGH_RISK_ACTION (below), forced to "block" by ApplyEnforce when
-// AXONFLOW_ENFORCE's category list includes "high_risk" (enforce.go), and
-// given a per-profile default (profile.go) — but it is NOT a field on
-// ModeDetectionConfig, so it is dropped the moment BuildActionOverrides
-// (below) derives the static-category override map, and consumed by
-// nothing else. An operator who sets either lever reasonably believes it
-// does something; today it is a no-op beyond a log line. Warn on the two
-// signals that indicate deliberate operator intent — an explicit
-// HIGH_RISK_ACTION, or an explicit AXONFLOW_ENFORCE=...,high_risk,... —
-// rather than on every profile default, which would fire on every process
-// start regardless of whether the operator ever touched this lever.
-func warnIfHighRiskActionNotEnforced(enforce EnforceResult) {
-	explicitEnv := os.Getenv(EnvHighRiskAction) != ""
-	enforceIncludesHighRisk := !enforce.Unset() && enforce.Categories != nil && enforce.Categories[EnforceHighRisk]
-	if explicitEnv || enforceIncludesHighRisk {
-		log.Printf("[Detection] WARNING: HighRiskAction is configured (%s set=%v, AXONFLOW_ENFORCE includes high_risk=%v) but is NOT currently enforced anywhere in this process — "+
-			"HighRiskAction has no ModeDetectionConfig field and is dropped at derivation; the dynamic-risk policy that actually governs risk_score (sys_dyn_high_risk_block, orchestrator-side) reads its action from the database, not from this env var. This configuration is currently a no-op.",
-			EnvHighRiskAction, explicitEnv, enforceIncludesHighRisk)
-	}
-}
-
-// DetectionConfigFromEnvWithBase parses explicit category env vars on top of
-// a caller-provided base config. The base is typically the result of
-// ProfileDefaults+ApplyEnforce, but tests may provide arbitrary bases.
-//
-// This is the lowest-level entry point and the only one that touches the
-// individual *_ACTION env vars. It deliberately does NOT read AXONFLOW_PROFILE
-// or AXONFLOW_ENFORCE — those are the caller's responsibility.
-func DetectionConfigFromEnvWithBase(base DetectionConfig) DetectionConfig {
-	cfg := base
-
-	// Parse SQLI_ACTION (new) or SQLI_BLOCK_MODE (deprecated).
-	// On invalid values, fall back to the BASE config's SQLIAction (which is
-	// already the correctly-resolved profile value), NOT the hardcoded legacy
-	// default. This preserves the active profile's posture under typo input.
-	// See v6.2.0 review finding P2 — the previous hardcoded fallback to
-	// DetectionActionBlock silently tightened behavior back to the v6.1.0 default.
-	// envcompat.Lookup centralises the primary→deprecated fallback +
-	// one-time deprecation warning. Format conversion stays here because
-	// the deprecated boolean ("block"/"warn") differs from the primary
-	// enum format and the conversion is per-env-var.
-	if value, source, ok := envcompat.Lookup(EnvSQLIAction, EnvSQLIBlockModeDeprecated); ok {
-		if source == "primary" {
-			cfg.SQLIAction = parseDetectionAction(value, "SQLI_ACTION", cfg.SQLIAction,
-				[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-		} else {
-			// Deprecated boolean format → action enum
-			switch strings.ToLower(value) {
-			case "block":
-				cfg.SQLIAction = DetectionActionBlock
-			case "warn":
-				cfg.SQLIAction = DetectionActionWarn
-			default:
-				cfg.SQLIAction = DetectionActionBlock
-			}
-		}
-	}
-
-	// Parse PII_ACTION (new) or PII_BLOCK_CRITICAL (deprecated).
-	// Same fix as SQLI_ACTION: preserve the base config's PIIAction on invalid
-	// input instead of silently flipping back to the v6.1.0 redact default.
-	if value, source, ok := envcompat.Lookup(EnvPIIAction, EnvPIIBlockCriticalDeprecated); ok {
-		if source == "primary" {
-			cfg.PIIAction = parseDetectionAction(value, "PII_ACTION", cfg.PIIAction,
-				[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
-		} else {
-			// Deprecated boolean format → action enum
-			if value == "false" || value == "0" {
-				cfg.PIIAction = DetectionActionLog // Disabled = log only
-			} else {
-				cfg.PIIAction = DetectionActionBlock // Enabled = block
-			}
-		}
-	}
-
-	// Parse SENSITIVE_DATA_ACTION. Fallback preserves base config.
-	if action := os.Getenv(EnvSensitiveDataAction); action != "" {
-		cfg.SensitiveDataAction = parseDetectionAction(action, "SENSITIVE_DATA_ACTION", cfg.SensitiveDataAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-
-	// Parse HIGH_RISK_ACTION. Fallback preserves base config.
-	if action := os.Getenv(EnvHighRiskAction); action != "" {
-		cfg.HighRiskAction = parseDetectionAction(action, "HIGH_RISK_ACTION", cfg.HighRiskAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-
-	// Parse DANGEROUS_QUERY_ACTION (SQL: DROP, TRUNCATE). Fallback preserves base.
-	if action := os.Getenv(EnvDangerousQueryAction); action != "" {
-		cfg.DangerousQueryAction = parseDetectionAction(action, "DANGEROUS_QUERY_ACTION", cfg.DangerousQueryAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-
-	// Parse DANGEROUS_COMMAND_ACTION (shell: rm -rf, reverse shells, curl|bash, SSRF).
-	// Fallback preserves base.
-	if action := os.Getenv(EnvDangerousCommandAction); action != "" {
-		cfg.DangerousCommandAction = parseDetectionAction(action, "DANGEROUS_COMMAND_ACTION", cfg.DangerousCommandAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-
-	// Log configuration summary
-	log.Printf("[Detection] Configuration: SQLI=%s, PII=%s, SensitiveData=%s, HighRisk=%s, DangerousQuery=%s, DangerousCommand=%s",
-		cfg.SQLIAction, cfg.PIIAction, cfg.SensitiveDataAction, cfg.HighRiskAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction)
-
-	return cfg
-}
-
-// parseDetectionAction parses an action string and returns the corresponding DetectionAction.
-// If the value is invalid, it logs a warning and returns the default.
-func parseDetectionAction(value, envName string, defaultAction DetectionAction, validActions []DetectionAction) DetectionAction {
-	normalized := DetectionAction(strings.ToLower(strings.TrimSpace(value)))
-	for _, valid := range validActions {
-		if normalized == valid {
-			return normalized
-		}
-	}
-	log.Printf("[Detection] WARNING: Invalid %s=%q, using default %q. Valid values: %v",
-		envName, value, defaultAction, validActions)
-	return defaultAction
-}
 
 // ShouldBlock returns true if the action is block.
 func (a DetectionAction) ShouldBlock() bool {
@@ -333,28 +90,108 @@ func (a DetectionAction) ToPolicyAction() sharedpolicy.Action {
 }
 
 // =============================================================================
+// The removed detection-posture environment variables (#3961)
+// =============================================================================
+
+// RemovedPostureEnvVars are the environment variables that set detection
+// ACTIONS before v11. None of them sets anything any more (#3961; ADR-065
+// amendment 2026-09-10).
+//
+// A control's action is part of the policy: authored, versioned, attributable.
+// An environment variable is a deployment-time string with no author, no
+// timestamp and no record, and before v11 these could move a shipped control to
+// a weaker action with nothing in the audit trail to show it - the default
+// profile alone turned a stored `block` into `warn`. Two ways to set one value is
+// the defect, so the unrecorded half is deleted: the stored policy action
+// decides, and the only thing that may replace it is the organization's RECORDED
+// override (detection_action_overrides, written through the detection-posture
+// API, audited to admin_audit_log - see detection_override.go).
+//
+// The list is the four category variables, their per-mode (MCP_ / GATEWAY_)
+// copies, their deprecated aliases, the two that were already read by no
+// enforcement path, and the two coarse levers that fanned a whole matrix of
+// actions (AXONFLOW_PROFILE, AXONFLOW_ENFORCE). The profile and the enforce list
+// had no effect other than setting actions and printing a banner, so nothing of
+// them survives.
+//
+// A deployment that still sets one keeps running with the stored actions: the
+// operator ruling was to apply the behaviour change and say so loudly, not to
+// refuse to boot. ReportIgnoredPostureEnv is the saying so.
+var RemovedPostureEnvVars = []string{
+	"PII_ACTION",
+	"SQLI_ACTION",
+	"DANGEROUS_COMMAND_ACTION",
+	"SENSITIVE_DATA_ACTION",
+	"MCP_PII_ACTION",
+	"MCP_SQLI_ACTION",
+	"MCP_DANGEROUS_QUERY_ACTION",
+	"MCP_DANGEROUS_COMMAND_ACTION",
+	"GATEWAY_PII_ACTION",
+	"GATEWAY_SQLI_ACTION",
+	"GATEWAY_DANGEROUS_QUERY_ACTION",
+	"GATEWAY_DANGEROUS_COMMAND_ACTION",
+	"SQLI_BLOCK_MODE",
+	"PII_BLOCK_CRITICAL",
+	"DANGEROUS_QUERY_ACTION",
+	"HIGH_RISK_ACTION",
+	"AXONFLOW_PROFILE",
+	"AXONFLOW_ENFORCE",
+}
+
+// ignoredPostureEnvTotal counts, per variable, the process starts at which a
+// removed detection-posture variable was still set. It is the fleet-visible half
+// of the boot WARN: a log line is read by whoever is looking at one process, a
+// counter on /prometheus by whoever is looking at all of them.
+var ignoredPostureEnvTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "axonflow_ignored_posture_env_total",
+		Help: "Process starts at which a removed detection-posture environment variable was set; it no longer sets an action (v11, #3961)",
+	},
+	[]string{"name"},
+)
+
+func init() {
+	prometheus.MustRegister(ignoredPostureEnvTotal)
+}
+
+// ReportIgnoredPostureEnv logs one WARN line per removed detection-posture
+// variable that is set to a non-empty value, increments
+// axonflow_ignored_posture_env_total for it, and returns the names found, in
+// RemovedPostureEnvVars order. Call once at process start. It changes nothing
+// else: boot continues and the stored actions decide.
+//
+// An empty value is not reported. Before v11 an empty variable set nothing
+// either, and a compose file that passes `PII_ACTION: ${PII_ACTION:-}` through
+// has not chosen an action.
+func ReportIgnoredPostureEnv(component string) []string {
+	var found []string
+	for _, name := range RemovedPostureEnvVars {
+		value := os.Getenv(name)
+		if value == "" {
+			continue
+		}
+		found = append(found, name)
+		ignoredPostureEnvTotal.WithLabelValues(name).Inc()
+		log.Printf("WARN [%s] detection posture env var ignored: %s=%s no longer sets an action (v11); the stored policy action decides - see release notes. "+
+			"To choose a different action for an organization, set its detection-posture override (audited), or change the action on the policy.",
+			component, name, value)
+	}
+	return found
+}
+
+// =============================================================================
 // Mode-Specific Detection Configuration
 // =============================================================================
 
-// Environment variable names for mode-specific detection configuration.
+// Environment variable names for mode-specific detection configuration. None of
+// them sets an ACTION: they enable or disable evaluation, skip categories, and
+// scope evaluation to connectors.
 const (
 	// MCP mode master switch
 	EnvMCPStaticPoliciesEnabled = "MCP_STATIC_POLICIES_ENABLED"
 
 	// Gateway mode master switch
 	EnvGatewayStaticPoliciesEnabled = "GATEWAY_STATIC_POLICIES_ENABLED"
-
-	// MCP action overrides
-	EnvMCPPIIAction              = "MCP_PII_ACTION"
-	EnvMCPSQLIAction             = "MCP_SQLI_ACTION"
-	EnvMCPDangerousQueryAction   = "MCP_DANGEROUS_QUERY_ACTION"
-	EnvMCPDangerousCommandAction = "MCP_DANGEROUS_COMMAND_ACTION"
-
-	// Gateway action overrides
-	EnvGatewayPIIAction              = "GATEWAY_PII_ACTION"
-	EnvGatewaySQLIAction             = "GATEWAY_SQLI_ACTION"
-	EnvGatewayDangerousQueryAction   = "GATEWAY_DANGEROUS_QUERY_ACTION"
-	EnvGatewayDangerousCommandAction = "GATEWAY_DANGEROUS_COMMAND_ACTION"
 
 	// Category skip lists
 	EnvMCPStaticPoliciesSkipCategories     = "MCP_STATIC_POLICIES_SKIP_CATEGORIES"
@@ -364,30 +201,35 @@ const (
 	EnvMCPStaticPoliciesConnectors = "MCP_STATIC_POLICIES_CONNECTORS"
 )
 
-// ModeDetectionConfig holds mode-specific detection configuration.
-// It supports enable/disable per mode, action overrides, category filtering,
-// and per-connector scoping (Enterprise only).
+// ModeDetectionConfig holds mode-specific detection configuration: whether
+// static policy evaluation runs for this mode, category filtering, per-connector
+// scoping (Enterprise only) and - once resolved for an organization - that
+// organization's recorded detection-action overrides.
 type ModeDetectionConfig struct {
 	// Enabled controls whether static policy evaluation runs for this mode.
 	// Default: true
 	Enabled bool
 
-	// PIIAction is the action for PII detection in this mode.
+	// The action fields carry ONLY the organization's recorded override for the
+	// category (detection_action_overrides, applied by
+	// applyOrgDetectionOverrides). Empty means there is no override and the
+	// stored policy action decides - which is every category of every
+	// organization that has not set one, and every call that resolved no
+	// organization. Nothing else writes them (#3961).
+
+	// PIIAction is the organization's override for the pii-* categories.
 	PIIAction DetectionAction
 
-	// SQLIAction is the action for SQL injection detection in this mode.
+	// SQLIAction is the organization's override for security-sqli.
 	SQLIAction DetectionAction
 
-	// SensitiveDataAction is the action for sensitive-data (credentials, tokens,
-	// secrets) detection in this mode. Wired into BuildActionOverrides so the
-	// SENSITIVE_DATA_ACTION lever + governance profile actually drive enforcement
-	// of the system sensitive-data policies (#2705).
-	SensitiveDataAction DetectionAction
-
-	// DangerousQueryAction is the action for dangerous SQL query detection in this mode.
+	// DangerousQueryAction is the organization's `dangerous_query` override. It
+	// is mapped onto no category: "dangerous_queries" is a legacy string
+	// category carried only by tenant starter policies (#2706).
 	DangerousQueryAction DetectionAction
 
-	// DangerousCommandAction is the action for dangerous shell command detection in this mode.
+	// DangerousCommandAction is the organization's override for
+	// security-dangerous.
 	DangerousCommandAction DetectionAction
 
 	// SkipCategories lists policy categories to skip in this mode.
@@ -399,44 +241,14 @@ type ModeDetectionConfig struct {
 	Connectors []string
 }
 
-// MCPDetectionConfigFromEnv creates MCP-specific detection config from environment variables.
-//
-// Precedence (highest → lowest):
-//  1. MCP-specific env vars (MCP_PII_ACTION, MCP_SQLI_ACTION, etc.)
-//  2. Global env vars (PII_ACTION, SQLI_ACTION, etc.)
-//  3. Engine defaults (redact for PII, block for SQLi, etc.)
+// MCPDetectionConfigFromEnv creates the MCP-mode detection config from the
+// environment: the enable switch, the category skip list and connector scoping.
+// It sets no action (#3961).
 func MCPDetectionConfigFromEnv() ModeDetectionConfig {
-	globalCfg := DetectionConfigFromEnv()
-
 	cfg := ModeDetectionConfig{
-		Enabled:                parseBoolEnv(EnvMCPStaticPoliciesEnabled, true),
-		PIIAction:              globalCfg.PIIAction,
-		SQLIAction:             globalCfg.SQLIAction,
-		SensitiveDataAction:    globalCfg.SensitiveDataAction,
-		DangerousQueryAction:   globalCfg.DangerousQueryAction,
-		DangerousCommandAction: globalCfg.DangerousCommandAction,
+		Enabled:        parseBoolEnv(EnvMCPStaticPoliciesEnabled, true),
+		SkipCategories: parseCategoryList(os.Getenv(EnvMCPStaticPoliciesSkipCategories)),
 	}
-
-	// MCP-specific overrides (highest precedence)
-	if action := os.Getenv(EnvMCPPIIAction); action != "" {
-		cfg.PIIAction = parseDetectionAction(action, EnvMCPPIIAction, cfg.PIIAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
-	}
-	if action := os.Getenv(EnvMCPSQLIAction); action != "" {
-		cfg.SQLIAction = parseDetectionAction(action, EnvMCPSQLIAction, cfg.SQLIAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-	if action := os.Getenv(EnvMCPDangerousQueryAction); action != "" {
-		cfg.DangerousQueryAction = parseDetectionAction(action, EnvMCPDangerousQueryAction, cfg.DangerousQueryAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-	if action := os.Getenv(EnvMCPDangerousCommandAction); action != "" {
-		cfg.DangerousCommandAction = parseDetectionAction(action, EnvMCPDangerousCommandAction, cfg.DangerousCommandAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-
-	// Category skip list
-	cfg.SkipCategories = parseCategoryList(os.Getenv(EnvMCPStaticPoliciesSkipCategories))
 
 	// Per-connector scoping (Enterprise only)
 	if connectors := os.Getenv(EnvMCPStaticPoliciesConnectors); connectors != "" {
@@ -450,117 +262,57 @@ func MCPDetectionConfigFromEnv() ModeDetectionConfig {
 	if !cfg.Enabled {
 		log.Printf("[Detection] MCP static policies DISABLED")
 	} else {
-		log.Printf("[Detection] MCP static policies: PII=%s, SQLI=%s, SensitiveData=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
-			cfg.PIIAction, cfg.SQLIAction, cfg.SensitiveDataAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
+		log.Printf("[Detection] MCP static policies enabled: SkipCategories=%v, Connectors=%v", cfg.SkipCategories, cfg.Connectors)
 	}
 
 	return cfg
 }
 
-// GatewayDetectionConfigFromEnv creates gateway-specific detection config from environment variables.
-//
-// Precedence (highest → lowest):
-//  1. Gateway-specific env vars (GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION, etc.)
-//  2. Global env vars (PII_ACTION, SQLI_ACTION, etc.)
-//  3. Engine defaults (redact for PII, block for SQLi, etc.)
+// GatewayDetectionConfigFromEnv creates the gateway-mode detection config from
+// the environment: the enable switch and the category skip list. It sets no
+// action (#3961).
 func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
-	globalCfg := DetectionConfigFromEnv()
-
 	cfg := ModeDetectionConfig{
-		Enabled:                parseBoolEnv(EnvGatewayStaticPoliciesEnabled, true),
-		PIIAction:              globalCfg.PIIAction,
-		SQLIAction:             globalCfg.SQLIAction,
-		SensitiveDataAction:    globalCfg.SensitiveDataAction,
-		DangerousQueryAction:   globalCfg.DangerousQueryAction,
-		DangerousCommandAction: globalCfg.DangerousCommandAction,
+		Enabled:        parseBoolEnv(EnvGatewayStaticPoliciesEnabled, true),
+		SkipCategories: parseCategoryList(os.Getenv(EnvGatewayStaticPoliciesSkipCategories)),
 	}
-
-	// Gateway-specific overrides (highest precedence)
-	if action := os.Getenv(EnvGatewayPIIAction); action != "" {
-		cfg.PIIAction = parseDetectionAction(action, EnvGatewayPIIAction, cfg.PIIAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
-	}
-	if action := os.Getenv(EnvGatewaySQLIAction); action != "" {
-		cfg.SQLIAction = parseDetectionAction(action, EnvGatewaySQLIAction, cfg.SQLIAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-	if action := os.Getenv(EnvGatewayDangerousQueryAction); action != "" {
-		cfg.DangerousQueryAction = parseDetectionAction(action, EnvGatewayDangerousQueryAction, cfg.DangerousQueryAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-	if action := os.Getenv(EnvGatewayDangerousCommandAction); action != "" {
-		cfg.DangerousCommandAction = parseDetectionAction(action, EnvGatewayDangerousCommandAction, cfg.DangerousCommandAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	}
-
-	// Category skip list
-	cfg.SkipCategories = parseCategoryList(os.Getenv(EnvGatewayStaticPoliciesSkipCategories))
 
 	if !cfg.Enabled {
 		log.Printf("[Detection] Gateway static policies DISABLED")
 	} else {
-		log.Printf("[Detection] Gateway static policies: PII=%s, SQLI=%s, SensitiveData=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
-			cfg.PIIAction, cfg.SQLIAction, cfg.SensitiveDataAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
+		log.Printf("[Detection] Gateway static policies enabled: SkipCategories=%v", cfg.SkipCategories)
 	}
 
 	return cfg
 }
 
-// BuildActionOverrides converts ModeDetectionConfig actions into a policy ActionOverrides map.
+// BuildActionOverrides converts the organization's recorded overrides into the
+// shared engine's EvalOptions.ActionOverrides map. A category appears ONLY when
+// the organization set an override for it; every other category keeps its
+// stored policy action. For a config with no override the map is empty and
+// displaces nothing (#3961). Each override reaches the policy categories
+// sharedpolicy.OrgOverrideReach names - the one fan-out, which the anchored
+// engine folds through as well (detectionposture.AnchoredCategoryActions) and
+// TestOrgOverrideCategoryMatchesBuildActionOverrides holds in both directions.
+//
+// sensitive-data has no override category (the detection_action_overrides CHECK
+// constraint does not list one), so its stored action always decides.
+// media-pii is not reached: it is the orchestrator's OCR subsystem, with no text
+// engine match to apply an override to.
 func (c *ModeDetectionConfig) BuildActionOverrides() map[sharedpolicy.PolicyCategory]sharedpolicy.Action {
 	overrides := make(map[sharedpolicy.PolicyCategory]sharedpolicy.Action)
-
-	piiAction := c.PIIAction.ToPolicyAction()
-	overrides[sharedpolicy.CategoryPIIGlobal] = piiAction
-	overrides[sharedpolicy.CategoryPIIUS] = piiAction
-	overrides[sharedpolicy.CategoryPIIIndia] = piiAction
-	overrides[sharedpolicy.CategoryPIIEU] = piiAction
-	overrides[sharedpolicy.CategoryPIISingapore] = piiAction
-	// pii-indonesia (NIK/OJK/UU PDP) was omitted here, so even once it's
-	// evaluated it wouldn't honor PII_ACTION (it would keep its DB
-	// action_response — redact — instead of blocking under PII_ACTION=block).
-	// Map it to the PII_ACTION lever like every other text PII category.
-	// (media-pii is intentionally NOT here — it's the orchestrator's OCR
-	// subsystem, with no agent text-engine match to apply an override to.)
-	overrides[sharedpolicy.CategoryPIIIndonesia] = piiAction
-
-	sqliAction := c.SQLIAction.ToPolicyAction()
-	overrides[sharedpolicy.CategorySecuritySQLi] = sqliAction
-
-	// sensitive-data (credentials/tokens/secrets, migration 035) was omitted
-	// here, so the system sensitive-data rows — which carry NULL phase columns —
-	// resolved via GetActionForPhase's category fallback to a hardcoded 'log',
-	// regardless of profile or SENSITIVE_DATA_ACTION. That made the documented
-	// posture (default=warn, strict/compliance=block — see
-	// docs/policies/system-policies.md + docs/guides/governance-profiles.md) a
-	// no-op. Map it to the SENSITIVE_DATA_ACTION lever like every other detection
-	// category so the profile + env override actually drive enforcement (#2705).
-	overrides[sharedpolicy.CategorySensitiveData] = c.SensitiveDataAction.ToPolicyAction()
-
-	dangerousCommandAction := c.DangerousCommandAction.ToPolicyAction()
-	overrides[sharedpolicy.CategorySecurityDangerous] = dangerousCommandAction
-
-	// NOTE — intentionally NOT mapped here:
-	//   * HighRiskAction has no static text-engine category: "high risk" is a
-	//     risk-SCORE concept (risk_score > 0.8), not a static_policies
-	//     category, so adding it to this static-category override map would
-	//     be a no-op regardless. It is NOT, however, enforced anywhere else
-	//     either — despite being populated from HIGH_RISK_ACTION, forced to
-	//     "block" by the AXONFLOW_ENFORCE high_risk opt-in (enforce.go), and
-	//     given per-profile defaults (profile.go), HighRiskAction is not a
-	//     field on ModeDetectionConfig, so it is dropped at derivation and
-	//     consumed by nothing but a log line — see
-	//     warnIfHighRiskActionNotEnforced above, which makes that gap visible
-	//     to operators who set either lever. The orchestrator's
-	//     sys_dyn_high_risk_block dynamic policy (currently "warn", migration
-	//     036) governs risk_score independently, reading its action from the
-	//     database, not from this env var or AXONFLOW_ENFORCE.
-	//   * DangerousQueryAction ("dangerous_queries") is a legacy string category
-	//     (no constant) carried only by tenant-tier starter policies, which the
-	//     gateway/decision Categories filters do not evaluate. Whether wiring it
-	//     here would have any effect is unverified, so it is deferred to a
-	//     follow-up rather than guessed (#2706).
-
+	for category, action := range map[string]DetectionAction{
+		DetectionCategoryPII:              c.PIIAction,
+		DetectionCategorySQLI:             c.SQLIAction,
+		DetectionCategoryDangerousCommand: c.DangerousCommandAction,
+	} {
+		if action == "" {
+			continue
+		}
+		for _, cat := range sharedpolicy.OrgOverrideReach(category) {
+			overrides[cat] = action.ToPolicyAction()
+		}
+	}
 	return overrides
 }
 
@@ -578,23 +330,14 @@ func (c *ModeDetectionConfig) IsConnectorEnabled(connector string) bool {
 	return false
 }
 
-// InitDetectionConfigs reads MCP and Gateway detection configs from environment
-// variables and caches them for the lifetime of the process. Call once at startup,
-// after environment is fully loaded. Subsequent calls to GetMCPDetectionConfig()
-// and GetGatewayDetectionConfig() return the cached values without re-parsing.
-//
-// This follows the same startup-cache pattern as sharedpolicy.InitGlobalDynamicPolicyEvaluator().
-//
-// Also logs a one-line profile banner so operators see what posture the
-// process is running in (relevant after the v6.2.0 default-relax change).
+// InitDetectionConfigs reads the MCP and Gateway detection configs from the
+// environment and caches them for the lifetime of the process. Call once at
+// startup, after the environment is fully loaded. Subsequent calls to
+// GetMCPDetectionConfig() and GetGatewayDetectionConfig() return the cached
+// values without re-parsing.
 func InitDetectionConfigs() {
 	detectionConfigMu.Lock()
 	defer detectionConfigMu.Unlock()
-
-	// Resolve global profile + log banner once.
-	profile := ResolveProfile()
-	globalCfg := DetectionConfigFromEnv()
-	LogProfileBanner("agent", profile, globalCfg)
 
 	mcp := MCPDetectionConfigFromEnv()
 	gw := GatewayDetectionConfigFromEnv()

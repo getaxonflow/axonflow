@@ -1,7 +1,9 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
-	"sort"
 	"strings"
 )
 
@@ -39,6 +41,17 @@ func KnownActions() []LegacyAction {
 		ActionAllow, ActionBlock, ActionDeny, ActionLog, ActionLogOnly,
 		ActionRedact, ActionRequireApproval, ActionWarn,
 	}
+}
+
+// OverrideActions returns the actions an organization may assign to a shipped
+// control, from the most restrictive to the least: what
+// detection_action_overrides records (its
+// action CHECK constraint, migration core/120) and what a typed document's
+// system_controls names (PRD v11 §1.5). ActionPolicy maps allow and deny as
+// well, and neither is an action anybody can assign, so both callers refuse them
+// rather than compiling them.
+func OverrideActions() []LegacyAction {
+	return []LegacyAction{ActionBlock, ActionRedact, ActionWarn, ActionLog}
 }
 
 func isKnownAction(a LegacyAction) bool {
@@ -114,60 +127,31 @@ func ResolveActionForPhase(category, severity string, storedAction string) Legac
 }
 
 // ---------------------------------------------------------------------------
-// The detection-posture lever.
+// Category actions: what EvalOptions.ActionOverrides assigns.
 // ---------------------------------------------------------------------------
 
-// postureLeverCategories maps a category to the environment lever that
-// displaces its resolved action, mirroring
-// ModeDetectionConfig.BuildActionOverrides. A category absent from this map is
-// one no lever reaches, which is a per-category fact and is why the lever
-// cannot be modelled as one global translation.
+// CategoryActions is the action EvalOptions.ActionOverrides assigns per policy
+// CATEGORY - the key the shared engine looks that map up by (engine.go). At
+// runtime its only source is an organization's recorded detection overrides:
+// no environment variable or profile assigns one (#3961). An importer may also
+// author one (axonflow-policy-import -posture), which is a deliberate choice
+// made by the person running the import and recorded in the document it signs.
 //
-// The set is pinned by the same generated table as the resolution model, for
-// the same reason: an override map that has silently gained or lost a category
-// changes which rows the posture displaces, and that is a difference the
-// shadow diff would otherwise attribute to the compiler.
-var postureLeverCategories = map[string]string{
-	"pii-global":         "PII_ACTION",
-	"pii-us":             "PII_ACTION",
-	"pii-india":          "PII_ACTION",
-	"pii-eu":             "PII_ACTION",
-	"pii-singapore":      "PII_ACTION",
-	"pii-indonesia":      "PII_ACTION",
-	"security-sqli":      "SQLI_ACTION",
-	"sensitive-data":     "SENSITIVE_DATA_ACTION",
-	"security-dangerous": "DANGEROUS_COMMAND_ACTION",
-}
+// IT IS KEYED BY CATEGORY BECAUSE THAT IS WHAT THE ENGINE DOES. The compiler
+// once keyed it by environment-variable name (PII_ACTION, ...), while the shadow
+// observer handed it the engine's category-keyed map - so on the shadow path
+// nothing was ever looked up and no displacement was ever modelled.
+//
+// An empty CategoryActions means no action is assigned, which is not the same
+// as an action assigned equal to the stored one: the second is still a
+// displacement the audit trail must show.
+type CategoryActions map[string]LegacyAction
 
-// PostureLeverFor returns the environment lever that displaces a category's
-// resolved action, or "" when no lever reaches it.
-func PostureLeverFor(category string) string { return postureLeverCategories[category] }
-
-// PostureLeverCategories returns every category a lever reaches, sorted.
-func PostureLeverCategories() []string {
-	out := make([]string, 0, len(postureLeverCategories))
-	for c := range postureLeverCategories {
-		out = append(out, c)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// Posture is a deployment detection posture: the resolved action each lever
-// currently carries. An empty Posture means "no lever configured", which is
-// not the same as a lever set to the stored action - the first leaves the
-// stored action in place, the second replaces it with an identical value and
-// is still a displacement the audit trail must show.
-type Posture map[string]LegacyAction
-
-// Apply returns the action a lever-bearing plane actually enforces for a
-// category, and whether the posture displaced the resolved action.
-func (p Posture) Apply(category string, resolved LegacyAction) (LegacyAction, bool) {
-	lever := PostureLeverFor(category)
-	if lever == "" {
-		return resolved, false
-	}
-	act, ok := p[lever]
+// Apply returns the action a plane that passes the override map actually
+// enforces for a category, and whether an assigned action displaced the
+// resolved one.
+func (c CategoryActions) Apply(category string, resolved LegacyAction) (LegacyAction, bool) {
+	act, ok := c[category]
 	if !ok || act == "" {
 		return resolved, false
 	}

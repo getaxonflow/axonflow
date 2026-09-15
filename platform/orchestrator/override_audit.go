@@ -50,6 +50,12 @@ type OverrideAuditEntry struct {
 
 // LogOverrideEvent records an override lifecycle event to the audit log.
 // eventType must be one of the AuditEventOverride* constants.
+//
+// No production path calls it from v11.0.0: the session override writes answer
+// the freeze (#4252). It is kept as the one statement of the historic
+// override_lifecycle row shape that the audit readers still render and that
+// runtime-e2e 3426 seeds; the AuditEventOverride* constants route those rows
+// out of verdict counts.
 func (l *AuditLogger) LogOverrideEvent(ctx context.Context, eventType string, entry *OverrideAuditEntry) {
 	if l == nil || entry == nil {
 		return
@@ -64,9 +70,10 @@ func (l *AuditLogger) LogOverrideEvent(ctx context.Context, eventType string, en
 		"clamped":       entry.Clamped,
 	}
 	// #3365: display names beside the ids so the portal resolver and the
-	// exporters stop rendering raw ids for override_used rows (the agent-side
-	// writeOverrideUsedEvent stamps the same). Empty entries are dropped; a
-	// wholly-unnamed event omits the key so the reader's marker stays honest.
+	// exporters stop rendering raw ids for override_used rows (the rows the
+	// agent's MCP planes wrote before v11 carry the same). Empty entries are
+	// dropped; a wholly-unnamed event omits the key so the reader's marker
+	// stays honest.
 	if names := nonEmptyStrings(entry.PolicyNames); len(names) > 0 {
 		policyDetails["policy_names"] = names
 	}

@@ -8,6 +8,8 @@
 #   1. Agent Role LLM Restriction - Agents cannot use OpenAI (cost control)
 #   2. PII Query Routing - PII-containing queries route to local model
 #   3. EU Region Data Sovereignty - EU users route to local model (Ollama)
+# Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 
 set -e
 

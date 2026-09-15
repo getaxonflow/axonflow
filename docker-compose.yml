@@ -68,6 +68,9 @@ services:
     container_name: axonflow-agent
     restart: unless-stopped
     environment:
+      # Opt-in Enterprise add-on policy packs (PRD v11 §1.9), comma-separated; `fincrime` installs the FinCrime pack.
+      # Empty installs none. An unknown name, or any value on a Community build, refuses boot.
+      AXONFLOW_POLICY_PACKS: ${AXONFLOW_POLICY_PACKS:-}
       # ============================================================
       # CORE CONFIGURATION (most users only need to set these)
       # ============================================================
@@ -96,7 +99,7 @@ services:
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.4.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.0.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
@@ -158,30 +161,16 @@ services:
       LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
       PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
 
-      # MCP Policy Features (Issue #966, #968)
-      # Dynamic policy evaluation is opt-in - enable via MCP_DYNAMIC_POLICIES_ENABLED=true
-      MCP_DYNAMIC_POLICIES_ENABLED: ${MCP_DYNAMIC_POLICIES_ENABLED:-false}
-      MCP_DYNAMIC_POLICIES_CONNECTORS: ${MCP_DYNAMIC_POLICIES_CONNECTORS:-}
-
-      # Security scanning - detection actions (Issue #891)
-      # Philosophy: Block high-confidence threats, warn on heuristics, redact PII
+      # Security scanning (Issue #891)
+      # Detection ACTIONS are not configured here (v11, #3961): the stored
+      # policy action decides, and the only thing that may replace it is an
+      # organization's recorded override (detection_action_overrides, written
+      # through the audited detection-posture API).
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
-      # SQLI_ACTION: block|warn|log (default: block - high confidence attacks)
-      SQLI_ACTION: ${SQLI_ACTION:-block}
-      # PII_ACTION: block|warn|redact|log (default: redact - preserves UX)
-      PII_ACTION: ${PII_ACTION:-redact}
-      # SENSITIVE_DATA_ACTION: block|warn|log (default: warn - may have false positives)
-      SENSITIVE_DATA_ACTION: ${SENSITIVE_DATA_ACTION:-warn}
-      # HIGH_RISK_ACTION: block|warn|log (default: warn - composite score needs tuning)
-      HIGH_RISK_ACTION: ${HIGH_RISK_ACTION:-warn}
-      # DANGEROUS_QUERY_ACTION: block|warn|log (default: block - DROP/TRUNCATE)
-      DANGEROUS_QUERY_ACTION: ${DANGEROUS_QUERY_ACTION:-block}
       # Capability-scoped evaluation (#2801): text-document tools (Jira/
       # Confluence edits) skip execution-class detectors (SQLi, dangerous
       # commands). Set to "true" to restore pre-#2801 full evaluation.
       AXONFLOW_CAPABILITY_SCOPING_DISABLED: ${AXONFLOW_CAPABILITY_SCOPING_DISABLED:-}
-      # Deprecated: use SQLI_ACTION instead
-      # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
       # Identity-header trust gate (#2896): set to the exact string "true" ONLY
       # when every hop that can reach the agent re-sets X-User-Email /
@@ -190,70 +179,8 @@ services:
       # attribution uses the validated identity.
       AXONFLOW_TRUST_IDENTITY_HEADERS: ${AXONFLOW_TRUST_IDENTITY_HEADERS:-}
 
-      # ADR-065 identity compatibility adapters (#3550): off | shadow | enforce.
-      # Default off, which touches nothing on the authentication path. `shadow`
-      # records what the identity plane WOULD have decided while legacy
-      # authentication continues to decide every request; `enforce` refuses a
-      # request the identity plane does not admit. An unrecognized value is
-      # fatal at boot on purpose: a deployment that believes it enforces must
-      # not start silently off.
-      #
-      # It is set on BOTH services because both bind a caller's principal: the
-      # agent from every credential path, the orchestrator from the trust-gated
-      # identity headers. A value on one and not the other is the "consulted in
-      # some planes and not others" split the adapter exists to prevent.
-      AXONFLOW_IDENTITY_COMPAT_MODE: ${AXONFLOW_IDENTITY_COMPAT_MODE:-}
-      # Per-path rollback lever (#3634). UNSET means every path, which is the
-      # only complete window; a list narrows to the paths it names (hs256,
-      # oidc, trusted_header, api_credential) and the paths it omits evaluate
-      # as off - recording nothing, refusing nothing. It exists for the failure
-      # the other two widths are the wrong shape for: ONE credential path going
-      # wrong for everyone, where lowering an organization loses its other
-      # three paths and lowering the deployment loses the window entirely.
-      # An unrecognised name is FATAL at boot, so a typo is a container that
-      # never becomes healthy rather than a window quietly measuring fewer
-      # paths than its operator believes. Set on BOTH services for the same
-      # reason the mode above is.
-      AXONFLOW_IDENTITY_COMPAT_PATHS: ${AXONFLOW_IDENTITY_COMPAT_PATHS:-}
-      # --- ADR-065 per-plane decision shadow (#3564, v10.3.0+) ---
-      #
-      # Set on BOTH services, for the same reason the identity mode above is:
-      # seven of the twelve enforcement planes evaluate in the agent and five
-      # in the orchestrator, and ADR-065 gate 18 is stated PER PLANE, so a
-      # value on one and not the other produces a window with no evidence at
-      # all for the other binary's planes.
-      #
-      # off (the default) | shadow. There is deliberately NO 'enforce': the
-      # decision plane becomes an authority at v11, and both binaries refuse
-      # the value BY NAME at boot rather than downgrading it silently.
-      AXONFLOW_DECISION_SHADOW_MODE: ${AXONFLOW_DECISION_SHADOW_MODE:-}
-      # Comma-separated planes that dual-evaluate. Empty is EVERY plane, which
-      # is the only value that produces a complete window; the list exists so
-      # one plane can be withdrawn without closing it.
-      AXONFLOW_DECISION_SHADOW_PLANES: ${AXONFLOW_DECISION_SHADOW_PLANES:-}
-      # Sampling rate in (0, 1]. Empty is 1.0. A value outside the range is
-      # FATAL rather than clamped: 0 is a deployment that believes it is
-      # measuring and is not.
-      AXONFLOW_DECISION_SHADOW_SAMPLE_RATE: ${AXONFLOW_DECISION_SHADOW_SAMPLE_RATE:-}
-      # The pool that runs the PDP evaluation OFF the request path, and the
-      # queue in front of it. Neither can add latency to a request; too small a
-      # queue costs DROPPED observations, which is a hole in the denominator.
-      AXONFLOW_DECISION_SHADOW_WORKERS: ${AXONFLOW_DECISION_SHADOW_WORKERS:-}
-      AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH: ${AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH:-}
-      # How many MATCHES pass between log lines (default 10000). Every
-      # expected_change and every UNEXPLAINED difference is logged in full and
-      # is never sampled away; turn this down while reading a window, because
-      # a plane producing no differences is otherwise indistinguishable from a
-      # shadow that never ran. It changes no decision.
-      AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY: ${AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY:-}
-      # How many identity-compat AGREEMENTS pass between log lines (default
-      # 100000). Turn it down while reading a shadow phase: an agreement is the
-      # common case, so at the default an operator cannot tell "the adapter ran
-      # on this path and agreed" from "the adapter never ran". 1 logs every
-      # one. It changes no decision.
-      AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY: ${AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY:-}
-      # How long one organization's identity_org_settings row (per-org compat
-      # mode, Shared Signals opt-in; enterprise builds) is served before it is
+      # How long one organization's identity_org_settings row (its Shared
+      # Signals opt-in; enterprise builds) is served before it is
       # re-read. Default 60s, clamped to [1s, 600s]. It bounds how long a
       # portal admin-API write takes to reach the authentication path; the
       # runtime suite lowers it to seconds. Community builds ignore it.
@@ -262,25 +189,20 @@ services:
       # (ADR-060). Default 60s, clamped to [5s, 600s]. Carried so the Shared
       # Signals runtime suite can pin it HIGH and prove a CAEP event beats it.
       AXONFLOW_SEGMENT_CACHE_TTL_SECONDS: ${AXONFLOW_SEGMENT_CACHE_TTL_SECONDS:-}
-      # Narrows what enforce refuses, to a comma-separated allow-list of
-      # AdmissionReason codes (empty = every reason). It is what makes a
-      # staged rollout possible: enforce the divergences you have driven to
-      # zero in shadow, keep recording the rest. Can only narrow. An
-      # unrecognized code is fatal at boot, like an unrecognized mode.
-      AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS: ${AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS:-}
+      # How long an organization's recorded detection-action overrides
+      # (detection_action_overrides) are cached. Default 60s, clamped to
+      # [5s, 600s]. Carried so a runtime suite that records or removes an
+      # override after this process has served that org can pin it low and
+      # wait it out instead of restarting the process.
+      AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS: ${AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS:-}
 
-      # Per-mode policy overrides (take precedence over global *_ACTION vars)
+      # Per-mode static policy evaluation switches. They enable, disable and
+      # skip categories; none of them sets an action.
       # MCP mode
       MCP_STATIC_POLICIES_ENABLED: ${MCP_STATIC_POLICIES_ENABLED:-true}
-      MCP_PII_ACTION: ${MCP_PII_ACTION:-}
-      MCP_SQLI_ACTION: ${MCP_SQLI_ACTION:-}
-      MCP_DANGEROUS_QUERY_ACTION: ${MCP_DANGEROUS_QUERY_ACTION:-}
       MCP_STATIC_POLICIES_SKIP_CATEGORIES: ${MCP_STATIC_POLICIES_SKIP_CATEGORIES:-}
       # Gateway mode
       GATEWAY_STATIC_POLICIES_ENABLED: ${GATEWAY_STATIC_POLICIES_ENABLED:-true}
-      GATEWAY_PII_ACTION: ${GATEWAY_PII_ACTION:-}
-      GATEWAY_SQLI_ACTION: ${GATEWAY_SQLI_ACTION:-}
-      GATEWAY_DANGEROUS_QUERY_ACTION: ${GATEWAY_DANGEROUS_QUERY_ACTION:-}
 
       # Exfiltration detection (Issue #966)
       # MCP_MAX_ROWS_PER_QUERY: Maximum rows allowed per query (default: 10000)
@@ -324,6 +246,16 @@ services:
     volumes:
       # MCP connector configuration (enables postgres connector for demos)
       - ./config/axonflow.yaml:/app/config/axonflow.yaml:ro
+      # THE AGENT'S DATA DIRECTORY, AND IT HAS TO SURVIVE A RECREATE (#3593).
+      # The node identity the tier limit counts is AXONFLOW_NODE_ID if set,
+      # else an id generated once and written to /var/lib/axonflow/node-id.
+      # Without a volume that file dies with the container, so `docker compose
+      # up` after a `down` presents a NEW node - and on Community, which is
+      # single-node, the new container would then have to wait for the old
+      # lease to expire before it could start. With the volume a recreate is
+      # the same node renewing its own lease, which is what it actually is.
+      # The audit fallback path (/var/lib/axonflow/audit) lives here too.
+      - axonflow-agent-data:/var/lib/axonflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -370,79 +302,30 @@ services:
       # Same origin policy as the agent — see that service for the rationale.
       # The two resolve it independently, so both must carry it.
       AXONFLOW_CORS_ALLOWED_ORIGINS: ${AXONFLOW_CORS_ALLOWED_ORIGINS:-}
-      # ADR-065 identity compatibility adapters (#3550). Carried here for the
-      # same reason as the origin policy above: the orchestrator binds a
-      # caller's principal from the trust-gated identity headers, so it
-      # resolves this independently and a value on the agent alone would leave
-      # this plane unadapted. See the agent service for the full contract.
-      AXONFLOW_IDENTITY_COMPAT_MODE: ${AXONFLOW_IDENTITY_COMPAT_MODE:-}
-      # Per-path rollback lever (#3634). UNSET means every path, which is the
-      # only complete window; a list narrows to the paths it names (hs256,
-      # oidc, trusted_header, api_credential) and the paths it omits evaluate
-      # as off - recording nothing, refusing nothing. It exists for the failure
-      # the other two widths are the wrong shape for: ONE credential path going
-      # wrong for everyone, where lowering an organization loses its other
-      # three paths and lowering the deployment loses the window entirely.
-      # An unrecognised name is FATAL at boot, so a typo is a container that
-      # never becomes healthy rather than a window quietly measuring fewer
-      # paths than its operator believes. Set on BOTH services for the same
-      # reason the mode above is.
-      AXONFLOW_IDENTITY_COMPAT_PATHS: ${AXONFLOW_IDENTITY_COMPAT_PATHS:-}
-      # --- ADR-065 per-plane decision shadow (#3564, v10.3.0+) ---
-      #
-      # Set on BOTH services, for the same reason the identity mode above is:
-      # seven of the twelve enforcement planes evaluate in the agent and five
-      # in the orchestrator, and ADR-065 gate 18 is stated PER PLANE, so a
-      # value on one and not the other produces a window with no evidence at
-      # all for the other binary's planes.
-      #
-      # off (the default) | shadow. There is deliberately NO 'enforce': the
-      # decision plane becomes an authority at v11, and both binaries refuse
-      # the value BY NAME at boot rather than downgrading it silently.
-      AXONFLOW_DECISION_SHADOW_MODE: ${AXONFLOW_DECISION_SHADOW_MODE:-}
-      # Comma-separated planes that dual-evaluate. Empty is EVERY plane, which
-      # is the only value that produces a complete window; the list exists so
-      # one plane can be withdrawn without closing it.
-      AXONFLOW_DECISION_SHADOW_PLANES: ${AXONFLOW_DECISION_SHADOW_PLANES:-}
-      # Sampling rate in (0, 1]. Empty is 1.0. A value outside the range is
-      # FATAL rather than clamped: 0 is a deployment that believes it is
-      # measuring and is not.
-      AXONFLOW_DECISION_SHADOW_SAMPLE_RATE: ${AXONFLOW_DECISION_SHADOW_SAMPLE_RATE:-}
-      # The pool that runs the PDP evaluation OFF the request path, and the
-      # queue in front of it. Neither can add latency to a request; too small a
-      # queue costs DROPPED observations, which is a hole in the denominator.
-      AXONFLOW_DECISION_SHADOW_WORKERS: ${AXONFLOW_DECISION_SHADOW_WORKERS:-}
-      AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH: ${AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH:-}
-      # How many MATCHES pass between log lines (default 10000). Every
-      # expected_change and every UNEXPLAINED difference is logged in full and
-      # is never sampled away; turn this down while reading a window, because
-      # a plane producing no differences is otherwise indistinguishable from a
-      # shadow that never ran. It changes no decision.
-      AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY: ${AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY:-}
-      # How many identity-compat AGREEMENTS pass between log lines (default
-      # 100000). Turn it down while reading a shadow phase: an agreement is the
-      # common case, so at the default an operator cannot tell "the adapter ran
-      # on this path and agreed" from "the adapter never ran". 1 logs every
-      # one. It changes no decision.
-      AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY: ${AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY:-}
-      # How long one organization's identity_org_settings row (per-org compat
-      # mode, Shared Signals opt-in; enterprise builds) is served before it is
-      # re-read. Default 60s, clamped to [1s, 600s]. It bounds how long a
-      # portal admin-API write takes to reach the authentication path; the
-      # runtime suite lowers it to seconds. Community builds ignore it.
-      AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS: ${AXONFLOW_IDENTITY_ORG_SETTINGS_TTL_SECONDS:-}
       # How long a resolved (org, user) governance-segment set is cached
       # (ADR-060). Default 60s, clamped to [5s, 600s]. Carried so the Shared
       # Signals runtime suite can pin it HIGH and prove a CAEP event beats it.
       AXONFLOW_SEGMENT_CACHE_TTL_SECONDS: ${AXONFLOW_SEGMENT_CACHE_TTL_SECONDS:-}
-      # Narrows what enforce refuses, to a comma-separated allow-list of
-      # AdmissionReason codes (empty = every reason). It is what makes a
-      # staged rollout possible: enforce the divergences you have driven to
-      # zero in shadow, keep recording the rest. Can only narrow. An
-      # unrecognized code is fatal at boot, like an unrecognized mode.
-      AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS: ${AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS:-}
+      # How long an organization's recorded detection-action overrides
+      # (detection_action_overrides) are cached. Default 60s, clamped to
+      # [5s, 600s]. Carried so a runtime suite that records or removes an
+      # override after this process has served that org can pin it low and
+      # wait it out instead of restarting the process.
+      AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS: ${AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-10.4.0}"
+      # The ADR-065 typed policy vocabulary, for the COMMUNITY write route
+      # #3943 added to this binary. It reached the customer-portal service in
+      # docker-compose.enterprise.yml and no compose file in this repository
+      # ever passed it here, so the orchestrator route answered 503 on every
+      # stack the repo can boot - which is why `Policy Path Alias E2E` reports
+      # "no vocabulary configured on this stack" rather than exercising the
+      # community publication legs it was written for. Unset by default: the
+      # surface is opt-in, and an unset value makes it unavailable by name.
+      # Recognised values since #3895: `deployment` (what a real installation
+      # runs) and `conformance` (the ADR-065 fixture world, publishable against
+      # and NEVER activatable).
+      AXONFLOW_TYPED_AUTHORING_CATALOG: ${AXONFLOW_TYPED_AUTHORING_CATALOG:-deployment}
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-11.0.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
@@ -474,7 +357,6 @@ services:
 
       # Internal services
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
-      REDIS_URL: redis://redis:6379
 
       # v9 Brief 11.5 / Session 20 — see agent service above for full rationale.
       # Pin OFF for local dev (master role IS the app role here).
@@ -507,18 +389,17 @@ services:
       ORG_ID: ${ORG_ID:-local-dev-org}
       # DEPLOYMENT_KIND mirrored from the agent block — see #2320 rationale.
       DEPLOYMENT_KIND: ${DEPLOYMENT_KIND:-dev}
+      ENVIRONMENT: development
       LOG_LEVEL: debug
     ports:
       # #3068: MUST stay loopback. The orchestrator is an INTERNAL service
-      # (ADR-026): the agent reaches it over the compose network, never via
+      # (ADR-024): the agent reaches it over the compose network, never via
       # the host port. Publishing it host-wide put the governance control
       # plane — unauthenticated, tenant-selectable read AND write — on every
       # interface of the host. Mirrors axonflow-install/docker-compose.yml.
       - "127.0.0.1:8081:8081"
     depends_on:
       axonflow-agent:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8081/health || exit 1"]
@@ -624,6 +505,8 @@ services:
       retries: 5
 
 volumes:
+  axonflow-agent-data:
+    driver: local
   postgres-data:
     driver: local
   prometheus-data:

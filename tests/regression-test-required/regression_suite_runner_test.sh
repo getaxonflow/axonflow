@@ -42,7 +42,10 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 RUNNER="${RUNNER_UNDER_TEST:-${REPO_ROOT}/tests/regression-test-required/run-all.sh}"
-WORKFLOW="${WORKFLOW_UNDER_TEST:-${REPO_ROOT}/.github/workflows/regression-test-required.yml}"
+# The job that runs the suite lives in repository-gates.yml since W3-J
+# (2026-09-12): regression-test-required.yml fires on edited / labeled /
+# unlabeled for its presence gate, and the suite re-ran on every one of those.
+WORKFLOW="${WORKFLOW_UNDER_TEST:-${REPO_ROOT}/.github/workflows/repository-gates.yml}"
 
 WORK_ROOT="${TEST_WORK_DIR:-$(mktemp -d)}"
 mkdir -p "$WORK_ROOT"

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -470,6 +462,7 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 			// Legacy callers that don't set Verdict still get the redacted label.
 			entry.PolicyDecision = responseVerdictRedacted
 		}
+		stampResponsePlaneDecision(entry.PolicyDetails, redactionInfo)
 	}
 
 	// LLM-forward path: this is the moment data leaves the deployment, so it is
@@ -535,6 +528,12 @@ func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRe
 			policyDetails["validation_error"] = info.ValidationError
 		}
 		redactedFields = info.RedactedFields
+		stampResponsePlaneDecision(policyDetails, info)
+		if info.WithheldByValidation {
+			if _, set := policyDetails["withheld_by_validation"]; !set {
+				policyDetails["withheld_by_validation"] = true
+			}
+		}
 	}
 
 	entry := &AuditEntry{
@@ -568,6 +567,31 @@ func (l *AuditLogger) LogBlockedResponse(ctx context.Context, req OrchestratorRe
 
 	l.enqueueEntry(entry)
 	return entry
+}
+
+// stampResponsePlaneDecision writes the response pass's decision onto a plane=llm
+// row's policy_details: the engine that authored the verdict, the type of
+// principal it was decided for, the digest of the policy set that decided, the
+// reason code (or the cause a response was withheld for), the constraint a
+// refusal names as blocking, and any checksum validator that acted outside the
+// engine. Both response-plane writers call it, so an allowed, a redacted and a
+// blocked row carry the decision the same way (PRD v11 §5.7). A member the pass
+// did not set is omitted rather than written empty, and an entry the writer
+// already set wins.
+func stampResponsePlaneDecision(details map[string]interface{}, info *RedactionInfo) {
+	if details == nil || info == nil {
+		return
+	}
+	stampUnsetDetails(details, map[string]string{
+		"engine":             info.Engine,
+		"subject_type":       info.SubjectType,
+		"policy_bundle":      info.PolicyBundle,
+		"decision_reason":    info.DecisionReason,
+		"blocking_policy_id": info.BlockingPolicyID,
+	})
+	if _, set := details["legacy_validators"]; len(info.LegacyValidators) > 0 && !set {
+		details["legacy_validators"] = append([]agent.LegacyValidatorAction(nil), info.LegacyValidators...)
+	}
 }
 
 // LogBlockedMedia writes the canonical audit_logs row when the orchestrator
@@ -629,9 +653,10 @@ func (l *AuditLogger) LogBlockedMedia(ctx context.Context, req OrchestratorReque
 	return entry
 }
 
-// LogBlockedRequest logs a blocked request
+// LogBlockedRequest logs a blocked request. decided is the anchored decision a
+// route seam refused it with, stamped on the row (PRD v11 §5.7); nil writes none.
 func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorRequest,
-	policyResult *PolicyEvaluationResult) {
+	policyResult *PolicyEvaluationResult, decided *anchoredDecision) {
 
 	entry := &AuditEntry{
 		ID:             generateAuditID(),
@@ -656,6 +681,7 @@ func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorReq
 		ComplianceFlags: l.detectComplianceFlags(req, nil),
 		SecurityMetrics: l.calculateSecurityMetrics(req, policyResult),
 	}
+	stampAnchoredDecision(entry, decided)
 
 	l.enqueueEntry(entry)
 }
@@ -699,6 +725,15 @@ type WorkflowAuditEntry struct {
 	UserEmail    string // v7.4.1+: reviewer email for step_approved/step_rejected; #3281: also the trust-gated caller email on step_gate, whose verdict is identity-dependent
 	UserRole     string // v7.4.1+: reviewer role
 	Metadata     map[string]interface{}
+	// Plane, Engine, SubjectType, PolicyBundle and EngineDecisionID are the
+	// anchored decision a step_gate row records (PRD v11 §5.7): the plane's own
+	// label, the engine, the principal type, the policy set's digest and the
+	// engine's decision id. Empty on an operation no anchored seam decided.
+	Plane            string
+	Engine           string
+	SubjectType      string
+	PolicyBundle     string
+	EngineDecisionID string
 }
 
 // workflowAuditDecision maps a workflow-control decision (WorkflowAuditEntry.Decision:
@@ -773,6 +808,17 @@ func (l *AuditLogger) LogWorkflowOperation(ctx context.Context, entry *WorkflowA
 		QueryHash:      hashQuery(entry.WorkflowID + entry.Operation),
 		PolicyDecision: policyDecision,
 		PolicyDetails:  policyDetails,
+	}
+	// A decision an anchored seam made carries it on the row, under the plane's
+	// own label (PRD v11 §5.7).
+	if entry.Plane != "" || entry.Engine != "" {
+		stampAnchoredDecision(auditEntry, &anchoredDecision{
+			Plane:        entry.Plane,
+			Engine:       entry.Engine,
+			SubjectType:  entry.SubjectType,
+			PolicyBundle: entry.PolicyBundle,
+			DecisionID:   entry.EngineDecisionID,
+		})
 	}
 
 	l.enqueueEntry(auditEntry)

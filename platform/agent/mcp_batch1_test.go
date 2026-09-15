@@ -6,6 +6,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 // TestMCPToolExplainDecision_RejectsMissingArg verifies input validation
@@ -30,34 +32,31 @@ func TestMCPToolExplainDecision_RejectsEmptyString(t *testing.T) {
 	}
 }
 
-func TestMCPToolCreateOverride_RejectsMissingRequired(t *testing.T) {
-	session := &mcpSession{tenantID: "t-1", userID: "u-1"}
-
-	cases := []struct {
-		name string
-		args map[string]interface{}
-	}{
-		{"no policy_id", map[string]interface{}{"policy_type": "static", "override_reason": "x"}},
-		{"no policy_type", map[string]interface{}{"policy_id": "p-1", "override_reason": "x"}},
-		{"no override_reason", map[string]interface{}{"policy_id": "p-1", "policy_type": "static"}},
-		{"all empty strings", map[string]interface{}{"policy_id": "", "policy_type": "", "override_reason": ""}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := mcpToolCreateOverride(session, tc.args)
-			if err == nil {
-				t.Errorf("expected error, got nil")
-			}
-		})
+// TestMCPToolCreateOverride_AnswersTheFreezeWhateverTheArgs: from v11 the tool
+// writes nothing (#4252), so its arguments decide nothing: a session with a real
+// identity is answered the freeze for every argument shape, including the ones
+// that used to fail validation.
+func TestMCPToolCreateOverride_AnswersTheFreezeWhateverTheArgs(t *testing.T) {
+	session := &mcpSession{tenantID: "t-1", userID: "u-1", userEmail: "dev@corp.example"}
+	for _, args := range []map[string]interface{}{
+		{"policy_type": "static", "override_reason": "x"},
+		{"policy_id": "p-1", "override_reason": "x"},
+		{"policy_id": "p-1", "policy_type": "static"},
+		{"policy_id": "", "policy_type": "", "override_reason": ""},
+	} {
+		_, err := mcpToolCreateOverride(session, args)
+		if err == nil || !strings.HasPrefix(err.Error(), legacyfreeze.ErrCode+": ") {
+			t.Errorf("args %v: err = %v, want the freeze", args, err)
+		}
 	}
 }
 
-func TestMCPToolDeleteOverride_RejectsMissingArg(t *testing.T) {
-	session := &mcpSession{tenantID: "t-1"}
-	_, err := mcpToolDeleteOverride(session, map[string]interface{}{})
-	if err == nil {
-		t.Fatal("expected error for missing override_id")
+// TestMCPToolDeleteOverride_AnswersTheFreezeWithoutAnID: delete answers the
+// freeze for every caller and argument set, including a missing override_id.
+func TestMCPToolDeleteOverride_AnswersTheFreezeWithoutAnID(t *testing.T) {
+	_, err := mcpToolDeleteOverride(&mcpSession{tenantID: "t-1"}, map[string]interface{}{})
+	if err == nil || !strings.HasPrefix(err.Error(), legacyfreeze.ErrCode+": ") {
+		t.Fatalf("err = %v, want the freeze", err)
 	}
 }
 

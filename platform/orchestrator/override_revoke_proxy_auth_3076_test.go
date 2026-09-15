@@ -18,7 +18,6 @@ package orchestrator
 // that the two layers compose without breaking the authenticated path.
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +27,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
 
+	"axonflow/platform/shared/legacyfreeze"
 	"axonflow/platform/shared/serviceauth"
 )
 
@@ -97,53 +97,30 @@ func TestRevokeOverride_ForgedProxyToken_Blocked(t *testing.T) {
 	})
 }
 
-// The control that keeps the refusals honest: the SAME request, once it carries
-// a valid agent token, revokes the override and returns 200. Without this, a
-// regression that denied everything would pass the two tests above.
-func TestRevokeOverride_ValidProxyToken_Revokes200(t *testing.T) {
+// The control that keeps the refusals above honest: the SAME request, once it
+// carries a valid agent token and the identity the agent vouched for, passes the
+// proxy-auth gate and is answered by the v11 freeze (#4252), 409
+// LEGACY_POLICY_WRITE_FROZEN, not 403. Without it, a regression that refused
+// every request at the gate would pass the two tests above. No SQL is queued:
+// the freeze reads nothing, so a revoke that still wrote would reach sqlmock.
+func TestRevokeOverride_ValidProxyToken_ReachesTheFreeze(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 	installProxyTokenValidator(t, proxyGuardTestSecret)
 
-	origAudit := auditLogger
-	auditLogger = nil
-	t.Cleanup(func() { auditLogger = origAudit })
-
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		mock.ExpectBegin()
-		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
-			WithArgs("org-x").WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery("SELECT policy_id, created_by FROM policy_overrides").
-			WithArgs("ov-live", "tenant-x").
-			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "created_by"}).
-				AddRow("pol-1", "dev@corp.example"))
-		mock.ExpectCommit()
-
-		mock.ExpectBegin()
-		mock.ExpectExec("set_config").WithArgs("org-x").WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectExec("UPDATE policy_overrides SET revoked_at").
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
-
 		req := revokeRequest("ov-live")
-		// The agent's own token, and the identity the agent vouched for.
 		req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 		req.Header.Set("X-User-Email", "dev@corp.example")
+		req.Header.Set("X-Tenant-ID", "tenant-x")
 
 		rr := httptest.NewRecorder()
 		revokeOverrideHandler(rr, req)
 
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
-		}
-		var resp map[string]interface{}
-		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode 200 body: %v (raw %s)", err, rr.Body.String())
-		}
-		if resp["id"] != "ov-live" {
-			t.Errorf("id: got %v, want ov-live", resp["id"])
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), legacyfreeze.ErrCode) {
+			t.Fatalf("status = %d, want 409 %s; body: %s", rr.Code, legacyfreeze.ErrCode, rr.Body.String())
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Errorf("the revoke did not actually run: %v", err)
+			t.Errorf("unexpected SQL state: %v", err)
 		}
 	})
 }

@@ -14,81 +14,25 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"axonflow/platform/orchestrator/workflow_control"
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/tenantscope"
 
-	"axonflow/platform/decision/legacycompile"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
-// MAPHITLPolicyChecker evaluates dynamic policies for MAP plan steps
-// and returns require_approval when applicable.
+// MAPHITLPolicyChecker decides each MAP plan step on the anchored engine and
+// holds a step whose policy requires approval (map_enforcing_seam.go, #4254).
 type MAPHITLPolicyChecker struct{}
 
-// CheckPolicy evaluates pre-step policies using the dynamic policy engine.
+// CheckPolicy decides one step. It NEVER RETURNS AN ERROR: the engine that calls
+// it proceeds on an error, so every cause the plane cannot decide through is a
+// block that names it (mapStepPolicyCheck).
 func (c *MAPHITLPolicyChecker) CheckPolicy(ctx context.Context, step WorkflowStep, execution *WorkflowExecution) (*PolicyCheckResult, error) {
-	if dynamicPolicyEngine == nil {
-		return nil, nil
-	}
-
-	req := OrchestratorRequest{
-		RequestID:   execution.ID,
-		Query:       fmt.Sprintf("MAP step: %s (%s)", step.Name, step.Type),
-		RequestType: "map_step",
-		User:        execution.UserContext,
-		Context: map[string]interface{}{
-			"step_name":     step.Name,
-			"step_type":     step.Type,
-			"step_provider": step.Provider,
-			"step_model":    step.Model,
-		},
-	}
-
-	req.ShadowPlane = legacycompile.PlaneMAP // ADR-065 decision shadow (#3564)
-	result := dynamicPolicyEngine.EvaluateDynamicPolicies(ctx, req)
-	if result == nil {
-		return nil, nil
-	}
-
-	if !result.Allowed {
-		action := "block"
-		reason := "Blocked by policy"
-		policyName := ""
-		if len(result.AppliedPolicies) > 0 {
-			policyName = result.AppliedPolicies[0]
-		}
-
-		// Check if require_approval is in the required actions
-		for _, ra := range result.RequiredActions {
-			if ra == "require_approval" {
-				action = "require_approval"
-				reason = "Policy requires human approval"
-				break
-			}
-		}
-
-		// Map risk score to severity
-		severity := "low"
-		if result.RiskScore >= 0.8 {
-			severity = "critical"
-		} else if result.RiskScore >= 0.6 {
-			severity = "high"
-		} else if result.RiskScore >= 0.3 {
-			severity = "medium"
-		}
-
-		return &PolicyCheckResult{
-			Allowed:    false,
-			Action:     action,
-			PolicyName: policyName,
-			Reason:     reason,
-			Severity:   severity,
-		}, nil
-	}
-
-	return nil, nil
+	return mapStepPolicyCheck(ctx, step, execution), nil
 }
 
 // MAPHITLApprovalAdapter provides in-memory approval tracking for MAP steps.
@@ -105,7 +49,16 @@ func (a *MAPHITLApprovalAdapter) CreateApproval(ctx context.Context, req *HITLAp
 	return &HITLApprovalResponse{
 		ApprovalID: approvalID,
 		Status:     "pending",
+		// #4254: the typed approval's expiry travels onto the paused execution,
+		// where the approve path refuses after it.
+		ExpiresAt: req.ExpiresAt,
 	}, nil
+}
+
+// approvalTimedOut reports whether an approval expiring at expiresAt has timed
+// out at now. A zero expiry declares none.
+func approvalTimedOut(expiresAt, now time.Time) bool {
+	return !expiresAt.IsZero() && !expiresAt.After(now)
 }
 
 // GetApproval retrieves the status of an HITL approval request.
@@ -318,16 +271,32 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 	// scope; a caller that asserts no scope matches nothing.
 	callerScope := mapHITLCallerScope(r)
 
+	//
+	// #4254: a timed-out approval is a deny. An approval after the hold's expiry
+	// is refused and the execution stays paused; the check and the release run
+	// under the one lock, so nothing can release it in between.
 	executionStoreMutex.Lock()
 	targetExec := findPausedHITLExecutionForPlan(callerScope, planID)
+	var lapsedAt time.Time
 	if targetExec != nil {
-		targetExec.ApprovalStatus = StatusApproved
-		targetExec.Status = "running"
+		if approvalTimedOut(targetExec.approvalExpiresAt, time.Now()) {
+			lapsedAt = targetExec.approvalExpiresAt
+		} else {
+			targetExec.ApprovalStatus = StatusApproved
+			targetExec.Status = "running"
+		}
 	}
 	executionStoreMutex.Unlock()
 
 	if targetExec == nil {
 		sendErrorResponse(w, "No paused execution found for this plan", http.StatusNotFound)
+		return
+	}
+	if !lapsedAt.IsZero() {
+		log.Printf("[MAP-HITL] Step approval refused for plan %s: the approval timed out at %s",
+			logutil.Sanitize(planID), lapsedAt.UTC().Format(time.RFC3339))
+		sendErrorResponse(w, "approval_expired: the approval for this step timed out at "+
+			lapsedAt.UTC().Format(time.RFC3339)+", and a timed-out approval is a deny", http.StatusConflict)
 		return
 	}
 
@@ -560,6 +529,53 @@ func mapPendingApprovalsHandler(w http.ResponseWriter, r *http.Request) {
 	// follows the same resolve rule as approve/reject - see hitlResolveAllowed.
 	// Revoking it would leave an operator unable to even SEE the entries the
 	// entitlement change stops them adding to.
+	// #3948: BOUND, not self-asserted — and 401 rather than the old 400,
+	// matching the WCP sibling this endpoint is documented as the counterpart
+	// of. That sibling's own comment (workflow_control/handlers.go:936) said it
+	// used 401 "matching every converted sibling"; this was the sibling, and it
+	// had never been converted. So one endpoint of a documented matched pair
+	// demanded both tenancy headers and refused the unowned sentinel while the
+	// other read X-Tenant-ID raw, never looked at X-Org-ID, and accepted the
+	// sentinel.
+	//
+	// THIS IS NOT CLOSING A LIVE HOLE, and saying so precisely is the point.
+	// Driven against a live stack (runtime-e2e/3948_pending_approvals_pair):
+	// requireInternalProxyAuth (authn_middleware.go) refuses a direct-to-
+	// orchestrator request for this path with 403 in every mode, and the agent
+	// and portal proxies both Set — never Add — these two headers from a
+	// validated credential, so an injected X-Tenant-ID is overwritten before it
+	// arrives. Both queries also key on tenant_id alone, and this one's result
+	// set is a strict subset of the WCP one's. What the raw read cost was
+	// DEFENCE IN DEPTH and a contract that lied: the spec documented 400 for a
+	// handler that could not be made to emit it, on an endpoint whose stated
+	// counterpart emits 401.
+	scope, err := tenantscope.Bind(r)
+	if err != nil {
+		sendErrorResponse(w, "Missing tenant or org identity", http.StatusUnauthorized)
+		return
+	}
+	tenantID := scope.TenantID
+
+	// BOTH OF THESE ARE AFTER THE TENANCY BIND, DELIBERATELY, and the tier gate
+	// was the one that mattered.
+	//
+	// Both used to run BEFORE it. The 503 told an unbound caller - one carrying
+	// no authenticated tenancy at all - whether this deployment's workflow
+	// control plane was up. The 403 told them more: its body names the exact
+	// licence tier and recites the entitlement matrix
+	// (mapHITLResolveRefusal), so an unauthenticated request read back the
+	// deployment's edition.
+	//
+	// That is the same "a refusal must not depend on the resource" rule
+	// requireScope is written around, one level out. R3 caught the tier gate
+	// after the 503 had been moved and the comment explaining why had been
+	// written one line below it - a fix that stated its own principle and left
+	// the larger instance of it in place, which is exactly the shape of
+	// "correcting one instance while the class stays open".
+	//
+	// Order among these two is deliberate too: entitlement before availability,
+	// so a deployment that may not use the feature is told that rather than
+	// being told the plane is down.
 	if isCommunityMode() && !hitlResolveAllowed(tierChecker) {
 		sendErrorResponse(w, mapHITLResolveRefusal("Listing plan-scoped pending approvals"), http.StatusForbidden)
 		return
@@ -567,12 +583,6 @@ func mapPendingApprovalsHandler(w http.ResponseWriter, r *http.Request) {
 
 	if workflowControlService == nil {
 		sendErrorResponse(w, "Workflow control plane unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		sendErrorResponse(w, "X-Tenant-ID header is required", http.StatusBadRequest)
 		return
 	}
 

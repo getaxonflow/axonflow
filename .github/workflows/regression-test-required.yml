@@ -45,20 +45,24 @@ name: Regression Test Required
 # determine whether it applies must not report success.
 #
 # ───────────────────────────────────────────────────────────────────────────
-# #3121 — THE PRESENCE GATE IS NOT THE ONLY JOB HERE ANY MORE
+# #3121 — PRESENCE HERE, EXECUTION IN repository-gates.yml
 # ───────────────────────────────────────────────────────────────────────────
 # `check-regression-test` verifies a test file APPEARS in the diff. It does not
-# and cannot verify the test works. `run-regression-suite` below executes every
+# and cannot verify the test works. `Run regression-test suite` executes every
 # script in tests/regression-test-required/ on every PR, so a committed
 # regression test that starts failing is caught rather than merely present.
+# That job lived here until W3-J (2026-09-12) and now lives in
+# repository-gates.yml: this workflow must fire on edited / labeled /
+# unlabeled because the presence gate reads the PR's title, body and labels,
+# and the suite - which reads none of them - re-ran on every such event.
 #
 # ───────────────────────────────────────────────────────────────────────────
 # #3124 — REQUIREDNESS
 # ───────────────────────────────────────────────────────────────────────────
-# Neither job is currently in the `Main Branch Protection` ruleset's required
+# The job below is not in the `Main Branch Protection` ruleset's required
 # status checks. Requiredness is a repository ruleset setting and cannot be
-# changed from a PR. Both jobs below emit a check-run on `merge_group` as well
-# as `pull_request` specifically so that an operator CAN make them required
+# changed from a PR. It emits a check-run on `merge_group` as well as
+# `pull_request` specifically so that an operator CAN make it required
 # without merge-queue entries sitting in AWAITING_CHECKS until the ruleset's
 # 60-minute `check_response_timeout_minutes` ejects them.
 
@@ -81,14 +85,10 @@ on:
   # Required-check compatibility with the merge queue: see the #3124 note above.
   merge_group:
     types: [checks_requested]
-  # Manual dispatch (#3755): the suite job runs on the real runner image
-  # against any ref, which is how a flake is measured where it happened
-  # rather than on a developer's docker daemon. There is no PR to classify,
-  # so the presence job SKIPS as a job on a dispatch (its own `if:` below):
-  # a job whose every step is event-keyed would otherwise conclude `success`
-  # having done nothing, and put a green `Check Regression Test Present` on
-  # the dispatched head - the vacuous-pass shape this issue is about.
-  workflow_dispatch:
+  # No workflow_dispatch any more (W3-J). It existed so the SUITE could run on
+  # the real runner image against any ref (#3755); the suite moved to
+  # repository-gates.yml, which carries the dispatch now. Here a dispatch had
+  # nothing to classify and only ever skipped the presence job.
 
 # Cancel superseded runs. Sessions on this repo push in rapid bursts, and a
 # run for a push that is no longer the tip proves nothing while billing the
@@ -113,20 +113,15 @@ permissions:
 jobs:
   check-regression-test:
     name: Check Regression Test Present
-    # HOSTED, NOT THE FLEET (#3791 stage one, 2026-09-06). This job does no
-    # real work - it reads other jobs' results, or greps the tree - but it
-    # feeds a REQUIRED context, so while it waits for a fleet slot behind the
-    # suites it blocks a merge having tested nothing. Measured: #3795's
-    # `Test Summary` sat QUEUED from 07:07Z behind 57 queued fleet runs with
-    # every unit job already green. A few seconds of hosted time is the
-    # correct price for a gate; slot-time is what the suites need.
-    runs-on: ubuntu-latest
+    # ON THE SELF-HOSTED FLEET in this repository (W3-J, 2026-09-12). #3791
+    # stage one moved it to hosted on the ground that it feeds a REQUIRED
+    # context; it does not - see the #3124 note at the top of this file,
+    # this job is not in the ruleset. It fires on edited / labeled /
+    # unlabeled as well as pushes (879 runs against 541 pushes over
+    # 2026-09-08..11), so as a hosted job it billed a minute per label click.
+    # Selected by repository because this workflow syncs to the mirror.
+    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
-    # Every step below is keyed on pull_request / merge_group. On a
-    # workflow_dispatch they would all skip and the JOB would still conclude
-    # `success` - a green check run for a classification that never happened
-    # (#3755 R3). Skip the job itself instead, so the conclusion is `skipped`.
-    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - name: Pass on merge_group (PR gate already enforced)
@@ -442,175 +437,3 @@ jobs:
           echo "See CONTRIBUTING.md ('Regression-test-per-bug') for the full guidance."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           exit 1
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # #3121 — actually execute the regression tests.
-  #
-  # No `paths:` filter and no event guard, on purpose. This job runs on every PR
-  # to main and on every merge-queue branch, which means:
-  #   * it runs on the PR that changes tests/regression-test-required/**;
-  #   * it runs on the PR that changes THIS workflow file (several of the tests
-  #     assert against this file's contents, so that matters);
-  #   * it cannot be dodged by a paths filter that failed to list something —
-  #     the #3089 failure mode.
-  # The whole suite is a few seconds of shell with no stack dependency, so the
-  # broadest possible trigger costs nothing worth optimising.
-  # ───────────────────────────────────────────────────────────────────────────
-  run-regression-suite:
-    name: Run regression-test suite
-    # RUNNER SELECTED BY REPOSITORY, because this workflow is carried to the
-    # community mirror verbatim. The fleet is registered on
-    # getaxonflow/axonflow-enterprise ONLY; getaxonflow/axonflow has zero
-    # runners, so a plain `[self-hosted, ...]` pin there does not fail - it
-    # QUEUES FOREVER, and `Lint Summary` and `Test Summary` are required checks
-    # on the mirror, so the community release blocks on a check that can never
-    # report. Measured on mirror PR getaxonflow/axonflow#485: seven checks
-    # queued twenty minutes with no runner able to accept them.
-    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
-    timeout-minutes: 15
-    # Enterprise repo only, same precedent and same reason as
-    # e2e-production-posture in sdk-smoke-tests.yml: the community sync excludes
-    # /scripts/*, so on a mirror checkout portable_sed_inplace_test.sh and
-    # posture_runner_dispatch_truncation_test.sh have no subject to assert
-    # against and fail for a reason that is not a regression. Verified by
-    # running the suite against a mirror-shaped tree: 7 pass, those 2 fail.
-    # Development happens in this repo (CLAUDE.md, "Repository Structure"), so
-    # this is where the guard has to hold. Making the mirror's copy of the suite
-    # self-contained means adding those two files to sync-community-repo.yml's
-    # exclude list — a change in another workflow, tracked separately.
-    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
-    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
-    # starts this job; later pushes to a ready PR run it as before.
-    if: (github.repository == 'getaxonflow/axonflow-enterprise') && github.event.pull_request.draft != true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Several of the suite's tests need tools the runner image does not ship.
-      # Every install is unconditional and fails the job if it fails: a test
-      # that cannot run must not be reported as having passed.
-      - name: Ensure PyYAML (workflows_yaml_parse_test.sh dependency)
-        run: |
-          set -euo pipefail
-          # The fallback below would hit PEP 668 on the fleet host
-          # (/usr/lib/python3.12/EXTERNALLY-MANAGED), so it installs into a
-          # per-job venv instead. It does NOT fire today - the host carries
-          # python3-yaml and this prints "PyYAML 6.0.1" - but a host rebuilt
-          # without that package would otherwise fail here rather than recover.
-          if ! python3 -c 'import yaml' 2>/dev/null; then
-            python3 -m venv "$RUNNER_TEMP/pyvenv"
-            "$RUNNER_TEMP/pyvenv/bin/pip" install --quiet pyyaml
-            echo "$RUNNER_TEMP/pyvenv/bin" >> "$GITHUB_PATH"
-            export PATH="$RUNNER_TEMP/pyvenv/bin:$PATH"
-          fi
-          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
-
-      - name: Ensure yq (saas_perf_testing_env_config_test.sh dependency)
-        env:
-          # Pinned rather than `latest` — this workflow is a guard, and a guard
-          # that pulls an unpinned binary from the internet on every run is not
-          # one. Other workflows in this repo still use `latest`; that is a
-          # separate cleanup.
-          YQ_VERSION: v4.53.3
-        run: |
-          set -euo pipefail
-          # HOST-GLOBAL FROM A FLEET JOB. `wget -O /usr/bin/yq` truncates the
-          # target and then fills it, so on the shared host a concurrent slot
-          # can exec a partial binary. Download to a private temp file, chmod
-          # it there, then `mv` it into place - a rename is atomic, so a
-          # concurrent reader sees either the old yq or the new one and never
-          # half of one. yq is preinstalled by runner-bootstrap.sh, so on the
-          # fleet this short-circuits and nothing is written at all.
-          if ! command -v yq >/dev/null 2>&1; then
-            tmp="$(mktemp "${RUNNER_TEMP:-/tmp}/yq.XXXXXX")"
-            wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O "$tmp"
-            chmod +x "$tmp"
-            sudo mv -f "$tmp" /usr/bin/yq
-          fi
-          yq --version
-
-      # #3140 — openapi_validator_synthetic_failure_test.sh used to `exit 0`
-      # with "skip: swagger-cli not installed locally" and to wrap its spectral
-      # section in `if command -v spectral`. Neither tool is on the
-      # GitHub-hosted runner image and this job installed neither, so the entire
-      # synthetic-failure half of that test — the part that proves the OpenAPI
-      # gate would REJECT a broken spec — silently did not run, on exactly the
-      # platform it was written for. The test now hard-fails when either tool is
-      # absent; these installs are what make it actually assert instead.
-      - name: Setup Node.js (swagger-cli + spectral)
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: '20'
-
-      - name: Ensure swagger-cli and spectral (openapi_validator_synthetic_failure_test.sh)
-        env:
-          # Pinned for the same reason yq is: a guard that pulls an unpinned
-          # binary from the internet on every run is not one.
-          SWAGGER_CLI_VERSION: 4.0.4
-          SPECTRAL_CLI_VERSION: 6.15.1
-        run: |
-          set -euo pipefail
-          # NOT `npm install -g` (2026-09-05). `npm config get prefix` on the
-          # fleet host is /usr, so a global install writes /usr/lib/node_modules
-          # - host-global across all eight slots, and two concurrent runs of
-          # this job race there. Same per-job shape as the spectral install
-          # below, which already does this correctly.
-          npm install --prefix "$RUNNER_TEMP/swagger-cli" \
-            "@apidevtools/swagger-cli@${SWAGGER_CLI_VERSION}"
-          echo "$RUNNER_TEMP/swagger-cli/node_modules/.bin" >> "$GITHUB_PATH"
-          # $GITHUB_PATH reaches only LATER steps; the `swagger-cli --version`
-          # check below runs in THIS step, so extend PATH here too (exit 127
-          # on #3783 run 33994256580 otherwise).
-          export PATH="$RUNNER_TEMP/swagger-cli/node_modules/.bin:$PATH"
-
-          # Spectral needs its whole transitive tree pinned, not just the CLI.
-          # 6.15.1 caret-ranges @stoplight/spectral-core and >=1 for the
-          # rulesets, which resolve today to 1.23.x / 1.22.x — a combination
-          # this repo already knows is broken: it emits a JSONPath expression
-          # that crashes nimma 0.2.3 with `Cannot read properties of null
-          # (reading 'enum')` on docs/api/orchestrator-api.yaml. A crash is a
-          # non-zero exit, which is what most of the synthetic-failure
-          # assertions look for, so installing the broken tree would let them
-          # pass for the wrong reason. This is the same pinned-overrides install
-          # .github/workflows/validate-openapi.yml uses, and for the same
-          # reason; `npm install -g` does not honour `overrides`, hence the
-          # local package.json. Bump both together when upstream ships a fix.
-          mkdir -p "$RUNNER_TEMP/spectral-ci"
-          cat > "$RUNNER_TEMP/spectral-ci/package.json" << PKGEOF
-          {
-            "name": "spectral-ci-pinned",
-            "version": "1.0.0",
-            "dependencies": {
-              "@stoplight/spectral-cli": "${SPECTRAL_CLI_VERSION}"
-            },
-            "overrides": {
-              "@stoplight/spectral-core": "1.22.0",
-              "@stoplight/spectral-rulesets": "1.22.1"
-            }
-          }
-          PKGEOF
-          (cd "$RUNNER_TEMP/spectral-ci" && npm install --silent)
-          echo "$RUNNER_TEMP/spectral-ci/node_modules/.bin" >> "$GITHUB_PATH"
-
-          swagger-cli --version
-
-      - name: Execute tests/regression-test-required/*.sh
-        env:
-          # required_check_name_uniqueness_test.sh reads ruleset 9199766 to
-          # check every required context has a producer that reports on
-          # pull_request. Without a token that read is unauthenticated, the
-          # guard degrades to a hardcoded snapshot, and it now FAILS rather
-          # than passing blind - which is how this omission surfaced.
-          # Measured on main-guard-freshness.yml today: the default token
-          # reads this ruleset successfully with no `administration: read`,
-          # so this is missing plumbing, not a scope limitation. Setting
-          # ALLOW_PINNED_SNAPSHOT=1 here would re-open the fail-open and make
-          # the escape hatch the default path on every run, so it is not set.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # No `if [ -x ... ]` guard. A missing runner is a broken repo, not a
-          # reason to report success — `bash` on a missing path exits non-zero
-          # and that is the correct outcome.
-          bash tests/regression-test-required/run-all.sh

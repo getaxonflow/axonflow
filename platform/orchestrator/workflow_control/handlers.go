@@ -128,8 +128,10 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/checkpoints", h.GetCheckpoints).Methods("GET", "OPTIONS")
 }
 
-// RegisterEvaluationRoutes registers approval routes available to Evaluation tier and above.
-// Same endpoints as Enterprise but accessed via eval license validation at runtime.
+// RegisterEvaluationRoutes registers approval routes available to the
+// Evaluation tier and above. Enterprise reaches them through
+// RegisterEnterpriseRoutes, which calls this function - see the note there for
+// why that delegation is load-bearing rather than tidiness.
 func (h *Handler) RegisterEvaluationRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/approve", h.ApproveStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/reject", h.RejectStep).Methods("POST", "OPTIONS")
@@ -139,14 +141,31 @@ func (h *Handler) RegisterEvaluationRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/checkpoints/resume", h.ResumeFromLastCheckpoint).Methods("POST", "OPTIONS")
 }
 
-// RegisterEnterpriseRoutes registers enterprise-only approval routes with a gorilla/mux router.
-// Approval endpoints (approve, reject, pending) are only available in enterprise mode.
+// RegisterEnterpriseRoutes registers everything the Evaluation tier serves,
+// plus the Enterprise-only resume-from-ANY-checkpoint route.
+//
+// #3953: IT DELEGATES RATHER THAN REPEATING, and that is the fix expressed in
+// code instead of only in a guard.
+//
+// These were two independent copies of the same three approval routes. One copy
+// grew `POST /api/v1/workflows/{id}/checkpoints/resume` (resume from the last
+// checkpoint) and the other did not, and run.go calls exactly one of them per
+// deployment - so on ENTERPRISE that route was on no router at all and answered
+// the mux's own `text/plain` 404, while `docs/api/orchestrator-api.yaml`
+// described it unconditionally and its summary said "Evaluation and above".
+// A deployment upgrading from Evaluation to Enterprise silently LOST a working
+// endpoint: a higher tier serving strictly less than a lower one.
+//
+// A superset built by construction cannot drift into a subset. The invariant is
+// additionally guarded - see TestEnterpriseServesEveryRouteEvaluationServes and
+// the posture census in openapi_route_posture_parity_enterprise_test.go, which
+// exists because nothing in this repository could SEE an edition-conditional
+// registration: the route-parity census reads source and unions the two
+// registrars, so a route present in either read as present.
 func (h *Handler) RegisterEnterpriseRoutes(r *mux.Router) {
-	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/approve", h.ApproveStep).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/reject", h.RejectStep).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/workflows/approvals/pending", h.GetPendingApprovals).Methods("GET", "OPTIONS")
+	h.RegisterEvaluationRoutes(r)
 
-	// Checkpoint resume — Enterprise can resume from any checkpoint
+	// Enterprise can additionally resume from any checkpoint, not only the last.
 	r.HandleFunc("/api/v1/workflows/{id}/checkpoints/{checkpoint_id}/resume", h.ResumeFromCheckpoint).Methods("POST", "OPTIONS")
 }
 
@@ -803,6 +822,17 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, scope.TenantID, scope.OrgID, approvedBy, comment); err != nil {
+		// #4254: an approval after its queue row's expiry is refused, and an
+		// expiry that cannot be read refuses rather than approving blind. Each
+		// is named, never answered as an internal error.
+		if errors.Is(err, ErrApprovalExpired) {
+			h.writeError(w, http.StatusConflict, "APPROVAL_EXPIRED", err.Error())
+			return
+		}
+		if errors.Is(err, ErrApprovalStateUnreadable) {
+			h.writeError(w, http.StatusServiceUnavailable, "APPROVAL_STATE_UNREADABLE", err.Error())
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return

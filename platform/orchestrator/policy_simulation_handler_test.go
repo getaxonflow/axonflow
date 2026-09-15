@@ -36,7 +36,6 @@ func (m *mockLicenseCheckerForSim) IsEnterprise() bool              { return lic
 func (m *mockLicenseCheckerForSim) Tier() license.Tier              { return m.tier }
 func (m *mockLicenseCheckerForSim) PolicyLimit() int                { return 50 }
 func (m *mockLicenseCheckerForSim) OrgPolicyLimit() int             { return 5 }
-func (m *mockLicenseCheckerForSim) CustomPolicyConnectorLimit() int { return 5 }
 func (m *mockLicenseCheckerForSim) AuditRetentionDays() int         { return 14 }
 func (m *mockLicenseCheckerForSim) MaxLLMProviders() int            { return 3 }
 func (m *mockLicenseCheckerForSim) MaxExecutionHistory() int        { return 500 }
@@ -764,7 +763,7 @@ func TestSimulationHandler_RegisterRoutes(t *testing.T) {
 	}
 	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, nil, handler)
 
 	var match mux.RouteMatch
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", nil)

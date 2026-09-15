@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package policy
 
@@ -112,9 +104,9 @@ import "strings"
 // below), security-admin / admin_access (access semantics, low FP risk, keep
 // conservative), and every PII / sensitive-data / compliance category.
 var executionScopedCategories = map[PolicyCategory]bool{
-	CategorySecuritySQLi:                true,
-	PolicyCategory("sql_injection"):     true,
-	PolicyCategory("dangerous_queries"): true,
+	CategorySecuritySQLi:           true,
+	CategoryLegacySQLInjection:     true,
+	CategoryLegacyDangerousQueries: true,
 }
 
 // executionScopedPolicyIDs individually classifies the execution-class

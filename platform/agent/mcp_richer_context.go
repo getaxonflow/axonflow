@@ -14,7 +14,6 @@ import (
 
 	"github.com/lib/pq"
 
-	"axonflow/platform/agent/fincrime"
 	sharedaudit "axonflow/platform/shared/audit"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
@@ -84,38 +83,9 @@ func buildRicherCheckInputBlock(
 		}
 	}
 
-	// override_available + override_existing_id: scoped to
-	// (tenant, user, first overridable policy). Critical-risk policies never
-	// qualify — the DB trigger guarantees this but we belt-and-suspenders
-	// here so the plugin doesn't render an "override" button for something
-	// that will 403 anyway.
-	//
-	// #2896: a client-shared pseudo-identity gets NO override affordance —
-	// offering the CTA would let the plugin create an override that either
-	// never applies (identity mismatch across planes) or applies to every
-	// caller on the client. The block response stays a plain block.
-	if firstOverridablePolicyID == "" || userEmail == "" || isClientSharedPseudoIdentity(userEmail) {
-		return matches, topRisk, nil, ""
-	}
-
-	available := false
-	overrideAvailable = &available
-
-	activeID, found, err := lookupActiveOverride(ctx, db, tenantID, userEmail, firstOverridablePolicyID)
-	if err != nil {
-		log.Printf("richer context: active-override lookup failed for %s: %v",
-			firstOverridablePolicyID, err)
-		return matches, topRisk, overrideAvailable, ""
-	}
-	if found {
-		overrideID = activeID
-	}
-	// allow_override=true + non-critical means the user COULD create an
-	// override — so override_available is true regardless of whether one
-	// is already active. The plugin distinguishes the two via
-	// override_existing_id being set.
-	*overrideAvailable = true
-	return matches, topRisk, overrideAvailable, overrideID
+	// override_available and override_existing_id stay unset: session
+	// overrides are retired in v11 (#4252), so none is offered.
+	return matches, topRisk, nil, ""
 }
 
 // lookupPolicyMeta fetches risk_level + allow_override + version for a
@@ -165,26 +135,6 @@ func lookupPolicyMeta(ctx context.Context, db *sql.DB, scopeOrg, policyID string
 		return "", false, 0, err
 	}
 	return risk.String, allowOverride.Bool, int(version.Int64), nil
-}
-
-// collectPolicyVersions distills RicherPolicyMatch.Version values into the
-// { policy_id → version } map shape carried by MCPQueryAuditEntry +
-// audit_logs.policy_details JSONB (#1983 / α1). Returns nil when no match
-// has a known version so audit consumers see omitempty rather than `{}`.
-func collectPolicyVersions(matches []RicherPolicyMatch) map[string]int {
-	if len(matches) == 0 {
-		return nil
-	}
-	out := make(map[string]int, len(matches))
-	for _, m := range matches {
-		if m.PolicyID != "" && m.Version > 0 {
-			out[m.PolicyID] = m.Version
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // lookupPolicyVersionsByID returns version numbers keyed by policy_id for the
@@ -256,275 +206,6 @@ func lookupPolicyVersionsByID(ctx context.Context, db *sql.DB, policyIDs []strin
 		return nil
 	}
 	return out
-}
-
-// lookupActiveOverride returns (id, true, nil) when the caller already has
-// a live (non-revoked, non-expired) override on the policy, or ("",
-// false, nil) otherwise. Scoped to (tenant, user, policy). The tool_signature
-// dimension is explicitly ignored — on the /api/v1/mcp/check-input path
-// there's no canonical "tool" identity, so we check for any override on
-// the policy rather than tool-scoped ones.
-//
-// Accepts either the human-readable policy slug (sys_sqli_admin_bypass) or
-// a UUID. policy_overrides.policy_id is UUID-typed; static_policies.policy_id
-// is the slug — so a join via static_policies is required when the caller
-// passes the slug. We do the join in a single statement so the index on
-// static_policies.policy_id stays hot.
-func lookupActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, policySlugOrUUID string) (string, bool, error) {
-	// #3048: both tables here are RLS-enabled (static_policies mig 018,
-	// policy_overrides mig 110) and live in DIFFERENT org scopes when the
-	// policy is a system-tier row: the policy carries org_id='global' while
-	// the override row carries the caller's org. The old single statement
-	// resolved the slug via a subselect INSIDE the caller's (unset) scope —
-	// under axonflow_app_role it matched nothing and every active override
-	// silently stopped applying. Resolve the policy UUID first (caller org
-	// scope, then 'global'), then read the override under the caller's org
-	// scope. An empty caller org keeps the legacy bare single statement
-	// (owner-pool contexts, RLS bypassed).
-	scopeOrg := OrgIDFromContext(ctx)
-	if scopeOrg == "" {
-		scopeOrg = tenantID
-	}
-
-	var id string
-	if scopeOrg == "" {
-		// #3065 (R3 round 2): this branch used to run a BARE read — no
-		// WithOrgScope wrap and no org predicate — with
-		// `(po.tenant_id = $3 OR po.tenant_id IS NULL)` and $3 empty. On an
-		// owner-pool deployment (AXONFLOW_DB_USE_APP_ROLE unset, the
-		// docker-compose default) RLS is bypassed, so that resolved ANY org's
-		// org-scoped override for the given created_by. It is the same
-		// "unknown caller org falls back to a bare read" fallback that
-		// PolicyOverrideRepository.GetByID carried until this change removed
-		// it one file over.
-		//
-		// Fail closed instead: with no org to authorize against there is no
-		// override to apply, so the ADR-044 allow-flip does not fire and the
-		// underlying deny stands. That is the safe direction — the override
-		// exists only to RELAX a decision.
-		return "", false, nil
-	}
-
-	const resolveQuery = `
-		SELECT sp.id FROM static_policies sp
-		WHERE sp.policy_id = $1
-		LIMIT 1
-	`
-	var policyUUID string
-	resolve := func(scope string) error {
-		return WithOrgScope(ctx, db, scope, func(tx *sql.Tx) error {
-			return tx.QueryRowContext(ctx, resolveQuery, policySlugOrUUID).Scan(&policyUUID)
-		})
-	}
-	err := resolve(scopeOrg)
-	if err == sql.ErrNoRows && scopeOrg != GlobalOrgSentinel {
-		err = resolve(GlobalOrgSentinel)
-	}
-	if err == sql.ErrNoRows {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-
-	err = WithOrgScope(ctx, db, scopeOrg, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `
-			SELECT po.id
-			FROM policy_overrides po
-			WHERE po.policy_id::text = $1
-			  AND po.created_by = $2
-			  AND (po.tenant_id = $3 OR po.tenant_id IS NULL)
-			  AND po.revoked_at IS NULL
-			  AND (po.expires_at IS NULL OR po.expires_at > NOW())
-			ORDER BY po.created_at DESC
-			LIMIT 1
-		`, policyUUID, userEmail, tenantID).Scan(&id)
-	})
-	if err == sql.ErrNoRows {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return id, true, nil
-}
-
-// applyOverrideToCheckInputBlock applies an active session override to a
-// matched-policy block. Returns (overrideID, &match, true) when the block is
-// suppressed — caller should treat the request as allowed and emit an
-// override_used audit event — or ("", nil, false) when no applicable
-// override exists and the block stands.
-//
-// The matched RicherPolicyMatch is returned so the caller can stamp the
-// overridden policy's version into the override_used audit event
-// (#1983 / α1). Returning a pointer keeps the no-override case allocation
-// free.
-//
-// ADR-044 invariants enforced:
-//   - Only non-critical, allow_override=true policies are overridable
-//   - Must be scoped to (tenant, user, policy)
-//   - Only live overrides (non-revoked, non-expired) qualify
-//
-// This mirrors orchestrator.ApplyOverrideToResult for the WCP path — the
-// same semantics applied to the MCP check-input path so the plugin and
-// SDK see consistent behavior regardless of which surface fired the
-// request. Deliberately NOT segment-aware: RicherPolicyMatch carries no
-// SegmentID, and none was added by #3296 Slice 2 — adding a segment
-// exclusion here would break the stated parity with
-// orchestrator.ApplyOverrideToResult, which was itself deliberately made
-// NOT segment-exclusive by #3239 (see platform/orchestrator/
-// override_enforcement.go's doc comment and platform/shared/policy/
-// override.go's package doc for the full rationale/evidence). The
-// SEPARATE admin tier-downgrade override mechanism
-// (StaticPolicyRepository.GetEffective) DOES exclude segment-scoped
-// policies — that is a different code path from this one.
-func applyOverrideToCheckInputBlock(
-	ctx context.Context,
-	db *sql.DB,
-	tenantID, userEmail string,
-	matches []RicherPolicyMatch,
-) (string, *RicherPolicyMatch, bool) {
-	// #2896: never flip a deny for a client-shared pseudo-identity — an
-	// override keyed to "mcp-client:<id>" would be one caller's override
-	// applied to EVERY caller on that client (ADR-044 scopes overrides to a
-	// user, not a client). Fail closed: the block stands.
-	if db == nil || userEmail == "" || isClientSharedPseudoIdentity(userEmail) || len(matches) == 0 {
-		return "", nil, false
-	}
-	for i := range matches {
-		m := matches[i]
-		// Eligibility gate factored into the shared primitive (#3296 Slice 2)
-		// — identical logic to orchestrator.ApplyOverrideToResult /
-		// SelectOverridablePolicy. See platform/shared/policy/override.go.
-		if !sharedpolicy.IsOverrideEligible(m.RiskLevel, m.AllowOverride) {
-			continue
-		}
-		id, found, err := lookupActiveOverride(ctx, db, tenantID, userEmail, m.PolicyID)
-		if err != nil {
-			log.Printf("apply override: lookup failed for %s: %v", m.PolicyID, err)
-			continue
-		}
-		if found {
-			return id, &matches[i], true
-		}
-	}
-	return "", nil, false
-}
-
-// writeOverrideUsedEvent records an override_used audit event for the MCP
-// check-input path. The orchestrator emits matching events for its own
-// paths; this keeps the override audit trail consistent across surfaces.
-//
-// policyID + policyVersion identify the policy whose block was unblocked
-// by this override (#1983 / α1). They land in policy_details JSONB so the
-// explain endpoint can surface "which version of which policy was overridden"
-// without re-deriving from the override row. Both are best-effort: empty
-// policyID / zero policyVersion are simply omitted from the JSONB so we
-// never block an override write on an unknown match.
-func writeOverrideUsedEvent(
-	ctx context.Context,
-	db *sql.DB,
-	overrideID, decisionID, tenantID, orgID, clientID, userEmail string,
-	policyID string, policyName string, policyVersion int,
-	correlationID string,
-) {
-	if db == nil || overrideID == "" {
-		return
-	}
-	details := map[string]interface{}{
-		"decision_id": decisionID,
-		"override_id": overrideID,
-		"event_type":  "override_used",
-	}
-	if policyID != "" {
-		details["policy_id"] = policyID
-	}
-	// #3365: the overridden match's evaluation-time display name (scalar
-	// policy_name, the shared reader's first resolution arm). Previously the
-	// event carried the id alone, so the portal rendered it with the
-	// "(name not recorded)" marker.
-	if policyName != "" {
-		details["policy_name"] = policyName
-	}
-	if policyVersion > 0 {
-		details["policy_version"] = policyVersion
-		// #3365: the shared reader's version chain (extractVersion /
-		// PolicyVersionSQLExpr) resolves policy_versions[id] and
-		// policy_matches[0].policy_version but never a top-level scalar, so the
-		// scalar above was written and unreadable on every surface. Stamp the
-		// id-keyed map alongside it (scalar kept for back-compat readers of the
-		// raw JSONB).
-		if policyID != "" {
-			details["policy_versions"] = map[string]int{policyID: policyVersion}
-		}
-	}
-	// #2598: mirror the correlation key into JSONB (read-path resilience) and the
-	// first-class column below, so an override applied mid-chain groups with the
-	// other stages of the same logical request.
-	if correlationID != "" {
-		details["correlation_id"] = correlationID
-	}
-	detailsJSON, err := json.Marshal(details)
-	if err != nil {
-		return
-	}
-	if userEmail == "" {
-		userEmail = "unknown@axonflow.local"
-	}
-	if clientID == "" {
-		clientID = "unknown"
-	}
-	if tenantID == "" {
-		tenantID = "unknown"
-	}
-	// #2592 / ADR-058 Phase 1: dual-write decision_id into the first-class
-	// column + stamp plane=mcp (this is the MCP check-input override surface),
-	// alongside the JSONB copy. No obligations on an override-used event.
-	// #2598: correlation_id (first-class column or NULL → singleton).
-	var correlationIDArg interface{}
-	if correlationID != "" {
-		correlationIDArg = correlationID
-	}
-	// #2753: per-session identity → audit_logs.session_id (NULL when absent),
-	// read from the request context stamped in requireMCPAuth, for parity with
-	// the block/redact rows on the same check_policy surface.
-	var sessionIDArg interface{}
-	if sid := clientSessionIDFromContext(ctx); sid != "" {
-		sessionIDArg = sid
-	}
-	_, _ = db.ExecContext(ctx, `
-		INSERT INTO audit_logs (
-			id, request_id, timestamp, user_id, user_email, user_role,
-			client_id, tenant_id, org_id, request_type, query, query_hash,
-			policy_decision, policy_details, decision_id, plane, correlation_id,
-			session_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-	`,
-		"audit_used_"+decisionID,
-		decisionID,
-		time.Now().UTC(),
-		0,
-		userEmail,
-		"user",
-		clientID,
-		tenantID,
-		orgID,
-		"override_used",
-		"override applied",
-		"none",
-		// #2641 (AUDIT-C) vocabulary contract (#2638): an override flips a deny to
-		// an allow, so the canonical past-tense verdict is "allowed" — NOT the
-		// legacy "allow" the agent /decide path still emits. Matches the
-		// orchestrator reference (audit_logger.go) so this override-used row reads
-		// consistently in the portal decisions feed alongside the redacted/blocked
-		// rows this PR adds across the MCP plane.
-		mcpVerdictAllowed,
-		detailsJSON,
-		decisionID,       // decision_id (first-class column)
-		PlaneMCP,         // plane
-		correlationIDArg, // correlation_id (#2598)
-		sessionIDArg,     // session_id (#2753)
-	)
 }
 
 // MCP-plane canonical policy_decision vocabulary (#2641 / #2638). These are now
@@ -676,15 +357,12 @@ func writeMCPDecisionAudit(
 		userIDInt = n
 	}
 
-	// ADR-061 / #3329: merge the fincrime attribution recorded on ctx (risk
-	// score, ml_inference_layer_status, fincrime policy ids/names/versions)
-	// so scored MCP-plane decisions satisfy the #3306 audit contract. No-op
-	// for every non-fincrime decision.
-	details := fincrime.MergeAuditDetails(ctx,
-		buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, policyNames, toolIdentity...))
-	// #3365: id-keyed policy_versions, best-effort, AFTER the fincrime merge so
-	// the seam's model/pack version strings win (missing-only add). Acted rows
-	// only: allow writes must not pay the RLS-scoped batch read per request.
+	details := buildMCPDecisionAuditDetails(decisionID, policyIDs, reasons, redactedFields, correlationID, policyNames, toolIdentity...)
+	// #3564: which engine authored an MCP response pass's verdict, in which
+	// mode. No-op for a row written outside or before that pass.
+	details = mergeEnforcementPosture(ctx, details)
+	// #3365: id-keyed policy_versions, best-effort, missing-only add. Acted
+	// rows only: allow writes must not pay the RLS-scoped batch read per request.
 	if actedAuditVerdict(policyDecision) {
 		stampMissingPolicyVersions(ctx, db, details)
 	}
@@ -894,9 +572,7 @@ func writeExplainableAuditLog(
 		userIDInt = n
 	}
 
-	// ADR-061 / #3329: merge any fincrime attribution recorded on ctx (see
-	// writeMCPDecisionAudit above). No-op for every non-fincrime decision.
-	detailsJSON, err := json.Marshal(fincrime.MergeAuditDetails(ctx,
+	detailsJSON, err := json.Marshal(mergeEnforcementPosture(ctx,
 		buildExplainableAuditDetails(decisionID, blockReason, topRisk, matches, correlationID, toolIdentity...)))
 	if err != nil {
 		log.Printf("explainable audit log: marshal failed: %v", err)

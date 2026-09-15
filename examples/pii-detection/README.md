@@ -4,7 +4,7 @@ Demonstrates AxonFlow's built-in PII (Personally Identifiable Information) detec
 
 ## What This Example Shows
 
-AxonFlow detects and redacts requests containing sensitive PII patterns (Issue #891: tiered defaults):
+AxonFlow detects sensitive PII patterns; the stored action of each matched policy decides what happens:
 
 | PII Type | Pattern | Region |
 |----------|---------|--------|
@@ -69,76 +69,66 @@ cd http
 
 Each example tests multiple PII patterns:
 - Safe query (no PII) - APPROVED
-- SSN pattern - REDACTED
-- Credit card pattern - REDACTED
-- India PAN - REDACTED
-- India Aadhaar - REDACTED (with Verhoeff checksum validation)
+- SSN pattern - APPROVED, `sys_pii_ssn` matched
+- Credit card pattern - APPROVED, `sys_pii_credit_card` matched
+- India PAN - APPROVED, `sys_pii_pan` matched
+- India Aadhaar - APPROVED, `sys_pii_aadhaar` matched (with Verhoeff checksum validation)
 
-> **Note:** PII detection defaults to `redact` mode. Use `PII_ACTION` to control behavior:
+> **Note (v11):** the stored action of each matched PII policy decides:
 
-| PII_ACTION | Request-side | Response-side | Audit |
-|------------|-------------|---------------|-------|
+| Stored action | Request-side | Response-side | Audit |
+|---------------|-------------|---------------|-------|
 | `block` | Rejected | Rejected | Yes |
-| `redact` (default) | Approved* | Redacted | Yes |
+| `redact` | Approved* | Redacted | Yes |
 | `warn` | Approved | Pass-through | Yes |
 | `log` | Approved | Pass-through | Yes |
 
 \* Approved with `requires_redaction=true` flag.
 
-To change: set `PII_ACTION` in docker-compose.yml and restart.
-```bash
-PII_ACTION=block docker compose up -d
-```
+The shipped SSN, credit card, PAN and Aadhaar policies store `warn` on the request side and `redact` on the response side; email and phone store `log` and `redact`. See [Changing the action](#changing-the-action) below.
 
 ## How It Works
 
 1. Client sends query to AxonFlow
 2. Policy engine scans for PII patterns
-3. If PII detected, it is redacted before the request reaches the LLM
-4. Response indicates which PII type was detected and redacted
+3. If PII is detected, the matched policy's stored action is applied (block, redact, warn or log)
+4. Response names the matched policies (`policies`) and, for `redact`, sets `requires_redaction`
 
-> **Tiered Detection (Issue #891):** PII is redacted by default to preserve UX.
-> SQLi and dangerous queries are still blocked (high-confidence threats).
+> **Stored actions (v11):** request-side PII warns out of the box, and so does SQL injection (every `sys_sqli_*` row stores `warn`). Dangerous commands still block.
 
 ## Policy Configuration
 
-PII detection is enabled by default via system policies:
-- `pii_ssn_detection`
-- `pii_credit_card_detection`
-- `pii_pan_detection`
-- `pii_aadhaar_detection`
-- `pii_email_detection`
-- `pii_phone_detection`
+PII detection is enabled by default via system policies, including:
+- `sys_pii_ssn`
+- `sys_pii_credit_card`
+- `sys_pii_pan`
+- `sys_pii_aadhaar`
+- `sys_pii_email`
+- `sys_pii_phone`
 
-To customize, create tenant-level policy overrides.
+### Changing the action
 
-### Configurable Action Modes
+Since v11 environment variables no longer set detection actions. `PII_ACTION` and `GATEWAY_PII_ACTION` are ignored: at boot the agent logs a warning for each one that is set and increments `axonflow_ignored_posture_env_total`. There are two supported ways to change what a PII match does:
 
-PII detection behavior is controlled via environment variables:
+1. **Record an organization override** (Enterprise). The `pii` override reaches every `pii-*` policy category for your organization. It is written through the customer portal API (`localhost:8082` in the enterprise compose stack) with a session for a user holding `sso:configure`, and every write is audited:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PII_ACTION` | `redact` | Controls PII detection action for all modes |
-| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | Override for gateway mode only |
+   ```bash
+   # Block PII for your organization
+   curl -X PUT http://localhost:8082/api/v1/detection-posture/pii \
+     -H "Content-Type: application/json" \
+     -b "axonflow_session=$PORTAL_SESSION" \
+     -d '{"action":"block"}'
 
-**Supported values:**
+   # Back to the stored policy actions
+   curl -X DELETE http://localhost:8082/api/v1/detection-posture/pii \
+     -b "axonflow_session=$PORTAL_SESSION"
+   ```
 
-| Value | Behavior |
-|-------|----------|
-| `redact` | (Default) PII is detected and flagged for downstream redaction. Requests are approved with `requires_redaction=true`. |
-| `block` | PII is detected and the request is blocked. Requests are rejected with a block reason. |
-| `log` | PII is detected and logged but passes through unmodified. No blocking or redaction. |
+   Agents pick up a change within `AXONFLOW_DETECTION_OVERRIDE_TTL_SECONDS` (default 60).
 
-**Example:**
-```bash
-# Block all requests containing PII
-PII_ACTION=block go run main.go
+2. **Change the policy's action.** Edit a tenant policy, or create a system-policy override where your edition allows it.
 
-# Log PII but allow requests through
-PII_ACTION=log python main.py
-```
-
-Each SDK example includes conditional tests that adapt to the configured `PII_ACTION` value.
+The SDK examples assert the shipped stored actions, so they report failures while an organization override is in force.
 
 ## Next Steps
 

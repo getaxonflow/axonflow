@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
@@ -116,6 +119,11 @@ func (r RawRow) jsonOr(col string) json.RawMessage {
 // category/severity table. Collapsing them would make the compiler agree with
 // the legacy engine by accident on the rows where it matters most.
 type StaticRow struct {
+	// raw is the row this was decoded from. The #3397 scan-drop check reads
+	// NULL-or-absent from it for every modelled column, so a column a model
+	// gains is judged without a hand-kept flag (#4078).
+	raw RawRow
+
 	ID       string
 	PolicyID string
 	Name     string
@@ -123,19 +131,17 @@ type StaticRow struct {
 	Pattern  string
 	Severity string
 
-	// Tier, TenantID, Priority, Enabled are DEFAULTed but NULLable in
-	// migrations/core/010 and 030. Their NULLability is what the legacy scan
-	// model turns into a dropped row.
-	Tier         string
-	TierNull     bool
-	TenantID     string
-	TenantIDNull bool
-	OrgID        string
-	OrgIDNull    bool
-	Priority     int
-	PriorityNull bool
-	Enabled      bool
-	EnabledNull  bool
+	// Tier, TenantID, Priority and Enabled are DEFAULTed but NULLable in
+	// migrations/core/010 and 030. Whether a NULL among them drops the row is
+	// the #3397 scan-drop models' question, answered from raw by
+	// nullScanDestinations (#4078), not by a flag here. EnabledNull stays
+	// because the enabled check reports it.
+	Tier        string
+	TenantID    string
+	OrgID       string
+	Priority    int
+	Enabled     bool
+	EnabledNull bool
 
 	// Runtime read path columns.
 	Phase              Phase
@@ -147,47 +153,41 @@ type StaticRow struct {
 
 	// Effective read path column. NOT NULL in the schema, so an absence here
 	// is a capture defect rather than a data state.
-	Action     string
-	ActionNull bool
+	Action string
 
 	SegmentID     string
 	SegmentIDNull bool
 	Version       int
-	VersionNull   bool
 	Metadata      json.RawMessage
 	DeletedAt     string
 	CreatedAt     string
-	CreatedAtNull bool
 	UpdatedAt     string
-	UpdatedAtNull bool
 }
 
 // DynamicRow is one dynamic_policies row.
 type DynamicRow struct {
-	ID           string
-	PolicyID     string
-	Name         string
-	PolicyType   string
-	Category     string
-	CategoryNull bool
+	// raw is the row this was decoded from. The #3397 scan-drop check reads
+	// NULL-or-absent from it for every modelled column, so a column a model
+	// gains is judged without a hand-kept flag (#4078).
+	raw RawRow
+
+	ID         string
+	PolicyID   string
+	Name       string
+	PolicyType string
+	Category   string
 
 	Tier         string
-	TierNull     bool
 	TenantID     string
-	TenantIDNull bool
 	OrgID        string
-	OrgIDNull    bool
 	Priority     int
 	PriorityNull bool
 	Enabled      bool
 	EnabledNull  bool
 
-	RiskThreshold     float64
-	RiskThresholdNull bool
-	Version           int
-	VersionNull       bool
-	Description       string
-	DescriptionNull   bool
+	RiskThreshold float64
+	Version       int
+	Description   string
 
 	// Conditions and Actions are JSONB and NOT NULL. They are kept as raw
 	// JSON so that a malformed document is a compilation reason rather than a
@@ -200,7 +200,6 @@ type DynamicRow struct {
 	SegmentIDNull bool
 	Metadata      json.RawMessage
 	CreatedAt     string
-	CreatedAtNull bool
 }
 
 // staticColumns is every column the compiler needs to see for a
@@ -255,10 +254,11 @@ func missingColumns(r RawRow) []string {
 }
 
 func decodeStatic(r RawRow) StaticRow {
-	pr, prOK := r.intOr("priority", 0)
+	pr, _ := r.intOr("priority", 0)
 	en, enOK := r.boolOr("enabled", false)
-	ver, verOK := r.intOr("version", 0)
+	ver, _ := r.intOr("version", 0)
 	row := StaticRow{
+		raw:      r,
 		ID:       r.stringOr("id", ""),
 		PolicyID: r.stringOr("policy_id", ""),
 		Name:     r.stringOr("name", ""),
@@ -266,16 +266,12 @@ func decodeStatic(r RawRow) StaticRow {
 		Pattern:  r.stringOr("pattern", ""),
 		Severity: r.stringOr("severity", ""),
 
-		Tier:         r.stringOr("tier", ""),
-		TierNull:     r.isNull("tier") || !r.has("tier"),
-		TenantID:     r.stringOr("tenant_id", ""),
-		TenantIDNull: r.isNull("tenant_id") || !r.has("tenant_id"),
-		OrgID:        r.stringOr("org_id", ""),
-		OrgIDNull:    r.isNull("org_id") || !r.has("org_id"),
-		Priority:     pr,
-		PriorityNull: !prOK,
-		Enabled:      en,
-		EnabledNull:  !enOK,
+		Tier:        r.stringOr("tier", ""),
+		TenantID:    r.stringOr("tenant_id", ""),
+		OrgID:       r.stringOr("org_id", ""),
+		Priority:    pr,
+		Enabled:     en,
+		EnabledNull: !enOK,
 
 		Phase:              Phase(r.stringOr("phase", "")),
 		PhaseNull:          r.isNull("phase") || !r.has("phase"),
@@ -284,19 +280,15 @@ func decodeStatic(r RawRow) StaticRow {
 		ActionResponse:     r.stringOr("action_response", ""),
 		ActionResponseNull: r.isNull("action_response") || !r.has("action_response"),
 
-		Action:     r.stringOr("action", ""),
-		ActionNull: r.isNull("action") || !r.has("action"),
+		Action: r.stringOr("action", ""),
 
 		SegmentID:     r.stringOr("segment_id", ""),
 		SegmentIDNull: r.isNull("segment_id") || !r.has("segment_id"),
 		Version:       ver,
-		VersionNull:   !verOK,
 		Metadata:      r.jsonOr("metadata"),
 		DeletedAt:     r.stringOr("deleted_at", ""),
 		CreatedAt:     r.stringOr("created_at", ""),
-		CreatedAtNull: r.isNull("created_at") || !r.has("created_at"),
 		UpdatedAt:     r.stringOr("updated_at", ""),
-		UpdatedAtNull: r.isNull("updated_at") || !r.has("updated_at"),
 	}
 	return row
 }
@@ -305,41 +297,34 @@ func decodeDynamic(r RawRow) DynamicRow {
 	pr, prOK := r.intOr("priority", 0)
 	en, enOK := r.boolOr("enabled", false)
 	var rt float64
-	rtOK := false
 	if raw := r.jsonOr("risk_threshold"); raw != nil {
 		var n json.Number
 		if err := json.Unmarshal(raw, &n); err == nil {
 			if f, err := n.Float64(); err == nil {
-				rt, rtOK = f, true
+				rt = f
 			}
 		}
 	}
-	ver, verOK := r.intOr("version", 0)
+	ver, _ := r.intOr("version", 0)
 	return DynamicRow{
-		Version:         ver,
-		VersionNull:     !verOK,
-		Description:     r.stringOr("description", ""),
-		DescriptionNull: r.isNull("description") || !r.has("description"),
-		ID:              r.stringOr("id", ""),
-		PolicyID:        r.stringOr("policy_id", ""),
-		Name:            r.stringOr("name", ""),
-		PolicyType:      r.stringOr("policy_type", ""),
-		Category:        r.stringOr("category", ""),
-		CategoryNull:    r.isNull("category") || !r.has("category"),
+		raw:         r,
+		Version:     ver,
+		Description: r.stringOr("description", ""),
+		ID:          r.stringOr("id", ""),
+		PolicyID:    r.stringOr("policy_id", ""),
+		Name:        r.stringOr("name", ""),
+		PolicyType:  r.stringOr("policy_type", ""),
+		Category:    r.stringOr("category", ""),
 
 		Tier:         r.stringOr("tier", ""),
-		TierNull:     r.isNull("tier") || !r.has("tier"),
 		TenantID:     r.stringOr("tenant_id", ""),
-		TenantIDNull: r.isNull("tenant_id") || !r.has("tenant_id"),
 		OrgID:        r.stringOr("org_id", ""),
-		OrgIDNull:    r.isNull("org_id") || !r.has("org_id"),
 		Priority:     pr,
 		PriorityNull: !prOK,
 		Enabled:      en,
 		EnabledNull:  !enOK,
 
-		RiskThreshold:     rt,
-		RiskThresholdNull: !rtOK,
+		RiskThreshold: rt,
 
 		Conditions: r.jsonOr("conditions"),
 		Actions:    r.jsonOr("actions"),
@@ -348,6 +333,5 @@ func decodeDynamic(r RawRow) DynamicRow {
 		SegmentIDNull: r.isNull("segment_id") || !r.has("segment_id"),
 		Metadata:      r.jsonOr("metadata"),
 		CreatedAt:     r.stringOr("created_at", ""),
-		CreatedAtNull: r.isNull("created_at") || !r.has("created_at"),
 	}
 }

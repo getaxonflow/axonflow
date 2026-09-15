@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Dynamic Policy Management Example - Go
 //
 // Demonstrates and VALIDATES CRUD operations for dynamic policies.
@@ -64,7 +67,7 @@ func main() {
 		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"), // Empty for community mode
 	})
 
-	fmt.Println("=== Dynamic Policy Management Example ===\n")
+	fmt.Println("=== Dynamic Policy Management Example ===")
 
 	// 1. List existing dynamic policies
 	fmt.Println("1. Listing existing dynamic policies...")

@@ -4,169 +4,23 @@
 package orchestrator
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/DATA-DOG/go-sqlmock"
+	"axonflow/platform/shared/legacyfreeze"
 	"github.com/gorilla/mux"
 )
-
-func TestClampOverrideTTL_ZeroUsesDefault(t *testing.T) {
-	ttl, clamped, reason := clampOverrideTTL(0)
-	if ttl != OverrideDefaultTTL {
-		t.Errorf("zero requested: ttl = %v, want %v", ttl, OverrideDefaultTTL)
-	}
-	if clamped {
-		t.Error("zero requested should not report clamped")
-	}
-	if reason != "" {
-		t.Errorf("zero requested should have empty reason, got %q", reason)
-	}
-}
-
-func TestClampOverrideTTL_WithinBoundsUnchanged(t *testing.T) {
-	// 30 minutes = 1800 seconds, within [1min, 24h]
-	ttl, clamped, reason := clampOverrideTTL(1800)
-	expected := 30 * time.Minute
-	if ttl != expected {
-		t.Errorf("ttl = %v, want %v", ttl, expected)
-	}
-	if clamped {
-		t.Error("within-bounds should not report clamped")
-	}
-	if reason != "" {
-		t.Errorf("within-bounds reason = %q, want empty", reason)
-	}
-}
-
-func TestClampOverrideTTL_ExceedsHardCap(t *testing.T) {
-	// 30 hours, exceeds 24h cap
-	ttl, clamped, reason := clampOverrideTTL(30 * 60 * 60)
-	if ttl != OverrideHardCapTTL {
-		t.Errorf("ttl = %v, want hard cap %v", ttl, OverrideHardCapTTL)
-	}
-	if !clamped {
-		t.Error("exceeds-cap should report clamped")
-	}
-	if reason != "exceeds_hard_cap" {
-		t.Errorf("reason = %q, want 'exceeds_hard_cap'", reason)
-	}
-}
-
-func TestClampOverrideTTL_BelowMinimum(t *testing.T) {
-	// 30 seconds, below 1min minimum
-	ttl, clamped, reason := clampOverrideTTL(30)
-	if ttl != OverrideMinTTL {
-		t.Errorf("ttl = %v, want min %v", ttl, OverrideMinTTL)
-	}
-	if !clamped {
-		t.Error("below-min should report clamped")
-	}
-	if reason != "below_minimum" {
-		t.Errorf("reason = %q, want 'below_minimum'", reason)
-	}
-}
-
-func TestClampOverrideTTL_ExactlyHardCap(t *testing.T) {
-	ttl, clamped, _ := clampOverrideTTL(int64(OverrideHardCapTTL.Seconds()))
-	if ttl != OverrideHardCapTTL {
-		t.Errorf("ttl = %v, want %v", ttl, OverrideHardCapTTL)
-	}
-	if clamped {
-		t.Error("exactly-cap should not report clamped")
-	}
-}
-
-func TestClampOverrideTTL_ExactlyMin(t *testing.T) {
-	ttl, clamped, _ := clampOverrideTTL(int64(OverrideMinTTL.Seconds()))
-	if ttl != OverrideMinTTL {
-		t.Errorf("ttl = %v, want %v", ttl, OverrideMinTTL)
-	}
-	if clamped {
-		t.Error("exactly-min should not report clamped")
-	}
-}
-
-func TestValidateCreateOverrideRequest_RequiresPolicyID(t *testing.T) {
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyType:     "static",
-		OverrideReason: "need it",
-	})
-	if err == nil {
-		t.Fatal("expected error for missing policy_id")
-	}
-}
-
-func TestValidateCreateOverrideRequest_RequiresReason(t *testing.T) {
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyID:   "pol-1",
-		PolicyType: "static",
-	})
-	if err == nil {
-		t.Fatal("expected error for missing reason")
-	}
-}
-
-func TestValidateCreateOverrideRequest_RejectsBlankReason(t *testing.T) {
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "   ",
-	})
-	if err == nil {
-		t.Fatal("expected error for whitespace-only reason")
-	}
-}
-
-func TestValidateCreateOverrideRequest_RejectsInvalidType(t *testing.T) {
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "invalid",
-		OverrideReason: "need it",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid policy_type")
-	}
-}
-
-func TestValidateCreateOverrideRequest_AcceptsStatic(t *testing.T) {
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "debugging",
-	})
-	if err != nil {
-		t.Fatalf("expected no error for valid static request, got %v", err)
-	}
-}
-
-func TestValidateCreateOverrideRequest_AcceptsDynamic(t *testing.T) {
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "dynamic",
-		OverrideReason: "debugging",
-	})
-	if err != nil {
-		t.Fatalf("expected no error for valid dynamic request, got %v", err)
-	}
-}
 
 // TestCreateOverrideHandler_RejectsMissingUserEmail locks in the ADR-044
 // requirement that every override must be attributable to a user. An
 // unauthenticated create (empty X-User-Email, X-User-ID) must 401 BEFORE
 // any DB work, not silently produce an orphan record.
 func TestCreateOverrideHandler_RejectsMissingUserEmail(t *testing.T) {
-	body, _ := json.Marshal(CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "test",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(string(body)))
+	body := `{"policy_id":"pol-1","policy_type":"static","override_reason":"test"}`
+	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-x")
 	// deliberately no X-User-Email or X-User-ID
 
@@ -182,12 +36,8 @@ func TestCreateOverrideHandler_RejectsMissingUserEmail(t *testing.T) {
 // that a tenant header is required. This runs before DB work, so it's
 // unit-testable without a live DB.
 func TestCreateOverrideHandler_RejectsMissingTenant(t *testing.T) {
-	body, _ := json.Marshal(CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "test",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(string(body)))
+	body := `{"policy_id":"pol-1","policy_type":"static","override_reason":"test"}`
+	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(body))
 	req.Header.Set("X-User-Email", "dev@example.com")
 	// deliberately no X-Tenant-ID
 
@@ -242,106 +92,56 @@ func TestGetOverrideHandler_RequiresTenantHeader(t *testing.T) {
 	}
 }
 
-func TestValidateCreateOverrideRequest_RejectsLongReason(t *testing.T) {
-	longReason := make([]byte, OverrideReasonMaxLn+1)
-	for i := range longReason {
-		longReason[i] = 'x'
-	}
-	err := validateCreateOverrideRequest(&CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: string(longReason),
-	})
-	if err == nil {
-		t.Fatal("expected error for reason > max length")
-	}
-}
+// TestSessionOverrideWritesAnswerTheFreeze is #4252's route-level proof: an
+// authenticated POST or DELETE with a per-user identity and a tenant is answered
+// 409 LEGACY_POLICY_WRITE_FROZEN in the coded envelope, naming the typed
+// document, and reads neither the body nor the database. usageDB is nil and the
+// body is not JSON, so a handler that still decoded the body would answer 400
+// and one that still looked the policy up would answer 404, 500 or panic.
+// TestCreateOverrideHandler_RejectsMissingUserEmail and _RejectsMissingTenant
+// above are the other half of the bracket: the guards answer before the freeze.
+func TestSessionOverrideWritesAnswerTheFreeze(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+	origValidator := proxyTokenValidator
+	proxyTokenValidator = nil
+	t.Cleanup(func() { proxyTokenValidator = origValidator })
+	origDB := usageDB
+	usageDB = nil
+	t.Cleanup(func() { usageDB = origDB })
 
-// TestInvalidateCachedDeniedDecisions_Scopes locks in the #1607 cache-vs-
-// override interaction: override create must purge denied workflow_steps
-// cache rows for the tenant+user scope so the next idempotent step_gate
-// call re-evaluates with the new override in effect.
-func TestInvalidateCachedDeniedDecisions_Scopes(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	// The helper first resolves policy synonyms via two SELECT queries
-	// against static_policies + dynamic_policies so cache rows that store
-	// the policy name can still be matched. #3039: those lookups now run in
-	// two org-scoped passes (tenant, then 'global'). Return empty rows so
-	// only the caller-supplied policy_id is used as a synonym.
-	for _, scope := range []string{"tenant-x", "global"} {
-		mock.ExpectBegin()
-		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery("SELECT policy_id, name FROM static_policies").
-			WithArgs("pol-uuid", "tenant-x").
-			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
-		mock.ExpectQuery("SELECT '' AS policy_id, name FROM dynamic_policies").
-			WithArgs("pol-uuid", "tenant-x").
-			WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
-		mock.ExpectCommit()
-	}
-
-	mock.ExpectExec("DELETE FROM workflow_steps").
-		WithArgs("tenant-x", "dev@example.com", sqlmock.AnyArg()).
-		WillReturnResult(sqlmock.NewResult(0, 3))
-
-	invalidateCachedDeniedDecisions(context.Background(), db, "tenant-x", "dev@example.com", "pol-uuid")
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
-// TestInvalidateCachedDeniedDecisions_NoopWithoutScope refuses to touch the
-// table when neither tenant nor user are known — guards against a
-// pathological caller invalidating every other tenant's cache.
-func TestInvalidateCachedDeniedDecisions_NoopWithoutScope(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	// No Expect* calls — if the helper fires any SQL, sqlmock will flag it.
-	invalidateCachedDeniedDecisions(context.Background(), db, "", "", "pol-uuid")
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expected no SQL; got: %v", err)
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"create", http.MethodPost, "/", createOverrideHandler},
+		{"revoke", http.MethodDelete, "/", revokeOverrideHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("{not json"))
+			req.Header.Set("X-Tenant-ID", "tenant-x")
+			req.Header.Set("X-User-Email", "dev@corp.example")
+			rr := httptest.NewRecorder()
+			tc.handler(rr, req)
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body = %s", rr.Code, rr.Body.String())
+			}
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("the 409 is not the coded envelope: %v (raw %s)", err, rr.Body.String())
+			}
+			if body.Error.Code != legacyfreeze.ErrCode {
+				t.Errorf("code = %q, want %q", body.Error.Code, legacyfreeze.ErrCode)
+			}
+			if body.Error.Message != legacyfreeze.OverrideMessage || !strings.Contains(body.Error.Message, "system_controls") {
+				t.Errorf("message = %q, want the override freeze remedy naming system_controls", body.Error.Message)
+			}
+		})
 	}
 }
-
-// TestInvalidateCachedDeniedDecisions_NoopWithoutPolicy skips work when the
-// policy id is empty — the delete SQL has no way to target anything useful.
-func TestInvalidateCachedDeniedDecisions_NoopWithoutPolicy(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	invalidateCachedDeniedDecisions(context.Background(), db, "tenant-x", "dev@example.com", "")
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expected no SQL; got: %v", err)
-	}
-}
-
-// The three TestNullableUUID_* cases were deleted here by #3334, with the
-// helper they covered.
-//
-// nullableUUID existed for ONE caller: the policy_overrides INSERT, whose
-// organization_id column was typed uuid until migration core/133 retyped it to
-// text. It coerced a non-UUID org id ("local-dev-org") to NULL so the driver
-// would not reject the insert. Migration core/166 drops that column and the
-// INSERT writes org_id, VARCHAR since core/110, which needs no coercion.
-//
-// The behaviour those tests protected - a community-mode org id must not 500
-// the override create path - is now a property of the SCHEMA rather than of a
-// function, and is covered end-to-end by the override create/read legs of
-// runtime-e2e/3062_override_identity_gate against a real Postgres. Keeping
-// unit tests for a deleted helper was not an option; keeping the helper for
-// the sake of its tests would have been worse.

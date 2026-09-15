@@ -40,6 +40,7 @@ func failClosedEffects() Effects {
 func sampleAction(name string) ActionRecord {
 	return ActionRecord{
 		ID:                 actionID(name),
+		DisplayName:        "Sample " + name,
 		Tags:               []string{"read_only"},
 		Posture:            FailClosedPosture(),
 		MaxDelegationDepth: 3,

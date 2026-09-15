@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -7,6 +10,8 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,12 +56,13 @@ import (
 // generated per request and the two requests necessarily have different ones;
 // it is asserted non-empty separately.
 //
-// THREE POSTURES, because one is not a comparison. The same PII query under
-// PII_ACTION=redact, warn and block gives an ALLOW carrying a mandatory
-// obligation, an ALLOW carrying none, and a DENY - three different renderings
-// over one query, so the two mappings are compared on the reason code, the
-// derived category and the obligation gate rather than on a single shape where
-// any mistake would be constant across both sides.
+// SEVERAL OVERRIDES, because one is not a comparison. The same PII query under
+// an organization's pii=redact, warn and block override gives an ALLOW carrying
+// a mandatory obligation, an ALLOW carrying none, and a DENY - three different
+// renderings over one query, so the two mappings are compared on the reason
+// code, the derived category and the obligation gate rather than on a single
+// shape where any mistake would be constant across both sides. The no-override
+// case is the rendering an organization that set nothing receives.
 //
 // WHAT THIS TEST CANNOT SEE, stated rather than left to be discovered. The two
 // renderings differ on a CHALLENGE that carries obligations - the old handler
@@ -68,22 +74,27 @@ import (
 // TestNothingButTheContractProducesAnAuthZENContext below.
 func TestServedAuthZENContextEqualsToAuthZEN(t *testing.T) {
 	for _, posture := range []struct {
-		action         string
+		name           string
+		action         string // the pii override; "" = none
 		wantState      contract.OperationalState
 		wantObligation bool
 	}{
-		{"redact", contract.StateAllow, true},
-		{"warn", contract.StateAllow, false},
-		{"block", contract.StateDeny, false},
+		{"redact", "redact", contract.StateAllow, true},
+		{"warn", "warn", contract.StateAllow, false},
+		{"block", "block", contract.StateDeny, false},
+		{"no override: the shipped NIK control's stored block", "", contract.StateDeny, false},
 	} {
-		t.Run(posture.action, func(t *testing.T) {
+		t.Run(posture.name, func(t *testing.T) {
 			installAuthZENPIIWorld(t, posture.action)
 
 			// The independent leg: what the evaluator this route adapts said.
 			decideBody := []byte(`{"stage":"llm","caller_identity":{"gateway_id":"llm-gateway-01"},` +
 				`"target":{"type":"llm","provider":"openai","model":"gpt-4o"},` +
-				`"query":"Customer NIK is 3174042506780001"}`)
-			dr := decideForTest(t, decideBody)
+				`"query":"Customer NIK is ` + fixtureNIK + `"}`)
+			req := httptest.NewRequest(http.MethodPost, decisionHandlerPath, bytes.NewReader(decideBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(contract.PEPHandshakeHeader, redactionHandshake(t))
+			dr := serveDecide(t, req)
 			if dr.Code != 200 {
 				t.Fatalf("the delegated route answered %d, so there is no evaluation to compare against: %s", dr.Code, dr.Body.String())
 			}
@@ -102,16 +113,16 @@ func TestServedAuthZENContextEqualsToAuthZEN(t *testing.T) {
 			// deployment where it did not would make the comparison hold for a
 			// reason that has nothing to do with the two renderings.
 			if state != posture.wantState {
-				t.Fatalf("PII_ACTION=%s produced state %s, want %s; this case is not comparing what it says it is",
+				t.Fatalf("pii override %q produced state %s, want %s; this case is not comparing what it says it is",
 					posture.action, state, posture.wantState)
 			}
 			if (len(obligations) > 0) != posture.wantObligation {
-				t.Fatalf("PII_ACTION=%s produced %d obligations, want obligation=%t",
+				t.Fatalf("pii override %q produced %d obligations, want obligation=%t",
 					posture.action, len(obligations), posture.wantObligation)
 			}
 
 			// The served leg.
-			rr := authzenForTest(t, authzenPIIEnvelope(t), negotiated())
+			rr := authzenPIIForTest(t, authzenPIIEnvelope(t), negotiated())
 			served := decodeAuthZENResponse(t, rr)
 			if served.Context == nil {
 				t.Fatal("the negotiated response carried no context")
@@ -191,7 +202,7 @@ func authorizationProducing(t *testing.T, state contract.OperationalState) contr
 // which is worse than the omission. The advertisements now say so.
 func TestTheServedContextOmitsApprovalDeliberately(t *testing.T) {
 	installAuthZENPIIWorld(t, "redact")
-	rr := authzenForTest(t, authzenPIIEnvelope(t), negotiated())
+	rr := authzenPIIForTest(t, authzenPIIEnvelope(t), negotiated())
 	served := decodeAuthZENResponse(t, rr)
 	if served.Context == nil {
 		t.Fatal("the negotiated response carried no context")

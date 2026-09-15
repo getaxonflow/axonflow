@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -415,7 +418,10 @@ func TestOverAdvertisedCapabilitiesAreDroppedAndTheRequestProceeds(t *testing.T)
 //
 // MUTANT: add `ObligationApprovalChallenge: contract.ObApprovalChallenge` to
 // legacyObligationType and this dies. That is the exact change that would make
-// dropping unsafe, and it is caught here rather than in production.
+// dropping unsafe, and it is caught here rather than in production. The table
+// is now derived from contract.DecisionWireObligations (#4046), so the same
+// mutant lands there: an approval_challenge entry in the Decision API
+// vocabulary.
 func TestDroppingAnOverAdvertisedCapabilityCanNeverCauseASilentDeny(t *testing.T) {
 	if len(legacyObligationType) == 0 {
 		t.Fatal("the legacy obligation table is empty, so this invariant is vacuous")
@@ -428,7 +434,8 @@ func TestDroppingAnOverAdvertisedCapabilityCanNeverCauseASilentDeny(t *testing.T
 		t.Fatal("no family is Enterprise-only, so this invariant is vacuous and the drop rule has nothing to drop")
 	}
 
-	for legacy, typed := range legacyObligationType {
+	for legacy, capability := range legacyObligationType {
+		typed := capability.Type
 		family, err := contract.FamilyOf(typed)
 		if err != nil {
 			t.Fatalf("legacy obligation %q maps to %q, which declares no family", legacy, typed)

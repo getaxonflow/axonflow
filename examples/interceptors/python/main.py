@@ -77,35 +77,41 @@ def main() -> int:
             failures.append(f"Safe query failed: {e}")
     print()
 
-    # Test 2: SQL injection (should be blocked)
-    print("2. SQL Injection - Expected: BLOCKED")
+    # Test 2: SQL injection. Every shipped sys_sqli_* policy stores warn, so it is
+    # detected and approved, not blocked. An org sqli=block override (or a policy
+    # whose action is block) blocks it instead.
+    print("2. SQL Injection - Expected: APPROVED (SQLi warns by default)")
     try:
         response = governed_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": "SELECT * FROM users; DROP TABLE users;--"}],
             max_tokens=50
         )
-        assert_check(False, "SQL injection should be blocked")
+        assert_check(True, "SQL injection was approved with a warning (stored action: warn)")
     except PolicyViolationError as e:
-        assert_check(True, "SQL injection was blocked")
-        assert_check("sql" in str(e).lower() or "blocked" in str(e).lower() or "drop" in str(e).lower(), "Block reason mentions SQL/blocked/drop")
+        assert_check(
+            False,
+            f"SQL injection was blocked, but the shipped action is warn "
+            f"(an org sqli=block override or an edited policy action is in force): {e}",
+        )
     except Exception as e:
-        if "api_key" in str(e).lower():
-            # Interceptor didn't block, but API failed - that's OK for this test
-            assert_check(False, "SQL injection should be blocked before reaching API")
+        # The pre-check approved it and the call reached the OpenAI API
+        if "api_key" in str(e).lower() or "authentication" in str(e).lower():
+            print(f"   Note: OpenAI API error (expected without key): {e}")
+            assert_check(True, "Interceptor passed the warned request through (API key issue expected)")
         else:
             failures.append(f"SQL injection test failed unexpectedly: {e}")
     print()
 
-    # Test 3: PII (should be approved with redaction in v3.0.0+)
-    print("3. PII Query - Expected: APPROVED (with redaction)")
+    # Test 3: PII (sys_pii_ssn stores warn for the request phase)
+    print("3. PII Query - Expected: APPROVED")
     try:
         response = governed_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": "Process refund for SSN 123-45-6789"}],
             max_tokens=50
         )
-        assert_check(True, "PII query was approved (redact mode)")
+        assert_check(True, "PII query was approved (stored action: warn)")
     except PolicyViolationError:
         # May be blocked depending on policy config
         assert_check(True, "PII query handled by policy")

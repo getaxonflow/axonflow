@@ -10,7 +10,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -138,4 +140,22 @@ func (r *wcpHITLMirrorResolver) ResolveStepMirror(ctx context.Context, orgID, te
 			logutil.Sanitize(workflowID), logutil.Sanitize(stepID), requestID, err)
 		queue.RecordMirrorResolve("error")
 	}
+}
+
+// StepMirrorExpiry reads the expiry of the `wcp_step_gate` row for (workflowID,
+// stepID), addressed by the same derived id ResolveStepMirror resolves (#4254).
+// expired reports that the queue has already expired the row.
+//
+// A workflow with no org_id reports no row rather than an error: the queue's
+// writer refuses an empty org (RLS on hitl_approval_queue), so no row can exist
+// for it. A resolver with no database has no rows for the same reason.
+func (r *wcpHITLMirrorResolver) StepMirrorExpiry(ctx context.Context, orgID, tenantID, workflowID, stepID string) (time.Time, bool, bool, error) {
+	if r == nil || r.db == nil || orgID == "" {
+		return time.Time{}, false, false, nil
+	}
+	requestID, err := uuid.Parse(workflow_control.DeriveHITLApprovalID(workflowID, stepID))
+	if err != nil {
+		return time.Time{}, false, false, fmt.Errorf("derive the approval id for %s/%s: %w", workflowID, stepID, err)
+	}
+	return queue.ApprovalExpiry(ctx, r.db, orgID, requestID)
 }

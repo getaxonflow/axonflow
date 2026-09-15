@@ -1,9 +1,13 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/pdp"
@@ -52,6 +56,7 @@ func Validate(d *Document, cat *Catalog) Findings {
 		out = append(out, validatePolicyAgainstCatalog(p, cat, schema)...)
 	}
 	out = append(out, validateAcrossPolicies(d, cat)...)
+	out = append(out, validateSystemControls(d)...)
 	return out.sorted()
 }
 
@@ -238,8 +243,21 @@ func validatePolicyAgainstCatalog(p pdp.Policy, cat *Catalog, schema map[string]
 
 	// Obligations that will certainly apply together and cannot be composed.
 	out = append(out, composeConflicts(p.ID, p.Obligations, leaves, fmt.Sprintf("policy %q", p.ID))...)
+
+	// A blanket grant. This is the shape the shadow harness compiles as a
+	// stand-in for the legacy substrate's missing gate, and the one shape a
+	// registry cannot bound: it permits every action registered after it.
+	if IsBlanketPermission(p) {
+		out = append(out, newFinding(CodeBlanketPermission, p.ID,
+			"the permission selects every action (`any`), is scoped to the whole organization, and carries no condition and no resource scope; it would also grant every action registered after it"))
+	}
 	return out
 }
+
+// IsBlanketPermission relays pdp.IsBlanketPermission: the save-time door and
+// the anchored-activation door judge ONE shape, defined once in the package
+// that enforces it.
+func IsBlanketPermission(p pdp.Policy) bool { return pdp.IsBlanketPermission(p) }
 
 // validateConditionAgainstCatalog applies the registry-aware condition checks.
 func validateConditionAgainstCatalog(p pdp.Policy, c pdp.Condition, reached []pdp.ActionEntry, cat *Catalog, schema map[string]pdp.AttributeSchema) Findings {
@@ -437,8 +455,14 @@ func composeConflicts(policyID string, obligations []contract.Obligation, leaves
 	}
 	outcome := contract.ComposeObligations(contract.ComposeInput{
 		Obligations: obligations,
-		Leaves:      leaves,
+		Payload:     contract.DeclaredPayloadLeaves(leaves),
 		PEP:         &contract.PEPProfile{ID: "authoring-save-time", Capabilities: caps},
+		// This site reports CONFLICTS only and discards the composed result,
+		// so the instant a carried expiry_seconds is converted against does
+		// not matter here; it is supplied so that a document carrying one is
+		// not refused for the evaluator's missing clock, which is a fact
+		// about this call site and not about the document.
+		Now: time.Now(),
 	})
 	if !outcome.Denied || outcome.Reason != contract.ReasonObligationConflict {
 		return nil
@@ -652,6 +676,23 @@ func containsString(hay []string, needle string) bool {
 	return false
 }
 
+// sharesID and containsAllIDs compare identifiers by their RENDERED form, type
+// included, because they answer an authoring-time question about policy scopes
+// and must agree with what the evaluator does (#3936).
+//
+// pdp.compileScope compiles a scope principal into a string equality on the
+// rendered form. Folding the type here and not there would report overlaps and
+// containments the PDP does not have - an author told two policies collide when
+// the running system will never let them both apply. The ruling recorded on
+// #3936 is that neither side folds until both do; the argument, the measurement
+// and the three guards that fail when it stops holding are stated at
+// pdp.compileScope.
+//
+// This is NOT the same question as authoring's separation-of-duties control,
+// which folds the type deliberately (publish.go's samePerson, #3876). That one
+// asks whether two identifiers name one PERSON. This one asks whether two
+// policy scopes select the same subject the evaluator will select. The two
+// answers differ because the questions do.
 func sharesID(a, b []contract.ID) bool {
 	set := make(map[string]struct{}, len(a))
 	for _, x := range a {

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package base
 
@@ -42,6 +34,19 @@ type URLValidationOptions struct {
 	// and their socket-level guard state the SAME posture. A backstop that
 	// disagrees with the check it backstops is how #3104 found this class.
 	EgressPolicy *egress.Policy
+	// LookupIP resolves the hostname whose answers the private-IP check
+	// inspects. nil means net.LookupIP, which is what production wants: the
+	// check exists to see what the network will actually connect to.
+	//
+	// It is a seam for TESTS of callers whose hostnames are hard-coded rather
+	// than caller-supplied (#3699). Such a caller cannot pass AllowPrivateIPs
+	// the way this package's own tests do without switching the check off, so
+	// its unit tests resolved the real host over the network - and a unit test
+	// that performs live DNS is one outage away from failing a required lane
+	// for a reason unrelated to the code. A test supplies a resolver that
+	// answers with a public address, and the private-IP check still runs over
+	// that answer.
+	LookupIP func(host string) ([]net.IP, error)
 }
 
 // DefaultURLValidationOptions returns secure defaults for URL validation
@@ -98,7 +103,11 @@ func ValidateURL(rawURL string, opts URLValidationOptions) error {
 		if opts.EgressPolicy != nil {
 			policy = *opts.EgressPolicy
 		}
-		if err := validateHostNotPrivate(hostname, policy); err != nil {
+		lookup := opts.LookupIP
+		if lookup == nil {
+			lookup = net.LookupIP
+		}
+		if err := validateHostNotPrivate(hostname, policy, lookup); err != nil {
 			return err
 		}
 	}
@@ -122,11 +131,11 @@ func validateScheme(scheme string, allowedSchemes []string) error {
 	return fmt.Errorf("URL scheme %q is not allowed; permitted schemes: %v", scheme, allowedSchemes)
 }
 
-// validateHostNotPrivate resolves the hostname and checks the answers against
-// the caller's egress policy.
-func validateHostNotPrivate(hostname string, policy egress.Policy) error {
+// validateHostNotPrivate resolves the hostname with the supplied resolver and
+// checks the answers against the caller's egress policy.
+func validateHostNotPrivate(hostname string, policy egress.Policy, lookup func(string) ([]net.IP, error)) error {
 	// Resolve hostname to IP addresses
-	ips, err := net.LookupIP(hostname)
+	ips, err := lookup(hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname %q: %w", hostname, err)
 	}

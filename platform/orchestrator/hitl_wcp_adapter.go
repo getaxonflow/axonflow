@@ -115,6 +115,11 @@ func (a *wcpHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprovalRe
 		requestID = parsed
 	}
 
+	expiresIn, err := approvalExpiresIn(req.ExpiresAt, time.Now())
+	if err != nil {
+		return nil, err
+	}
+
 	row, outcome, err := a.enq.Enqueue(ctx, queue.Input{
 		RequestID: requestID,
 		OrgID:     req.OrgID,
@@ -134,6 +139,7 @@ func (a *wcpHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprovalRe
 		TriggeredPolicyName: req.PolicyName,
 		TriggerReason:       req.TriggerReason,
 		Severity:            req.Severity,
+		ExpiresIn:           expiresIn,
 	})
 	if err != nil {
 		return nil, err
@@ -192,4 +198,27 @@ func classifyEnqueueFailure(err error) (outcome string, reason string) {
 		return string(queue.OutcomeError),
 			"step is held: the approval could not be queued (see approval_enqueue)"
 	}
+}
+
+// errApprovalExpiredBeforeQueue refuses a queue row for an approval that timed
+// out between the step gate's decision and the enqueue.
+var errApprovalExpiredBeforeQueue = errors.New("the approval's declared expiry passed before it could be queued, and a timed-out approval is a deny")
+
+// approvalExpiresIn is how long a queue row lives: until the typed approval's
+// declared expiry and never longer, because a timed-out approval is a deny
+// (#4254). A zero expiry keeps the queue's default.
+//
+// An expiry that has already passed is REFUSED, never clamped. The step gate
+// withholds such a step before it reaches here (approval_expired), so this
+// arm is only the moment between that decision and the enqueue. It refuses
+// rather than passing a non-positive value, which the queue reads as "use the
+// default" and which would let the row outlive the approval it represents.
+func approvalExpiresIn(expiresAt, now time.Time) (time.Duration, error) {
+	if expiresAt.IsZero() {
+		return 0, nil
+	}
+	if d := expiresAt.Sub(now); d > 0 {
+		return d, nil
+	}
+	return 0, errApprovalExpiredBeforeQueue
 }

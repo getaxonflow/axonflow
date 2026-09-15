@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -165,7 +168,8 @@ func TestEngineBindsItsDocumentsToItsBundles(t *testing.T) {
 		Realms: map[string]bool{"realm_ws": true, "conn": true},
 	}
 	cfg := func(docs []*Document) EngineConfig {
-		return EngineConfig{Bundles: []*Bundle{b}, Documents: docs, TrustStore: ts, Registry: registry}
+		return EngineConfig{Bundles: []*Bundle{b}, Documents: docs, TrustStore: ts, Registry: registry,
+			SystemCorpus: Unanchored("an in-package test builds a fixture document to exercise one rule of the decision algebra; it never activates the shipped system corpus")}
 	}
 	if _, err := NewEngine(context.Background(), cfg([]*Document{doc})); err != nil {
 		t.Fatalf("the honest configuration was refused: %v", err)

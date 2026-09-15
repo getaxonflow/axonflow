@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // HTTP Connector Example - Go
 //
 // Demonstrates installing and using the built-in HTTP connector to call the

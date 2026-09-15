@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"axonflow/platform/shared/corspolicy"
+	"axonflow/platform/shared/policypath"
 
 	"github.com/rs/cors"
 )
@@ -43,7 +44,7 @@ func resolveCORSOptions() cors.Options {
 		// tenant-policy family is stamped on this plane and the header is
 		// copied back through the agent's reverse proxy, so this is where its
 		// visibility is decided.
-		ExposedHeaders: []string{"Deprecation", "Link"},
+		ExposedHeaders: policypath.DeprecationHeaders(),
 	})
 }
 

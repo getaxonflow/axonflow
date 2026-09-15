@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES DSPy + AxonFlow integration in Go.
 //
 // This example shows how to add AxonFlow governance to DSPy-style

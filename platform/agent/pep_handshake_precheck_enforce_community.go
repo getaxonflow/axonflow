@@ -1,5 +1,8 @@
 //go:build !enterprise
 
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 // The COMMUNITY half of the pre-check plane's capability handshake split

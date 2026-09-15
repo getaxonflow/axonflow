@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Cloud Storage Connector Example - Go SDK
 //
 // Tests S3 cloud storage connector operations via the AxonFlow Go SDK.

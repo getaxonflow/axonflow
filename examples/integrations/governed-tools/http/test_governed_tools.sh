@@ -78,15 +78,16 @@ RESPONSE=$(curl -s -w "\n%{http_code}" \
 STATUS=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
-# PII detection may block (403) or allow with warning depending on PII_ACTION setting
+# v11: the stored action decides. sys_pii_ssn stores action_request=warn, so the
+# input is allowed (200); an organization pii=block override or a policy edit makes it 403.
 if [ "$STATUS" = "403" ]; then
     assert_status "PII input returns 403" "$STATUS" "403"
     assert_contains "Policy evaluated" "$BODY" "policies_evaluated"
-    echo "  (PII_ACTION=block: SSN detected and blocked)"
+    echo "  (blocked: an organization override or policy edit set block)"
 elif [ "$STATUS" = "200" ]; then
     assert_status "PII input returns 200" "$STATUS" "200"
     assert_contains "Policies evaluated" "$BODY" "policies_evaluated"
-    echo "  (PII_ACTION=warn/redact: SSN detected but not blocked at input)"
+    echo "  (allowed: stored request action for SSN is warn)"
 fi
 
 # ============================================================
@@ -133,11 +134,11 @@ if [ "$STATUS" = "200" ]; then
         echo "  ✅ Redacted data present in response"
         ((PASS++)) || true
     else
-        echo "  ℹ️  No redaction (PII_ACTION may be warn/log)"
+        echo "  ℹ️  No redaction applied (an organization override may set warn or log)"
     fi
 elif [ "$STATUS" = "403" ]; then
     assert_status "PII output returns 403" "$STATUS" "403"
-    echo "  (PII_ACTION=block: output blocked entirely)"
+    echo "  (output blocked: an organization override or policy edit set block)"
 fi
 
 # ============================================================

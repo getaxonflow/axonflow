@@ -63,9 +63,8 @@ func TestV9_AuditLogs_OrgIDPersistedAgainstRealPostgres(t *testing.T) {
 	// Unique IDs so reruns don't collide on PK.
 	now := time.Now().UTC().UnixNano()
 	decisionID := fmt.Sprintf("r2-explain-%d", now)
-	overrideID := fmt.Sprintf("r2-override-%d", now)
 
-	// Path 1: writeExplainableAuditLog
+	// The production writer: writeExplainableAuditLog
 	writeExplainableAuditLog(context.Background(), db,
 		decisionID, fmt.Sprintf("req-%d", now),
 		"cs_v9_demo", "cs_v9_demo", "client-v9", "alice@v9.test",
@@ -76,19 +75,9 @@ func TestV9_AuditLogs_OrgIDPersistedAgainstRealPostgres(t *testing.T) {
 		"corr-v9-input",
 		sharedaudit.LatencyUnmeasured)
 
-	// Path 2: writeOverrideUsedEvent
-	writeOverrideUsedEvent(context.Background(), db,
-		overrideID, decisionID,
-		"acme-corp", "acme-corp", "client-acme", "bob@v9.test",
-		"v9-policy", "V9 Policy", 7,
-		"corr-v9-ovr")
-
-	// writeExplainableAuditLog prefixes the row id with "audit_";
-	// writeOverrideUsedEvent prefixes with "audit_used_". Both rows
-	// reference the same decision_id in policy_details, but the PK
-	// shape is the literal we read back.
-	rows, err := db.Query(`SELECT id, tenant_id, org_id FROM audit_logs WHERE id IN ($1, $2) ORDER BY id`,
-		"audit_used_"+decisionID, "audit_"+decisionID)
+	// writeExplainableAuditLog prefixes the row id with "audit_", the
+	// literal read back here.
+	rows, err := db.Query(`SELECT id, tenant_id, org_id FROM audit_logs WHERE id = $1`, "audit_"+decisionID)
 	if err != nil {
 		t.Fatalf("SELECT: %v", err)
 	}
@@ -103,11 +92,11 @@ func TestV9_AuditLogs_OrgIDPersistedAgainstRealPostgres(t *testing.T) {
 		seen[id] = [2]string{tid, oid}
 	}
 	t.Logf("seen rows: %+v", seen)
-	if len(seen) != 2 {
-		t.Fatalf("expected 2 rows, got %d (%+v)", len(seen), seen)
+	if len(seen) != 1 {
+		t.Fatalf("expected 1 row, got %d (%+v)", len(seen), seen)
 	}
 
-	// The R2 falsifying assertion: BOTH rows must carry non-empty org_id.
+	// The R2 falsifying assertion: the row must carry a non-empty org_id.
 	// Pre-fix HEAD wrote "" for org_id on these paths; if this assertion
 	// fails after a future regression, the bug is back.
 	for id, vals := range seen {
@@ -117,9 +106,6 @@ func TestV9_AuditLogs_OrgIDPersistedAgainstRealPostgres(t *testing.T) {
 	}
 	if got := seen["audit_"+decisionID]; got[1] != "cs_v9_demo" {
 		t.Errorf("decision row org_id = %q, want %q", got[1], "cs_v9_demo")
-	}
-	if got := seen["audit_used_"+decisionID]; got[1] != "acme-corp" {
-		t.Errorf("override row org_id = %q, want %q", got[1], "acme-corp")
 	}
 }
 

@@ -81,10 +81,43 @@ package deploymode
 import (
 	"os"
 	"sort"
+
+	"axonflow/platform/decision/registry"
 )
 
 // EnvDeploymentMode is the variable every deployment surface sets.
 const EnvDeploymentMode = "DEPLOYMENT_MODE"
+
+// EnvLicenceTransition is how an operator whose Enterprise licence has ENDED
+// tells this process WHY it is in the community posture.
+//
+// # WHY A SECOND VARIABLE, AND NOT AN INFERENCE FROM THE FIRST
+//
+// The marketplace template already has the operator control: its
+// LicenceTransitionMode parameter overrides DEPLOYMENT_MODE to `community` on
+// the agent and the orchestrator only, so an expired key cannot crash-loop the
+// enforcement plane (ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml,
+// parameter at :468, condition IsLicenceTransition at :1683, applied at
+// AgentTaskDefinition and OrchestratorTaskDefinition, never the portal).
+//
+// What reaches the container is the OVERRIDDEN value and nothing else. From
+// inside the process, "this deployment has always been Community" and "this
+// deployment's Enterprise licence ended last week and it is being wound down"
+// are the same nine bytes. Every control that must fire for the first and must
+// NOT fire for the second therefore has nothing to read: the difference is not
+// in DEPLOYMENT_MODE, and it never was (#4094).
+//
+// So the transition is DECLARED rather than inferred. The declaration is set by
+// the same CloudFormation condition, on the same two task definitions, as the
+// override itself - one place to configure, so the two cannot come to disagree
+// about whether a deployment is in transition.
+//
+// It grants nothing. It is configuration and it is not signed, so it can only
+// ever make a boundary SOFTER for a deployment that has stopped paying, which
+// is the direction an operator can already take by not renewing. The standing
+// rule that a mode "may narrow what a build registers, it never grants a limit"
+// is unaffected: no limit, capability or construct is unlocked by this value.
+const EnvLicenceTransition = "AXONFLOW_LICENCE_TRANSITION"
 
 // CategoryEnterprise is the migrations/enterprise/ directory: the tables that
 // exist only on a deployment that applies the Enterprise schema.
@@ -211,14 +244,13 @@ func RecognisedModes() []string {
 // # THE UNRECOGNISED CASE ANSWERS YES, DELIBERATELY
 //
 // An unrecognised value makes the agent refuse to boot (getMigrationPaths
-// returns an error), so no deployment reaches steady state with one. The
-// orchestrator does not validate the value, and for it the choice is between
-// two wrongs: answering NO would stop it consulting a table that may well
-// exist, silently running every organization in the process mode while its
-// records say otherwise. Answering YES restores exactly the behaviour that
-// shipped before this predicate existed - a read that fails, is counted, is
-// logged once per TTL window, and falls back to the process mode. The second
-// is recoverable and the first is silent, so this answers YES.
+// returns an error), so no deployment reaches steady state with one. A caller
+// that does not validate the value faces two wrongs: answering NO would stop
+// it consulting a table that may well exist, silently ignoring every record in
+// it. Answering YES restores exactly the behaviour that shipped before this
+// predicate existed - a read that fails, is counted and is logged once per TTL
+// window. The second is recoverable and the first is silent, so this answers
+// YES.
 func AppliesCategory(raw, category string) bool {
 	mode, recognised := Resolve(raw)
 	if !recognised {
@@ -320,6 +352,32 @@ func AppliesEnterpriseSchema() bool {
 // posture half would not, and that test fails until the decision is made.
 func IsCommunityPosture(raw string) bool {
 	return raw == ModeCommunity
+}
+
+// IsLicenceTransition reports whether raw DECLARES that this deployment's
+// Enterprise licence has ended and the deployment is being kept serving.
+//
+// The accepting set is exactly the community posture's token, for
+// IsCommunityPosture's reason: the template writes ONE value onto both the
+// override and this declaration, so a second spelling here would let a stack be
+// half-transitioned - the enforcement plane in the community posture while
+// nothing knows why - which is worse than either end state. It is not trimmed,
+// not case-folded and not aliased, so " community" declares nothing and the
+// controls that read this keep behaving as they do for a deployment that never
+// held a licence.
+//
+// Reading it is the only thing this value is for. It selects no schema, no
+// posture and no capability; see EnvLicenceTransition for why it exists at all.
+func IsLicenceTransition(raw string) bool {
+	return raw == ModeCommunity
+}
+
+// CurrentIsLicenceTransition reports IsLicenceTransition for THIS process.
+//
+// The raw form above exists so the contract can be tested without an
+// environment, which is the pairing every predicate in this file uses.
+func CurrentIsLicenceTransition() bool {
+	return IsLicenceTransition(os.Getenv(EnvLicenceTransition))
 }
 
 // IsCommunitySaasPosture reports whether raw selects the community-SaaS
@@ -455,4 +513,39 @@ func IsEnterpriseEntitled(raw string) bool {
 // DEPLOYMENT_MODE.
 func CurrentIsEnterpriseEntitled() bool {
 	return IsEnterpriseEntitled(Current())
+}
+
+// PlaneEdition is the edition of the IN-PROCESS ENFORCEMENT PLANES this build
+// carries (#3895).
+//
+// It answers "what can this binary's planes discharge", which is a property of
+// the build and its deployment mode and NOT of a customer's licence: a
+// community binary genuinely has no approval tables, so a plane in it cannot be
+// handed an approval_challenge whatever a licence says. The other edition
+// question - what may this customer WRITE - is the licensed construct set and
+// is platform/shared/authoringedition's, read per publication from a verified
+// licence. Answering the first from a licence would let an expired key silently
+// narrow what a plane advertises to the decision point, turning a billing event
+// into a decision change.
+//
+// IT LIVES HERE BECAUSE IT IS A DEPLOYMENT-MODE QUESTION. It was briefly in
+// authoringedition, which made every importer of it look like a process that
+// resolves an authoring edition - platform/agent among them - and the #3956
+// deployment guard then demanded a licence key in the agent's compose services
+// for a read that never touches a licence.
+//
+// An UNRECOGNISED mode is refused rather than folded onto Community.
+// AppliesCategory answers "yes" for one, which is correct for schema selection
+// (a read that fails is recoverable, a schema that is missing is not) and is
+// the wrong direction here: it would register the Enterprise plane set on a
+// deployment nobody could classify.
+func PlaneEdition() (registry.Edition, bool) {
+	mode, recognised := Resolve(Current())
+	if !recognised {
+		return registry.EditionUnspecified, false
+	}
+	if AppliesCategory(mode, CategoryEnterprise) {
+		return registry.EditionEnterprise, true
+	}
+	return registry.EditionCommunity, true
 }

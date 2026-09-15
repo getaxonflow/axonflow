@@ -5,18 +5,23 @@ package agent
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/shared/deploymode"
+	"axonflow/platform/shared/detectionposture"
 )
 
 func TestHandleCommunityRegister_NilDB(t *testing.T) {
@@ -293,7 +298,7 @@ func TestEnqueueActivityUpdate_FullChannel(t *testing.T) {
 }
 
 func TestRegisterEndpoint_MethodNotAllowed(t *testing.T) {
-	router := setupCSAASTestRouter()
+	router := setupCSAASTestRouter(t)
 	RegisterCommunityRegistrationHandler(router, nil)
 
 	methods := []string{"GET", "PUT", "DELETE", "PATCH"}
@@ -310,7 +315,7 @@ func TestRegisterEndpoint_MethodNotAllowed(t *testing.T) {
 }
 
 func TestRegisterEndpoint_POST_NilDB(t *testing.T) {
-	router := setupCSAASTestRouter()
+	router := setupCSAASTestRouter(t)
 	RegisterCommunityRegistrationHandler(router, nil)
 
 	body := bytes.NewBufferString(`{"label":"test"}`)
@@ -375,7 +380,7 @@ func TestInternalTenantIDPrefixAllowlist_Shape(t *testing.T) {
 // validation is covered by the resolveTenantPrefix pure-function tests
 // below + runtime-e2e/community_saas_register_internal_prefix/test.sh.
 func TestRegisterEndpoint_POST_DoesNotCrashOnNewWireField(t *testing.T) {
-	router := setupCSAASTestRouter()
+	router := setupCSAASTestRouter(t)
 	RegisterCommunityRegistrationHandler(router, nil)
 
 	body := bytes.NewBufferString(`{"label":"test","internal_tenant_id_prefix":"attacker-prefix-"}`)
@@ -576,7 +581,11 @@ func TestHandleCommunityRegister_EmptyBody(t *testing.T) {
 	}
 }
 
-func setupCSAASTestRouter() *mux.Router {
+// setupCSAASTestRouter returns a router under DEPLOYMENT_MODE=community-saas,
+// the only mode RegisterCommunityRegistrationHandler mounts in.
+func setupCSAASTestRouter(t *testing.T) *mux.Router {
+	t.Helper()
+	t.Setenv("DEPLOYMENT_MODE", deploymode.ModeCommunitySaas)
 	return mux.NewRouter()
 }
 
@@ -626,8 +635,9 @@ func TestRegisterEndpoint_INSERTWritesClientIDColumn(t *testing.T) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec(`SELECT register_org`).WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec(`SELECT register_tenant`).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectRegistrationPosture(mock, sqlmock.AnyArg())
 
-		router := setupCSAASTestRouter()
+		router := setupCSAASTestRouter(t)
 		resetRegIPTracker()
 		RegisterCommunityRegistrationHandler(router, db)
 
@@ -661,8 +671,9 @@ func TestRegisterEndpoint_INSERTWritesClientIDColumn(t *testing.T) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec(`SELECT register_org`).WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec(`SELECT register_tenant`).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectRegistrationPosture(mock, sqlmock.AnyArg())
 
-		router := setupCSAASTestRouter()
+		router := setupCSAASTestRouter(t)
 		resetRegIPTracker()
 		RegisterCommunityRegistrationHandler(router, db)
 
@@ -680,4 +691,172 @@ func TestRegisterEndpoint_INSERTWritesClientIDColumn(t *testing.T) {
 			t.Errorf("INSERT shape mismatch — v9 Phase 6 org_id=$1 / client_id=$1 invariant violated: %v", err)
 		}
 	})
+}
+
+// orgArg matches the first organization it is shown and then only that one, so
+// a test can require every statement of one transaction to address the same
+// organization, and read back which one it was.
+type orgArg struct{ got string }
+
+func (o *orgArg) Match(v driver.Value) bool {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return false
+	}
+	if o.got == "" {
+		o.got = s
+	}
+	return s == o.got
+}
+
+// expectRegistrationPosture expects the detection posture every registration
+// records (#4017): one transaction scoped to the new organization, holding its
+// sqli=block override, updated_by the registration's actor, and the
+// DETECTION_POSTURE_SET admin_audit_log row from clientIP. It returns the
+// organization the statements named.
+func expectRegistrationPosture(mock sqlmock.Sqlmock, clientIP any) *orgArg {
+	org := &orgArg{}
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app\.current_org_id', \$1, true\)`).
+		WithArgs(org).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO detection_action_overrides`).
+		WithArgs(org, detectionposture.CategorySQLI, detectionposture.ActionBlock, registrationPostureActor).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`INSERT INTO admin_audit_log`).
+		WithArgs(detectionposture.AuditActionSet, org, registrationPostureActor, sqlmock.AnyArg(), clientIP, sqlmock.AnyArg(), true, nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	return org
+}
+
+func registerThroughTheRouter(t *testing.T, router *mux.Router, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/register", bytes.NewBufferString(`{"label":"posture"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = remoteAddr
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr
+}
+
+// TestRegistrationRecordsSQLInjectionBlockForTheNewOrganization (#4017): a
+// registration records sqli=block for the organization it creates, updated_by
+// the registration's system actor, with its DETECTION_POSTURE_SET
+// admin_audit_log row carrying the registrant's address, in ONE transaction
+// scoped to that organization, before the credentials are returned; and every
+// statement names the organization the response hands back. Remove the write
+// and the posture expectations go unmet; point it at another organization and
+// the org matcher refuses it.
+func TestRegistrationRecordsSQLInjectionBlockForTheNewOrganization(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	mock.ExpectExec(`SELECT csaas_register_tenant\(`).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`SELECT register_org`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SELECT register_tenant`).WillReturnResult(sqlmock.NewResult(0, 0))
+	org := expectRegistrationPosture(mock, "198.51.100.23")
+
+	router := setupCSAASTestRouter(t)
+	resetRegIPTracker()
+	RegisterCommunityRegistrationHandler(router, db)
+	rr := registerThroughTheRouter(t, router, "198.51.100.23:5000")
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the registration did not record its organization's sqli=block override and audit row: %v", err)
+	}
+	var resp registrationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if org.got == "" || org.got != resp.TenantID {
+		t.Fatalf("the posture was recorded for %q; the registration created %q", org.got, resp.TenantID)
+	}
+}
+
+// TestARegistrationWhosePostureCannotBeRecordedDisclosesNoCredentials: the
+// write fails closed. When the override cannot be recorded, the transaction
+// rolls back and the registration answers 500 with no tenant id and no secret,
+// so no organization holds credentials without its override.
+func TestARegistrationWhosePostureCannotBeRecordedDisclosesNoCredentials(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	mock.ExpectExec(`SELECT csaas_register_tenant\(`).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`SELECT register_org`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SELECT register_tenant`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO detection_action_overrides`).
+		WillReturnError(errors.New(`relation "detection_action_overrides" does not exist`))
+	mock.ExpectRollback()
+
+	router := setupCSAASTestRouter(t)
+	resetRegIPTracker()
+	RegisterCommunityRegistrationHandler(router, db)
+	rr := registerThroughTheRouter(t, router, "198.51.100.24:5000")
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	for _, credential := range []string{"secret", "secret_prefix", "tenant_id"} {
+		if _, disclosed := body[credential]; disclosed {
+			t.Errorf("a registration without its override disclosed %q: %s", credential, rr.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the failed posture write was not rolled back: %v", err)
+	}
+}
+
+// TestRegistrationMountsOnlyInCommunitySaasMode: POST /api/v1/register, and
+// with it the write of a new organization's detection posture into
+// admin_audit_log, exists only under DEPLOYMENT_MODE=community-saas. Every
+// other mode deploymode recognises, every alias, and an unset value mount
+// nothing. A Community deployment (core only) has no admin_audit_log to write
+// to (#4017).
+func TestRegistrationMountsOnlyInCommunitySaasMode(t *testing.T) {
+	modes := []string{""}
+	for mode := range deploymode.CanonicalModes() {
+		modes = append(modes, mode)
+	}
+	for alias := range deploymode.Aliases() {
+		modes = append(modes, alias)
+	}
+	sort.Strings(modes)
+	mounted := 0
+	for _, mode := range modes {
+		t.Run("DEPLOYMENT_MODE="+mode, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", mode)
+			router := mux.NewRouter()
+			RegisterCommunityRegistrationHandler(router, nil)
+			rr := registerThroughTheRouter(t, router, "198.51.100.25:5000")
+			switch {
+			case mode == deploymode.ModeCommunitySaas:
+				// Mounted: the handler itself answers, 503 with no database.
+				if rr.Code != http.StatusServiceUnavailable {
+					t.Errorf("community-saas: got %d, want the mounted handler's 503", rr.Code)
+				}
+				mounted++
+			case rr.Code != http.StatusNotFound:
+				t.Errorf("%q mounted POST /api/v1/register (got %d, want 404): a mode without admin_audit_log could reach the registration's audited write", mode, rr.Code)
+			}
+		})
+	}
+	if mounted != 1 {
+		t.Fatalf("community-saas mounted the endpoint %d time(s) across %d modes, want exactly once", mounted, len(modes))
+	}
 }

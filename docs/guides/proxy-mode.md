@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** 9.14.0 | **SDK Version:** 9.0.0
+**Platform Version:** 11.0.0 | **SDK Version:** 9.4.0
 
 Proxy Mode is the simplest way to add governance to your AI applications. AxonFlow acts as a proxy between your application and LLM providers, handling policy enforcement, PII detection, rate limiting, and audit logging automatically.
 
@@ -170,10 +170,10 @@ try {
       messages: [{ role: 'user', content: 'My SSN is 123-45-6789' }]
     });
   });
-  // Default: PII flagged for redaction (request proceeds, response redacted)
-  // If PII_ACTION=block configured: throws error
+  // Shipped rows: an SSN match warns on the request (it proceeds) and is redacted in the response
+  // Throws only when the resolved action is block: an org pii=block override, or a policy edited to block
 } catch (error) {
-  // Only if PII_ACTION=block: "Request blocked by AxonFlow: PII detected"
+  // Only when the resolved action is block: "Request blocked by AxonFlow: PII detected"
 }
 ```
 

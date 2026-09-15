@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES AxonFlow Proxy Mode in Go.
 //
 // Proxy Mode is the simplest integration pattern:

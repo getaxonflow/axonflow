@@ -609,55 +609,45 @@ var identityConformanceCases = []ConformanceCase{
 		TestName:    "TestApproverQuorumSeparatesUnreachableFromUnderQuorum",
 		TestFile:    "approver_quorum_test.go",
 	},
+	{
+		// THE LAST FREE IDENTIFIER IN THIS PLANE'S RANGE. AXC-200 to AXC-299
+		// is the identity plane's allocation and AXC-298 was the previous
+		// high-water mark, so the next case here has nowhere to go. Ruled
+		// 2026-09-09: the plane gets a SECOND block, AXC-500 to AXC-599, and
+		// the 14 unused numbers inside 200-299 stay unused - a gap is either a
+		// retired case or an accident, and reusing one repoints whatever cited
+		// it. Wiring that block into conformance_registry_test.go's range
+		// check and into the allocation sentence in
+		// technical-docs/designs/DETECTOR_REGISTRY_DESIGN.md is #3945, not
+		// this change. Two further
+		// assertions from that change - the quorum-shrink consequence and the
+		// AdmitChain twin - are deliberately NOT registered as cases for the
+		// same reason, and are named in this case's Asserts so a reader of the
+		// corpus can still find them.
+		ID: "AXC-299", Edition: ConformanceAnyEdition,
+		Title:       "Approver self-exclusion compares the subject, not the classification the requester happens to present",
+		SourceCases: []string{"EX-46"},
+		Asserts: "A requester whose principal type differs from the pool's spelling of the same realm-qualified subject is struck out of their own request's approver pool, while a different subject and the same subject id in another realm both survive; " +
+			"the resulting pool can be too small for its quorum, which TestWideningSelfExclusionCanMakeAQuorumUnreachable asserts as QUORUM_UNREACHABLE rather than leaving to a release note, and the same rule governs chain-cycle detection in TestAdmitChainTreatsOneSubjectUnderTwoTypesAsARepeat.",
+		TestName: "TestSelfExclusionIsBySubjectRatherThanByClassification",
+		TestFile: "approver_self_exclusion_test.go",
+	},
 
-	// Per-organization compatibility mode (#3550, session ADR65-I): the
-	// release plan's "shadow enabled per org", composed INSIDE the single
-	// mode read rather than beside it.
-	{
-		ID: "AXC-280", Edition: ConformanceAnyEdition,
-		Title:    "The resolved mode is the organization's record when one exists, else the process flag, in every cell",
-		Asserts:  "Across the full product of process mode {off, shadow, enforce} and record {absent, off, shadow, enforce}, the outcome's mode, evaluation, refusal and counterfactual all follow the record when present and the process flag when absent; a record wins in both the raising and the lowering direction.",
-		TestName: "TestCompatOrgModeCompositionMatrix",
-		TestFile: "compat_org_mode_test.go",
-	},
-	{
-		ID: "AXC-281", Edition: ConformanceAnyEdition,
-		Title:    "A per-organization record affects only that organization",
-		Asserts:  "On a process-off deployment, an organization with a shadow record is evaluated and recorded while an organization with no record is not evaluated, not recorded and reports mode off - the absent-record leg is byte-identical to the process-wide behaviour.",
-		TestName: "TestCompatOrgModeAppliesOnlyToTheRecordedOrganization",
-		TestFile: "compat_org_mode_test.go",
-	},
-	{
-		ID: "AXC-282", Edition: ConformanceAnyEdition,
-		Title:    "The mode is consulted at exactly one site, with the organization's record as an input to it",
-		Asserts:  "An AST census of every non-test file in the package, under both build tags, finds the process-mode field and the per-organization source read only inside effectiveMode (and the diagnostics accessor Mode); any other reader is named by file and line. The compatmutation harness plants a second reader to prove the census can fail.",
-		TestName: "TestCompatModeIsConsultedAtExactlyOneSite",
-		TestFile: "compat_org_mode_test.go",
-	},
-	{
-		ID: "AXC-283", Edition: ConformanceAnyEdition,
-		Title:    "An undeclared recorded mode is a read failure, never a mode",
-		Asserts:  "A source answering with a value outside the declared modes (the zero value, 99, -1) is treated as a failed read: the process mode applies, nothing is evaluated or recorded, and the fall-back is counted. Membership, not inequality against the zero value.",
-		TestName: "TestCompatOrgModeRefusesAnUndeclaredRecordedValue",
-		TestFile: "compat_org_mode_test.go",
-	},
-	{
-		ID: "AXC-284", Edition: ConformanceAnyEdition,
-		Title:    "A record that cannot be read falls back to the deployment's declaration and is counted",
-		Asserts:  "When the per-organization source errors, the process mode applies in both directions (a process-enforce deployment still enforces; a process-off one stays off) and OrgModeFailures increments, so an organization silently running in the process mode is visible.",
-		TestName: "TestCompatOrgModeReadFailureFallsBackToTheProcessMode",
-		TestFile: "compat_org_mode_test.go",
-	},
+	// AXC-280 to AXC-284 pinned the per-organization compatibility mode's
+	// composition. They were retired with the identity-compat mode; the
+	// numbers stay unused (see AXC-299's note).
+
+	// The per-organization identity settings store (#3550, session ADR65-I).
 	{
 		ID: "AXC-285", Edition: ConformanceEnterpriseOnly,
 		Title:    "The settings store serves the last successfully read row through an outage, never an absence",
-		Asserts:  "After one successful read, a storage failure serves that row for both the mode and the CAEP opt-in, counts the failure, and memoizes it for the TTL; a failure with no prior read returns the error rather than presenting the outage as 'no record' or 'not opted in'.",
+		Asserts:  "After one successful read, a storage failure serves that row for the CAEP opt-in, counts the failure, and memoizes it for the TTL; a failure with no prior read returns the error rather than presenting the outage as 'no record' or 'not opted in'.",
 		TestName: "TestOrgSettingsStoreServesTheLastGoodRowThroughAnOutage",
-		TestFile: "compat_org_settings_test.go",
+		TestFile: "org_settings_test.go",
 	},
 
 	// The Shared Signals / CAEP push receiver (#3550, session ADR65-I): the
-	// endpoint that gives compat_caep.go's intake a transmitter, and HasCAEP
+	// endpoint that gives caep_receiver.go's intake a transmitter, and HasCAEP
 	// a setter.
 	{
 		ID: "AXC-286", Edition: ConformanceEnterpriseOnly,
@@ -665,84 +655,61 @@ var identityConformanceCases = []ConformanceCase{
 		SourceCases: []string{"EX-47"},
 		Asserts:     "A push whose iss resolves to no realm in the authenticated organization is refused as invalid_issuer with zero fetches of any key set and nothing invalidated: the undeclared issuer is refused for being undeclared, at zero cost, before signature verification.",
 		TestName:    "TestCAEPPushUndeclaredIssuerIsRefusedBeforeAnyKeyIsFetched",
-		TestFile:    "compat_caep_push_test.go",
+		TestFile:    "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-287", Edition: ConformanceEnterpriseOnly,
 		Title:    "A SET must name the organization's configured receiver audience",
 		Asserts:  "A validly signed SET whose aud does not name the organization's configured audience - another receiver's, an array without it, absent, malformed - is refused as invalid_audience; an array that names it is accepted.",
 		TestName: "TestCAEPPushRefusesTheWrongAudience",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-288", Edition: ConformanceEnterpriseOnly,
 		Title:    "A SET is verified against the realm's own key set",
 		Asserts:  "A SET signed by a key outside the realm's JWKS is refused as invalid_key at the signature stage and invalidates nothing; the key set is the JWKS URI of the same SSO configuration the realm was derived from.",
 		TestName: "TestCAEPPushRefusesABadSignature",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-289", Edition: ConformanceEnterpriseOnly,
 		Title:    "A Shared Signals subject is a canonical principal or it is refused",
 		Asserts:  "Only the iss_sub format (directly, or as a complex subject's user member) whose iss is the realm's own issuer becomes a principal; email, phone_number, opaque, a foreign iss_sub, an empty sub, a formatless object and a bare string are refused and invalidate nothing. ADR-065 invariant 3 at the endpoint.",
 		TestName: "TestCAEPPushRefusesAnAliasSubject",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-290", Edition: ConformanceEnterpriseOnly,
 		Title:    "A failed invalidation is not acknowledged",
 		Asserts:  "A valid SET whose invalidation hook fails is answered 503 temporarily_unavailable (retryable), its jti is not remembered, and the redelivery after the hook recovers is applied rather than deduplicated away.",
 		TestName: "TestCAEPPushFailedInvalidationIsNotAcknowledged",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-291", Edition: ConformanceEnterpriseOnly,
 		Title:    "A realm that has not opted into Shared Signals receives nothing",
 		Asserts:  "A validly signed SET for a declared realm whose revocation source is not shared signals is refused as access_denied without any key fetch or invalidation; HasCAEP is per organization and comes from the settings row, not from code.",
 		TestName: "TestCAEPPushRefusesARealmThatDidNotOptIn",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-292", Edition: ConformanceEnterpriseOnly,
 		Title:    "A push affects only the organization the caller authenticated as",
 		Asserts:  "The same perfectly signed SET delivered under another organization's credential is refused (its issuer is undeclared there), and a push with no authenticated organization is refused as access_denied; the SET's own claims name no tenant and are never consulted for one.",
 		TestName: "TestCAEPPushIsScopedToTheAuthenticatedOrganization",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-293", Edition: ConformanceEnterpriseOnly,
 		Title:    "A redelivered SET is acknowledged without being re-applied",
 		Asserts:  "The jti is remembered inside a bounded window: a second delivery of the same SET is 202 and invalidates nothing further, a different jti for the same subject is applied, and a SET with no jti is refused.",
 		TestName: "TestCAEPPushRedeliveryIsAcknowledgedWithoutReapplying",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 
-	// The outage-wording gate's ARGUMENT (#3596 R3, finding 1). The gate
-	// itself is one line; what these cases pin is that it is asked about the
-	// REQUEST'S organization at every caller, which is what makes a
-	// per-organization shadow legible to an operator instead of reading as a
-	// deployment-wide forgery.
-	{
-		ID: "AXC-294", Edition: ConformanceEnterpriseOnly,
-		Title:    "The outage-wording gate is resolved per organization, not from the process flag",
-		Asserts:  "On one adapter whose process mode disagrees with an organization's record, outageSentinelsActive answers differently for the recorded organization and for one with no record, in both the raising and the lowering direction; the key is trimmed as the adapter trims it, and an uninstalled adapter is off for every organization.",
-		TestName: "TestOutageSentinelsAreResolvedPerOrganization",
-		TestFile: "compat_org_mode_gate_test.go",
-	},
-	{
-		ID: "AXC-295", Edition: ConformanceEnterpriseOnly,
-		Title:    "The OIDC verifier asks the gate about the request's organization",
-		Asserts:  "Driven through oidcVerifier.Validate with a process-off adapter and one organization recorded shadow, an unreachable JWKS wraps ErrJWKSUnavailable for the recorded organization and keeps main's ErrTokenInvalid wrap for one with no record - so neither a constant argument nor an empty one can produce both answers.",
-		TestName: "TestOIDCVerifierOutageWordingIsResolvedPerOrganization",
-		TestFile: "compat_org_mode_gate_test.go",
-	},
-	{
-		ID: "AXC-296", Edition: ConformanceEnterpriseOnly,
-		Title:    "The HS256 validator asks the gate about the request's organization",
-		Asserts:  "Driven through ResolveToken on the revocation-outage leg with a process-off adapter and one organization recorded shadow, the recorded organization's 401 carries the reclassification while the unrecorded organization's body is main's bytes.",
-		TestName: "TestHS256OutageWordingIsResolvedPerOrganization",
-		TestFile: "compat_org_mode_gate_test.go",
-	},
+	// AXC-294 to AXC-296 pinned the outage-wording gate's per-organization
+	// argument. They were retired with the identity-compat mode, which took
+	// the gate with it; the numbers stay unused (see AXC-299's note).
 
 	// The two Shared Signals refusal stages that no test and no mutant
 	// reached (#3596 R3, finding 2).
@@ -751,14 +718,14 @@ var identityConformanceCases = []ConformanceCase{
 		Title:    "A disabled realm receives no Shared Signals events",
 		Asserts:  "A validly signed SET whose issuer resolves to a DISABLED realm is refused as invalid_issuer at the realm_disabled stage, before any key set is fetched and with nothing invalidated; disabling a realm withdraws its event stream rather than only its authentication.",
 		TestName: "TestCAEPPushRefusesADisabledRealm",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 	{
 		ID: "AXC-298", Edition: ConformanceEnterpriseOnly,
 		Title:    "A realm source that cannot answer is an outage, never an undeclared issuer",
 		Asserts:  "When EnsureRealms fails, the push is refused 503 temporarily_unavailable at the realms_unavailable stage so the transmitter redelivers; presenting it as a terminal 400 invalid_issuer would drop every revocation delivered during the outage permanently.",
 		TestName: "TestCAEPPushRealmSourceOutageIsRetryable",
-		TestFile: "compat_caep_push_test.go",
+		TestFile: "caep_push_receiver_test.go",
 	},
 }
 

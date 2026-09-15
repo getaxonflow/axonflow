@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package agent
 
@@ -25,6 +17,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -35,20 +28,76 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/decision/contract"
+	"axonflow/platform/decision/legacycompile"
+	sharedidentity "axonflow/platform/shared/identity"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/policy/policytest"
 )
 
-// decideForTest sends a DecideRequest body through the raw handler (no
-// auth middleware) so test cases can deterministically control the
-// community-mode flow without needing JWTs. Returns the recorder.
+// decideForTest sends a DecideRequest body through the auth middleware, as a
+// caller on this deployment sends it (presentTestClientCredential). Returns the
+// recorder.
 func decideForTest(t *testing.T, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", decisionHandlerPath, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	return serveDecide(t, req)
+}
+
+// serveDecide serves req through the auth middleware, presenting this
+// deployment's client credential (presentTestClientCredential): a request a
+// deployment decides arrives authenticated, and a raw handler call carries no
+// subject the identity plane can admit.
+func serveDecide(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+	presentTestClientCredential(t, req)
 	rr := httptest.NewRecorder()
-	handleDecide(rr, req)
+	apiAuthMiddleware(http.HandlerFunc(handleDecide)).ServeHTTP(rr, req)
 	return rr
+}
+
+// The Indonesian NIK the redaction fixtures send, and the shipped row that
+// detects it. A recorded pii override reaches that row's control on every
+// request scope that binds it (activation's override fold, #4045), and the
+// anchored engine hands the resulting mandatory field_redact only to an
+// enforcement point whose PEP handshake declares it (redactionHandshake).
+const (
+	fixtureNIK    = "3174042506780001"
+	fixtureNIKRow = "sys_pii_indonesia_ktp"
+)
+
+// installNIKWorld installs the shared engine with fixtureNIKRow matching
+// fixtureNIK, as its shipped pattern matches one, and records piiAction as org's
+// pii override ("" records none).
+func installNIKWorld(t *testing.T, org string, piiAction DetectionAction) {
+	t.Helper()
+	enfInstallDetectors(t, map[string]string{fixtureNIKRow: regexp.QuoteMeta(fixtureNIK)}, nil)
+	reader := &fakeOverrideReader{data: map[string]map[string]DetectionAction{}}
+	if piiAction != "" {
+		reader.data[org] = map[string]DetectionAction{DetectionCategoryPII: piiAction}
+	}
+	installTestOverrideCache(t, reader, time.Minute)
+}
+
+// nikControl is the policy scope binds on fixtureNIKRow's detector: the control a
+// recorded pii override displaces and replaces.
+func nikControl(t *testing.T, scope legacycompile.EnforcementScope) string {
+	t.Helper()
+	for _, c := range enfScopeControls(t, scope) {
+		if c.row.PolicyID == fixtureNIKRow {
+			return c.policy.ID
+		}
+	}
+	t.Fatalf("%s binds no control on %s, so no pii override reaches the NIK there", scope, fixtureNIKRow)
+	return ""
+}
+
+// redactionHandshake is the PEP handshake of an enforcement point that
+// discharges field_redact.
+func redactionHandshake(t *testing.T) string {
+	t.Helper()
+	return encodedHandshake(t, "redaction-pep", contract.Capability{Type: contract.ObFieldRedact, Version: 1})
 }
 
 // installSharedEngineWithMockDB swaps the global shared-policy engine for one
@@ -68,15 +117,12 @@ func installSharedEngineWithMockDB(t *testing.T) {
 	// empty-result SELECTs. Extra unmet expectations are harmless (the tests
 	// don't assert ExpectationsWereMet).
 	mockSQL.MatchExpectationsInOrder(false)
-	// #3048: each load is two scoped passes; a load whose result carries ZERO
-	// system-tier policies now fails CLOSED (ErrEmptySystemPolicySet), so the
-	// fixture returns one benign never-matching system policy per pass.
+	// #3048: each load is two scoped passes, and a load carrying ZERO
+	// system-tier policies fails CLOSED (ErrEmptySystemPolicySet); the shipped
+	// global rows are the system tier a migrated database carries, none of them
+	// matching.
 	for i := 0; i < 8; i++ {
-		mockSQL.ExpectQuery("SELECT").WillReturnRows(
-			policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
-				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
-				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
-		)
+		mockSQL.ExpectQuery("SELECT").WillReturnRows(appendShippedGlobalRows(t, sqlmock.NewRows(policytest.LoaderCols()), nil, nil))
 	}
 	policytest.ScopedTxPlumbing(mockSQL, 8)
 	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, sharedpolicy.EngineConfig{}, nil)
@@ -140,158 +186,82 @@ func TestHandleDecide_VerdictAllow(t *testing.T) {
 	}
 }
 
-// TestHandleDecide_IndonesiaNIKRedactObligation pins the /decide half of the
-// #2571 fix: under PII_ACTION=redact, a checksum-valid NIK must emit EXACTLY ONE
-// redact_pii obligation that names check-input as its fulfillment endpoint.
-// Before the fix /decide flagged Indonesia PII for block only, so under redact
-// it returned allow with NO obligation and the NIK slipped through. Mirrors the
-// pre-check integration test on the /decide plane (deterministic, no license).
+// TestHandleDecide_IndonesiaNIKRedactObligation is the NIK-slips-through
+// regression on the decide plane, on the anchored engine: an organization's
+// recorded pii=redact displaces the shipped NIK control, and a caller whose
+// handshake declares field_redact receives exactly one redact_pii obligation,
+// fulfilled at check-input. The control is the same NIK with no override
+// recorded: the shipped control's own stored action decides, and nothing is
+// handed to the caller to redact. A community caller authenticates to the
+// deployment's organization, so that is where the override is recorded.
 func TestHandleDecide_IndonesiaNIKRedactObligation(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
-	t.Setenv("PII_ACTION", "redact")
-	ResetDetectionConfigCache()
-	installSharedEngineWithMockDB(t)
-	installCircuitBreaker(t)
+	// The no-override case is a real deny, which the Enterprise breaker records
+	// through its repository.
+	installCircuitBreakerWithMockDB(t)
+	org := getDeploymentOrgID()
 
-	body, _ := json.Marshal(DecideRequest{
-		Stage:          DecisionStageLLM,
-		CallerIdentity: DecisionCallerIdentity{GatewayID: "test-llm-gateway", TenantID: "test-tenant"},
-		Target:         DecisionTarget{Type: "llm", Model: "gpt-4o", Provider: "openai"},
-		Query:          "Customer NIK is 3174042506780001",
-	})
-	rr := decideForTest(t, body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
-	}
-	var resp DecideResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v -- body=%s", err, rr.Body.String())
-	}
-	if resp.Verdict != VerdictAllow {
-		t.Fatalf("verdict: got %q want %q (redact, not block); reasons=%v", resp.Verdict, VerdictAllow, resp.Reasons)
-	}
-
-	redactCount := 0
-	var ob DecisionObligation
-	for _, o := range resp.Obligations {
-		if o.Type == ObligationRedactPII {
-			redactCount++
-			ob = o
-		}
-	}
-	if redactCount != 1 {
-		t.Fatalf("expected exactly one redact_pii obligation for a NIK under PII_ACTION=redact, got %d (obligations=%+v)", redactCount, resp.Obligations)
-	}
-	if ob.Fulfillment == nil || !strings.Contains(ob.Fulfillment.Endpoint, "check-input") {
-		t.Errorf("redact_pii obligation must name check-input as its fulfillment endpoint, got %+v", ob.Fulfillment)
-	}
-}
-
-// --- Verdict mapping (pure, no engine/DB needed) ---
-//
-// The handler delegates verdict choice to mapPolicyResultToVerdict so the
-// four verdict transitions can be tested deterministically. Live-engine
-// SQLi/PII detection paths require DB-seeded patterns and are exercised
-// by runtime-e2e/2426_decision_api/ end-to-end.
-
-func TestMapPolicyResultToVerdict_AllPaths(t *testing.T) {
-	cases := []struct {
-		name        string
-		in          *StaticPolicyResult
-		community   bool
-		wantVerdict string
-		wantReason  string // empty = none required
-		wantOblig   string // obligation type (empty = none expected)
-	}{
-		{
-			name:        "nil result is allow",
-			in:          nil,
-			wantVerdict: VerdictAllow,
-		},
-		{
-			name:        "clean result is allow",
-			in:          &StaticPolicyResult{TriggeredPolicies: []string{}},
-			wantVerdict: VerdictAllow,
-		},
-		{
-			name:        "blocked is deny with reason",
-			in:          &StaticPolicyResult{Blocked: true, Reason: "SQL injection detected", TriggeredPolicies: []string{"sys_sqli_union"}},
-			wantVerdict: VerdictDeny,
-			wantReason:  "SQL injection detected",
-		},
-		{
-			name:        "requires_approval in enterprise mode is needs_approval",
-			in:          &StaticPolicyResult{RequiresApproval: true, TriggeredPolicies: []string{"hitl_eu_ai_act"}},
-			community:   false,
-			wantVerdict: VerdictNeedsApproval,
-			wantReason:  "require_approval",
-		},
-		{
-			name:        "requires_approval in community mode auto-allows (HITL is enterprise-only)",
-			in:          &StaticPolicyResult{RequiresApproval: true, TriggeredPolicies: []string{"hitl_eu_ai_act"}},
-			community:   true,
-			wantVerdict: VerdictAllow,
-		},
-		{
-			name:        "requires_redaction is allow + obligation",
-			in:          &StaticPolicyResult{RequiresRedaction: true, Reason: "SSN detected"},
-			wantVerdict: VerdictAllow,
-			wantOblig:   "redact_pii",
-		},
-		{
-			name:        "blocked takes precedence over redaction",
-			in:          &StaticPolicyResult{Blocked: true, Reason: "blocked", RequiresRedaction: true},
-			wantVerdict: VerdictDeny,
-			wantReason:  "blocked",
-		},
-		{
-			// #2965: a warn/log PII match carries no obligation but must surface
-			// an advisory reason, so a matched policy is never a silent allow.
-			name:        "advisory match is allow + reason, no obligation",
-			in:          &StaticPolicyResult{AdvisoryReasons: []string{"pii-indonesia detected by policy sys_pii_indonesia_ktp (action=log); no redaction applied"}},
-			wantVerdict: VerdictAllow,
-			wantReason:  "pii-indonesia detected by policy sys_pii_indonesia_ktp (action=log); no redaction applied",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			verdict, reasons, obligations := mapPolicyResultToVerdict(tc.in, tc.community)
-			if verdict != tc.wantVerdict {
-				t.Errorf("verdict: got %q want %q", verdict, tc.wantVerdict)
-			}
-			if tc.wantReason != "" {
-				found := false
-				for _, r := range reasons {
-					if r == tc.wantReason {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("reasons %v missing expected %q", reasons, tc.wantReason)
-				}
-			}
-			if tc.wantOblig != "" {
-				found := false
-				for _, o := range obligations {
-					if o.Type == tc.wantOblig {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("obligations %v missing expected type %q", obligations, tc.wantOblig)
-				}
-			}
-			if reasons == nil {
-				t.Error("reasons must always be non-nil for stable JSON output")
-			}
-			if obligations == nil {
-				t.Error("obligations must always be non-nil for stable JSON output")
-			}
+	decideNIK := func(t *testing.T) DecideResponse {
+		t.Helper()
+		body, _ := json.Marshal(DecideRequest{
+			Stage:          DecisionStageLLM,
+			CallerIdentity: DecisionCallerIdentity{GatewayID: "test-llm-gateway", TenantID: "test-tenant"},
+			Target:         DecisionTarget{Type: "llm", Model: "gpt-4o", Provider: "openai"},
+			Query:          "Customer NIK is " + fixtureNIK,
 		})
+		req := httptest.NewRequest("POST", decisionHandlerPath, bytes.NewBuffer(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(contract.PEPHandshakeHeader, redactionHandshake(t))
+		rr := serveDecide(t, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
+		}
+		var resp DecideResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v -- body=%s", err, rr.Body.String())
+		}
+		return resp
 	}
+	redactObligations := func(resp DecideResponse) (int, DecisionObligation) {
+		n := 0
+		var ob DecisionObligation
+		for _, o := range resp.Obligations {
+			if o.Type == ObligationRedactPII {
+				n++
+				ob = o
+			}
+		}
+		return n, ob
+	}
+
+	t.Run("a recorded pii=redact hands the caller one redact_pii obligation", func(t *testing.T) {
+		installNIKWorld(t, org, DetectionActionRedact)
+		resp := decideNIK(t)
+		if resp.Verdict != VerdictAllow {
+			t.Fatalf("verdict: got %q want %q (redact, not block); reasons=%v", resp.Verdict, VerdictAllow, resp.Reasons)
+		}
+		n, ob := redactObligations(resp)
+		if n != 1 {
+			t.Fatalf("expected exactly one redact_pii obligation for a NIK under a pii=redact override, got %d (obligations=%+v)", n, resp.Obligations)
+		}
+		if ob.Fulfillment == nil || !strings.Contains(ob.Fulfillment.Endpoint, "check-input") {
+			t.Errorf("redact_pii obligation must name check-input as its fulfillment endpoint, got %+v", ob.Fulfillment)
+		}
+	})
+
+	t.Run("no override: the shipped control's stored action decides, and nothing is redacted", func(t *testing.T) {
+		installNIKWorld(t, org, "")
+		resp := decideNIK(t)
+		if n, _ := redactObligations(resp); n != 0 {
+			t.Fatalf("no override is recorded, yet %d redact_pii obligation(s) were attached: %+v", n, resp.Obligations)
+		}
+		control := nikControl(t, decideSeamScope)
+		if resp.Verdict != VerdictDeny || len(resp.EvaluatedPolicies) == 0 || resp.EvaluatedPolicies[0] != control {
+			t.Fatalf("verdict %q evaluated_policies %v reasons %v; want the shipped control %s, whose stored action is block, to deny",
+				resp.Verdict, resp.EvaluatedPolicies, resp.Reasons, control)
+		}
+	})
 }
 
 // TestNewRedactPIIObligation_SelfDescribing pins the #2563 contract: every
@@ -317,134 +287,6 @@ func TestNewRedactPIIObligation_SelfDescribing(t *testing.T) {
 	}
 	if ob.Fulfillment.Phase != ObligationPhaseRequest {
 		t.Errorf("phase=%q want %q", ob.Fulfillment.Phase, ObligationPhaseRequest)
-	}
-}
-
-// TestMapPolicyResultToVerdict_ObligationIsFulfillable asserts that the redact
-// obligation produced by the verdict mapping is engine-fulfillable (not a bare
-// {type,detail}). This is the structural guard against regressing to the
-// pre-#2563 obligation shape.
-func TestMapPolicyResultToVerdict_ObligationIsFulfillable(t *testing.T) {
-	_, _, obligations := mapPolicyResultToVerdict(
-		&StaticPolicyResult{RequiresRedaction: true, Reason: "NIK detected"}, false)
-	if len(obligations) != 1 {
-		t.Fatalf("obligations=%d want 1", len(obligations))
-	}
-	ob := obligations[0]
-	if ob.Type != ObligationRedactPII || ob.Fulfillment == nil {
-		t.Fatalf("obligation not self-describing: %+v", ob)
-	}
-	if ob.Fulfillment.Endpoint != requestRedactionEndpoint || ob.Fulfillment.Phase != ObligationPhaseRequest {
-		t.Fatalf("fulfillment wrong: %+v", ob.Fulfillment)
-	}
-}
-
-// TestDecide_MatchedPIIPolicy_NeverBareAllow is the #2965 CLASS GUARD — the
-// item that kills the bug family, not just the pii-indonesia instance. For
-// EVERY pii-* category, under every resolved action a PII match can carry, a
-// MATCHED policy run through the real convert→verdict pipeline must NEVER return
-// verdict=allow with BOTH empty obligations AND empty reasons. A matched policy
-// always produces a governance signal (obligation, deny reason, needs_approval,
-// or advisory reason). The postures are the RESOLVED match action the engine
-// hands convert (block ⇒ Blocked=true; everything else ⇒ non-blocking match).
-// require_approval is included specifically because the community-mode branch
-// drops HITL — the case R3 round 2 caught the action-aware switch reintroducing
-// as a bare allow.
-func TestDecide_MatchedPIIPolicy_NeverBareAllow(t *testing.T) {
-	// The pii-* category surface. Kept as an explicit list (mirroring
-	// shared/policy TestIsPIIPolicyCategory_Convention) with a forward-compat
-	// synthetic entry so a future pii-* jurisdiction is auto-covered by the
-	// same guard — the convergence onto the shared prefix predicate means a new
-	// pii-* category needs no code change here to be governed.
-	piiCategories := []sharedpolicy.PolicyCategory{
-		sharedpolicy.CategoryPIIGlobal,
-		sharedpolicy.CategoryPIIUS,
-		sharedpolicy.CategoryPIIIndia,
-		sharedpolicy.CategoryPIIEU,
-		sharedpolicy.CategoryPIISingapore,
-		sharedpolicy.CategoryPIIIndonesia,     // #2965 — the reported instance
-		sharedpolicy.PolicyCategory("pii-zz"), // forward-compat: any pii-* is covered
-	}
-	// The four PII_ACTION postures, expressed as the resolved action the engine
-	// stamps onto match.Action (BuildActionOverrides maps PII_ACTION onto every
-	// pii-* category identically).
-	postures := []struct {
-		name    string
-		action  sharedpolicy.Action
-		blocked bool
-	}{
-		{"block", sharedpolicy.ActionBlock, true},
-		{"redact", sharedpolicy.ActionRedact, false},
-		{"warn", sharedpolicy.ActionWarn, false},
-		{"log", sharedpolicy.ActionLog, false},
-		// Not a PII_ACTION posture (BuildActionOverrides never yields it), but a
-		// tenant/dynamic pii-* policy can carry require_approval as its stored
-		// action — must still signal, incl. in community mode where HITL is dropped.
-		{"require_approval", sharedpolicy.ActionRequireApproval, false},
-	}
-
-	for _, cat := range piiCategories {
-		for _, p := range postures {
-			t.Run(string(cat)+"/"+p.name, func(t *testing.T) {
-				rr := &sharedpolicy.RequestResult{
-					Blocked: p.blocked,
-					MatchedPolicies: []sharedpolicy.PolicyMatch{{
-						PolicyID: "sys_" + string(cat),
-						Action:   p.action,
-						Category: cat,
-						Severity: sharedpolicy.SeverityCritical,
-					}},
-				}
-				if p.blocked {
-					rr.BlockReason = "blocked by " + string(cat)
-				}
-				// Run the FULL bridge: convert (shared → static) then the
-				// verdict mapping — the exact path /decide uses. Tested in both
-				// editions because community drops HITL, which is the axis the
-				// require_approval bare-allow regression hid on.
-				for _, community := range []bool{false, true} {
-					result := convertSharedResultToStatic(rr)
-					verdict, reasons, obligations := mapPolicyResultToVerdict(result, community)
-
-					// The property: a matched policy is never a silent allow.
-					if verdict == VerdictAllow && len(obligations) == 0 && len(reasons) == 0 {
-						t.Fatalf("BARE ALLOW for matched %s under posture %s (community=%v): "+
-							"verdict=allow, no obligations, no reasons — a matched policy produced zero governance signal",
-							cat, p.name, community)
-					}
-
-					// Stronger, posture-specific expectations so the guard can't
-					// be satisfied by the wrong signal.
-					switch p.name {
-					case "block":
-						if verdict != VerdictDeny {
-							t.Errorf("%s/block community=%v: verdict=%q want deny", cat, community, verdict)
-						}
-					case "redact":
-						if verdict != VerdictAllow || len(obligations) == 0 {
-							t.Errorf("%s/redact community=%v: want allow+obligation, got verdict=%q obligations=%d", cat, community, verdict, len(obligations))
-						}
-					case "warn", "log":
-						if verdict != VerdictAllow || len(reasons) == 0 || len(obligations) != 0 {
-							t.Errorf("%s/%s community=%v: want allow+reason+no-obligation, got verdict=%q reasons=%d obligations=%d",
-								cat, p.name, community, verdict, len(reasons), len(obligations))
-						}
-					case "require_approval":
-						if community {
-							// HITL is enterprise-only → community falls through to
-							// allow, so the advisory reason is the ONLY signal.
-							if verdict != VerdictAllow || len(reasons) == 0 {
-								t.Errorf("%s/require_approval community: want allow+advisory-reason, got verdict=%q reasons=%d", cat, verdict, len(reasons))
-							}
-						} else {
-							if verdict != VerdictNeedsApproval {
-								t.Errorf("%s/require_approval enterprise: want needs_approval, got verdict=%q", cat, verdict)
-							}
-						}
-					}
-				}
-			})
-		}
 	}
 }
 
@@ -656,8 +498,7 @@ func TestHandleDecide_TraceIDReusesTraceparent(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("traceparent", traceparent)
 
-	rr := httptest.NewRecorder()
-	handleDecide(rr, req)
+	rr := serveDecide(t, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
@@ -699,8 +540,7 @@ func TestHandleDecide_TraceIDFallback_OnMalformedTraceparent(t *testing.T) {
 			if tp != "" {
 				req.Header.Set("traceparent", tp)
 			}
-			rr := httptest.NewRecorder()
-			handleDecide(rr, req)
+			rr := serveDecide(t, req)
 
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
@@ -893,9 +733,14 @@ func TestHandleDecide_NilCircuitBreaker(t *testing.T) {
 	}
 }
 
-// --- No shared engine → allow (bypass path) ---
+// --- No shared engine → the anchored engine fails closed ---
 
-func TestHandleDecide_NoSharedEngine(t *testing.T) {
+// TestHandleDecide_NoSharedEngineFailsClosed pins what replaced the legacy
+// bypass. The shared engine is the anchored engine's detector input (PRD v11
+// §1.2), so without it every shipped control's detector is unknown, and the
+// anchored engine denies on the unknown constraint rather than allowing content
+// it could not inspect.
+func TestHandleDecide_NoSharedEngineFailsClosed(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
 	old := sharedpolicy.GetGlobalEngine()
@@ -911,14 +756,26 @@ func TestHandleDecide_NoSharedEngine(t *testing.T) {
 	})
 	rr := decideForTest(t, body)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("no-engine bypass: got %d; body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
 	}
 	var resp DecideResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp.Verdict != VerdictAllow {
-		t.Errorf("verdict: got %q want %q", resp.Verdict, VerdictAllow)
+	if resp.Verdict != VerdictDeny || resp.Engine != decisionEngineAnchored ||
+		len(resp.Reasons) == 0 || resp.Reasons[0] != string(contract.ReasonUnknownConstraint) {
+		t.Fatalf("verdict %q engine %q reasons %v; want the anchored deny on %s. body=%s",
+			resp.Verdict, resp.Engine, resp.Reasons, contract.ReasonUnknownConstraint, rr.Body.String())
+	}
+	// The deny names the constraints it could not evaluate, the binding one
+	// first (#4227): a shipped control whose detector had no engine to run it.
+	if len(resp.Reasons) < 2 || len(resp.EvaluatedPolicies) == 0 ||
+		!strings.HasPrefix(resp.Reasons[1], resp.EvaluatedPolicies[0]+" (shipped) could not be evaluated: ") {
+		t.Fatalf("reasons %q evaluated_policies %v; want the binding constraint named after the code. body=%s",
+			resp.Reasons, resp.EvaluatedPolicies, rr.Body.String())
+	}
+	if len(resp.PolicyIdentities) == 0 || resp.PolicyIdentities[0].ID != resp.EvaluatedPolicies[0] || resp.PolicyIdentities[0].Source != "shipped" {
+		t.Fatalf("policy_identities %+v; want the binding constraint first, shipped", resp.PolicyIdentities)
 	}
 }
 
@@ -1076,10 +933,16 @@ func withMockUsageDB(t *testing.T) sqlmock.Sqlmock {
 // mintUserTokenWithTenant signs an HS256 user token carrying a tenant_id claim,
 // so ResolveUser (enterprise) returns a user whose tenant can be made to
 // disagree with the authenticated client tenant. jwtSecret must be set first.
-func mintUserTokenWithTenant(t *testing.T, tenant string) string {
+// mintUserTokenWithTenant mints the per-user mint's claim set for tenant,
+// minted for org: the organization the test authenticates with (#4311).
+func mintUserTokenWithTenant(t *testing.T, tenant, org string) string {
 	t.Helper()
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":       sharedidentity.UserTokenIssuer,
+		"sub":       "user@example.com",
 		"tenant_id": tenant,
+		"org_id":    org,
+		"jti":       "jti-" + org + "-" + tenant,
 		"email":     "user@example.com",
 		"role":      "user",
 		"exp":       time.Now().Add(time.Hour).Unix(),
@@ -1297,7 +1160,9 @@ func TestHandleDecide_AuditsTenantMismatch_AsBlocked(t *testing.T) {
 	t.Cleanup(func() { jwtSecret = origSecret })
 	mock := withMockUsageDB(t)
 
-	token := mintUserTokenWithTenant(t, "other-tenant")
+	// The credential's organization (ent-org) with ANOTHER tenant: a valid
+	// per-user token for this organization, so the 403 is the tenant binding.
+	token := mintUserTokenWithTenant(t, "other-tenant", "ent-org")
 
 	args := decideAuditInsertArgs(AuditVerdictBlocked,
 		decideSecurityDetailsMatcher{wantEvent: "tenant_mismatch", wantAttemptedTenant: "other-tenant"})

@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Compliance Policy Examples - Go
 //
 // Demonstrates using allowed_providers in dynamic policies for:
@@ -61,7 +64,7 @@ func main() {
 
 	client := axonflow.NewClient(config)
 
-	fmt.Println("=== Compliance Policy Examples ===\n")
+	fmt.Println("=== Compliance Policy Examples ===")
 
 	var createdPolicies []string
 

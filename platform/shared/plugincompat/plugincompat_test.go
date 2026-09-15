@@ -12,10 +12,12 @@ func TestPinnedToReleaseTrain(t *testing.T) {
 	wantMin := map[string]string{
 		"openclaw": "2.4.0", "claude-code": "1.4.0", "cursor": "1.4.0",
 		"codex": "1.4.0", "claude-desktop": "0.2.0",
+		"n8n": "1.2.0", "google-adk": "1.2.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw": "2.9.0", "claude-code": "1.12.0", "cursor": "1.8.0",
-		"codex": "1.8.0", "claude-desktop": "0.4.0",
+		"openclaw": "2.9.1", "claude-code": "1.13.0", "cursor": "1.9.0",
+		"codex": "1.9.0", "claude-desktop": "0.4.0",
+		"n8n": "1.2.1", "google-adk": "1.3.0",
 	}
 	for id, want := range wantMin {
 		if got := MinVersions()[id]; got != want {

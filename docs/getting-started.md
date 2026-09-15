@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: September 2026** | **Platform: v10.4.0** | **SDKs: Python / Go / TypeScript / Java v9.3.0 + Rust v0.10.0 (preview)**
+**Last Updated: September 2026** | **Platform Version:** v11.0.0 | **SDK Version:** v9.4.0 (Python / Go / TypeScript / Java) | **Rust SDK Version:** v0.11.0 (preview)
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -190,7 +190,7 @@ pip install axonflow
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>9.3.0</version>
+    <version>9.4.0</version>
 </dependency>
 ```
 
@@ -206,7 +206,7 @@ cargo add axonflow-sdk-rust
 
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v9.3.0. Rust is in preview at v0.10.0 — covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction).
+Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v9.4.0. Rust is in preview at v0.11.0 — covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, the v9 `X-Client-ID` outbound header, plus the Decision Mode PEP (`decide` → `fulfill_request` → forward with engine-only, fail-closed redaction).
 
 #### Go
 
@@ -838,8 +838,8 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 1. **[Configurable Agents Guide](./reference/configurable-agents.md)** - Configure agent behavior and routing
 2. **[API Reference](./api/)** - API specifications and error codes
 3. **[Example Applications](../examples/)** - Healthcare, E-commerce, Trip Planning
-4. **[Production Deployment](../technical-docs/DEPLOYMENT_GUIDE.md)** - Deploy to AWS
-5. **[MCP Connectors](../technical-docs/MCP_CONNECTORS.md)** - Connect to your data sources
+4. **[Production Deployment](https://docs.getaxonflow.com/docs/deployment/overview/)** - Deploy to AWS
+5. **[MCP Connectors](https://docs.getaxonflow.com/docs/mcp/overview/)** - Connect to your data sources
 
 **Questions?** Join our Slack community: https://getaxonflow.com/slack
 
@@ -847,4 +847,4 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 
 ---
 
-*Last Updated: September 2026 | Platform: v10.4.0 | SDKs: v9.3.0*
+*Last Updated: September 2026 | Platform: v11.0.0 | SDKs: v9.4.0*

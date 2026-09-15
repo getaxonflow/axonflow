@@ -4,7 +4,9 @@
 package identity
 
 import (
-	"regexp"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"unicode"
@@ -34,7 +36,7 @@ import (
 // The obvious repair - have contract.ID derive its type set from SubjectType -
 // is not available, and the reason is structural rather than stylistic.
 // platform/decision is a SEPARATE Go module with a deliberately minimal
-// dependency set, and axonflow/platform depends on IT (planeshadow imports
+// dependency set, and axonflow/platform depends on IT (identity imports
 // contract). An import the other way would invert that. The vocabulary
 // therefore cannot be shared as code, and the honest alternatives were: state
 // in contract's own source that its type segment is deliberately open and name
@@ -190,18 +192,6 @@ func (d divergenceDirection) String() string {
 	return "identity accepts / contract refuses"
 }
 
-// contractTypeSegmentRe RESTATES contract's type-segment regex.
-//
-// It is used only to CLASSIFY a disagreement the two implementations actually
-// produced - never to decide whether one exists. A drifted copy here can
-// therefore only make a real disagreement unclassified, which fails, and can
-// never hide one. The alternative, exporting it from contract, would put a
-// test's convenience into a wire-contract package's public surface. (The
-// qualifier regex used to be restated beside it for the realm-charset class;
-// that class is closed by #3709 row 3 and contract.ValidateQualifier is now
-// the ONE grammar, so the restatement went with it.)
-var contractTypeSegmentRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]*$`)
-
 // identityComponentMax mirrors identity's own maxPrincipalComponent, which is
 // unexported. Same argument as above: classification only.
 const identityComponentMax = 512
@@ -223,6 +213,18 @@ const contractRejectedControl = "\x00\n\r\t"
 // disagree about. Adding a row is a decision that needs a disposition; removing
 // the last input that exercises one fails the coverage assertion below.
 //
+// THE type-vocabulary CLASS WAS HERE AND IS GONE (#3711, v11). It was the
+// divergence this file was written about: contract's type segment was an open
+// regex and identity's a closed set of six, so `Robot::security:r1` was a
+// decided request to the PDP and a hard error here. It is closed on the
+// contract side, in the direction the disposition named: contract.PrincipalType
+// is now the ONE vocabulary and SubjectType is an alias of it, so the three
+// out-of-vocabulary probes (`Robot`, `Machine.v2`, `A-b_c`) are agreements
+// now - both refuse - and they stay in probeTypes so the sweep keeps proving
+// it. Re-declaring the class would fail the stale-exemption check below, which
+// is the rule that makes a fixed divergence unable to become an exemption
+// again.
+//
 // THE realm-charset CLASS WAS HERE AND IS GONE (#3709 row 3). It was the
 // dangerous direction - identity minted realm ids contract could not parse -
 // and it is closed on the permissive side: ValidateRealmID now DELEGATES to
@@ -234,18 +236,6 @@ const contractRejectedControl = "\x00\n\r\t"
 // divergence cannot quietly become an exemption again.
 func declaredDivergences() []divergenceClass {
 	return []divergenceClass{
-		{
-			name:      "type-vocabulary",
-			direction: contractAcceptsIdentityRefuses,
-			why: "contract's type segment is an open regex and identity's is a closed set of six. " +
-				"A type outside the six names a subject whose semantics no policy author has seen, " +
-				"and the PDP would evaluate it.",
-			disposition: "v11.0.0 on #3711: closing contract's set rejects a principal the wire has " +
-				"always accepted, which is a wire break.",
-			applies: func(typ, _, _ string) bool {
-				return contractTypeSegmentRe.MatchString(typ) && !SubjectType(typ).IsValid()
-			},
-		},
 		{
 			name:      "component-length",
 			direction: contractAcceptsIdentityRefuses,
@@ -291,7 +281,7 @@ func declaredDivergences() []divergenceClass {
 var (
 	probeTypes = []string{
 		"User", "Group", // inside the closed vocabulary
-		"Robot", "Machine.v2", "A-b_c", // legal contract segments, outside the six
+		"Robot", "Machine.v2", "A-b_c", // legal type SEGMENTS, outside the six: both refuse since #3711
 	}
 	probeRealms = []string{
 		"security", "acme-prod", "eu.central_1", "r-1", "A1", // both accept
@@ -443,26 +433,24 @@ var malformedPrincipals = []malformedPrincipal{
 	{"User::acme+prod:00u1", "a realm outside the qualifier grammar - identity minted this before #3709 row 3 and the PDP could not parse it"},
 	{"User::-leading:00u1", "a realm starting with '-', which the qualifier grammar refuses"},
 	{"User::réalm:00u1", "a non-ASCII realm, printable and therefore admitted by the old ValidateRealmID"},
+	{"Robot::security:r1", "a type outside the closed vocabulary - contract accepted this until #3711 closed the set in v11"},
 }
 
-// TestTheTypeVocabularyDivergenceIsStillTheOneThatMatters.
+// TestTheTypeVocabularyIsClosedOnBothSides.
 //
-// The type vocabulary is the divergence #3711 is ABOUT, and it is asserted
-// directly as well as through the sweep: a class predicate proves a
-// disagreement is explained, and this proves the specific disagreement is still
-// there and still in the direction the disposition assumes.
-//
-// If contract ever closes its vocabulary - dispositioned to v11.0.0 - this
-// fails and the author has to come here to remove it, which is what stops a
-// SECOND vocabulary appearing in contract quietly.
-func TestTheTypeVocabularyDivergenceIsStillTheOneThatMatters(t *testing.T) {
+// The type vocabulary was the divergence #3711 was ABOUT, and its closure is
+// asserted directly as well as through the sweep: a class predicate proves a
+// disagreement is explained, and this proves the specific disagreement is
+// gone in the direction the disposition named - contract closed, identity
+// unchanged. Both must refuse an out-of-vocabulary type; a widening on either
+// side reopens the finding and fails here by name.
+func TestTheTypeVocabularyIsClosedOnBothSides(t *testing.T) {
 	const outsideVocabulary = "Robot::security:r1"
 
-	if _, err := contract.ParseID(contract.KindPrincipal, outsideVocabulary); err != nil {
-		t.Errorf("contract now REFUSES %q (%v). Its type segment used to be an open regex, and this "+
-			"test is the record of that. If contract has closed its vocabulary, delete this assertion "+
-			"and reconcile the two definitions - do not widen the regex to make this pass.",
-			outsideVocabulary, err)
+	if _, err := contract.ParseID(contract.KindPrincipal, outsideVocabulary); err == nil {
+		t.Errorf("contract ACCEPTS %q. Its principal type segment was an open regex until v11 and "+
+			"#3711 closed it to contract.PrincipalTypes(); a PDP that evaluates a principal no proof "+
+			"can bind is the finding this file was written about.", outsideVocabulary)
 	}
 	if _, err := ParsePrincipalID(outsideVocabulary); err == nil {
 		t.Errorf("identity now ACCEPTS %q. The closed vocabulary is the point: an unknown subject type "+
@@ -490,8 +478,8 @@ func TestTheTypeVocabularyDivergenceIsStillTheOneThatMatters(t *testing.T) {
 			"other reads as a different principal")
 	}
 
-	if len(malformedPrincipals) < 13 {
-		t.Fatalf("the malformed corpus holds %d inputs; it was written with 13 and a shrunk corpus "+
+	if len(malformedPrincipals) < 14 {
+		t.Fatalf("the malformed corpus holds %d inputs; it was written with 14 and a shrunk corpus "+
 			"asserts less while still passing", len(malformedPrincipals))
 	}
 	for _, m := range malformedPrincipals {
@@ -510,10 +498,54 @@ func TestTheTypeVocabularyDivergenceIsStillTheOneThatMatters(t *testing.T) {
 	}
 }
 
+// TestTheSubjectVocabularyIsTheContractsPrincipalVocabulary reads BOTH
+// vocabularies and pins them equal, element for element and in order, and pins
+// each of this package's named constants to the contract constant it aliases.
+//
+// SubjectType is an alias of contract.PrincipalType, so today this cannot
+// fail; it exists so that the day someone de-aliases it - "we only need a
+// seventh type on the identity side" - the build says the two definitions
+// diverged, which is exactly the state #3711 closed.
+func TestTheSubjectVocabularyIsTheContractsPrincipalVocabulary(t *testing.T) {
+	ours, theirs := SubjectTypes(), contract.PrincipalTypes()
+	if len(ours) < 6 {
+		t.Fatalf("SubjectTypes() returned %d types; the vocabulary is six and this test is reading nothing", len(ours))
+	}
+	if len(ours) != len(theirs) {
+		t.Fatalf("identity.SubjectTypes() has %d members and contract.PrincipalTypes() has %d; there is ONE vocabulary", len(ours), len(theirs))
+	}
+	for i := range ours {
+		if ours[i] != theirs[i] {
+			t.Errorf("position %d: identity says %q, contract says %q", i, ours[i], theirs[i])
+		}
+	}
+	pairs := []struct {
+		name   string
+		ours   SubjectType
+		theirs contract.PrincipalType
+	}{
+		{"User", SubjectUser, contract.PrincipalUser},
+		{"Service", SubjectService, contract.PrincipalService},
+		{"Workload", SubjectWorkload, contract.PrincipalWorkload},
+		{"Agent", SubjectAgent, contract.PrincipalAgent},
+		{"Client", SubjectClient, contract.PrincipalClient},
+		{"Group", SubjectGroup, contract.PrincipalGroup},
+	}
+	if len(pairs) != len(theirs) {
+		t.Fatalf("this table names %d constants and the vocabulary has %d; add the new pair here", len(pairs), len(theirs))
+	}
+	for _, p := range pairs {
+		if p.ours != p.theirs || string(p.ours) != p.name {
+			t.Errorf("%s: identity constant %q, contract constant %q", p.name, p.ours, p.theirs)
+		}
+	}
+}
+
 // TestTheClosedVocabularyIsExpressibleInTheOpenOne.
 //
-// The two are only comparable at all while every closed subject type is a legal
-// contract type segment. A seventh type spelled with a character contract's
+// contract's type SEGMENT is still an open regex for every kind but principal,
+// and the principal check runs after it. So every closed subject type must
+// also be a legal segment. A seventh type spelled with a character contract's
 // regex refuses - a space, a slash, a leading digit - would make that type
 // unrepresentable on the PDP side, and the failure would appear as an
 // unparseable principal at runtime rather than here.
@@ -538,5 +570,116 @@ func TestTheClosedVocabularyIsExpressibleInTheOpenOne(t *testing.T) {
 			t.Errorf("SubjectType %q contains a colon; both parsers locate the separator by scanning "+
 				"for one, so such a type would re-split every identifier that carried it", st)
 		}
+	}
+}
+
+// ONE ANSWER TO "ARE THESE THE SAME PERSON" (#3876).
+//
+// The casing fold decides whether two spellings of a subject are one identity,
+// and it is asked in two modules: here, and in platform/decision, where
+// separation of duties compares an author against an approver and activation
+// compares an activator against both. It existed once as identity.CanonicalEmail
+// and was applied by ONE CALLER, the customer portal, to its own inputs - so
+// every other caller of the control compared raw bytes, and the two-person rule
+// was defeatable on the casing axis after the casing bug had already been found,
+// written up and fixed at that caller.
+//
+// CanonicalEmail now delegates to contract.CanonicalLocal. This pins the
+// delegation rather than the implementation: if someone reintroduces a local
+// fold here, the two rules disagree the day either changes, and the case that
+// discovers it is a signed compliance record naming two approvers who are one
+// person.
+func TestCanonicalEmailIsTheContractsFold(t *testing.T) {
+	// TWO HALVES, BECAUSE THE TABLE ALONE PROVES THE WEAKER THING.
+	//
+	// The equivalence table below catches a genuine DIVERGENCE: if either rule
+	// changes and the other does not, the outputs differ and this reds. That is
+	// the failure that actually costs something.
+	//
+	// It does NOT prove delegation. Review restated CanonicalEmail's body as
+	// `strings.ToLower(strings.TrimSpace(...))` - a re-implementation that
+	// agrees on every input - and the table passed, while the test's name and
+	// comment claimed to pin the delegation. A re-implementation that agrees is
+	// indistinguishable from a correct one by its outputs alone, which is the
+	// whole reason the rule was moved to one place.
+	//
+	// So the delegation is asserted on the SYNTAX TREE, not on the text. A
+	// comment naming contract.CanonicalLocal inside the function satisfies a
+	// substring search - the presence check that is satisfied by your own
+	// comment - and review defeated exactly that: a body that re-implemented
+	// the fold with the delegation named only in a comment beside it.
+	//
+	// TWO STATED LIMITS, because this check is narrower than the property in
+	// both directions and saying so is the point.
+	//
+	// It is too STRICT for a refactor that keeps one implementation but routes
+	// through a function value (`fold := contract.CanonicalLocal; return
+	// fold(email)`): refused, because it wants a direct call. The cost is that
+	// a two-line function has to call the thing it delegates to by name, which
+	// is a fair price.
+	//
+	// And it is too LOOSE for a DEAD CALL: `_ = contract.CanonicalLocal(email)`
+	// beside a private re-implementation passes, because it is a call
+	// expression and this walk does not ask whether the result is used. Review
+	// found that. Closing it needs dataflow - the same dataflow the strictness
+	// above would need - and neither is worth carrying here.
+	//
+	// So the honest description is: this catches the COMMENT-ONLY mutant, which
+	// is the one review actually produced and the one a person writing a
+	// re-implementation is most likely to leave behind. It does not catch
+	// somebody who writes a dead call on purpose. Together with the equivalence
+	// table above, that is what these two halves are worth.
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "validator.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing validator.go to check the delegation: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "CanonicalEmail" {
+			fn = f
+		}
+	}
+	if fn == nil {
+		t.Fatal("CanonicalEmail is not declared in validator.go; if it moved, move this assertion with it")
+	}
+	var delegates bool
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if ok && pkg.Name == "contract" && sel.Sel.Name == "CanonicalLocal" {
+			delegates = true
+		}
+		return true
+	})
+	if !delegates {
+		t.Error("CanonicalEmail does not CALL contract.CanonicalLocal. Two implementations of \"are these the same person\" are two answers the day either changes, and the case that discovers it is a signed compliance record naming two approvers who are one person.")
+	}
+
+	cases := []string{
+		"alice@acme.example",
+		"Alice@Acme.Example",
+		"  alice@acme.example  ",
+		"\tALICE@ACME.EXAMPLE\n",
+		"",
+		"   ",
+		"spiffe://acme.example/workload/jira-bot",
+	}
+	for _, in := range cases {
+		if got, want := CanonicalEmail(in), contract.CanonicalLocal(in); got != want {
+			t.Errorf("CanonicalEmail(%q) = %q and contract.CanonicalLocal(%q) = %q; one rule, two answers", in, got, in, want)
+		}
+	}
+	// ANTI-VACUITY: the fold must actually fold, or two functions that both
+	// return their input would satisfy every case above.
+	if CanonicalEmail("Alice@Acme.Example ") != "alice@acme.example" {
+		t.Fatalf("the shared fold does not lower-case and trim; it is not the rule the roles store matches on (lower(btrim(user_email)))")
 	}
 }

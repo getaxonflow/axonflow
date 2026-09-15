@@ -226,8 +226,9 @@ async function main(): Promise<void> {
   // ========================================
   console.log('5. PII in Plan Query - Testing policy enforcement on plan with SSN...');
   const piiQuery = 'Create a plan to process refund for customer with SSN 123-45-6789';
-  const gatewayPiiAction = getEnv('GATEWAY_PII_ACTION', getEnv('PII_ACTION', 'redact'));
-  console.log(`   GATEWAY_PII_ACTION=${gatewayPiiAction}`);
+  // v11: the stored action of the matched PII policy decides. sys_pii_ssn
+  // stores action_request=warn, so plan generation is not blocked. An
+  // organization pii=block override or a policy action change would block it.
 
   let piiPlan;
   let piiErr: unknown = null;
@@ -237,29 +238,11 @@ async function main(): Promise<void> {
     piiErr = error;
   }
 
-  if (gatewayPiiAction === 'block') {
-    if (piiErr) {
-      assert(true, 'PII plan blocked as expected (GATEWAY_PII_ACTION=block)');
-      console.log(`   Block reason: ${piiErr}`);
-    } else {
-      assert(false, 'PII plan should have been blocked (GATEWAY_PII_ACTION=block)');
-    }
-  } else if (gatewayPiiAction === 'log') {
-    if (piiErr) {
-      console.log(`   Warning: PII plan failed: ${piiErr}`);
-    } else {
-      assert(piiPlan?.planId !== '', 'PII plan approved with log-only mode');
-      console.log(`   Plan ID: ${piiPlan?.planId} (PII logged but not redacted)`);
-    }
+  if (piiErr) {
+    console.log(`   Warning: PII plan failed: ${piiErr}`);
   } else {
-    // Default "redact" mode
-    if (piiErr) {
-      console.log(`   Warning: PII plan failed: ${piiErr}`);
-    } else {
-      assert(piiPlan?.planId !== '', 'PII plan generated (redaction may apply downstream)');
-      console.log(`   Plan ID: ${piiPlan?.planId}`);
-      console.log('   Note: PII redaction is applied downstream by the Orchestrator');
-    }
+    assert(piiPlan?.planId !== '', 'PII plan generated (stored request action for SSN is warn)');
+    console.log(`   Plan ID: ${piiPlan?.planId}`);
   }
   console.log();
 

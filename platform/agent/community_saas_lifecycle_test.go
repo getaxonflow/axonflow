@@ -337,6 +337,7 @@ func TestIsUniqueViolation(t *testing.T) {
 // never accumulates count across tests — important now and as the suite grows.
 func registerOnceWithIP(t *testing.T, db *sql.DB, label, remoteAddr string) registrationResponse {
 	t.Helper()
+	skipWithoutAdminAuditLog(t, db)
 	body, _ := json.Marshal(registrationRequest{Label: label})
 	req := httptest.NewRequest("POST", "/api/v1/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

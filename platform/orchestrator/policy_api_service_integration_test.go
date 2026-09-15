@@ -773,3 +773,61 @@ func TestPolicyService_SkipsWithoutDB(t *testing.T) {
 		}
 	})
 }
+
+// TestPolicyService_Integration_TheMCPOnlyTypesStillReadAndList holds the
+// ruling that kept the six MCP-only policy types in ValidPolicyTypes after v11
+// removed the MCP dynamic-policy endpoint, their only evaluator. Rows of those
+// types exist and legacy policy writes are frozen, so a read or a list that
+// refused its own stored type would fail the other way: every such row must
+// still read back, list, and list under a filter on its own type.
+func TestPolicyService_Integration_TheMCPOnlyTypesStillReadAndList(t *testing.T) {
+	db := getTestDB(t)
+	defer db.Close()
+
+	service := NewPolicyService(NewPolicyRepository(db), nil)
+	tenantID := "test-svc-mcp-types-" + time.Now().Format("20060102150405")
+	defer cleanupTestPolicies(t, db, tenantID)
+	ctx := context.Background()
+
+	mcpOnly := []string{"rate-limit", "budget", "time-access", "role-access", "mcp", "connector"}
+	ids := map[string]string{}
+	for _, typ := range mcpOnly {
+		created, err := service.CreatePolicy(ctx, tenantID, tenantID, &CreatePolicyRequest{
+			Name:        "MCP-only type " + typ,
+			Description: "a stored row of a type nothing evaluates since v11",
+			Type:        typ,
+			Conditions:  []PolicyCondition{{Field: "query", Operator: "contains", Value: "x"}},
+			Actions:     []PolicyAction{{Type: "block", Config: map[string]interface{}{}}},
+			Enabled:     true,
+		}, "user")
+		if err != nil {
+			t.Fatalf("storing a %q row: %v", typ, err)
+		}
+		ids[typ] = created.ID
+	}
+
+	for _, typ := range mcpOnly {
+		got, err := service.GetPolicy(ctx, tenantID, tenantID, ids[typ])
+		if err != nil {
+			t.Fatalf("reading the stored %q row: %v", typ, err)
+		}
+		if got.Type != typ {
+			t.Errorf("the stored %q row read back as type %q", typ, got.Type)
+		}
+		listed, err := service.ListPolicies(ctx, tenantID, tenantID, ListPoliciesParams{Type: typ, Page: 1, PageSize: 10})
+		if err != nil {
+			t.Fatalf("listing by type %q: %v", typ, err)
+		}
+		if len(listed.Policies) != 1 || listed.Policies[0].ID != ids[typ] {
+			t.Errorf("listing by type %q returned %d row(s), want exactly the stored one", typ, len(listed.Policies))
+		}
+	}
+
+	all, err := service.ListPolicies(ctx, tenantID, tenantID, ListPoliciesParams{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("listing the tenant: %v", err)
+	}
+	if len(all.Policies) != len(mcpOnly) {
+		t.Errorf("listing the tenant returned %d rows, want the %d stored", len(all.Policies), len(mcpOnly))
+	}
+}

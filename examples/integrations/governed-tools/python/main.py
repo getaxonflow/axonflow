@@ -167,7 +167,7 @@ async def test_pii_in_tool_input(client: AxonFlow) -> None:
         print(f"   Direct check: Input blocked ({direct.block_reason})")
     else:
         pii_detected = direct.policies_evaluated > 0
-        print(f"   Direct check: {direct.policies_evaluated} policies evaluated (PII_ACTION may be warn/log)")
+        print(f"   Direct check: {direct.policies_evaluated} policies evaluated (allowed: stored request action for SSN is warn)")
 
     assert_check(pii_detected, "PII in tool input was detected by policy engine")
 
@@ -226,7 +226,7 @@ async def test_pii_in_tool_output(client: AxonFlow) -> None:
         elif "***" in str(result) or "REDACTED" in str(result):
             print(f"   GovernedTool: Output redacted")
         else:
-            print(f"   GovernedTool: Output returned (PII_ACTION may be warn/log)")
+            print(f"   GovernedTool: Output returned without redaction")
         print(f"   Result: {str(result)[:200]}")
     except PolicyViolationError as e:
         assert_check(len(call_log) == 1, "Tool was called before output block")

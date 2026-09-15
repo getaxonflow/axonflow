@@ -10,11 +10,12 @@ import (
 
 	"github.com/rs/cors"
 
+	sharedidentity "axonflow/platform/shared/identity"
 	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/serviceauth"
 )
 
-// The orchestrator is an INTERNAL service (ADR-026 single entry point). Every
+// The orchestrator is an INTERNAL service (ADR-024 single entry point). Every
 // legitimate caller reaches it over a hop that holds
 // AXONFLOW_INTERNAL_SERVICE_SECRET and stamps an HMAC-signed
 // X-Axonflow-Proxy-Auth token:
@@ -54,8 +55,17 @@ import (
 //     covers routes registered by other packages onto the same router, and
 //     makes unrouted paths 403 rather than 404, so an unauthenticated caller
 //     cannot map which routes exist.
+//   - #3817: the synthetic-probe stamp is OUTERMOST, wrapping CORS. The
+//     decision-shadow observation sites live inside the dynamic policy engine
+//     and receive a context and no request, so the fact has to be on the
+//     context before any of this runs. It is deliberately ahead of the auth
+//     gate: a request the gate REJECTS produces no comparison, so stamping it
+//     costs one context value and changes nothing, while stamping inside the
+//     gate would silently miss the exempt paths. It grants nothing and is
+//     never read by any admission decision - see
+//     sharedidentity.SyntheticProbeMiddleware.
 func buildOrchestratorHandler(c *cors.Cors, r http.Handler) http.Handler {
-	return c.Handler(requireInternalProxyAuth(r))
+	return sharedidentity.SyntheticProbeMiddleware(c.Handler(requireInternalProxyAuth(r)))
 }
 
 // orchestratorAuthExemptPaths enumerates the ONLY paths served without a valid

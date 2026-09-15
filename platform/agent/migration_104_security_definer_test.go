@@ -37,31 +37,13 @@ func TestMigration104_SecurityDefinerHelpersUnderForceRLS(t *testing.T) {
 	if os.Getenv("TEST_PG_INTEGRATION") != "1" {
 		t.Skip("TEST_PG_INTEGRATION not set — skipping real-Postgres test")
 	}
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set — skipping")
-	}
-
 	ctx := context.Background()
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	db := migrationTestDB(t)
 	defer db.Close()
-	// GUC continuity across statements requires single connection.
-	db.SetMaxOpenConns(1)
 
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
-
-	// Mirror v9_followup_a_gaps_test.go's setup. Migration 028 references
-	// app.db_password (template-substituted in production); the test runs
-	// the literal so the value is set but unused. Also resets the schema
-	// so prior tests' artifacts don't pollute migration application.
-	if _, err := db.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
+	// Migration 028 references app.db_password (template-substituted in
+	// production); the test sets the literal so the value is set but unused.
+	// The schema reset that used to sit here is migrationTestDB's.
 	if _, err := db.Exec(`SELECT set_config('app.db_password', 'test-pass', false)`); err != nil {
 		t.Fatalf("set app.db_password: %v", err)
 	}

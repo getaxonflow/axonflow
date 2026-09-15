@@ -4,13 +4,15 @@ This example demonstrates AxonFlow's Singapore PII detection capabilities for MA
 
 ## Detected Patterns
 
-| Pattern | Format | Action | Severity |
-|---------|--------|--------|----------|
-| **NRIC** | [STFGM]XXXXXXX[A-Z] | Redact | Critical |
-| **FIN** | [FG]XXXXXXX[A-Z] | Redact | Critical |
-| **UEN** | 8-9 digits + letter | Redact | High |
-| **Phone** | +65 XXXX XXXX | Redact | Medium |
-| **Postal** | 6 digits (01-82 range) | Warn | Low |
+| Pattern | Format | Stored action (request / response) | Severity |
+|---------|--------|------------------------------------|----------|
+| **NRIC** | [STFGM]XXXXXXX[A-Z] | Warn / Redact | Critical |
+| **FIN** | [FG]XXXXXXX[A-Z] | Warn / Redact | Critical |
+| **UEN** | 8-9 digits + letter | Warn / Redact | High |
+| **Phone** | +65 XXXX XXXX | Warn / Redact | Medium |
+| **Postal** | 6 digits (01-82 range) | Log / Log | Low |
+
+The stored action of each matched policy decides (v11). A policy check on the request side therefore warns and records the match; redaction applies on the response side.
 
 ## Prerequisites
 
@@ -62,9 +64,9 @@ Customer NRIC is S1234567D
 ```
 
 **Result:**
-- Action: `redact`
+- Action: `warn` on the request side, `redact` on the response side
 - Policy: `sys_pii_singapore_nric`
-- Redacted output: `Customer NRIC is [REDACTED]`
+- Redacted output (response side): `Customer NRIC is [REDACTED]`
 
 ### FIN Detection
 
@@ -74,7 +76,7 @@ Foreigner FIN: F9876543A
 ```
 
 **Result:**
-- Action: `redact`
+- Action: `warn` on the request side, `redact` on the response side
 - Policy: `sys_pii_singapore_fin`
 
 ### UEN Detection
@@ -85,7 +87,7 @@ Company UEN: 201812345K
 ```
 
 **Result:**
-- Action: `redact`
+- Action: `warn` on the request side, `redact` on the response side
 - Policy: `sys_pii_singapore_uen`
 
 ### Phone Detection
@@ -96,7 +98,7 @@ Contact: +65 9123 4567
 ```
 
 **Result:**
-- Action: `redact`
+- Action: `warn` on the request side, `redact` on the response side
 - Policy: `sys_pii_singapore_phone`
 
 ### Postal Code Detection
@@ -107,7 +109,7 @@ Address: Singapore 238877
 ```
 
 **Result:**
-- Action: `warn` (logged but not blocked)
+- Action: `log` on both sides (recorded, not blocked)
 - Policy: `sys_pii_singapore_postal`
 
 ## MAS FEAT Context
@@ -134,7 +136,8 @@ Enterprise Edition adds:
 | `AXONFLOW_ENDPOINT` | `http://localhost:8080` | AxonFlow Agent endpoint |
 | `AXONFLOW_CLIENT_ID` | `singapore-pii-example` | Client identifier |
 | `AXONFLOW_CLIENT_SECRET` | (empty) | Optional for Community |
-| `PII_ACTION` | `redact` | Override PII action globally |
+
+Environment variables no longer set detection actions (v11). To change a PII action, record an organization override (Enterprise customer portal API: `PUT /api/v1/detection-posture/pii` with `{"action":"block"}`) or change the policy's action.
 
 ## Related Documentation
 

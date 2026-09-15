@@ -1,22 +1,17 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"axonflow/platform/shared/policypath"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
@@ -40,17 +35,6 @@ type PolicyAPIHandler struct {
 // NewPolicyAPIHandler creates a new policy API handler
 func NewPolicyAPIHandler(service PolicyServicer) *PolicyAPIHandler {
 	return &PolicyAPIHandler{service: service}
-}
-
-// RegisterRoutes registers policy API routes with the provided mux
-func (h *PolicyAPIHandler) RegisterRoutes(mux *http.ServeMux) {
-	// CRUD endpoints
-	mux.HandleFunc("/api/v1/policies", h.handlePolicies)
-	mux.HandleFunc("/api/v1/policies/", h.handlePolicyByID)
-
-	// Bulk operations
-	mux.HandleFunc("/api/v1/policies/import", h.handleImport)
-	mux.HandleFunc("/api/v1/policies/export", h.handleExport)
 }
 
 // handlePolicies handles GET (list) and POST (create) for /api/v1/policies
@@ -82,7 +66,7 @@ func (h *PolicyAPIHandler) handlePolicyByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Extract policy ID and subpath from URL
-	path := strings.TrimPrefix(r.URL.Path, "/api/v1/policies/")
+	path := strings.TrimPrefix(r.URL.Path, policypath.Policies+"/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Policy ID is required")
@@ -122,6 +106,13 @@ func (h *PolicyAPIHandler) handlePolicyByID(w http.ResponseWriter, r *http.Reque
 
 // createPolicy handles POST /api/v1/policies
 func (h *PolicyAPIHandler) createPolicy(w http.ResponseWriter, r *http.Request, tenantID string) {
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237), as on the bulk import:
+	// where core/172 has revoked the write no body can succeed, and one that
+	// failed validation below was answered 400 rather than the freeze.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "CreatePolicy", h.getOrgID(r), tenantID) {
+		return
+	}
+
 	// Limit request body size to prevent memory exhaustion
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
@@ -134,13 +125,20 @@ func (h *PolicyAPIHandler) createPolicy(w http.ResponseWriter, r *http.Request, 
 	userID := h.getUserID(r)
 	policy, err := h.service.CreatePolicy(r.Context(), tenantID, h.getOrgID(r), &req, userID)
 	if err != nil {
-		if validationErr, ok := err.(*ValidationError); ok {
+		// errors.As, as the tier refusal below: a %w-wrapped *ValidationError is
+		// still the caller's 400, not our 500 (#4237).
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[PolicyAPI] CreatePolicy tier error for tenant %s: %v", tenantID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		if h.writeLegacyFreezeError(w, err, "CreatePolicy", tenantID) {
 			return
 		}
 		// Log detailed error but return generic message
@@ -217,6 +215,13 @@ func (h *PolicyAPIHandler) getPolicy(w http.ResponseWriter, r *http.Request, ten
 
 // updatePolicy handles PUT /api/v1/policies/{id}
 func (h *PolicyAPIHandler) updatePolicy(w http.ResponseWriter, r *http.Request, tenantID, policyID string) {
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237), as on the bulk import:
+	// where core/172 has revoked the write no body can succeed, and one that
+	// failed validation below was answered 400 rather than the freeze.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "UpdatePolicy", h.getOrgID(r), tenantID) {
+		return
+	}
+
 	// Limit request body size to prevent memory exhaustion
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
@@ -229,13 +234,20 @@ func (h *PolicyAPIHandler) updatePolicy(w http.ResponseWriter, r *http.Request, 
 	userID := h.getUserID(r)
 	policy, err := h.service.UpdatePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, &req, userID)
 	if err != nil {
-		if validationErr, ok := err.(*ValidationError); ok {
+		// errors.As, as the tier refusal below: a %w-wrapped *ValidationError is
+		// still the caller's 400, not our 500 (#4237).
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[PolicyAPI] UpdatePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		if h.writeLegacyFreezeError(w, err, "UpdatePolicy", tenantID) {
 			return
 		}
 		log.Printf("[PolicyAPI] UpdatePolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -268,9 +280,13 @@ func (h *PolicyAPIHandler) deletePolicy(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := h.service.DeletePolicy(r.Context(), tenantID, h.getOrgID(r), policyID, userID); err != nil {
-		if tierErr, ok := err.(*TierValidationError); ok {
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
 			log.Printf("[PolicyAPI] DeletePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
-			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		if h.writeLegacyFreezeError(w, err, "DeletePolicy", tenantID) {
 			return
 		}
 		log.Printf("[PolicyAPI] DeletePolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
@@ -358,6 +374,14 @@ func (h *PolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237): where core/172 has
+	// revoked the write no body can succeed, and one that failed validation
+	// below was answered 500 rather than the freeze. After authentication, so a
+	// caller the route does not accept is told that first.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "ImportPolicies", orgID, tenantID) {
+		return
+	}
+
 	// Limit request body size for imports (larger than single policy)
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBodySize)
 
@@ -380,8 +404,24 @@ func (h *PolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Request) 
 	userID := h.getUserID(r)
 	response, err := h.service.ImportPolicies(r.Context(), tenantID, orgID, &req, userID)
 	if err != nil {
-		if validationErr, ok := err.(*ValidationError); ok {
+		// errors.As, as the tier refusal below: a %w-wrapped *ValidationError is
+		// still the caller's 400, not our 500 (#4237).
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
 			h.writeValidationError(w, validationErr.Errors)
+			return
+		}
+		// A TIER REFUSAL IS NOT A SERVER ERROR. ImportPolicies wraps its
+		// refusal with %w, so a concrete type assertion misses it and the
+		// caller was told 500 INTERNAL_ERROR for hitting a documented ceiling
+		// (independent R3, MAJOR-3). errors.As sees through the wrap.
+		var tierErr *TierValidationError
+		if errors.As(err, &tierErr) {
+			log.Printf("[PolicyAPI] ImportPolicies tier refusal for tenant %s: %v", tenantID, err)
+			h.writeTierError(w, tierErr)
+			return
+		}
+		if h.writeLegacyFreezeError(w, err, "ImportPolicies", tenantID) {
 			return
 		}
 		log.Printf("[PolicyAPI] ImportPolicies error for tenant %s: %v", tenantID, err)
@@ -490,6 +530,16 @@ func (h *PolicyAPIHandler) writeJSON(w http.ResponseWriter, status int, data int
 }
 
 // writeError writes an error response
+// writeTierError renders a tier refusal: its own status, its code, and
+// Retry-After when the refusal is the retryable (outage) one. See the twin on
+// DynamicPolicyAPIHandler.
+func (h *PolicyAPIHandler) writeTierError(w http.ResponseWriter, e *TierValidationError) {
+	if e.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(e.RetryAfter.Seconds())))
+	}
+	h.writeError(w, e.HTTPStatus(), e.Code, e.Message)
+}
+
 func (h *PolicyAPIHandler) writeError(w http.ResponseWriter, status int, code, message string) {
 	h.writeJSON(w, status, PolicyAPIError{
 		Error: PolicyAPIErrorDetail{

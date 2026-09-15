@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -540,6 +532,13 @@ func (s *PolicyService) GetPolicyVersions(ctx context.Context, tenantID, policyI
 	return &PolicyVersionResponse{Versions: versions}, nil
 }
 
+// MayWriteLegacyPolicies reports whether the repository's pool may write the
+// legacy policy table; the import, create and update routes ask it before
+// reading a body (#4237).
+func (s *PolicyService) MayWriteLegacyPolicies(ctx context.Context) (bool, error) {
+	return s.repo.MayWriteLegacyPolicies(ctx)
+}
+
 // ExportPolicies exports all policies for a tenant
 func (s *PolicyService) ExportPolicies(ctx context.Context, tenantID, orgID string) (*ExportPoliciesResponse, error) {
 	policies, err := s.repo.ExportAll(ctx, tenantID, orgID)
@@ -575,40 +574,18 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID, orgID stri
 		licenseTier := s.licenseChecker.Tier()
 
 		// Count how many new org-tier and tenant-tier policies are being imported
-		var newOrgCount, newTenantCount int
+		// Only the TENANT count is carried: the organization-root set is
+		// recomputed at the admission below, which moved under the tenant
+		// ceiling check (#3973). Counting org-tier rows here as well would be a
+		// second derivation of the same set, able to disagree with the one that
+		// actually admits.
+		var newTenantCount int
 		for _, p := range req.Policies {
 			if p.Tier == TierSystem {
 				return nil, NewTierValidationError("System policies cannot be created via API", ErrCodeSystemTierImmutable)
 			}
-			if p.Tier == TierOrganization {
-				newOrgCount++
-			} else {
+			if p.Tier != TierOrganization {
 				newTenantCount++
-			}
-		}
-
-		// Organization tier requires Evaluation or higher license
-		if newOrgCount > 0 && !license.IsEvaluationOrHigher(licenseTier) {
-			return nil, NewTierValidationError(
-				"Organization-tier policies require Evaluation or Enterprise license. "+
-					"Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
-				ErrCodeOrgTierEvaluationOrHigher,
-			)
-		}
-
-		// For Evaluation tier, enforce org policy limit
-		if newOrgCount > 0 && licenseTier == license.TierEvaluation {
-			existingOrgCount, err := s.repo.CountOrgPolicies(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("failed to count organization policies: %w", err)
-			}
-			limit := s.licenseChecker.OrgPolicyLimit()
-			if existingOrgCount+newOrgCount > limit {
-				return nil, NewTierValidationError(
-					fmt.Sprintf("Import would exceed organization policy limit of %d for Evaluation tier (current: %d, importing: %d). "+
-						"Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise", limit, existingOrgCount, newOrgCount),
-					ErrCodeOrgPolicyLimitExceeded,
-				)
 			}
 		}
 
@@ -632,6 +609,47 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID, orgID stri
 					ErrCodePolicyLimitExceeded,
 				)
 			}
+		}
+	}
+
+	// Organization-root policies: the same ONE admission the single create path
+	// uses (#3593), as ONE all-or-nothing batch rather than one call per row
+	// (#3973) - an import refused at the ceiling used to leave every row before
+	// the boundary admitted against an append-only ledger.
+	//
+	// IT RUNS LAST, AND THE POSITION IS THE POINT. It sat above the TENANT
+	// ceiling check, so an import refused for the tenant limit had already spent
+	// organization-root capacity on its way to being refused - #3973's own class,
+	// on a different bounded tier, in the function whose comment claimed it got
+	// the same treatment. Every refusal a caller can cause now happens before a
+	// single ledger row is written.
+	//
+	// The old "policy %d: " prefix is gone with the loop and nothing is lost: the
+	// refusal names the policy that crossed the boundary on the error itself,
+	// which is a name rather than an index into a request the operator may not
+	// still have.
+	//
+	// RESIDUAL, NAMED RATHER THAN LEFT TO BE FOUND: ImportBulk below can still
+	// fail after these rows are written, so a storage failure records capacity
+	// for an import that did not happen. It is the same shape as the store-write
+	// residual on authoring.PublishAdmitting and it has the same cause - the
+	// ledger and the policy repository open their own transactions through
+	// different handles, so there is no way to commit them together today.
+	// REVISIT WHEN: ImportBulk accepts an external *sql.Tx that the ledger write
+	// can join.
+	// The set is recomputed here rather than carried down from newOrgCount,
+	// which is scoped to the `len(req.Policies) > 0` block above. The two are
+	// equivalent: an empty request yields an empty name set and admits nothing,
+	// which is what that counter's guard did.
+	orgNames := make([]string, 0, len(req.Policies))
+	for _, p := range req.Policies {
+		if p.Tier == TierOrganization {
+			orgNames = append(orgNames, p.Name)
+		}
+	}
+	if len(orgNames) > 0 {
+		if err := admitOrgRootPolicies(ctx, orgID, orgNames); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1019,30 +1037,35 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID, org
 		return NewTierValidationError("System policies cannot be created via API", ErrCodeSystemTierImmutable)
 	}
 
-	// Organization tier requires Evaluation or Enterprise license
+	// Customer-authored policies are a tier SCALE dimension (#3593; values
+	// revised 2026-09-08 by #3906): 20 on Community, 50 on Evaluation,
+	// unlimited on Enterprise. The ONE reader is admission.Admit through
+	// admitOrgRootPolicies; the two branches this replaced (an
+	// IsEvaluationOrHigher gate and a count against OrgPolicyLimit) were a
+	// second limits path with no metric and no audit row.
+	//
+	// THIS GATE IS STILL KEYED ON THE LEGACY `tier` COLUMN, and that is correct
+	// HERE while being the exact thing #3906 said had to stop being the only
+	// keying. This is the legacy create path: a caller who sets
+	// tier=organization is asking for an org-tier row in the legacy tables, and
+	// that IS a customer-authored policy, so it spends the same budget through
+	// the same dimension. What #3906 required was that the ceiling also be
+	// reached from the path the new model writes through, which it now is -
+	// TypedAuthoringRouteHandler.handlePublish admits on the DOCUMENT ID, so
+	// the number is real on both models rather than on a column the new one
+	// does not have.
+	//
+	// The tenant-tier branch below is a SEPARATE budget (TenantPolicies) and is
+	// left alone. PRD section 6 folds the two rows into one, and v11 is
+	// deliberately the release where both models run so a customer can migrate;
+	// collapsing the enforcement now would need existing tenant-tier rows
+	// backfilled into the append-only ledger, and v12's removal of the legacy
+	// path collapses them without one.
 	if tier == TierOrganization {
-		if !license.IsEvaluationOrHigher(licenseTier) {
-			return NewTierValidationError(
-				"Organization-tier policies require Evaluation or Enterprise license. "+
-					"Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
-				ErrCodeOrgTierEvaluationOrHigher,
-			)
-		}
-
-		// For Evaluation tier, enforce org policy limit
-		if licenseTier == license.TierEvaluation {
-			count, err := s.repo.CountOrgPolicies(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to count organization policies: %w", err)
-			}
-			limit := s.licenseChecker.OrgPolicyLimit()
-			if count >= limit {
-				return NewTierValidationError(
-					fmt.Sprintf("Organization policy limit of %d reached for Evaluation tier. "+
-						"Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise", limit),
-					ErrCodeOrgPolicyLimitExceeded,
-				)
-			}
+		// A single create is a batch of one: the same choke point, so there is
+		// one admission path in this binary rather than two that can drift.
+		if err := admitOrgRootPolicies(ctx, orgID, []string{req.Name}); err != nil {
+			return err
 		}
 	}
 

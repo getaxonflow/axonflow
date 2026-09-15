@@ -5,10 +5,12 @@ AxonFlow detects and redacts PII across multiple jurisdictions:
 - US: Social Security Numbers (SSN), Credit Cards
 - India: PAN (Permanent Account Number), Aadhaar
 
-Each pattern triggers the appropriate policy for redaction (default) or blocking.
+Each pattern triggers its PII policy; the policy's stored action decides the outcome.
 
-Note (Issue #891): PII is now redacted by default instead of blocked.
-To restore blocking behavior, set PII_ACTION=block in your environment.
+Note (v11): on the request side these policies store "warn", so the pre-check
+approves the request and names the matched policy. Environment variables no
+longer set detection actions: to block, record an organization pii=block
+override (Enterprise customer portal) or change the policy's action.
 """
 
 import asyncio
@@ -18,31 +20,31 @@ from axonflow import AxonFlow
 
 
 # PII test cases with expected outcomes
-# Note: PII_ACTION=redact by default (Issue #891), so PII is detected but not blocked
+# Note (v11): the stored request action of these policies is warn, so PII is detected but not blocked
 PII_TESTS = [
     {
         "name": "US Social Security Number",
         "query": "Customer SSN is 123-45-6789 for verification",
         "pattern": "SSN",
-        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
+        "expected": "detected",  # Flagged: stored request action is warn
     },
     {
         "name": "Credit Card (Visa)",
         "query": "Charge card 4111-1111-1111-1111 for $99",
         "pattern": "Credit Card",
-        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
+        "expected": "detected",  # Flagged: stored request action is warn
     },
     {
         "name": "Indian PAN",
         "query": "Customer PAN is ABCPD1234E for tax records",
         "pattern": "PAN",
-        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
+        "expected": "detected",  # Flagged: stored request action is warn
     },
     {
         "name": "Indian Aadhaar",
         "query": "Verify Aadhaar number 2345 6789 0123",
         "pattern": "Aadhaar",
-        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
+        "expected": "detected",  # Flagged: stored request action is warn
     },
 ]
 
@@ -68,8 +70,8 @@ async def test_pii_detection(client: AxonFlow) -> None:
             )
 
             if not ctx.approved:
-                # PII detected - action depends on PII_ACTION env var
-                # Default: redact (preserves UX), can be: block, warn, log
+                # PII detected and blocked (an organization override or policy edit set block)
+                # The shipped stored actions do not block these rows on the request side
                 print(f"  Result: PII DETECTED")
                 print(f"  Reason: {ctx.block_reason}")
                 if ctx.policies:

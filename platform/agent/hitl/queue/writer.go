@@ -198,7 +198,7 @@ const InsertHistorySQL = `
 //
 // THAT IS WHY THE COUNT NO LONGER LIVES IN A COMMENT (#3714). Every statement
 // that writes this table is now in this package - UpdateStatusSQL here,
-// Override / ExpireByIDs / ExpireDueReturning / ConsumeGrant in
+// Override / ExpireByIDs / ExpireDueReturning in
 // transitions.go - and scripts/lint-hitl-queue-choke-point.sh counts them per
 // file against an allow-list, matching every write VERB against the TABLE NAME
 // rather than the one statement somebody thought of. A prose census is bounded
@@ -557,6 +557,34 @@ func ResolveMirror(ctx context.Context, db *sql.DB, p StatusParams, tenantID str
 		return ErrNotPending
 	}
 	return err
+}
+
+// ApprovalExpirySQL reads the status and the expiry of the queue row one
+// request id names.
+const ApprovalExpirySQL = `SELECT status, expires_at FROM hitl_approval_queue WHERE request_id = $1`
+
+// ApprovalExpiry reads the row requestID names under orgID's scope: when its
+// approval stops being grantable, and whether the queue has already expired it
+// (#4254). found is false when no
+// row is visible to the organization - no adapter was wired when the step gate
+// fired, or the enqueue was refused - which is an answer, not an error. Every
+// other failure is returned, so a caller that must not approve blind can refuse
+// on it.
+func ApprovalExpiry(ctx context.Context, db *sql.DB, orgID string, requestID uuid.UUID) (expiresAt time.Time, expired bool, found bool, err error) {
+	if orgID == "" {
+		return time.Time{}, false, false, fmt.Errorf("ApprovalExpiry: OrgID must be non-empty (RLS on hitl_approval_queue)")
+	}
+	var status string
+	err = rls.WithOrgScope(ctx, db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, ApprovalExpirySQL, requestID).Scan(&status, &expiresAt)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, false, fmt.Errorf("read approval expiry: %w", err)
+	}
+	return expiresAt, status == "expired", true, nil
 }
 
 // capLockKey derives the advisory-lock key that serialises cap accounting for

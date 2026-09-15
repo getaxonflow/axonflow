@@ -35,9 +35,9 @@ The `tests/e2e/plugin-batch-1/` pattern (full matrices here, smoke scenarios in 
 ### Enterprise repo owns
 
 - **Explain endpoint** — `GET /api/v1/decisions/:id/explain` shape + access control, including MCP-path decisions.
-- **Override lifecycle** — `POST /api/v1/overrides` → allow path → `DELETE` → deny returns, across both HTTP check-input and MCP `tools/call` surfaces.
+- **Override lifecycle (retired in v11.0.0, #4252)** — the writes answer `409 LEGACY_POLICY_WRITE_FROZEN` on the HTTP route and the MCP `tools/call` surface; the reads stay.
 - **Audit search filter parity** — `decision_id`, `policy_name`, `override_id` filters return matching rows.
-- **Cache invalidation** — override create flushes the WCP step-gate deny cache so the next request re-evaluates.
+- **Cache invalidation** — retired with the override create in v11.0.0 (#4252).
 - **Cross-plugin consistency** — all plugins surface the same richer-context markers; block-path shape is identical.
 - **Anything that requires a licensed stack** — evaluation-tier override creation, enterprise-tier audit export, license-gated policy categories.
 
@@ -70,7 +70,7 @@ Plugin-internal wiring (hook registration path, manifest correctness, bash scrip
 
 ## CI enforcement
 
-`.github/workflows/tests-hygiene.yml` scans every PR that touches `tests/` for the forbidden patterns in the "No test may contain" list. Failures block merge. See that workflow for the exact regexes.
+The `Public tests hygiene scan` step of `.github/workflows/repository-gates.yml` scans every pull request for the forbidden patterns in the "No test may contain" list. Failures block merge. See that workflow for the exact regexes.
 
 ## History
 

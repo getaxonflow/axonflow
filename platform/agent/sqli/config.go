@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package sqli
 
 import (
@@ -56,12 +59,12 @@ type ConnectorConfig struct {
 // Set BlockOnDetection to true after validating in your environment.
 func DefaultConfig() Config {
 	return Config{
-		InputMode:         ModeBasic,
-		ResponseMode:      ModeBasic,
-		BlockOnDetection:  false, // Monitor mode: detect and log, don't block
-		LogDetections:     true,
-		AuditTrailEnabled: true,
-		MaxContentLength:  1048576, // 1MB
+		InputMode:          ModeBasic,
+		ResponseMode:       ModeBasic,
+		BlockOnDetection:   false, // Monitor mode: detect and log, don't block
+		LogDetections:      true,
+		AuditTrailEnabled:  true,
+		MaxContentLength:   1048576, // 1MB
 		ConnectorOverrides: make(map[string]ConnectorConfig),
 	}
 }
@@ -72,21 +75,6 @@ const (
 	// Valid values: "off", "basic", "advanced"
 	// Default: "basic"
 	EnvSQLIScannerMode = "SQLI_SCANNER_MODE"
-
-	// EnvSQLIBlockMode sets whether to block or warn on detection.
-	// Valid values: "block", "warn"
-	// Default: "block"
-	//
-	// Deprecated: Use SQLI_ACTION instead for unified detection configuration.
-	// SQLI_ACTION supports: "block", "warn", "log"
-	// This env var will be removed in a future release.
-	EnvSQLIBlockMode = "SQLI_BLOCK_MODE"
-
-	// EnvSQLIAction is the new unified env var for SQL injection action.
-	// Valid values: "block", "warn", "log"
-	// Default: "block"
-	// Takes precedence over SQLI_BLOCK_MODE if both are set.
-	EnvSQLIAction = "SQLI_ACTION"
 )
 
 // ConfigFromEnv creates a configuration from environment variables.
@@ -94,12 +82,16 @@ const (
 //
 // Environment variables:
 //   - SQLI_SCANNER_MODE: off, basic, advanced (default: basic)
-//   - SQLI_ACTION: block, warn, log (default: block) - NEW, takes precedence
-//   - SQLI_BLOCK_MODE: block, warn (default: block) - DEPRECATED
 //
 // Invalid values are logged and fall back to defaults.
+//
+// SQLI_ACTION and SQLI_BLOCK_MODE are no longer read (#3961): what happens to a
+// detection is the policy's action, not a string in the environment.
+// BlockOnDetection is true, the security-first default this constructor has
+// always given a caller that sets nothing.
 func ConfigFromEnv() Config {
 	cfg := DefaultConfig()
+	cfg.BlockOnDetection = true
 
 	// Parse SQLI_SCANNER_MODE
 	if modeStr := os.Getenv(EnvSQLIScannerMode); modeStr != "" {
@@ -112,41 +104,6 @@ func ConfigFromEnv() Config {
 			cfg.ResponseMode = mode
 			log.Printf("[SQLi] Scanner mode set to %q from environment", mode)
 		}
-	}
-
-	// Parse SQLI_ACTION (new) or SQLI_BLOCK_MODE (deprecated)
-	// SQLI_ACTION takes precedence if both are set
-	if actionStr := os.Getenv(EnvSQLIAction); actionStr != "" {
-		switch strings.ToLower(actionStr) {
-		case "block":
-			cfg.BlockOnDetection = true
-			log.Printf("[SQLi] Action=block - detections will be blocked")
-		case "warn", "log":
-			cfg.BlockOnDetection = false
-			log.Printf("[SQLi] Action=%s - detections will be logged but not blocked", strings.ToLower(actionStr))
-		default:
-			log.Printf("[SQLi] WARNING: Invalid %s=%q, using default 'block'. Valid values: block, warn, log",
-				EnvSQLIAction, actionStr)
-			cfg.BlockOnDetection = true
-		}
-	} else if blockStr := os.Getenv(EnvSQLIBlockMode); blockStr != "" {
-		// Deprecated: SQLI_BLOCK_MODE
-		log.Printf("[SQLi] WARNING: %s is deprecated. Use %s instead.", EnvSQLIBlockMode, EnvSQLIAction)
-		switch strings.ToLower(blockStr) {
-		case "block":
-			cfg.BlockOnDetection = true
-			log.Printf("[SQLi] Block mode ENABLED - detections will be blocked")
-		case "warn":
-			cfg.BlockOnDetection = false
-			log.Printf("[SQLi] Warn mode ENABLED - detections will be logged but not blocked")
-		default:
-			log.Printf("[SQLi] WARNING: Invalid %s=%q, using default 'block'. Valid values: block, warn",
-				EnvSQLIBlockMode, blockStr)
-			cfg.BlockOnDetection = true
-		}
-	} else {
-		// Default to block mode for security-first approach
-		cfg.BlockOnDetection = true
 	}
 
 	return cfg

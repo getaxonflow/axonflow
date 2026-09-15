@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -28,6 +20,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"axonflow/platform/agent"
+	"axonflow/platform/shared/legacyfreeze"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -330,16 +323,47 @@ func (e *DatabaseDynamicPolicyEngine) connectDB(maxRetries int) error {
 }
 
 func (e *DatabaseDynamicPolicyEngine) seedDefaultData() error {
-	// Seed system media policies (idempotent — ON CONFLICT DO NOTHING)
-	if err := e.seedSystemMediaPolicies(); err != nil {
-		log.Printf("Warning: Failed to seed system media policies: %v", err)
+	// VERIFY the platform's media controls, never write them (#4026).
+	//
+	// Reported at ERROR, not Warning. The old line read "Warning: Failed to seed
+	// system media policies", which described an attempt that should no longer
+	// happen and, at WARN, read as routine noise — so the one deployment state
+	// worth shouting about (the rows genuinely absent) looked identical to the
+	// one that was merely obsolete.
+	if err := e.verifySystemMediaPolicies(); err != nil {
+		log.Printf("ERROR: system media governance policies are not usable: %v", err)
 	}
 
-	// Insert sample policies if table is empty. Cross-org COUNT — must run
-	// on the refresh pool: on the app-role pool RLS filters every row and
-	// the count reads 0 on every boot, re-attempting the sample seed. SQL
-	// lives in the shared substrate now (sharedpolicy.CountAllDynamicPolicies,
-	// #3319/#3293) — this call site owns only the pool selection.
+	// THE SAMPLE SEED IS THE SECOND WRITE INTO A FROZEN TABLE, and it is
+	// reachable rather than theoretical (#4026): crossOrgDB() falls back to the
+	// main pool when no dedicated BYPASSRLS pool is configured, RLS then filters
+	// every row, the boot COUNT reads 0 and this path INSERTs straight into
+	// core/172's revoke — a second `permission denied` line in the boot log and
+	// another clean-boot failure. The engine already names that exact
+	// configuration: see refreshPoolIsRLSScoped.
+	//
+	// ASK THE DATABASE, NOT THE ENVIRONMENT. The tempting guard is
+	// agent.UseAppRoleEnabled(), and it is wrong: it defaults to TRUE and
+	// ResolveAppRoleDSN falls back to the supplied (master) DSN when no
+	// app-role URL is set, which is the ordinary docker-compose dev case. That
+	// guard would stop seeding sample policies on developer stacks that can
+	// write perfectly well. has_table_privilege answers for the connection we
+	// actually hold; legacyfreeze.MayWrite is that one question, asked here and
+	// by the legacy import routes before they read a body (#4237).
+	mayInsert, err := legacyfreeze.MayWrite(context.Background(), e.db, "dynamic_policies")
+	if err != nil {
+		return fmt.Errorf("before the sample seed: %w", err)
+	}
+	if !mayInsert {
+		log.Printf("Sample policy seeding skipped: this connection may not INSERT into dynamic_policies (migrations/core/172 made the legacy policy tables read-only to the application roles)")
+		return nil
+	}
+
+	// Cross-org COUNT — must run on the refresh pool: on the app-role pool RLS
+	// filters every row and the count reads 0 on every boot, re-attempting the
+	// sample seed. SQL lives in the shared substrate now
+	// (sharedpolicy.CountAllDynamicPolicies, #3319/#3293) — this call site owns
+	// only the pool selection.
 	count, err := sharedpolicy.CountAllDynamicPolicies(context.Background(), e.crossOrgDB())
 	if err != nil {
 		return err
@@ -352,96 +376,155 @@ func (e *DatabaseDynamicPolicyEngine) seedDefaultData() error {
 	return nil
 }
 
-// seedSystemMediaPolicies seeds the 5 default system media governance policies.
-// Uses ON CONFLICT DO NOTHING for idempotent upgrades — existing policies are never overwritten.
-func (e *DatabaseDynamicPolicyEngine) seedSystemMediaPolicies() error {
-	type systemMediaPolicy struct {
-		policyID    string
-		name        string
-		description string
-		category    string
-		conditions  string
-		actions     string
-		priority    int
+// systemMediaPolicy is one of the media governance controls this service seeds
+// at boot.
+//
+// HOISTED OUT OF seedSystemMediaPolicies SO A TEST CAN READ IT (#3884).
+// These five rows exist in NO migration - migrations/core/153's down file
+// even excludes them by name as "the Go seeder's" - so a corpus, an
+// inventory or a count built from a migrated database is missing them and
+// reconciles perfectly while it is. platform/decision/registry carries them
+// as data so the shipped policy corpus can contain them, and
+// TestTheApplicationSeededInventoryMatchesThisSeeder holds the two equal in
+// both directions. A list a test cannot read is a list that drifts.
+//
+// The deeper fix is #3957's: a SECURITY DEFINER function whose body lives in
+// a migration, the shape ensure_org_system_roles and three others already
+// use, which an application role losing write does not disable. That is a
+// change to the seeding path and belongs with #3880, not here.
+type systemMediaPolicy struct {
+	policyID    string
+	name        string
+	description string
+	category    string
+	conditions  string
+	actions     string
+	priority    int
+}
+
+// systemMediaPolicies is the seeded set.
+//
+// It is a package-level var rather than a function-local literal for ONE
+// reason: a test has to be able to read it. It is unexported because that
+// reason is satisfied inside this package - a list exported for a test in the
+// same package buys nothing outside it and makes what the boot path seeds
+// writable from anywhere in the binary.
+var systemMediaPolicies = []systemMediaPolicy{
+	{
+		policyID:    "sys_media_nsfw_block",
+		name:        "NSFW Content Blocking",
+		description: "Blocks media with high NSFW confidence scores",
+		category:    "media-safety",
+		conditions:  `[{"field":"media.nsfw_score","operator":"greater_than","value":0.8}]`,
+		actions:     `[{"type":"block","config":{"reason":"Media blocked: NSFW content detected (score > 0.8)"}}]`,
+		priority:    1000,
+	},
+	{
+		policyID:    "sys_media_violence_warn",
+		name:        "Violence Content Warning",
+		description: "Alerts on media with high violence scores",
+		category:    "media-safety",
+		conditions:  `[{"field":"media.violence_score","operator":"greater_than","value":0.7}]`,
+		actions:     `[{"type":"alert","config":{"message":"Violence detected in media (score > 0.7)"}},{"type":"log","config":{}}]`,
+		priority:    950,
+	},
+	{
+		policyID:    "sys_media_biometric_log",
+		name:        "Biometric Data Audit",
+		description: "Logs media containing biometric data for compliance audit",
+		category:    "media-biometric",
+		conditions:  `[{"field":"media.has_biometric_data","operator":"equals","value":true}]`,
+		actions:     `[{"type":"log","config":{"message":"Biometric data detected in media"}}]`,
+		priority:    900,
+	},
+	{
+		policyID:    "sys_media_pii_block",
+		name:        "Image PII Blocking",
+		description: "Blocks media containing personally identifiable information",
+		category:    "media-pii",
+		conditions:  `[{"field":"media.has_pii","operator":"equals","value":true}]`,
+		actions:     `[{"type":"block","config":{"reason":"Media blocked: PII detected in image content"}}]`,
+		priority:    950,
+	},
+	{
+		policyID:    "sys_media_sensitive_doc_warn",
+		name:        "Sensitive Document Detection",
+		description: "Alerts when sensitive documents are detected in media",
+		category:    "media-document",
+		conditions:  `[{"field":"media.is_sensitive_document","operator":"equals","value":true}]`,
+		actions:     `[{"type":"alert","config":{"message":"Sensitive document detected in media"}},{"type":"log","config":{}}]`,
+		priority:    900,
+	},
+}
+
+// verifySystemMediaPolicies checks that the five system media governance
+// controls are present. It does NOT write them (#4026).
+//
+// WHY THIS IS A READ NOW. migrations/core/172 (#3880) revoked
+// INSERT/UPDATE/DELETE/TRUNCATE on dynamic_policies from the application roles,
+// and migrations/core/173 seeds these five rows as the migration OWNER for
+// exactly that reason. This function used to INSERT them at every boot under
+// axonflow_app_role, so Postgres refused it with SQLSTATE 42501 while the caller
+// logged a warning and carried on.
+//
+// That was invisible in the obvious places and expensive in one: every stack
+// anyone would inspect already held the rows from a pre-172 boot, so nothing
+// looked wrong — while the production-posture runner's clean-boot guard treats a
+// refused write in the boot log as a failed boot, correctly, and took Phase 5
+// red on main along with every registry suite it executes.
+//
+// The check is kept, and reported at ERROR rather than WARN, because a
+// deployment missing these rows has no NSFW blocking, no violence warning, no
+// biometric logging, no media PII blocking and no sensitive-document warning,
+// and nothing else in the system says so. Removing the check outright belongs to
+// #3565 (retire legacy policy storage): while dynamic_policies is still the read
+// path for these controls, "the migration actually ran" is worth confirming.
+func (e *DatabaseDynamicPolicyEngine) verifySystemMediaPolicies() error {
+	if len(systemMediaPolicies) == 0 {
+		return nil
 	}
 
-	policies := []systemMediaPolicy{
-		{
-			policyID:    "sys_media_nsfw_block",
-			name:        "NSFW Content Blocking",
-			description: "Blocks media with high NSFW confidence scores",
-			category:    "media-safety",
-			conditions:  `[{"field":"media.nsfw_score","operator":"greater_than","value":0.8}]`,
-			actions:     `[{"type":"block","config":{"reason":"Media blocked: NSFW content detected (score > 0.8)"}}]`,
-			priority:    1000,
-		},
-		{
-			policyID:    "sys_media_violence_warn",
-			name:        "Violence Content Warning",
-			description: "Alerts on media with high violence scores",
-			category:    "media-safety",
-			conditions:  `[{"field":"media.violence_score","operator":"greater_than","value":0.7}]`,
-			actions:     `[{"type":"alert","config":{"message":"Violence detected in media (score > 0.7)"}},{"type":"log","config":{}}]`,
-			priority:    950,
-		},
-		{
-			policyID:    "sys_media_biometric_log",
-			name:        "Biometric Data Audit",
-			description: "Logs media containing biometric data for compliance audit",
-			category:    "media-biometric",
-			conditions:  `[{"field":"media.has_biometric_data","operator":"equals","value":true}]`,
-			actions:     `[{"type":"log","config":{"message":"Biometric data detected in media"}}]`,
-			priority:    900,
-		},
-		{
-			policyID:    "sys_media_pii_block",
-			name:        "Image PII Blocking",
-			description: "Blocks media containing personally identifiable information",
-			category:    "media-pii",
-			conditions:  `[{"field":"media.has_pii","operator":"equals","value":true}]`,
-			actions:     `[{"type":"block","config":{"reason":"Media blocked: PII detected in image content"}}]`,
-			priority:    950,
-		},
-		{
-			policyID:    "sys_media_sensitive_doc_warn",
-			name:        "Sensitive Document Detection",
-			description: "Alerts when sensitive documents are detected in media",
-			category:    "media-document",
-			conditions:  `[{"field":"media.is_sensitive_document","operator":"equals","value":true}]`,
-			actions:     `[{"type":"alert","config":{"message":"Sensitive document detected in media"}},{"type":"log","config":{}}]`,
-			priority:    900,
-		},
+	want := make([]string, 0, len(systemMediaPolicies))
+	for _, p := range systemMediaPolicies {
+		want = append(want, p.policyID)
 	}
 
-	// v9 Phase 8 PR-C2 (#2384): seeder writes 'global' wildcard policies that
-	// apply across orgs. dynamic_policies is mig 018 ENABLE RLS with policy
-	// `org_id = get_current_org_id()`. Wrap with WithOrgScope('global') +
-	// populate org_id='global' so the WITH CHECK GUC-vs-column match holds
-	// under axonflow_app_role. The 'global' sentinel is read-side-recognized
-	// by getApplicablePolicies which treats tenant_id='global' as
-	// matching-all-tenants — same shape for org_id here.
+	var found map[string]bool
+	// ORG-SCOPED FOR THE SAME REASON THE WRITE WAS. These are 'global' rows and
+	// dynamic_policies is mig 018 ENABLE RLS with `org_id = get_current_org_id()`,
+	// so an app-role connection without the GUC matches ZERO rows — every boot
+	// would report all five missing and the ERROR below would be pure noise.
+	//
+	// THE READ ITSELF GOES THROUGH THE CHOKE POINT (epic #3293/#3296). This
+	// function carried its own SELECT over dynamic_policies until the
+	// choke-point lint refused it, correctly: a bespoke reader beside the
+	// sanctioned one is how #3266's drift happened, where two readers over the
+	// same table disagreed about what they selected. The query lives in
+	// sharedpolicy.PresentPolicyIDs; only the org scope is owned here.
 	wrapErr := agent.WithOrgScope(context.Background(), e.db, "global", func(tx *sql.Tx) error {
-		for _, p := range policies {
-			// v9 compat (Epic #2230 Phase 2/4): client_id literal 'global'
-			// mirrors the tenant_id 'global' wildcard sentinel (migration 090).
-			if _, err := tx.ExecContext(context.Background(), `
-				INSERT INTO dynamic_policies (
-					policy_id, name, description, policy_type, category, tier,
-					conditions, actions, tenant_id, client_id, org_id, priority, enabled,
-					version, created_by, updated_by, created_at, updated_at
-				) VALUES ($1, $2, $3, 'media', $4, 'system', $5::jsonb, $6::jsonb, 'global', 'global', 'global', $7, true, 1, 'system', 'system', NOW(), NOW())
-				ON CONFLICT (policy_id) DO NOTHING
-			`, p.policyID, p.name, p.description, p.category, p.conditions, p.actions, p.priority); err != nil {
-				return fmt.Errorf("failed to seed system media policy %s: %w", p.policyID, err)
-			}
+		present, qErr := sharedpolicy.PresentPolicyIDs(context.Background(), tx, want)
+		if qErr != nil {
+			return qErr
 		}
+		found = present
 		return nil
 	})
 	if wrapErr != nil {
 		return wrapErr
 	}
 
-	log.Println("System media policies seeded (5 policies, idempotent)")
+	missing := make([]string, 0, len(systemMediaPolicies))
+	for _, p := range systemMediaPolicies {
+		if !found[p.policyID] {
+			missing = append(missing, p.policyID)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%d of %d system media governance policies are absent (%s): migrations/core/173 seeds them as the owner, so this deployment is missing media governance",
+			len(missing), len(systemMediaPolicies), strings.Join(missing, ", "))
+	}
+
+	log.Printf("System media policies verified: %d present (seeded by migrations/core/173)", len(systemMediaPolicies))
 	return nil
 }
 
@@ -674,12 +757,6 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 
 		// Create policy data from conditions and actions
 		policyData := map[string]interface{}{
-			// The row's VERSION, rendered by the one shared helper so a
-			// dynamic row and a static row cannot key differently. Read only
-			// by the ADR-065 decision shadow (#3564), which uses (policy_id,
-			// updated_at) to prove the bundle it compares against describes
-			// the policy set this cache actually holds.
-			"updated_at":  sharedpolicy.PolicyVersionStamp(row.UpdatedAt, row.CreatedAt),
 			"policy_id":   row.PolicyID,
 			"name":        row.Name,
 			"description": row.Description,
@@ -1199,11 +1276,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	// for why a plain map range made the risk_score escalation above
 	// order-dependent on Go's randomized map iteration, not just on
 	// priority as intended.
-	// ADR-065 decision shadow (#3564). Nil when the shadow could not observe
-	// on this deployment; every method on a nil trace is a no-op, so an off
-	// deployment pays one atomic load and allocates nothing.
 	sortedEntries := sortedDynamicPolicyEntries(policies)
-	trace := newDynamicShadowTrace(sortedEntries, orgID)
 
 	for _, entry := range sortedEntries {
 		cacheKey := entry.cacheKey
@@ -1284,15 +1357,10 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		// fails to unmarshal is skipped above (`continue`), and a legacy
 		// explicitly-empty `[]` is excluded by the #3384 guard directly
 		// above, never evaluated as indistinguishable from `null`.
-		// The row's conditions are about to be evaluated - or, with none, to
-		// hold vacuously. Either way the legacy engine LOOKED at this row,
-		// which is what the tri-state distinguishes from a row it skipped.
-		trace.markRan(cacheKey)
-
 		if len(conditions) > 0 {
 			allMatch := true
 			for _, cond := range conditions {
-				condResult := e.evaluateCondition(cond, req, result, trace)
+				condResult := e.evaluateCondition(cond, req, result)
 				if !condResult {
 					allMatch = false
 					break
@@ -1303,12 +1371,10 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			}
 		}
 
-		// Plugin Batch 1 (ADR-044): capture structured policy detail so the
-		// override enforcement layer (ApplyOverrideToResult) has something to
-		// iterate against. This engine populates AppliedPoliciesDetail at this
-		// point (the now-deleted in-memory DynamicPolicyEngine, #3319, used to
-		// need the same population), or WCP-path overrides never flip
-		// deny -> allow.
+		// Plugin Batch 1 (ADR-044): capture structured policy detail for the
+		// WCP step gate's per-policy projection (PoliciesEvaluated and
+		// PoliciesMatched). The session override that also iterated it was
+		// deleted in v11 (#4252).
 		//
 		// Source the policy UUID from _metadata.id when present so it matches
 		// what policy_overrides.policy_id stores; fall back to the cacheKey.
@@ -1338,20 +1404,11 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		if riskLevel == "critical" {
 			allowOverride = false
 		}
-		// ADR-060: a segment-scoped policy uses the SAME session-override
-		// contract (ADR-044) as a tenant policy — overridable iff its own
-		// allow_override column is true and it is not critical-risk (forced
-		// false above). There is no segment-specific carve-out: additive-
-		// restriction-only (Decision 1) is a property of the applicable-set
-		// combiner earlier in this evaluation, not of ApplyOverrideToResult,
-		// so honoring a segment policy's own allow_override in a later,
-		// separately-authorized, identity-keyed override does not weaken it.
-		// A hard-floor segment policy (compliance) simply ships with
-		// allow_override=false or risk_level=critical, which
-		// createOverrideHandler already refuses to override at creation time
-		// (overrides_handler.go). SegmentID is still carried on the detail
-		// below purely for attribution/audit — it is no longer read as an
-		// override-exclusion signal anywhere.
+		// ADR-060: a segment-scoped policy carries its own allow_override
+		// column like a tenant policy (forced false above for critical-risk).
+		// It is policy metadata on the step gate's projection; the step gate
+		// reads no session override against it in v11 (#4252). SegmentID is carried on
+		// the detail below for attribution and audit only.
 		// Determine top action for the detail record — "block",
 		// "require_approval", etc. Peek at actions without consuming them
 		// here; the existing loop below still runs.
@@ -1419,14 +1476,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			actions = actionsRaw
 		}
 
-		// Every instruction this row produces, for the ADR-065 shadow's effect
-		// multiset. Accumulated INSIDE the switch's own arms rather than from
-		// the actions array, so an action type the switch has no case for
-		// contributes nothing - which is the legacy behaviour being preserved
-		// (migration 036's "warn" was inert for exactly that reason) and not a
-		// control this package may invent on the running system's behalf.
-		var shadowApplied []appliedAction
-
 		for _, action := range actions {
 			actionMap, ok := action.(map[string]interface{})
 			if !ok {
@@ -1438,54 +1487,21 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 
 			switch actionType {
 			case "route":
-				// Handle LLM routing override for compliance
-				if preferred, ok := actionConfig["preferred_provider"].(string); ok && preferred != "" {
-					result.PreferredProvider = preferred
+				// #883 routing hints, merged by the ONE merge the fact producer also
+				// calls (routeEffects.apply), so the two cannot drift (#4254).
+				routes := routeEffects{
+					PreferredProvider: result.PreferredProvider,
+					RoutingReason:     result.RoutingReason,
+					AllowedProviders:  result.AllowedProviders,
 				}
-				if reason, ok := actionConfig["reason"].(string); ok {
-					result.RoutingReason = reason
-				}
-				// Handle allowed_providers for strict compliance
-				// Use INTERSECTION logic: if multiple policies specify allowed_providers,
-				// only providers in ALL lists are allowed (most restrictive wins)
-				if allowedRaw, ok := actionConfig["allowed_providers"]; ok {
-					var policyAllowed []string
-					switch v := allowedRaw.(type) {
-					case []interface{}:
-						for _, p := range v {
-							if ps, ok := p.(string); ok {
-								policyAllowed = append(policyAllowed, ps)
-							}
-						}
-					case []string:
-						policyAllowed = v
-					}
-
-					if len(policyAllowed) > 0 {
-						if len(result.AllowedProviders) == 0 {
-							// First policy with allowed_providers - set the initial list
-							result.AllowedProviders = policyAllowed
-						} else {
-							// Compute intersection with existing allowed list
-							intersection := make([]string, 0)
-							for _, p := range result.AllowedProviders {
-								for _, ap := range policyAllowed {
-									if p == ap {
-										intersection = append(intersection, p)
-										break
-									}
-								}
-							}
-							result.AllowedProviders = intersection
-						}
-					}
-				}
-				shadowApplied = append(shadowApplied, appliedAction{action: "route"})
+				routes.apply(actionConfig)
+				result.PreferredProvider = routes.PreferredProvider
+				result.RoutingReason = routes.RoutingReason
+				result.AllowedProviders = routes.AllowedProviders
 				log.Printf("[POLICY_ROUTE] Applied routing: preferred=%s, allowed=%v, reason=%s",
 					result.PreferredProvider, result.AllowedProviders, result.RoutingReason)
 
 			case "block":
-				shadowApplied = append(shadowApplied, appliedAction{action: "block"})
 				result.Allowed = false
 				if reason, ok := actionConfig["reason"].(string); ok {
 					result.RequiredActions = append(result.RequiredActions, "blocked: "+reason)
@@ -1509,7 +1525,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				// are fixed to "add" alongside this comment, rather than
 				// changing the key here and silently breaking every
 				// already-deployed sys_dyn_llm_cost row.
-				shadowApplied = append(shadowApplied, appliedAction{action: "modify_risk"})
 				if add, ok := actionConfig["add"].(float64); ok {
 					result.RiskScore += add
 				}
@@ -1527,7 +1542,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				if message == "" {
 					message = "policy matched"
 				}
-				shadowApplied = append(shadowApplied, appliedAction{action: "log"})
 				log.Printf("[POLICY_LOG] level=%s policy=%q: %s (config=%v)", level, name, message, actionConfig)
 
 			case "alert":
@@ -1545,7 +1559,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				}
 				channel, _ := actionConfig["channel"].(string)
 				message, _ := actionConfig["message"].(string)
-				shadowApplied = append(shadowApplied, appliedAction{action: "alert"})
 				log.Printf("[POLICY_ALERT] severity=%s channel=%s policy=%q: %s", severity, channel, name, message)
 				result.RequiredActions = append(result.RequiredActions, fmt.Sprintf("alert: %s (severity=%s)", name, severity))
 
@@ -1567,7 +1580,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				if reason == "" {
 					reason = "policy matched"
 				}
-				shadowApplied = append(shadowApplied, appliedAction{action: "warn"})
 				log.Printf("[POLICY_WARN] policy=%q: %s", name, reason)
 				result.RequiredActions = append(result.RequiredActions, fmt.Sprintf("warn: %s (policy=%s)", reason, name))
 
@@ -1595,20 +1607,11 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 					fields = fv
 				}
 				if len(fields) > 0 {
-					// ONE INSTRUCTION PER FIELD. A redaction names fields, and
-					// the fields are what the enforcement point is told to do:
-					// three redactions of three fields are three instructions,
-					// and collapsing them lets a compiler that dropped two of
-					// three targets compare as equal.
-					for _, f := range fields {
-						shadowApplied = append(shadowApplied, appliedAction{action: "redact", target: f})
-					}
 					log.Printf("[POLICY_REDACT] policy=%q requested redaction of fields=%v", name, fields)
 					result.RequiredActions = append(result.RequiredActions, fmt.Sprintf("redact_requested: fields=%v", fields))
 				}
 
 			case "require_approval":
-				shadowApplied = append(shadowApplied, appliedAction{action: "require_approval"})
 				// Issue #1082: Trigger HITL workflow - requires human approval before continuing
 				result.Allowed = false
 				result.RequiredActions = append(result.RequiredActions, "require_approval")
@@ -1631,7 +1634,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			}
 		}
 
-		trace.markMatched(cacheKey, shadowApplied)
 		result.AppliedPolicies = append(result.AppliedPolicies, name)
 	}
 
@@ -1720,12 +1722,6 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	log.Printf("Policy evaluation completed in %v. Applied %d policies. Cache age: %v",
 		time.Since(startTime), len(result.AppliedPolicies), time.Since(lastRefresh))
 
-	// The ADR-065 shadow, LAST, after the verdict, the risk clamp and every
-	// action are final. It returns nothing: there is no value here for this
-	// function to read, so no edit to this function can make the shadow's
-	// opinion reach `result`.
-	trace.emit(ctx, req, orgID, segmentIDs, result)
-
 	return result
 }
 
@@ -1753,7 +1749,7 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 // only "risk_score" reads it (see getFieldValue), restoring the retired
 // in-memory engine's three-parameter getFieldValue signature. Every other
 // field is still sourced from req.
-func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interface{}, req OrchestratorRequest, result *PolicyEvaluationResult, trace *dynamicShadowTrace) bool {
+func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interface{}, req OrchestratorRequest, result *PolicyEvaluationResult) bool {
 	mc, _ := sharedpolicy.MapCondition(cond)
 	if mc.Operator == "regex" {
 		if pattern, ok := mc.Value.(string); ok {
@@ -1763,15 +1759,7 @@ func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interfac
 		}
 	}
 	return dbConditionEvaluator.Match(mc, func(field string) (any, bool) {
-		v := e.getFieldValue(field, req, result)
-		// Recorded HERE, inside the resolver the legacy engine itself uses,
-		// rather than re-resolved afterwards. Two resolutions of one field are
-		// two answers whenever anything in between moved - and something does
-		// move: a matched policy's modify_risk raises result.RiskScore
-		// mid-loop, and "risk_score" is a condition field. The ADR-065 side
-		// has to be built from the value the legacy engine actually read.
-		trace.noteField(field, v)
-		return v, true
+		return e.getFieldValue(field, req, result), true
 	}, dbUnevaluableRecorder)
 }
 
@@ -1813,6 +1801,15 @@ func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interfac
 // distinct, caller-asserted field under its own namespace — not a carve-out
 // of this one.
 func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req OrchestratorRequest, result *PolicyEvaluationResult) interface{} {
+	return dynamicFieldValue(field, req, result)
+}
+
+// dynamicFieldValue is getFieldValue's body: a function of the request and the
+// evaluation's running state alone, and of nothing on the engine. The dynamic
+// condition matcher's fact producer reads each field through it, so a field
+// resolves to the same value whether a verdict or a fact is being derived from
+// it (#4254, PRD v11 §1.2 ruling R2).
+func dynamicFieldValue(field string, req OrchestratorRequest, result *PolicyEvaluationResult) interface{} {
 	switch field {
 	// Top-level fields
 	case "query":
@@ -1983,20 +1980,9 @@ func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req Orchestrat
 // cacheKey identifies the entry for the [BUG] log line only (e.g. the
 // policy_id/name the caller's loop is already keyed on); it plays no role
 // in the org/segment decision itself.
-// dbCachedPolicyBelongsToOrg is the ORG half of dbCachedPolicyAppliesToOrg,
-// split out so the two callers that need different halves share one definition
-// of what "belongs to this tenant" means.
-//
-// The evaluation loop needs the whole gate: org AND segment, because a
-// segment-scoped row the caller is not in must not run. The ADR-065 shadow
-// trace needs only this half, because a segment-scoped row the caller is not in
-// is still part of the TENANT'S POLICY VERSION - it simply did not run, which
-// the tri-state records as unknown rather than as a non-match.
-//
-// Splitting rather than letting the shadow pass nil segments is deliberate: nil
-// segments makes the full gate exclude every segment-scoped row, which would
-// silently drop them from the policy-set digest that identifies what the
-// evaluation ran against.
+// dbCachedPolicyBelongsToOrg is the ORG half of dbCachedPolicyAppliesToOrg:
+// whether a cached row belongs to this tenant, before the segment gate asks
+// whether it applies to this caller.
 func dbCachedPolicyBelongsToOrg(policyMap map[string]interface{}, orgID string, cacheKey string) bool {
 	metadata, ok := policyMap["_metadata"].(map[string]interface{})
 	if !ok {
@@ -2241,11 +2227,13 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePoliciesForTenant(orgID string, 
 	defer e.mu.RUnlock()
 
 	scoped := make([]DynamicPolicy, 0, len(e.policies))
-	for cacheKey, policy := range e.policies {
-		policyMap, ok := policy.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	// IN THE ORDER EVALUATION WALKS THEM (sortedDynamicPolicyEntries), never Go's
+	// randomized map order. The fact producer merges route effects from these
+	// rows, and that merge is order-dependent exactly as EvaluateDynamicPolicies'
+	// is, so an unordered list would change the preferred provider between
+	// identical requests (#4254).
+	for _, entry := range sortedDynamicPolicyEntries(e.policies) {
+		cacheKey, policyMap := entry.cacheKey, entry.policyMap
 		if !dbCachedPolicyAppliesToOrg(policyMap, orgID, segmentIDs, cacheKey) {
 			continue
 		}

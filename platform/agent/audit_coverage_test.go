@@ -519,21 +519,19 @@ func dedup(s []string) []string {
 // no audit obligation of their own. Sourced from the engine definitions:
 //
 //	platform/shared/policy/engine.go      EvaluateRequest / EvaluateResponse
-//	platform/agent/tier_aware_policy_engine.go   EvaluatePolicy / EvaluateAllPolicies
+//	platform/agent/tier_aware_policy_engine.go   EvaluatePolicy / EvaluateAllPolicies (deleted by #4253)
 //	platform/agent/policy/permissions.go         EvaluateMCPPermission
-//	platform/shared/policy/dynamic_evaluator.go  EvaluateWithGracefulDegradation
 //	platform/orchestrator/dynamic_policy_engine.go + db_dynamic_policies.go  EvaluateDynamicPolicies
 //	platform/orchestrator/workflow_control/service.go  EvaluateStepGate
 func policyEvalSinks() map[string]bool {
 	return map[string]bool{
-		"EvaluateRequest":                 true,
-		"EvaluateResponse":                true,
-		"EvaluateDynamicPolicies":         true,
-		"EvaluatePolicy":                  true,
-		"EvaluateAllPolicies":             true,
-		"EvaluateMCPPermission":           true,
-		"EvaluateWithGracefulDegradation": true,
-		"EvaluateStepGate":                true,
+		"EvaluateRequest":         true,
+		"EvaluateResponse":        true,
+		"EvaluateDynamicPolicies": true,
+		"EvaluatePolicy":          true,
+		"EvaluateAllPolicies":     true,
+		"EvaluateMCPPermission":   true,
+		"EvaluateStepGate":        true,
 	}
 }
 
@@ -555,12 +553,11 @@ func policyEvalSinks() map[string]bool {
 // matching by call name is unambiguous.
 func policyDelegatingHelpers() map[string]bool {
 	return map[string]bool{
-		"evaluateInputPolicies":   true, // mcp_handler.go — MCP input plane
-		"evaluateOutputPolicies":  true, // mcp_handler.go — MCP output plane
-		"redactInputStatement":    true, // mcp_handler.go — MCP redaction
-		"DetectWithSharedEngine":  true, // pii_detector.go — response detector
-		"processWithSharedEngine": true, // response_processor.go — response plane
-		"CheckPolicy":             true, // map_hitl_adapter.go — MAP/HITL step gate
+		"evaluateInputPolicies":  true, // mcp_handler.go — MCP input plane
+		"evaluateOutputPolicies": true, // mcp_handler.go — MCP output plane
+		"responseDetectorPass":   true, // response_enforcing_seam.go — response detector facts
+		"decideResponse":         true, // response_enforcing_seam.go — response plane
+		"CheckPolicy":            true, // map_hitl_adapter.go — MAP/HITL step gate
 	}
 }
 

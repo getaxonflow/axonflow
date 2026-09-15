@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package media
 
@@ -31,7 +23,14 @@ type LocalOCRAnalyzer struct {
 }
 
 // PIIDetectorFunc is a function type for PII detection on extracted text.
-// This allows injecting the existing EnhancedPIIDetector.DetectAll() via composition.
+//
+// NOTHING INJECTS ONE ON THE PRODUCTION PATH. NewLocalOCRAnalyzer is called with
+// nil below, so OCR-extracted text is scanned by no detector (#4300). The
+// detector this comment used to name, the orchestrator's regex EnhancedPIIDetector,
+// was dead code and was removed in #4291; re-injecting it is not the fix. The
+// platform's detectors are the shared engine's, read as FACTS by the anchored
+// engine, and OCR text arrives request-side, so wiring it is a plane-assignment
+// decision rather than a hook to fill in here.
 type PIIDetectorFunc func(text string) []PIIFinding
 
 // NewLocalOCRAnalyzer creates a new local OCR analyzer.

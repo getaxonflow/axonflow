@@ -31,14 +31,23 @@ import java.util.List;
  * AxonFlow Gateway Policy Configuration - Java SDK
  *
  * This example demonstrates and VALIDATES per-mode Gateway policy configuration.
- * AxonFlow's static policies can be configured per-mode using environment variables.
- * This example validates the CURRENT configuration by sending test queries through
- * the Gateway mode API (getPolicyApprovedContext + proxyLLMCall) and checking that
- * the Agent responds according to the configured policy actions.
+ * This example sends test queries through the Gateway mode API
+ * (getPolicyApprovedContext + proxyLLMCall) and checks that the Agent responds
+ * according to the shipped policy actions.
  *
- * Environment variables (must match Agent-side config):
- *   GATEWAY_PII_ACTION   = block | redact | log  (default: redact)
- *   GATEWAY_SQLI_ACTION  = block | warn | log    (default: block)
+ * v11: the stored policy action decides. GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION,
+ * PII_ACTION and SQLI_ACTION no longer set an action (ignored, with a boot WARN).
+ * The shipped request-phase actions exercised here:
+ *   sys_pii_ssn = warn (approved, policy id in getPolicies())
+ *   sys_sqli_*  = warn (approved, policy id in getPolicies())
+ *
+ * To change an outcome, record an organization override (customer portal API,
+ * Enterprise: PUT /api/v1/detection-posture/{pii|sqli} with {"action":"block"})
+ * or change the policy's action. This example validates the shipped actions with
+ * no override recorded.
+ *
+ * Still read from the environment (a non-action knob, must match Agent config):
+ *   GATEWAY_STATIC_POLICIES_ENABLED = true | false (default: true)
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  *
@@ -74,16 +83,8 @@ public class GatewayPolicyConfigExample {
         return (value != null && !value.isEmpty()) ? value : defaultValue;
     }
 
-    private static String getEnvWithFallback(String key, String fallbackKey, String defaultValue) {
-        String value = System.getenv(key);
-        if (value != null && !value.isEmpty()) {
-            return value;
-        }
-        value = System.getenv(fallbackKey);
-        if (value != null && !value.isEmpty()) {
-            return value;
-        }
-        return defaultValue;
+    private static boolean hasPolicyPrefix(List<String> policies, String prefix) {
+        return policies != null && policies.stream().anyMatch(p -> p.startsWith(prefix));
     }
 
     private static void assertCheck(boolean condition, String message) {
@@ -100,13 +101,11 @@ public class GatewayPolicyConfigExample {
         System.out.println("=================================================");
         System.out.println();
 
-        // Read expected policy actions (with fallback keys, matching Go version)
-        String piiAction = getEnvWithFallback("GATEWAY_PII_ACTION", "PII_ACTION", "redact").toLowerCase();
-        String sqliAction = getEnvWithFallback("GATEWAY_SQLI_ACTION", "SQLI_ACTION", "block").toLowerCase();
+        // Detection actions come from the stored policy rows (no org override
+        // recorded), not from the environment.
         String policiesEnabled = getEnv("GATEWAY_STATIC_POLICIES_ENABLED", "true").toLowerCase();
 
-        System.out.printf("Expected PII_ACTION:  %s%n", piiAction);
-        System.out.printf("Expected SQLI_ACTION: %s%n", sqliAction);
+        System.out.println("Expected actions: shipped stored actions (PII warn at request phase, SQLi warn)");
         System.out.printf("Static policies enabled: %s%n", policiesEnabled);
         System.out.println();
 
@@ -142,11 +141,11 @@ public class GatewayPolicyConfigExample {
         System.out.println();
 
         // -----------------------------------------------------------
-        // Test 2: PII query (SSN) -- depends on GATEWAY_PII_ACTION
+        // Test 2: PII query (SSN) -- sys_pii_ssn stores warn for the request phase
         // -----------------------------------------------------------
         System.out.println("Test 2: PII Query (SSN '123-45-6789')");
         System.out.println("--------------------------------------");
-        System.out.printf("  Expected action: %s%n", piiAction);
+        System.out.println("  Expected action: warn (stored)");
 
         boolean piiBlocked = false;
         String piiBlockReason = null;
@@ -175,49 +174,29 @@ public class GatewayPolicyConfigExample {
                 "No policies matched (disabled)"
             );
         } else {
-            switch (piiAction) {
-                case "block":
-                    assertCheck(piiBlocked || (result != null && !result.isApproved()), "PII blocked (GATEWAY_PII_ACTION=block)");
-                    assertCheck(
-                        piiBlockReason != null || (result != null && result.getBlockReason() != null && !result.getBlockReason().isEmpty()),
-                        "Block reason provided"
-                    );
-                    String reason = piiBlockReason != null ? piiBlockReason : (result != null ? result.getBlockReason() : "");
-                    System.out.printf("   Block reason: %s%n", reason);
-                    break;
-                case "redact":
-                    assertCheck(result.isApproved(), "PII approved for redaction (GATEWAY_PII_ACTION=redact)");
-                    assertCheck(
-                        result.getPolicies() != null && !result.getPolicies().isEmpty(),
-                        "PII policies detected"
-                    );
-                    if (result.getPolicies() != null) {
-                        System.out.printf("   Policies: %s%n", result.getPolicies());
-                    }
-                    break;
-                case "warn":
-                    assertCheck(result.isApproved(), "PII approved with warning (GATEWAY_PII_ACTION=warn)");
-                    assertCheck(
-                        result.getPolicies() != null && !result.getPolicies().isEmpty(),
-                        "PII policies detected"
-                    );
-                    break;
-                case "log":
-                    assertCheck(result.isApproved(), "PII approved (GATEWAY_PII_ACTION=log)");
-                    break;
-                default:
-                    System.out.println("   \u274C Unknown GATEWAY_PII_ACTION: " + piiAction);
-                    failures.add("Unknown GATEWAY_PII_ACTION: " + piiAction);
+            // warn approves the request and reports the matched policy
+            boolean piiApproved = !piiBlocked && result != null && result.isApproved();
+            assertCheck(piiApproved, "PII approved with a warning (stored action: warn)");
+            assertCheck(
+                result != null && hasPolicyPrefix(result.getPolicies(), "sys_pii_"),
+                "PII policy detected (sys_pii_* in policies)"
+            );
+            if (result != null && result.getPolicies() != null) {
+                System.out.printf("   Policies: %s%n", result.getPolicies());
+            }
+            if (!piiApproved) {
+                String reason = piiBlockReason != null ? piiBlockReason : (result != null ? result.getBlockReason() : "");
+                System.out.printf("   Block reason: %s (an org pii=block override or an edited policy action is in force)%n", reason);
             }
         }
         System.out.println();
 
         // -----------------------------------------------------------
-        // Test 3: SQLi query -- depends on GATEWAY_SQLI_ACTION
+        // Test 3: SQLi query -- every sys_sqli_* policy stores warn
         // -----------------------------------------------------------
         System.out.println("Test 3: SQLi Query (UNION SELECT)");
         System.out.println("----------------------------------");
-        System.out.printf("  Expected action: %s%n", sqliAction);
+        System.out.println("  Expected action: warn (stored)");
 
         boolean sqliBlocked = false;
         String sqliBlockReason = null;
@@ -241,25 +220,19 @@ public class GatewayPolicyConfigExample {
         if ("false".equals(policiesEnabled)) {
             assertCheck(result != null && result.isApproved(), "SQLi approved (static policies disabled)");
         } else {
-            switch (sqliAction) {
-                case "block":
-                    assertCheck(sqliBlocked || (result != null && !result.isApproved()), "SQLi blocked (GATEWAY_SQLI_ACTION=block)");
-                    assertCheck(
-                        sqliBlockReason != null || (result != null && result.getBlockReason() != null && !result.getBlockReason().isEmpty()),
-                        "Block reason provided"
-                    );
-                    String sqliReason = sqliBlockReason != null ? sqliBlockReason : (result != null ? result.getBlockReason() : "");
-                    System.out.printf("   Block reason: %s%n", sqliReason);
-                    break;
-                case "warn":
-                    assertCheck(result != null && result.isApproved(), "SQLi approved with warning (GATEWAY_SQLI_ACTION=warn)");
-                    break;
-                case "log":
-                    assertCheck(result != null && result.isApproved(), "SQLi approved (GATEWAY_SQLI_ACTION=log)");
-                    break;
-                default:
-                    System.out.println("   \u274C Unknown GATEWAY_SQLI_ACTION: " + sqliAction);
-                    failures.add("Unknown GATEWAY_SQLI_ACTION: " + sqliAction);
+            // SQL injection warns by default; it is not blocked
+            boolean sqliApproved = !sqliBlocked && result != null && result.isApproved();
+            assertCheck(sqliApproved, "SQLi approved with a warning (stored action: warn)");
+            assertCheck(
+                result != null && hasPolicyPrefix(result.getPolicies(), "sys_sqli_"),
+                "SQLi policy detected (sys_sqli_* in policies)"
+            );
+            if (result != null && result.getPolicies() != null) {
+                System.out.printf("   Policies: %s%n", result.getPolicies());
+            }
+            if (!sqliApproved) {
+                String sqliReason = sqliBlockReason != null ? sqliBlockReason : (result != null ? result.getBlockReason() : "");
+                System.out.printf("   Block reason: %s (an org sqli=block override or an edited policy action is in force)%n", sqliReason);
             }
         }
         System.out.println();
@@ -307,8 +280,8 @@ public class GatewayPolicyConfigExample {
             System.out.println("\u2713 ALL TESTS PASSED");
             System.out.println();
             System.out.printf("Gateway policy config validated:%n");
-            System.out.printf("  PII_ACTION=%s, SQLI_ACTION=%s, enabled=%s%n",
-                piiAction, sqliAction, policiesEnabled);
+            System.out.printf("  shipped stored actions (PII warn, SQLi warn), enabled=%s%n",
+                policiesEnabled);
         } else {
             System.out.println("\u274C " + failures.size() + " TEST(S) FAILED:");
             for (String f : failures) {

@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** 9.0.0 | **Platform Version:** 9.14.0
+**SDK Version:** 9.4.0 | **Platform Version:** 11.0.0
 
 ---
 
@@ -144,11 +144,11 @@ try {
     requestType: 'chat',
   });
 
-  // If PII_ACTION=redact (default), the response is processed with PII redacted
+  // Shipped SSN and credit-card rows warn on the request and redact the response, so this succeeds
   console.log('Success:', response.success);
   console.log('Policies evaluated:', response.policyInfo?.policiesEvaluated);
 } catch (error) {
-  // If PII_ACTION=block, a PolicyViolationError is thrown
+  // Thrown when the resolved action is block: an org pii=block override, or a policy edited to block
   if (error instanceof PolicyViolationError) {
     console.log('Blocked:', error.blockReason);
     console.log('Policies:', error.policies);

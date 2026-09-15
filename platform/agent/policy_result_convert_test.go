@@ -99,28 +99,6 @@ func TestConvertSharedResultToStatic_PIIRedaction(t *testing.T) {
 	}
 }
 
-func TestConvertSharedResultToStatic_RequiresApproval(t *testing.T) {
-	result := convertSharedResultToStatic(&sharedpolicy.RequestResult{
-		Blocked:           false,
-		PoliciesEvaluated: 1,
-		MatchedPolicies: []sharedpolicy.PolicyMatch{
-			{
-				PolicyID: "hitl_credit_scoring",
-				Action:   sharedpolicy.ActionRequireApproval,
-				Category: sharedpolicy.CategorySensitiveData,
-				Severity: sharedpolicy.SeverityCritical,
-			},
-		},
-	})
-
-	if result.Blocked {
-		t.Error("Expected Blocked=false for require_approval")
-	}
-	if !result.RequiresApproval {
-		t.Error("Expected RequiresApproval=true for ActionRequireApproval")
-	}
-}
-
 func TestConvertSharedResultToStatic_EmptyResult(t *testing.T) {
 	result := convertSharedResultToStatic(&sharedpolicy.RequestResult{
 		Blocked:           false,
@@ -133,9 +111,6 @@ func TestConvertSharedResultToStatic_EmptyResult(t *testing.T) {
 	}
 	if result.RequiresRedaction {
 		t.Error("Expected RequiresRedaction=false for no matches")
-	}
-	if result.RequiresApproval {
-		t.Error("Expected RequiresApproval=false for no matches")
 	}
 }
 
@@ -205,13 +180,12 @@ func TestAllTextPIICategories_CoversStaticCategories(t *testing.T) {
 // regression: pii-indonesia (KTP/NIK) must produce the SAME governance signal
 // as pii-singapore (NRIC) under every resolved action. Before the fix the
 // agent-local isPIICategory switch omitted pii-indonesia, so a non-blocking KTP
-// match set neither RequiresRedaction nor an advisory reason and fell through
-// to a bare allow. Both categories are driven table-wise so any divergence
-// between them fails.
+// match set no RequiresRedaction under redact. Both categories are driven
+// table-wise so any divergence between them fails.
 func TestConvertSharedResultToStatic_Indonesia_ActionAware(t *testing.T) {
-	// The engine has already applied the per-category PII_ACTION override onto
+	// The engine has already applied any organization pii override onto
 	// match.Action by the time convert sees it, so `action` here is the RESOLVED
-	// action for each of the four postures.
+	// action (stored, or overridden) for each of the four cases.
 	//
 	//   block is represented by Blocked=true (engine short-circuits on it);
 	//   redact/warn/log ride a non-blocking match.
@@ -220,12 +194,11 @@ func TestConvertSharedResultToStatic_Indonesia_ActionAware(t *testing.T) {
 		action        sharedpolicy.Action
 		blocked       bool
 		wantRedaction bool
-		wantAdvisory  bool
 	}{
-		{"redact", sharedpolicy.ActionRedact, false, true, false},
-		{"warn", sharedpolicy.ActionWarn, false, false, true},
-		{"log", sharedpolicy.ActionLog, false, false, true},
-		{"block", sharedpolicy.ActionBlock, true, false, false},
+		{"redact", sharedpolicy.ActionRedact, false, true},
+		{"warn", sharedpolicy.ActionWarn, false, false},
+		{"log", sharedpolicy.ActionLog, false, false},
+		{"block", sharedpolicy.ActionBlock, true, false},
 	}
 
 	categories := []struct {
@@ -257,17 +230,6 @@ func TestConvertSharedResultToStatic_Indonesia_ActionAware(t *testing.T) {
 				if got.RequiresRedaction != tc.wantRedaction {
 					t.Errorf("RequiresRedaction = %v, want %v", got.RequiresRedaction, tc.wantRedaction)
 				}
-				hasAdvisory := len(got.AdvisoryReasons) > 0
-				if hasAdvisory != tc.wantAdvisory {
-					t.Errorf("advisory reasons present = %v (%v), want %v", hasAdvisory, got.AdvisoryReasons, tc.wantAdvisory)
-				}
-				if tc.wantAdvisory {
-					// The advisory reason must name the policy so the match is
-					// self-documenting (not a bare allow).
-					if !strings.Contains(got.AdvisoryReasons[0], cat.policyID) {
-						t.Errorf("advisory reason %q does not name policy %q", got.AdvisoryReasons[0], cat.policyID)
-					}
-				}
 			})
 		}
 	}
@@ -275,7 +237,7 @@ func TestConvertSharedResultToStatic_Indonesia_ActionAware(t *testing.T) {
 
 // TestConvertSharedResultToStatic_WarnLogNoRedaction pins the sibling bug fix
 // (#2965): before making the mapping action-aware, ANY non-blocking PII match
-// set RequiresRedaction regardless of resolved action, so warn/log postures
+// set RequiresRedaction regardless of resolved action, so warn/log actions
 // silently emitted redact_pii. A warn/log match must NOT require redaction.
 func TestConvertSharedResultToStatic_WarnLogNoRedaction(t *testing.T) {
 	for _, action := range []sharedpolicy.Action{sharedpolicy.ActionWarn, sharedpolicy.ActionLog} {
@@ -290,9 +252,6 @@ func TestConvertSharedResultToStatic_WarnLogNoRedaction(t *testing.T) {
 		})
 		if got.RequiresRedaction {
 			t.Errorf("action=%s: RequiresRedaction=true, want false (warn/log must not redact)", action)
-		}
-		if len(got.AdvisoryReasons) == 0 {
-			t.Errorf("action=%s: expected an advisory reason so the match is not a silent allow", action)
 		}
 	}
 }

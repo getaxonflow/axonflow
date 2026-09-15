@@ -33,7 +33,7 @@ import (
 
 func TestResolveUserSegments_NilResolver_OrgOnlyNotFailure(t *testing.T) {
 	ResetFleetSegmentResolverForTest()
-	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement)
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseSessionAuth)
 	if !ok {
 		t.Fatal("no resolver wired (community / no SCIM) must NOT be treated as a failure")
 	}
@@ -63,7 +63,7 @@ func TestResolveUserSegments_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T) {
 		{"org-a", ""},
 		{"", ""},
 	} {
-		ids, ok := resolveUserSegments(context.Background(), tc.org, tc.email, segmentResolutionPhaseEnforcement)
+		ids, ok := resolveUserSegments(context.Background(), tc.org, tc.email, segmentResolutionPhaseSessionAuth)
 		if !ok {
 			t.Fatalf("org=%q email=%q: no verified identity to resolve against must not be a failure", tc.org, tc.email)
 		}
@@ -78,7 +78,7 @@ func TestResolveUserSegments_EmptyOrgOrEmail_OrgOnlyNotFailure(t *testing.T) {
 
 func TestResolveUserSegments_EmptySet_OrgOnly(t *testing.T) {
 	withFleetSegmentResolver(t, &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{Segments: []sharedidentity.Segment{}}})
-	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement)
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseSessionAuth)
 	if !ok {
 		t.Fatal("zero group memberships is a legitimate success, not a failure")
 	}
@@ -97,7 +97,7 @@ func TestResolveUserSegments_EmptySet_OrgOnly(t *testing.T) {
 // below for what makes it observably distinct: nothing acts on it.)
 func TestResolveUserSegments_Error_FailsClosed(t *testing.T) {
 	withFleetSegmentResolver(t, &fakeSegmentResolver{err: errors.New("segment query failed")})
-	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement)
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseSessionAuth)
 	if ok {
 		t.Fatal("a genuine segment resolution error must DENY (ok=false), never fall back to org-only")
 	}
@@ -119,7 +119,7 @@ func TestResolveUserSegments_Error_FailsClosed(t *testing.T) {
 func TestResolveUserSegments_EmptyEmail_OrgOnly_NeverCallsResolver(t *testing.T) {
 	fake := &fakeSegmentResolver{err: errors.New("segment query failed")}
 	withFleetSegmentResolver(t, fake)
-	ids, ok := resolveUserSegments(context.Background(), "org-a", "", segmentResolutionPhaseEnforcement)
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "", segmentResolutionPhaseSessionAuth)
 	if !ok {
 		t.Fatal("an absent per-user email (tenant-kind token) must proceed org-only, never fail closed")
 	}
@@ -138,7 +138,7 @@ func TestResolveUserSegments_EmptyEmail_OrgOnly_NeverCallsResolver(t *testing.T)
 func TestResolveUserSegments_NonEmptyEmailError_StillFailsClosed(t *testing.T) {
 	fake := &fakeSegmentResolver{err: errors.New("segment query failed")}
 	withFleetSegmentResolver(t, fake)
-	_, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement)
+	_, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseSessionAuth)
 	if ok {
 		t.Fatal("a genuine resolver error on a real per-user identity must still fail closed")
 	}
@@ -150,7 +150,7 @@ func TestResolveUserSegments_NonEmptyEmailError_StillFailsClosed(t *testing.T) {
 func TestResolveUserSegments_Success_ReturnsIDs(t *testing.T) {
 	want := []sharedidentity.Segment{{ID: "grp-finance", DisplayName: "finance"}, {ID: "grp-ml", DisplayName: "ml-platform"}}
 	withFleetSegmentResolver(t, &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{Segments: want}})
-	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement)
+	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseSessionAuth)
 	if !ok {
 		t.Fatal("a successful resolution must never fail closed")
 	}
@@ -159,7 +159,7 @@ func TestResolveUserSegments_Success_ReturnsIDs(t *testing.T) {
 	}
 }
 
-// --- #3473 item 5: phase-label / segmentPolicyFailClosedTotal isolation ---
+// --- metric helpers ---
 
 // counterValue reads a CounterVec's current value for one label combination,
 // or 0 if it has never been observed. Avoids depending on Prometheus's text
@@ -173,67 +173,6 @@ func counterValue(t *testing.T, c *prometheus.CounterVec, labels ...string) floa
 	var out dto.Metric
 	if err := m.Write(&out); err != nil {
 		t.Fatalf("Write metric: %v", err)
-	}
-	return out.GetCounter().GetValue()
-}
-
-// TestResolveUserSegments_SessionAuthPhase_ErrorNeverCountsAsFailClosed is
-// the behavioral-parity guard for collapsing the session-auth call site
-// onto this fail-closed function (#3473 item 2): before the collapse, a
-// session-auth resolution error never touched
-// segmentPolicyFailClosedTotal at all (that counter didn't exist on the P2
-// call path). After the collapse, the SAME shared implementation
-// (sharedidentity.ResolveUserSegments) calls metrics.IncFailClosed() on every
-// error regardless of phase — so agentSegmentPolicyMetrics.IncFailClosed
-// must no-op for segmentResolutionPhaseSessionAuth, or a session-auth
-// failure (which denies nothing — mcp_server_handler.go discards `ok`)
-// would misreport as a "request denied" in a counter whose Help text says
-// exactly that.
-func TestResolveUserSegments_SessionAuthPhase_ErrorNeverCountsAsFailClosed(t *testing.T) {
-	withFleetSegmentResolver(t, &fakeSegmentResolver{err: errors.New("segment query failed")})
-	before := counterValue(t, segmentResolutionTotal, "error", "session_auth")
-	failClosedBefore := readFailClosedTotal(t)
-
-	ids, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseSessionAuth)
-	if ok {
-		t.Fatal("a genuine resolver error must still report ok=false even on the session-auth phase (the caller just discards it)")
-	}
-	if ids != nil {
-		t.Fatalf("expected nil ids on failure, got %v", ids)
-	}
-
-	after := counterValue(t, segmentResolutionTotal, "error", "session_auth")
-	if after != before+1 {
-		t.Fatalf("segmentResolutionTotal{result=error,phase=session_auth} = %v, want %v", after, before+1)
-	}
-	if failClosedAfter := readFailClosedTotal(t); failClosedAfter != failClosedBefore {
-		t.Fatalf("segmentPolicyFailClosedTotal must NOT increment for the session_auth phase (it denies nothing): before=%v after=%v", failClosedBefore, failClosedAfter)
-	}
-}
-
-// TestResolveUserSegments_EnforcementPhase_ErrorCountsAsFailClosed is the
-// enforcement-side twin of the test above: an enforcement-phase error DOES
-// increment segmentPolicyFailClosedTotal, unchanged from pre-#3473 behavior.
-func TestResolveUserSegments_EnforcementPhase_ErrorCountsAsFailClosed(t *testing.T) {
-	withFleetSegmentResolver(t, &fakeSegmentResolver{err: errors.New("segment query failed")})
-	failClosedBefore := readFailClosedTotal(t)
-
-	if _, ok := resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement); ok {
-		t.Fatal("enforcement-phase resolver error must fail closed")
-	}
-
-	if failClosedAfter := readFailClosedTotal(t); failClosedAfter != failClosedBefore+1 {
-		t.Fatalf("segmentPolicyFailClosedTotal = %v, want %v", failClosedAfter, failClosedBefore+1)
-	}
-}
-
-// readFailClosedTotal reads segmentPolicyFailClosedTotal's current value (a
-// plain Counter, not a Vec).
-func readFailClosedTotal(t *testing.T) float64 {
-	t.Helper()
-	var out dto.Metric
-	if err := segmentPolicyFailClosedTotal.Write(&out); err != nil {
-		t.Fatalf("Write segmentPolicyFailClosedTotal: %v", err)
 	}
 	return out.GetCounter().GetValue()
 }
@@ -261,20 +200,6 @@ func TestResolveUserSegments_SessionAuthPhase_ErrorLogsWarningNeverDenying(t *te
 	}
 	if !strings.Contains(out, `[Identity] WARNING: #2989 segment resolution failed org="org-a"`) {
 		t.Fatalf("expected the restored WARNING-level line naming the org, got: %s", out)
-	}
-}
-
-// TestResolveUserSegments_EnforcementPhase_ErrorLogsDenying pins the
-// unchanged enforcement-phase behavior: byte-for-byte the pre-#3473 log line.
-func TestResolveUserSegments_EnforcementPhase_ErrorLogsDenying(t *testing.T) {
-	withFleetSegmentResolver(t, &fakeSegmentResolver{err: errors.New("segment query failed")})
-	buf := captureLog(t)
-
-	resolveUserSegments(context.Background(), "org-a", "a@example.com", segmentResolutionPhaseEnforcement)
-
-	out := buf.String()
-	if !strings.Contains(out, `[Policy] DENYING (fail-closed, ADR-060 #2989): segment resolution failed org="org-a"`) {
-		t.Fatalf("expected the unchanged enforcement-phase DENYING line, got: %s", out)
 	}
 }
 
@@ -317,53 +242,22 @@ func TestResolveUserSegments_SessionAuthPhase_ZeroGroupsLogsCountZero(t *testing
 	}
 }
 
-// TestResolveUserSegments_EnforcementPhase_SuccessLogsNothing guards the
-// other half of the trade the original R3 round-1 finding surfaced: the
-// enforcement phase runs on every policy-affecting request, so it must NOT
-// gain a per-call log line (that would flood the log for no benefit
-// segmentResolutionTotal doesn't already provide).
-func TestResolveUserSegments_EnforcementPhase_SuccessLogsNothing(t *testing.T) {
-	withFleetSegmentResolver(t, &fakeSegmentResolver{resolved: sharedidentity.ResolvedIdentity{
-		Segments: []sharedidentity.Segment{{ID: "grp-finance"}},
-	}})
-	buf := captureLog(t)
-
-	resolveUserSegments(context.Background(), "org-a", "alice@example.com", segmentResolutionPhaseEnforcement)
-
-	if buf.Len() != 0 {
-		t.Fatalf("enforcement-phase success must not log, got: %s", buf.String())
-	}
-}
-
 // =============================================================================
-// The resolution PHASE must be pinned per call site.
+// Segment resolution has ONE production call site, and it decides nothing.
 //
-// The phase used to be a positional enum argument, so it was entirely
-// caller-supplied and nothing anywhere pinned it: flipping every enforcement
-// call site to the observability phase compiled and passed the whole suite. In
-// production that flatlines axonflow_segment_policy_fail_closed_total through
-// a live segment-store outage while requests ARE being denied, replaces each
-// "DENYING" line with a WARNING, and starts logging a success line per request
-// on the hot path — the exact flood the phase gate exists to prevent. The
-// denial itself still happens, so it is audit and observability integrity
-// rather than authorization, which is precisely why no behavioural test caught
-// it.
+// Since #4253 the agent resolves governance segments only at the MCP server's
+// session authentication, which discards ok (resolveUserSegmentsForObservability).
+// /api/request's segment gate - the last call site that denied on a resolution
+// failure - went with the pass it fed, and the policy-test preview resolves
+// nothing either (PRD v11 §1 item 1). A resolution call anywhere else in the
+// package is that gate, or a new one, coming back, and this census fails on it.
 //
-// The wrappers make the phase structural: a call site picks a differently
-// named function rather than a differently valued argument. This census pins
-// which wrapper each production site uses, so a future edit that reaches for
-// the raw form or the wrong wrapper fails here rather than silently.
+// The wrapper is still pinned per call site, because the phase was once a
+// caller-supplied argument nothing pinned: flipping an enforcement call site to
+// the observability phase compiled and passed the whole suite.
 func TestSegmentResolutionPhaseIsPinnedPerCallSite(t *testing.T) {
-	// Production call sites, by file, with the wrapper each MUST use.
 	want := map[string]string{
-		"run.go":                "resolveUserSegmentsForEnforcement",
-		"gateway_handlers.go":   "resolveUserSegmentsForEnforcement",
-		"mcp_identity.go":       "resolveUserSegmentsForEnforcement",
 		"mcp_server_handler.go": "resolveUserSegmentsForObservability",
-	}
-	// run.go additionally holds the ONE preview call site (policyTestHandler).
-	extra := map[string][]string{
-		"run.go": {"resolveUserSegmentsForPreview"},
 	}
 
 	fset := token.NewFileSet()
@@ -381,6 +275,10 @@ func TestSegmentResolutionPhaseIsPinnedPerCallSite(t *testing.T) {
 	seen := map[string]map[string]bool{}
 	for name, f := range agentPkg.Files {
 		base := filepath.Base(name)
+		if base == "segment_policy_gate.go" {
+			// The wrapper's own body calls the raw form.
+			continue
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -388,10 +286,6 @@ func TestSegmentResolutionPhaseIsPinnedPerCallSite(t *testing.T) {
 			}
 			id, ok := call.Fun.(*ast.Ident)
 			if !ok || !strings.HasPrefix(id.Name, "resolveUserSegments") {
-				return true
-			}
-			// The wrappers' own bodies call the raw form; skip the defining file.
-			if base == "segment_policy_gate.go" {
 				return true
 			}
 			if seen[base] == nil {
@@ -402,29 +296,30 @@ func TestSegmentResolutionPhaseIsPinnedPerCallSite(t *testing.T) {
 		})
 	}
 
+	if len(seen) == 0 {
+		t.Fatal("the census found no resolution call at all, so it would pass over anything")
+	}
 	for file, wrapper := range want {
-		got := seen[file]
-		if got == nil {
-			t.Errorf("%s no longer resolves segments at all — if the call site moved, move this pin with it", file)
-			continue
-		}
-		if !got[wrapper] {
-			t.Errorf("%s must resolve via %s; found %v. Picking a different wrapper silently changes "+
-				"which phase the metric and the DENYING log are attributed to.", file, wrapper, keysOf(got))
-		}
-		if got["resolveUserSegments"] {
-			t.Errorf("%s calls the raw phase-taking form. Use a named wrapper — a positional enum is "+
-				"caller-supplied and is exactly what went unpinned before.", file)
+		if got := seen[file]; len(got) != 1 || !got[wrapper] {
+			t.Errorf("%s resolves segments through %v; want exactly %s", file, segmentCallNames(got), wrapper)
 		}
 	}
-	for file, wrappers := range extra {
-		for _, wrapper := range wrappers {
-			if !seen[file][wrapper] {
-				t.Errorf("%s must retain a %s call site (policyTestHandler simulates a verdict and "+
-					"returns 200, so its failures must not reach the denial counter)", file, wrapper)
-			}
+	for file, got := range seen {
+		if _, pinned := want[file]; !pinned {
+			t.Errorf("%s resolves governance segments (%v): nothing on the agent decides on a segment since #4253, "+
+				"so this is /api/request's retired segment gate, or a new one, coming back", file, segmentCallNames(got))
 		}
 	}
+}
+
+// segmentCallNames is m's keys, sorted, for a failure message.
+func segmentCallNames(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func keysOf(m map[string]bool) []string {

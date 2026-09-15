@@ -198,8 +198,8 @@ func mutants() []mutant {
 			expect: "TestGate15CrossPlaneOutcomeEquality",
 			edits: []edit{{
 				file: "contract/obligation.go",
-				from: "\t\t\t\tDenied: true, Reason: ReasonUnsupportedObligation,\n\t\t\t\tDetail: fmt.Sprintf(\"mandatory obligation %q from policy %q cannot be discharged: %s\", o.Type, o.SourcePolicy, who),",
-				to:   "\t\t\t\tDenied: true, Reason: ReasonObligationConflict,\n\t\t\t\tDetail: fmt.Sprintf(\"mandatory obligation %q from policy %q cannot be discharged: %s\", o.Type, o.SourcePolicy, who),",
+				from: "\t\t\t\tDenied: true, Reason: ReasonUnsupportedObligation, Detail: detail,\n\t\t\t\tErr: &UndischargedObligationError{Obligation: o, Detail: detail},",
+				to:   "\t\t\t\tDenied: true, Reason: ReasonObligationConflict, Detail: detail,\n\t\t\t\tErr: &UndischargedObligationError{Obligation: o, Detail: detail},",
 			}},
 		},
 		{

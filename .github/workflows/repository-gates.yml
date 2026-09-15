@@ -1,0 +1,550 @@
+name: Repository Gates
+
+# ONE JOB FOR THE ONE-MINUTE REPOSITORY GATES (W3-J, 2026-09-12), plus the
+# regression-test suite, which moved here for the reason stated above its job.
+#
+# These seven checks each ran as their own workflow with their own job. Every
+# one is a grep, a lint script or a range scan that finishes in seconds, but
+# GitHub bills every hosted JOB rounded UP to a whole minute, so seven 5-second
+# jobs billed seven minutes on every push of every pull request. Measured
+# 2026-09-08..11 over the pull_request tier: 514 runs each of forbidden files,
+# telemetry markers and gitleaks, 444 of version alignment, 213 of stale model
+# ids and 199 of tests hygiene - 2,398 hosted minutes in four days, ~$108 per
+# 30 days at the billed $0.006/min, for about four minutes of actual work.
+#
+# Now they are steps of one job, and on this repository that job runs on the
+# self-hosted fleet, where a minute costs nothing. The fleet's price is QUEUE
+# time (p90 6.2 min on 2026-09-10), and it is affordable HERE because nothing on
+# the required path waits for this job: none of these checks is a required
+# context, and it runs in parallel with the unit lanes that decide when a board
+# is done. A serial job - a change detector, a required rollup - would put the
+# queue on the critical path, which is #3795's incident, so those stay hosted.
+#
+# EACH STEP KEEPS ITS OLD CHECK'S NAME, so a red still says which gate failed,
+# and each runs `if: !cancelled()` so one red does not hide the others - the
+# default (a failed step skips the rest) would let the first finding mask every
+# later one. `!cancelled()` rather than `always()`, so a run cancelled by a newer
+# push does not report checks it never finished; and each also requires the
+# checkout to have SUCCEEDED, because a fleet slot keeps its workspace between
+# jobs, so after a failed checkout the tree on disk may be another PR's.
+#
+# PATH FILTERS WERE DROPPED, DELIBERATELY. Version alignment, tests hygiene and
+# stale model ids used to fire only on their own paths. Inside one job that
+# already runs, a `paths:` filter cannot apply per step, and each of them costs
+# seconds, so they now run on every pull request - which is also the stronger
+# trigger (#3089: a PR editing only VERSION did not run the version gate).
+#
+# Stays out, each for a named contract (see the W3-J PR for the measurements):
+#   commit-lint.yml             reads the title and body, so it must fire on
+#                               `edited`; folding it here would re-run every
+#                               gate on every body edit
+#   regression-test-required    reads labels, so it fires on labeled/unlabeled
+#   partner-name-denylist.yml   enterprise-only, runs on push to main, and its
+#                               trigger is pinned by
+#                               partner_denylist_trigger_coverage_test.sh
+#   check-protected-changes.yml needs pull-requests: write to comment
+#   suite-gate.yml              its merge_group leg must stay hosted
+#   gitleaks.yml                keeps the push-to-main leg (the last scan before
+#                               content reaches the public mirror); the PR leg
+#                               is the step below, both through
+#                               .github/scripts/gitleaks-delta-scan.sh
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+# Cancel superseded runs. Sessions on this repo push in rapid bursts, and a
+# run for a push that is no longer the tip proves nothing while billing the
+# same minutes as a real one. Two halves make non-PR runs safe, and BOTH are
+# needed: cancel-in-progress only covers the RUNNING run, while GitHub's
+# documented default also cancels a PENDING run in the same group the moment
+# a third arrives - so with a shared per-branch group, three rapid pushes
+# meant the middle push was never scanned at all. R3 found real windows: on
+# 2026-08-25 three pushes landed inside one 42-second gitleaks run, and that
+# scanner is delta-only, so the dropped run's commit range would have been
+# scanned by NOTHING. Non-PR events therefore get a PER-COMMIT group (no
+# sharing, nothing to displace), and only pull_request events cancel.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: Repository gates
+    # RUNNER SELECTED BY REPOSITORY: this workflow syncs to the community mirror,
+    # which has no self-hosted runners, so a plain fleet pin would QUEUE FOREVER
+    # there. Pinned by mirror_can_schedule_every_staged_job_test.sh.
+    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history: the forbidden-files and stale-model-id checks diff
+          # against the base, and the secret scan reads the PR's commit range.
+          fetch-depth: 0
+
+      - name: Check for forbidden files
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.event_name == 'pull_request' }}
+        run: |
+          # Get list of files added/modified in this PR (exclude deletions)
+          FILES=$(git diff --name-only --diff-filter=ACM origin/main...HEAD)
+
+          # Official docs that match broad forbidden-file patterns but are allowed.
+          ALLOWED_FILES=(
+            "technical-docs/runbooks/RUNBOOK_CLAUDE_CODE_PLUGIN_E2E.md"
+            "technical-docs/runbooks/RUNBOOK_CODEX_PLUGIN_E2E.md"
+          )
+
+          # Patterns that should never be committed
+          FORBIDDEN_PATTERNS=(
+            "^\.claude/"
+            "CLAUDE\.md$"
+            "CLAUDE.*\.md$"
+            "SESSION_.*\.md$"
+            "session-.*\.md$"
+            "HANDOVER.*\.md$"
+          )
+
+          FORBIDDEN_FOUND=()
+
+          for file in $FILES; do
+            ALLOWED=false
+            for allowed_file in "${ALLOWED_FILES[@]}"; do
+              if [ "$file" = "$allowed_file" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+
+            if [ "$ALLOWED" = true ]; then
+              continue
+            fi
+
+            for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+              if echo "$file" | grep -qE "$pattern"; then
+                FORBIDDEN_FOUND+=("$file")
+                break
+              fi
+            done
+          done
+
+          if [ ${#FORBIDDEN_FOUND[@]} -gt 0 ]; then
+            echo "❌ Forbidden files detected in PR:"
+            echo ""
+            for file in "${FORBIDDEN_FOUND[@]}"; do
+              echo "  - $file"
+            done
+            echo ""
+            echo "These files should not be committed to the repository."
+            echo "They are typically personal development aids (Claude Code config, session notes)."
+            echo ""
+            echo "To remove them from tracking while keeping locally:"
+            echo "  git rm --cached <file>"
+            echo ""
+            exit 1
+          fi
+
+          echo "✅ No forbidden files found"
+
+      - name: Scan for hardcoded secrets
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/gitleaks-delta-scan.sh
+
+      # Every workflow that runs the AxonFlow agent in the runner must declare
+      # its telemetry disposition, or its heartbeats leave from a hosted
+      # runner's IP and pollute the external telemetry digest (epic #2047).
+      - name: Lint workflow telemetry markers
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: bash .github/scripts/check-workflow-telemetry-marker.sh
+
+      - name: Self-test the telemetry marker lint
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: bash .github/scripts/check-workflow-telemetry-marker_test.sh
+
+      # Expression-length guard (#3909). It needs a trigger with no path filter:
+      # the run: block that breaks a workflow is usually grown by a PR that is
+      # not about workflows, and an oversized block makes the WHOLE file
+      # unparseable, so update-stack.yml stops dispatching for every
+      # environment at once.
+      # ENTERPRISE ONLY, measured: on a staged community-mirror copy the guard
+      # fails its own anti-vacuity floor ("scanned only 20 run-blocks
+      # containing ${{ }}, expected at least 40") - the floor is this tree's
+      # calibration, and the mirror carries half the workflows. The file it
+      # protects, update-stack.yml, does not sync, and neither does the script
+      # (/scripts/ci/* is excluded), so on the mirror there is nothing for it
+      # to verify and the step would only ever be red.
+      - name: Workflow expression-length guard
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.repository == 'getaxonflow/axonflow-enterprise' }}
+        run: python3 scripts/ci/check-workflow-expression-length.py
+
+      - name: Self-test the expression-length guard
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && github.repository == 'getaxonflow/axonflow-enterprise' }}
+        run: python3 scripts/ci/check-workflow-expression-length.py --self-test
+
+      # VERSION must agree with the latest CHANGELOG heading, and every compose
+      # file, Dockerfile and capabilities.go must pin that version (#3089).
+      - name: Validate version alignment
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: ./.github/scripts/validate-version-alignment.sh
+
+      # Enforces docs/test-visibility-policy.md. The top-level tests/ directory
+      # is PUBLIC (it syncs to the community mirror), so it must never contain
+      # internal hostnames, AWS account IDs, real credentials, or references to
+      # private sibling repos. A test that genuinely needs one of those belongs
+      # under ee/**/tests/, which the sync excludes.
+      - name: Public tests hygiene scan
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          errors=0
+          fail() {
+            echo "::error file=$1::$2"
+            errors=$((errors + 1))
+          }
+
+          # 1) Private sibling repos — these are internal-only and their
+          # paths don't exist in the public community mirror. Reference
+          # public ADRs, public CHANGELOG entries, or inline self-contained
+          # explanations instead.
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            fail "$file" "Line $line references private sibling repo '$(echo "$rest" | tr -d '[:space:]' | head -c 80)'. Move to ee/**/tests/ or inline the reference."
+          done < <(grep -rnE "axonflow-business-docs|axonflow-operations|axonflow-secrets|axonflow-internal" tests/ 2>/dev/null)
+
+          # 2) Internal hostnames — .internal, RDS endpoints, staging
+          # subdomains that aren't publicly documented. Localhost and
+          # public github.com / docs.getaxonflow.com URLs are fine.
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            fail "$file" "Line $line has an internal hostname: '$(echo "$rest" | tr -d '[:space:]' | head -c 80)'."
+          done < <(grep -rnE '\.internal\b|[a-z0-9-]+\.([a-z0-9-]+\.)?rds\.amazonaws\.com|amazonaws\.com/[0-9]{12}|[a-z0-9-]+\.elb\.amazonaws\.com' tests/ 2>/dev/null)
+
+          # 3) AWS account IDs — 12-digit patterns in arns / role refs.
+          # Exclude obvious false positives (test UUIDs, timestamps, line
+          # numbers).
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            # Filter: arn:aws: or account-id surroundings
+            if echo "$rest" | grep -qE 'arn:aws|account[-_ ]?id|iam::[0-9]{12}'; then
+              fail "$file" "Line $line looks like it contains an AWS account id: '$(echo "$rest" | tr -d '[:space:]' | head -c 80)'."
+            fi
+          done < <(grep -rnE 'arn:aws:|iam::[0-9]{12}|account[-_ ]?id["]?\s*[:=]\s*["]?[0-9]{12}' tests/ 2>/dev/null)
+
+          # 4) Real-looking credentials. Demo credentials (demo-client,
+          # demo-secret, demo-*) are the documented defaults and fine.
+          # Flag: long hex/base64-ish secrets, bearer tokens, GitHub PATs,
+          # AWS access keys, SSH keys.
+          #   - ghp_... / gho_... / ghs_... — GitHub PATs
+          #   - AKIA... / ASIA... — AWS access key IDs
+          #   - private key headers
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            fail "$file" "Line $line looks like a real credential: '$(echo "$rest" | head -c 80)'."
+          done < <(grep -rnE 'ghp_[a-zA-Z0-9]{30,}|gho_[a-zA-Z0-9]{30,}|ghs_[a-zA-Z0-9]{30,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH )?PRIVATE KEY-----' tests/ 2>/dev/null)
+
+          if [ $errors -gt 0 ]; then
+            echo ""
+            echo "❌ tests/ hygiene scan failed with $errors issue(s)."
+            echo "   Public tests must not contain internal hostnames, AWS account IDs,"
+            echo "   real credentials, or references to private sibling repos."
+            echo "   See docs/test-visibility-policy.md."
+            echo "   For sensitive tests, use ee/**/tests/ instead (excluded from community sync)."
+            exit 1
+          fi
+          echo "✅ tests/ hygiene scan passed."
+
+      # Greps markdown for stale model ids; nothing is written back (#3089).
+      # A pull request scans the docs it changed; a manual dispatch scans all.
+      - name: Block stale model identifiers
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+        run: |
+          set -euo pipefail
+
+          SCAN_ENGINE=""
+          if command -v rg >/dev/null 2>&1; then
+            SCAN_ENGINE="rg"
+          elif command -v grep >/dev/null 2>&1 && grep -P "x" <<< "x" >/dev/null 2>&1; then
+            SCAN_ENGINE="grep-pcre"
+          else
+            echo "::error::Neither ripgrep (rg) nor grep with PCRE (-P) is available on this runner."
+            exit 2
+          fi
+
+          scan_pattern() {
+            local pattern="$1"
+            local file="$2"
+            if [ "$SCAN_ENGINE" = "rg" ]; then
+              rg -n "$pattern" "$file"
+            else
+              grep -nH -P "$pattern" "$file"
+            fi
+          }
+          scan_dirs=()
+          [ -d docs ] && scan_dirs+=(docs)
+          [ -d technical-docs ] && scan_dirs+=(technical-docs)
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ ${#scan_dirs[@]} -eq 0 ]; then
+              echo "No docs/ or technical-docs/ directories found."
+              exit 0
+            fi
+            FILES=$(find "${scan_dirs[@]}" -type f \( -name "*.md" -o -name "*.mdx" \) | sort || true)
+          else
+            FILES=$(git diff --name-only --diff-filter=ACM "${{ github.event.pull_request.base.sha }}"...HEAD | grep -E '^(docs|technical-docs)/.*\.(md|mdx)$' || true)
+          fi
+
+          if [ -z "$FILES" ]; then
+            echo "No changed docs files to scan."
+            exit 0
+          fi
+
+          PATTERNS=(
+            '\b(gpt-3\.5-turbo|gpt-35-turbo|gpt-4-turbo)\b'
+            '\bclaude-instant\b'
+            '\bclaude-3(-5)?-(opus|sonnet|haiku)(-[0-9]{8})?\b'
+            '\banthropic\.claude-3(-5)?-[a-z0-9-]+\b'
+            '\b(llama2|llama3\.1|codellama|neural-chat)\b'
+            '\b(mixtral:8x7b|mistral:7b)\b'
+          )
+          BEDROCK_PATTERNS=(
+            '\bbedrock:claude-v2\b'
+            '\banthropic\.claude-v2(:1)?\b'
+            '\banthropic\.claude-3-(opus|sonnet|haiku)-[0-9]{8}-v1:0\b'
+            '\banthropic\.claude-3-5-(sonnet|haiku)-[0-9]{8}-v1:0\b'
+          )
+
+          FOUND=0
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            for pattern in "${PATTERNS[@]}"; do
+              if scan_pattern "$pattern" "$file"; then
+                FOUND=1
+              elif [ $? -gt 1 ]; then
+                echo "::error::Scan failed for file '$file' with pattern '$pattern'"
+                exit 2
+              fi
+            done
+            for pattern in "${BEDROCK_PATTERNS[@]}"; do
+              if scan_pattern "$pattern" "$file"; then
+                FOUND=1
+              elif [ $? -gt 1 ]; then
+                echo "::error::Scan failed for file '$file' with pattern '$pattern'"
+                exit 2
+              fi
+            done
+          done <<< "$FILES"
+
+          if [ $FOUND -ne 0 ]; then
+            echo "::error::Stale model identifiers found. Use current provider model IDs."
+            exit 1
+          fi
+
+          echo "✓ No stale model IDs found in changed docs."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # MOVED HERE FROM regression-test-required.yml (W3-J, 2026-09-12), verbatim.
+  # That workflow must fire on edited / labeled / unlabeled, because its
+  # presence gate reads the PR's title, body and labels. This suite reads none
+  # of them - it executes tests/regression-test-required/ against the tree - but
+  # as a sibling there it re-ran on every one of those events, on an unchanged
+  # head: 884 runs against 544 pushes over 2026-09-08..11. It was the single
+  # largest pull-request job on the fleet - 710 of 2,206 pull-request fleet
+  # job-minutes across 85% of 2026-09-10's runs (by workflow, test.yml's
+  # several lanes together were larger). This workflow never subscribes to
+  # edited / labeled / unlabeled.
+  # ───────────────────────────────────────────────────────────────────────────
+  # #3121 — actually execute the regression tests.
+  #
+  # No `paths:` filter and no event guard, on purpose. This job runs on every PR
+  # (to any base, since W3-J moved it here) and on every merge-queue branch, which means:
+  #   * it runs on the PR that changes tests/regression-test-required/**;
+  #   * it runs on the PR that changes THIS workflow file (several of the tests
+  #     assert against this file's contents, so that matters);
+  #   * it cannot be dodged by a paths filter that failed to list something —
+  #     the #3089 failure mode.
+  # The whole suite is a few seconds of shell with no stack dependency, so the
+  # broadest possible trigger costs nothing worth optimising.
+  # ───────────────────────────────────────────────────────────────────────────
+  run-regression-suite:
+    name: Run regression-test suite
+    # RUNNER SELECTED BY REPOSITORY, because this workflow is carried to the
+    # community mirror verbatim. The fleet is registered on
+    # getaxonflow/axonflow-enterprise ONLY; getaxonflow/axonflow has zero
+    # runners, so a plain `[self-hosted, ...]` pin there does not fail - it
+    # QUEUES FOREVER, and `Lint Summary` and `Test Summary` are required checks
+    # on the mirror, so the community release blocks on a check that can never
+    # report. Measured on mirror PR getaxonflow/axonflow#485: seven checks
+    # queued twenty minutes with no runner able to accept them.
+    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
+    # THE CAP FOLLOWS THE MEASURED DURATION: its p95 times 1.5, rounded up. On
+    # 2026-09-13, 20 successful runs took p50 12.99 and p95 14.75 minutes on the
+    # fleet, and the old 15-minute cap cancelled two more at 15.2; on 2026-09-10/11
+    # the job took 6.5 to 7.9. The time is the test step itself: fleet contention
+    # on the same work, plus a 154.6s test added on 09-12. It is not a setup or
+    # post step, which a cap raise must never hide. The two tests that are half
+    # of the suite's time are tracked in #4215. Re-measure before moving this.
+    timeout-minutes: 23
+    # Enterprise repo only, same precedent and same reason as
+    # e2e-production-posture in sdk-smoke-tests.yml: the community sync excludes
+    # /scripts/*, so on a mirror checkout portable_sed_inplace_test.sh and
+    # posture_runner_dispatch_truncation_test.sh have no subject to assert
+    # against and fail for a reason that is not a regression. Verified by
+    # running the suite against a mirror-shaped tree: 7 pass, those 2 fail.
+    # Development happens in this repo (CLAUDE.md, "Repository Structure"), so
+    # this is where the guard has to hold. Making the mirror's copy of the suite
+    # self-contained means adding those two files to sync-community-repo.yml's
+    # exclude list — a change in another workflow, tracked separately.
+    # Draft-PR cheap tier (2026-09-03): while a PR is a draft only the one-minute
+    # gates run. Marking it ready (`ready_for_review` in pull_request.types)
+    # starts this job; later pushes to a ready PR run it as before.
+    if: (github.repository == 'getaxonflow/axonflow-enterprise') && github.event.pull_request.draft != true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Several of the suite's tests need tools the runner image does not ship.
+      # Every install is unconditional and fails the job if it fails: a test
+      # that cannot run must not be reported as having passed.
+      - name: Ensure PyYAML (workflows_yaml_parse_test.sh dependency)
+        run: |
+          set -euo pipefail
+          # The fallback below would hit PEP 668 on the fleet host
+          # (/usr/lib/python3.12/EXTERNALLY-MANAGED), so it installs into a
+          # per-job venv instead. It does NOT fire today - the host carries
+          # python3-yaml and this prints "PyYAML 6.0.1" - but a host rebuilt
+          # without that package would otherwise fail here rather than recover.
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            python3 -m venv "$RUNNER_TEMP/pyvenv"
+            "$RUNNER_TEMP/pyvenv/bin/pip" install --quiet pyyaml
+            echo "$RUNNER_TEMP/pyvenv/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/pyvenv/bin:$PATH"
+          fi
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+
+      - name: Ensure yq (saas_perf_testing_env_config_test.sh dependency)
+        env:
+          # Pinned rather than `latest` — this workflow is a guard, and a guard
+          # that pulls an unpinned binary from the internet on every run is not
+          # one. Other workflows in this repo still use `latest`; that is a
+          # separate cleanup.
+          YQ_VERSION: v4.53.3
+        run: |
+          set -euo pipefail
+          # HOST-GLOBAL FROM A FLEET JOB. `wget -O /usr/bin/yq` truncates the
+          # target and then fills it, so on the shared host a concurrent slot
+          # can exec a partial binary. Download to a private temp file, chmod
+          # it there, then `mv` it into place - a rename is atomic, so a
+          # concurrent reader sees either the old yq or the new one and never
+          # half of one. yq is preinstalled by runner-bootstrap.sh, so on the
+          # fleet this short-circuits and nothing is written at all.
+          if ! command -v yq >/dev/null 2>&1; then
+            tmp="$(mktemp "${RUNNER_TEMP:-/tmp}/yq.XXXXXX")"
+            wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O "$tmp"
+            chmod +x "$tmp"
+            sudo mv -f "$tmp" /usr/bin/yq
+          fi
+          yq --version
+
+      # #3140 — openapi_validator_synthetic_failure_test.sh used to `exit 0`
+      # with "skip: swagger-cli not installed locally" and to wrap its spectral
+      # section in `if command -v spectral`. Neither tool is on the
+      # GitHub-hosted runner image and this job installed neither, so the entire
+      # synthetic-failure half of that test — the part that proves the OpenAPI
+      # gate would REJECT a broken spec — silently did not run, on exactly the
+      # platform it was written for. The test now hard-fails when either tool is
+      # absent; these installs are what make it actually assert instead.
+      - name: Setup Node.js (swagger-cli + spectral)
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '20'
+
+      - name: Ensure swagger-cli and spectral (openapi_validator_synthetic_failure_test.sh)
+        env:
+          # Pinned for the same reason yq is: a guard that pulls an unpinned
+          # binary from the internet on every run is not one.
+          SWAGGER_CLI_VERSION: 4.0.4
+          SPECTRAL_CLI_VERSION: 6.15.1
+        run: |
+          set -euo pipefail
+          # NOT `npm install -g` (2026-09-05). `npm config get prefix` on the
+          # fleet host is /usr, so a global install writes /usr/lib/node_modules
+          # - host-global across all eight slots, and two concurrent runs of
+          # this job race there. Same per-job shape as the spectral install
+          # below, which already does this correctly.
+          npm install --prefix "$RUNNER_TEMP/swagger-cli" \
+            "@apidevtools/swagger-cli@${SWAGGER_CLI_VERSION}"
+          echo "$RUNNER_TEMP/swagger-cli/node_modules/.bin" >> "$GITHUB_PATH"
+          # $GITHUB_PATH reaches only LATER steps; the `swagger-cli --version`
+          # check below runs in THIS step, so extend PATH here too (exit 127
+          # on #3783 run 33994256580 otherwise).
+          export PATH="$RUNNER_TEMP/swagger-cli/node_modules/.bin:$PATH"
+
+          # Spectral needs its whole transitive tree pinned, not just the CLI.
+          # 6.15.1 caret-ranges @stoplight/spectral-core and >=1 for the
+          # rulesets, which resolve today to 1.23.x / 1.22.x — a combination
+          # this repo already knows is broken: it emits a JSONPath expression
+          # that crashes nimma 0.2.3 with `Cannot read properties of null
+          # (reading 'enum')` on docs/api/orchestrator-api.yaml. A crash is a
+          # non-zero exit, which is what most of the synthetic-failure
+          # assertions look for, so installing the broken tree would let them
+          # pass for the wrong reason. This is the same pinned-overrides install
+          # .github/workflows/validate-openapi.yml uses, and for the same
+          # reason; `npm install -g` does not honour `overrides`, hence the
+          # local package.json. Bump both together when upstream ships a fix.
+          mkdir -p "$RUNNER_TEMP/spectral-ci"
+          cat > "$RUNNER_TEMP/spectral-ci/package.json" << PKGEOF
+          {
+            "name": "spectral-ci-pinned",
+            "version": "1.0.0",
+            "dependencies": {
+              "@stoplight/spectral-cli": "${SPECTRAL_CLI_VERSION}"
+            },
+            "overrides": {
+              "@stoplight/spectral-core": "1.22.0",
+              "@stoplight/spectral-rulesets": "1.22.1"
+            }
+          }
+          PKGEOF
+          (cd "$RUNNER_TEMP/spectral-ci" && npm install --silent)
+          echo "$RUNNER_TEMP/spectral-ci/node_modules/.bin" >> "$GITHUB_PATH"
+
+          swagger-cli --version
+
+      - name: Execute tests/regression-test-required/*.sh
+        env:
+          # required_check_name_uniqueness_test.sh reads ruleset 9199766 to
+          # check every required context has a producer that reports on
+          # pull_request. Without a token that read is unauthenticated, the
+          # guard degrades to a hardcoded snapshot, and it now FAILS rather
+          # than passing blind - which is how this omission surfaced.
+          # Measured on main-guard-freshness.yml today: the default token
+          # reads this ruleset successfully with no `administration: read`,
+          # so this is missing plumbing, not a scope limitation. Setting
+          # ALLOW_PINNED_SNAPSHOT=1 here would re-open the fail-open and make
+          # the escape hatch the default path on every run, so it is not set.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # docs_deletion_ledger_test.sh compares the change with its base. The
+          # checkout above is shallow, so the checker fetches this one commit.
+          # A manual dispatch reviews no change, so its base is the dispatched
+          # commit itself; without that fallback the check had no base and
+          # failed the whole suite (#4059).
+          DOCS_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # No `if [ -x ... ]` guard. A missing runner is a broken repo, not a
+          # reason to report success — `bash` on a missing path exits non-zero
+          # and that is the correct outcome.
+          bash tests/regression-test-required/run-all.sh

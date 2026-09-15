@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package audit
 
@@ -238,9 +230,9 @@ func TestTopPoliciesQuery_AggregatesEveryPlane_RealPG(t *testing.T) {
 		// A lifecycle row naming a policy NOTHING else recorded must not
 		// create a policy on the report at all.
 		{"override_revoked", DecisionOverrideLifecycle, `{"override_id":"ov-2","policy_ids":["override_only_never_fired"]}`},
-		// THE MCP PLANE'S OVERRIDE ROW (#3438 R3 BLOCKER 2). Its writer is
-		// platform/agent writeOverrideUsedEvent, which stamps
-		// policy_decision = "allowed" and request_type = "override_used" - so
+		// THE MCP PLANE'S OVERRIDE ROW (#3438 R3 BLOCKER 2). The agent's MCP
+		// planes wrote it until v11 deleted their override flip, and the rows
+		// remain: policy_decision = "allowed" and request_type = "override_used" - so
 		// the policy_decision-keyed exclusion above never saw it, and the
 		// policy whose block it records as BYPASSED was ranked as a trigger.
 		// Same discipline as the lifecycle rows: on a policy that genuinely

@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -37,6 +29,16 @@ type mockDynamicPolicyService struct {
 	versionsFunc func(ctx context.Context, tenantID, policyID string) (*PolicyVersionResponse, error)
 	importFunc   func(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, userID string) (*ImportPoliciesResponse, error)
 	exportFunc   func(ctx context.Context, tenantID string) (*ExportPoliciesResponse, error)
+	mayWriteFunc func(ctx context.Context) (bool, error)
+}
+
+// MayWriteLegacyPolicies defaults to an owner pool (may write), so the import
+// tests below exercise the route past the pre-read freeze guard, as before it.
+func (m *mockDynamicPolicyService) MayWriteLegacyPolicies(ctx context.Context) (bool, error) {
+	if m.mayWriteFunc != nil {
+		return m.mayWriteFunc(ctx)
+	}
+	return true, nil
 }
 
 func (m *mockDynamicPolicyService) ListPolicies(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
@@ -126,7 +128,7 @@ func TestDynamicPolicyAPI_ListDynamicPolicies(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -152,7 +154,7 @@ func TestDynamicPolicyAPI_ListDynamicPolicies(t *testing.T) {
 func TestDynamicPolicyAPI_ListDynamicPolicies_MissingTenantID(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies", nil)
 	// No X-Tenant-ID header
@@ -182,7 +184,7 @@ func TestDynamicPolicyAPI_CreateDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	body := `{"name":"Cost Limit Policy","category":"dynamic-cost","type":"cost","conditions":[],"actions":[],"priority":100,"enabled":true}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies", bytes.NewBufferString(body))
@@ -201,7 +203,7 @@ func TestDynamicPolicyAPI_CreateDynamicPolicy(t *testing.T) {
 func TestDynamicPolicyAPI_CreateDynamicPolicy_InvalidCategory(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	// Try to create with non-dynamic category
 	body := `{"name":"Static Policy","category":"pii","type":"content","conditions":[],"actions":[],"priority":100,"enabled":true}`
@@ -221,7 +223,7 @@ func TestDynamicPolicyAPI_CreateDynamicPolicy_InvalidCategory(t *testing.T) {
 func TestDynamicPolicyAPI_CreateDynamicPolicy_MissingCategory(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	// Try to create without category
 	body := `{"name":"Policy Without Category","type":"cost","conditions":[],"actions":[],"priority":100,"enabled":true}`
@@ -254,7 +256,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -285,7 +287,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_NotDynamic(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -308,7 +310,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_NotFound(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
@@ -326,7 +328,7 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_NotFound(t *testing.T) {
 func TestDynamicPolicyAPI_GetDynamicPolicy_InvalidID(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	// "BAD_ID!" — uppercase + bang — fails UUID parse, sys_* prefix, AND the
 	// legacy snake-case regex (^[a-z][a-z0-9_-]+$). Plain "not-a-uuid" is now
@@ -369,7 +371,7 @@ func TestDynamicPolicyAPI_UpdateDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	body := `{"name":"Updated Name"}`
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewBufferString(body))
@@ -401,7 +403,7 @@ func TestDynamicPolicyAPI_UpdateDynamicPolicy_InvalidCategory(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	// Try to change category to non-dynamic
 	body := `{"category":"pii"}`
@@ -439,7 +441,7 @@ func TestDynamicPolicyAPI_DeleteDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -470,7 +472,7 @@ func TestDynamicPolicyAPI_Import(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	body := `{"policies":[{"name":"Policy 1","category":"dynamic-risk","type":"risk","conditions":[],"actions":[],"priority":1,"enabled":true}]}`
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/import", bytes.NewBufferString(body))
@@ -489,7 +491,7 @@ func TestDynamicPolicyAPI_Import(t *testing.T) {
 func TestDynamicPolicyAPI_Import_InvalidCategory(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	// Import with non-dynamic category
 	body := `{"policies":[{"name":"Static Policy","category":"pii","type":"content","conditions":[],"actions":[],"priority":1,"enabled":true}]}`
@@ -520,7 +522,7 @@ func TestDynamicPolicyAPI_Export(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -566,7 +568,7 @@ func TestDynamicPolicyAPI_Effective(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/effective", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -583,7 +585,7 @@ func TestDynamicPolicyAPI_Effective(t *testing.T) {
 func TestDynamicPolicyAPI_CORS(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
@@ -618,7 +620,7 @@ func TestDynamicPolicyAPI_TestPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	testReq := TestPolicyRequest{
 		Query: "test query for policy evaluation",
@@ -651,7 +653,7 @@ func TestDynamicPolicyAPI_TestPolicy_InvalidJSON(t *testing.T) {
 	}
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/"+policyID+"/test", bytes.NewReader([]byte("invalid json")))
@@ -684,7 +686,7 @@ func TestDynamicPolicyAPI_GetVersions(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
@@ -711,7 +713,7 @@ func TestDynamicPolicyAPI_Delete_Success(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
@@ -735,7 +737,7 @@ func TestDynamicPolicyAPI_Update_InvalidJSON(t *testing.T) {
 	}
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	policyID := uuid.New().String()
 	req := httptest.NewRequest("PUT", "/api/v1/dynamic-policies/"+policyID, bytes.NewReader([]byte("invalid json")))
@@ -770,7 +772,7 @@ func TestDynamicPolicyAPI_List_WithFilters(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies?type=cost&category=dynamic-cost", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -787,7 +789,7 @@ func TestDynamicPolicyAPI_List_WithFilters(t *testing.T) {
 func TestDynamicPolicyAPI_Import_InvalidJSON(t *testing.T) {
 	handler := NewDynamicPolicyAPIHandler(&mockDynamicPolicyService{})
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/dynamic-policies/import", bytes.NewReader([]byte("invalid json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -816,7 +818,7 @@ func TestDynamicPolicyAPI_Create_ValidationError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	createReq := CreatePolicyRequest{
 		Name:     "Test",
@@ -868,7 +870,7 @@ func TestDynamicPolicyAPI_Update_Success(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	updateReq := UpdatePolicyRequest{
 		Name:    &name,
@@ -899,7 +901,7 @@ func TestDynamicPolicyAPI_List_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -922,7 +924,7 @@ func TestDynamicPolicyAPI_Export_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -945,7 +947,7 @@ func TestDynamicPolicyAPI_Create_TierError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	createReq := CreatePolicyRequest{
 		Name:     "System Policy",
@@ -983,7 +985,7 @@ func TestDynamicPolicyAPI_Create_Success(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	createReq := CreatePolicyRequest{
 		Name:     "New Policy",
@@ -1014,7 +1016,7 @@ func TestDynamicPolicyAPI_Create_InternalError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	createReq := CreatePolicyRequest{
 		Name:     "New Policy",
@@ -1046,7 +1048,7 @@ func TestDynamicPolicyAPI_Get_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1070,7 +1072,7 @@ func TestDynamicPolicyAPI_Effective_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/effective", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1097,7 +1099,7 @@ func TestDynamicPolicyAPI_Delete_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1126,7 +1128,7 @@ func TestDynamicPolicyAPI_Update_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	updateReq := UpdatePolicyRequest{Name: &name}
 	body, _ := json.Marshal(updateReq)
@@ -1158,7 +1160,7 @@ func TestDynamicPolicyAPI_TestPolicy_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	testReq := TestPolicyRequest{Query: "test query"}
 	body, _ := json.Marshal(testReq)
@@ -1189,7 +1191,7 @@ func TestDynamicPolicyAPI_Versions_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1212,7 +1214,7 @@ func TestDynamicPolicyAPI_Import_ServiceError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	importReq := ImportPoliciesRequest{
 		Policies: []CreatePolicyRequest{
@@ -1245,7 +1247,7 @@ func TestDynamicPolicyAPI_Update_NotFound(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	name := "Updated Policy"
 	updateReq := UpdatePolicyRequest{Name: &name}
@@ -1275,7 +1277,7 @@ func TestDynamicPolicyAPI_Update_NotDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	name := "Updated Policy"
 	updateReq := UpdatePolicyRequest{Name: &name}
@@ -1305,7 +1307,7 @@ func TestDynamicPolicyAPI_Update_InvalidCategoryChange(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	newCategory := "static-security" // Invalid - not a dynamic category
 	updateReq := UpdatePolicyRequest{Category: &newCategory}
@@ -1338,7 +1340,7 @@ func TestDynamicPolicyAPI_Update_ValidationError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	name := ""
 	updateReq := UpdatePolicyRequest{Name: &name}
@@ -1371,7 +1373,7 @@ func TestDynamicPolicyAPI_Update_TierError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	name := "Updated"
 	updateReq := UpdatePolicyRequest{Name: &name}
@@ -1404,7 +1406,7 @@ func TestDynamicPolicyAPI_Update_NilPolicyAfterUpdate(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	name := "Updated"
 	updateReq := UpdatePolicyRequest{Name: &name}
@@ -1434,7 +1436,7 @@ func TestDynamicPolicyAPI_Delete_NotFound(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1459,7 +1461,7 @@ func TestDynamicPolicyAPI_Delete_NotDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1487,7 +1489,7 @@ func TestDynamicPolicyAPI_Delete_TierError(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("DELETE", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1512,7 +1514,7 @@ func TestDynamicPolicyAPI_Test_NotFound(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	testReq := TestPolicyRequest{Query: "test query"}
 	body, _ := json.Marshal(testReq)
@@ -1540,7 +1542,7 @@ func TestDynamicPolicyAPI_Test_NotDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	testReq := TestPolicyRequest{Query: "test query"}
 	body, _ := json.Marshal(testReq)
@@ -1568,7 +1570,7 @@ func TestDynamicPolicyAPI_Versions_NotFound(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1592,7 +1594,7 @@ func TestDynamicPolicyAPI_Versions_NotDynamicPolicy(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/"+policyID+"/versions", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1621,7 +1623,7 @@ func TestDynamicPolicyAPI_List_Pagination(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies?page=2&page_size=2&enabled=true&category=dynamic-risk", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1640,7 +1642,7 @@ func TestDynamicPolicyAPI_CORS_Preflight(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1660,7 +1662,7 @@ func TestDynamicPolicyAPI_HandlePolicyByID_Options(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/"+policyID, nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1679,7 +1681,7 @@ func TestDynamicPolicyAPI_Import_Options(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/import", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1698,7 +1700,7 @@ func TestDynamicPolicyAPI_Export_Options(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/export", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -1717,7 +1719,7 @@ func TestDynamicPolicyAPI_Effective_Options(t *testing.T) {
 
 	handler := NewDynamicPolicyAPIHandler(mockService)
 	r := mux.NewRouter()
-	handler.RegisterRoutes(r)
+	registerLegacyPolicyRoutes(r, handler, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/dynamic-policies/effective", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")

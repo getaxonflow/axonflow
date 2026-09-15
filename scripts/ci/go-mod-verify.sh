@@ -85,7 +85,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     # A tolerable line is exactly: "<module> <version>: missing ziphash: ..."
     # for a module on the filesystem-replaced list.
-    if printf '%s' "$line" | grep -q 'missing ziphash'; then
+    if grep -q 'missing ziphash' <<<"$line"; then
         mod="${line%% *}"
         if grep -qxF "$mod" "$log.replaced"; then
             echo "  (skipped, replaced by a local path: $mod)"

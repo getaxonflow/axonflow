@@ -121,7 +121,7 @@ func TestHandleDecide_RequireUserToken_FlagOn_ValidToken_Unaffected(t *testing.T
 	origSecret := jwtSecret
 	jwtSecret = []byte(testJWTSecret)
 	t.Cleanup(func() { jwtSecret = origSecret })
-	token := mintUserTokenWithTenant(t, "ent-tenant")
+	token := mintUserTokenWithTenant(t, "ent-tenant", rutDecideOrg)
 
 	req := decideEnterpriseReq(t, DecideRequest{
 		Stage:     DecisionStageLLM,

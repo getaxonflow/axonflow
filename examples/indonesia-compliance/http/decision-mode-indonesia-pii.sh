@@ -8,7 +8,11 @@
 #   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 #   export AXONFLOW_CLIENT_ID=your-client-id
 #   export AXONFLOW_CLIENT_SECRET=your-client-secret
-#   export PII_ACTION=block  # Required for deny verdicts
+#   The organization's recorded PII override must be block for the deny
+#   verdicts. The checksum NIK/NPWP detector has no stored policy row, so
+#   with no override it detects and records and the request is allowed.
+#   Since v11 environment variables no longer set detection actions:
+#     PUT /api/v1/detection-posture/pii {"action":"block"} on the customer portal
 
 set -euo pipefail
 

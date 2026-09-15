@@ -140,7 +140,7 @@ func TestGetWorkflow(t *testing.T) {
 
 func TestStepGate_Allow(t *testing.T) {
 	repo := NewMockRepository()
-	svc := NewService(repo, nil, nil) // Default evaluator allows all
+	svc := NewService(repo, allowingPolicyEvaluator{}, nil) // an explicit allowing double (#4254)
 	ctx := context.Background()
 
 	// Create a workflow
@@ -534,6 +534,21 @@ func TestMarkStepCompleted(t *testing.T) {
 	err = svc.MarkStepCompleted(ctx, workflow.WorkflowID, "non-existent", nil, "tenant-1", "org-1")
 	if err == nil {
 		t.Error("expected error for non-existent step")
+	}
+}
+
+// allowingPolicyEvaluator allows every step. It is a TEST DOUBLE for tests whose
+// subject lies past the gate, and never a production default: a service built
+// without an evaluator withholds every step (#4254).
+type allowingPolicyEvaluator struct{}
+
+func (allowingPolicyEvaluator) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
+	return &StepGateEvaluation{
+		Decision:          GateDecisionAllow,
+		Reason:            "allowed by the test double",
+		PolicyIDs:         []string{},
+		PoliciesEvaluated: []PolicyMatch{},
+		PoliciesMatched:   []PolicyMatch{},
 	}
 }
 
@@ -1257,7 +1272,7 @@ func TestCreateWorkflowWithAllSources(t *testing.T) {
 
 func TestStepGateAllStepTypes(t *testing.T) {
 	repo := NewMockRepository()
-	svc := NewService(repo, nil, nil)
+	svc := NewService(repo, allowingPolicyEvaluator{}, nil) // an explicit allowing double (#4254)
 	ctx := context.Background()
 
 	stepTypes := []StepType{
@@ -1881,21 +1896,28 @@ func TestMarkStepCompletedOverridesGateMetrics(t *testing.T) {
 	}
 }
 
-func TestDefaultPolicyEvaluatorEvaluateStepGate(t *testing.T) {
-	evaluator := &DefaultPolicyEvaluator{}
-	ctx := context.Background()
-
-	step := &StepGateContext{
-		WorkflowID: "wf_test",
-		StepID:     "step-1",
-		StepName:   "test",
-		StepType:   StepTypeLLMCall,
-	}
-
-	result := evaluator.EvaluateStepGate(ctx, step)
-
-	if result.Decision != GateDecisionAllow {
-		t.Errorf("decision = %s, want allow", result.Decision)
+// A service built with no evaluator WITHHOLDS every step (#4254): it has no
+// enforcer to decide with, so it fails closed and names the cause, where it used
+// to allow every step as a decision nobody made.
+func TestAServiceWithNoEvaluatorWithholdsEveryStep(t *testing.T) {
+	svc := NewService(NewMockRepository(), nil, nil)
+	for _, stepType := range []StepType{StepTypeLLMCall, StepTypeToolCall, StepTypeConnectorCall, StepTypeHumanTask} {
+		result := svc.policyEvaluator.EvaluateStepGate(context.Background(), &StepGateContext{
+			WorkflowID: "wf_test",
+			StepID:     "step-1",
+			StepName:   "test",
+			StepType:   stepType,
+		})
+		if result.Decision != GateDecisionBlock {
+			t.Errorf("%s: decision = %s, want block: an unwired service must not admit a step", stepType, result.Decision)
+		}
+		// Named in the step gate seam's shape, "<message> (<cause>)" (R3 B-L3).
+		if !strings.HasSuffix(result.Reason, " (enforcer_not_wired)") || strings.HasPrefix(result.Reason, "enforcer_not_wired") {
+			t.Errorf("%s: reason = %q, want it to name enforcer_not_wired as \"<message> (enforcer_not_wired)\"", stepType, result.Reason)
+		}
+		if len(result.PolicyIDs) != 1 || result.PolicyIDs[0] != "decision_enforcement_unavailable" {
+			t.Errorf("%s: policy ids = %v, want [decision_enforcement_unavailable]", stepType, result.PolicyIDs)
+		}
 	}
 }
 

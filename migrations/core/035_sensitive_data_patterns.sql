@@ -1,7 +1,7 @@
 -- Migration 035: Sensitive Data Patterns
 -- Date: 2026-01-05
 -- Purpose: Add sensitive data detection patterns to static_policies (Issue #891)
--- Related: ADR-026 - Tiered Detection Defaults
+-- Related: ADR-025 - Tiered Detection Defaults
 --
 -- This migration adds credential/secret detection patterns that were previously
 -- hardcoded in the orchestrator's dynamic_policy_engine.go. By moving them to

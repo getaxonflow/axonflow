@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -15,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -24,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"axonflow/platform/agent"
+	"axonflow/platform/shared/legacyfreeze"
 )
 
 // GlobalTenantSentinel is the tenant_id/org_id wildcard used by system-seeded
@@ -51,6 +45,24 @@ func NewPolicyRepository(db *sql.DB) *PolicyRepository {
 func (r *PolicyRepository) SetCrossOrgDB(db *sql.DB) {
 	r.crossOrgDB = db
 }
+
+// MayWriteLegacyPolicies reports whether r.db may write dynamic_policies. It
+// asks r.db because that is the pool every legacy write here goes through:
+// ImportBulk, Create and Update all run agent.WithOrgScope over r.db, so the
+// answer is about the connection the write would use, not about a declared
+// role (#4237).
+func (r *PolicyRepository) MayWriteLegacyPolicies(ctx context.Context) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errNoPolicyPool
+	}
+	return legacyfreeze.MayWrite(ctx, r.db, "dynamic_policies")
+}
+
+// errNoPolicyPool is what the probe reports when the repository has no pool.
+// It falls through (legacyfreeze.RefuseWhenRevoked), so a handler built
+// without a database behaves as it did before the guard, as the agent's
+// errNoStaticPolicyPool does.
+var errNoPolicyPool = errors.New("policy repository has no database pool")
 
 func (r *PolicyRepository) crossOrg() *sql.DB {
 	if r.crossOrgDB != nil {
@@ -245,13 +257,14 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, orgID, policyI
 func (r *PolicyRepository) List(ctx context.Context, tenantID, orgID string, params ListPoliciesParams) ([]PolicyResource, int, error) {
 	// Build dynamic query
 	// Include both tenant-specific and system/global policies. The tenancy
-	// predicate is a $1 placeholder filled PER SCOPE below (tenant pass reads
-	// tenant_id = tenantID, global pass reads tenant_id = 'global') so the
+	// predicate is two placeholders filled PER SCOPE below (the organization
+	// pass reads the caller's tenant and the organization's id, the global pass
+	// reads 'global' twice) so the
 	// two scoped queries return disjoint sets on every deployment — with or
 	// without RLS enforcement (#3039).
-	whereConditions := []string{"tenant_id = $1"}
-	args := []interface{}{tenantID}
-	argIndex := 2
+	whereConditions := []string{"tenant_id IN ($1, $2)"}
+	args := []interface{}{tenantID, tenantID}
+	argIndex := 3
 
 	if params.Type != "" {
 		whereConditions = append(whereConditions, fmt.Sprintf("policy_type = $%d", argIndex))
@@ -336,12 +349,12 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID, orgID string, par
 		ORDER BY %s %s
 	`, whereClause, sortBy, sortDir)
 
-	scopedList := func(scopeOrg string) ([]PolicyResource, error) {
-		// Per-scope tenancy arg: $1 = the scope being read, so the tenant
-		// pass and the global pass return disjoint sets even without RLS.
+	scopedList := func(scopeOrg string, tenancy [2]string) ([]PolicyResource, error) {
+		// Per-scope tenancy args: $1 and $2 are the tenants the pass reads.
+		// scopeOrg only selects the organization RLS unlocks.
 		scopeArgs := make([]interface{}, len(args))
 		copy(scopeArgs, args)
-		scopeArgs[0] = scopeOrg
+		scopeArgs[0], scopeArgs[1] = tenancy[0], tenancy[1]
 		var out []PolicyResource
 		scopeErr := agent.WithOrgScope(ctx, r.db, scopeOrg, func(tx *sql.Tx) error {
 			rows, qErr := tx.QueryContext(ctx, query, scopeArgs...)
@@ -387,17 +400,34 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID, orgID string, par
 		return out, nil
 	}
 
-	policies, err := scopedList(crudScope(tenantID, orgID))
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list policies: %w", err)
-	}
-	if crudScope(tenantID, orgID) != GlobalTenantSentinel {
-		globalPolicies, gErr := scopedList(GlobalTenantSentinel)
-		if gErr != nil {
-			return nil, 0, fmt.Errorf("failed to list global policies: %w", gErr)
+	// The organization pass reads the rows stored under the caller's tenant AND
+	// under the organization's id (#3894). Binding the organization alone, as
+	// this did until #3894, dropped every row whose tenant is the calling client's
+	// id: every row a Community client writes, and in Enterprise the rows of an
+	// API client whose client id is not its organization's. Binding the tenant
+	// alone would drop the rows stored under the organization's id, the
+	// portal's. Both together lose no row either caller listed before. 'global'
+	// is never read here: the global pass below reads it, once.
+	var own []string
+	for _, t := range []string{tenantID, orgID} {
+		t = strings.TrimSpace(t)
+		if t == "" || t == GlobalTenantSentinel || (len(own) > 0 && own[0] == t) {
+			continue
 		}
-		policies = append(policies, globalPolicies...)
+		own = append(own, t)
 	}
+	var policies []PolicyResource
+	if len(own) > 0 {
+		var err error
+		if policies, err = scopedList(crudScope(tenantID, orgID), [2]string{own[0], own[len(own)-1]}); err != nil {
+			return nil, 0, fmt.Errorf("failed to list policies: %w", err)
+		}
+	}
+	globalPolicies, gErr := scopedList(GlobalTenantSentinel, [2]string{GlobalTenantSentinel, GlobalTenantSentinel})
+	if gErr != nil {
+		return nil, 0, fmt.Errorf("failed to list global policies: %w", gErr)
+	}
+	policies = append(policies, globalPolicies...)
 
 	sortPolicyResources(policies, sortBy, sortDir)
 
@@ -781,6 +811,11 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID, orgID strin
 					// Update existing within transaction
 					updateErr := r.updatePolicyTx(ctx, tx, tenantID, orgID, existing.ID, &req, importedBy)
 					if updateErr != nil {
+						// THE FREEZE ABORTS THE IMPORT INSTEAD OF BECOMING A ROW
+						// NOTE (#4010). See the create arm below for why.
+						if legacyfreeze.IsFrozen(updateErr) {
+							return updateErr
+						}
 						response.Errors = append(response.Errors, fmt.Sprintf("Error updating policy %s: %v", req.Name, updateErr))
 					} else {
 						response.Updated++
@@ -792,6 +827,31 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID, orgID strin
 			// Create new policy within transaction
 			createErr := r.createPolicyTx(ctx, tx, tenantID, orgID, &req, importedBy)
 			if createErr != nil {
+				// THE FREEZE ABORTS THE IMPORT INSTEAD OF BECOMING A ROW NOTE
+				// (#4010), for three reasons, in order of consequence:
+				//
+				//  1. It is a fact about the TABLE, not about this row. core/172
+				//     revoked INSERT from the application role, so every
+				//     remaining row fails identically. Reporting it per-row tells
+				//     an operator that N policies were individually rejected when
+				//     what happened is that the write path was retired.
+				//  2. Postgres has already ABORTED the transaction. Every
+				//     subsequent statement in this loop returns
+				//     ErrInFailedTransaction - an errors.New carrying no
+				//     SQLSTATE - so continuing manufactures a list of unrelated
+				//     failures whose real cause is only in the first entry.
+				//  3. %v DESTROYS the *pq.Error. Accumulating the string left
+				//     nothing for errors.As downstream, WithOrgScope committed an
+				//     aborted transaction, and handleImport answered a bare 500.
+				//     That is why the import route could not answer 409 while the
+				//     other three write routes could.
+				//
+				// Returning it lets WithOrgScope roll back and the handler
+				// classify. Any OTHER row failure keeps the accumulate behaviour,
+				// so partial-success imports are unchanged.
+				if legacyfreeze.IsFrozen(createErr) {
+					return createErr
+				}
 				response.Errors = append(response.Errors, fmt.Sprintf("Error creating policy %s: %v", req.Name, createErr))
 			} else {
 				response.Created++
@@ -852,11 +912,16 @@ func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenan
 		return fmt.Errorf("failed to insert policy: %w", err)
 	}
 
-	// Create version entry within transaction. Errors abort the wrap tx — the
-	// only realistic failure under app_role is the policy_versions RLS subquery
-	// rejecting the new row, which would leave Postgres in an aborted-tx state
-	// the caller can't recover from anyway. The snapshot mirrors what was
-	// INSERTed above (CreatePolicyRequest fields plus the row's identity).
+	// Create version entry within transaction. Errors abort the wrap tx, which
+	// would leave Postgres in an aborted-tx state the caller can't recover from
+	// anyway. The snapshot mirrors what was INSERTed above (CreatePolicyRequest
+	// fields plus the row's identity).
+	//
+	// This comment used to say the policy_versions RLS subquery was "the only
+	// realistic failure under app_role". That stopped being true at
+	// migrations/core/172 (#3880), which revoked INSERT on dynamic_policies from
+	// the application role: the statement ABOVE now fails first, and under the
+	// app role it always does. See legacy_policy_write_freeze.go.
 	snapshot := &PolicyResource{
 		ID:             policyID,
 		Name:           req.Name,

@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 // Package audit defines the canonical, cross-plane vocabulary for the
 // audit_logs.policy_decision column and the single read-time normalizer that
@@ -106,9 +98,11 @@ const DecisionOverrideLifecycle = "override_lifecycle"
 //
 //	orchestrator LogOverrideEvent   request_type = the event type
 //	                                policy_decision = override_lifecycle
-//	agent writeOverrideUsedEvent    request_type = "override_used"
-//	(mcp_richer_context.go)         policy_decision = "allowed"
+//	agent MCP planes, before v11    request_type = "override_used"
+//	                                policy_decision = "allowed"
 //
+// v11 deleted the agent's writer with the MCP override flip (the anchored
+// engine authors those verdicts), but the rows it wrote stay in audit_logs.
 // So a reader that excludes override events on policy_decision alone catches
 // the orchestrator plane and silently keeps the MCP one - and the MCP one is
 // the override_used row, which stamps the policy the override BYPASSED. On an

@@ -851,12 +851,6 @@ func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// allowlist.
 		"ee/platform/customer-portal/api/organizations.go::*": "admin-pool: h.adminConn() routes to axonflow_platform_admin. Brief §3.",
 
-		// platform/agent/policy_override_repository.go::CleanupExpiredOverrides
-		// is doc-acknowledged admin-pool: cleanup loop runs cross-org
-		// (single SELECT pulls ALL expired rows, single DELETE removes
-		// them). Brief §3 names this explicitly.
-		"platform/agent/policy_override_repository.go::CleanupExpiredOverrides": "admin-pool: cross-org expired-override cleanup loop. Brief §3.",
-
 		// platform/orchestrator/audit_cleanup.go — file-wide admin-
 		// pool. Operates on the admin retention bucket map cross-org
 		// (audit_logs cleanup runs for every tenant via UPSERT of

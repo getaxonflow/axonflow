@@ -20,8 +20,10 @@ name: Main Guard Freshness
 # than a restatement of the bug: a scheduled workflow that merely goes red is
 # ITSELF a signal with no reader - nobody browses the Actions tab of a green
 # repository. So a stale red is escalated to the issue tracker, which is a
-# surface humans actually read. One open issue at a time, updated rather than
-# duplicated.
+# surface humans actually read. One open issue at a time, kept current rather
+# than duplicated: scripts/ci/escalate-main-guard-freshness.sh rewrites it to
+# each run's report. (It once stopped at "already open", so the issue froze at
+# its first report while a second guard went red - #4061.)
 #
 # NO `pull_request` ARM, AND NO SELF-TEST JOB HERE. Both regression tests that
 # pin this machinery -
@@ -29,7 +31,7 @@ name: Main Guard Freshness
 # tests/regression-test-required/main_guard_freshness_test.sh - are already
 # executed on every pull request by
 # tests/regression-test-required/run-all.sh, wired into
-# .github/workflows/regression-test-required.yml's `Run regression-test suite`
+# .github/workflows/repository-gates.yml's `Run regression-test suite`
 # job, which discovers every `*.sh` in that directory. A `self-test` job here
 # would run the same two scripts a second time on the same PR for no extra
 # enforcement: neither context is required, so duplicating them buys nothing
@@ -136,41 +138,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          set -uo pipefail
-          # A fixed marker in the title is what makes this an UPSERT rather
-          # than a daily duplicate. Searching by marker and not by label means
-          # a hand-removed label cannot turn this into a spam loop.
-          MARKER='[main-guard-freshness]'
-          existing=$(gh issue list --repo "$REPO" --state open --limit 50 \
-                       --search "in:title $MARKER" \
-                       --json number,title \
-                       --jq '[.[] | select(.title | contains("'"$MARKER"'")) | .number] | .[0] // ""')
-          if [ -n "$existing" ]; then
-            echo "issue #$existing is already open for this; not filing a duplicate."
-            echo "https://github.com/$REPO/issues/$existing"
-            exit 0
-          fi
-          {
-            echo "A guard that enforces only on push to \`main\` has a FAILING most-recent"
-            echo "verdict on main. It gates no pull request, and main's tip may carry no"
-            echo "verdict for it at all, so every PR board can be green while this stands."
-            echo ""
-            echo "Filed automatically by \`.github/workflows/main-guard-freshness.yml\`."
-            echo "Run: https://github.com/$REPO/actions/runs/${GITHUB_RUN_ID}"
-            echo ""
-            echo '```'
-            cat report.txt
-            echo '```'
-            echo ""
-            echo "Close this issue once the most recent verdict on main is a pass. The"
-            echo "workflow will re-file if it regresses."
-          } > body.md
-          gh issue create --repo "$REPO" \
-            --title "$MARKER a push-to-main guard is red on main" \
-            --body-file body.md
+          # One open issue, kept current: a new one is filed labelled, an open
+          # one has its body rewritten to this run's report, and a change in
+          # WHICH contexts are red is posted as a comment. The logic lives in
+          # the script so main_guard_freshness_test.sh drives it against a stub
+          # forge (#4061); it exits 2, failing this step, when it could neither
+          # file nor update.
+          bash scripts/ci/escalate-main-guard-freshness.sh \
+            --report report.txt --repo "$REPO" \
+            --run-url "https://github.com/$REPO/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Fail the run on a stale red
         if: steps.read.outputs.rc == '1'
         run: |
           echo "::error::at least one push-to-main guard's most recent verdict on main is a failure - see the report above"
           exit 1
+      - name: Report a red main to the tracker (#4041)
+        if: always()
+        uses: ./.github/actions/report-main-red
+        with:
+          status: ${{ job.status }}
+          token: ${{ github.token }}

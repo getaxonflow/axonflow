@@ -6,9 +6,13 @@
 # forwarding, and fail-closed on an unreachable PDP. Exits 0 only if all pass.
 #
 # Prerequisites:
-#   - AxonFlow agent running on :8080 in ENTERPRISE mode with PII_ACTION=block:
-#       PII_ACTION=block ./scripts/setup-e2e-testing.sh enterprise
+#   - AxonFlow agent running on :8080 in ENTERPRISE mode:
+#       ./scripts/setup-e2e-testing.sh enterprise
 #       source /tmp/axonflow-e2e-env.sh
+#   - The organization's recorded PII override set to block (the NIK and NPWP
+#     deny scenarios need it; since v11 environment variables no longer set
+#     detection actions):
+#       PUT /api/v1/detection-posture/pii {"action":"block"} on the customer portal
 #   - AXONFLOW_CLIENT_ID / AXONFLOW_CLIENT_SECRET / AXONFLOW_TENANT_ID set
 #     (the setup script exports these).
 set -euo pipefail
@@ -26,7 +30,7 @@ echo "Agent URL: $AGENT_URL"
 # 1. AxonFlow must be reachable. Fail fast with a clear pointer otherwise.
 if ! curl -sf --max-time 5 "$AGENT_URL/health" >/dev/null; then
   echo "FATAL: AxonFlow agent not reachable at $AGENT_URL/health" >&2
-  echo "Start it with: PII_ACTION=block ./scripts/setup-e2e-testing.sh enterprise" >&2
+  echo "Start it with: ./scripts/setup-e2e-testing.sh enterprise, then set the org pii=block override (see README)" >&2
   exit 1
 fi
 

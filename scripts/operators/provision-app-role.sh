@@ -22,9 +22,9 @@
 # wraps this script with AWS-specific orchestration for AxonFlow's own stacks.
 #
 # Companion docs:
-#   - technical-docs/v9_phase7_self_hosted_migration.md
-#   - technical-docs/v9_phase8_rls_rollout.md
-#   - axonflow-docs/docs/operators/_v9-self-hosted-upgrade-guide.md
+#   - technical-docs/archive/v9_phase7_self_hosted_migration.md
+#   - technical-docs/archive/v9_phase8_rls_rollout.md
+#   - https://docs.getaxonflow.com/docs/deployment/v8-self-hosted-upgrade-guide/
 #
 # Usage:
 #   # Master DSN (used to ALTER ROLE both new roles):

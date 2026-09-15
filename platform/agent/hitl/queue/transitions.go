@@ -33,8 +33,9 @@ package queue
 // platform/agent/hitl/ for EDITION=enterprise, so the ee/ copy is what SHIPS
 // while the platform/ copy is what the unit tests exercise. Nothing can make
 // two files in that arrangement stay equal except a person remembering, and
-// TestConsumeGrantPredicateIsIdenticalInBothTwins exists because a person did
-// not. This package carries no build tag and is not overlaid, so a statement
+// the ConsumeGrant predicate needed a twin-equality test because a person did
+// not (both went with the grant path, #4254). This package carries no build
+// tag and is not overlaid, so a statement
 // that lives here exists ONCE for both.
 //
 // This file adds no new table, no new column and no new statement: every SQL
@@ -223,128 +224,4 @@ func ExpireDueReturning(ctx context.Context, adminDB *sql.DB, limit int) (*sql.R
 		return nil, fmt.Errorf("expire due approvals: %w", err)
 	}
 	return rows, nil
-}
-
-// ---------------------------------------------------------------------------
-// Grant consumption
-// ---------------------------------------------------------------------------
-
-// ConsumeGrantSQL spends an approved single-use policy step-up, admitting
-// exactly one held request.
-//
-// SINGLE USE IS ENFORCED BY THIS STATEMENT, not by its caller. The UPDATE is
-// guarded on `consumed_at IS NULL` and reports through RETURNING, so two
-// concurrent retries of the same held request serialise on the row and exactly
-// one of them receives an id. There is deliberately no read-then-write: a
-// SELECT followed by an UPDATE leaves a window in which both callers see an
-// unspent grant.
-//
-// EVERY CLAUSE IN THE SUBSELECT IS A SCOPE NARROWING and dropping one silently
-// widens the match:
-//
-//	org_id       RLS already scopes the connection (mig 025); asserted here as
-//	             well so the predicate is correct on an owner-role pool where
-//	             RLS is bypassed.
-//	tenant_id    a grant does not cross a tenant boundary.
-//	client_id    nor a credential, and this is not defence in depth: a caller
-//	             presenting no per-user token gets a SYNTHETIC identity with ID
-//	             0, so `user_id` is the string "0" for EVERY such caller in the
-//	             organisation. Keyed on user alone, one PEP's approval would
-//	             admit a different PEP's request.
-//	user_id      the principal the grant was issued to.
-//	reviewer_*   a reviewer that names a person, and never the requester
-//	             themselves ($3/$4) - otherwise a caller mints its own
-//	             admission.
-//	query_hash   the grant admits the request it was granted for.
-//
-// `request_type = 'policy_step_up'` is a LITERAL, not a bound parameter, so the
-// predicate matches idx_hitl_unconsumed_grant's own partial-index predicate
-// (migration 167), which is also a literal. A bound parameter is matched to a
-// partial index only under a custom plan; behind prepared-statement caching or
-// a pooler that promotes a generic plan the index becomes unusable and this
-// degrades to a scan of the org's whole queue history, on the latency path of a
-// held decision.
-//
-// ORDER BY reviewed_at ASC spends the OLDEST outstanding approval first: a
-// reviewer who approved twice granted two admissions, and taking the newest
-// would leave the older to expire unused while looking spendable.
-const ConsumeGrantSQL = `
-		UPDATE hitl_approval_queue
-		SET consumed_at = CURRENT_TIMESTAMP,
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = (
-			SELECT id FROM hitl_approval_queue
-			WHERE org_id = $1
-			  AND tenant_id = $2
-			  AND client_id = $3
-			  AND user_id = $4
-			  AND triggered_policy_id = $5
-			  AND request_type = 'policy_step_up'
-			  AND status = 'approved'
-			  AND consumed_at IS NULL
-			  AND reviewed_at IS NOT NULL
-			  AND reviewed_at > CURRENT_TIMESTAMP - $6::interval
-			  AND reviewer_role IS NOT NULL
-			  AND reviewer_role <> 'service'
-			  AND reviewer_id IS NOT NULL
-			  AND reviewer_id <> $3
-			  AND reviewer_id <> $4
-			  AND request_context->>'query_hash' = $7
-			ORDER BY reviewed_at ASC
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING request_id, tenant_id`
-
-// ErrGrantNotFound is returned by ConsumeGrant when no unspent, unexpired
-// approval matched. It is not an error condition on the request path - it is
-// the overwhelmingly common case - and the caller keeps holding.
-var ErrGrantNotFound = errors.New("no unspent approval grant")
-
-// ConsumeGrantParams is the full principal a single-use approval is bound to,
-// plus what identifies the held request.
-//
-// A struct rather than seven positional strings because every field is a scope
-// narrowing and a transposed pair of adjacent strings is the failure this type
-// exists to make hard to write.
-type ConsumeGrantParams struct {
-	OrgID     string
-	TenantID  string
-	ClientID  string
-	UserID    string
-	PolicyID  string
-	QueryHash string
-	TTL       time.Duration
-}
-
-// ConsumeGrant spends one approved policy step-up and returns the spent entry's
-// request_id and tenant_id. Returns ErrGrantNotFound when nothing matched.
-//
-// FAILS CLOSED on a missing dimension: an absent scope key would widen the
-// match across callers, tenants or orgs, which is the one outcome this function
-// must never produce.
-func ConsumeGrant(ctx context.Context, db *sql.DB, p ConsumeGrantParams) (uuid.UUID, string, error) {
-	if p.OrgID == "" || p.TenantID == "" || p.ClientID == "" || p.UserID == "" ||
-		p.PolicyID == "" || p.QueryHash == "" {
-		return uuid.Nil, "", fmt.Errorf("ConsumeGrant: org, tenant, client, user, policy and query hash are all required")
-	}
-	if p.TTL <= 0 {
-		return uuid.Nil, "", fmt.Errorf("ConsumeGrant: ttl must be positive, got %s", p.TTL)
-	}
-
-	var requestID uuid.UUID
-	var tenantID string
-	err := rls.WithOrgScope(ctx, db, p.OrgID, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, ConsumeGrantSQL,
-			p.OrgID, p.TenantID, p.ClientID, p.UserID, p.PolicyID,
-			fmt.Sprintf("%d seconds", int64(p.TTL.Seconds())), p.QueryHash,
-		).Scan(&requestID, &tenantID)
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return uuid.Nil, "", ErrGrantNotFound
-	}
-	if err != nil {
-		return uuid.Nil, "", fmt.Errorf("consume approval grant: %w", err)
-	}
-	return requestID, tenantID, nil
 }

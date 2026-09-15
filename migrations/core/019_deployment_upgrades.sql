@@ -1,6 +1,6 @@
 -- Migration 019: Deployment Upgrades Table
 -- Tracks application upgrade history for customer deployments
--- Part of ADR-006: Decoupled Deployments
+-- Part of ADR-005: Decoupled Deployments
 
 -- Add deployment configuration fields to organizations
 ALTER TABLE organizations

@@ -29,7 +29,10 @@ permissions:
 jobs:
   check-coverage-thresholds:
     name: Check Coverage Threshold Changes
-    runs-on: ubuntu-latest
+    # On the self-hosted fleet in this repository (W3-J): a diff grep that
+    # billed a hosted minute per run and gates nothing on the required path.
+    # Selected by repository because this workflow syncs to the mirror.
+    runs-on: ${{ github.repository == 'getaxonflow/axonflow-enterprise' && fromJSON('["self-hosted","linux","x64","axonflow"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6

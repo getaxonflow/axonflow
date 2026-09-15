@@ -124,3 +124,17 @@ func TestRequiredCapabilitiesAreValidated(t *testing.T) {
 	a.RequiredCapabilities = []contract.Capability{{Type: contract.ObFieldRedact, Version: 1}}
 	accepted(t, c.RegisterAction(a))
 }
+
+// TestAnActionWithoutADisplayNameIsRefused (#3789): the portal shows an operator
+// the display name in place of the identifier, so a record without one would
+// put a machine string in front of the person choosing what a policy governs.
+func TestAnActionWithoutADisplayNameIsRefused(t *testing.T) {
+	c := newFixtureCatalog(t)
+	for _, blank := range []string{"", "   "} {
+		a := sampleAction("crm.unnamed")
+		a.DisplayName = blank
+		refusal(t, c.RegisterAction(a), CodeDisplayNameNotDeclared)
+	}
+	// THE CONTROL: the same record with a name is admitted.
+	accepted(t, c.RegisterAction(sampleAction("crm.unnamed")))
+}

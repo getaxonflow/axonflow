@@ -3,64 +3,66 @@
 package agent
 
 import (
-	"context"
 	"strings"
 	"testing"
 
-	"github.com/DATA-DOG/go-sqlmock"
-
 	sharedpolicy "axonflow/platform/shared/policy"
-	"axonflow/platform/shared/policy/policytest"
 )
 
-// withMCPPIIAction sets the cached MCP detection config to a given PII action for
-// the duration of a test (isolated; restored via the returned cleanup). The
-// static engine is also nil'd so only the Indonesia response step runs.
+// withMCPPIIAction pins the cached MCP detection config's PIIAction - the slot
+// an organization's recorded pii override fills; "" = no override - for the
+// duration of a test (isolated; restored in t.Cleanup). An organization with no
+// recorded override resolves to the pinned slot. The shared engine is the
+// migrated database's, whose shipped rows match nothing these tests send, so
+// the Indonesia response step is the only detector that acts.
 func withMCPPIIAction(t *testing.T, action DetectionAction) {
 	t.Helper()
 	detectionConfigMu.Lock()
 	origCfg := cachedMCPConfig
 	cachedMCPConfig = &ModeDetectionConfig{Enabled: true, PIIAction: action}
 	detectionConfigMu.Unlock()
-	origEngine := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(nil)
 	t.Cleanup(func() {
 		detectionConfigMu.Lock()
 		cachedMCPConfig = origCfg
 		detectionConfigMu.Unlock()
-		sharedpolicy.SetGlobalEngine(origEngine)
 	})
 }
 
 const validNIKResponse = "Pelanggan NIK 3174042506780001 terdaftar"
 
-// Under PII_ACTION=warn/log the Indonesia response step must DETECT but NOT
+// Under a pii=warn/log override the Indonesia response step must DETECT but NOT
 // modify content — parity with the static engine + orchestrator, which never
-// mutate on warn/log. (Master R3 round-2 required fix.)
+// mutate on warn/log. (Master R3 round-2 required fix.) With NO override the
+// code-backed detector has no action to take either (#3961), so it too detects
+// and neither masks nor blocks.
 func TestEvaluateOutputPolicies_IndonesiaWarnNoMask(t *testing.T) {
-	for _, action := range []DetectionAction{DetectionActionWarn, DetectionActionLog} {
-		t.Run(string(action), func(t *testing.T) {
+	for _, action := range []DetectionAction{DetectionActionWarn, DetectionActionLog, ""} {
+		name := string(action)
+		if action == "" {
+			name = "no override"
+		}
+		t.Run(name, func(t *testing.T) {
 			withMCPPIIAction(t, action)
-			out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
-				nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
+			out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", "gw.test", "gw.test",
+				nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 			if out.StaticResult != nil && out.StaticResult.Blocked {
-				t.Errorf("%s must not block", action)
+				t.Errorf("%s must not block", name)
 			}
 			if out.RedactedMessage != "" {
-				t.Errorf("%s must NOT mask (detect-don't-modify); got RedactedMessage=%q", action, out.RedactedMessage)
+				t.Errorf("%s must NOT mask (detect-don't-modify); got RedactedMessage=%q", name, out.RedactedMessage)
 			}
 			if out.WasRedacted() {
-				t.Errorf("%s must not report a redaction", action)
+				t.Errorf("%s must not report a redaction", name)
 			}
 		})
 	}
 }
 
-// Under PII_ACTION=redact the Indonesia response step masks the NIK.
+// Under a pii=redact override the Indonesia response step masks the NIK.
 func TestEvaluateOutputPolicies_IndonesiaRedactMasks(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionRedact)
-	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
-		nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
+	out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", "gw.test", "gw.test",
+		nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 	if out.RedactedMessage == "" {
 		t.Fatal("redact must mask the NIK on the response")
 	}
@@ -70,13 +72,16 @@ func TestEvaluateOutputPolicies_IndonesiaRedactMasks(t *testing.T) {
 	if !out.WasRedacted() {
 		t.Error("redact must report a redaction")
 	}
+	if out.StaticResult != nil && out.StaticResult.Blocked {
+		t.Errorf("a masked response is released, not withheld; got %+v", out.StaticResult)
+	}
 }
 
-// Under PII_ACTION=block a critical NIK is blocked (not masked) on the response.
+// Under a pii=block override a critical NIK is blocked (not masked) on the response.
 func TestEvaluateOutputPolicies_IndonesiaBlock(t *testing.T) {
 	withMCPPIIAction(t, DetectionActionBlock)
-	out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", "gw.test", "gw.test",
-		nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
+	out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", "gw.test", "gw.test",
+		nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 	if out.StaticResult == nil || !out.StaticResult.Blocked {
 		t.Fatal("block mode must block a critical NIK on the response")
 	}
@@ -149,9 +154,9 @@ func TestCheckIndonesiaResponsePII_NIK(t *testing.T) {
 }
 
 // redactIndonesiaPIIInString masks checksum-validated Indonesia PII in place.
-// This is the masker the request-phase check-input redactor (redactInputStatement,
-// #2571) now uses, so a /decide redact_pii obligation naming check-input is
-// actually fulfillable. The static engine does NOT carry checksum NIK, so this
+// This is the masker the MCP request pass's checksum validator step
+// (maskIndonesiaBeforeTheRequestPass, #2571) masks with under the organization's
+// pii=redact posture. The static engine does NOT carry checksum NIK, so this
 // primitive is what closes the request-path NIK leak — it must be pinned in
 // normal CI, not only the license-gated runtime-e2e.
 func TestRedactIndonesiaPIIInString(t *testing.T) {
@@ -193,66 +198,41 @@ func TestRedactIndonesiaPIIInString(t *testing.T) {
 
 // #2801 regression lock (R3 round-2 F1): capability scoping must NEVER touch
 // Indonesia PII response governance — a NIK in a Jira document is still a
-// leak. Unlike the tests above, the shared engine is REAL (DB-less, graceful
-// degradation) so the capability classifier is actually active and positively
-// classifies the identity as text-document; redact/block per posture must
-// behave exactly as for any other identity.
+// leak. The shared engine's capability classifier positively classifies the
+// identity as text-document; redact/block per pii override must behave exactly
+// as for any other identity.
 func TestEvaluateOutputPolicies_IndonesiaNIKUnaffectedByCapabilityScope(t *testing.T) {
 	const jiraTool = "claude_code.mcp__atlassian__getJiraIssue"
 
 	install := func(t *testing.T, action DetectionAction) {
 		t.Helper()
-		withMCPPIIAction(t, action) // sets posture, nils engine, registers restore
-		// #2820: a DB-backed engine that LOADS successfully with an empty policy
-		// set. A nil-DB engine now errors on GetPolicies (couldn't-scan), which
-		// the response plane fails CLOSED on — that would mask this test's real
-		// intent (Indonesia checksum detector, engine-independent, still governs
-		// NIK on a text-document tool).
-		mockDB, mockSQL, err := sqlmock.New()
-		if err != nil {
-			t.Fatalf("sqlmock.New: %v", err)
-		}
-		t.Cleanup(func() { _ = mockDB.Close() })
-		mockSQL.MatchExpectationsInOrder(false)
-		// #3048: zero-system-set loads fail CLOSED — serve a benign
-		// never-matching non-PII system row instead of an empty set.
-		for i := 0; i < 8; i++ {
-			mockSQL.ExpectQuery("SELECT").WillReturnRows(
-				policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
-				"00000000-0000-0000-0000-00000000f0f0", "sys_test_never_matches",
-				"security-sqli", "ZZ_NEVER_MATCHES_ZZ", "low", "request", "block", 1),
-			)
-		}
-		policytest.ScopedTxPlumbing(mockSQL, 8)
-		cfg := sharedpolicy.DefaultEngineConfig()
-		cfg.RefreshInterval = 0
-		cfg.EnableMetrics = false
-		engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, cfg, &sharedpolicy.NoOpAuditQueue{})
-		t.Cleanup(engine.Stop)
-		sharedpolicy.SetGlobalEngine(engine) // withMCPPIIAction's cleanup restores the original
-		if !engine.IsTextDocumentTool(jiraTool) {
+		withMCPPIIAction(t, action)
+		if !sharedpolicy.GetGlobalEngine().IsTextDocumentTool(jiraTool) {
 			t.Fatalf("%s must classify text-document — test would be vacuous", jiraTool)
 		}
 	}
 
 	t.Run("redact still masks NIK", func(t *testing.T) {
 		install(t, DetectionActionRedact)
-		out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", jiraTool, jiraTool,
-			nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
+		out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", jiraTool, jiraTool,
+			nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 		if out.RedactedMessage == "" {
 			t.Fatal("NIK via a text-document tool must still redact")
 		}
 		if strings.Contains(out.RedactedMessage, "3174042506780001") {
 			t.Errorf("raw NIK leaked through redaction: %q", out.RedactedMessage)
 		}
+		if out.StaticResult != nil && out.StaticResult.Blocked {
+			t.Errorf("a masked response is released, not withheld; got %+v", out.StaticResult)
+		}
 	})
 
 	t.Run("block still blocks NIK", func(t *testing.T) {
 		install(t, DetectionActionBlock)
-		out := evaluateOutputPolicies(context.Background(), "t1", "", "u1", jiraTool, jiraTool,
-			nil, validNIKResponse, nil, 0, false, true /* isGateway */, nil)
+		out := evaluateOutputPolicies(responseRouteContext("o1"), "t1", "o1", "u1", jiraTool, jiraTool,
+			nil, validNIKResponse, nil, 0, false, true /* isGateway */)
 		if out.StaticResult == nil || !out.StaticResult.Blocked {
-			t.Fatal("block posture must block a critical NIK even via a text-document tool")
+			t.Fatal("a pii=block override must block a critical NIK even via a text-document tool")
 		}
 	})
 }

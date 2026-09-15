@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -78,15 +81,24 @@ func NewCatalogFromRegistry(reg *registry.Catalog, realms map[string]RealmEntry)
 	}
 
 	actions := make(map[string]pdp.ActionEntry, len(projected.Actions))
+	labels := make(map[string]ActionLabel, len(projected.Actions))
 	for k, v := range projected.Actions {
 		actions[k] = v
+		// The label is read from the registry RECORD, not the projection:
+		// pdp.ActionEntry carries only what admission decides on, and a name
+		// is not that (#3789).
+		rec, ok := reg.Action(v.ID)
+		if !ok {
+			return nil, fmt.Errorf("authoring: the registry projects action %q but does not hold its record", k)
+		}
+		labels[k] = ActionLabel{DisplayName: rec.DisplayName, Description: rec.Description}
 	}
 	realmCopy := make(map[string]RealmEntry, len(realms))
 	for k, v := range realms {
 		realmCopy[k] = v
 	}
 
-	cat := &Catalog{Actions: actions, Realms: realmCopy, ResourceTypes: types}
+	cat := &Catalog{Actions: actions, Realms: realmCopy, ResourceTypes: types, ActionLabels: labels}
 	if err := cat.Validate(); err != nil {
 		return nil, err
 	}

@@ -25,6 +25,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"axonflow/platform/agent"
+	"axonflow/platform/decision/authoring"
 	"axonflow/platform/shared/pep"
 )
 
@@ -755,10 +756,16 @@ func specAnchors() []specAnchor {
 			"the verdict POST /api/v1/decide marshals"},
 		{agentAPI, "DecideResponse", reflect.TypeOf(pep.DecideResponse{}),
 			"the blessed PEP client's mirror of that verdict"},
+		{agentAPI, "MCPCheckInputResponse", reflect.TypeOf(agent.MCPCheckInputResponse{}),
+			"the verdict POST /api/v1/mcp/check-input marshals - the request pass's cutover added its engine, subject type, bundle, validators and packs"},
 		{orchestratorAPI, "OrchestratorRequest", reflect.TypeOf(OrchestratorRequest{}),
 			"the body the orchestrator's governed entry point decodes"},
 		{orchestratorAPI, "OrchestratorResponse", reflect.TypeOf(OrchestratorResponse{}),
 			"the envelope it marshals - reaches PolicyEvaluationResult, #3724 gap 3"},
+		{orchestratorAPI, "TypedAuthoringActivation", reflect.TypeOf(authoring.Activation{}),
+			"the activation record POST /api/v1/typed-policies/activate marshals (#4262); it descends into "+
+				"contract.ID through `actor`, which is why this one is anchored where its sibling "+
+				"TemplateOmissionReport cannot be"},
 	}
 }
 
@@ -812,9 +819,9 @@ func TestThePublishedSchemasMatchTheTypesThePlatformMarshals(t *testing.T) {
 			t.Fatalf("anchor %s <-> %s was never compared (%s); the walk is not reading what this test "+
 				"claims it reads", a.schema, a.typ, a.why)
 		}
-		// Every anchor's graph reaches at least one NESTED schema: all six
+		// Every anchor's graph reaches at least one NESTED schema: all eight
 		// carry a structured member (caller_identity, target, obligations,
-		// user, client, policy_info). An anchor that reached only its own pair
+		// user, client, policy_info, actor). An anchor that reached only its own pair
 		// stopped descending, and its subtree - where gap 1 and gap 3 both
 		// live - would be invisible.
 		if len(perAnchor) < 2 {

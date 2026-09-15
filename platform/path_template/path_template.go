@@ -45,6 +45,12 @@ import (
 // new endpoint until someone updates this list — but never an outright
 // outage.
 var Templates = []string{
+	// The two OAuth-discovery probes. They answer 404 by design (this server
+	// uses HTTP Basic, not OAuth) and are registered with PathPrefix, so any
+	// sub-path normalises onto these two rather than exploding the analytics
+	// vocabulary with one row per probed resource path.
+	"/.well-known/oauth-authorization-server",
+	"/.well-known/oauth-protected-resource",
 	"/api/audit/llm-call",
 	"/api/clients",
 	"/api/policies/test",

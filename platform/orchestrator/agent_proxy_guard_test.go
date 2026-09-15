@@ -13,14 +13,11 @@ package orchestrator
 // X-User-Email is rejected BEFORE any identity or DB work.
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/shared/serviceauth"
@@ -108,12 +105,8 @@ func TestCreateOverrideHandler_DirectAccessForgedIdentityBlocked(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 	installProxyTokenValidator(t, proxyGuardTestSecret)
 
-	body, _ := json.Marshal(CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "attacker-supplied",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(string(body)))
+	body := `{"policy_id":"pol-1","policy_type":"static","override_reason":"attacker-supplied"}`
+	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "victim-tenant")
 	req.Header.Set("X-User-Email", "victim@corp.example") // forged, no proxy token
 
@@ -137,12 +130,8 @@ func TestCreateOverrideHandler_ValidProxyTokenReachesIdentityCheck(t *testing.T)
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 	installProxyTokenValidator(t, proxyGuardTestSecret)
 
-	body, _ := json.Marshal(CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "legit",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(string(body)))
+	body := `{"policy_id":"pol-1","policy_type":"static","override_reason":"legit"}`
+	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(body))
 	req.Header.Set("X-Axonflow-Proxy-Auth", validProxyToken(t))
 	req.Header.Set("X-Tenant-ID", "tenant-x")
 	// No X-User-Email → pre-existing 401 (NOT the 403 proxy-auth gate).
@@ -162,12 +151,8 @@ func TestCreateOverrideHandler_CommunityModeSkipsProxyAuth(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	installProxyTokenValidator(t, "")
 
-	body, _ := json.Marshal(CreateOverrideRequest{
-		PolicyID:       "pol-1",
-		PolicyType:     "static",
-		OverrideReason: "local",
-	})
-	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(string(body)))
+	body := `{"policy_id":"pol-1","policy_type":"static","override_reason":"local"}`
+	req := httptest.NewRequest("POST", "/api/v1/overrides", strings.NewReader(body))
 	req.Header.Set("X-Tenant-ID", "tenant-x")
 	// No proxy token, no user email: must pass the proxy gate (community) and
 	// hit the pre-existing 401 identity check — NOT a 403.
@@ -182,72 +167,6 @@ func TestCreateOverrideHandler_CommunityModeSkipsProxyAuth(t *testing.T) {
 // ---------------------------------------------------------------------------
 // #2896 WS1c — the checkpoint-resume override-hijack chain.
 // ---------------------------------------------------------------------------
-
-// TestApplyOverrideToResult_IsIdentityKeyed_TheSink demonstrates the SINK the
-// checkpoint-resume chain feeds: ApplyOverrideToResult flips a DENY to ALLOW
-// when the passed actor identity (in the exploit: the checkpoint's stored
-// cp.UserID, seeded from a forged X-User-Id) has an active override on a
-// non-critical overridable policy. This is why a forged identity reaching the
-// resume is a deny→allow hijack — and why WS1c gates the identity at the agent
-// AND requires proxy-auth on the resume ingresses so this identity can never
-// be attacker-controlled. Mutation reference: this is the behavior the two
-// guards prevent an attacker from triggering with a victim's identity.
-func TestApplyOverrideToResult_IsIdentityKeyed_TheSink(t *testing.T) {
-	mockDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer mockDB.Close()
-
-	// The victim has an active "allow" override on the blocking policy.
-	// #3048: the lookup runs org-scoped.
-	mock.ExpectBegin()
-	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-		WithArgs("org"). // ApplyOverrideToResult passes orgID as the scope key (R3 HIGH-3)
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`SELECT id, policy_id, policy_type`).
-		WithArgs("sys_block_marker", "victim@corp.example", "tenant-shared", "").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"}).
-			AddRow("ovr-victim", "sys_block_marker", "dynamic", "", "victim needed it", nil))
-	mock.ExpectCommit()
-
-	result := &PolicyEvaluationResult{
-		Allowed: false,
-		AppliedPoliciesDetail: []AppliedPolicyDetail{
-			{PolicyID: "sys_block_marker", RiskLevel: "low", AllowOverride: true},
-		},
-	}
-	// Passing the VICTIM identity (what a hijacked checkpoint would carry)
-	// flips the deny — proving the sink is identity-keyed and real.
-	applied, ov := ApplyOverrideToResult(context.Background(), mockDB, nil, result, "tenant-shared", "org", "victim@corp.example", "")
-	if !applied || ov == nil || ov.ID != "ovr-victim" {
-		t.Fatalf("victim's override must apply when the resume feeds the victim identity (applied=%v ov=%v)", applied, ov)
-	}
-	if !result.Allowed || !result.OverrideApplied {
-		t.Fatal("deny must have flipped to allow via the victim override — this is the hijack WS1c prevents by gating the identity")
-	}
-
-	// Control: the SAME denied result with the attacker's own (override-less)
-	// identity does NOT flip — the exploit's whole value is borrowing the
-	// victim's identity, which the WS1c guards make unreachable.
-	mock2DB, mock2, _ := sqlmock.New()
-	defer mock2DB.Close()
-	mock2.ExpectBegin()
-	mock2.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
-		WithArgs("org"). // ApplyOverrideToResult passes orgID as the scope key (R3 HIGH-3)
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock2.ExpectQuery(`SELECT id, policy_id, policy_type`).
-		WithArgs("sys_block_marker", "attacker@corp.example", "tenant-shared", "").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "policy_type", "tool_signature", "override_reason", "expires_at"}))
-	mock2.ExpectRollback()
-	result2 := &PolicyEvaluationResult{
-		Allowed:               false,
-		AppliedPoliciesDetail: []AppliedPolicyDetail{{PolicyID: "sys_block_marker", RiskLevel: "low", AllowOverride: true}},
-	}
-	if applied2, _ := ApplyOverrideToResult(context.Background(), mock2DB, nil, result2, "tenant-shared", "org", "attacker@corp.example", ""); applied2 || result2.Allowed {
-		t.Error("attacker's own identity has no override — deny must stand (confirms the value is in borrowing the victim identity)")
-	}
-}
 
 // TestResumePlanHandler_DirectAccessBlocked is the B4 case on the MAP
 // plan-resume ingress: a direct (non-agent) caller in Enterprise mode is

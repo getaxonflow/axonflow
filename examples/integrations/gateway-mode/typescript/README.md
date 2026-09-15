@@ -207,19 +207,9 @@ typescript/
 
 ## Gateway Policy Configuration
 
-Gateway mode supports dedicated policy configuration env vars that override the global defaults:
+Gateway mode is governed by the same stored policy actions as every other mode. Since v11 environment variables no longer set detection actions: the gateway-specific and global action variables are ignored, with one boot warning per variable and the `axonflow_ignored_posture_env_total` counter.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | PII detection action in gateway mode: `redact`, `block`, or `log` |
-| `GATEWAY_SQLI_ACTION` | (inherits `SQLI_ACTION`) | SQLi detection action in gateway mode: `block`, `warn`, or `log` |
-
-These allow you to have different policy behavior in gateway mode vs. proxy mode. For example, you might want gateway mode to only log PII (since the caller handles redaction) while proxy mode blocks it:
-
-```bash
-export PII_ACTION=block              # Default for proxy mode
-export GATEWAY_PII_ACTION=log        # Override for gateway mode
-```
+Out of the box the pre-check warns on PII and on SQL injection: the request is approved and the matched policy ids are returned. To change an action, record an organization override (Enterprise customer portal API: `PUT /api/v1/detection-posture/{category}` with `{"action":"block"}`, categories `pii` and `sqli`) or change the policy's action.
 
 ## Troubleshooting
 

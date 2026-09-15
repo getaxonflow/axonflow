@@ -1,13 +1,5 @@
 // Copyright 2026 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package policy
 
@@ -28,7 +20,9 @@ import (
 //     DynamicPolicyEngine.evaluateCondition ("1a") — file deleted by #3319;
 //     DynamicPolicyEngine no longer exists, cited here for provenance only
 //  2. platform/orchestrator/db_dynamic_policies.go:1113 DatabaseDynamicPolicyEngine.evaluateCondition ("1b")
-//  3. platform/orchestrator/mcp_dynamic_policy_handler.go:509 MCPDynamicPolicyHandler.evaluateCondition ("1c")
+//  3. platform/orchestrator/mcp_dynamic_policy_handler.go:509
+//     the MCP dynamic-policy handler's evaluateCondition ("1c") — file deleted in v11
+//     with the MCP dynamic-policy endpoint; cited here for provenance only
 //  4. platform/orchestrator/policy_api_service.go:609 PolicyService.evaluateCondition ("1d", wrapper)
 //  5. platform/orchestrator/policy_api_service.go:645 PolicyService.evaluateOperator ("1e")
 //
@@ -209,10 +203,11 @@ import (
 // field value, and none of that logic is duplicated here. A FieldResolver
 // is supplied by the caller per evaluation; ok=false (field not present)
 // is treated identically to every legacy impl's own "unrecognized field"
-// path — as a nil value, never as a distinct third outcome. The MCP handler
-// and the policy-test evaluator additionally short-circuit to false BEFORE
-// calling Match when a field cannot be resolved at all (mcpFieldValue,
-// policyTestFieldValue in platform/orchestrator) — that short-circuit is
+// path — as a nil value, never as a distinct third outcome. The policy-test
+// evaluator additionally short-circuits to false BEFORE calling Match when a
+// field cannot be resolved at all (policyTestFieldValue in
+// platform/orchestrator; the MCP handler's mcpFieldValue did the same until
+// v11 removed it) — that short-circuit is
 // caller-side, predates this evaluator, and is unrelated to the six
 // convergences above; it must not move inside Match.
 type ConditionEvaluator struct{}

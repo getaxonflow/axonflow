@@ -553,6 +553,10 @@ func TestRequireUserTokenSyntheticFallbackCensus(t *testing.T) {
 	expected := map[string]bool{
 		"decision_handler.go": gated,
 		"mcp_handler.go":      gated,
+		// policyTestHandler's preview (#4253): a token-less Enterprise credential
+		// is decided as its service identity, and refused where the posture
+		// requires a user token, as decide refuses it.
+		"run.go": gated,
 		// NOT gated, and it cannot be: this plane has no per-user token field
 		// on the wire at all (ResolveUser is called with a hardcoded ""), so a
 		// refusal would be a WALL rather than a migration ask — no caller can

@@ -201,10 +201,11 @@ func TestApplySeamCapabilityObligations_LegacyCallerUnchanged(t *testing.T) {
 	}
 }
 
-func TestApplySeamCapabilityObligations_LegacyResponseIsByteIdentical(t *testing.T) {
+func TestApplySeamCapabilityObligations_ACallerWithNoHandshakeGetsTheUngatedResponse(t *testing.T) {
 	// Stronger than the field-by-field check above: the SERIALIZED verdict a
-	// legacy caller receives must be byte-for-byte what it received before this
-	// change — that is the actual backward-compatibility contract.
+	// caller that presents no PEP handshake receives must be byte-for-byte what
+	// it received before #2958 - that is the capability gate's compatibility
+	// contract, and it is the handshake's, not the retired decision mode's.
 	installTestOverrideCache(t, &fakeOverrideReader{}, time.Minute)
 
 	build := func(verdict string, reasons []string, obs []DecisionObligation) []byte {
@@ -222,7 +223,7 @@ func TestApplySeamCapabilityObligations_LegacyResponseIsByteIdentical(t *testing
 	// What the pre-#2958 handler produced: no gate, obligation emitted.
 	want := build(VerdictAllow, []string{}, redactObligations())
 
-	// What the gated handler produces for the same legacy request.
+	// What the gated handler produces for the same request, with no handshake.
 	verdict, reasons, obs, _ := applySeamCapabilityObligations(
 		context.Background(), "org-1", nil, VerdictAllow, []string{}, redactObligations())
 	got := build(verdict, reasons, obs)
@@ -466,21 +467,28 @@ func TestObligationAttachmentSiteCensus(t *testing.T) {
 		}
 	}
 
-	// 1 definition + 2 attachment sites, all in decision_handler.go.
-	const wantDefinitionPlusSites = 3
-	if len(calls) != 1 || calls["decision_handler.go"] != wantDefinitionPlusSites {
-		t.Errorf("newRedactPIIObligation call census = %v, expected exactly {decision_handler.go: %d} "+
-			"(1 definition + 2 attachment sites: mapPolicyResultToVerdict and the India/Indonesia validator merge).\n"+
+	// The definition in decision_handler.go, and the one attachment site in
+	// decision_enforcing_seam.go (#3895 PR-A2): redactObligationFor renders an
+	// anchored decision's request-side field_redact. That obligation returns in
+	// requestPassEnforcement.obligations, and is the same `obligations` slice
+	// applyObligationGates receives in handleDecide, so it flows through the
+	// gate rather than around it. The anchored engine is decide's only author
+	// (PRD v11 §1.1), so the legacy attachment sites are gone.
+	const wantDefinitionPlusSites = 1
+	const wantAnchoredSeamSites = 1
+	if len(calls) != 2 || calls["decision_handler.go"] != wantDefinitionPlusSites || calls["decision_enforcing_seam.go"] != wantAnchoredSeamSites {
+		t.Errorf("newRedactPIIObligation call census = %v, expected exactly {decision_handler.go: %d, decision_enforcing_seam.go: %d} "+
+			"(the definition, and the anchored engine's request-side redaction in redactObligationFor).\n"+
 			"If you ADDED an attachment site: confirm its obligations flow through applySeamCapabilityObligations "+
 			"(they do if you appended to the `obligations` slice before the gate runs) and update this census. "+
 			"If you added one that BYPASSES the gate — writing straight to the response or the audit row — that is the "+
 			"#2958 bug re-opening: a PEP would receive an obligation its seam cannot discharge and would have to block.",
-			calls, wantDefinitionPlusSites)
+			calls, wantDefinitionPlusSites, wantAnchoredSeamSites)
 	}
 
 	// Every producer of a DecideResponse.Obligations value must be a file whose
 	// obligations went through the gate. decision_handler.go is the only one
-	// today (the response write + the two mapPolicyResultToVerdict returns).
+	// today: the response write.
 	//
 	// One file is censused CONSCIOUSLY rather than routed, and the exemption is
 	// checked rather than asserted. authzen_handler.go writes an `Obligations`

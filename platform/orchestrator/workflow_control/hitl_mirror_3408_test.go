@@ -12,6 +12,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type mirrorCall struct {
@@ -24,6 +25,11 @@ type recordingMirrorResolver struct {
 
 func (r *recordingMirrorResolver) ResolveStepMirror(_ context.Context, orgID, tenantID, workflowID, stepID, status, reviewerID, comment string) {
 	r.calls = append(r.calls, mirrorCall{orgID, tenantID, workflowID, stepID, status, reviewerID, comment})
+}
+
+// StepMirrorExpiry reports no queue row, the state these tests stand for.
+func (r *recordingMirrorResolver) StepMirrorExpiry(context.Context, string, string, string, string) (time.Time, bool, bool, error) {
+	return time.Time{}, false, false, nil
 }
 
 func approvableWorkflow(t *testing.T, svc *Service) string {

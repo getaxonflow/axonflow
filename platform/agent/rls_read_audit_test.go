@@ -329,7 +329,6 @@ func rlsReadAllowlist() (allowFiles, allowFuncs map[string]string) {
 
 		"platform/agent/mcp_richer_context.go::lookupPolicyMeta":         "dual-shape reader: scoped two-pass (org → 'global') when scopeOrg set; bare branch = owner-pool legacy contexts only (#3048).",
 		"platform/agent/mcp_richer_context.go::lookupPolicyVersionsByID": "dual-shape reader: scoped org+'global' merge when caller org known; bare branch = owner-pool legacy contexts only (#3048).",
-		"platform/agent/mcp_richer_context.go::lookupActiveOverride":     "dual-shape reader: scoped resolve+override when scopeOrg set; the flagged single-statement is the owner-pool legacy branch (#3048).",
 		"platform/agent/static_policy_repository.go::GetByID":            "dual-shape reader: caller-org scope + 'global' fallback when OrgIDFromContext set; bare branch = owner-pool legacy + post-authorized by callerOrgOwnsStaticPolicy (#3048).",
 		"platform/agent/policy_override_repository.go::GetByID":          "dual-shape reader: caller-org scope when OrgIDFromContext set; bare branch = owner-pool legacy contexts (#3048).",
 		"platform/agent/decision_chain.go::GetChain":                     "dual-shape reader: caller-org scope when OrgIDFromContext set; bare branch = owner-pool legacy contexts; org-scoped fetchers in decision_chain_signing.go are the audited surface (#3048).",

@@ -12,7 +12,12 @@
       "const": "authoring.axonflow.com/v1"
     },
     "metadata": { "$ref": "#/$defs/metadata" },
-    "policy": { "$ref": "#/$defs/policy_document" }
+    "policy": { "$ref": "#/$defs/policy_document" },
+    "system_controls": {
+      "description": "The organization's control of the shipped system controls (PRD v11 §1.5), one entry per control. Absent from a document that controls nothing.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/system_control" }
+    }
   },
   "$defs": {
     "metadata": {
@@ -39,11 +44,18 @@
       }
     },
 
+    "principal_type": {
+      "description": "The closed vocabulary of principal types (#3711). A principal type outside this set names a subject whose semantics no policy author has ever seen.",
+      "enum": ["User", "Service", "Workload", "Agent", "Client", "Group"]
+    },
+
     "identifier": {
       "description": "A canonical identifier. Display names, emails, token claims, connector names and aliases are never identifiers.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "type", "local"],
+      "if": { "properties": { "kind": { "const": "principal" } }, "required": ["kind"] },
+      "then": { "properties": { "type": { "$ref": "#/$defs/principal_type" } } },
       "properties": {
         "kind": { "$ref": "#/$defs/identifier_kind" },
         "type": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$" },
@@ -134,10 +146,18 @@
           "items": { "$ref": "#/$defs/obligation" }
         },
         "mandatory": { "type": "boolean" },
+        "assurance": {
+          "description": "The ADR-065 Inspection and risk class this control declares: what happens when it cannot be evaluated. Held to the failure behaviour of the policy's shape wherever it is declared; a permission declares none.",
+          "$ref": "#/$defs/assurance_class"
+        },
         "pierceable_by": {
           "description": "The break-glass roles that may suspend this control. Absent means unbreakable by construction, which is what a regulatory or contractual constraint declares.",
           "type": "array",
           "items": { "$ref": "#/$defs/identifier" }
+        },
+        "name": {
+          "description": "The operator-facing name of the policy, shown in place of its identifier. Optional; a decision's reason text comes from description.",
+          "type": "string"
         },
         "description": { "type": "string" }
       }
@@ -146,6 +166,11 @@
     "authority": {
       "description": "What a policy is allowed to do, not where it executes. A permission only widens, a constraint only restricts, a requirement attaches a mandatory obligation, and an inspection policy cannot grant.",
       "enum": ["permission", "constraint", "requirement", "inspection"]
+    },
+
+    "assurance_class": {
+      "description": "enforcement: a required deterministic control, denies when it cannot be evaluated. gating_risk: a required control whose verdict depends on a detector or scorer, denies when it cannot be evaluated. advisory: audit, warning or tuning evidence, skipped and recorded when it cannot be evaluated; it cannot deny.",
+      "enum": ["enforcement", "gating_risk", "advisory"]
     },
 
     "scope": {
@@ -263,6 +288,22 @@
         "immutable_audit",
         "notification"
       ]
+    },
+    "system_control": {
+      "description": "One shipped system control, named by its corpus identifier as the shipped posture table lists it, with exactly one instruction: enabled false leaves it out, and action replaces its action.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["control"],
+      "properties": {
+        "control": { "type": "string", "pattern": "^corpus:[a-z_]+:[A-Za-z0-9_]+$" },
+        "enabled": { "description": "Only false: a shipped control is enabled unless the document disables it, and removing the entry restores it.", "const": false },
+        "action": { "$ref": "#/$defs/system_control_action" }
+      },
+      "oneOf": [{ "required": ["enabled"] }, { "required": ["action"] }]
+    },
+    "system_control_action": {
+      "description": "The actions an organization may assign to a shipped control, from the most restrictive to the least.",
+      "enum": ["block", "redact", "warn", "log"]
     }
   }
 }

@@ -26,6 +26,8 @@
 # Usage:
 #   chmod +x media-governance-policies.sh
 #   ./media-governance-policies.sh
+# Deprecated in v11.0.0: the legacy policy write routes answer 409 LEGACY_POLICY_WRITE_FROZEN on an application-role deployment; use the typed policy routes instead. This material is rewritten or deleted in v11.1.0.
+
 
 set -e
 
@@ -146,7 +148,11 @@ BODY2=$(echo "$RESPONSE2" | sed '$d')
 SUCCESS2=$(echo "$BODY2" | jq -r '.success // false')
 assert_pass "$SUCCESS2" "Response is successful (HTTP $HTTP_CODE2)"
 
-BLOCKED2=$(echo "$BODY2" | jq -r '.blocked // false')
+# has(), NOT `// false` (#3964): a response with no `blocked` key at all -
+# an error envelope, a 5xx body - rendered as `false` and PASSED this
+# assertion as "not blocked". The next line already uses has() for
+# media_analysis; this is the same rule applied to the boolean.
+BLOCKED2=$(echo "$BODY2" | jq -r 'if has("blocked") then .blocked else "absent" end')
 assert_pass "$([ "$BLOCKED2" = "false" ] && echo true || echo false)" \
     "Clean image is NOT blocked (blocked=$BLOCKED2)"
 
@@ -241,7 +247,8 @@ PROCESS_BODY=$(echo "$PROCESS_RESPONSE" | sed '$d')
 PROCESS_SUCCESS=$(echo "$PROCESS_BODY" | jq -r '.success // false')
 assert_pass "$PROCESS_SUCCESS" "1x1 image request succeeded (HTTP $PROCESS_HTTP_CODE)"
 
-PROCESS_BLOCKED=$(echo "$PROCESS_BODY" | jq -r '.blocked // false')
+# has(), NOT `// false` (#3964) - see the BLOCKED2 assertion above.
+PROCESS_BLOCKED=$(echo "$PROCESS_BODY" | jq -r 'if has("blocked") then .blocked else "absent" end')
 assert_pass "$([ "$PROCESS_BLOCKED" = "false" ] && echo true || echo false)" \
     "1x1 image NOT blocked by face policy (no faces in 1px image)"
 

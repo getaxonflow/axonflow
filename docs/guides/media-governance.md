@@ -65,7 +65,7 @@ AxonFlow seeds 5 system media policies by default when media governance is enabl
 | `sys_media_pii_block` | `media.has_pii == true` | Block | 950 | `media-pii` |
 | `sys_media_sensitive_doc_warn` | `media.is_sensitive_document == true` | Alert + Log | 900 | `media-document` |
 
-System media policies live in the same `dynamic_policies` table as all other dynamic policies. They use the same `DynamicPolicyEngine` evaluation, same CRUD API (`/api/v1/dynamic-policies`), and same audit trail.
+System media policies live in the same `dynamic_policies` table as all other dynamic policies. They use the same `DynamicPolicyEngine` evaluation, same CRUD API (`/api/v1/tenant-policies`, deprecated spelling `/api/v1/dynamic-policies`), and same audit trail. In v11 that table is read-only to the application roles (`migrations/core/172`), so the API's writes - toggling a system media policy included - answer `409 LEGACY_POLICY_WRITE_FROZEN`; evaluation is unchanged.
 
 ### Media Policy Categories
 

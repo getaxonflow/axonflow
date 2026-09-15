@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -67,8 +70,57 @@ type EngineConfig struct {
 	// Compat is the temporary, action-scoped compatibility profile. Nil is the
 	// production posture.
 	Compat *CompatibilityProfile
+	// SystemCorpus is the trust anchor for the system-root bundle, and it is
+	// REQUIRED. See system_corpus.go: exactly one of its two fields is set,
+	// and an engine that declares neither is refused rather than defaulted to
+	// "do not check", because a defaulted anchor is a system root nobody is
+	// checking.
+	SystemCorpus SystemCorpusAnchor
 	// Limits bound evaluation.
 	Limits Limits
+}
+
+// bindSourceDocument refuses a document that is not the policy set the bundle
+// was compiled from, by comparing the document's exact digest with the source
+// digest the bundle's signed provenance carries.
+//
+// It is the one expression of that rule. NewEngine asks it of every document it
+// is handed, and SystemCorpusAnchor.CheckSystemPublication asks it before the
+// anchor's checks, because under a restriction the anchor judges the DOCUMENT
+// and would otherwise answer for a bundle it never looked at.
+func bindSourceDocument(d *Document, b *Bundle) error {
+	// A BUNDLE WITH NO SOURCE DIGEST BINDS TO NOTHING, and is refused by name
+	// rather than by the comparison below happening to fail. BuildBundle always
+	// records one, but an exported caller can hand over any Bundle, and "the
+	// provenance is populated" is the same assumption as "the caller built the
+	// bundle from the document".
+	if b.Provenance.SourceDigest == "" {
+		return fmt.Errorf("pdp: the %s bundle carries no source digest, so no document can be bound to it; "+
+			"the combiner reads policy metadata out of the document, and a bundle that names no source vouches for none",
+			b.Root)
+	}
+	digest, err := contract.ExactDigest(d)
+	if err != nil {
+		return fmt.Errorf("pdp: digesting the %s source document: %w", d.Root, err)
+	}
+	if digest != b.Provenance.SourceDigest {
+		return fmt.Errorf(
+			"pdp: the %s source document digests to %s, the bundle it accompanies was compiled from %s; "+
+				"the combiner reads policy metadata out of the document, so the two must be the same policy set",
+			d.Root, digest, b.Provenance.SourceDigest)
+	}
+	return nil
+}
+
+// BindSourceDocument is bindSourceDocument for a caller that relates a document
+// to its bundle before either reaches NewEngine: authoring.CompositionAuthority
+// binds an organization's authored document to its signed bundle before it signs
+// a composition of that document (#4045), by the rule NewEngine applies.
+func BindSourceDocument(d *Document, b *Bundle) error {
+	if d == nil || b == nil {
+		return fmt.Errorf("pdp: binding a source document needs the document and the bundle, and one of the two is missing")
+	}
+	return bindSourceDocument(d, b)
 }
 
 // NewEngine verifies every bundle, prepares a runtime per root, and returns a
@@ -87,6 +139,33 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 	}
 	if cfg.Registry == nil {
 		return nil, fmt.Errorf("pdp: an engine requires an action registry; without one an unregistered action cannot be refused")
+	}
+	if err := cfg.SystemCorpus.Validate(); err != nil {
+		return nil, err
+	}
+	// The ABSENCE check, before the per-bundle one. A per-bundle check cannot
+	// see a system document that is simply not there, and an engine with none
+	// enforces no platform ceiling while every other check passes.
+	if err := cfg.SystemCorpus.requireSystemBundle(cfg.Bundles); err != nil {
+		return nil, err
+	}
+	// The blanket-permission refusal, on the DOCUMENTS, before any of them is
+	// trusted for combiner metadata. It is an anchored-engine rule; see
+	// refuseBlanketPermission for why an unanchored engine is exempt.
+	if err := cfg.SystemCorpus.refuseBlanketPermission(cfg.Documents); err != nil {
+		return nil, err
+	}
+	// A RESTRICTION IS A SUBSET OF THE SHIPPED CORPUS, checked on the system
+	// document. It runs here rather than beside checkSystemBundle because it
+	// reads the DOCUMENT, and the document is bound to its bundle a few lines
+	// below; both orders are safe and this one keeps every document-level
+	// anchor rule in one place.
+	for _, d := range cfg.Documents {
+		if d != nil && d.Root == RootSystem {
+			if err := cfg.SystemCorpus.checkSystemRestriction(d); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if cfg.ApprovalTTL <= 0 {
 		cfg.ApprovalTTL = 15 * time.Minute
@@ -113,15 +192,8 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		if !ok {
 			return nil, fmt.Errorf("pdp: a source document was supplied for root %q with no matching bundle", d.Root)
 		}
-		digest, err := contract.ExactDigest(d)
-		if err != nil {
-			return nil, fmt.Errorf("pdp: digesting the %s source document: %w", d.Root, err)
-		}
-		if digest != b.Provenance.SourceDigest {
-			return nil, fmt.Errorf(
-				"pdp: the %s source document digests to %s, the bundle it accompanies was compiled from %s; "+
-					"the combiner reads policy metadata out of the document, so the two must be the same policy set",
-				d.Root, digest, b.Provenance.SourceDigest)
+		if err := bindSourceDocument(d, b); err != nil {
+			return nil, err
 		}
 	}
 	for root := range byRoot {
@@ -154,6 +226,15 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 		if err := cfg.TrustStore.Verify(b); err != nil {
 			return nil, err
 		}
+		// AFTER the signature and BEFORE the runtime is prepared. A bundle
+		// that verifies is a bundle somebody signed; the anchor is the
+		// separate question of whether the platform's own ceiling is the one
+		// this binary ships.
+		if b.Root == RootSystem {
+			if err := cfg.SystemCorpus.checkSystemBundle(b); err != nil {
+				return nil, err
+			}
+		}
 		if _, dup := e.runtimes[b.Root]; dup {
 			return nil, fmt.Errorf("pdp: two bundles were supplied for root %q", b.Root)
 		}
@@ -179,15 +260,71 @@ func NewEngine(ctx context.Context, cfg EngineConfig) (*Engine, error) {
 // cannot do anything else. An error is returned only when a Decision cannot be
 // constructed at all.
 func (e *Engine) Decide(ctx context.Context, req *contract.Request) (*contract.Decision, error) {
+	return e.DecideWith(ctx, req, DecideOptions{})
+}
+
+// DecideOptions carries the per-request facts an evaluation needs that are not
+// part of the request itself.
+type DecideOptions struct {
+	// PEP is the enforcement profile THIS caller advertised, from the ADR-065
+	// capability handshake (#3704). Nil means the caller advertised nothing
+	// for this request and the engine-wide profile applies, so every existing
+	// caller is unchanged.
+	//
+	// A profile is per REQUEST because an external enforcement point declares
+	// its capabilities per request; an engine-wide profile can only describe
+	// one of them. Before #3706 the engine held exactly one and the handshake's
+	// refusal was therefore enforced by the agent's decide plane rather than by
+	// the PDP - two checks over the same vocabulary, agreeing, written apart.
+	//
+	// NIL MEANS TWO DIFFERENT THINGS ON THE TWO SIDES OF THIS SEAM, AND #3564
+	// MUST NOT PASS ONE THROUGH AS THE OTHER. Here nil means "this caller
+	// advertised nothing for this request, so the engine-wide profile
+	// applies". In the registry, ExternalPEP.Profile() returns nil for a PEP
+	// that was never ADMITTED, and there nil means "refuse" - a caller with no
+	// admitted profile must not be granted the engine's. Issue #3706 step 3
+	// tells #3564 to pass exactly that value here, so the prescribed call
+	// FAILS OPEN unless the caller distinguishes the two: an unadmitted PEP
+	// must be REFUSED BEFORE Decide is reached.
+	//
+	// Passing an EMPTY profile (&contract.PEPProfile{}) is the safer of the
+	// two wrong-looking values - it advertises nothing, so any mandatory
+	// obligation is denied - but it is NOT equivalent to refusing, and R3
+	// round 2 proved it: a request that carries no mandatory obligation is
+	// PERMITTED under an empty profile, because the capability check only
+	// runs over mandatory obligations. ADR-065 invariant 12 says a plane that
+	// has not advertised the decision profile refuses the request, full stop.
+	// So the empty profile is a floor, not the answer; the answer is that an
+	// unadmitted enforcement point never reaches a decision.
+	PEP *contract.PEPProfile
+}
+
+// DecideWith evaluates one normalized request against a per-request profile.
+//
+// The resolved profile is computed ONCE, here, and reaches all THREE places
+// composition consults it: the per-hop Combine, the multi-hop MeetDecisions,
+// and ComposeObligations inside applyCompatibility. That is the whole of
+// #3706: e.pep used to be read at each of those separately, so a change made
+// at one left the other two answering against the engine-wide profile -
+// silently, because each remaining site kept passing its own tests.
+func (e *Engine) DecideWith(ctx context.Context, req *contract.Request, opts DecideOptions) (*contract.Decision, error) {
 	decisionID, bindErr := decisionIDFor(req)
 	var approvalExpiry time.Time
 	if req != nil {
 		approvalExpiry = req.EvaluatedAt.Add(e.approvalTTL)
 	}
+	// Resolved once. Every site below reads in.PEP rather than e.pep, so
+	// there is one answer to "which profile is this request judged against"
+	// and no site can be forgotten.
+	pep := e.pep
+	if opts.PEP != nil {
+		pep = opts.PEP
+	}
+	// SITE 1 of 3 (#3706): CombineInput.PEP, read by every per-hop Combine.
 	in := CombineInput{
 		Request:        req,
 		Meta:           e.meta,
-		PEP:            e.pep,
+		PEP:            pep,
 		PayloadLeaves:  e.payloadLeaves,
 		ApprovalExpiry: approvalExpiry,
 		DecisionID:     decisionID,
@@ -263,9 +400,13 @@ func (e *Engine) Decide(ctx context.Context, req *contract.Request) (*contract.D
 		}
 		perHop = append(perHop, hopDec)
 	}
+	// SITE 2 of 3 (#3706): the multi-hop meet recomposes the union of the
+	// permitted hops' obligations, so it applies the capability check a second
+	// time and must apply it against the SAME profile the hops were judged by.
 	dec, err := contract.MeetDecisions(perHop, contract.MeetOptions{
 		PayloadLeaves: in.PayloadLeaves,
-		PEP:           e.pep,
+		PEP:           in.PEP,
+		Now:           req.EvaluatedAt,
 	})
 	if err != nil {
 		return nil, err
@@ -309,11 +450,17 @@ func (e *Engine) applyCompatibility(dec *contract.Decision, entry ActionEntry, r
 	if !out.Applies {
 		return dec, nil
 	}
+	// SITE 3 of 3 (#3706): a DIRECT ComposeObligations call that bypasses
+	// CombineInput entirely. The compatibility exception carries a mandatory
+	// immutable-audit obligation, so an enforcement point that cannot write
+	// that record must not be granted the exception - and "that enforcement
+	// point" is the one which advertised on THIS request.
 	composed := contract.ComposeObligations(contract.ComposeInput{
 		Obligations:    CompatibilityObligations(req.Action),
-		Leaves:         in.PayloadLeaves,
-		PEP:            e.pep,
+		Payload:        contract.DeclaredPayloadLeaves(in.PayloadLeaves),
+		PEP:            in.PEP,
 		ApprovalExpiry: in.ApprovalExpiry,
+		Now:            req.EvaluatedAt,
 	})
 	if composed.Denied {
 		// The exception cannot be applied without its audit record, and an
@@ -390,12 +537,49 @@ func shellRequest(req *contract.Request) *contract.Request {
 // digest, and reports whether the binding could be computed at all.
 //
 // Deriving rather than generating means a replay of the same request against
-// the same bundle produces the same decision identifier, which is what makes
-// "identical input and bundle reproduce identical decision" checkable rather
-// than merely asserted. The error is RETURNED rather than swallowed: an earlier
-// version fell back to a digest of the caller-supplied request identifier, so
-// two materially different requests shared a decision identifier and the
-// request was evaluated to a permit whose binding guarantee was void.
+// the same bundle produces the same decision identifier. The error is RETURNED
+// rather than swallowed: an earlier version fell back to a digest of the
+// caller-supplied request identifier, so two materially different requests
+// shared a decision identifier and the request was evaluated to a permit whose
+// binding guarantee was void.
+//
+// THE IDENTIFIER DOES NOT COVER THE ENFORCEMENT PROFILE, AND SINCE #3706 THAT
+// IS OBSERVABLE. The binding digest is over the REQUEST; the profile is a
+// property of the caller, supplied per request through DecideOptions. So one
+// engine, one request and one bundle can now produce the same decision
+// identifier with different outcomes - a permit for a caller that can
+// discharge a mandatory obligation and a deny for one that cannot. That is
+// correct as a decision (the whole point of the capability check is that the
+// answer depends on who is asking) and it means the older, broader phrasing
+// here - "identical input and bundle reproduce identical decision" - is no
+// longer true as written, so it has been removed rather than left to be read
+// as a guarantee.
+//
+// WHAT THIS COSTS AND WHO OWNS IT. replay/environment.go pins the profile as
+// part of the ENVIRONMENT precisely because it "changes decisions without
+// changing a bundle", and replay reproduces decisions through Decide. So a
+// replay is sound today: the environment carries the profile the record was
+// taken against. It stops being automatic once #3564 routes a per-request
+// profile from the handshake, because then the profile travels with the
+// request and a record replayed against an environment-level profile could
+// reproduce a different answer while reporting a match. Recorded on #3706 for
+// #3564 to carry; it is not fixed here, because the fix is either binding the
+// profile into the identifier - which changes #3614's proof surface - or
+// recording it alongside the request, which is the replay format's decision.
+//
+// The exposure begins with any caller that passes a non-nil DecideOptions.PEP,
+// which is possible from this commit onward because DecideWith is exported.
+// #3564 is simply the first planned one. But exposure is not the trigger: a
+// per-request profile only matters to replay once a record exists that was
+// taken under one.
+//
+// REVISIT WHEN anything outside a _test.go file constructs a replay.Record.
+// Nothing does today - `git grep 'replay.Record{'` outside tests returns
+// nothing - so no record in existence was taken under a per-request profile,
+// and the gap is a TRIGGER rather than a defect. The observable is that grep,
+// not a component: an earlier version of this sentence named "the sampler",
+// and there is no sampler, so it named nothing anybody could watch and its
+// trailing clause read as "nothing to do here".
 func decisionIDFor(req *contract.Request) (string, error) {
 	if req == nil {
 		sum := sha256.Sum256([]byte("nil canonical request"))

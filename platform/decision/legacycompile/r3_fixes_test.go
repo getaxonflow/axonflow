@@ -1,47 +1,11 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
-	"strings"
 	"testing"
 )
-
-// TestEffectiveScanModelsBothTimestamps pins the two columns easiest to miss
-// in EffectivePolicyRow.
-//
-// created_at and updated_at scan into `time.Time`, not `sql.NullTime`, and both
-// are DEFAULTed-but-NULLable in migrations/core/010. Omitting them from the
-// effective read path's scan model made the compiler emit an ADR-065
-// constraint on the proxy tier for a row GetEffective never returns: a deny
-// with no legacy counterpart, on the one plane an operator is least likely to
-// check.
-func TestEffectiveScanModelsBothTimestamps(t *testing.T) {
-	for _, col := range []string{"created_at", "updated_at"} {
-		t.Run("NULL "+col, func(t *testing.T) {
-			rep, err := Compile([]RawRow{staticRow(t, "sys_ts", map[string]any{col: nil})}, testOptions())
-			if err != nil {
-				t.Fatalf("Compile: %v", err)
-			}
-			rec := recordFor(t, rep, "sys_ts")
-			for _, pr := range rec.Planes {
-				if pr.ReadPath != ReadPathEffectiveAction {
-					continue
-				}
-				dropped := false
-				for _, r := range pr.Reasons {
-					if r.Code == ReasonLegacyScanDrop && strings.Contains(r.Detail, col) {
-						dropped = true
-					}
-				}
-				if !dropped {
-					t.Fatalf("a NULL %s did not drop the row on the effective read path; the compiler would emit policy GetEffective never returns", col)
-				}
-				if len(pr.Policies) > 0 {
-					t.Fatalf("the proxy tier emitted %d policy(ies) for a row its own scan drops", len(pr.Policies))
-				}
-			}
-		})
-	}
-}
 
 // TestAnInexpressibleRowIsFiledAsAMigrationGap pins the distinction the status
 // vocabulary must keep: a row the typed language cannot express may be
@@ -109,43 +73,6 @@ func TestEveryConditionIsExaminedRegardlessOfOrder(t *testing.T) {
 			t.Fatalf("reason %q present in dead-first=%t unsup-first=%t; the recorded reasons depend on authoring order",
 				code, deadFirst[code], unsupFirst[code])
 		}
-	}
-}
-
-// TestReadPathDivergenceReportsAnEmptySide pins that "one path enforces this
-// row and the other does not reach it at all" is the MOST divergent a row can
-// be, not agreement. Treating an empty side as agreement made the package's
-// self-described central finding fail closed to silence.
-//
-// The reachable trigger is a column the EFFECTIVE path scans and the runtime
-// path does not select: version, updated_at, or action. The mirror direction -
-// runtime empty, effective resolving - is NOT reachable, because every column
-// the runtime scan can drop is also in the effective scan; that asymmetry is
-// itself worth knowing, and asserting the reachable direction is what this
-// test can honestly do.
-func TestReadPathDivergenceReportsAnEmptySide(t *testing.T) {
-	for _, col := range []string{"version", "updated_at"} {
-		t.Run("NULL "+col, func(t *testing.T) {
-			rep, err := Compile([]RawRow{staticRow(t, "sys_eff_dropped", map[string]any{col: nil})}, testOptions())
-			if err != nil {
-				t.Fatalf("Compile: %v", err)
-			}
-			rec := recordFor(t, rep, "sys_eff_dropped")
-			if !rec.HasReason(ReasonReadPathActionDivergence) {
-				t.Fatalf("a NULL %s drops the row on the effective path while the runtime path still enforces it, and the record reported read-path agreement; reasons: %+v", col, rec.Reasons)
-			}
-		})
-	}
-
-	// The negative direction: a row that drops on BOTH paths enforces nothing
-	// anywhere, and reporting divergence there would make the reason true of
-	// every broken row.
-	rep, err := Compile([]RawRow{staticRow(t, "sys_both_dropped", map[string]any{"tier": nil})}, testOptions())
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if recordFor(t, rep, "sys_both_dropped").HasReason(ReasonReadPathActionDivergence) {
-		t.Fatal("a row dropped on both read paths was reported as divergent; there is no divergence when neither path reaches it")
 	}
 }
 
@@ -238,10 +165,10 @@ func TestPlaneModelCoversEveryStaticEvaluationSurface(t *testing.T) {
 			t.Fatal("the MAP plane claims the static substrate; its only evaluation call site is EvaluateDynamicPolicies in map_hitl_adapter")
 		}
 	}
-	// /decide passes runDynamicPolicy=false.
+	// /decide's evaluateInputPolicies has no dynamic hop.
 	for _, sub := range MustSpecFor(PlaneDecide).Substrates {
 		if sub == SubstrateDynamic {
-			t.Fatal("the decide plane claims the dynamic substrate; evaluateInputPolicies is called with runDynamicPolicy=false")
+			t.Fatal("the decide plane claims the dynamic substrate; its evaluateInputPolicies call has no dynamic hop")
 		}
 	}
 	// A plane ADR-065 names but the tree does not implement must be RECORDED,
@@ -252,10 +179,10 @@ func TestPlaneModelCoversEveryStaticEvaluationSurface(t *testing.T) {
 	if _, modelled := planeSpecs["connector_execution"]; modelled {
 		t.Fatal("connector_execution is modelled as a plane despite having no evaluation call site; it would read as coverage of something that does not exist")
 	}
-	// The cowork ingest plane coerces redact for PII regardless of posture.
+	// The cowork ingest plane coerces redact for PII regardless of any override.
 	cowork := MustSpecFor(PlaneCoworkIngest)
-	if cowork.PostureLever {
-		t.Fatal("the cowork ingest plane builds its own override map and never sees the deployment posture")
+	if cowork.PassesOrgOverrides {
+		t.Fatal("the cowork ingest plane builds its own override map and never sees the organization's overrides")
 	}
 	if got, does := cowork.Forces("pii-us"); !does || got != ActionRedact {
 		t.Fatalf("the cowork plane forces %q for pii-us (does=%t), want redact", got, does)
@@ -267,8 +194,8 @@ func TestPlaneModelCoversEveryStaticEvaluationSurface(t *testing.T) {
 
 // TestTablesContainOnlyDeclaredCategories is the seen-subset-declared
 // direction of the pin. Without it a MISSPELLED category sits in the table
-// forever, pinning nothing, and on the lever table it also inflates the
-// unlevered count that the anti-vacuity check reads.
+// forever, pinning nothing. legacy_categories.tsv is the declared vocabulary;
+// until #3961 the same column lived in the posture-lever table, which is gone.
 func TestTablesContainOnlyDeclaredCategories(t *testing.T) {
 	// The one deliberate non-enum row, named so a reader can tell a sentinel
 	// from a typo. It exists to pin the fallback for a category the enum does
@@ -276,7 +203,7 @@ func TestTablesContainOnlyDeclaredCategories(t *testing.T) {
 	const sentinel = "an-unregistered-category"
 
 	declared := map[string]bool{}
-	for _, r := range readTSV(t, "legacy_posture_levers.tsv", []string{"category", "posture_lever"}) {
+	for _, r := range readTSV(t, "legacy_categories.tsv", []string{"category"}) {
 		declared[r["category"]] = true
 	}
 	res := readTSV(t, "legacy_resolution.tsv", []string{"category", "severity", "phase", "stored_action", "resolved_action"})
@@ -286,12 +213,12 @@ func TestTablesContainOnlyDeclaredCategories(t *testing.T) {
 	}
 	for c := range resCats {
 		if !declared[c] {
-			t.Fatalf("legacy_resolution.tsv carries category %q, which legacy_posture_levers.tsv does not; the two tables must cover the same population or one of them is pinning a typo", c)
+			t.Fatalf("legacy_resolution.tsv carries category %q, which legacy_categories.tsv does not; the two tables must cover the same population or one of them is pinning a typo", c)
 		}
 	}
 	for c := range declared {
 		if !resCats[c] {
-			t.Fatalf("legacy_posture_levers.tsv carries category %q, which legacy_resolution.tsv does not", c)
+			t.Fatalf("legacy_categories.tsv carries category %q, which legacy_resolution.tsv does not", c)
 		}
 	}
 	if !resCats[sentinel] {

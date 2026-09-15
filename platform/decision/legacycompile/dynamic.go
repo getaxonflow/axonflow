@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
@@ -9,6 +12,7 @@ import (
 
 	"axonflow/platform/decision/contract"
 	"axonflow/platform/decision/pdp"
+	"axonflow/platform/decision/registry"
 )
 
 // resolverFields is the orchestrator's condition-field resolver, as a set of
@@ -128,7 +132,7 @@ type legacyCondition struct {
 // spaces) can never share one signal - sanitizePathSegment escapes '.', so no
 // sanitized id can collide with the literal segment separator used here.
 func DynamicContentDetectorPath(policyID string) string {
-	return "signal.detector.dyn." + sanitizePathSegment(policyID)
+	return registry.DetectorSignalPrefix + "dyn." + sanitizePathSegment(policyID)
 }
 
 // contentOperators are the condition operators that inspect content and
@@ -151,7 +155,7 @@ func compileDynamicRow(raw RawRow, row DynamicRow, opts Options) Record {
 			// traceable to a source row AND VERSION, and leaving it zero on
 			// every dynamic record made that half of the claim false for one
 			// of the two substrates.
-			PolicyID: row.PolicyID, Version: row.Version, RowDigest: digestRow(raw),
+			PolicyID: row.PolicyID, Name: row.Name, Version: row.Version, RowDigest: digestRow(raw),
 		},
 	}
 
@@ -249,8 +253,12 @@ func compileDynamicRow(raw RawRow, row DynamicRow, opts Options) Record {
 
 	for _, plane := range PlanesFor(SubstrateDynamic) {
 		spec := MustSpecFor(plane)
+		// EnforcedAction equals ResolvedAction on every dynamic plane: none of
+		// them carries PassesOrgOverrides and none coerces, so nothing displaces the
+		// row's own action list. Stated rather than left empty, for the reason
+		// on the field - absent would read as "applies nothing".
 		pr := PlaneResult{Plane: spec.Plane, ReadPath: ReadPathDynamicRows,
-			ResolvedAction: legacyActionList, AttributePaths: paths}
+			ResolvedAction: legacyActionList, EnforcedAction: legacyActionList, AttributePaths: paths}
 		switch whereOutcome {
 		case conditionInexpressible:
 			pr.Reasons = append(pr.Reasons, Reason{
@@ -277,6 +285,10 @@ func compileDynamicRow(raw RawRow, row DynamicRow, opts Options) Record {
 		rec.Planes = append(rec.Planes, pr)
 	}
 
+	// #3899: see tenantColumnReason and the static twin.
+	if r := tenantColumnReason(row.TenantID, row.Tier, dynamicRootFor(row)); r != nil {
+		rec.Reasons = append(rec.Reasons, *r)
+	}
 	rec.Reasons = append(rec.Reasons, Reason{
 		Code: ReasonPriorityHasNoEquivalent,
 		Detail: fmt.Sprintf("legacy evaluation order is priority DESC then created_at, and this row's priority is %s; "+
@@ -500,10 +512,7 @@ func toList(v any) ([]any, bool) {
 func dynamicPolicyFor(row DynamicRow, spec PlaneSpec, where pdp.Condition, act legacyAction, idx int, opts Options) (*pdp.Policy, []Reason) {
 	var reasons []Reason
 	id := fmt.Sprintf("%s#%d", PolicyIDFor("dynamic_policies", row.PolicyID, spec.Plane, ""), idx)
-	root := pdp.RootOrganization
-	if row.Tier == "system" || row.TenantID == "global" {
-		root = pdp.RootSystem
-	}
+	root := dynamicRootFor(row)
 	scope := pdp.Scope{Organization: true}
 	if !row.SegmentIDNull && row.SegmentID != "" {
 		gid, err := contract.ParseID(contract.KindGroup, opts.GroupIDFor(row.SegmentID))
@@ -542,16 +551,7 @@ func dynamicPolicyFor(row DynamicRow, spec PlaneSpec, where pdp.Condition, act l
 				Detail: "require_approval stores a reason and a severity but no approver pool; ADR-065's approval obligation needs an eligible set and a quorum",
 			}}
 		}
-		base.Authority = contract.AuthorityRequirement
-		base.Mandatory = true
-		base.Obligations = []contract.Obligation{{
-			Type:          contract.ObApprovalChallenge,
-			Params:        map[string]string{"quorum": strconv.Itoa(pool.Quorum), "eligible": strings.Join(pool.Eligible, ",")},
-			Mandatory:     true,
-			SourcePolicy:  id,
-			SchemaVersion: 1,
-		}}
-		return &base, nil
+		return ApprovalPolicy(base, pool), nil
 
 	case "route":
 		// ADR-065's route restriction is a SET OF ALLOWED DESTINATIONS and
@@ -630,17 +630,7 @@ func dynamicPolicyFor(row DynamicRow, spec PlaneSpec, where pdp.Condition, act l
 		return &base, nil
 
 	case "alert", "warn":
-		base.Authority = contract.AuthorityRequirement
-		base.Obligations = []contract.Obligation{{
-			Type: contract.ObNotification,
-			Params: map[string]string{
-				"kind":     act.Type,
-				"severity": orDefault(cfgStr("severity"), "medium"),
-				"channel":  cfgStr("channel"),
-			},
-			SourcePolicy: id, SchemaVersion: 1,
-		}}
-		return &base, nil
+		return dynamicNotificationPolicy(base, act.Type, orDefault(cfgStr("severity"), dynamicNotificationSeverity), cfgStr("channel")), nil
 
 	case "modify_risk":
 		return nil, []Reason{{
@@ -697,4 +687,13 @@ func configStringList(cfg map[string]any, key string) []string {
 		out = append(out, v...)
 	}
 	return out
+}
+
+// dynamicRootFor is the ONE derivation of a dynamic row's authority root. See
+// staticRootFor for why it is a function.
+func dynamicRootFor(row DynamicRow) pdp.Root {
+	if row.Tier == "system" || row.TenantID == "global" {
+		return pdp.RootSystem
+	}
+	return pdp.RootOrganization
 }

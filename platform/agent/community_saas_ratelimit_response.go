@@ -45,6 +45,10 @@ const (
 	LimitTypeActivePolicies      = "active_policies"
 	LimitTypeHITLApprovalsWindow = "hitl_approvals_window"
 	LimitTypeFeatureProOnly      = "feature_pro_only"
+
+	// LimitTypePerMinute is the per-minute burst limit on the MCP server path
+	// (#4261). The REST per-minute 429 keeps its plain {"error": ...} body.
+	LimitTypePerMinute = "per_minute"
 )
 
 // Locked V1 wordings per umbrella #1958 + PRD §"Customer-facing copy —
@@ -58,6 +62,14 @@ const (
 	wordingActivePolicies      = "Free tier supports 4 active custom policies. Delete one to make room, or upgrade to Pro for up to 50."
 	wordingHITLApprovalsWindow = "HITL approval limit reached for the last 7 days. Next available %s. Pro raises this to 20/week."
 	wordingFeatureProOnly      = "LLM cost pre-flight is a Pro feature — see what a multi-step plan will cost before it runs."
+
+	// The per-minute wordings are new copy (#4261), not part of the V1 set
+	// locked by #1958. The Free one fills in the Free and Pro limits; the
+	// other one fills in the limit that was reached, and serves every tier
+	// that has no higher tier to offer, and the pre-credential limiter, which
+	// runs before the tier is known.
+	wordingPerMinuteFree = "Per-minute limit reached on Free tier (%d requests). Pro raises this to %d/min. Try again in a minute."
+	wordingPerMinute     = "Per-minute limit reached (%d requests). Try again in a minute."
 )
 
 // rateLimitEnvelope is the structured response body emitted on every
@@ -306,19 +318,63 @@ func writeRateLimitErrorJSONRPC(w http.ResponseWriter, reqID interface{}, tenant
 			BuyURL:     v1ProUpgradeBuyURL,
 		},
 	}
+	writeEnvelopeJSONRPC(w, reqID, tenantID, envelope, retryAfterSeconds(resetsAt))
+}
+
+// writeMinuteRateLimitErrorJSONRPC emits the per-minute envelope (#4261)
+// wrapped the same way as the daily one. retrySecs is the Retry-After the
+// limiter asked for (60, as on the REST per-minute 429), and resets_at is
+// that far from now, so a hook's throttle and the header agree.
+//
+// tier is "" when the pre-credential limiter fired: it runs before the
+// credential, and so the tier, is resolved.
+func writeMinuteRateLimitErrorJSONRPC(w http.ResponseWriter, reqID interface{}, tenantID, tier string, limit, retrySecs int) {
+	resetsAt := time.Now().UTC().Add(time.Duration(retrySecs) * time.Second).Truncate(time.Second)
+	wording := renderPerMinuteWording(tier, limit)
+	envelope := rateLimitEnvelope{
+		Error:     wording,
+		LimitType: LimitTypePerMinute,
+		Tier:      tier,
+		Limit:     limit,
+		Remaining: 0,
+		Window:    "minute",
+		ResetsAt:  &resetsAt,
+		Upgrade: upgradeBlock{
+			Tier:       "Pro",
+			Wording:    wording,
+			CompareURL: v1ProUpgradeCompareURL,
+			BuyURL:     v1ProUpgradeBuyURL,
+		},
+	}
+	writeEnvelopeJSONRPC(w, reqID, tenantID, envelope, retrySecs)
+}
+
+// renderPerMinuteWording names Pro's higher limit only to a Free caller;
+// every other caller is told the limit it reached.
+func renderPerMinuteWording(tier string, limit int) string {
+	if tier == "Free" {
+		return fmt.Sprintf(wordingPerMinuteFree, limit, minuteLimitForTier("Pro"))
+	}
+	return fmt.Sprintf(wordingPerMinute, limit)
+}
+
+// writeEnvelopeJSONRPC answers HTTP 429 with the envelope inside a JSON-RPC
+// result: `result.content[0].text`, isError true. The installed plugin hooks
+// read an envelope only from a 429 or a 403 and look for it at the body root
+// or in `result.content[0].text`; before #4261 this answer was a 200, so every
+// hook passed it by as an ordinary result and allowed the call silently.
+func writeEnvelopeJSONRPC(w http.ResponseWriter, reqID interface{}, tenantID string, envelope rateLimitEnvelope, retrySecs int) {
 	envelopeJSON, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		log.Printf("[V1 Pro envelope JSON-RPC] tenant=%s marshal failed: %v", tenantID, err)
-		envelopeJSON = []byte(`{"error":"daily quota exceeded"}`)
+		envelopeJSON = []byte(`{"error":"rate limit exceeded"}`)
 	}
 
-	// Mirror the locked headers from the HTTP path. JSON-RPC clients
-	// don't typically read these but they're useful for observability
-	// (CloudWatch / ALB access logs surface them).
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Axonflow-Tier-Limit", LimitTypeDailyQuota)
+	w.Header().Set("X-Axonflow-Tier-Limit", envelope.LimitType)
 	w.Header().Set("X-Axonflow-Upgrade-URL", v1ProUpgradeCompareURL)
-	w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSeconds(resetsAt)))
+	w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySecs))
+	w.WriteHeader(http.StatusTooManyRequests)
 
 	resp := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -331,6 +387,6 @@ func writeRateLimitErrorJSONRPC(w http.ResponseWriter, reqID interface{}, tenant
 		},
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("[V1 Pro envelope JSON-RPC] tenant=%s encode failed: %v", tenantID, err)
+		log.Printf("[V1 Pro envelope JSON-RPC] tenant=%s limit_type=%s encode failed: %v", tenantID, envelope.LimitType, err)
 	}
 }

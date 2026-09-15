@@ -22,6 +22,24 @@ paths = [
     '''.*_test\.py$''',
     '''.*_test\.ts$''',
     '''.*\.md$''',
+    # NARROW, WHICH IS THE ARGUMENT: a `testdata` PATH COMPONENT and `.json`
+    # only, and the whole `paths` list is pinned as a set by
+    # tests/regression-test-required/testdata_exclusions_stay_narrow_test.sh, so
+    # an entry added beside this one is a deliberate act rather than a drift.
+    #
+    # What it silences: the #3719 decision-proof fixture trips generic-api-key on
+    # a KEY IDENTIFIER (`dps-use1-2026-09-3719`), which is a name and not a
+    # secret. The private half is an ECDSA key derived at test time from a fixed
+    # string and is never written to any file.
+    #
+    # NOT ARGUED FROM UNREACHABILITY, deliberately. An earlier version of this
+    # note reasoned that the Go toolchain never builds testdata and nothing in it
+    # reaches a shipped binary. That is true and it is a NON-SEQUITUR for a
+    # secret scanner: a hardcoded credential in `testdata/x.json` is exactly as
+    # leaked as one anywhere else, because the leak is the repository and not the
+    # binary. Reusing that reasoning for a scanner exclusion that mattered is the
+    # failure this paragraph exists to prevent.
+    '''(^|/)testdata/.*\.json$''',
 ]
 regexes = [
     '''SIGNING_KEY[[:space:]]*=[[:space:]]*""''',

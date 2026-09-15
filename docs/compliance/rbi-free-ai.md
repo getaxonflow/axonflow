@@ -1,6 +1,6 @@
 # RBI FREE-AI Framework Compliance
 
-*Last updated: July 2026 | **Platform:** 9.14.0 · **SDKs:** 9.0.0*
+*Last updated: July 2026* | **Platform Version:** 11.0.0 | **SDK Version:** 9.4.0
 
 AxonFlow provides comprehensive compliance support for the Reserve Bank of India's **Framework for Responsible and Ethical Enablement of AI (FREE-AI)** (August 2025) for Indian banking and financial services institutions.
 
@@ -17,7 +17,7 @@ The RBI FREE-AI Framework establishes governance requirements for AI systems in 
 | **Board Reporting** | Quarterly and annual compliance reports |
 | **Audit Export** | 10-year retention, RBI-compliant exports |
 | **PII Detection** | 11 India-specific PII types (Aadhaar, PAN, UPI, etc.) |
-| **Policy Templates** | Pre-built RBI compliance policies |
+| **Policy Pack** | The `rbi` policy pack, which the banking deployment modes install |
 
 ## Feature Availability
 
@@ -30,7 +30,7 @@ The RBI FREE-AI Framework establishes governance requirements for AI systems in 
 | Kill Switch | - | Full workflow |
 | Board Reporting | - | Full workflow |
 | 10-year Audit Export | - | RBI format |
-| Policy Templates | Basic | Full library |
+| RBI policy pack | - | Installed by the banking deployment modes |
 
 ## Key Features (Enterprise)
 
@@ -50,7 +50,7 @@ Per RBI FREE-AI Section 2.1, all AI systems must be registered with board approv
 GET  /api/v1/rbi/ai-systems          # List registered systems
 POST /api/v1/rbi/ai-systems          # Register new system
 GET  /api/v1/rbi/ai-systems/{id}     # Get system details
-PUT  /api/v1/rbi/ai-systems/{id}     # Update system
+PATCH /api/v1/rbi/ai-systems/{id}    # Update system (partial)
 GET  /api/v1/rbi/ai-systems/summary  # Registry summary
 ```
 
@@ -86,7 +86,7 @@ Per RBI FREE-AI Section 3.2, AI models require independent validation before dep
 GET  /api/v1/rbi/validations         # List validations
 POST /api/v1/rbi/validations         # Record new validation
 GET  /api/v1/rbi/validations/{id}    # Get validation details
-PUT  /api/v1/rbi/validations/{id}    # Update validation status
+PATCH /api/v1/rbi/validations/{id}   # Update validation (partial)
 ```
 
 **Example: Record a model validation:**
@@ -121,8 +121,8 @@ Per RBI FREE-AI Section 5.1, AI incidents must be tracked and reported to the bo
 GET  /api/v1/rbi/incidents              # List incidents
 POST /api/v1/rbi/incidents              # Report new incident
 GET  /api/v1/rbi/incidents/{id}         # Get incident details
-PUT  /api/v1/rbi/incidents/{id}         # Update incident
-POST /api/v1/rbi/incidents/{id}/resolve # Resolve incident
+PATCH /api/v1/rbi/incidents/{id}        # Update incident (partial; not the status)
+POST /api/v1/rbi/incidents/{id}/resolve # Resolve incident (`resolution` required)
 ```
 
 **Example: Report an AI incident:**
@@ -313,13 +313,18 @@ Format: `SSAAAAANNNNANAN` (15 characters)
 06BZAHM6385P6Z2  → Valid (Haryana)
 ```
 
-## Policy Templates
+## The RBI Policy Pack
 
-AxonFlow includes pre-built policy templates for RBI FREE-AI compliance:
+AxonFlow Enterprise ships its RBI FREE-AI controls as a typed policy pack,
+`rbi`. The `in-vpc-banking` and `saas` deployment modes install it at boot, and
+any other Enterprise deployment can install it with `AXONFLOW_POLICY_PACKS=rbi`.
+Each detector below compiles to a pack control, `pack:rbi:<detector id with
+every underscore doubled>`; a detector that warns on requests and redacts
+responses compiles to one control per phase, suffixed `:warn` and `:redact`.
 
-### PII Detection Policies
+### PII Detection
 
-| Policy ID | Description |
+| Detector | Description |
 |-----------|-------------|
 | `rbi_upi_id_detection` | Detect UPI Virtual Payment Addresses |
 | `rbi_mobile_number_detection` | Detect Indian mobile numbers |
@@ -329,19 +334,19 @@ AxonFlow includes pre-built policy templates for RBI FREE-AI compliance:
 | `rbi_driving_license_detection` | Detect driving license numbers |
 | `rbi_pincode_detection` | Detect postal PIN codes |
 
-### Compliance Policies
+### Compliance
 
-| Policy ID | RBI Section | Description |
+| Detector | RBI Section | Description |
 |-----------|-------------|-------------|
 | `rbi_high_risk_ai_oversight` | 2.4 | Human oversight for high-risk AI |
 | `rbi_ai_explainability` | 2.5 | AI decision explanation |
 | `rbi_ai_fairness_monitoring` | 2.3 | Bias detection in AI models |
-| `rbi_model_validation_required` | 3.2 | Model validation enforcement |
-| `rbi_board_reporting_required` | 6.1 | Board reporting compliance |
+| `rbi_model_validation_logging` | 3.2 | Model validation status logging |
+| `rbi_board_reporting_trigger` | 6.1 | Board reporting event detection |
 
 ## SDK Integration
 
-Once RBI policy templates are applied, all LLM calls routed through AxonFlow are automatically subject to PII detection and audit logging.
+With the RBI pack installed, every call AxonFlow decides on `/api/v1/decide` is subject to the pack's controls, and the decision names the pack by digest.
 
 **curl:**
 
@@ -413,7 +418,7 @@ RBI compliance uses dedicated tables (banking-industry migration `301_rbi_free_a
 ## Getting Started (Enterprise)
 
 1. Deploy AxonFlow Enterprise (the RBI module initializes automatically in Enterprise builds)
-2. Run database migrations (includes `301_rbi_free_ai_compliance.sql` and `302_rbi_free_ai_templates.sql`)
+2. Run in `DEPLOYMENT_MODE=in-vpc-banking` (or `saas`): the agent installs the `rbi`, `sebi` and `mas-feat` policy packs at boot, and the migrations include `301_rbi_free_ai_compliance.sql` and `402_retire_banking_seeded_policies.sql`, which retires the template rows the packs replace
 3. Register AI systems in the registry
 4. Set up board reporting schedule
 

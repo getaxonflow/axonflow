@@ -7,9 +7,9 @@
 # because the main loop only iterates the parameters the live stack already
 # carries, and a parameter the stack has never had is not among them.
 #
-# When #3564 added five DecisionShadow* parameters, they were added to the
+# When #3564 added five decision-mode parameters, they were added to the
 # preview loop and not the deploy loop. The failure is silent and it points the
-# wrong way: an operator dispatches `decision_shadow_mode: shadow`, the change
+# wrong way: an operator dispatches the decision mode as `shadow`, the change
 # set PREVIEWS `shadow`, params.json omits the key, CloudFormation applies the
 # template default `off`, and the workflow reports success. The fleet runs with
 # the observation window closed while every signal says it is open.

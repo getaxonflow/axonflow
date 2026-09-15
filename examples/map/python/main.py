@@ -375,10 +375,9 @@ async def main() -> int:
         # ========================================
         print("10. PII in Plan Query - Testing policy enforcement on plan with SSN...")
         pii_query = "Create a plan to process refund for customer with SSN 123-45-6789"
-        gateway_pii_action = os.getenv(
-            "GATEWAY_PII_ACTION", os.getenv("PII_ACTION", "redact")
-        )
-        print(f"   GATEWAY_PII_ACTION={gateway_pii_action}")
+        # v11: the stored action of the matched PII policy decides. sys_pii_ssn
+        # stores action_request=warn, so plan generation is not blocked. An
+        # organization pii=block override or a policy action change would block it.
 
         try:
             pii_plan = await client.generate_plan(
@@ -391,29 +390,14 @@ async def main() -> int:
             pii_plan = None
             pii_err = e
 
-        if gateway_pii_action == "block":
-            if pii_err is not None:
-                assert_check(True, "PII plan blocked as expected (GATEWAY_PII_ACTION=block)")
-                print(f"   Block reason: {pii_err}")
-            else:
-                assert_check(False, "PII plan should have been blocked (GATEWAY_PII_ACTION=block)")
-        elif gateway_pii_action == "log":
-            if pii_err is not None:
-                print(f"   Warning: PII plan failed: {pii_err}")
-            else:
-                assert_check(pii_plan.plan_id != "", "PII plan approved with log-only mode")
-                print(f"   Plan ID: {pii_plan.plan_id} (PII logged but not redacted)")
+        if pii_err is not None:
+            print(f"   Warning: PII plan failed: {pii_err}")
         else:
-            # Default "redact" mode
-            if pii_err is not None:
-                print(f"   Warning: PII plan failed: {pii_err}")
-            else:
-                assert_check(
-                    pii_plan.plan_id != "",
-                    "PII plan generated (redaction may apply downstream)",
-                )
-                print(f"   Plan ID: {pii_plan.plan_id}")
-                print("   Note: PII redaction is applied downstream by the Orchestrator")
+            assert_check(
+                pii_plan.plan_id != "",
+                "PII plan generated (stored request action for SSN is warn)",
+            )
+            print(f"   Plan ID: {pii_plan.plan_id}")
         print()
 
         # ========================================

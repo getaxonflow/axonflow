@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
@@ -197,6 +200,75 @@ const (
 	ResourceAncestorsPath = "resource.ancestors"
 )
 
+// CompilerOwnedPaths returns every attribute path the compiler itself writes a
+// comparison against, in a stable order.
+//
+// IT EXISTS SO ANOTHER PRODUCER CAN ASK RATHER THAN REMEMBER (#3936). These
+// paths are not ordinary attributes: their VALUE is decided by this package,
+// because the compiler renders a policy's own identifiers into the literal
+// side of the comparison. `principal.id` holds a rendered principal because
+// compileScope emits `principal.id == "User::realm:alice"`; nothing else may
+// put a different currency in it.
+//
+// A producer that maps some other value onto one of these silently gives the
+// path two meanings, and deriveSchema's type widening means the collision
+// carries no diagnostic. That is not hypothetical: legacycompile mapped the
+// legacy `user.id` condition field onto `principal.id` and the shadow request
+// builder then wrote the legacy integer over the canonical principal it had
+// just written.
+//
+// It is DERIVED FROM THE CONST BLOCK ABOVE by a test rather than trusted as a
+// hand-kept list, because a hand-kept list of well-known paths is one entry
+// short the day a sixth is declared - which is the exact shape #3877 shipped
+// and had to correct.
+func CompilerOwnedPaths() []string {
+	return []string{
+		ActionIDPath,
+		ActionTagsPath,
+		PrincipalGroupsPath,
+		PrincipalIDPath,
+		ResourceAncestorsPath,
+	}
+}
+
+// compileScope renders a policy's scope into a tri-state condition.
+//
+// # THE PRINCIPAL EQUALITY IS OVER THE RENDERED FORM, TYPE INCLUDED (#3936)
+//
+// `p.String()` renders `Type::realm:local`, so a policy scoped to
+// `User::acme:alice` does not apply to the same subject presented as
+// `Service::acme:alice`. That is a CLASSIFICATION participating in an equality
+// that decides IDENTITY - the same shape as #3876 and #3878, on the largest of
+// the three surfaces - and it was measured rather than reasoned about:
+// TestAScopePrincipalSelectsOnTheRenderedFormIncludingTheType drives a real
+// signed bundle through the real evaluator and observes one spelling permitted
+// and every other classification of the same subject not_applicable.
+//
+// IT IS DELIBERATELY NOT FOLDED, and the reason is reachability. Folding it
+// changes which policies apply in BOTH directions at once - a deny that starts
+// firing and an allow that starts granting, on every request, with no policy
+// edited - so it needs a hazard somebody has demonstrated. Nobody can, and the
+// three facts that stop it are each carried by a guard rather than by this
+// comment, because a ruling nothing enforces decays into a paragraph:
+//
+//   - no production compiler emits Scope.Principals at all, so this branch is
+//     not on a path a live decision reaches
+//     (shadow.TestNoCompiledDocumentSelectsOnNamedPrincipals);
+//   - every shipped realm accepts exactly the one subject type its claim
+//     mapping mints, so Credential.SubjectType cannot widen and one subject
+//     cannot arrive spelled two ways
+//     (identity.TestEveryShippedRealmAcceptsOnlyTheTypeItMints);
+//   - principal.id carries a canonical rendered principal and nothing else
+//     (shadow.TestNoLegacyConditionFieldOverwritesTheCanonicalPrincipal).
+//
+// The day any of those fails, #3936 is live. The fix then has to move THIS
+// function and authoring's sharesID / containsAllIDs together: authoring
+// mirrors this equality on purpose, and making it fold the type alone would
+// report overlaps the evaluator does not have.
+//
+// The groups half below makes the same choice for the same reason. Its two
+// sides are a scope literal and the principal.groups request attribute, so the
+// rendered form is the only currency they share at all.
 func compileScope(s Scope, schema map[string]AttributeSchema) (string, error) {
 	if s.Organization {
 		return "tri.k_true", nil

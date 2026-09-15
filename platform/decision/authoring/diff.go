@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -77,11 +80,14 @@ type Diff struct {
 	Metadata    []FieldChange  `json:"metadata,omitempty"`
 	Attributes  []FieldChange  `json:"attributes,omitempty"`
 	Policies    []PolicyChange `json:"policies,omitempty"`
+	// SystemControls is what changed in the organization's control of the
+	// shipped system controls (PRD v11 §1.5).
+	SystemControls []SystemControlChange `json:"system_controls,omitempty"`
 }
 
 // Empty reports whether the two documents are identical.
 func (d Diff) Empty() bool {
-	return len(d.Metadata) == 0 && len(d.Attributes) == 0 && len(d.Policies) == 0
+	return len(d.Metadata) == 0 && len(d.Attributes) == 0 && len(d.Policies) == 0 && len(d.SystemControls) == 0
 }
 
 // DiffDocuments computes the semantic difference between two documents.
@@ -101,6 +107,7 @@ func DiffDocuments(from, to *Document) (Diff, error) {
 
 	var fromPolicies []pdp.Policy
 	var fromAttrs []pdp.AttributeSchema
+	var fromControls []SystemControlEntry
 	if from != nil {
 		out.FromVersion = from.Policy.Version
 		fromDigest, err := Digest(from)
@@ -110,6 +117,7 @@ func DiffDocuments(from, to *Document) (Diff, error) {
 		out.FromDigest = fromDigest
 		fromPolicies = from.Policy.Policies
 		fromAttrs = from.Policy.Attributes
+		fromControls = from.SystemControls
 		meta, err := diffStruct(from.Metadata, to.Metadata)
 		if err != nil {
 			return Diff{}, err
@@ -128,7 +136,15 @@ func DiffDocuments(from, to *Document) (Diff, error) {
 		return Diff{}, err
 	}
 	out.Policies = policies
-	out.Effect = combineEffects(policies)
+	out.SystemControls = diffSystemControls(fromControls, to.SystemControls)
+	effects := make([]Effect, 0, len(policies)+len(out.SystemControls))
+	for _, c := range policies {
+		effects = append(effects, c.Effect)
+	}
+	for _, c := range out.SystemControls {
+		effects = append(effects, c.Effect)
+	}
+	out.Effect = combineEffects(effects)
 	return out, nil
 }
 
@@ -302,14 +318,14 @@ func obligationKey(o contract.Obligation) string {
 	return fmt.Sprintf("%s|%s|%v|%t|%d", o.Type, o.Target, params, o.Mandatory, o.SchemaVersion)
 }
 
-// combineEffects folds the per-policy directions into one.
-func combineEffects(changes []PolicyChange) Effect {
-	if len(changes) == 0 {
+// combineEffects folds the per-change directions into one.
+func combineEffects(effects []Effect) Effect {
+	if len(effects) == 0 {
 		return EffectNeutral
 	}
 	widening, narrowing, undetermined := false, false, false
-	for _, c := range changes {
-		switch c.Effect {
+	for _, e := range effects {
+		switch e {
 		case EffectWidening:
 			widening = true
 		case EffectNarrowing:

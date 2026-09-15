@@ -30,16 +30,22 @@
 # ---------------------------------------------------------------------------
 # The sections below are grouped by the release that introduced them:
 #
-#   [1/24]-[8/24]   v8.x -> v9.0 baseline (epic #2230 Phase 7)
-#   [9/24]-[12/24]  v9.13.0 (the cross-tenant remediation train, epic #3071)
-#   [13/24]-[15/24] v9.14.0 governance-gate advisories (#3248, #3057, #3278)
-#   [16/24]         v9.17.0 break-glass recovery readiness (ADMIN_API_KEY)
-#   [17/24]-[22/24] v10.0.0 (audit_logs backfill sizing, the app-role admin
+#   [1/26]-[8/26]   v8.x -> v9.0 baseline (epic #2230 Phase 7)
+#   [9/26]-[12/26]  v9.13.0 (the cross-tenant remediation train, epic #3071)
+#   [13/26]-[15/26] v9.14.0 governance-gate advisories (#3248, #3057, #3278)
+#   [16/26]         v9.17.0 break-glass recovery readiness (ADMIN_API_KEY)
+#   [17/26]-[22/26] v10.0.0 (audit_logs backfill sizing, the app-role admin
 #                   pool on the orchestrator and portal, a retired env lever, a
-#                   retired metric label, and two advisories about what the
-#                   segment-enforcement and risk-scoring changes now do)
-#   [23/24]-[24/24] v10.0.0 Decision 5 (#3490): per-tenant policy divergence,
+#                   retired metric label, and two advisories: the segment
+#                   targeting v11 stops honouring, and what the risk-scoring
+#                   change now does)
+#   [23/26]-[24/26] v10.0.0 Decision 5 (#3490): per-tenant policy divergence,
 #                   and policy rows core/165 cannot resolve an org key for
+#   [25/26]         v11.0.0: the variables v11 refuses at boot (the decision
+#                   mode's, the MCP dynamic-policy plane's, the FinCrime
+#                   scorer's and the identity-compat mode's)
+#   [26/26]         v11.0.0: the per-policy overrides that stop applying at the
+#                   upgrade (an unpublished draft, or tenant-scoped and dropped)
 #
 # KEEP THIS MAP IN STEP WITH TOTAL_CHECKS. It exists so a reader can find the
 # check that matters to them without scrolling the file, which it stops doing
@@ -94,7 +100,7 @@
 # issue number is.
 #
 # Companion docs:
-#   technical-docs/v9_phase7_self_hosted_migration.md          (v8 → v9)
+#   technical-docs/archive/v9_phase7_self_hosted_migration.md  (v8 → v9)
 #   https://docs.getaxonflow.com/docs/deployment/v9-12-to-v9-13-upgrade/
 #   https://docs.getaxonflow.com/docs/deployment/v8-self-hosted-upgrade-guide/
 #
@@ -230,7 +236,7 @@ info() { printf "%bℹ️  INFO%b  %s\n" "$BLUE" "$NC" "$1"; }
 # TOTAL_CHECKS is asserted against the number of section() calls at the end. A
 # hard-coded "[3/8]" that nobody updated when a ninth check landed is a small
 # lie printed on every run, and the kind that makes an operator stop reading.
-TOTAL_CHECKS=24
+TOTAL_CHECKS=26
 SECTION_NO=0
 section() {
     SECTION_NO=$((SECTION_NO + 1))
@@ -1745,7 +1751,7 @@ else
         fi
         if [[ "$APP_ROLE_HAS_PW" == "f" ]]; then
             warn "axonflow_app_role has no password set" \
-                "Migration 098 creates the role with LOGIN capability but no password — the role cannot authenticate until provisioned. BEFORE flipping AXONFLOW_DB_USE_APP_ROLE=true, run: scripts/operators/provision-app-role.sh (see technical-docs/v9_phase8_rls_rollout.md §'Mechanism recap'). Skipping this step results in the agent failing to connect on boot."
+                "Migration 098 creates the role with LOGIN capability but no password — the role cannot authenticate until provisioned. BEFORE flipping AXONFLOW_DB_USE_APP_ROLE=true, run: scripts/operators/provision-app-role.sh (see technical-docs/archive/v9_phase8_rls_rollout.md §'Mechanism recap'). Skipping this step results in the agent failing to connect on boot."
         fi
     fi
 fi
@@ -2940,36 +2946,23 @@ fi
 printf "\n"
 
 # ---------------------------------------------------------------------------
-# Check 20 - segment-scoped policies and the MCP X-User-Token consequence
+# Check 20 - segment-scoped legacy policies decide nothing on v11's enforcing planes
 # ---------------------------------------------------------------------------
-section "Segment-scoped policies in force (#3430 X-User-Token consequence)"
+section "Segment-scoped legacy policies (ADR-060 targeting, retired on the enforcing planes in v11)"
 
 # ADVISORY, in the same honest-scope register as checks 13 to 15. What this can
-# see is the POLICY TABLES. What it cannot see, at all, is which callers reach
-# this deployment or what credential each of them presents, so it must not claim
-# to know whether anybody will actually be refused.
+# see is the POLICY TABLES; it cannot see which callers reach this deployment.
 #
-# The consequence it reports is real and narrow: on the MCP-server check_policy
-# and check_output tools, v10.0.0 makes X-User-Token MANDATORY for any
-# organisation that holds an enabled segment-scoped STATIC policy for that
-# phase. A caller with no validated per-user token is refused with the
-# identifier segment_identity_unresolved instead of being evaluated as though
-# no segment restriction existed.
-#
-# THE WORD "STATIC" ABOVE IS LOAD-BEARING, AND IS WHY THIS CHECK COUNTS THE TWO
-# TABLES SEPARATELY. The census that decides the refusal is
-# segmentScopedPoliciesInScope -> UnifiedPolicyEngine.HasSegmentScopedPolicies
-# -> PolicyLoader.GetPolicies -> loadFromDatabase, whose SQL reads FROM
-# static_policies and nothing else. The code says so itself, at
-# platform/agent/mcp_identity.go: "this censuses the STATIC engine's policy set
-# (static_policies) only ... An org whose ONLY segment-scoped rows are dynamic
-# therefore still answers false here and proceeds". So a dynamic_policies row
-# with a segment_id is real governance, but it does not make any caller start
-# needing a token on this plane, and reporting it as though it did would tell
-# an operator to go mint credentials for a requirement that never binds.
-# Both counts are still reported, because knowing the dynamic plane has adopted
-# segment targeting is useful context; only the static count carries the
-# MANDATORY claim.
+# What it reports: v11's anchored decision engine decides /api/v1/decide, the
+# gateway pre-check, the agent's pass on /api/request, the OpenAI-compatible route
+# and both MCP passes from the organization's typed policy document. A row in
+# static_policies or dynamic_policies decides nothing there, and a segment_id
+# on it (ADR-060 targeting) restricts nothing: an organization that relied on
+# segment-scoped rows keeps their effect only by importing and activating them
+# through the typed path. v11 also removes the MCP consequence v10.0.0 attached
+# to such rows (#3430): no MCP caller needs a per-user token because a
+# segment-scoped policy exists. So both tables count the same, and the count is
+# the thing to act on.
 #
 # segment_id arrives on static_policies in core/157 and on dynamic_policies in
 # core/159, so a deployment older than those columns cannot hold a
@@ -2981,13 +2974,9 @@ section "Segment-scoped policies in force (#3430 X-User-Token consequence)"
 # tenant-isolation policy, and a connection with neither ownership nor
 # BYPASSRLS counts 0 on each of them with psql exit 0 and no error - which is
 # indistinguishable from an org that has adopted no segment targeting at all.
-# Measured on a database holding exactly one enabled segment-scoped row: the
-# app-role reported "No enabled segment-scoped policy exists, so the #3430
-# X-User-Token requirement binds no caller here" while the BYPASSRLS role on
-# the same database at the same instant reported the row. The zero-total arm is
-# the only affirmative claim built on the counts, so it is the only one gated;
-# a non-zero count is true under every posture, because RLS can hide a row but
-# never invent one.
+# The zero-total arm is the only affirmative claim built on the counts, so it is
+# the only one gated; a non-zero count is true under every posture, because RLS
+# can hide a row but never invent one.
 C20_TOTAL=0
 C20_STATIC=0
 C20_DYNAMIC=0
@@ -3048,24 +3037,12 @@ elif [[ "$C20_TOTAL" -eq 0 && -n "$C20_BLIND_TABLES" ]]; then
     warn "This connection cannot read the policy tables, so 'no segment-scoped policy' is not a measurement" \
         "Row-level security is applied to this connection on: ${C20_BLIND_TABLES} - and each read as ZERO rows, which is what a filtered read and an empty table both look like. Connected as role '${PF_CONN_ROLE:-unknown}' (rolsuper=${PF_CONN_SUPER:-unknown}, rolbypassrls=${PF_CONN_BYPASSRLS:-unknown}). core/018 puts \`org_id = get_current_org_id()\` on these tables and a bare psql never sets \`app.current_org_id\`, so the policy matches nothing. This check exists to tell you whether v10.0.0 makes X-User-Token MANDATORY for callers of the MCP-server check_policy and check_output tools, and on this evidence it cannot: a green all-clear here would be the one reading that stops you minting the per-user tokens those callers are about to need. Re-run as axonflow_platform_admin (the same role the migrations use), or - on a docker-compose bundle - as the database user that OWNS the tables; see 'WHICH DATABASE ROLE TO RUN THIS AS' in this script's header."
 elif [[ "$C20_TOTAL" -eq 0 ]]; then
-    pass "No enabled segment-scoped policy exists, so the #3430 X-User-Token requirement binds no caller here"
+    pass "No enabled segment-scoped legacy policy exists, so v11's retirement of legacy segment targeting changes nothing here"
 else
     info "  enabled segment-scoped policies: $C20_TOTAL (static_policies: $C20_STATIC, dynamic_policies: $C20_DYNAMIC)"
     info "  first ten policy_id(s) per table: $C20_DETAIL"
-    if [[ "$C20_STATIC" -eq 0 ]]; then
-        info "  Why this is a pass and not a warning: the MCP-server census that decides the refusal reads"
-        info "  static_policies only, so an organisation whose only segment-scoped rows are dynamic answers"
-        info "  'no segment-scoped policy' there and proceeds without a per-user token. The dynamic plane has"
-        info "  its own segment_id column and its own gate (#3052). Nothing here needs a token minted for it."
-        pass "The $C20_DYNAMIC enabled segment-scoped polic(ies) here are all in dynamic_policies, which does not drive the #3430 X-User-Token requirement"
-    else
-        C20_DYN_NOTE=""
-        if [[ "$C20_DYNAMIC" -gt 0 ]]; then
-            C20_DYN_NOTE=" Reported for context, and deliberately NOT part of the requirement above: this deployment also holds $C20_DYNAMIC enabled segment-scoped dynamic_policies row(s). Those do not drive this requirement and no caller needs a token on their account. The census behind the refusal reads static_policies only, and the dynamic-policy plane has its own segment_id column and its own gate (#3052); count those rows as segment targeting you have already adopted, not as callers about to be refused."
-        fi
-        warn "$C20_STATIC enabled segment-scoped static_policies row(s) make X-User-Token MANDATORY on two MCP-server tools" \
-            "As of v10.0.0 the MCP-server check_policy and check_output tools resolve the caller's governance segments before evaluating, and an organisation holding an enabled segment-scoped policy in static_policies for that phase refuses a caller with no validated per-user token. The refusal is an HTTP 200 JSON-RPC result carrying allowed=false with the stable identifier segment_identity_unresolved in blocked_by; match on that identifier, never on the human-readable reason, whose punctuation differs between planes (#3465). X-User-Email is explicitly refused as a substitute, even under AXONFLOW_TRUST_IDENTITY_HEADERS, and a token naming a shared synthetic identity is refused too. Mint per-user tokens for the callers that use those tools before upgrading. Honest scope: this preflight reads your POLICY TABLES. It cannot see which callers reach this deployment or what credential any of them presents, so it cannot tell you whether anybody will actually be refused, only that the requirement now has something to bind to. It also says nothing about the separate, UNCONDITIONAL segment_resolution_failed refusal, which denies a token-bearing caller whenever segment resolution errors, whether or not any segment-scoped policy exists.${C20_DYN_NOTE}"
-    fi
+    warn "$C20_TOTAL enabled segment-scoped legacy polic(ies) will decide nothing on the enforcing planes after the upgrade" \
+        "v11's anchored decision engine decides /api/v1/decide, the gateway pre-check, the agent's pass on /api/request, the OpenAI-compatible route, both MCP passes, and the orchestrator's /api/v1/process, /api/v1/plan/execute, workflow step gate and multi-agent plane from the organization's typed policy document. A row in static_policies or dynamic_policies decides nothing there and its segment_id restricts nothing, so the segment targeting these rows carry stops applying on those planes. Import and activate them through the typed path to keep their effect. No MCP caller needs a per-user token because such a row exists: v11 removes that requirement (#3430)."
 fi
 printf "\n"
 
@@ -3843,6 +3820,275 @@ else
     info "  first 25 policy_id(s): $C24_DETAIL"
     warn "$C24_TOTAL policy row(s) will be stamped __axonflow_unowned__ by migration core/165 and will stop firing" \
         "${C24_ORGS_NOTE:+${C24_ORGS_NOTE# } }A SEPARATE, EXPECTED WARNING: core/166 raises its own RAISE WARNING naming any row that still carries a value in the legacy organization_id column it drops. That warning is about a column being retired, NOT about scope being lost, and a row can appear there while carrying a perfectly good org_id - some shipped policy bundles populate both. Read core/166's warning as an inventory of what the drop discarded; read THIS check for what stops being enforced. They are different questions and only this one costs you enforcement. These rows carry no organisation key and no tenant key that core/165 can resolve one through, so after the upgrade they are selectable by NOBODY. This is the one change in v10.0.0 that REMOVES enforcement rather than widening it, which is why it is reported before the upgrade rather than left to the migration's own boot-time warning. Decide per row: stamp it with the owning organisation (UPDATE the org_id column) if the rule should keep applying, or accept that it stops - a rule with no owner was already unreachable under row-level security on any app-role deployment. Honest scope: this reproduces core/165's resolution chain read-only. It counts rows the migration cannot resolve; it does not modify anything."
+fi
+printf "\n"
+
+# ---------------------------------------------------------------------------
+# Check 25 - variables v11.0.0 refuses at boot
+# ---------------------------------------------------------------------------
+section "Variables v11.0.0 refuses at boot (the decision mode, the MCP dynamic-policy plane, the FinCrime scorer, the identity-compat mode, the HITL grant lifetime)"
+
+# A HARD FAIL, unlike check 19. v11.0.0's agent and orchestrator refuse to start
+# while any of these holds a non-empty value - 'false' included, because a
+# deployment that sets one believes it does something (PRD v11 sections 1.1,
+# 1.2, 1.3, 1.7, 1.13 and 5.1). An EMPTY value boots: v10.x compose files pass the
+# decision-mode variables through empty. So only a set value is a finding, and
+# it is a FAIL because upgrading with one set is an outage, not a posture
+# change. The v10.x enterprise compose file sets
+# AXONFLOW_FINCRIME_SCORER_TIMEOUT_MS to 100, so a stack started from it fails
+# here until the variable is removed. A v10.x CloudFormation stack sets
+# AXONFLOW_IDENTITY_COMPAT_MODE on both task definitions (the template's default
+# is 'off'), so it fails here until the stack runs a v11 template.
+# AXONFLOW_HITL_GRANT_TTL_SECONDS bounded a single-use approval grant v11 no
+# longer mints; no shipped compose file or CloudFormation template sets it,
+# so only a deployment that set it by hand fails here.
+#
+# The list is platform/shared/retiredenv's DecisionMode, MCPDynamicPolicies,
+# FinCrimeScorer, IdentityCompat and HITLGrant; a test there holds this copy
+# equal to them. discover_env reads one variable per call, so on ECS this check makes a
+# few AWS calls per variable; a component that cannot be read stops after its
+# first.
+C25_RETIRED_VARS=(
+    AXONFLOW_DECISION_SHADOW_MODE
+    AXONFLOW_DECISION_SHADOW_PLANES
+    AXONFLOW_DECISION_SHADOW_SAMPLE_RATE
+    AXONFLOW_DECISION_SHADOW_QUEUE_DEPTH
+    AXONFLOW_DECISION_SHADOW_WORKERS
+    AXONFLOW_DECISION_SHADOW_MATCH_LOG_EVERY
+    AXONFLOW_DECISION_SHADOW_REALM
+    AXONFLOW_DECISION_SHADOW_CONTENT_TARGET
+    MCP_DYNAMIC_POLICIES_ENABLED
+    MCP_DYNAMIC_POLICIES_CONNECTORS
+    MCP_DYNAMIC_POLICIES_TIMEOUT
+    MCP_DYNAMIC_POLICIES_GRACEFUL
+    AXONFLOW_FINCRIME_SCORER_URL
+    AXONFLOW_FINCRIME_SCORER_TIMEOUT_MS
+    AXONFLOW_IDENTITY_COMPAT_MODE
+    AXONFLOW_IDENTITY_COMPAT_ENFORCE_REASONS
+    AXONFLOW_IDENTITY_COMPAT_PATHS
+    AXONFLOW_IDENTITY_COMPAT_AGREEMENT_LOG_EVERY
+    AXONFLOW_HITL_GRANT_TTL_SECONDS
+)
+C25_SET=""
+C25_UNREADABLE=""
+for comp in agent orchestrator; do
+    info "  $comp: reading ${#C25_RETIRED_VARS[@]} variables"
+    for var in "${C25_RETIRED_VARS[@]}"; do
+        discover_env "$comp" "$var"
+        case "$DISC_STATE" in
+            set)
+                C25_SET="${C25_SET:+$C25_SET, }$comp $var"
+                info "  $comp: $var='$DISC_VALUE' (source: $DISC_SOURCE)" ;;
+            empty|absent) ;;
+            *)
+                C25_UNREADABLE="${C25_UNREADABLE:+$C25_UNREADABLE, }$comp"
+                info "  $comp: its environment could not be read ($DISC_SOURCE)"
+                break ;;
+        esac
+    done
+done
+
+if [[ -n "$C25_SET" ]]; then
+    fail "A variable v11.0.0 refuses at boot is set: $C25_SET" \
+        "v11.0.0's agent and orchestrator refuse to start while any of these holds a non-empty value, 'false' included. v11 has no decision mode, no MCP dynamic-policy plane, no identity-compat mode and no single-use approval grant: the ADR-065 decision plane decides every enforcing scope from the organization's typed policy document, the identity plane alone admits a credential, and an approval hold is the engine's challenge verdict (PRD v11 sections 1.1, 1.2, 1.3, 1.7, 1.13 and 5.1). Remove each named variable from the component's task definition, compose file or environment before upgrading. An empty value boots."
+elif [[ -n "$C25_UNREADABLE" ]]; then
+    warn "Could not read the environment of: $C25_UNREADABLE, so a variable v11.0.0 refuses at boot may still be set there" \
+        "Confirm by hand that none of ${C25_RETIRED_VARS[*]} holds a non-empty value on those components: v11.0.0 refuses to start while one does."
+else
+    pass "None of the ${#C25_RETIRED_VARS[@]} variables v11.0.0 refuses at boot is set on the agent or the orchestrator"
+fi
+printf "\n"
+
+# ---------------------------------------------------------------------------
+# Check 26 - per-policy overrides that stop applying at the upgrade (migration core/183)
+# ---------------------------------------------------------------------------
+section "Per-policy overrides that stop applying at the upgrade (migration core/183)"
+
+# v11.0.0 decides the shipped policies through the organization's typed policy
+# document, not policy_overrides (PRD v11 section 1.5), and this check
+# describes v11.0.0 as tagged. When it was written, main still had two readers
+# of the table that change a decision, and both are removed before the tag:
+#   - the agent's tier engine, Phase 2 of the request path
+#     (platform/agent/run.go, through StaticPolicyRepository.GetEffective),
+#     which applied a static row's block or require_approval until #4253
+#     removed it;
+#   - the workflow step gate's ADR-044 break-glass lookup
+#     (platform/orchestrator/override_enforcement.go FindActiveOverride), which
+#     let an 'allow' row, or a dynamic-policy row with no action, through for
+#     the user who created it until #4252 removed it (#4254's first half).
+# The table's other readers (among them the explain handler, the MCP richer
+# context and the effective-policies view) change no decision. At the first v11 boot the agent
+# translates each organization's rows ONCE into an UNPUBLISHED draft of that
+# document (migration core/183, platform/agent/policy_override_import.go), and
+# nothing is published: until someone in the organization reviews and
+# publishes the draft, the shipped policies decide as shipped and these
+# settings do not apply. That is a change
+# in what is enforced, so this check lists the rows read-only BEFORE the
+# upgrade rather than leaving the portal's import banner to announce it after.
+# It is a WARN and never a FAIL: the upgrade is safe, and what changes is who
+# has to act after it.
+#
+# TWO LISTS, BECAUSE THE IMPORT CARRIES ONE AND DROPS THE OTHER.
+#   C26_CANDIDATES   the rows the import proposes for the draft.
+#   C26_TENANT_ROWS  the rows it does NOT import because they are
+#                    tenant-scoped, and an organization's document has no
+#                    tenant scope. In v10.x the agent's per-policy override API
+#                    wrote every row with the caller's tenant
+#                    (HandleCreateOverride refuses a request with none), and
+#                    v10.x applied those rows, so on an upgraded deployment
+#                    this is usually the longer list. Those settings stop
+#                    applying at the upgrade and reach no draft.
+#
+# THE IMPORT SELECTS IN TWO HALVES, AND BOTH LISTS REPEAT THE FIRST EXACTLY.
+#   1. SQL: core/183's typed_policy_import_candidates() joins each row to the
+#      legacy policy it names. This check cannot call it, because core/183
+#      creates it during the upgrade, so both lists repeat the join.
+#   2. Go: buildImportRecord carries a row only when it is organization-wide
+#      (tenant_id is NULL), unrevoked, unexpired, not break-glass (no tool
+#      signature, and not an 'allow'), names a legacy policy, and changes it
+#      (enabled_override false, or an action). The join and the last five
+#      terms are declared ONCE, as C26_ELIGIBLE under C26_SELECT's columns, and
+#      the two lists are that body with the first term and with it reversed,
+#      so no edit can reach one list and miss the other.
+# What the import decides beyond them needs its document validation, so the
+# first list is a SUPERSET of what the draft carries. Two rows that disagree
+# about one control, a row naming a control outside the shipped set, a
+# re-action of a dynamic control, and an action outside block, redact, warn
+# and log (the v10 table also admits deny, require_approval and log_only) are
+# skipped at import, and the portal's import banner lists every row it
+# skipped, with its reason. A row naming a policy a v11 migration deletes is
+# listed here and skipped there as naming none, and a row whose expires_at
+# falls between this run and the upgrade is listed here and skipped there as
+# expired. Break-glass overrides (a tool signature, or an 'allow') are in
+# neither list and are not imported: they stay in policy_overrides, and
+# from the v11.0.0 tag no decision reads them (#4254).
+#
+# platform/agent/preflight_draft_import_candidates_realpg_test.go runs every
+# query below, exactly as declared here, against a migrated database beside
+# the import itself. It fails if the import carries a row the first list
+# omits, if a term stops excluding a row the import skips for it, or if a
+# tenant-scoped row the import drops is missing from the second list. Keep
+# each declaration on ONE line in ONE pair of double quotes; both tests read
+# them so. platform/agent/preflight_check26_declarations_test.go holds the
+# declarations without a database and fails unless each name below has ONE
+# writer: outside full-line comments a name may appear without a leading $
+# only at its declaration, so read one only as $NAME or ${NAME}.
+C26_SELECT="SELECT po.id::text AS override_id, COALESCE(po.org_id::text, '') AS org_id, COALESCE(po.tenant_id::text, '') AS tenant_id, COALESCE(sp.policy_id, dp.policy_id)::text AS legacy_policy_id, CASE WHEN po.enabled_override IS FALSE THEN 'disabled' ELSE 'action ' || po.action_override::text END AS change"
+C26_ELIGIBLE="FROM policy_overrides po LEFT JOIN static_policies sp ON po.policy_type = 'static' AND sp.id = po.policy_id LEFT JOIN dynamic_policies dp ON po.policy_type = 'dynamic' AND dp.id = po.policy_id WHERE po.revoked_at IS NULL AND (po.expires_at IS NULL OR po.expires_at > now()) AND po.tool_signature IS NULL AND po.action_override IS DISTINCT FROM 'allow' AND COALESCE(sp.policy_id, dp.policy_id, '') <> '' AND (po.enabled_override IS FALSE OR po.action_override IS NOT NULL)"
+C26_CANDIDATES="$C26_SELECT $C26_ELIGIBLE AND po.tenant_id IS NULL"
+C26_TENANT_ROWS="$C26_SELECT $C26_ELIGIBLE AND po.tenant_id IS NOT NULL"
+C26_COUNT_SQL="SELECT COUNT(*)::text || '|' || COUNT(DISTINCT org_id)::text FROM ($C26_CANDIDATES) c"
+C26_TENANT_COUNT_SQL="SELECT COUNT(*)::text || '|' || COUNT(DISTINCT org_id)::text FROM ($C26_TENANT_ROWS) c"
+C26_LIST_SQL="SELECT COALESCE(string_agg(translate(org_id || CASE WHEN tenant_id <> '' THEN '/' || tenant_id ELSE '' END || ': ' || legacy_policy_id || ' ' || change || ' (override ' || override_id || ')', E'\n\r', '  '), '; ' ORDER BY org_id, override_id), '') FROM (SELECT * FROM ($C26_CANDIDATES) c ORDER BY org_id, override_id LIMIT 25) s"
+C26_TENANT_LIST_SQL="SELECT COALESCE(string_agg(translate(org_id || CASE WHEN tenant_id <> '' THEN '/' || tenant_id ELSE '' END || ': ' || legacy_policy_id || ' ' || change || ' (override ' || override_id || ')', E'\n\r', '  '), '; ' ORDER BY org_id, tenant_id, override_id), '') FROM (SELECT * FROM ($C26_TENANT_ROWS) c ORDER BY org_id, tenant_id, override_id LIMIT 25) s"
+C26_COLUMNS=(org_id tenant_id policy_type policy_id enabled_override action_override revoked_at expires_at tool_signature)
+C26_OK=1
+C26_TABLE=0
+C26_MISSING=""
+C26_BLIND=""
+C26_FILTERED=""
+C26_TOTAL=0
+C26_ORGS=0
+C26_DETAIL=""
+C26_TENANT_TOTAL=0
+C26_TENANT_ORGS=0
+C26_TENANT_DETAIL=""
+C26_FAILURES_BEFORE="${#PSQL_FAILURES[@]}"
+
+# c26_count LABEL SQL - runs a "<rows>|<organizations>" count into C26_N and
+# C26_O; a query that did not run, or an answer that is not two numbers,
+# clears C26_OK.
+c26_count() {
+    C26_N=0
+    C26_O=0
+    q "$1" "$2"
+    if [[ "$QOK" -eq 1 ]] && is_uint "${Q%%|*}" && is_uint "${Q##*|}"; then
+        C26_N="${Q%%|*}"
+        C26_O="${Q##*|}"
+    else
+        C26_OK=0
+    fi
+}
+
+if table_exists policy_overrides; then
+    C26_TABLE=1
+    for col in "${C26_COLUMNS[@]}"; do
+        if ! column_exists policy_overrides "$col"; then
+            C26_MISSING="${C26_MISSING:+$C26_MISSING, }policy_overrides.$col"
+        fi
+    done
+    # The import reads as the table owner, which row-level security does not
+    # filter on these three tables (core/018, core/030: enabled, not forced).
+    # A connection that RLS DOES filter reads fewer rows, or none - and a
+    # filtered static_policies drops the joined policy id, so a visible
+    # override would vanish from both lists too. Checked on all three, exactly
+    # as check 24 checks the tables it counts; see rls_verdict().
+    for tname in policy_overrides static_policies dynamic_policies; do
+        if ! table_exists "$tname"; then
+            [[ "$tname" == policy_overrides ]] || C26_MISSING="${C26_MISSING:+$C26_MISSING, }the table $tname"
+            continue
+        fi
+        probe_rls "$tname"
+        if rls_blocks_all_clear "$RLS_STATE"; then
+            C26_BLIND="${C26_BLIND:+$C26_BLIND, }${tname}"
+        elif [[ "$RLS_STATE" == "filtered" ]]; then
+            C26_FILTERED="${C26_FILTERED:+$C26_FILTERED, }${tname}"
+        fi
+    done
+    if [[ -z "$C26_MISSING" ]]; then
+        c26_count "draft import candidates (count)" "$C26_COUNT_SQL"
+        C26_TOTAL="$C26_N"
+        C26_ORGS="$C26_O"
+        c26_count "tenant-scoped overrides (count)" "$C26_TENANT_COUNT_SQL"
+        C26_TENANT_TOTAL="$C26_N"
+        C26_TENANT_ORGS="$C26_O"
+        if [[ "$C26_OK" -eq 1 && "$C26_TOTAL" -gt 0 ]]; then
+            q "draft import candidates (first 25)" "$C26_LIST_SQL"
+            if [[ "$QOK" -eq 1 ]]; then C26_DETAIL="$Q"; else C26_OK=0; fi
+        fi
+        if [[ "$C26_OK" -eq 1 && "$C26_TENANT_TOTAL" -gt 0 ]]; then
+            q "tenant-scoped overrides (first 25)" "$C26_TENANT_LIST_SQL"
+            if [[ "$QOK" -eq 1 ]]; then C26_TENANT_DETAIL="$Q"; else C26_OK=0; fi
+        fi
+    fi
+fi
+
+if [[ "${#PSQL_FAILURES[@]}" -ne "$C26_FAILURES_BEFORE" ]]; then
+    C26_OK=0
+fi
+
+C26_PARTIAL_NOTE=""
+if [[ -n "$C26_FILTERED" ]]; then
+    C26_PARTIAL_NOTE=" This connection sees only part of: ${C26_FILTERED} (row-level security), so a row outside that part is not listed. Connected as role '${PF_CONN_ROLE:-unknown}'; re-run as axonflow_platform_admin, or on a docker-compose bundle as the database user that owns the tables, for the deployment-wide lists."
+fi
+
+if [[ "$C26_OK" -ne 1 ]]; then
+    fail "The per-policy override scan did not complete" \
+        "At least one query did not execute - see the query-failure list at the end. An unexecuted scan must NOT be read as 'nothing stops applying', because the rows it would have listed stop applying at the upgrade."
+elif [[ "$C26_TABLE" -eq 0 ]]; then
+    pass "No policy_overrides table on this deployment: no per-policy override stops applying at the upgrade"
+elif [[ -n "$C26_MISSING" ]]; then
+    warn "The per-policy override import cannot be previewed on this schema" \
+        "This schema lacks ${C26_MISSING}, which the v11 import reads. The upgrade applies the migrations that add them before core/183 runs, so the import itself is unaffected; only this preview cannot run. Re-run this script after upgrading to the latest v10 release to see the lists."
+elif [[ -n "$C26_BLIND" ]]; then
+    warn "This connection cannot read the per-policy overrides, so no verdict on the draft import is available" \
+        "Row-level security is applied to this connection on: ${C26_BLIND} - and a table that reads as ZERO rows is indistinguishable from an empty one. Connected as role '${PF_CONN_ROLE:-unknown}' (rolsuper=${PF_CONN_SUPER:-unknown}, rolbypassrls=${PF_CONN_BYPASSRLS:-unknown}). The v11 import reads every organization's rows as the table owner. RE-RUN as axonflow_platform_admin, or on a docker-compose bundle as the database user that OWNS the tables. See 'WHICH DATABASE ROLE TO RUN THIS AS' in this script's header."
+elif [[ "$C26_TOTAL" -eq 0 && "$C26_TENANT_TOTAL" -eq 0 && -n "$C26_FILTERED" ]]; then
+    warn "No per-policy override found, but this connection sees only part of the tables the import reads" \
+        "Rows were visible, so the scan ran - over the subset this connection is scoped to.${C26_PARTIAL_NOTE}"
+elif [[ "$C26_TOTAL" -eq 0 && "$C26_TENANT_TOTAL" -eq 0 ]]; then
+    pass "No per-policy override will stop applying at the upgrade: nothing for an organization to publish after it"
+else
+    if [[ "$C26_TOTAL" -gt 0 ]]; then
+        info "  organization-wide overrides the v11 import will propose as a draft: $C26_TOTAL, in $C26_ORGS organization(s)"
+        info "  first 25 (organization: policy change): $C26_DETAIL"
+    fi
+    if [[ "$C26_TENANT_TOTAL" -gt 0 ]]; then
+        info "  tenant-scoped overrides the v11 import does not carry: $C26_TENANT_TOTAL, in $C26_TENANT_ORGS organization(s)"
+        info "  first 25 (organization/tenant: policy change): $C26_TENANT_DETAIL"
+    fi
+    warn "$((C26_TOTAL + C26_TENANT_TOTAL)) per-policy override row(s) will stop applying at the upgrade: $C26_TOTAL arrive as an unpublished draft, $C26_TENANT_TOTAL are tenant-scoped and are not imported" \
+        "The previous engine's per-policy overrides stay in policy_overrides and from the v11.0.0 tag no decision reads them. At the first v11 boot each organization's organization-wide rows are translated ONCE into an unpublished draft of its typed policy document (migration core/183), and nothing is published: until someone in that organization reviews and publishes the draft in the portal's policy editor, the shipped policies decide as shipped and those settings do not apply. Tenant-scoped rows are not imported at all, because an organization's document has no tenant scope: the same change made in the document applies to EVERY tenant of the organization, so decide for each listed row whether that is acceptable before re-creating it there. Tell each organization named above before you upgrade. The draft list is a superset of what the draft carries: rows that disagree about one control, a row naming a control outside the shipped set, a re-action of a shipped dynamic control, an action outside block, redact, warn and log, and a row naming a policy a v11 migration deletes are skipped at import, and the portal's import banner lists every skipped row with its reason. Break-glass overrides (a tool signature, or an 'allow') are in neither list: they stay in policy_overrides, and from the v11.0.0 tag no decision reads them either.${C26_PARTIAL_NOTE}"
 fi
 printf "\n"
 

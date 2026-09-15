@@ -114,53 +114,16 @@ scenario_context_enriched_on_block() {
 }
 
 # -----------------------------------------------------------------------------
-# Scenario 2 — Override create → apply → revoke
+# Scenario 2 — RETIRED BY v11.0.0 (#4252)
 # -----------------------------------------------------------------------------
-
-scenario_override_lifecycle() {
-  local plugin="$1"
-  log "[$plugin] Scenario 2: override create → apply → revoke"
-
-  # Step 2a: Create override for the overridable test policy.
-  local create_out
-  create_out=$(http POST /api/v1/overrides \
-    '{"policy_id":"test-overridable-policy","policy_type":"dynamic","override_reason":"E2E test","ttl_seconds":300}')
-  local create_status
-  create_status=$(echo "$create_out" | head -1)
-  local override_id
-  override_id=$(echo "$create_out" | tail -n +2 | jq -r '.id // empty')
-
-  if [ "$create_status" = "201" ] && [ -n "$override_id" ]; then
-    pass "override created (id: $override_id)"
-  else
-    fail "override create failed: status=$create_status"
-    return
-  fi
-
-  # Step 2b: Search for override_created audit event.
-  local audit_out
-  audit_out=$(http POST /api/v1/audit/search \
-    "$(jq -n --arg oid "$override_id" '{override_id: $oid, limit: 10}')")
-  local audit_body
-  audit_body=$(echo "$audit_out" | tail -n +2)
-  local found_created
-  found_created=$(echo "$audit_body" | jq -r '.entries[] | select(.request_type=="override_created") | .id' | head -1)
-  [ -n "$found_created" ] && pass "override_created audit event present" || fail "override_created missing"
-
-  # Step 2c: Revoke.
-  local revoke_out
-  revoke_out=$(http DELETE "/api/v1/overrides/$override_id")
-  local revoke_status
-  revoke_status=$(echo "$revoke_out" | head -1)
-  [ "$revoke_status" = "200" ] && pass "override revoked" || fail "revoke failed: status=$revoke_status"
-
-  # Step 2d: Audit has override_revoked event.
-  audit_out=$(http POST /api/v1/audit/search \
-    "$(jq -n --arg oid "$override_id" '{override_id: $oid, limit: 10}')")
-  local found_revoked
-  found_revoked=$(echo "$audit_out" | tail -n +2 | jq -r '.entries[] | select(.request_type=="override_revoked") | .id' | head -1)
-  [ -n "$found_revoked" ] && pass "override_revoked audit event present" || fail "override_revoked missing"
-}
+#
+# Session overrides are gone. This scenario created an override for the
+# overridable test policy, found its override_created audit event, revoked it
+# and found override_revoked. From v11.0.0 the override create and revoke
+# write nothing and answer 409 LEGACY_POLICY_WRITE_FROZEN on every stack, so
+# the scenario could only fail. It is retired rather than inverted, as
+# scenario-3 and scenario-6 in openclaw-install/ were: the freeze itself is
+# proven by the platform's own runtime suites, not by this manual harness.
 
 # -----------------------------------------------------------------------------
 # Scenario 3 — Explain returns full context
@@ -230,7 +193,6 @@ scenario_audit_search_parity() {
 run_all_scenarios() {
   local plugin="$1"
   scenario_context_enriched_on_block "$plugin"
-  scenario_override_lifecycle "$plugin"
   scenario_explain_returns_context "$plugin"
   scenario_audit_search_parity "$plugin"
 }

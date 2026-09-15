@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package legacycompile
 
 import (
@@ -78,67 +81,12 @@ func TestStatusIsDerivedNotAsserted(t *testing.T) {
 	}
 }
 
-// TestBothReadPathsAreCompiled is the disjoint-read-path property. The proxy
-// tier engine reads the action column; every other plane reads the phase
-// columns; a compiler that read one would mistranslate every row where they
-// disagree.
-func TestBothReadPathsAreCompiled(t *testing.T) {
-	// action='allow' but action_request='block': the two read paths disagree,
-	// which is the exact population the migration is looking for.
-	row := staticRow(t, "sys_divergent", map[string]any{
-		"action": "allow", "action_request": "block", "action_response": "block",
-	})
-	rep, err := Compile([]RawRow{row}, testOptions())
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	rec := recordFor(t, rep, "sys_divergent")
-
-	var sawRuntime, sawEffective bool
-	for _, pr := range rec.Planes {
-		switch pr.ReadPath {
-		case ReadPathRuntimePhase:
-			sawRuntime = true
-			if pr.ResolvedAction != "block" {
-				t.Fatalf("runtime path resolved %q, want block (it reads action_request/action_response)", pr.ResolvedAction)
-			}
-		case ReadPathEffectiveAction:
-			sawEffective = true
-			if pr.ResolvedAction != "allow" {
-				t.Fatalf("effective path resolved %q, want allow (it reads the action column)", pr.ResolvedAction)
-			}
-		}
-	}
-	if !sawRuntime || !sawEffective {
-		t.Fatalf("runtime path compiled=%t, effective path compiled=%t; both must be", sawRuntime, sawEffective)
-	}
-	if !rec.HasReason(ReasonReadPathActionDivergence) {
-		t.Fatal("the two read paths resolved different actions and no divergence reason was recorded")
-	}
-	if rec.Status != StatusPreservedDefect {
-		t.Fatalf("status = %q, want preserved_defect for a row whose read paths disagree", rec.Status)
-	}
-
-	// The negative direction: a row whose columns agree must NOT be flagged,
-	// or the reason means nothing.
-	agree := staticRow(t, "sys_agreed", map[string]any{
-		"action": "block", "action_request": "block", "action_response": "block",
-	})
-	rep2, err := Compile([]RawRow{agree}, testOptions())
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if recordFor(t, rep2, "sys_agreed").HasReason(ReasonReadPathActionDivergence) {
-		t.Fatal("a row whose read paths agree was flagged as divergent; the reason would then be true of every row")
-	}
-}
-
-// TestPostureLeverIsPerPlane pins the one plane the detection posture does not
-// reach. A global translation would be wrong for exactly this plane, which is
-// the plane an operator is least likely to check.
-func TestPostureLeverIsPerPlane(t *testing.T) {
+// TestCategoryActionsArePerPlane pins the plane an organization override does not
+// reach: cowork_ingest builds its own map and coerces redact (ForcedAction). A
+// global translation would be wrong for exactly that plane.
+func TestCategoryActionsArePerPlane(t *testing.T) {
 	opts := testOptions()
-	opts.Posture = Posture{"PII_ACTION": ActionWarn}
+	opts.CategoryActions = CategoryActions{"pii-us": ActionWarn}
 	row := staticRow(t, "sys_pii", map[string]any{
 		"category": "pii-us", "action": "block", "action_request": "block", "action_response": "block",
 	})
@@ -151,34 +99,43 @@ func TestPostureLeverIsPerPlane(t *testing.T) {
 	sawDisplaced, sawUndisplaced := false, false
 	for _, pr := range rec.Planes {
 		spec := MustSpecFor(pr.Plane)
-		displaced := false
+		displaced, coerced := false, false
 		for _, r := range pr.Reasons {
-			if r.Code == ReasonPostureLeverDisplaces {
+			switch r.Code {
+			case ReasonOrgOverrideDisplaces:
 				displaced = true
+			case ReasonPlaneCoercesAction:
+				coerced = true
 			}
 		}
 		_, forces := spec.Forces("pii-us")
-		if spec.PostureLever && displaced {
+		if spec.PassesOrgOverrides && displaced {
 			sawDisplaced = true
 		}
-		if !spec.PostureLever && displaced && !forces {
-			t.Fatalf("plane %q has neither a posture lever nor a forced action, but the compiler displaced its action", pr.Plane)
+		// The two reasons are different facts (#3961): an organization override
+		// is recorded only where the plane passes the override map, and a
+		// plane's own coercion is recorded under its own code.
+		if !spec.PassesOrgOverrides && displaced {
+			t.Fatalf("plane %q passes no override map, but the compiler recorded an organization-override displacement", pr.Plane)
 		}
-		if forces && !displaced {
+		if forces && !coerced {
 			t.Fatalf("plane %q coerces an action for pii-us and the compiler did not record the coercion", pr.Plane)
 		}
-		if pr.Plane == PlaneProxyTier {
+		if !forces && coerced {
+			t.Fatalf("plane %q coerces nothing, but the compiler recorded a plane coercion", pr.Plane)
+		}
+		if pr.Plane == PlaneCoworkIngest {
 			sawUndisplaced = true
 			if displaced {
-				t.Fatal("the proxy tier engine never sees EvalOptions.ActionOverrides; its action must not be displaced")
+				t.Fatal("the cowork ingest plane passes its own map, never the organization's overrides; its action must not be displaced")
 			}
 		}
 	}
 	if !sawDisplaced {
-		t.Fatal("no lever-bearing plane recorded a displacement; the posture would then be untested")
+		t.Fatal("no override-passing plane recorded a displacement; the category actions would then be untested")
 	}
 	if !sawUndisplaced {
-		t.Fatal("the proxy tier plane produced no result, so the negative half of this test asserted nothing")
+		t.Fatal("the cowork ingest plane produced no result, so the negative half of this test asserted nothing")
 	}
 }
 
@@ -203,13 +160,17 @@ func TestCategoryFallbackIsRecorded(t *testing.T) {
 		if pr.ReadPath != ReadPathRuntimePhase {
 			continue
 		}
-		if pr.ResolvedAction != string(ActionWarn) {
-			t.Fatalf("admin-access with NULL phase columns resolved %q, want warn", pr.ResolvedAction)
+		retired := false
+		for _, r := range pr.Reasons {
+			retired = retired || r.Code == ReasonRetiredTierPassAction
 		}
-	}
-	for _, pr := range rec.Planes {
-		if pr.ReadPath == ReadPathEffectiveAction && pr.ResolvedAction != "block" {
-			t.Fatalf("the effective path resolved %q, want the stored action column block", pr.ResolvedAction)
+		if retired {
+			// proxy_request keeps the retired pass's read of the stored column
+			// (#4253), and the category fallback stays stated in that reason.
+			continue
+		}
+		if pr.ResolvedAction != string(ActionWarn) {
+			t.Fatalf("admin-access with NULL phase columns resolved %q on %s, want warn", pr.ResolvedAction, pr.Plane)
 		}
 	}
 }
@@ -437,37 +398,6 @@ func TestCompiledPolicyIsTraceableToItsSourceRow(t *testing.T) {
 	}
 }
 
-// TestScanDropIsModelledPerReadPath proves the #3397 model is read-path aware:
-// a NULL version drops the row on the EFFECTIVE path (whose EffectivePolicyRow
-// scans version into an int) and not on the runtime path (which never selects
-// version).
-func TestScanDropIsModelledPerReadPath(t *testing.T) {
-	row := staticRow(t, "sys_nullversion", map[string]any{"version": nil})
-	rep, err := Compile([]RawRow{row}, testOptions())
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	rec := recordFor(t, rep, "sys_nullversion")
-	for _, pr := range rec.Planes {
-		dropped := false
-		for _, r := range pr.Reasons {
-			if r.Code == ReasonLegacyScanDrop {
-				dropped = true
-			}
-		}
-		switch pr.ReadPath {
-		case ReadPathEffectiveAction:
-			if !dropped {
-				t.Fatal("a NULL version must drop the row on the effective read path, whose scan destination is an int")
-			}
-		case ReadPathRuntimePhase:
-			if dropped {
-				t.Fatal("the runtime read path never selects version, so a NULL there cannot drop the row")
-			}
-		}
-	}
-}
-
 func reasonDetail(rec Record, code ReasonCode) string {
 	for _, r := range rec.Reasons {
 		if r.Code == code {
@@ -482,4 +412,53 @@ func reasonDetail(rec Record, code ReasonCode) string {
 		}
 	}
 	return ""
+}
+
+// TestOneStaticReadPath: since #4253 every static plane reads the runtime phase
+// columns. The stored action column's second read path went with the proxy_tier
+// plane, and its one remaining effect on a verdict is
+// PlaneSpec.EnforcesRetiredTierPassRead, which acts on the runtime path's result.
+func TestOneStaticReadPath(t *testing.T) {
+	row := staticRow(t, "sys_one_path", map[string]any{
+		"action": "allow", "action_request": "block", "action_response": "block",
+	})
+	rep, err := Compile([]RawRow{row}, testOptions())
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	rec := recordFor(t, rep, "sys_one_path")
+	if len(rec.Planes) == 0 {
+		t.Fatal("a static row compiled on no plane, so the read-path check asserted nothing")
+	}
+	for _, pr := range rec.Planes {
+		if pr.ReadPath != ReadPathRuntimePhase {
+			t.Errorf("plane %q read %q; the runtime phase columns are the one static read path", pr.Plane, pr.ReadPath)
+		}
+	}
+	for _, p := range PlanesFor(SubstrateStatic) {
+		if spec := MustSpecFor(p); spec.StaticReadPath != ReadPathRuntimePhase {
+			t.Errorf("plane %q declares read path %q", p, spec.StaticReadPath)
+		}
+	}
+}
+
+// TestANullVersionDropsNothing: the runtime read path never selects version, so
+// a NULL there drops the row on no plane. Before #4253 it dropped the row on the
+// retired effective path, whose scan destination was an int.
+func TestANullVersionDropsNothing(t *testing.T) {
+	rep, err := Compile([]RawRow{staticRow(t, "sys_nullversion", map[string]any{"version": nil})}, testOptions())
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	rec := recordFor(t, rep, "sys_nullversion")
+	if len(rec.Planes) == 0 {
+		t.Fatal("the row compiled on no plane, so the absence of a drop asserted nothing")
+	}
+	for _, pr := range rec.Planes {
+		for _, r := range pr.Reasons {
+			if r.Code == ReasonLegacyScanDrop {
+				t.Fatalf("plane %q dropped the row for a NULL version; no remaining read path selects it: %s", pr.Plane, r.Detail)
+			}
+		}
+	}
 }

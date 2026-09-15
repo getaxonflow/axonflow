@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package authoring
 
 import (
@@ -153,6 +156,24 @@ func mutants() []mutant {
 			new: "\t\tif false && p.Root != d.Root {",
 		},
 		{
+			code: "ASSURANCE_CLASS_UNKNOWN", file: "pdp/assurance.go",
+			why: "accepts a declared assurance class outside the three the ADR names, which then reads to an operator as a classification",
+			old: "\tif err := p.Assurance.Validate(); err != nil {",
+			new: "\tif err := p.Assurance.Validate(); false && err != nil {",
+		},
+		{
+			code: "ASSURANCE_CLASS_ON_A_PERMISSION", file: "pdp/assurance.go",
+			why: "lets a permission declare a failure behaviour it does not have",
+			old: "\tif !control {",
+			new: "\tif false && !control {",
+		},
+		{
+			code: "ASSURANCE_CLASS_CONTRADICTS_THE_POLICY", file: "pdp/assurance.go",
+			why: "accepts an advisory declaration on a control that denies when it cannot be evaluated - the one wrong direction the ADR forbids",
+			old: "\tif p.Assurance != derived {",
+			new: "\tif false && p.Assurance != derived {",
+		},
+		{
 			code: "POOL_NOT_INTERACTIVE", file: "pdp/policy.go",
 			why: "makes the all-non-interactive test unreachable, so an approval nobody can answer is issued and expires into a denial",
 			old: "\tif len(nonInteractive) == countEligible(o) {",
@@ -163,6 +184,18 @@ func mutants() []mutant {
 			why: "lets a condition over an optional attribute leave absence undeclared, so the compiler decides on the author's behalf",
 			old: "\t\tcase declared && schemaEntry.Optional && c.OnAbsent == AbsentUnspecified:",
 			new: "\t\tcase false && declared && schemaEntry.Optional && c.OnAbsent == AbsentUnspecified:",
+		},
+		{
+			code: "IDENTIFIER_WRONG_KIND", file: "pdp/policy.go",
+			why: "stops checking the KIND of the identifiers a policy names, so a scope that names a RESOURCE where a principal belongs compiles and evaluates - the identifier is well-formed, so the validity check below cannot catch it",
+			old: "\t\t\t\tif id.Kind != group.kind {",
+			new: "\t\t\t\tif false && id.Kind != group.kind {",
+		},
+		{
+			code: "MALFORMED_IDENTIFIER", file: "pdp/policy.go",
+			why: "stops validating the identifiers a policy names, so a scope carrying a principal type outside the closed vocabulary - or a resource identifier where a principal belongs - compiles, publishes and evaluates",
+			old: "\t\t\t\tif err := id.Validate(); err != nil {",
+			new: "\t\t\t\tif err := error(nil); err != nil {",
 		},
 
 		// Owned by this package.
@@ -233,6 +266,12 @@ func mutants() []mutant {
 			new: "\t\t\tif suppressesEntirely(con, perm, cat) {\n\t\t\t\tcontinue\n\t\t\t}",
 		},
 		{
+			code: CodeBlanketPermission, file: "authoring/validate.go",
+			why: "accepts the shadow harness's blanket baseline permission into a production document",
+			old: "\tif IsBlanketPermission(p) {",
+			new: "\tif IsBlanketPermission(p) && p.ID == \"\" {",
+		},
+		{
 			code: CodeCatalogDisagreement, file: "authoring/validate.go",
 			why: "inverts the agreement test, so the carried registry copy becomes a second, editable source of truth",
 			old: "\t\tif gotVal != wantVal {",
@@ -247,8 +286,119 @@ func mutants() []mutant {
 		{
 			code: CodeApproverIsAuthor, file: "authoring/publish.go",
 			why: "inverts separation of duties, so the author approving themselves is the case that satisfies it",
-			old: "\t\tif ap.String() != d.Metadata.Author.String() {\n\t\t\treturn nil\n\t\t}",
-			new: "\t\tif ap.String() == d.Metadata.Author.String() {\n\t\t\treturn nil\n\t\t}",
+			old: "\t\tif !samePerson(ap, d.Metadata.Author) {\n\t\t\treturn nil\n\t\t}",
+			new: "\t\tif samePerson(ap, d.Metadata.Author) {\n\t\t\treturn nil\n\t\t}",
+		},
+		{
+			code: CodeSelfApprovalReasonRequired, file: "authoring/publish.go",
+			why: "accepts a granted self-approval that states no reason, so the audit row records a self-approval nobody explained (PRD v11 §1.12)",
+			old: "\t\tif strings.TrimSpace(opts.SelfApprovalReason) == \"\" {\n\t\t\treturn Findings{newFinding(CodeSelfApprovalReasonRequired, \"\", fmt.Sprintf(\n\t\t\t\t\"the author %q approves their own publication under a granted self-approval and states no reason; the reason is what the audit row records\",\n\t\t\t\td.Metadata.Author))}\n\t\t}\n",
+			new: "",
+		},
+		{
+			code: CodeSelfApprovalReasonWithoutSelfApproval, file: "authoring/publish.go",
+			why: "drops the refusal of a self-approval reason on a two-person publication, so provenance and the audit row can record a self-approval that did not happen",
+			old: "\tfindings = append(findings, checkSelfApprovalReason(d, opts)...)\n",
+			new: "",
+		},
+
+		// THE EDITION BOUNDARY (#3907). These four mutate the RULING TABLES
+		// rather than the walk over them, because the table is where the
+		// boundary actually lives: the walk is the same three loops whatever
+		// the ladder says, and a mutant that deleted a loop would prove the
+		// loop runs rather than that the ruling is enforced. Each restores a
+		// specific defect of the form "this edition may spend a construct the
+		// PRD reserves", which is the failure this whole file exists to make
+		// impossible to ship silently.
+		{
+			code: CodeGroupScopeNotInEdition, file: "authoring/edition.go",
+			why: "grants Community the nested group graph, which PRD 5.2 rules None/None/Full, so a group-scoped policy publishes against a directory that cannot resolve it",
+			old: "const groupScopeFloor = EditionEnterprise",
+			new: "const groupScopeFloor = EditionCommunity",
+		},
+		{
+			code: CodeObligationFamilyNotInEdition, file: "authoring/edition.go",
+			why: "grants Community and Evaluation budget and quota reservation, which PRD 5.3 rules None/None/Full",
+			old: "\tcontract.FamilyBudget:      EditionEnterprise,",
+			new: "\tcontract.FamilyBudget:      EditionCommunity,",
+		},
+		{
+			code: CodeAttributeNamespaceNotInEdition, file: "authoring/edition.go",
+			why: "grants Community reads of detector output, which is PRD 5.1's \"tuning the shipped system controls\", ruled None/Full/Full",
+			old: "\tcontract.NsSignal:    EditionEvaluation,",
+			new: "\tcontract.NsSignal:    EditionCommunity,",
+		},
+		{
+			code: CodeConstructUnruled, file: "authoring/edition.go",
+			why: "turns the reservation of an UNRULED construct into a grant, which is how a boundary nobody decided becomes product policy",
+			old: "\tcontract.FamilyStepUp:      reservedFloor,",
+			new: "\tcontract.FamilyStepUp:      EditionCommunity,",
+		},
+
+		// CALL-SITE MUTANTS. The four above prove the tables are right; these
+		// three prove they are CONSULTED, which is a different claim and the
+		// one this package has been caught missing before - the raw-schema
+		// mutant above exists for the same reason, and its comment records that
+		// it was "the third guard in this lane whose CALL SITE was unpinned
+		// while its predicate was tested".
+		//
+		// They name their own test rather than a check code because none of
+		// them IS a save-time check: two restore the unconditional separation
+		// of duties that made the ladder unspendable, and neither of those has
+		// a finding code at all - the whole defect was that a refusal happened
+		// where no edition ruling said it should.
+		{
+			code: "EDITION_GATE_NOT_CALLED", file: "authoring/publish.go",
+			why:        "compiles the whole edition table and then never consults it, so every construct is publishable on every edition and all four tables above become decoration",
+			old:        "\tfindings = append(findings, checkEditionConstructs(d, profile)...)\n",
+			new:        "",
+			runPattern: "TestTheApiOverridesACallerSuppliedEdition$",
+		},
+		{
+			code: "SOD_PUBLISH_NOT_RELAXED", file: "authoring/publish.go",
+			why:        "restores unconditional separation of duties at PUBLICATION, so a single-administrator Community deployment cannot publish a policy - the #3907 defect, at the first of its two gates",
+			old:        "\tif profile.RequiresSeparationOfDuties() {\n\t\tfindings = append(findings, checkSeparationOfDuties(d, opts)...)\n\t}",
+			new:        "\tfindings = append(findings, checkSeparationOfDuties(d, opts)...)",
+			runPattern: "TestASoleAdministratorCanPublishAndActivateOnCommunity$",
+		},
+		{
+			code: "SOD_ACTIVATE_NOT_RELAXED", file: "authoring/store.go",
+			why:        "restores unconditional separation of duties at ACTIVATION - the second gate, and the one a fix to publication alone would leave shut, so a Community deployment could publish a policy it could never put into force",
+			old:        "\tif !p.RequiresSeparationOfDuties() {\n\t\treturn nil\n\t}\n\t// samePerson, NOT String() (#3876).",
+			new:        "\t// samePerson, NOT String() (#3876).",
+			runPattern: "TestASoleAdministratorCanPublishAndActivateOnCommunity$",
+		},
+		// system_controls (PRD v11 §1.5). Each disables exactly the refusal its
+		// TestSaveTimeChecks case provokes.
+		{
+			code: CodeSystemControlsOutsideOrganization, file: "authoring/system_controls.go",
+			why: "lets a document that is not the organization's control the shipped set its organization runs under",
+			old: "\tif d.Policy.Root != pdp.RootOrganization {\n",
+			new: "\tif false {\n",
+		},
+		{
+			code: CodeSystemControlUnknown, file: "authoring/system_controls.go",
+			why: "lets an entry name a control the corpus does not ship, which activation would then have nothing to fold",
+			old: "case !shipped[c.Control]:",
+			new: "case false && !shipped[c.Control]:",
+		},
+		{
+			code: CodeSystemControlDuplicate, file: "authoring/system_controls.go",
+			why: "lets a control be named twice, so which instruction applies depends on the order activation reads them in",
+			old: "case seen[c.Control]:",
+			new: "case false:",
+		},
+		{
+			code: CodeSystemControlMalformed, file: "authoring/system_controls.go",
+			why: "lets an entry carry both a disable and a replacement action, so the document says two things about one control",
+			old: "case (c.Enabled == nil) == (c.Action == \"\"):",
+			new: "case false:",
+		},
+		{
+			code: CodeSystemControlNotReactionable, file: "authoring/system_controls.go",
+			why: "lets a shipped dynamic control be given a replacement action, which v11 lets an organization disable only",
+			old: "case c.Action != \"\" && DynamicSystemControl(c.Control):",
+			new: "case false:",
 		},
 	}
 }

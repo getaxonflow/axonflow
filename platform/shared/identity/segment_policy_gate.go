@@ -10,8 +10,9 @@ import (
 )
 
 // ADR-060 (#2989) — this file is the single implementation shared by the
-// agent static plane's segment gate (P3, #3051, platform/agent/
-// segment_policy_gate.go) and the orchestrator dynamic-policy plane's gate
+// agent side (platform/agent/segment_policy_gate.go, whose static-plane policy
+// gate, P3 #3051, went with #4253; MCP session auth is its one caller now)
+// and the orchestrator dynamic-policy plane's gate
 // (P3b, #3052, platform/orchestrator/segment_policy_gate.go). Round 1 of
 // #3239 shipped these as two independently-maintained copies; round 2
 // converged both planes on an unconditional fail-closed contract (dropping

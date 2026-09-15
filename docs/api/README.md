@@ -6,15 +6,15 @@ This directory contains OpenAPI 3.0 specifications for all AxonFlow APIs.
 
 | File | Service | Description |
 |------|---------|-------------|
-| [`agent-api.yaml`](./agent-api.yaml) | Agent | Authentication, Gateway Mode, Decision Mode, MCP Connectors, MCP Server, Static Policies, HITL, Circuit Breaker, OTLP Ingest |
-| [`orchestrator-api.yaml`](./orchestrator-api.yaml) | Orchestrator | LLM Routing, Multi-Agent Planning, Workflows, Audit & Compliance |
-| [`policy-api.yaml`](./policy-api.yaml) | Orchestrator (via Agent proxy) | Dynamic Policy CRUD, Templates, Simulation |
+| [`agent-api.yaml`](./agent-api.yaml) | Agent | Authentication, Gateway Mode, Decision Mode, MCP Connectors, MCP Server, System Policies (read-only in v11), HITL, Circuit Breaker, OTLP Ingest |
+| [`orchestrator-api.yaml`](./orchestrator-api.yaml) | Orchestrator | LLM Routing, Multi-Agent Planning, Workflows, Audit & Compliance, Typed Policy Authoring (the v11 policy write path) |
+| [`policy-api.yaml`](./policy-api.yaml) | Orchestrator (via Agent proxy) | Tenant policies (writes refused in v11), Templates, Simulation |
 | [`masfeat-api.yaml`](./masfeat-api.yaml) | Orchestrator (via Agent proxy) | MAS FEAT compliance (Singapore) — **Enterprise only** |
 | [`error-codes.md`](./error-codes.md) | All | Error code reference |
 
 ## Architecture Overview
 
-AxonFlow uses a **Single Entry Point Architecture** (ADR-026). All client requests go through the Agent service, which proxies to internal services automatically.
+AxonFlow uses a **Single Entry Point Architecture** (ADR-024). All client requests go through the Agent service, which proxies to internal services automatically.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -188,48 +188,31 @@ curl -X POST "https://agent.getaxonflow.com/mcp/resources/query" \
   }'
 ```
 
-### Dynamic Policy CRUD
+### Tenant Policies
 
 All policy management goes through the Agent (Single Entry Point).
 
-**List dynamic policies**
+> **v11: policy is authored through `/api/v1/typed-policies`.** `migrations/core/172` makes the legacy policy tables read-only to the application roles, so creating, updating, deleting or importing a tenant policy answers `409 LEGACY_POLICY_WRITE_FROZEN`. The policies already stored are still listed, tested and evaluated. The typed authoring routes are specified in [`orchestrator-api.yaml`](./orchestrator-api.yaml) under Typed Policy Authoring. A deployment connecting as the database owner (`AXONFLOW_DB_USE_APP_ROLE=false`) is not bound by the revoke.
+
+**List tenant policies**
 ```bash
-curl -X GET "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
+curl -X GET "https://agent.getaxonflow.com/api/v1/tenant-policies" \
   -H "X-Tenant-ID: tenant-123"
 ```
 
-**Create a dynamic policy**
-```bash
-curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: tenant-123" \
-  -H "X-User-ID: admin@company.com" \
-  -d '{
-    "name": "Block PII Access",
-    "description": "Prevent unauthorized access to PII",
-    "type": "content",
-    "category": "pii-protection",
-    "conditions": [
-      {
-        "field": "query",
-        "operator": "contains_any",
-        "value": ["ssn", "social security", "credit card"]
-      }
-    ],
-    "actions": [
-      {
-        "type": "block",
-        "config": {"message": "Access to PII is restricted"}
-      }
-    ],
-    "priority": 100,
-    "enabled": true
-  }'
+**Creating a tenant policy** answers, in v11:
+```json
+{
+  "error": {
+    "code": "LEGACY_POLICY_WRITE_FROZEN",
+    "message": "The legacy policy tables are read-only in v11: migrations/core/172 revoked write access from the application role, and this endpoint writes them. Author policies through the typed authoring route at /api/v1/typed-policies instead. Reads on this endpoint are unaffected."
+  }
+}
 ```
 
-**Test a dynamic policy**
+**Test a tenant policy**
 ```bash
-curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies/pol_abc123/test" \
+curl -X POST "https://agent.getaxonflow.com/api/v1/tenant-policies/pol_abc123/test" \
   -H "Content-Type: application/json" \
   -H "X-Tenant-ID: tenant-123" \
   -d '{
@@ -238,19 +221,19 @@ curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies/pol_abc123/t
   }'
 ```
 
-### Static Policy Management
+### System Policies
 
-Static policies (PII detection, SQL injection) are managed directly on the Agent.
+System policies (PII detection, SQL injection) are served directly by the Agent. In v11 they are read-only to the application roles like the tenant policies above; the pattern test and per-policy overrides are unaffected.
 
-**List static policies**
+**List system policies**
 ```bash
-curl -X GET "https://agent.getaxonflow.com/api/v1/static-policies" \
+curl -X GET "https://agent.getaxonflow.com/api/v1/system-policies" \
   -H "Authorization: Basic $(echo -n 'my-org:your_client_secret' | base64)"
 ```
 
-**Test a static policy pattern**
+**Test a system policy pattern**
 ```bash
-curl -X POST "https://agent.getaxonflow.com/api/v1/static-policies/test" \
+curl -X POST "https://agent.getaxonflow.com/api/v1/system-policies/test" \
   -H "Content-Type: application/json" \
   -H "Authorization: Basic $(echo -n 'my-org:your_client_secret' | base64)" \
   -d '{
@@ -296,62 +279,64 @@ All endpoints are accessed via the Agent (port 8080). The Agent proxies requests
 | Proxy | `/api/clients` | GET/POST | Manage clients |
 | Gateway | `/api/policy/pre-check` | POST | Pre-check request |
 | Gateway | `/api/audit/llm-call` | POST | Audit LLM call |
-| System Policy | `/api/v1/system-policies` | GET/POST | List/create system policies |
-| System Policy | `/api/v1/system-policies/{id}` | GET/PUT/DELETE/PATCH | CRUD system policy |
+| System Policy | `/api/v1/system-policies` | GET/POST | List system policies; in v11 create answers `409 LEGACY_POLICY_WRITE_FROZEN` when the agent connects as an application role (its default) |
+| System Policy | `/api/v1/system-policies/{id}` | GET/PUT/DELETE/PATCH | Get a system policy; in v11 update, delete and toggle answer `409 LEGACY_POLICY_WRITE_FROZEN` when the agent connects as an application role (its default) |
 | System Policy | `/api/v1/system-policies/test` | POST | Test pattern |
 | System Policy | `/api/v1/system-policies/effective` | GET | Get effective policies |
 | System Policy | `/api/v1/system-policies/overrides` | GET | List tenant overrides |
-| System Policy | `/api/v1/static-policies*` | (all of the above) | **Deprecated** spelling, still served. See [Deprecated path spellings](#deprecated-path-spellings) |
+| System Policy | `/api/v1/static-policies*` | (all of the above) | **Deprecated** spelling, still served. See [Deprecated path spellings](#deprecated-legacy-policy-routes-v11) |
 | MCP | `/mcp/connectors` | GET | List connectors |
 | MCP | `/mcp/connectors/{name}/health` | GET | Connector health |
 | MCP | `/mcp/resources/query` | POST | Execute query |
 | MCP | `/mcp/tools/execute` | POST | Execute command |
 | MCP | `/mcp/health` | GET | MCP health |
 
-## Deprecated path spellings
+## Deprecated legacy policy routes (v11)
 
-Two policy route families were renamed in v10.0.0:
+In v11 the legacy policy routes are a **read-only, deprecated export surface**
+(PRD §1.11): policy is read, authored and activated through
+`/api/v1/typed-policies`, writes on the legacy routes answer
+`409 LEGACY_POLICY_WRITE_FROZEN`, and the reads stay so an organization can see
+and export its legacy rows after upgrading. v11.1 removes them once the SDKs
+have moved to the typed route. The surface is every spelling of every legacy
+family:
 
-| Current | Deprecated, still served |
-|---------|--------------------------|
-| `/api/v1/system-policies` | `/api/v1/static-policies` |
-| `/api/v1/tenant-policies` | `/api/v1/dynamic-policies` |
+| Family | Paths |
+|--------|-------|
+| System policies | `/api/v1/system-policies*`, `/api/v1/static-policies*`, `/api/v1/policy-overrides` |
+| Tenant policies | `/api/v1/tenant-policies*`, `/api/v1/dynamic-policies*` |
+| Policy CRUD, test, simulation | `/api/v1/policies*` |
+| Policy templates | `/api/v1/templates*` |
 
-Everything else in the product already used this vocabulary: the tier column
-in the database, the portal UI and these docs all say **system** and
-**tenant**. Only the wire paths still said `static` and `dynamic`, and
-"dynamic" reads as "changes by itself", which is not what it means. Those are
-simply the policies a tenant writes.
+The v10.0.0 rename (`static` to `system`, `dynamic` to `tenant`) still holds:
+the two spellings of a family are the same routes, with one handler per pair
+and the same authentication, bodies and status codes. Both spellings are
+deprecated in v11.
 
-**The two spellings are the same routes.** One handler per pair, one
-registration site per plane, the same authentication, the same permissions,
-the same request and response bodies, the same status codes. Nothing about a
-request changes except the path you send it to.
-
-Responses served from a deprecated path additionally carry, **on any response
-produced by the endpoint itself** (including an authentication failure):
+Every response the endpoint itself produces carries the signal, including an
+authentication failure and a `409`:
 
 ```
-Deprecation: true
-Link: </api/v1/system-policies>; rel="successor-version"
+Link: </api/v1/typed-policies>; rel="successor-version"
+X-AxonFlow-Removed-In: v11.1
+Deprecation: @<unix time of the v11.0.0 tag>
 ```
 
-with the `Link` naming the exact successor of the path that served the
-response, suffix preserved, so a client can follow it mechanically rather than
-having to know the mapping. Both headers are CORS-exposed, so a browser client
-can read them.
+- `Deprecation` is the RFC 9745 structured date on which the deprecation took
+  effect, the v11.0.0 tag. It is omitted on builds made before that date is
+  set at release, never guessed. The v10 form `Deprecation: true` is retired.
+- `Link` (RFC 8288) names the typed authoring route for every family.
+- `X-AxonFlow-Removed-In` names the release that removes the surface. No
+  registered header carries a release, and RFC 8594's `Sunset` is a date, so
+  there is no `Sunset` until v11.1 has one.
 
-Two responses do **not** carry the signal, so do not treat its absence as
-proof a path is current: a `404` for a path or method that matches no route
-under the family, and a refusal produced by a gateway in front of the endpoint
-rather than by the endpoint itself. Sample a successful response, not an error
-one.
-
-**There is deliberately no `Sunset` header, and no removal date is
-published.** A `Sunset` value is a promise that the path stops working on a
-given day; whether these paths are ever removed has not been decided. Treat
-the old spellings as supported, migrate when it is convenient, and watch the
-release notes rather than a header.
+All three headers are CORS-exposed on the agent, the orchestrator and the
+portal, so a browser client can read them. Two responses do **not** carry the
+signal, so do not treat its absence as proof a path is current: a `404` or
+`405` for a path or method that matches no route, and a refusal produced in
+front of the endpoint (the orchestrator's proxy-authentication gate, reached
+only by bypassing the agent). `/api/v1/overrides` (ADR-044 session overrides)
+is not part of this surface.
 
 ### Agent API - Proxied Routes (via Agent to Orchestrator)
 
@@ -359,14 +344,15 @@ These routes are accessed via Agent but proxied to Orchestrator internally.
 
 | Category | Endpoint | Method | Description |
 |----------|----------|--------|-------------|
-| Tenant Policy | `/api/v1/tenant-policies` | GET/POST | List/create tenant policies |
-| Tenant Policy | `/api/v1/tenant-policies/{id}` | GET/PUT/DELETE | CRUD tenant policy |
+| Tenant Policy | `/api/v1/tenant-policies` | GET/POST | List tenant policies; create answers `409 LEGACY_POLICY_WRITE_FROZEN` in v11 |
+| Tenant Policy | `/api/v1/tenant-policies/{id}` | GET/PUT/DELETE | Get a tenant policy; update and delete answer `409` in v11 |
 | Tenant Policy | `/api/v1/tenant-policies/{id}/test` | POST | Test policy |
 | Tenant Policy | `/api/v1/tenant-policies/{id}/versions` | GET | Version history |
 | Tenant Policy | `/api/v1/tenant-policies/effective` | GET | Get effective policies |
-| Tenant Policy | `/api/v1/tenant-policies/import` | POST | Bulk import |
+| Tenant Policy | `/api/v1/tenant-policies/import` | POST | Bulk import (answers `409` in v11) |
 | Tenant Policy | `/api/v1/tenant-policies/export` | GET | Bulk export |
-| Tenant Policy | `/api/v1/dynamic-policies*` | (all of the above) | **Deprecated** spelling, still served. See [Deprecated path spellings](#deprecated-path-spellings) |
+| Tenant Policy | `/api/v1/dynamic-policies*` | (all of the above) | **Deprecated** spelling, still served. See [Deprecated path spellings](#deprecated-legacy-policy-routes-v11) |
+| Typed Policy Authoring | `/api/v1/typed-policies/*` | GET/POST | The v11 policy write path; see `orchestrator-api.yaml` |
 | Connectors | `/api/v1/connectors` | GET | List marketplace connectors |
 | Connectors | `/api/v1/connectors/{id}/install` | POST | Install connector |
 | Connectors | `/api/v1/connectors/{id}/uninstall` | DELETE | Uninstall connector |
@@ -418,7 +404,7 @@ JWT token identifying the end user. Include in request body.
 
 ### Tenant Headers (Policy API)
 
-Dynamic-policy management endpoints resolve the tenant from `X-Tenant-ID`
+Tenant-policy endpoints resolve the tenant from `X-Tenant-ID`
 (stamped by the agent proxy from the authenticated identity when calls go
 through the single entry point) and record the actor from `X-User-ID`:
 

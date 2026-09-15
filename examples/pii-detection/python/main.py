@@ -13,18 +13,15 @@ This example demonstrates and VALIDATES AxonFlow's PII detection:
 VALIDATION: This example exits with code 1 if any assertion fails.
 This ensures CI/CD pipelines catch regressions.
 
-Default Behavior (Issue #891):
-  PII detection defaults to "redact" mode - requests are APPROVED but flagged
-  with requires_redaction=true for downstream redaction by the Orchestrator.
-  Set PII_ACTION=block to restore blocking behavior.
-
-Policy Configuration (env vars):
-  PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
-  GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
-
-  When PII_ACTION=block: requests with critical PII are blocked (approved=False)
-  When PII_ACTION=log:   PII is detected and logged but passes through unmodified
-  When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+Default Behavior (v11):
+  The stored action of each matched PII policy decides. On the request side
+  (this pre-check) the shipped SSN, credit card, PAN and Aadhaar policies store
+  action_request=warn: the request is APPROVED and the matched policy ids are
+  returned with it. Their stored response action is redact, so redaction
+  happens on the response side. Environment variables no longer set detection
+  actions. To change an outcome, record an organization override (Enterprise
+  customer portal: PUT /api/v1/detection-posture/pii {"action":"block"}) or
+  change the policy's action.
 
 Run with: python main.py
 Prerequisites: docker compose up -d
@@ -56,7 +53,7 @@ async def main() -> int:
     print("AxonFlow PII Detection - Python SDK")
     print("=" * 40)
     print()
-    print("Default Mode: redact (PII flagged for redaction, not blocked)")
+    print("Stored policy actions decide: request-side PII warns (approved, policy recorded)")
     print()
 
     async with AxonFlow(
@@ -66,43 +63,43 @@ async def main() -> int:
         debug=get_env("AXONFLOW_DEBUG", "") == "true",
     ) as client:
         # PII test cases
-        # expect_redact: True = critical PII (requires_redaction=true)
-        # expect_redact: False = non-critical or no PII (logged but not flagged)
+        # expect_detect: True = critical PII (a policy matches; stored request action is warn)
+        # expect_detect: False = non-critical or no PII (approved, no redaction flag)
         test_cases = [
             {
                 "name": "Safe Query (No PII)",
                 "query": "What is the capital of France?",
-                "expect_redact": False,
+                "expect_detect": False,
             },
             {
                 "name": "US Social Security Number (Critical PII)",
                 "query": "Process refund for customer with SSN 123-45-6789",
-                "expect_redact": True,
+                "expect_detect": True,
             },
             {
                 "name": "Credit Card Number (Critical PII)",
                 "query": "Charge card 4111-1111-1111-1111 for $99.99",
-                "expect_redact": True,
+                "expect_detect": True,
             },
             {
                 "name": "India PAN (Critical PII)",
                 "query": "Verify PAN number ABCPD1234E for tax filing",
-                "expect_redact": True,
+                "expect_detect": True,
             },
             {
                 "name": "India Aadhaar (Critical PII)",
                 "query": "Link Aadhaar 2345 6789 0123 to account",
-                "expect_redact": True,
+                "expect_detect": True,
             },
             {
                 "name": "Email Address (Non-Critical PII)",
                 "query": "Send invoice to john.doe@gmail.com",
-                "expect_redact": False,  # Medium severity - logged but not flagged
+                "expect_detect": False,  # Medium severity - logged but not flagged
             },
             {
                 "name": "Phone Number (Non-Critical PII)",
                 "query": "Call customer at +1-555-123-4567",
-                "expect_redact": False,  # Medium severity - logged but not flagged
+                "expect_detect": False,  # Medium severity - logged but not flagged
             },
         ]
 
@@ -135,72 +132,26 @@ async def main() -> int:
                 else:
                     print("   Status: APPROVED")
             else:
-                # Request was blocked (only if PII_ACTION=block)
+                # Blocked only when an organization override or a policy edit sets block
                 print("   Status: BLOCKED")
                 print(f"   Reason: {result.block_reason}")
+            policies = getattr(result, "policies", None) or []
+            if policies:
+                print(f"   Policies: {policies}")
 
-            # Get actual redaction status (blocked also counts as "requires handling")
-            actual_requires_redaction = requires_redaction or not result.approved
-
-            # Verify expected behavior
-            if test["expect_redact"]:
+            # Verify expected behavior against the shipped stored actions
+            if test["expect_detect"]:
                 assert_check(
-                    actual_requires_redaction,
-                    "Critical PII detected and flagged for redaction",
+                    result.approved,
+                    "Request approved (stored request action is warn, not block)",
                 )
+                assert_check(len(policies) > 0, "Critical PII detected (policy matched)")
             else:
                 assert_check(
-                    not actual_requires_redaction and result.approved,
+                    not requires_redaction and result.approved,
                     "No critical PII detected, request approved",
                 )
 
-            print()
-
-        # ========================================
-        # Policy Configuration Tests (PII_ACTION)
-        # ========================================
-        pii_action = os.getenv("PII_ACTION", "redact")
-        print(f"Policy Config: PII_ACTION={pii_action}")
-        print()
-
-        if pii_action == "block":
-            print("Test (config): PII_ACTION=block - SSN should be BLOCKED")
-            try:
-                result = await client.get_policy_approved_context(
-                    user_token=get_env("AXONFLOW_USER_TOKEN", "pii-config-test-user"),
-                    query="Customer SSN is 999-88-7777",
-                )
-            except Exception as e:
-                print(f"   FATAL: get_policy_approved_context failed: {e}")
-                return 1
-            assert_check(
-                not result.approved,
-                "PII_ACTION=block: SSN query is blocked (not approved)",
-            )
-            assert_check(
-                result.block_reason != "",
-                "PII_ACTION=block: block reason is provided",
-            )
-            print()
-        elif pii_action == "log":
-            print("Test (config): PII_ACTION=log - SSN should pass through unmodified")
-            try:
-                result = await client.get_policy_approved_context(
-                    user_token=get_env("AXONFLOW_USER_TOKEN", "pii-config-test-user"),
-                    query="Customer SSN is 999-88-7777",
-                )
-            except Exception as e:
-                print(f"   FATAL: get_policy_approved_context failed: {e}")
-                return 1
-            assert_check(
-                result.approved,
-                "PII_ACTION=log: SSN query is approved (pass-through)",
-            )
-            requires_redaction = getattr(result, "requires_redaction", False)
-            assert_check(
-                not requires_redaction,
-                "PII_ACTION=log: no redaction required (log only)",
-            )
             print()
 
         print("=" * 40)

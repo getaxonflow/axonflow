@@ -16,8 +16,8 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/decision/contract"
 	sharedpolicy "axonflow/platform/shared/policy"
-	"axonflow/platform/shared/policy/policytest"
 )
 
 // installCircuitBreakerWithMockDB swaps the breaker for one whose repository
@@ -28,21 +28,12 @@ import (
 // repository degrades on gracefully.
 func installCircuitBreakerWithMockDB(t *testing.T) {
 	t.Helper()
-	mockDB, mockSQL, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	t.Cleanup(func() { _ = mockDB.Close() })
-	mockSQL.MatchExpectationsInOrder(false)
-	old := circuitBreakerInstance
-	circuitBreakerInstance = circuitbreaker.New(circuitbreaker.NewRepository(mockDB), circuitbreaker.Config{})
-	t.Cleanup(func() { circuitBreakerInstance = old })
+	installCircuitBreakerWithConfig(t, circuitbreaker.Config{})
 }
 
-// installSharedEngineWithPolicyRows swaps the global engine for one whose
-// sqlmock DB serves the given static_policies rows (loader column order per
-// loadFromDatabase) on every load.
-func installSharedEngineWithPolicyRows(t *testing.T) {
+// installCircuitBreakerWithConfig is installCircuitBreakerWithMockDB with the
+// breaker's configuration given, and returns the breaker it installed.
+func installCircuitBreakerWithConfig(t *testing.T, cfg circuitbreaker.Config) *circuitbreaker.CircuitBreaker {
 	t.Helper()
 	mockDB, mockSQL, err := sqlmock.New()
 	if err != nil {
@@ -50,30 +41,48 @@ func installSharedEngineWithPolicyRows(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mockDB.Close() })
 	mockSQL.MatchExpectationsInOrder(false)
+	cb := circuitbreaker.New(circuitbreaker.NewRepository(mockDB), cfg)
+	old := circuitBreakerInstance
+	circuitBreakerInstance = cb
+	t.Cleanup(func() { circuitBreakerInstance = old })
+	return cb
+}
 
-	// #3048: loader cols carry created_at; each load is two scoped passes.
-	for i := 0; i < 8; i++ {
-		rows := policytest.SystemPolicyRow(sqlmock.NewRows(policytest.LoaderCols()),
-			"11111111-1111-1111-1111-111111111111", "sys_sqli_revoke",
-			"security-sqli", `(?i)\bREVOKE\s+`, "critical", "request", "block", 100)
-		mockSQL.ExpectQuery("SELECT").WillReturnRows(rows)
+// installSharedEngineWithPolicyRows installs the shared engine over the shipped
+// rows with one execution-class control the decide scope binds matching REVOKE
+// statements (executionClassDecideControl): prose a SQL detector false-positives
+// on, which capability scoping exists to stop flagging for a document tool. The
+// control is the organization template's, so it denies while the organization
+// has published nothing, with no override recorded and no environment variable
+// setting an action (#3961).
+func installSharedEngineWithPolicyRows(t *testing.T) {
+	t.Helper()
+	enfInstallDetectors(t, map[string]string{executionClassDecideControl(t): `(?i)\bREVOKE\s+`}, nil)
+}
+
+// executionClassDecideControl is the census row of the first constraint the
+// decide scope's organization template binds on a detector capability scoping
+// treats as execution-class (sharedpolicy.IsExecutionScopedPolicy): a control
+// that denies what its detector matches, where a requirement would allow.
+func executionClassDecideControl(t *testing.T) string {
+	t.Helper()
+	controls, err := templateControls(decideSeamScope)
+	if err != nil {
+		t.Fatal(err)
 	}
-	policytest.ScopedTxPlumbing(mockSQL, 8)
-
-	cfg := sharedpolicy.DefaultEngineConfig()
-	cfg.RefreshInterval = 0
-	cfg.EnableMetrics = false
-	engine := sharedpolicy.NewUnifiedPolicyEngine(mockDB, cfg, &sharedpolicy.NoOpAuditQueue{})
-	t.Cleanup(engine.Stop)
-	old := sharedpolicy.GetGlobalEngine()
-	sharedpolicy.SetGlobalEngine(engine)
-	t.Cleanup(func() { sharedpolicy.SetGlobalEngine(old) })
+	for _, c := range controls {
+		if c.policy.Authority == contract.AuthorityConstraint &&
+			sharedpolicy.IsExecutionScopedPolicy(&sharedpolicy.CompiledPolicy{PolicyID: c.row.PolicyID, Category: sharedpolicy.PolicyCategory(c.row.Category)}) {
+			return c.row.PolicyID
+		}
+	}
+	t.Fatal("the decide scope's organization template binds no execution-class constraint, so capability scoping has nothing to scope")
+	return ""
 }
 
 func TestHandleDecide_ToolTargetCapabilityScope(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
 	t.Setenv("ENVIRONMENT", "development")
-	t.Setenv("SQLI_ACTION", "block")
 	installSharedEngineWithPolicyRows(t)
 	installCircuitBreakerWithMockDB(t)
 

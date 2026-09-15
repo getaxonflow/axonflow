@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -146,4 +138,7 @@ type TemplateServicer interface {
 	ApplyTemplate(ctx context.Context, tenantID, orgID, templateID string, req *ApplyTemplateRequest, userID string) (*ApplyTemplateResponse, error)
 	GetCategories(ctx context.Context) ([]string, error)
 	GetUsageStats(ctx context.Context, tenantID string) ([]TemplateUsageStatsResponse, error)
+	// MayWriteLegacyPolicies reports whether the pool apply writes through may
+	// write dynamic_policies (legacyfreeze.MayWrite, #4237).
+	MayWriteLegacyPolicies(ctx context.Context) (bool, error)
 }

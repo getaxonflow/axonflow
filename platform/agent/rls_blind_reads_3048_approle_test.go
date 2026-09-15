@@ -384,6 +384,15 @@ func TestGlobalBaselineWritesRejectedUnderAppRole(t *testing.T) {
 	ctx := context.WithValue(context.Background(), ContextKeyOrgID, org)
 	ctx = context.WithValue(ctx, ContextKeyTenantID, org)
 
+	// INTACT means unchanged from what the migrations left, read before any
+	// attempt, rather than a copy of one migration's literal: core/185 (#4131)
+	// rewrites this row's pattern, and the property is that no tenant can.
+	var baselinePattern string
+	if err := f.masterDB.QueryRow(
+		`SELECT pattern FROM static_policies WHERE policy_id = 'drop_table_prevention'`,
+	).Scan(&baselinePattern); err != nil {
+		t.Fatalf("PREMISE: the migrated drop_table_prevention row is not readable: %v", err)
+	}
 	assertIntact := func(t *testing.T, when string) {
 		t.Helper()
 		var enabled bool
@@ -394,7 +403,7 @@ func TestGlobalBaselineWritesRejectedUnderAppRole(t *testing.T) {
 		).Scan(&enabled, &deleted, &pattern); err != nil {
 			t.Fatalf("master read (%s): %v", when, err)
 		}
-		if !enabled || deleted.Valid || pattern != `drop\s+table` {
+		if !enabled || deleted.Valid || pattern != baselinePattern {
 			t.Fatalf("SECURITY (%s): baseline row mutated — enabled=%v deleted=%v pattern=%q", when, enabled, deleted.Valid, pattern)
 		}
 	}

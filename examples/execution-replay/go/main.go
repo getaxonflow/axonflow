@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES AxonFlow's Execution Replay API.
 //
 // This example validates all Execution Replay SDK methods:

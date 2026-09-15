@@ -20,11 +20,10 @@ import (
 //
 // PROBLEM: #2609 wired per-org posture into the AGENT process. The orchestrator
 // is a SEPARATE binary (platform/cmd/orchestrator) and its LLM-response
-// redaction path still resolved the deployment-global gateway config
-// (agent.GetGatewayDetectionConfig), so an org configured to redact/block was
-// honored on the agent's check planes but NOT on the orchestrator's
-// proxy/gateway/MAP response plane. That left a plane where per-org posture
-// silently degraded to the deployment-global — the #2566/#2563 multi-plane PII
+// redaction path did not consult the org's override at all, so an org
+// configured to redact/block was honored on the agent's check planes but NOT on
+// the orchestrator's proxy/gateway/MAP response plane. That left a plane where
+// the org's choice silently did not apply - the #2566/#2563 multi-plane PII
 // lesson.
 //
 // SOLUTION: the orchestrator gets its OWN per-org override cache instance, wired
@@ -35,20 +34,23 @@ import (
 // config types, so the DB/RLS logic is shared (not a divergent copy that could
 // drift). The orchestrator only owns the cache + apply glue:
 //
-//	effective gateway action = per-org override (if any) ELSE deployment-global config
+//	effective action = per-org override (if any) ELSE the stored policy action
+//
+// A recorded override is the only thing that may replace a stored action
+// (#3961); no environment variable or profile does.
 //
 // HOT-PATH SAFETY: resolution NEVER does a per-request DB query — the cache
 // serves an org's overrides for the TTL window, refreshed lazily on miss, and is
 // size-bounded so a flood of distinct orgs cannot grow it without limit.
 //
-// FAIL-SAFE: a lookup error (DB down, table absent, schema drift) falls back to
-// the deployment-global config — NEVER to "no governance". This is the response
-// plane, where a fail-open leaks PII. The error is cached for a short window so a
-// failing DB is not hammered on the hot path.
+// FAIL-SAFE: a lookup error (DB down, table absent, schema drift) resolves no
+// override, so the stored policy actions decide — NEVER "no governance". This is
+// the response plane, where a fail-open leaks PII. The error is cached for a
+// short window so a failing DB is not hammered on the hot path.
 //
-// GLOBAL-ONLY DEPLOYMENTS: with no override rows (or no DB / cache not wired /
-// empty org), resolution returns the cached deployment-global config unchanged —
-// byte-identical to the pre-#2612 behavior.
+// NO OVERRIDE: with no override rows (or no DB / cache not wired / empty org),
+// resolution returns the process's gateway mode config unchanged, whose action
+// fields are empty, so every category keeps its stored action.
 //
 // CACHE-INVALIDATION CONTRACT: InvalidateOrgDetectionOverrides mirrors the
 // agent's identically-named hook (agent.InvalidateOrgDetectionOverrides). The
@@ -89,6 +91,9 @@ type detectionOverrideReader interface {
 type detectionOverrideCacheEntry struct {
 	overrides map[string]agent.DetectionAction
 	expiresAt time.Time
+	// err is the failure a lookup-error entry caches: get serves such an entry as
+	// its empty set, read as the error itself.
+	err error
 }
 
 // detectionOverrideCache caches per-org override sets with a short TTL and a
@@ -129,8 +134,8 @@ func newDetectionOverrideCache(reader detectionOverrideReader, ttl time.Duration
 }
 
 // get returns the cached (or freshly-read) override set for orgID. It never
-// returns an error: on a lookup failure it caches + returns an empty set so the
-// caller fails SAFE to the deployment-global config.
+// returns an error: on a lookup failure it caches + returns an empty set, so no
+// override applies and the stored policy actions decide.
 func (c *detectionOverrideCache) get(ctx context.Context, orgID string) map[string]agent.DetectionAction {
 	now := time.Now()
 
@@ -143,16 +148,45 @@ func (c *detectionOverrideCache) get(ctx context.Context, orgID string) map[stri
 
 	overrides, err := c.reader.ReadOrgOverrides(ctx, orgID)
 	if err != nil {
-		// Fail-safe: cache an empty set briefly so the global config is used and
+		// Fail-safe: cache an empty set briefly so the stored actions decide and
 		// a failing DB is not re-hit on every request inside the error window.
-		log.Printf("[Detection] WARNING: orchestrator per-org override lookup failed for org %q — falling back to global config: %v", orgID, err)
+		log.Printf("[Detection] WARNING: orchestrator per-org override lookup failed for org %q — applying no override, the stored policy actions decide: %v", orgID, err)
 		empty := map[string]agent.DetectionAction{}
-		c.store(orgID, empty, now.Add(c.errTTL))
+		c.storeEntry(orgID, detectionOverrideCacheEntry{overrides: empty, expiresAt: now.Add(c.errTTL), err: err})
 		return empty
 	}
 
 	c.store(orgID, overrides, now.Add(c.ttl))
 	return overrides
+}
+
+// read returns orgID's recorded overrides, or the error that kept them from
+// being read. It is the anchored enforcer's read (orchestratorRecordedOverrides):
+// unlike get it never substitutes an empty set for a failed read, because an
+// enforcing seam that cannot read an override fails closed rather than
+// enforcing the shipped action the organization recorded a change to. A failure
+// is cached for the error window, as get caches one, so a failing store is not
+// re-read on every request.
+func (c *detectionOverrideCache) read(ctx context.Context, orgID string) (map[string]agent.DetectionAction, error) {
+	now := time.Now()
+
+	c.mu.RLock()
+	entry, ok := c.entries[orgID]
+	c.mu.RUnlock()
+	if ok && now.Before(entry.expiresAt) {
+		if entry.err != nil {
+			return nil, entry.err
+		}
+		return entry.overrides, nil
+	}
+
+	overrides, err := c.reader.ReadOrgOverrides(ctx, orgID)
+	if err != nil {
+		c.storeEntry(orgID, detectionOverrideCacheEntry{overrides: map[string]agent.DetectionAction{}, expiresAt: now.Add(c.errTTL), err: err})
+		return nil, err
+	}
+	c.store(orgID, overrides, now.Add(c.ttl))
+	return overrides, nil
 }
 
 // store inserts an entry, enforcing the size bound. When at capacity it first
@@ -161,12 +195,17 @@ func (c *detectionOverrideCache) get(ctx context.Context, orgID string) map[stri
 // short-TTL cache). The newly-resolved entry is always inserted so the current
 // request is served from the cache.
 func (c *detectionOverrideCache) store(orgID string, overrides map[string]agent.DetectionAction, expiresAt time.Time) {
+	c.storeEntry(orgID, detectionOverrideCacheEntry{overrides: overrides, expiresAt: expiresAt})
+}
+
+// storeEntry inserts entry under the same size bound store enforces.
+func (c *detectionOverrideCache) storeEntry(orgID string, entry detectionOverrideCacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.entries[orgID]; !exists && len(c.entries) >= c.maxEntries {
 		c.evictLocked()
 	}
-	c.entries[orgID] = detectionOverrideCacheEntry{overrides: overrides, expiresAt: expiresAt}
+	c.entries[orgID] = entry
 }
 
 // evictLocked frees room for at least one insert. Caller holds c.mu. It drops
@@ -199,8 +238,8 @@ func (c *detectionOverrideCache) invalidate(orgID string) {
 }
 
 // Package-global cache, wired once at orchestrator startup (DB mode only). nil
-// when the orchestrator runs without a DB → resolution returns the global config
-// unchanged, identical to pre-#2612 behavior.
+// when the orchestrator runs without a DB → no override resolves and the stored
+// policy actions decide.
 var (
 	globalDetectionOverrideCache   *detectionOverrideCache
 	globalDetectionOverrideCacheMu sync.RWMutex
@@ -208,7 +247,7 @@ var (
 
 // InitDetectionOverrides wires the orchestrator's per-org override cache to db.
 // Call once at orchestrator startup AFTER the DB connection is open. Safe to
-// skip in no-DB mode (the resolvers then return the global config). db is the
+// skip in no-DB mode (no override then resolves; stored actions decide). db is the
 // orchestrator's OWN handle (usageDB) — distinct from the agent process's.
 func InitDetectionOverrides(db *sql.DB) {
 	if db == nil {
@@ -220,7 +259,7 @@ func InitDetectionOverrides(db *sql.DB) {
 	globalDetectionOverrideCacheMu.Lock()
 	globalDetectionOverrideCache = cache
 	globalDetectionOverrideCacheMu.Unlock()
-	log.Printf("✅ Orchestrator per-org detection-action overrides enabled (#2612; cache TTL %s, max %d orgs, fallback=global config)", ttl, maxEntries)
+	log.Printf("✅ Orchestrator per-org detection-action overrides enabled (#2612; cache TTL %s, max %d orgs, no override = stored policy action)", ttl, maxEntries)
 }
 
 // ResetDetectionOverrideCacheForTest clears the wired cache. Test-only.
@@ -298,28 +337,28 @@ func resolveDetectionOverrideMaxEntries() int {
 // failed (fail-safe). Never hits the DB on the hot path beyond the cache.
 func orgDetectionOverrides(ctx context.Context, orgID string) map[string]agent.DetectionAction {
 	if orgID == "" {
-		return nil // unauthenticated / community / internal-service with no org → global
+		return nil // unauthenticated / community / internal-service with no org → stored actions
 	}
 	cache := getDetectionOverrideCache()
 	if cache == nil {
-		return nil // no DB / cache not wired → global
+		return nil // no DB / cache not wired → stored actions
 	}
 	return cache.get(ctx, orgID)
 }
 
 // ResolveGatewayDetectionConfig returns the gateway detection config for orgID:
-// the cached deployment-global config (agent.GetGatewayDetectionConfig) with any
-// per-org category overrides applied on top. Falls back to the global config
-// when orgID is empty, the override cache isn't wired, the org has no overrides,
-// or the lookup fails (fail-safe). This is the orchestrator response plane's
-// sibling of agent.ResolveGatewayDetectionConfig.
+// the process's gateway mode config (agent.GetGatewayDetectionConfig) with the
+// org's recorded overrides in its action fields. When orgID is empty, the
+// override cache isn't wired, the org has no overrides, or the lookup fails, the
+// action fields stay empty and every category keeps its stored policy action.
+// This is the orchestrator response plane's sibling of
+// agent.ResolveGatewayDetectionConfig.
 func ResolveGatewayDetectionConfig(ctx context.Context, orgID string) agent.ModeDetectionConfig {
 	return applyOrgDetectionOverrides(orgDetectionOverrides(ctx, orgID), agent.GetGatewayDetectionConfig())
 }
 
 // applyOrgDetectionOverrides layers a per-category override map onto base. base
-// is returned UNCHANGED (same value) whenever no override applies, so a
-// global-only deployment is byte-identical to today.
+// is returned UNCHANGED (same value) whenever no override applies.
 func applyOrgDetectionOverrides(overrides map[string]agent.DetectionAction, base agent.ModeDetectionConfig) agent.ModeDetectionConfig {
 	if len(overrides) == 0 {
 		return base
@@ -343,11 +382,10 @@ func applyOrgDetectionOverrides(overrides map[string]agent.DetectionAction, base
 // ResolveGatewayPIIActionOverride returns orgID's EXPLICIT per-org PII action and
 // true when one is set, or ("", false) otherwise. It is distinct from
 // ResolveGatewayDetectionConfig: callers that must distinguish "this org has no
-// override, use the deployment-global behavior unchanged" from "this org
-// explicitly set warn/log/redact/block" need the boolean — notably the
-// ProcessResponse skipRedaction (detect-don't-modify vs redact) decision, which
-// must stay byte-identical to the deployment-global PII_ACTION baseline when an
-// org has no explicit override.
+// override, the stored actions decide" from "this org explicitly set
+// warn/log/redact/block" need the boolean — notably the ProcessResponse
+// skipRedaction (detect-don't-modify vs redact) decision, which is off unless
+// the org chose warn or log.
 func ResolveGatewayPIIActionOverride(ctx context.Context, orgID string) (agent.DetectionAction, bool) {
 	a, ok := orgDetectionOverrides(ctx, orgID)[agent.DetectionCategoryPII]
 	return a, ok

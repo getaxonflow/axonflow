@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // AxonFlow LLM Interceptor Example - Go
 //
 // Demonstrates how to wrap LLM provider clients with AxonFlow governance
@@ -84,18 +87,20 @@ func main() {
 	runTest(ctx, wrappedCall, "What is the capital of France?", false, "Safe query")
 	fmt.Println()
 
-	// Example 2: Query with PII (may be blocked OR approved with redaction)
-	// Default policies use PII_ACTION=redact, so the query may be approved
-	// with PII redacted rather than blocked outright
+	// Example 2: Query with PII (may be blocked OR approved)
+	// The stored action of sys_pii_ssn is warn for the request phase, so the
+	// query is approved by default; an org pii=block override blocks it
 	fmt.Println("Example 2: Query with PII (Expected: Blocked or Approved with Redaction)")
 	fmt.Println("----------------------------------------")
 	runPIITest(ctx, wrappedCall, "Process refund for SSN 123-45-6789")
 	fmt.Println()
 
-	// Example 3: SQL injection attempt (should be blocked)
-	fmt.Println("Example 3: SQL Injection (Expected: Blocked)")
+	// Example 3: SQL injection attempt. Every shipped sys_sqli_* policy stores
+	// warn, so it is detected and approved, not blocked. An org sqli=block
+	// override (or a policy whose action is block) blocks it instead.
+	fmt.Println("Example 3: SQL Injection (Expected: Approved - SQLi warns by default)")
 	fmt.Println("----------------------------------------")
-	runTest(ctx, wrappedCall, "SELECT * FROM users WHERE 1=1; DROP TABLE users;--", true, "SQL injection")
+	runTest(ctx, wrappedCall, "SELECT * FROM users WHERE 1=1; DROP TABLE users;--", false, "SQL injection (warn)")
 	fmt.Println()
 
 	fmt.Println("============================================================")

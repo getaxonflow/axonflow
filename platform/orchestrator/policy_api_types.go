@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -207,8 +199,14 @@ type PolicyFieldError struct {
 }
 
 // Valid policy types
-// Note: MCP-specific types (rate-limit, budget, time-access, role-access, mcp, connector)
-// are used by the MCP Dynamic Policy Handler for connector-level policy enforcement.
+// Note: the MCP-specific types (rate-limit, budget, time-access, role-access,
+// mcp, connector) had their type-specific semantics (windowed counting,
+// budgets, time windows, role checks) only in the MCP dynamic-policy endpoint,
+// which v11 removed. The orchestrator's database engine still loads rows of
+// these types (sharedpolicy.RefreshDynamicPolicies selects every enabled row)
+// and evaluates their conditions like any other row's. They stay valid because
+// such rows exist and legacy policy writes are frozen: a read or list that
+// refused its own stored type would fail the other way.
 var ValidPolicyTypes = []string{
 	"content", "user", "risk", "cost", // Standard policy types
 	"context_aware",                       // Context-aware (tenant isolation, debug restrict, sensitive-data control — seeded by migration core/031)
@@ -287,4 +285,7 @@ type PolicyServicer interface {
 	GetPolicyVersions(ctx context.Context, tenantID, policyID string) (*PolicyVersionResponse, error)
 	ExportPolicies(ctx context.Context, tenantID, orgID string) (*ExportPoliciesResponse, error)
 	ImportPolicies(ctx context.Context, tenantID, orgID string, req *ImportPoliciesRequest, importedBy string) (*ImportPoliciesResponse, error)
+	// MayWriteLegacyPolicies reports whether the connection the legacy writes
+	// run on may write dynamic_policies (legacyfreeze.MayWrite, #4237).
+	MayWriteLegacyPolicies(ctx context.Context) (bool, error)
 }

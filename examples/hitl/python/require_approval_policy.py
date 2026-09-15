@@ -127,8 +127,10 @@ async def main() -> int:
                         f"Block reason mentions approval (got: {block_reason})",
                     )
                 else:
-                    # Community mode: auto-approved
-                    assert_check(True, "Community mode: matching query auto-approved (expected)")
+                    # Not held. Community auto-approves, and from v11.0.0 /api/request
+                    # holds no request on either edition (#4253); approval holds return
+                    # as typed approval_challenge obligations with #4254.
+                    assert_check(True, "Matching query not held (Community auto-approve, or /api/request since v11.0.0, #4253)")
             except Exception as e:
                 err_str = str(e).lower()
                 if "api_key" in err_str or "authentication" in err_str:

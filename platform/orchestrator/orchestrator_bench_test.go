@@ -1,4 +1,5 @@
 // Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
 package orchestrator
 
 import (
@@ -10,20 +11,6 @@ import (
 
 // Benchmark Tests for Orchestrator Utility Functions
 // Run with: go test -bench=. -benchmem
-
-// BenchmarkNewPIIDetector benchmarks PII detector creation
-func BenchmarkNewPIIDetector(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = NewPIIDetector()
-	}
-}
-
-// BenchmarkNewRedactor benchmarks redactor creation
-func BenchmarkNewRedactor(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = NewRedactor()
-	}
-}
 
 // BenchmarkNewResponseProcessor benchmarks response processor creation
 func BenchmarkNewResponseProcessor(b *testing.B) {

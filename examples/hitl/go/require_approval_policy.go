@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates creating HITL policies with require_approval action
 // and VALIDATES that enforcement actually works via ProxyLLMCall.
 //
@@ -147,9 +150,11 @@ func main() {
 			fmt.Sprintf("Block reason mentions approval (got: %s)", matchingResponse.BlockReason),
 		)
 	} else {
-		// Community mode: auto-approved, call succeeds
-		fmt.Println("   NOT BLOCKED (community mode auto-approve)")
-		assertCheck(true, "Community mode: matching query auto-approved (expected)")
+		// Not held. Community auto-approves, and from v11.0.0 /api/request
+		// holds no request on either edition (#4253); approval holds return as
+		// typed approval_challenge obligations with #4254.
+		fmt.Println("   NOT BLOCKED (Community auto-approves; /api/request holds nothing since v11.0.0, #4253)")
+		assertCheck(true, "Matching query not held (Community auto-approve, or /api/request since v11.0.0, #4253)")
 	}
 
 	// 3b. Send a safe query that should NOT trigger HITL

@@ -1,3 +1,6 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package main demonstrates and VALIDATES AxonFlow Gateway Mode in Go.
 //
 // Gateway Mode provides the lowest latency AI governance by separating
@@ -10,10 +13,11 @@
 // This gives you full control over LLM parameters while maintaining
 // complete audit trails with ~3-5ms governance overhead.
 //
-// Gateway-specific policy config env vars (override defaults for gateway mode only):
-//
-//	GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
-//	GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+// Detection actions (v11): the stored action of each matched policy decides,
+// on this plane as on every other; environment variables no longer set them.
+// Out of the box the pre-check WARNS on PII and SQL injection: the request is
+// approved and the matched policy ids are returned with it. An organization
+// override (Enterprise customer portal) or a policy action change alters that.
 //
 // Issue #1082: Examples should test actual behavior, not just API availability
 //
@@ -24,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v9"
@@ -31,6 +36,16 @@ import (
 )
 
 var failures []string
+
+// hasSQLiPolicy reports whether a shipped SQL injection policy (sys_sqli_*) matched.
+func hasSQLiPolicy(policies []string) bool {
+	for _, p := range policies {
+		if strings.HasPrefix(p, "sys_sqli_") {
+			return true
+		}
+	}
+	return false
+}
 
 func assertCheck(condition bool, message string) {
 	if condition {
@@ -108,7 +123,7 @@ func main() {
 	fmt.Println()
 
 	// =========================================================================
-	// STEP 1b: PII Detection - SSN triggers redaction flag
+	// STEP 1b: PII Detection - SSN is detected (stored request action: warn)
 	// =========================================================================
 	fmt.Println("Step 1b: PII Detection (SSN)...")
 	piiResult, err := axonflowClient.GetPolicyApprovedContext(
@@ -120,7 +135,7 @@ func main() {
 		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
 		assertCheck(false, "PII pre-check succeeded")
 	} else {
-		assertCheck(piiResult.Approved, "PII query approved (redact mode, not blocked)")
+		assertCheck(piiResult.Approved, "PII query approved (stored request action is warn)")
 		assertCheck(len(piiResult.Policies) > 0, "PII policies detected")
 		fmt.Printf("   Policies: %v\n", piiResult.Policies)
 	}
@@ -139,7 +154,7 @@ func main() {
 		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
 		assertCheck(false, "PAN pre-check succeeded")
 	} else {
-		assertCheck(panResult.Approved, "India PAN approved (redact mode)")
+		assertCheck(panResult.Approved, "India PAN approved (stored request action is warn)")
 		assertCheck(len(panResult.Policies) > 0, "India PII policies detected for PAN")
 		fmt.Printf("   Policies: %v\n", panResult.Policies)
 	}
@@ -154,14 +169,14 @@ func main() {
 		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
 		assertCheck(false, "Aadhaar pre-check succeeded")
 	} else {
-		assertCheck(aadhaarResult.Approved, "India Aadhaar approved (redact mode)")
+		assertCheck(aadhaarResult.Approved, "India Aadhaar approved (stored request action is warn)")
 		assertCheck(len(aadhaarResult.Policies) > 0, "India PII policies detected for Aadhaar")
 		fmt.Printf("   Policies: %v\n", aadhaarResult.Policies)
 	}
 	fmt.Println()
 
 	// =========================================================================
-	// STEP 1d: SQL Injection Detection - should be BLOCKED
+	// STEP 1d: SQL Injection Detection - WARNS (every sys_sqli_* row stores warn)
 	// =========================================================================
 	fmt.Println("Step 1d: SQL Injection Detection (DROP TABLE)...")
 	sqliResult, err := axonflowClient.GetPolicyApprovedContext(
@@ -173,9 +188,9 @@ func main() {
 		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
 		assertCheck(false, "SQLi pre-check succeeded")
 	} else {
-		assertCheck(!sqliResult.Approved, "SQLi query is BLOCKED")
-		assertCheck(sqliResult.BlockReason != "", "Block reason provided for SQLi")
-		fmt.Printf("   Block reason: %s\n", sqliResult.BlockReason)
+		assertCheck(sqliResult.Approved, "SQLi query approved with a warning (stored action is warn, not block)")
+		assertCheck(hasSQLiPolicy(sqliResult.Policies), "SQLi policy matched (sys_sqli_*)")
+		fmt.Printf("   Policies: %v\n", sqliResult.Policies)
 	}
 
 	fmt.Println("Step 1d: SQL Injection Detection (UNION SELECT)...")
@@ -188,9 +203,9 @@ func main() {
 		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
 		assertCheck(false, "UNION SQLi pre-check succeeded")
 	} else {
-		assertCheck(!unionResult.Approved, "UNION SQLi query is BLOCKED")
-		assertCheck(unionResult.BlockReason != "", "Block reason provided for UNION SQLi")
-		fmt.Printf("   Block reason: %s\n", unionResult.BlockReason)
+		assertCheck(unionResult.Approved, "UNION SQLi query approved with a warning (stored action is warn, not block)")
+		assertCheck(hasSQLiPolicy(unionResult.Policies), "UNION SQLi policy matched (sys_sqli_*)")
+		fmt.Printf("   Policies: %v\n", unionResult.Policies)
 	}
 	fmt.Println()
 

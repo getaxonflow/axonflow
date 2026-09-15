@@ -20,7 +20,26 @@
 #      never in the set (something else runs it); `--all` fires everything.
 #   3. Against the real tree, `--dry-run --all` selects the whole fleet
 #      (>= 60, including the portal and SDK suites) and dispatches nothing.
+#      This section is enterprise-only: the mirror strips `*-e2e.yml`, so the
+#      fleet does not exist there and the floor would fire on a healthy tree.
+#      It skips on a community checkout and FAILS if `ee/` is present.
 set -euo pipefail
+# A required guard must not read bytecode compiled from source no longer on
+# disk. This suite loads a repo-resident script via importlib
+# (spec_from_file_location + exec_module), which caches a .pyc exactly as an
+# ordinary import does, and the cache is invalidated on (mtime, SIZE) - a pair
+# that misses a SAME-LENGTH edit written and reverted inside one second. That
+# is the cadence of a positive-control probe loop. See #3919.
+export PYTHONDONTWRITEBYTECODE=1
+# ...and that closes only the WRITE half. CPython still EXECUTES an existing
+# .pyc whose (mtime, size) header matches the source, so the sentence above -
+# "must not READ bytecode compiled from source no longer on disk" - is not
+# delivered by the line above on its own. Proved against this branch: a cache
+# poisoned by anything that ran without the variable, with the source left
+# pristine, was executed by this guard and it asserted on code that was not
+# there. Relocating the cache moves the READ off the in-tree directory as well,
+# which is what makes the claim true. See #3919.
+export PYTHONPYCACHEPREFIX="$(mktemp -d)"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 SCRIPT="$PWD/.github/scripts/nightly-e2e-dispatch.py"
 
@@ -130,10 +149,23 @@ grep -q 'dispatched: \*\*6\*\*' <<<"$out" || { echo "FAIL: with no changes only 
 echo "ok: an unchanged main fires only the unconditional suites"
 
 # 3. the real tree ----------------------------------------------------------
+# The mirror strips every `*-e2e.yml` (and this dispatcher's own workflow) but
+# NOT this script, so on a community checkout there is no fleet to count and
+# the anti-vacuity floor in main() would - correctly - exit 2. That is not a
+# regression there. In an ENTERPRISE tree a missing fleet is a failure, never
+# a skip, so the tripwire below keeps this from passing where it must bite.
+if [ ! -f .github/workflows/sync-community-repo.yml ]; then
+  if [ -d ee ]; then
+    echo "FAIL: sync-community-repo.yml missing in an enterprise tree - section 3 cannot vacuously pass"
+    exit 1
+  fi
+  echo "ok: SKIP section 3 - community checkout, the e2e fleet is stripped from the mirror"
+  exit 0
+fi
 out=$(python3 "$SCRIPT" --dry-run --all 2>/dev/null)
 n=$(sed -n 's/.*stack-booting workflows: \*\*\([0-9]*\)\*\*.*/\1/p' <<<"$out")
 if [ "${n:-0}" -lt 60 ]; then echo "FAIL: real tree selects only ${n:-0} nightly-set workflows (expected >= 60)"; exit 1; fi
-for f in e2e-tests.yml sdk-smoke-tests.yml per-plane-decision-shadow-e2e.yml; do
+for f in e2e-tests.yml sdk-smoke-tests.yml per-plane-enforcement-e2e.yml; do
   grep -q "\`$f\`" <<<"$out" || { echo "FAIL: $f not in the nightly set"; exit 1; }
 done
 grep -q 'dry-run: gh workflow run' <<<"$out" || { echo "FAIL: dry run did not print the dispatch command"; exit 1; }

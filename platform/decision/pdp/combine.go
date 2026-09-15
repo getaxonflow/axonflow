@@ -1,6 +1,10 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package pdp
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -297,12 +301,19 @@ func Combine(in CombineInput) (*contract.Decision, error) {
 	// an invariant the next call site will not have, and there are three.
 	outcome := contract.ComposeObligations(contract.ComposeInput{
 		Obligations:    append(append([]contract.Obligation(nil), required...), advisory...),
-		Leaves:         in.PayloadLeaves,
+		Payload:        contract.DeclaredPayloadLeaves(in.PayloadLeaves),
 		PEP:            in.PEP,
 		ApprovalExpiry: in.ApprovalExpiry,
+		Now:            in.Request.EvaluatedAt,
 	})
 	if outcome.Denied {
 		trace.Warnings = warnings
+		// The obligation the enforcement point cannot discharge rides the
+		// internal trace for the adapter that names the capability gap.
+		var undischarged *contract.UndischargedObligationError
+		if errors.As(outcome.Err, &undischarged) {
+			trace.Undischarged = []contract.Obligation{undischarged.Obligation}
+		}
 		return finish(dec, trace, contract.AuthzDeny, outcome.Reason, outcome.Detail, nil, nil, determining)
 	}
 	if outcome.UnplacedDetail != "" {

@@ -16,7 +16,13 @@
         "local": { "type": "string", "minLength": 1 }
       },
       "required": ["kind", "type", "local"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": { "properties": { "kind": { "const": "principal" } } },
+      "then": {
+        "properties": {
+          "type": { "enum": ["User", "Service", "Workload", "Agent", "Client", "Group"] }
+        }
+      }
     },
 
     "attribute": {

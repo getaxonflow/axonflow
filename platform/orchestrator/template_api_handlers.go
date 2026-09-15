@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -147,6 +139,13 @@ func (h *TemplateAPIHandler) HandleApplyTemplate(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// THE FREEZE IS ASKED BEFORE THE BODY IS READ (#4237), as on the policy
+	// routes: where core/172 has revoked the write no apply can succeed, and a
+	// request that failed validation below was answered 400 rather than the freeze.
+	if h.refuseLegacyWriteWhenRevoked(w, r, "ApplyTemplate", orgID, tenantID) {
+		return
+	}
+
 	var req ApplyTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON body")
@@ -162,6 +161,13 @@ func (h *TemplateAPIHandler) HandleApplyTemplate(w http.ResponseWriter, r *http.
 		}
 		if err.Error() == "template not found" {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Template not found")
+			return
+		}
+		// #4088: the policy this route creates is written to a table core/172
+		// made read-only to the application roles. That refusal is a retired
+		// write path with a named replacement, not a server fault, so it is
+		// answered as the other policy write routes answer it.
+		if h.writeLegacyFreezeError(w, err, "ApplyTemplate", tenantID) {
 			return
 		}
 		// The internal error is logged, not served. It is built by wrapping

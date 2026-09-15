@@ -1,3 +1,6 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
 package policy
 
 import (
@@ -243,7 +246,7 @@ func ValidateAadhaar(match string, context string) (bool, float64) {
 
 	// The pattern's bare-12-digit alternative matches ANY 12-digit number
 	// (barcodes, order ids, ledger refs), and EvaluateAll has no confidence
-	// threshold, so a match always fires → under PII_ACTION=redact benign 12-digit
+	// threshold, so a match always fires → under a redact action benign 12-digit
 	// figures were masked. Validity therefore REQUIRES an Aadhaar/UID label. A
 	// Verhoeff check-digit gate is NOT enough on its own here: ~1 in 10 random
 	// 12-digit numbers pass the check digit, so it would only cut the false
@@ -621,10 +624,9 @@ func leftContextOf(match, context string) string {
 // followed by 6-9 digits (matching the sys_pii_passport pattern). That pattern is
 // broad — it also matches generic uppercase-alphanumeric IDs (SKUs, order/case
 // numbers) — and the shared engine's EvaluateAll has no confidence threshold (a
-// valid match always fires). The policy's effective action is the deployment's
-// PII_ACTION (blocked under PII_ACTION=block, redacted/warned otherwise — the
-// pii-global category override replaces the seed action), so a false positive
-// CAN block legitimate traffic. Validity therefore requires a passport/travel-
+// valid match always fires). The policy's effective action is its stored action,
+// or an organization's recorded pii override (block under pii=block), so a false
+// positive CAN block legitimate traffic. Validity therefore requires a passport/travel-
 // document label IMMEDIATELY PRECEDING the number; without it the match is
 // rejected, so "order X1234567" is not governed as a passport.
 //
@@ -664,8 +666,8 @@ func ValidatePassport(match string, context string) (bool, float64) {
 // at the value's left edge). A bare birth word elsewhere in the window does NOT
 // qualify: "the company was born in 2018, invoice 03/04/2025" leaves the date's
 // left context ending in "invoice " → not governed. The policy's effective action
-// is the deployment's PII_ACTION (block under PII_ACTION=block, redact/warn
-// otherwise), so this proximity gate is what prevents false blocks of ordinary
+// is its stored action, or an organization's recorded pii override (block under
+// pii=block), so this proximity gate is what prevents false blocks of ordinary
 // dates.
 //
 // Coverage limits (documented, not a regression): the sys_pii_dob pattern is
@@ -684,7 +686,7 @@ func ValidateDOB(match string, context string) (bool, float64) {
 // IMMEDIATELY PRECEDE the value (anchored at the end of the left context), not
 // merely co-occur in the window. Both detectors are CategoryPIISingapore, whose
 // category default validator is nil (accept-all), so before this gate every
-// regex match fired unconditionally — and under PII_ACTION=redact the engine
+// regex match fired unconditionally — and under a redact action the engine
 // masked the value, which for a bare JSON number breaks the document and makes
 // a downstream PEP (e.g. the Claude Desktop proxy, which re-validates the
 // redacted result as JSON) fail-closed on an otherwise-benign response.
@@ -733,7 +735,7 @@ var structuredUENRe = regexp.MustCompile(`^[TS]\d{2}[A-Z]{2}\d{4}[A-Z]$`)
 // passportLabelRe/dobLabelRe (#2567) and sgPostalLabelRe/sgUENLabelRe (#2575) do:
 // the label must IMMEDIATELY PRECEDE the value (anchored at the end of the left
 // context). These three matched on shape alone with no real gate, and EvaluateAll
-// has no confidence threshold, so under PII_ACTION=redact they masked benign IDs:
+// has no confidence threshold, so under a redact action they masked benign IDs:
 // any 12-digit number fired Aadhaar; any [STFGM]/[FG]+7digit+letter fired NRIC/FIN.
 var aadhaarLabelRe = regexp.MustCompile(`(?i)\b(aadhaar|aadhar|uidai|uid|unique\s*id)\b\s*(?:number|no\.?|num|card|id)?\s*[:#=.\-]?\s*$`)
 
@@ -873,6 +875,29 @@ var validatorTokenMappings = []struct{ token, regKey string }{
 // Single source of truth shared by the loader (PolicyLoader.getValidatorForPolicy,
 // which pre-sets CompiledPolicy.Validator) and the evaluator (PatternEvaluator
 // .getValidator, the in-memory fallback) so the two never diverge.
+// ValidatorFor is THE resolution of "which validator gates this row", and it is
+// the only one.
+//
+// Selection is by PII-type token within the policy ID, falling back to the
+// category default when no token matches. That is two lines, and before #3963
+// it was written THREE times: PolicyLoader.getValidatorForPolicy (which pre-sets
+// CompiledPolicy.Validator), PatternEvaluator.getValidator's in-memory
+// fallback, and the detector census's own censusResolveValidator, whose comment
+// said in terms that it "reproduces PolicyLoader.getValidatorForPolicy exactly".
+// All three agreed. That is the property a reproduction has right up until it
+// does not, and the census is the worst place to keep one: a census that
+// re-derives the rule it is auditing cannot report a disagreement with it.
+//
+// #3963 needed a fourth caller - the tier engine - and the instruction was to
+// use the real function rather than copy it. There was no real function to use;
+// there were three copies and no original. This is the original.
+func ValidatorFor(policyID string, category PolicyCategory) ValidatorFunc {
+	if validator := ValidatorForPolicyID(policyID); validator != nil {
+		return validator
+	}
+	return GetValidatorForCategory(category)
+}
+
 func ValidatorForPolicyID(policyID string) ValidatorFunc {
 	segments := "_" + strings.ToLower(policyID) + "_"
 	for _, m := range validatorTokenMappings {

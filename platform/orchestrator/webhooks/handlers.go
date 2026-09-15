@@ -158,10 +158,19 @@ func requireScope(w http.ResponseWriter, r *http.Request) (tenantscope.Scope, bo
 	return scope, true
 }
 
+// sendError writes an error in the platform's FLAT error envelope.
+//
+// #3941: this used to emit `{"error": msg}` — one key, no `success` — while
+// all four documented `/api/v1/webhooks/*` operations declare the flat
+// `{success, error}` envelope (`ErrorResponse`), on which `success` is
+// `required`. See euaiact's writeError for why this converges rather than
+// becoming a fourth named family: adding `success` is a pure addition of one
+// member, so no shipped reader of `error` breaks and the handler moves toward
+// the contract already published for it.
 func sendError(w http.ResponseWriter, msg string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": msg}); err != nil {
 		log.Printf("[Webhooks] Failed to encode error response: %v", err)
 	}
 }

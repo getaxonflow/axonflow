@@ -1,6 +1,9 @@
 # Replay corpus and production capture
 
-How the ADR-065 shadow harness gets its inputs today, and how a live
+> v11 retired the ADR-065 shadow harness and observer this note was written for
+> (PRD v11 §1.1). The capture and its reconciliation test below remain.
+
+How the ADR-065 shadow harness got its inputs, and how a live
 deployment plugs into the same seam later. Design note; the production capture
 is deliberately NOT implemented in this phase.
 
@@ -189,16 +192,12 @@ cd platform/decision
 AXONFLOW_LEGACY_CAPTURE_DIR=/tmp/legacy-capture \
   go test ./legacycompile/ -run TestCapturedCorpusReconciles -v
 
-# gate 18 over the REAL capture, every plane
-AXONFLOW_LEGACY_CAPTURE_DIR=/tmp/legacy-capture \
-  go test ./legacycompile/shadow/ -run TestRealCaptureShadowGateIsGreen -v
-
 # the fixture diff gate over every plane
 go test ./legacycompile/... -count=1
 ```
 
-Without `AXONFLOW_LEGACY_CAPTURE_DIR` both capture-backed tests SKIP, and say
-so loudly, so a green run cannot be read as either having passed. CI does not
+Without `AXONFLOW_LEGACY_CAPTURE_DIR` the capture-backed tests SKIP, and say
+so loudly, so a green run cannot be read as having passed. CI does not
 rely on the skip: the `Unit Tests: Enterprise-Tagged + Real-PG` job runs the
-capture script and BOTH tests on every PR, and its step requires their
+capture script and the capture-backed tests on every PR, and its step requires their
 `--- PASS` lines, so a skip there is a red step rather than a green one.

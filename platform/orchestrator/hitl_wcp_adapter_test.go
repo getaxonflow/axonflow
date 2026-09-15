@@ -367,33 +367,20 @@ func (s *stubCreator) CreateApproval(context.Context, *HITLApprovalRequest) (*HI
 	return s.resp, s.err
 }
 
-func requireApprovalResult() *PolicyEvaluationResult {
-	return &PolicyEvaluationResult{
-		Allowed:         false,
-		RequiredActions: []string{"require_approval"},
-		AppliedPolicies: []string{"wsp-approval-policy"},
-		Severity:        "high",
-	}
-}
-
+// gateContext is the step the disclosure tests below gate. The anchored engine
+// deciding it is a double (withStepGateEngine), because these tests are about
+// what the enqueue does with a hold, not about how the hold was decided (#4254).
 func gateContext() *workflow_control.StepGateContext {
 	return &workflow_control.StepGateContext{
 		WorkflowID: "wf-123",
 		StepID:     "step-a",
 		StepName:   "high-risk-step",
+		StepType:   workflow_control.StepTypeToolCall,
 		OrgID:      "test-org",
 		TenantID:   "test-tenant",
 		ClientID:   "test-client",
 	}
 }
-
-type allowAllEngine struct{ result *PolicyEvaluationResult }
-
-func (e *allowAllEngine) EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult {
-	return e.result
-}
-func (e *allowAllEngine) ListActivePolicies() []DynamicPolicy { return nil }
-func (e *allowAllEngine) IsHealthy() bool                     { return true }
 
 // TestEnqueueRefusalIsDisclosedNotSwallowed is the core of scope item D.
 //
@@ -435,10 +422,11 @@ func TestEnqueueRefusalIsDisclosedNotSwallowed(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter := NewWCPPolicyAdapter(&allowAllEngine{result: requireApprovalResult()})
+			withStepGateEngine(t, heldStepVerdict())
+			adapter := NewWCPPolicyAdapter()
 			adapter.SetHITLApproval(&stubCreator{err: tc.err})
 
-			ev := adapter.EvaluateStepGate(context.Background(), gateContext())
+			ev := adapter.EvaluateStepGate(wcpSubjectContext(), gateContext())
 
 			if ev.Decision != workflow_control.GateDecisionRequireApproval {
 				t.Fatalf("decision = %q, want require_approval - the caller must stay HELD", ev.Decision)
@@ -461,12 +449,13 @@ func TestEnqueueRefusalIsDisclosedNotSwallowed(t *testing.T) {
 // failure value would satisfy every case there.
 func TestSuccessfulEnqueueIsAlsoClassified(t *testing.T) {
 	id := uuid.New()
-	adapter := NewWCPPolicyAdapter(&allowAllEngine{result: requireApprovalResult()})
+	withStepGateEngine(t, heldStepVerdict())
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(&stubCreator{resp: &HITLApprovalResponse{
 		ApprovalID: id, Status: "pending", Enqueue: string(queue.OutcomeCreated),
 	}})
 
-	ev := adapter.EvaluateStepGate(context.Background(), gateContext())
+	ev := adapter.EvaluateStepGate(wcpSubjectContext(), gateContext())
 
 	if ev.ApprovalID != id.String() {
 		t.Errorf("approval_id = %q, want %s", ev.ApprovalID, id)
@@ -484,10 +473,11 @@ func TestSuccessfulEnqueueIsAlsoClassified(t *testing.T) {
 // always means "a HITL write was tried". A field that is always populated
 // cannot be filtered on.
 func TestAllowDecisionCarriesNoEnqueueClassification(t *testing.T) {
-	adapter := NewWCPPolicyAdapter(&allowAllEngine{result: &PolicyEvaluationResult{Allowed: true}})
+	withStepGateEngine(t, allowedStepVerdict())
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(&stubCreator{err: errors.New("must not be called")})
 
-	ev := adapter.EvaluateStepGate(context.Background(), gateContext())
+	ev := adapter.EvaluateStepGate(wcpSubjectContext(), gateContext())
 
 	if ev.Decision != workflow_control.GateDecisionAllow {
 		t.Fatalf("decision = %q, want allow", ev.Decision)
@@ -508,14 +498,15 @@ func TestAllowDecisionCarriesNoEnqueueClassification(t *testing.T) {
 // the step was gated, on exactly the requests an operator most needs to
 // reconstruct.
 func TestEnqueueRefusalKeepsThePolicyReason(t *testing.T) {
-	adapter := NewWCPPolicyAdapter(&allowAllEngine{result: requireApprovalResult()})
+	withStepGateEngine(t, heldStepVerdict())
+	adapter := NewWCPPolicyAdapter()
 	adapter.SetHITLApproval(&stubCreator{err: &queue.CapError{TenantID: "test-tenant", Pending: 5, Limit: 5}})
 
-	ev := adapter.EvaluateStepGate(context.Background(), gateContext())
+	ev := adapter.EvaluateStepGate(wcpSubjectContext(), gateContext())
 
-	// The policy half - what convertToStepGateEvaluation set before the
-	// enqueue ran. Asserted by its literal, because that literal is what an
-	// operator reading the audit row sees.
+	// The policy half - what the step gate's seam set before the enqueue
+	// ran. Asserted by its literal, because that literal is what an operator
+	// reading the audit row sees.
 	if !strings.Contains(ev.Reason, "Step requires human approval") {
 		t.Errorf("the policy's own reason was lost: %q", ev.Reason)
 	}

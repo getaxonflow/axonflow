@@ -300,46 +300,6 @@ func TestBuildExplanation_FallsBackToPolicyIDs(t *testing.T) {
 	}
 }
 
-func TestCheckOverrideAvailability_NoUserReturnsFalse(t *testing.T) {
-	ok, id := checkOverrideAvailability("tenant-x", "tenant-x", "", "", []ExplainPolicy{
-		{PolicyID: "p-1", AllowOverride: true, RiskLevel: "medium"},
-	})
-	if ok {
-		t.Error("expected false for empty user")
-	}
-	if id != "" {
-		t.Errorf("expected empty id, got %q", id)
-	}
-}
-
-func TestCheckOverrideAvailability_NoMatchesReturnsFalse(t *testing.T) {
-	ok, id := checkOverrideAvailability("tenant-x", "tenant-x", "user@example.com", "", nil)
-	if ok {
-		t.Error("expected false for no matches")
-	}
-	if id != "" {
-		t.Errorf("expected empty id, got %q", id)
-	}
-}
-
-// Logical check: when all matches are critical OR allow_override=false,
-// the function should return false without even trying the DB.
-// We avoid DB dependencies in this unit test by keeping matches in a
-// configuration that short-circuits the DB query.
-func TestCheckOverrideAvailability_AllCriticalReturnsFalse(t *testing.T) {
-	matches := []ExplainPolicy{
-		{PolicyID: "p-1", AllowOverride: true, RiskLevel: "critical"},
-		{PolicyID: "p-2", AllowOverride: false, RiskLevel: "high"},
-	}
-	ok, id := checkOverrideAvailability("tenant-x", "tenant-x", "user@example.com", "", matches)
-	if ok {
-		t.Error("expected false when all matches are critical or non-overridable")
-	}
-	if id != "" {
-		t.Errorf("expected empty id, got %q", id)
-	}
-}
-
 func TestBuildExplanation_ExtractsReason(t *testing.T) {
 	exp := buildExplanation("dec-4", time.Now().UTC(), "require_approval", "manual review required", nil)
 	if exp.Reason != "manual review required" {
